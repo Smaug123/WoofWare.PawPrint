@@ -619,44 +619,20 @@ module internal DebuggerValueJson =
         | CliNumericType.Float64 f -> writeDouble writer false f
         | CliNumericType.NativeFloat f -> writeDouble writer true f
 
-    /// A field's current value. With explicit layout, a field that shares bytes with another may
-    /// have been overwritten through its sibling, leaving its own cell stale, so for those the
-    /// value is read back through the bytes the fields share.
-    let rec private writeFieldValue
-        (writer : Utf8JsonWriter)
-        (context : DebuggerValueContext)
-        (valueType : CliValueType)
-        (overlapsAnother : bool)
-        (field : CliField)
-        : unit
-        =
-        if not overlapsAnother then
-            writeCliType writer context field.Contents
-        else
-            // `DereferenceFieldById` throws when the shared bytes cannot be decoded as the field's
-            // shape (for instance, when a sibling holds a pointer); the debugger reports that
-            // rather than failing the whole response.
-            let current =
-                try
-                    Ok (CliValueType.DereferenceFieldById field.Id valueType)
-                with e ->
-                    Error e.Message
+    /// One field of a value type as the debugger reports it: its layout, and its current value,
+    /// or why that could not be decoded.
+    type private CurrentField =
+        {
+            Field : CliField
+            Offset : int
+            Size : int
+            Current : Result<CliType, string>
+        }
 
-            match current with
-            | Ok current -> writeCliType writer context current
-            | Error message ->
-                writer.WriteStartObject ()
-                writer.WriteString ("kind", "opaque")
-                writer.WriteString ("text", $"overlapping field %s{field.Name} could not be decoded: %s{message}")
-                writer.WriteEndObject ()
-
-    /// The `fields` array (and `rawBytesBase64`) of a value type or of a heap object's contents.
-    and writeValueTypeFields
-        (writer : Utf8JsonWriter)
-        (context : DebuggerValueContext)
-        (valueType : CliValueType)
-        : unit
-        =
+    /// Every field of `valueType` with its current value. With explicit layout, a field that
+    /// shares bytes with another may have been overwritten through its sibling, leaving its own
+    /// cell stale, so for those the value is read back through the bytes the fields share.
+    let private currentFields (valueType : CliValueType) : CurrentField list =
         let fields =
             CliValueType.TryAllFields valueType
             |> List.map (fun field ->
@@ -665,9 +641,8 @@ module internal DebuggerValueJson =
                 field, offset, size
             )
 
-        writer.WriteStartArray "fields"
-
-        for field, offset, size in fields do
+        fields
+        |> List.map (fun (field, offset, size) ->
             let overlapsAnother =
                 fields
                 |> List.exists (fun (other, otherOffset, otherSize) ->
@@ -676,13 +651,75 @@ module internal DebuggerValueJson =
                     && offset < otherOffset + otherSize
                 )
 
+            let current =
+                if not overlapsAnother then
+                    Ok field.Contents
+                else
+                    // `DereferenceFieldById` throws when the shared bytes cannot be decoded as the
+                    // field's shape (for instance, when a sibling holds a pointer); the debugger
+                    // reports that rather than failing the whole response.
+                    try
+                        Ok (CliValueType.DereferenceFieldById field.Id valueType)
+                    with e ->
+                        Error $"overlapping field %s{field.Name} could not be decoded: %s{e.Message}"
+
+            {
+                Field = field
+                Offset = offset
+                Size = size
+                Current = current
+            }
+        )
+
+    /// The heap objects `value` refers to directly, in the order its fields hold them. Only
+    /// object references count: a byref or native int that happens to point into the heap is not
+    /// an edge of the object graph.
+    let rec referencesOfCliType (value : CliType) : ManagedHeapAddress list =
+        match value with
+        | CliType.ObjectRef (Some address) -> [ address ]
+        | CliType.ObjectRef None
+        | CliType.Numeric _
+        | CliType.Bool _
+        | CliType.Char _
+        | CliType.RuntimePointer _ -> []
+        | CliType.ValueType valueType -> referencesOfValueType valueType
+
+    /// As `referencesOfCliType`, over every field of a value type or of a heap object's contents.
+    /// A field whose value cannot be decoded contributes nothing.
+    and referencesOfValueType (valueType : CliValueType) : ManagedHeapAddress list =
+        currentFields valueType
+        |> List.collect (fun field ->
+            match field.Current with
+            | Ok value -> referencesOfCliType value
+            | Error _ -> []
+        )
+
+    /// The `fields` array (and `rawBytesBase64`) of a value type or of a heap object's contents.
+    let rec writeValueTypeFields
+        (writer : Utf8JsonWriter)
+        (context : DebuggerValueContext)
+        (valueType : CliValueType)
+        : unit
+        =
+        let fields = currentFields valueType
+        writer.WriteStartArray "fields"
+
+        for field in fields do
             writer.WriteStartObject ()
-            writer.WriteString ("name", field.Name)
-            writer.WriteNumber ("offset", offset)
-            writer.WriteNumber ("size", size)
-            writer.WriteString ("type", typeDescription context field.Type)
+            writer.WriteString ("name", field.Field.Name)
+            writer.WriteNumber ("offset", field.Offset)
+            writer.WriteNumber ("size", field.Size)
+            writer.WriteString ("type", typeDescription context field.Field.Type)
             writer.WritePropertyName "value"
-            writeFieldValue writer context valueType overlapsAnother field
+
+            match field.Current with
+            | Ok value -> writeCliType writer context value
+            | Error message ->
+                writer.WriteStartObject ()
+                writer.WriteString ("kind", "opaque")
+                writer.WriteString ("text", message)
+                writer.WriteEndObject ()
+
             writer.WriteEndObject ()
 
         writer.WriteEndArray ()

@@ -1520,3 +1520,299 @@ class Program
             f.GetProperty("kind").GetString () |> shouldEqual "float"
             f.GetProperty("value").GetDouble () |> shouldEqual 1.0
         }
+
+    /// A small object graph (`a -> b`, both in `all`), a string, and statics of each storage kind.
+    let private objectGraphSource =
+        """
+using System;
+
+struct Holder
+{
+    public object Held;
+}
+
+class Node
+{
+    public Node Next;
+    public int Value;
+    public Holder Box;
+}
+
+class Program
+{
+    static readonly object Gate = new object();
+    static int counter;
+    static int neverWritten;
+    const int Constant = 12;
+    [ThreadStatic] static int perThread;
+
+    static void Spin()
+    {
+        while (true) { }
+    }
+
+    static int Main(string[] args)
+    {
+        Node b = new Node { Value = 2 };
+        Node a = new Node { Next = b, Value = 1 };
+        Node[] all = new Node[] { a, b };
+        string text = "graph-text";
+        a.Box.Held = text;
+        lock (Gate)
+        {
+            counter = 5;
+        }
+        perThread = 3;
+        Spin();
+        return a.Value + all.Length + text.Length + counter + perThread + neverWritten + Constant;
+    }
+}
+"""
+
+    let private getJson (client : HttpClient) (path : string) : Task<JsonElement> =
+        task {
+            let! response = client.GetAsync path
+            let! body = response.Content.ReadAsStringAsync ()
+
+            if response.StatusCode <> HttpStatusCode.OK then
+                failwith $"GET %s{path} returned %O{response.StatusCode}: %s{body}"
+
+            use document = JsonDocument.Parse body
+            return document.RootElement.Clone ()
+        }
+
+    /// Every object-reference address a structured value mentions, walking into value types.
+    let rec private objectRefsIn (value : JsonElement) : int list =
+        match value.GetProperty("kind").GetString () with
+        | "objectRef" -> [ value.GetProperty("address").GetInt32 () ]
+        | "valueType" ->
+            value.GetProperty("fields").EnumerateArray ()
+            |> Seq.toList
+            |> List.collect (fun field -> objectRefsIn (field.GetProperty "value"))
+        | _ -> []
+
+    /// The outgoing edges `GET /heap/{address}` reports must be exactly the references its own
+    /// structured fields or elements contain.
+    let private assertReferencesMatchContents (heapObject : JsonElement) : unit =
+        let values =
+            match heapObject.GetProperty("kind").GetString () with
+            | "object" ->
+                heapObject.GetProperty("fields").EnumerateArray ()
+                |> Seq.map (fun field -> field.GetProperty "value")
+                |> Seq.toList
+            | "array" ->
+                heapObject.GetProperty("elements").EnumerateArray ()
+                |> Seq.map (fun element -> element.GetProperty "structured")
+                |> Seq.toList
+            | other -> failwith $"unexpected heap kind %s{other}"
+
+        let expected = values |> List.collect objectRefsIn |> List.distinct |> List.sort
+
+        heapObject.GetProperty("references").EnumerateArray ()
+        |> Seq.map (fun r -> r.GetInt32 ())
+        |> Seq.toList
+        |> shouldEqual expected
+
+    [<Test>]
+    let ``Debugger HTTP heap objects expose structured fields and outgoing references`` () : Task =
+        task {
+            use server = startServer objectGraphSource
+            use client = client server (Some token)
+
+            let! thread = runUntilFrame client ".Spin"
+            let main = frameFor ".Main" thread
+
+            let localAddress (index : int) : int =
+                (main.GetProperty("locals").EnumerateArray () |> Seq.item index)
+                    .GetProperty("structured")
+                    .GetProperty("address")
+                    .GetInt32 ()
+
+            let b = localAddress 0
+            let a = localAddress 1
+            let all = localAddress 2
+            let text = localAddress 3
+
+            let! aJson = getJson client $"heap/%d{a}"
+            aJson.GetProperty("kind").GetString () |> shouldEqual "object"
+
+            let fields =
+                aJson.GetProperty("fields").EnumerateArray ()
+                |> Seq.map (fun field -> field.GetProperty("name").GetString (), field.GetProperty "value")
+                |> Map.ofSeq
+
+            fields.["Next"].GetProperty("address").GetInt32 () |> shouldEqual b
+            fields.["Value"].GetProperty("value").GetInt32 () |> shouldEqual 1
+
+            // `text` is reached through a struct field, which is still a direct reference.
+            aJson.GetProperty("references").EnumerateArray ()
+            |> Seq.map (fun r -> r.GetInt32 ())
+            |> Seq.toList
+            |> shouldEqual (List.sort [ b ; text ])
+
+            assertReferencesMatchContents aJson
+
+            let! bJson = getJson client $"heap/%d{b}"
+
+            // `b.Next` is null, which is no edge.
+            bJson.GetProperty("references").GetArrayLength () |> shouldEqual 0
+
+            let! allJson = getJson client $"heap/%d{all}"
+
+            allJson.GetProperty("references").EnumerateArray ()
+            |> Seq.map (fun r -> r.GetInt32 ())
+            |> Seq.toList
+            |> shouldEqual (List.sort [ a ; b ])
+
+            assertReferencesMatchContents allJson
+        }
+
+    [<Test>]
+    let ``Debugger HTTP lists the whole heap a page at a time`` () : Task =
+        task {
+            use server = startServer objectGraphSource
+            use client = client server (Some token)
+
+            let! thread = runUntilFrame client ".Spin"
+            let main = frameFor ".Main" thread
+
+            let localAddress (index : int) : int =
+                (main.GetProperty("locals").EnumerateArray () |> Seq.item index)
+                    .GetProperty("structured")
+                    .GetProperty("address")
+                    .GetInt32 ()
+
+            let a = localAddress 1
+            let all = localAddress 2
+            let text = localAddress 3
+
+            let! state = getJson client "state"
+            let heapCounts = state.GetProperty("session").GetProperty "heap"
+
+            let liveCount =
+                heapCounts.GetProperty("nonArrayObjects").GetInt32 ()
+                + heapCounts.GetProperty("arrays").GetInt32 ()
+
+            let listed = ResizeArray<JsonElement> ()
+            let mutable after : int option = None
+            let mutable pages = 0
+            let mutable finished = false
+
+            while not finished do
+                pages <- pages + 1
+
+                if pages > 10000 then
+                    failwith "heap listing did not terminate"
+
+                let path =
+                    match after with
+                    | None -> "heap?limit=97"
+                    | Some after -> $"heap?limit=97&after=%d{after}"
+
+                let! page = getJson client path
+                page.GetProperty("liveCount").GetInt32 () |> shouldEqual liveCount
+                let objects = page.GetProperty("objects").EnumerateArray () |> Seq.toList
+                (List.length objects <= 97) |> shouldEqual true
+                listed.AddRange objects
+
+                match page.GetProperty("nextAfter").ValueKind with
+                | JsonValueKind.Null -> finished <- true
+                | _ ->
+                    // A page that says there is more must have been full.
+                    List.length objects |> shouldEqual 97
+                    after <- Some (page.GetProperty("nextAfter").GetInt32 ())
+
+            let addresses =
+                listed |> Seq.map (fun o -> o.GetProperty("address").GetInt32 ()) |> Seq.toList
+
+            addresses |> shouldEqual (List.sort addresses |> List.distinct)
+            addresses.Length |> shouldEqual liveCount
+
+            let byAddress =
+                listed
+                |> Seq.map (fun o -> o.GetProperty("address").GetInt32 (), o)
+                |> Map.ofSeq
+
+            byAddress.[a].GetProperty("kind").GetString () |> shouldEqual "object"
+
+            byAddress.[a].GetProperty("type").GetString ()
+            |> unnumbered
+            |> shouldEqual "Node#_ [PawPrintTestAssembly]"
+
+            byAddress.[all].GetProperty("kind").GetString () |> shouldEqual "array"
+            byAddress.[all].GetProperty("length").GetInt32 () |> shouldEqual 2
+
+            byAddress.[text].GetProperty("string").GetString () |> shouldEqual "graph-text"
+            byAddress.[text].GetProperty("stringLength").GetInt32 () |> shouldEqual 10
+
+            let! badAfter = client.GetAsync "heap?after=not-a-number"
+            badAfter.StatusCode |> shouldEqual HttpStatusCode.BadRequest
+        }
+
+    [<Test>]
+    let ``Debugger HTTP exposes static fields of every storage kind`` () : Task =
+        task {
+            use server = startServer objectGraphSource
+            use client = client server (Some token)
+
+            let! _ = runUntilFrame client ".Spin"
+            let! statics = getJson client "statics"
+
+            let program =
+                statics.GetProperty("types").EnumerateArray ()
+                |> Seq.filter (fun ty ->
+                    ty.GetProperty("typeDescription").GetString () |> unnumbered = "Program#_ [PawPrintTestAssembly]"
+                )
+                |> Seq.exactlyOne
+
+            program.GetProperty("initState").GetProperty("kind").GetString ()
+            |> shouldEqual "initialized"
+
+            let fields =
+                program.GetProperty("fields").EnumerateArray ()
+                |> Seq.map (fun field -> field.GetProperty("name").GetString (), field)
+                |> Map.ofSeq
+
+            // A `const` has no storage at all.
+            fields
+            |> Map.keys
+            |> Seq.toList
+            |> List.sort
+            |> shouldEqual [ "Gate" ; "counter" ; "neverWritten" ; "perThread" ]
+
+            let slots (name : string) : (JsonElement * JsonElement) list =
+                fields.[name].GetProperty("slots").EnumerateArray ()
+                |> Seq.map (fun slot -> slot.GetProperty "owner", slot.GetProperty "value")
+                |> Seq.toList
+
+            fields.["Gate"].GetProperty("storage").GetString () |> shouldEqual "shared"
+
+            match slots "Gate" with
+            | [ owner, value ] ->
+                owner.GetProperty("kind").GetString () |> shouldEqual "shared"
+                value.GetProperty("kind").GetString () |> shouldEqual "objectRef"
+
+                value.GetProperty("type").GetString ()
+                |> unnumbered
+                |> shouldEqual "System.Object#_ [System.Private.CoreLib]"
+            | other -> failwith $"expected one slot for Gate, got %d{other.Length}"
+
+            match slots "counter" with
+            | [ _, value ] -> value.GetProperty("value").GetInt32 () |> shouldEqual 5
+            | other -> failwith $"expected one slot for counter, got %d{other.Length}"
+
+            fields.["neverWritten"].GetProperty("storage").GetString ()
+            |> shouldEqual "shared"
+
+            slots "neverWritten" |> shouldEqual []
+
+            fields.["perThread"].GetProperty("storage").GetString ()
+            |> shouldEqual "threadStatic"
+
+            match slots "perThread" with
+            | [ owner, value ] ->
+                owner.GetProperty("kind").GetString () |> shouldEqual "thread"
+                owner.GetProperty("thread").GetInt32 () |> shouldEqual 0
+                value.GetProperty("value").GetInt32 () |> shouldEqual 3
+            | other -> failwith $"expected one slot for perThread, got %d{other.Length}"
+        }

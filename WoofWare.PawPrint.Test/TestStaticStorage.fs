@@ -81,3 +81,28 @@ module TestStaticStorage =
                         |> shouldEqual (Map.tryFind (owner, ty, field) model |> Option.map value)
 
         Check.One (Config.QuickThrowOnFailure.WithMaxTest 500, Prop.forAll (Arb.fromGen (Gen.listOf genWrite)) property)
+
+    /// The observer's enumeration is the whole of what was written, each slot once with its
+    /// latest value, in ascending (owner, type, field) order.
+    [<Test>]
+    let ``the observer enumerates exactly the written slots, in order`` () : unit =
+        let property (writes : (int * int * int * int) list) : unit =
+            let model : Map<int * int * int, int> =
+                (Map.empty, writes)
+                ||> List.fold (fun model (owner, ty, field, v) -> Map.add (owner, ty, field) v model)
+
+            let storage : StaticStorage =
+                (StaticStorage.empty, writes)
+                ||> List.fold (fun storage (owner, ty, field, v) ->
+                    StaticStorage.set owners.[owner] types.[ty] fields.[field] (value v) storage
+                )
+
+            let expected =
+                model
+                |> Map.toList
+                |> List.map (fun ((owner, ty, field), v) -> owners.[owner], types.[ty], fields.[field], value v)
+                |> List.sortBy (fun (owner, ty, field, _) -> owner, ty, field)
+
+            StaticStorageObserver.writtenSlots storage |> shouldEqual expected
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 500, Prop.forAll (Arb.fromGen (Gen.listOf genWrite)) property)
