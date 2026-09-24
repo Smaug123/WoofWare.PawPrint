@@ -766,9 +766,8 @@ module UnixNamespace =
     /// resolution.
     ///
     /// Two kinds, because the two are answered differently: an errno is what the
-    /// guest is told, while a refusal is this kernel saying it cannot represent
-    /// what the guest asked about at all — a pathname whose bytes are not valid
-    /// UTF-8 names a file no `FileName` can.
+    /// caller is told, while a refusal is this kernel saying the bytes it was
+    /// handed are not a pathname at all (see `PathArgumentRefusal`).
     [<RequireQualifiedAccess>]
     type private RenameStop =
         | Errno of error : UnixError

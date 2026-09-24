@@ -339,14 +339,12 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> false
         | SimulatedUnixFlavour.Darwin -> true
 
-    /// Whether this platform's `stat` reports a creation time.
+    /// Whether this platform's `stat(2)` reports a creation time.
     ///
-    /// A compile-time property of the native shim rather than of any file:
-    /// `ConvertFileStatus` in `pal_io.c` sets `BirthTime` and the
-    /// `HAS_BIRTHTIME` flag under `#if HAVE_STAT_BIRTHTIME` — true on macOS,
-    /// false on Linux, where it hard-zeroes both with the comment "Linux path:
-    /// until we use statx()". So the birth time is a real fact about the inode
-    /// on both, and this governs only whether the guest is told it.
+    /// Darwin's `struct stat` has `st_birthtimespec`; Linux's has no such
+    /// field, and only `statx(2)` reports one (`stx_btime`). The birth time is
+    /// a fact about the inode on both, and this governs only whether `stat`
+    /// tells a caller.
     let reportsBirthTime (platform : SimulatedUnixPlatform) : bool =
         match flavour platform with
         | SimulatedUnixFlavour.Linux -> false
@@ -607,25 +605,15 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Darwin -> BindableEntryNames.StrictUtf8
 
     /// `sizeof(struct sockaddr_storage)`: the size of the largest socket address
-    /// any Unix we model can hand back, and so the buffer size CoreLib sizes
-    /// every socket-address buffer by. Reported to the guest by
-    /// `SystemNative_GetMaximumAddressSize`.
+    /// any Unix we model can hand back.
     ///
-    /// A compile-time property of the native shim rather than of any socket, like
-    /// `reportsBirthTime`. Unlike that one it takes no flavour: both families
-    /// *define* the constant in their headers rather than computing it
-    /// (`_SS_MAXSIZE` on Darwin, `_SS_SIZE` in glibc's generic `bits/sockaddr.h`)
-    /// and derive the padding members from it, so the value is invariant of
-    /// pointer width as well as agreed between the two — both descend from
-    /// RFC 2553's sample definition. Measured 128 on macOS arm64 and on Linux
-    /// alike, and re-pinned against a real platform on every test run by
-    /// `sourcesPure/SystemNativeGetMaximumAddressSize.cs`. Make it a function of
-    /// the flavour on the day one of them disagrees.
-    ///
-    /// Contrast `sockaddr_un`, which genuinely does differ (106 on Darwin, 110 on
-    /// Linux). That is `SocketAddressSizes.UnixDomain` below, reported through a
-    /// different entry point again; this binding is where the shared 128 is
-    /// defined, and `socketAddressSizes` reads it rather than repeating it.
+    /// Takes no flavour: both families *define* the constant in their headers
+    /// rather than computing it (`_SS_MAXSIZE` on Darwin, `_SS_SIZE` in glibc's
+    /// generic `bits/sockaddr.h`) and derive the padding members from it, so the
+    /// value is invariant of pointer width as well as agreed between the two —
+    /// both descend from RFC 2553's sample definition. Measured 128 on macOS
+    /// arm64 and on Linux alike. Make it a function of the flavour on the day one
+    /// of them disagrees.
     let maximumSocketAddressSize : int = 128
 
     /// `sizeof(struct sockaddr_in)`: 16 on both flavours.

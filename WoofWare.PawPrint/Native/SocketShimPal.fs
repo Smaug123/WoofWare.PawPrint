@@ -6,8 +6,8 @@ open WoofWare.PosixKernel
 /// which `System.Net.Primitives`' `SocketAddressPal` class initialiser latches
 /// and every `SocketAddress` is then sized by.
 ///
-/// Compile-time properties of the native shim rather than of any socket, like
-/// `reportsBirthTime`. Measured with a `sizeof` probe compiled on macOS arm64 and
+/// Compile-time properties of the native shim rather than of any socket.
+/// Measured with a `sizeof` probe compiled on macOS arm64 and
 /// on Linux, rather than recalled; all four are invariant of pointer width, since
 /// every member of these structs is fixed-width and the two variable-length tails
 /// (`sun_path`, `sockaddr_storage`'s padding) are sized from a constant.
@@ -56,8 +56,8 @@ module SocketShimPal =
     /// dual-mode socket — an IPv6 socket receiving IPv4-mapped traffic. Reported
     /// to the guest by `SystemNative_PlatformSupportsDualModeIPv4PacketInfo`.
     ///
-    /// A compile-time property of the native shim rather than of any socket, like
-    /// `reportsBirthTime`: upstream the whole function body is
+    /// A compile-time property of the native shim rather than of any socket:
+    /// upstream the whole function body is
     /// `#if HAVE_SUPPORT_FOR_DUAL_MODE_IPV4_PACKET_INFO return 1 #else return 0`,
     /// and `configure.cmake` sets that define to 1 for every Linux target and
     /// leaves it 0 elsewhere. There is no probe of the running kernel involved, so

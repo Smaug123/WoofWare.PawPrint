@@ -5,9 +5,9 @@ namespace WoofWare.PosixKernel
 ///
 /// The *consumer* half of the port model. The producer half -- seeding the
 /// pending list when a registration is added or modified, and signalling a
-/// registration when its target's level changes -- is still the client's, so
-/// this library can say whether a port would deliver while owning no modelled
-/// operation that makes one start to.
+/// registration when its target's level changes -- belongs to the operations
+/// that make those changes: `UnixPoll.changeSocketEventRegistration`, and the
+/// socket operations in `UnixConnection`.
 [<RequireQualifiedAccess>]
 module SocketEventPort =
 

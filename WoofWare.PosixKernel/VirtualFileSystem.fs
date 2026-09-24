@@ -101,13 +101,12 @@ type RenameOutcome =
 
 /// Where `lseek(2)` measures its offset from.
 ///
-/// Exactly the three `Interop.Sys.SeekWhence` values (`Interop.LSeek.cs`), which
-/// are also the three POSIX ones — and *not* the platforms' full `<unistd.h>`
+/// Exactly the three POSIX values — and *not* the platforms' full `<unistd.h>`
 /// vocabulary, which continues with `SEEK_DATA` and `SEEK_HOLE`. Those two are
 /// deliberately absent: they are numbered 3 and 4 on Linux and **4 and 3** on
 /// Darwin, so a raw whence of 3 does not name the same operation on the two
-/// kernels, and there is no portable case to add. `SystemNative_LSeek` decodes
-/// the raw integer and refuses them; see the handler.
+/// kernels, and there is no portable case to add. `UnixDescriptor.lseek`
+/// decodes a raw `whence` under the flavour and refuses them.
 [<RequireQualifiedAccess>]
 type SeekWhence =
     /// `SEEK_SET` (0): from the start of the file.

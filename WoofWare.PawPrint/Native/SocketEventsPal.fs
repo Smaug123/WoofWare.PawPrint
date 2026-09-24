@@ -86,7 +86,7 @@ module SocketEventsPal =
     /// The stride of the event buffer `SystemNative_CreateSocketEventBuffer`
     /// allocates and `SystemNative_WaitForSocketEvents` fills, in bytes.
     ///
-    /// A compile-time property of the native shim, like `reportsBirthTime`:
+    /// A compile-time property of the native shim:
     /// `pal_networking.c` defines `SocketEventBufferElementSize` once per backend,
     /// as `max(sizeof(struct epoll_event), sizeof(SocketEvent))` under epoll and
     /// `sizeof(struct kevent)` under kqueue.

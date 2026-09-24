@@ -633,7 +633,7 @@ type FileDescriptorCloseError =
 /// What `flock(2)` was asked to do, once the operation bits have been decoded.
 ///
 /// `LOCK_NB` is not part of this: the registry reports that the lock is
-/// unavailable, and the handler decides between failing and waiting.
+/// unavailable, and `UnixDescriptor.flock` decides between failing and waiting.
 [<RequireQualifiedAccess>]
 type FlockRequest =
     /// `LOCK_SH` or `LOCK_EX`. Replaces whatever lock this description already
@@ -1246,9 +1246,9 @@ module FileDescriptorRegistry =
     /// This is Linux's mechanism. Darwin diverges in three measured ways — it
     /// answers `ENOTSUP` for a pipe, it validates the operation differently,
     /// and it *keeps* a lock that a failed conversion would drop here. None of
-    /// those live in this module: deciding what a Darwin-flavoured kernel does
-    /// is the handler's job, and it currently refuses rather than modelling it
-    /// (see `SystemNative_FLock` in `NativeSystemNative.fs`).
+    /// those live in this module: `UnixDescriptor.flock` decides what a
+    /// Darwin-flavoured kernel does, and refuses (`FLockRefusal`) wherever
+    /// Darwin would answer differently.
     ///
     /// `Acquire` replaces any lock this description already held, so a
     /// conversion cannot conflict with itself: `SH` to `EX` succeeds when this
@@ -1392,10 +1392,10 @@ module FileDescriptorRegistry =
     /// the same table because the pair shares one description.
     ///
     /// This is Linux's mechanism, exactly as `flock` above is: kqueue registers
-    /// per-(ident, filter) with answers that differ on most rows, and deciding
-    /// what a Darwin-flavoured kernel does is the handler's job (it currently
-    /// refuses; see `SystemNative_TryChangeSocketEventRegistration` in
-    /// `NativeSystemNative.fs`).
+    /// per-(ident, filter) with answers that differ on most rows, and
+    /// `UnixPoll.changeSocketEventRegistration` decides what a
+    /// Darwin-flavoured kernel does (it refuses, with
+    /// `SocketEventRegistrationRefusal.UnmodelledFlavour`).
     ///
     /// Refuses (a failwith, not an error) an `Add` whose target is another
     /// socket event port: the simple case measures as success, but epoll's ADD
