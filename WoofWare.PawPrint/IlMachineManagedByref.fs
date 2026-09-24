@@ -1191,6 +1191,27 @@ module IlMachineManagedByref =
         CliValueType.SymbolicBytesAt byteOffset targetSize existing.Contents
         |> CliType.ofSymbolicBytesLike targetTemplate
 
+    /// A read of `targetTemplate` at `byteOffset` of a raw memory block, answered by naming a cell
+    /// of the typed value `covering` — the block's `tryFindCellCovering` at `byteOffset` — when
+    /// that value has no byte image. This is the block analogue of `readArrayBytesAs`'s named
+    /// read: a struct holding a pointer is stored as one cell, and a read that lands exactly on
+    /// one of its fields reads that field.
+    ///
+    /// `None` when no cell covers the offset, when the covering cell has a byte image (bytes stay
+    /// the route for those), or when the range is not exactly one nameable cell of it — in which
+    /// case the byte read the caller falls back to refuses the cell loudly.
+    let private tryReadNamedBlockCell
+        (covering : (int * CliType) option)
+        (byteOffset : int)
+        (targetTemplate : CliType)
+        : CliType option
+        =
+        match covering with
+        | None -> None
+        | Some (cellOffset, cell) ->
+            tryNameCellForByteRead (byteOffset - cellOffset) cell targetTemplate
+            |> Option.map (fun path -> readCellNamedForByteRead path cell targetTemplate)
+
     let private readStackMemoryBytesAs
         (state : IlMachineState)
         (thread : ThreadId)
@@ -1245,6 +1266,12 @@ module IlMachineManagedByref =
         | Some cell -> cell
         | None ->
 
+        match
+            tryReadNamedBlockCell (StackMemoryPool.tryFindCellCovering block byteOffset pool) byteOffset targetTemplate
+        with
+        | Some cell -> cell
+        | None ->
+
         let buf = StackMemoryPool.readNamedBytes block byteOffset targetSize pool
         CliType.ofSymbolicBytesLike targetTemplate buf
 
@@ -1283,6 +1310,12 @@ module IlMachineManagedByref =
             | _ -> None
 
         match fastPath with
+        | Some cell -> cell
+        | None ->
+
+        match
+            tryReadNamedBlockCell (NativeMemoryPool.tryFindCellCovering block byteOffset pool) byteOffset targetTemplate
+        with
         | Some cell -> cell
         | None ->
 
@@ -1718,7 +1751,16 @@ module IlMachineManagedByref =
                     // (e.g. `Unsafe.Add(ref guid._a, 1)` reaches `_b`/`_c`). When
                     // the byte read overflows the immediate cell, lift back
                     // through trailing `Field` projections, accumulating each
-                    // field's offset within its parent until the read fits.
+                    // field's offset within its parent until the read fits, and read it there. A
+                    // cell the lift only passes through is measured and nothing more: its bytes are
+                    // never asked for, so the lift can pass through a struct holding a pointer on
+                    // its way to a parent, or out into the root's container.
+                    //
+                    // Storage with no byte image — a value type holding object references or
+                    // pointers — cannot be read bytewise where the read fits, so the fitting level
+                    // first descends instead: if the range is exactly some cell's extent, that cell,
+                    // read as the target, is the read. The lift widens, the naming narrows; between
+                    // them the walk is total for the shapes the byte path cannot represent.
                     //
                     // `Error (offset, cellSize)` when the lift runs out at the root — the read
                     // does not fit in the root's own storage, `offset` is where it starts
@@ -1728,16 +1770,17 @@ module IlMachineManagedByref =
                     // prefix contains nothing but `Field`s, since `peelTrailingByteView` cut it
                     // at the first `ReinterpretAs` and a `ByteOffset` may not follow a `Field`
                     // unanchored.
-                    let rec resolveCell
-                        (projs : ByrefProjection list)
-                        (offset : int)
-                        : Result<CliType * int, int * int>
-                        =
+                    let rec resolveCell (projs : ByrefProjection list) (offset : int) : Result<CliType, int * int> =
                         let cell = readProjectedValue rootValue projs
-                        let cellSize = namedByteCellSize $"single-cell byref %O{src}" cell
+                        let cellSize = CliType.sizeOf cell
 
                         if offset >= 0 && targetSize <= cellSize - offset then
-                            Ok (cell, offset)
+                            match tryNameCellForByteRead offset cell targetTemplate with
+                            | Some path -> Ok (readCellNamedForByteRead path cell targetTemplate)
+                            | None ->
+                                namedCellBytesAt $"single-cell byref %O{src}" offset targetSize cell
+                                |> CliType.ofSymbolicBytesLike targetTemplate
+                                |> Ok
                         else
                             match List.tryLast projs with
                             | Some (ByrefProjection.Field field) ->
@@ -1750,27 +1793,8 @@ module IlMachineManagedByref =
                                     $"TODO: byte-view read at offset %d{offset} for %d{targetSize} bytes does not fit in single primitive cell of size %d{cellSize}, and the remaining projections %O{projs} are not a `Field` to lift through: %O{src}"
                             | None -> Error (offset, cellSize)
 
-                    // Storage with no byte image — a value type holding object references — cannot
-                    // be indexed by `resolveCell`, which lifts scope outward until a *byte* read
-                    // fits. Descend instead: if the range is exactly some cell's extent, that cell,
-                    // read as the target, is the read. `resolveCell` widens, this narrows; between them the walk is
-                    // total for the shapes the byte path cannot represent.
-                    let named =
-                        let cellHere = readProjectedValue rootValue prefixProjs
-
-                        tryNameCellForByteRead byteOffset cellHere targetTemplate
-                        |> Option.map (fun path -> readCellNamedForByteRead path cellHere targetTemplate)
-
-                    match named with
-                    | Some cell -> cell
-                    | None ->
-
                     match resolveCell prefixProjs byteOffset with
-                    | Ok (cell, finalOffset) ->
-                        let bytes =
-                            namedCellBytesAt $"single-cell byref %O{src}" finalOffset targetSize cell
-
-                        CliType.ofSymbolicBytesLike targetTemplate bytes
+                    | Ok value -> value
                     | Error (rootRelativeOffset, rootCellSize) ->
 
                     match tryReadThroughContainer state outerProjs outerRoot rootRelativeOffset targetTemplate with
@@ -2217,15 +2241,51 @@ module IlMachineManagedByref =
 
         state
 
-    let private writeStackMemoryBytesAt
+    /// The write mirror of `tryReadNamedBlockCell`: a write of `newValue` at `byteOffset` of a raw
+    /// memory block, answered by naming a cell of the typed value `covering` — the block's
+    /// `tryFindCellCovering` at `byteOffset` — when that value has no byte image.
+    ///
+    /// `Some (cellOffset, updated)` when a cell is named, where `updated` is the whole covering
+    /// cell with the write applied, to be reinstalled at `cellOffset`, or `None` if the write is
+    /// provably unobservable. `None` under the same conditions as `tryReadNamedBlockCell`, and
+    /// the byte write the caller falls back to then refuses the cell loudly.
+    let private tryWriteNamedBlockCell
+        (covering : (int * CliType) option)
+        (byteOffset : int)
+        (newValue : CliType)
+        : (int * CliType option) option
+        =
+        match covering with
+        | None -> None
+        | Some (cellOffset, cell) ->
+            tryNameCellForByteAccess (byteOffset - cellOffset) cell newValue
+            |> Option.map (fun path -> cellOffset, writeIntoCellNamedForByteAccess path cell newValue)
+
+    /// Write `newValue` at `byteOffset` of a localloc block: into the field of a stored cell it
+    /// lands on exactly, when that cell has no byte image (`tryWriteNamedBlockCell`), and as bytes
+    /// otherwise.
+    let private writeStackMemoryAt
         (state : IlMachineState)
         (thread : ThreadId)
         (frame : FrameId)
         (block : StackMemoryBlockId)
         (byteOffset : int)
-        (bytes : byte[])
+        (newValue : CliType)
         : IlMachineState
         =
+        let pool = IlMachineThreadState.getStackMemoryPool thread frame state
+
+        match
+            tryWriteNamedBlockCell (StackMemoryPool.tryFindCellCovering block byteOffset pool) byteOffset newValue
+        with
+        | Some (_, None) -> state
+        | Some (cellOffset, Some updated) ->
+            let pool = StackMemoryPool.writeCell block cellOffset updated pool
+            IlMachineThreadState.setStackMemoryPool thread frame pool state
+        | None ->
+
+        let bytes = CliType.ToBytes newValue
+
         if bytes.Length = 0 then
             state
         else
@@ -2234,17 +2294,29 @@ module IlMachineManagedByref =
         | ValueSome existing when bytesEqual existing bytes -> state
         | _ ->
 
-        let pool = IlMachineThreadState.getStackMemoryPool thread frame state
         let pool = StackMemoryPool.writeBytes block byteOffset bytes pool
         IlMachineThreadState.setStackMemoryPool thread frame pool state
 
-    let private writeNativeMemoryBytesAt
+    /// Mirror of `writeStackMemoryAt` for native-heap blocks.
+    let private writeNativeMemoryAt
         (state : IlMachineState)
         (block : NativeMemoryBlockId)
         (byteOffset : int)
-        (bytes : byte[])
+        (newValue : CliType)
         : IlMachineState
         =
+        let pool = state.Kernel.NativeMemoryPool
+
+        match
+            tryWriteNamedBlockCell (NativeMemoryPool.tryFindCellCovering block byteOffset pool) byteOffset newValue
+        with
+        | Some (_, None) -> state
+        | Some (cellOffset, Some updated) ->
+            IlMachineThreadState.setNativeMemoryPool (NativeMemoryPool.writeCell block cellOffset updated pool) state
+        | None ->
+
+        let bytes = CliType.ToBytes newValue
+
         if bytes.Length = 0 then
             state
         else
@@ -2253,10 +2325,7 @@ module IlMachineManagedByref =
         | ValueSome existing when bytesEqual existing bytes -> state
         | _ ->
 
-        let pool =
-            NativeMemoryPool.writeBytes block byteOffset bytes state.Kernel.NativeMemoryPool
-
-        IlMachineThreadState.setNativeMemoryPool pool state
+        IlMachineThreadState.setNativeMemoryPool (NativeMemoryPool.writeBytes block byteOffset bytes pool) state
 
     let private writeStringBytes
         (state : IlMachineState)
@@ -2563,7 +2632,7 @@ module IlMachineManagedByref =
         (projs : ByrefProjection list)
         (root : ByrefRoot)
         (rootRelativeOffset : int)
-        (bytes : byte[])
+        (newValue : CliType)
         : IlMachineState option
         =
         // Separate from `tryReadThroughContainer` rather than one function parameterised over an
@@ -2577,12 +2646,13 @@ module IlMachineManagedByref =
                 rootOffset + int64<int> rootRelativeOffset |> byteViewOffsetWithinInt32 projs
 
             match container with
-            | ByteStorageIdentity.Array arr -> Some (writeArrayBytes state arr 0 offset bytes)
-            | ByteStorageIdentity.HeapObject addr -> Some (writeHeapValueBytes state addr offset bytes)
-            | ByteStorageIdentity.String str -> Some (writeStringBytes state str 0 offset bytes)
+            | ByteStorageIdentity.Array arr -> Some (writeArrayBytes state arr 0 offset (CliType.ToBytes newValue))
+            | ByteStorageIdentity.HeapObject addr ->
+                Some (writeHeapValueBytes state addr offset (CliType.ToBytes newValue))
+            | ByteStorageIdentity.String str -> Some (writeStringBytes state str 0 offset (CliType.ToBytes newValue))
             | ByteStorageIdentity.StackMemory (thread, frame, block) ->
-                Some (writeStackMemoryBytesAt state thread frame block offset bytes)
-            | ByteStorageIdentity.NativeMemory block -> Some (writeNativeMemoryBytesAt state block offset bytes)
+                Some (writeStackMemoryAt state thread frame block offset newValue)
+            | ByteStorageIdentity.NativeMemory block -> Some (writeNativeMemoryAt state block offset newValue)
             | ByteStorageIdentity.PeByteRange _
             | ByteStorageIdentity.StackLocal _
             | ByteStorageIdentity.StackArgument _
@@ -2674,8 +2744,7 @@ module IlMachineManagedByref =
             if typedWriteSafe then
                 writeRootValue state (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset)) newValue
             else
-                let bytes = CliType.ToBytes newValue
-                writeStackMemoryBytesAt state thread frame block byteOffset bytes
+                writeStackMemoryAt state thread frame block byteOffset newValue
         | ValueNone ->
 
         // Same fast path for native-heap blocks. The pool is global on state, so we
@@ -2721,8 +2790,7 @@ module IlMachineManagedByref =
             if typedWriteSafe then
                 writeRootValue state (ByrefRoot.NativeMemoryByte (block, byteOffset)) newValue
             else
-                let bytes = CliType.ToBytes newValue
-                writeNativeMemoryBytesAt state block byteOffset bytes
+                writeNativeMemoryAt state block byteOffset newValue
         | ValueNone ->
 
         // Field-precise byte-view write into a heap object: when the destination is a
@@ -2924,75 +2992,66 @@ module IlMachineManagedByref =
                     // above declines them so that the `Bytes` overlay
                     // representation is preserved for `stind.i1`-style partial
                     // updates).
-                    writeStackMemoryBytesAt
+                    writeStackMemoryAt
                         state
                         thread
                         frame
                         block
                         (rootRelativeByteOffset outerProjs rootByteOffset byteOffset)
-                        bytes
+                        newValue
                 | ByrefRoot.NativeMemoryByte (block, rootByteOffset), [] ->
                     // Same reasoning as the StackMemoryByte case above, but
                     // routed through the global NativeMemoryPool.
-                    writeNativeMemoryBytesAt
+                    writeNativeMemoryAt
                         state
                         block
                         (rootRelativeByteOffset outerProjs rootByteOffset byteOffset)
-                        bytes
+                        newValue
                 | ByrefRoot.ArrayElement (arr, index), [] -> writeArrayBytes state arr index byteOffset bytes
                 | ByrefRoot.StringCharAt (str, charIndex), [] -> writeStringBytes state str charIndex byteOffset bytes
                 | ByrefRoot.HeapValue addr, [] -> writeHeapValueBytes state addr byteOffset bytes
                 | _, prefixProjs ->
                     let rootValue = readRootValue state outerRoot
 
-                    // Storage with no byte image cannot be written by lifting outward either:
-                    // there is no byte-addressable cell to lift to. Descend instead and name the
-                    // cell the range picks out, mirroring `readManagedByrefBytesAs`. This is the
-                    // route for `buffer[k].Tag = v` over an `[InlineArray]` whose element holds a
-                    // reference: the value written is byte-renderable, so the write arrives here
-                    // rather than at the structural writer, but the *storage* is not.
-                    // `tryNameCellForByteAccess` yields `None` for byte-addressable storage, so
-                    // nothing that reaches `resolveCell` today is diverted.
-                    //
-                    // For every root the probe above covers, this repeats it on the same inputs and
-                    // so finds nothing. It is the only naming attempt for a `StackMemoryByte` or
-                    // `NativeMemoryByte` root with a structural prefix, which the probe above
-                    // skips: `Unsafe.As<Inner, byte>(ref p->I)` through a stackalloc'd or natively
-                    // allocated `Outer*` whose `Inner` holds a pointer
-                    // (`StackallocFieldPrefixByteViewStore.cs`).
-                    let namedWrite =
-                        let cellHere = readProjectedValue rootValue prefixProjs
-
-                        match tryNameCellForByteAccess byteOffset cellHere newValue with
-                        | None -> ValueNone
-                        | Some path ->
-                            match writeIntoCellNamedForByteAccess path cellHere newValue with
-                            | None -> ValueSome state
-                            | Some updatedCell ->
-                                match applyProjectionsForWriteIfChanged rootValue prefixProjs updatedCell with
-                                | None -> ValueSome state
-                                | Some updatedRoot -> ValueSome (writeRootValue state outerRoot updatedRoot)
-
-                    match namedWrite with
-                    | ValueSome state -> state
-                    | ValueNone ->
-
                     // Symmetric to the read path: when the byte write overflows
                     // the immediate cell, lift back through trailing `Field`
                     // projections so a write through e.g. `Unsafe.Add(ref s.A, 1)`
                     // updates the parent struct's sibling field. `Error` on
                     // exhaustion at the root, exactly as on the read side, so the
-                    // caller can step out into the root's container.
+                    // caller can step out into the root's container. A cell the lift
+                    // only passes through is measured and never asked for its bytes.
+                    //
+                    // Storage with no byte image cannot be written bytewise where the write
+                    // fits, so the fitting level first names the cell the range picks out,
+                    // mirroring `readManagedByrefBytesAs`. This is the route for
+                    // `buffer[k].Tag = v` over an `[InlineArray]` whose element holds a reference:
+                    // the value written is byte-renderable, so the write arrives here rather than
+                    // at the structural writer, but the *storage* is not. It is also the only
+                    // naming attempt for a `StackMemoryByte` or `NativeMemoryByte` root with a
+                    // structural prefix, which the probe above skips:
+                    // `Unsafe.As<Inner, byte>(ref p->I)` through a stackalloc'd or natively
+                    // allocated `Outer*` whose `Inner` holds a pointer
+                    // (`StackallocFieldPrefixByteViewStore.cs`).
                     let rec resolveCell
                         (projs : ByrefProjection list)
                         (offset : int)
-                        : Result<ByrefProjection list * int * CliType, int * int>
+                        : Result<ByrefProjection list * CliType option, int * int>
                         =
                         let cell = readProjectedValue rootValue projs
-                        let cellSize = byteAddressableCellSize $"single-cell byref %O{src}" cell
+                        let cellSize = CliType.sizeOf cell
 
                         if offset >= 0 && bytes.Length <= cellSize - offset then
-                            Ok (projs, offset, cell)
+                            let updatedCell =
+                                match tryNameCellForByteAccess offset cell newValue with
+                                | Some path -> writeIntoCellNamedForByteAccess path cell newValue
+                                | None ->
+                                    withByteAddressableCellBytesAtIfChanged
+                                        $"single-cell byref %O{src}"
+                                        offset
+                                        bytes
+                                        cell
+
+                            Ok (projs, updatedCell)
                         else
                             match List.tryLast projs with
                             | Some (ByrefProjection.Field field) ->
@@ -3006,18 +3065,14 @@ module IlMachineManagedByref =
                             | None -> Error (offset, cellSize)
 
                     match resolveCell prefixProjs byteOffset with
-                    | Ok (liftedProjs, finalOffset, cell) ->
-                        match
-                            withByteAddressableCellBytesAtIfChanged $"single-cell byref %O{src}" finalOffset bytes cell
-                        with
+                    | Ok (_, None) -> state
+                    | Ok (liftedProjs, Some updatedCell) ->
+                        match applyProjectionsForWriteIfChanged rootValue liftedProjs updatedCell with
                         | None -> state
-                        | Some updatedCell ->
-                            match applyProjectionsForWriteIfChanged rootValue liftedProjs updatedCell with
-                            | None -> state
-                            | Some updatedRoot -> writeRootValue state outerRoot updatedRoot
+                        | Some updatedRoot -> writeRootValue state outerRoot updatedRoot
                     | Error (rootRelativeOffset, rootCellSize) ->
 
-                    match tryWriteThroughContainer state outerProjs outerRoot rootRelativeOffset bytes with
+                    match tryWriteThroughContainer state outerProjs outerRoot rootRelativeOffset newValue with
                     | Some state -> state
                     | None ->
                         failwith
