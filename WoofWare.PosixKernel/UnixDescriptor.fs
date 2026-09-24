@@ -850,7 +850,7 @@ module UnixDescriptor =
                     // `FileDescriptorRegistry.flock` grants every release, so a
                     // release cannot be what contended.
                     failwith
-                        $"flock: fd %d{fd} reported contention for a release, which cannot contend (this is an interpreter bug)"
+                        $"flock: fd %d{fd} reported contention for a release, which cannot contend (this is a bug in this library)"
 
             // The requester is the description rather than the descriptor: a
             // `dup` of `fd` waits on the same lock, and a wake keyed on the
@@ -861,7 +861,7 @@ module UnixDescriptor =
                 | Some id -> id
                 | None ->
                     failwith
-                        $"flock: fd %d{fd} reported contention but names no open file description (this is an interpreter bug)"
+                        $"flock: fd %d{fd} reported contention but names no open file description (this is a bug in this library)"
 
             // The record is derived from the condition rather than built beside
             // it, so a task cannot be parked on one lock while a client polls
@@ -933,7 +933,7 @@ module UnixDescriptor =
         match Map.tryFind requester descriptions with
         | None ->
             failwith
-                $"UnixDescriptor.flockAcquire: open file description %O{requester} is not in the table, so a task parked on an flock of it has had that description closed underneath it. `close` refuses such a close precisely so that this cannot happen (this is an interpreter bug)."
+                $"UnixDescriptor.flockAcquire: open file description %O{requester} is not in the table, so a task parked on an flock of it has had that description closed underneath it. `close` refuses such a close precisely so that this cannot happen (this is a bug in this library, or in a caller that destroyed the description without UnixDescriptor.close)."
         | Some description ->
 
         match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform, description.Flock with
@@ -957,7 +957,7 @@ module UnixDescriptor =
             // `flockOn` never resolves a descriptor, so it has no bad one to
             // report.
             failwith
-                $"UnixDescriptor.flockAcquire: acquiring on open file description %O{requester} reported EBADF, which only a descriptor lookup can produce (this is an interpreter bug)."
+                $"UnixDescriptor.flockAcquire: acquiring on open file description %O{requester} reported EBADF, which only a descriptor lookup can produce (this is a bug in this library)."
         | Some FlockError.WouldBlock ->
             Ok (SyscallOutcome.WouldBlock (WakeCondition.FlockGrantable (requester, mode)), advanced)
         | None ->
@@ -1048,8 +1048,8 @@ module UnixDescriptor =
         | None ->
 
         // The same question for a lock rather than a port, and the reason
-        // `WakeCondition.isSatisfied` may treat a vanished description as an
-        // interpreter bug rather than as something to answer.
+        // `WakeCondition.isSatisfied` may treat a vanished description as a
+        // broken precondition rather than as something to answer.
         //
         // Two ladders over one park record rather than one ladder, because they
         // ask different questions of different things: this one fires only on a

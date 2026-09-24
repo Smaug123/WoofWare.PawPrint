@@ -127,7 +127,7 @@ module private RenameChecks =
             | InodePermissions.Stored bits -> PermissionBits.deniedTo privilege AccessRequest.Write bits
             | InodePermissions.PlatformSymlinkDefault ->
                 failwith
-                    $"RenameChecks.lacksWrite: %s{role} is inode %O{inode}, which reports platform-default symlink permissions -- but rename only asks this of a directory (this is an interpreter bug)."
+                    $"RenameChecks.lacksWrite: %s{role} is inode %O{inode}, which reports platform-default symlink permissions -- but rename only asks this of a directory (this is a bug in the caller of RenameChecks.lacksWrite)."
         | None ->
             failwith
                 $"RenameChecks.lacksWrite: %s{role} is inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."

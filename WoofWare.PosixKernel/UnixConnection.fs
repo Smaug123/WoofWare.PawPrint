@@ -781,7 +781,7 @@ module UnixConnection =
                     failed UnixError.ECONNREFUSED system
                 | SocketPhase.Dead ->
                     failwith
-                        "UnixConnection.connectSocket: a stream socket is in SocketPhase.Dead under the Linux flavour, which only Darwin's refusal delivery produces. This is an interpreter bug."
+                        "UnixConnection.connectSocket: a stream socket is in SocketPhase.Dead under the Linux flavour, which only Darwin's refusal delivery produces. This is a bug in this library, or in a caller that assembled the state by hand."
                 | SocketPhase.Established _ -> fail UnixError.EISCONN
                 | SocketPhase.Listening _ ->
                     // Measured: Linux answers a connect on the listening
@@ -806,7 +806,7 @@ module UnixConnection =
                 | Some dest -> attemptStream dest
                 | None ->
                     failwith
-                        "UnixConnection.connectSocket: the declared length passed the AF_INET verdict but the destination was not supplied; the caller reads it whenever the length reaches it. This is an interpreter bug."
+                        "UnixConnection.connectSocket: the declared length passed the AF_INET verdict but the destination was not supplied; the caller reads it whenever the length reaches it. This is a bug in the caller of UnixConnection.connectSocket."
             | SimulatedUnixFlavour.Darwin ->
                 // The state arms answer first — measured three ways: the
                 // dead latch beats a good destination, EISCONN beats
@@ -815,7 +815,7 @@ module UnixConnection =
                 match sock.Phase with
                 | SocketPhase.EstablishedPendingReport _ ->
                     failwith
-                        "UnixConnection.connectSocket: a stream socket is in SocketPhase.EstablishedPendingReport under the Darwin flavour, which never constructs it (its retry answers EISCONN directly). This is an interpreter bug."
+                        "UnixConnection.connectSocket: a stream socket is in SocketPhase.EstablishedPendingReport under the Darwin flavour, which never constructs it (its retry answers EISCONN directly). This is a bug in this library, or in a caller that assembled the state by hand."
                 | SocketPhase.RefusedPendingDelivery ->
                     // Deliver once; the socket is then dead (measured).
                     failed UnixError.ECONNREFUSED (withPhase SocketPhase.Dead system)
@@ -866,7 +866,7 @@ module UnixConnection =
                 | Some dest -> attemptStream dest
                 | None ->
                     failwith
-                        "UnixConnection.connectSocket: the declared length passed the AF_INET verdict but the destination was not supplied; the caller reads it whenever the length reaches it. This is an interpreter bug."
+                        "UnixConnection.connectSocket: the declared length passed the AF_INET verdict but the destination was not supplied; the caller reads it whenever the length reaches it. This is a bug in the caller of UnixConnection.connectSocket."
         | SocketKind.Datagram ->
             match lengthVerdict with
             | BindLengthVerdict.RejectedBeforeCopy error -> fail error
@@ -910,7 +910,7 @@ module UnixConnection =
                     match sock.Phase, sock.Binding with
                     | SocketPhase.DatagramPeer _, None ->
                         failwith
-                            "UnixConnection.connectSocket: a datagram socket holds a peer but no binding; connect binds before it records the peer, so this is an interpreter bug."
+                            "UnixConnection.connectSocket: a datagram socket holds a peer but no binding; connect binds before it records the peer, so this is a bug in this library, or in a caller that assembled the state by hand."
                     | _, None ->
                         // Nothing to dissolve and nothing bound: the accepted
                         // no-op (measured).
@@ -998,7 +998,7 @@ module UnixConnection =
                             }
                     | SocketPhase.DatagramPeer _, None ->
                         failwith
-                            "UnixConnection.connectSocket: a datagram socket holds a peer but no binding; connect binds before it records the peer, so this is an interpreter bug."
+                            "UnixConnection.connectSocket: a datagram socket holds a peer but no binding; connect binds before it records the peer, so this is a bug in this library, or in a caller that assembled the state by hand."
                     | _, _ -> fail UnixError.EAFNOSUPPORT
             else
 
@@ -1014,7 +1014,7 @@ module UnixConnection =
             match destination with
             | None ->
                 failwith
-                    "UnixConnection.connectSocket: the declared length passed the AF_INET verdict but the destination was not supplied; the caller reads it whenever the length reaches it. This is an interpreter bug."
+                    "UnixConnection.connectSocket: the declared length passed the AF_INET verdict but the destination was not supplied; the caller reads it whenever the length reaches it. This is a bug in the caller of UnixConnection.connectSocket."
             | Some dest ->
 
             if dest.Address = InternetEndpoint.WildcardAddress then
@@ -1085,7 +1085,7 @@ module UnixConnection =
             | Some (OpenFileTarget.Socket socketId) -> socketId
             | other ->
                 failwith
-                    $"UnixConnection.connect: fd %d{fd} names %A{other}, yet the admission above reached the sockaddr copy, which only a socket does (this is an interpreter bug)."
+                    $"UnixConnection.connect: fd %d{fd} names %A{other}, yet the admission above reached the sockaddr copy, which only a socket does (this is a bug in this library)."
 
         // `O_NONBLOCK` is a fact about the open file description `fd` came
         // through, not about the socket, so a connect through a `dup` of a
@@ -1095,7 +1095,7 @@ module UnixConnection =
             | Some description -> description.NonBlocking
             | None ->
                 failwith
-                    $"UnixConnection.connect: fd %d{fd} resolved to a socket a line above and nothing here closes it (this is an interpreter bug)."
+                    $"UnixConnection.connect: fd %d{fd} resolved to a socket a line above and nothing here closes it (this is a bug in this library)."
 
         connectSocket socketId nonBlocking declaredLength family endpoint system
 

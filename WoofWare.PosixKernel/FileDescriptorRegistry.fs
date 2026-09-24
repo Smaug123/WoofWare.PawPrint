@@ -837,7 +837,7 @@ module FileDescriptorRegistry =
                 // through a lookup means the table was mutated by something
                 // other than this module's operations.
                 failwith
-                    $"file descriptor %d{fd} names open file description %O{id}, which is not present in the table (this is an interpreter bug)"
+                    $"file descriptor %d{fd} names open file description %O{id}, which is not present in the table (this is a bug in this library: every descriptor names a description in the table)"
         )
 
     /// The description `fd` names, if `fd` is live.
@@ -1183,7 +1183,9 @@ module FileDescriptorRegistry =
         let description =
             match Map.tryFind id registry.Descriptions with
             | Some description -> description
-            | None -> failwith $"open file description %O{id} is not present in the table (this is an interpreter bug)"
+            | None ->
+                failwith
+                    $"open file description %O{id} is not present in the table (this is a bug in the caller of FileDescriptorRegistry.flockOn, which holds the identity of a description it let close destroy)"
 
         let withFlock (flock : FlockMode option) : FileDescriptorRegistry =
             { registry with
@@ -1275,12 +1277,12 @@ module FileDescriptorRegistry =
     let setOffset (fd : int) (offset : int64) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =
         if offset < 0L then
             failwith
-                $"setOffset: fd %d{fd} was asked to move to offset %d{offset}, which is negative. No kernel permits a negative file offset; the caller must reject this as EINVAL before storing it (this is an interpreter bug)."
+                $"setOffset: fd %d{fd} was asked to move to offset %d{offset}, which is negative. No kernel permits a negative file offset; the caller must reject this as EINVAL before storing it (this is a bug in the caller of FileDescriptorRegistry.setOffset)."
 
         match Map.tryFind fd registry.Fds with
         | None ->
             failwith
-                $"setOffset: fd %d{fd} is not a live file descriptor, so there is no offset to move (this is an interpreter bug: the caller should have answered EBADF)."
+                $"setOffset: fd %d{fd} is not a live file descriptor, so there is no offset to move (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have answered EBADF)."
         | Some id ->
 
         let description =
@@ -1288,18 +1290,18 @@ module FileDescriptorRegistry =
             | Some description -> description
             | None ->
                 failwith
-                    $"file descriptor %d{fd} names open file description %O{id}, which is not present in the table (this is an interpreter bug)"
+                    $"file descriptor %d{fd} names open file description %O{id}, which is not present in the table (this is a bug in this library: every descriptor names a description in the table)"
 
         match description.Target with
         | OpenFileTarget.StandardStream role ->
             failwith
-                $"setOffset: fd %d{fd} names standard stream %O{role}, which this library models as a pipe and so has no file offset (this is an interpreter bug: the caller should have answered ESPIPE)."
+                $"setOffset: fd %d{fd} names standard stream %O{role}, which this library models as a pipe and so has no file offset (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have answered ESPIPE)."
         | OpenFileTarget.SocketEventPort _ ->
             failwith
-                $"setOffset: fd %d{fd} names a socket event port, which holds no file offset on either platform — Linux's lseek on one is noop_llseek and Darwin's is ESPIPE (this is an interpreter bug: the caller should have answered without moving a position)."
+                $"setOffset: fd %d{fd} names a socket event port, which holds no file offset on either platform — Linux's lseek on one is noop_llseek and Darwin's is ESPIPE (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have answered without moving a position)."
         | OpenFileTarget.Socket socketId ->
             failwith
-                $"setOffset: fd %d{fd} names socket %O{socketId}, which holds no file offset on either platform — `lseek` on a socket is ESPIPE on both (this is an interpreter bug: the caller should have answered ESPIPE)."
+                $"setOffset: fd %d{fd} names socket %O{socketId}, which holds no file offset on either platform — `lseek` on a socket is ESPIPE on both (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have answered ESPIPE)."
         | OpenFileTarget.File (inode, _) ->
 
         { registry with
@@ -1333,7 +1335,7 @@ module FileDescriptorRegistry =
         match Map.tryFind fd registry.Fds with
         | None ->
             failwith
-                $"setNonBlocking: fd %d{fd} is not a live file descriptor, so there is no description to flag (this is an interpreter bug: the caller should have answered EBADF)."
+                $"setNonBlocking: fd %d{fd} is not a live file descriptor, so there is no description to flag (this is a bug in the caller of FileDescriptorRegistry.setNonBlocking, which should have answered EBADF)."
         | Some id ->
 
         let description =
@@ -1341,12 +1343,12 @@ module FileDescriptorRegistry =
             | Some description -> description
             | None ->
                 failwith
-                    $"file descriptor %d{fd} names open file description %O{id}, which is not present in the table (this is an interpreter bug)"
+                    $"file descriptor %d{fd} names open file description %O{id}, which is not present in the table (this is a bug in this library: every descriptor names a description in the table)"
 
         match description.Target, value with
         | OpenFileTarget.StandardStream role, true ->
             failwith
-                $"setNonBlocking: fd %d{fd} names standard stream %O{role}, and no modelled stream transfer consults O_NONBLOCK, so a stored `true` would silently keep blocking semantics (this is an interpreter bug: the caller should have refused)."
+                $"setNonBlocking: fd %d{fd} names standard stream %O{role}, and no modelled stream transfer consults O_NONBLOCK, so a stored `true` would silently keep blocking semantics (this is a bug in the caller of FileDescriptorRegistry.setNonBlocking, which should have refused)."
         | OpenFileTarget.StandardStream _, false
         | OpenFileTarget.SocketEventPort _, _
         | OpenFileTarget.File _, _
@@ -1511,7 +1513,7 @@ module FileDescriptorRegistry =
         match Map.tryFind portId registry.Descriptions with
         | None ->
             failwith
-                $"appendSocketEventReady: %O{portId} names no live open file description; the caller resolved it moments ago, so this is an interpreter bug."
+                $"appendSocketEventReady: %O{portId} names no live open file description; the caller resolved it moments ago, so this is a bug in the caller of FileDescriptorRegistry.appendSocketEventReady."
         | Some description ->
 
         match description.Target with
@@ -1519,16 +1521,16 @@ module FileDescriptorRegistry =
         | OpenFileTarget.File _
         | OpenFileTarget.Socket _ ->
             failwith
-                $"appendSocketEventReady: %O{portId} is not a socket event port; the caller resolved it as one moments ago, so this is an interpreter bug."
+                $"appendSocketEventReady: %O{portId} is not a socket event port; the caller resolved it as one moments ago, so this is a bug in the caller of FileDescriptorRegistry.appendSocketEventReady."
         | OpenFileTarget.SocketEventPort portState ->
 
         if not (Map.containsKey key portState.Registrations) then
             failwith
-                $"appendSocketEventReady: %A{key} is not registered with port %O{portId}, so it cannot become pending on it (this is an interpreter bug)."
+                $"appendSocketEventReady: %A{key} is not registered with port %O{portId}, so it cannot become pending on it (this is a bug in the caller of FileDescriptorRegistry.appendSocketEventReady)."
 
         if List.contains key portState.Ready then
             failwith
-                $"appendSocketEventReady: %A{key} is already pending on port %O{portId}; a pending entry keeps its place rather than being re-queued, so the caller should not have asked (this is an interpreter bug)."
+                $"appendSocketEventReady: %A{key} is already pending on port %O{portId}; a pending entry keeps its place rather than being re-queued, so the caller should not have asked (this is a bug in the caller of FileDescriptorRegistry.appendSocketEventReady)."
 
         { registry with
             Descriptions =
@@ -1559,24 +1561,25 @@ module FileDescriptorRegistry =
         match Map.tryFind portId registry.Descriptions with
         | None ->
             failwith
-                $"setSocketEventReady: %O{portId} names no live open file description (this is an interpreter bug)."
+                $"setSocketEventReady: %O{portId} names no live open file description (this is a bug in the caller of FileDescriptorRegistry.setSocketEventReady, which derived the list from a different table)."
         | Some description ->
 
         match description.Target with
         | OpenFileTarget.StandardStream _
         | OpenFileTarget.File _
         | OpenFileTarget.Socket _ ->
-            failwith $"setSocketEventReady: %O{portId} is not a socket event port (this is an interpreter bug)."
+            failwith
+                $"setSocketEventReady: %O{portId} is not a socket event port (this is a bug in the caller of FileDescriptorRegistry.setSocketEventReady, which derived the list from a different table)."
         | OpenFileTarget.SocketEventPort portState ->
 
         for key in ready do
             if not (Map.containsKey key portState.Registrations) then
                 failwith
-                    $"setSocketEventReady: %A{key} is not registered with port %O{portId} (this is an interpreter bug)."
+                    $"setSocketEventReady: %A{key} is not registered with port %O{portId} (this is a bug in the caller of FileDescriptorRegistry.setSocketEventReady, which derived the list from a different table)."
 
         if List.length (List.distinct ready) <> List.length ready then
             failwith
-                $"setSocketEventReady: the ready list for port %O{portId} repeats an entry (this is an interpreter bug)."
+                $"setSocketEventReady: the ready list for port %O{portId} repeats an entry (this is a bug in the caller of FileDescriptorRegistry.setSocketEventReady, which derived the list from a different table)."
 
         { registry with
             Descriptions =

@@ -82,9 +82,10 @@ type UnixSystemDefect<'Task> =
     ///
     /// Unreachable by construction — `UnixProcessState.heldInodes` counts a stream's inode
     /// among the things pinning it, so `UnixDescriptor.forgetIfUnheld` cannot free one out from under
-    /// a stream — which is exactly why a violation is an interpreter bug rather
-    /// than something a guest did. The next `readdir` would crash the
-    /// interpreter, and this names the cause instead.
+    /// a stream — which is exactly why a violation is a bug in this library (or
+    /// in a caller that assembled the state by hand) rather than something the
+    /// process did. The next `readdir` would crash, and this names the cause
+    /// instead.
     | DanglingDirectoryStreamInode of stream : DirectoryStreamId * inode : InodeNumber
     /// An open directory stream names an inode that is not a directory.
     | DirectoryStreamIsNotADirectory of stream : DirectoryStreamId * inode : InodeNumber

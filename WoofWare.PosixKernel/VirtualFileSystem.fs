@@ -268,8 +268,7 @@ type DirectoryStream =
         /// The directory being enumerated. Also reachable through `Fd`, but
         /// held directly so that a guest which closed that descriptor behind the
         /// stream's back — undefined behaviour on a real libc, and possible here
-        /// because fd numbers are guessable — does not turn into an interpreter
-        /// crash.
+        /// because fd numbers are guessable — does not turn into a crash.
         Inode : InodeNumber
         /// How far through `Inode` this stream has read.
         Cursor : DirectoryCursor
@@ -1231,7 +1230,7 @@ module VirtualFileSystem =
     /// position for anything, and this is the less convenient of the two — it
     /// refuses a guest that consumes two entries to skip the dots, or that
     /// expects the first entry to be one. A guest doing either is already broken
-    /// on ext4, and the point of this interpreter is to say so deterministically
+    /// on ext4, and the point of this simulation is to say so deterministically
     /// rather than on whichever machine happens to run it.
     ///
     /// No caller may compare an enumeration order against a host: the order
@@ -1260,7 +1259,7 @@ module VirtualFileSystem =
             | Some _
             | None ->
                 failwith
-                    $"VirtualFileSystem.nextDirectoryEntry: inode %O{directory} is not a directory this filesystem holds. A directory stream's inode is pinned by the descriptor that opened it, so this is an interpreter bug."
+                    $"VirtualFileSystem.nextDirectoryEntry: inode %O{directory} is not a directory this filesystem holds. A directory stream's inode is pinned by the descriptor that opened it, so this is a bug in the caller of VirtualFileSystem.nextDirectoryEntry."
 
         if isOrphanedDirectory directory vfs then
             None
@@ -1298,7 +1297,7 @@ module VirtualFileSystem =
     /// name for a file has gone *and* no open description is holding it.
     ///
     /// Partial, deliberately: the inode must be present and nothing may still
-    /// name it. Both are interpreter bugs rather than anything a guest can
+    /// name it. Both are bugs in the caller rather than anything a process can
     /// cause — the caller has just unbound the last name and consulted the
     /// descriptor table — and forgetting a still-bound inode would leave a
     /// dangling entry that every later walk would trip over far from here.
@@ -1307,11 +1306,11 @@ module VirtualFileSystem =
     let forget (inode : InodeNumber) (vfs : VirtualFileSystem) : VirtualFileSystem =
         if not (Map.containsKey inode vfs.Inodes) then
             failwith
-                $"VirtualFileSystem.forget: inode %O{inode} is not in the graph, so it cannot be forgotten (this is an interpreter bug)."
+                $"VirtualFileSystem.forget: inode %O{inode} is not in the graph, so it cannot be forgotten (this is a bug in the caller of VirtualFileSystem.forget)."
 
         if inode = vfs.Root then
             failwith
-                "VirtualFileSystem.forget: the root cannot be forgotten; every path resolves from it (this is an interpreter bug)."
+                "VirtualFileSystem.forget: the root cannot be forgotten; every path resolves from it (this is a bug in the caller of VirtualFileSystem.forget)."
 
         match bindingCount inode vfs with
         | 0 ->
@@ -1320,7 +1319,7 @@ module VirtualFileSystem =
             }
         | count ->
             failwith
-                $"VirtualFileSystem.forget: inode %O{inode} is still named by %d{count} directory entry/entries, so forgetting it would leave the graph with a dangling entry (this is an interpreter bug)."
+                $"VirtualFileSystem.forget: inode %O{inode} is still named by %d{count} directory entry/entries, so forgetting it would leave the graph with a dangling entry (this is a bug in the caller of VirtualFileSystem.forget)."
 
     /// Write `bytes` at `offset` into the regular file at `inode`, moving its
     /// `mtime` and `ctime` and — unless `privilege` says otherwise — stripping its
@@ -1333,7 +1332,7 @@ module VirtualFileSystem =
     /// contains. A caller arrives here having resolved a descriptor open for
     /// writing, and only a regular file can be opened that way — `open(2)`
     /// answers EISDIR for a directory and resolves a symlink to whatever it names
-    /// — so anything else is an interpreter bug rather than a guest error.
+    /// — so anything else is a bug in the caller rather than a process's error.
     ///
     /// Must not be called with an empty `bytes`: a zero-length write moves no
     /// timestamp and strips no bit, so treating it as an ordinary write of nothing
@@ -1366,12 +1365,12 @@ module VirtualFileSystem =
                    Content = InodeContent.Directory _
                } ->
             failwith
-                $"VirtualFileSystem.writeFile: inode %O{inode} is a directory, so no descriptor naming it can be open for writing — `open(2)` answers EISDIR for every write access mode. The caller resolved a writable descriptor to it anyway (this is an interpreter bug)."
+                $"VirtualFileSystem.writeFile: inode %O{inode} is a directory, so no descriptor naming it can be open for writing — `open(2)` answers EISDIR for every write access mode. The caller resolved a writable descriptor to it anyway (this is a bug in the caller)."
         | Some {
                    Content = InodeContent.Symlink _
                } ->
             failwith
-                $"VirtualFileSystem.writeFile: inode %O{inode} is a symbolic link. `open` resolves symlinks, so no descriptor should name one (this is an interpreter bug)."
+                $"VirtualFileSystem.writeFile: inode %O{inode} is a symbolic link. `open` resolves symlinks, so no descriptor should name one (this is a bug in the caller)."
         | Some ({
                     Content = InodeContent.RegularFile (contents, permissions)
                 } as entry) ->
@@ -1435,7 +1434,7 @@ module VirtualFileSystem =
         // offset, and for the same reason.
         if length < 0L then
             failwith
-                $"VirtualFileSystem.truncateFile: inode %O{inode} was asked to become %d{length} bytes, which is negative. No kernel permits it; the caller must reject this as EINVAL before committing it (this is an interpreter bug)."
+                $"VirtualFileSystem.truncateFile: inode %O{inode} was asked to become %d{length} bytes, which is negative. No kernel permits it; the caller must reject this as EINVAL before committing it (this is a bug in the caller)."
 
 
         match Map.tryFind inode vfs.Inodes with
@@ -1446,12 +1445,12 @@ module VirtualFileSystem =
                    Content = InodeContent.Directory _
                } ->
             failwith
-                $"VirtualFileSystem.truncateFile: inode %O{inode} is a directory, so no descriptor naming it can be open for writing — `open(2)` answers EISDIR for every write access mode, and `ftruncate(2)` answers EINVAL for the read-only descriptor that is left. The caller resolved a writable descriptor to it anyway (this is an interpreter bug)."
+                $"VirtualFileSystem.truncateFile: inode %O{inode} is a directory, so no descriptor naming it can be open for writing — `open(2)` answers EISDIR for every write access mode, and `ftruncate(2)` answers EINVAL for the read-only descriptor that is left. The caller resolved a writable descriptor to it anyway (this is a bug in the caller)."
         | Some {
                    Content = InodeContent.Symlink _
                } ->
             failwith
-                $"VirtualFileSystem.truncateFile: inode %O{inode} is a symbolic link. `open` resolves symlinks, so no descriptor should name one (this is an interpreter bug)."
+                $"VirtualFileSystem.truncateFile: inode %O{inode} is a symbolic link. `open` resolves symlinks, so no descriptor should name one (this is a bug in the caller)."
         | Some ({
                     Content = InodeContent.RegularFile (contents, permissions)
                 } as entry) ->
@@ -1789,7 +1788,7 @@ module VirtualFileSystem =
     ///
     /// Exists so that `checkInvariants` can be tested: a defect no test can
     /// construct is documentation rather than a check. Deliberately one
-    /// greppable token, so that any interpreter code reaching for it is visible
+    /// greppable token, so that any non-test code reaching for it is visible
     /// in review — nothing outside tests should.
     [<RequireQualifiedAccess>]
     module Unchecked =
