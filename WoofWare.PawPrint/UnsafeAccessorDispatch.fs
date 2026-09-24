@@ -179,7 +179,7 @@ module internal UnsafeAccessorDispatch =
     /// depth.
     ///
     /// CoreCLR compares an accessor's signature with `MetaSig::CompareState.IgnoreCustomModifiers`
-    /// set: always for a field (`TrySetTargetField` asserts it, unsafeaccessors.cpp:750) and on the
+    /// set: always for a field (`TrySetTargetField` sets it, unsafeaccessors.cpp:749) and on the
     /// first pass for a method (`TrySetTargetMethod`, :587). `CompareElementType` then consumes
     /// modifiers wherever it meets them rather than only at the top, so the strip has to recurse.
     /// Measured against real .NET 10: an accessor spelling `ref int` binds a `private volatile int`
@@ -279,7 +279,7 @@ module internal UnsafeAccessorDispatch =
         |> ComparableSignatureHeader.Make
 
     /// The header both sides of a *field* comparison are read under. CoreCLR compares one signature
-    /// element -- the declaration's `ref` return against the field's type (unsafeaccessors.cpp:704)
+    /// element -- the declaration's `ref` return against the field's type (unsafeaccessors.cpp:706)
     /// -- so neither blob's leading bytes take part, and expressing that comparison as a
     /// one-parameter method signature means picking a header that cannot itself distinguish them.
     let private fieldComparisonHeader : ComparableSignatureHeader =
@@ -601,7 +601,7 @@ module internal UnsafeAccessorDispatch =
             |> fun (state, matching) -> state, List.rev matching
 
         // The *first* match in metadata order wins, and there is no ambiguity check:
-        // `TrySetTargetField` returns as soon as one matches (unsafeaccessors.cpp:761), unlike
+        // `TrySetTargetField` returns as soon as one matches (unsafeaccessors.cpp:765), unlike
         // `TrySetTargetMethod`, which keeps looking so that it can report an ambiguity. Two fields
         // of one type may share a name if their signatures differ, and a modifier-blind comparison
         // can leave both -- no C# compiler emits that, but a metadata writer may.
@@ -646,7 +646,7 @@ module internal UnsafeAccessorDispatch =
 
     /// The constraint checks CoreCLR makes once the lookup has found a target method, for the shapes
     /// whose answer this dispatcher can state: `VerifyDeclarationSatisfiesTargetConstraints`
-    /// (unsafeaccessors.cpp:513), which compares the declaration's *typical* instantiation with the
+    /// (unsafeaccessors.cpp:519), which compares the declaration's *typical* instantiation with the
     /// target's as part of the lookup, and then `MethodDesc::SatisfiesMethodConstraints`
     /// (genmeth.cpp:1594), which checks the accessor's actual type arguments as the stub
     /// instantiates the target.
@@ -1347,7 +1347,7 @@ module internal UnsafeAccessorDispatch =
     /// Refuse an accessor whose `UnsafeAccessorKind` names none of the five kinds.
     ///
     /// CoreCLR parses the attribute's integer, keeps it, and reaches the `default:` of the switch
-    /// that consumes it (unsafeaccessors.cpp:1146), which is the same `BFA_INVALID_UNSAFEACCESSOR`
+    /// that consumes it (unsafeaccessors.cpp:1149), which is the same `BFA_INVALID_UNSAFEACCESSOR`
     /// refusal a malformed declaration gets -- measured on real .NET 10 as a catchable
     /// `BadImageFormatException` on the first invocation. The accessor's own declaring type is not
     /// initialised: the stub fails to compile before the method's prologue could run.
@@ -1574,7 +1574,7 @@ module internal UnsafeAccessorDispatch =
                 state
             |> fun state -> ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall)
         | UnsafeAccessorPlan.CallInstance target ->
-            // CoreCLR emits `callvirt` for the instance-method kind (unsafeaccessors.cpp:968), so a
+            // CoreCLR emits `callvirt` for the instance-method kind (unsafeaccessors.cpp:970), so a
             // null receiver faults here rather than inside the target.
             if receiverIsNull (EvalStackValue.ofCliType instruction.Arguments.[0]) then
                 raiseFromAccessor baseClassTypes.NullReferenceException None state

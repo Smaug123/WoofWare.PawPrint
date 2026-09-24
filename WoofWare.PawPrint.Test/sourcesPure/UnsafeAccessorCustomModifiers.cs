@@ -2,7 +2,7 @@ using System.Runtime.CompilerServices;
 
 // An accessor's signature is compared against the target's with custom modifiers ignored: CoreCLR
 // sets `MetaSig::CompareState.IgnoreCustomModifiers` always for a field lookup
-// (vm/unsafeaccessors.cpp:750) and on the first pass for a method (:587). Ordinary C# produces
+// (vm/unsafeaccessors.cpp:749) and on the first pass for a method (:587). Ordinary C# produces
 // `modreq`s in all four positions below, and none of them is spelled on the accessor:
 //
 //   * `volatile int _v`      -> `int32 modreq(IsVolatile)`

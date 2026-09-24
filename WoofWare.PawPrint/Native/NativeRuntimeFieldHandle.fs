@@ -142,13 +142,16 @@ module NativeRuntimeFieldHandle =
             ->
             // CoreCLR's RuntimeFieldHandle::GetApproxDeclaringMethodTable
             // (runtimehandles.cpp:2192) is an FCall returning
-            // pField->GetApproxEnclosingMethodTable() — the canonical MethodTable for
-            // the field's declaring type. Under shared-generic codegen the canonical
-            // form is the open instantiation. With PawPrint's per-canonical
-            // FieldHandle model, the stored DeclaringType is `Closed` for non-generic
-            // declaring types and `OpenGenericTypeDefinition` for generic ones.
-            // `NativeIntSource.MethodTablePtr` carries the full `RuntimeTypeHandleTarget`,
-            // so the open-generic case surfaces directly.
+            // pField->GetApproxEnclosingMethodTable() — the MethodTable the FieldDesc belongs
+            // to, which for a reference-type instantiation of a generic type is the shared
+            // canonical (`__Canon`) one rather than the exact instantiation.
+            // PawPrint shares no field descriptions between instantiations (see
+            // `AcquiresContextFromThis` below): a `FieldHandle` records the exact
+            // `RuntimeTypeHandleTarget` it was minted against — `Closed` for any closed type,
+            // generic instantiations included, and `OpenGenericTypeDefinition` only for a
+            // handle taken from the generic definition itself — so the answer is that exact
+            // type. `NativeIntSource.MethodTablePtr` carries the full `RuntimeTypeHandleTarget`,
+            // so both arms surface directly.
             let operation = "RuntimeFieldHandle.GetApproxDeclaringMethodTable"
 
             let fieldHandle =
