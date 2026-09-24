@@ -2,15 +2,6 @@ namespace WoofWare.PosixKernel
 
 open System.Collections.Immutable
 
-/// The signal argument of `kill(2)`.
-[<RequireQualifiedAccess>]
-type KillSignal =
-    /// Signal number 0, the null signal: check that the target exists and may
-    /// be signalled, and send nothing.
-    | Null
-    /// Send this signal.
-    | Signal of Signal
-
 /// Why this library will not answer a `kill(2)`. Each is a target it does not
 /// model, rather than an error a kernel would report: a real kernel's answer
 /// depends on other processes, which this library has none of.
@@ -29,33 +20,43 @@ type KillRefusal =
 [<RequireQualifiedAccess>]
 module UnixSignal =
 
-    /// `kill(2)`, sent by the calling process to `pid`.
+    /// `kill(2)`, sent by the calling process to `pid`, with `signo` read under
+    /// the process's own signal numbering.
     ///
     /// `liveThreads` are the process's threads that exist at the kernel level;
     /// a signal sent to the process can be received by any of them that does
     /// not block it. See `SignalState.generate` for what the signal then does.
     ///
-    /// Only a signal to the calling process itself is answered.
+    /// Only a signal to the calling process itself is answered. Signal number 0
+    /// sends nothing, and a number that is neither 0 nor a signal is `EINVAL`.
     let kill<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (liveThreads : ImmutableArray<'Task>)
         (pid : int32)
-        (signal : KillSignal)
+        (signo : int32)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<SignalGeneration * UnixSystem<'Task, 'Handler>, KillRefusal>
+        : Result<Result<SignalGeneration * UnixSystem<'Task, 'Handler>, UnixError>, KillRefusal>
         =
         let self = ProcessId.toInt32 (UnixSystem.processId system)
 
+        // The target is screened before the number. Linux looks the target up
+        // first, so a pid naming no process is ESRCH whatever the number, where
+        // Darwin checks the number first and says EINVAL (measured,
+        // `docs/plans/2026-08-23-posix-kernel-extraction/kill-arguments.c`).
+        // Whether a pid names a process is what this kernel cannot know, so
+        // every other target is refused before the number is looked at.
         if pid <= 0 then
             Error (KillRefusal.ProcessGroup pid)
         elif pid <> self then
             Error (KillRefusal.OtherProcess pid)
         elif self = 1 then
             Error KillRefusal.InitProcess
+        elif signo = 0 then
+            Ok (Ok (SignalGeneration.ProcessContinues, system))
         else
 
-        match signal with
-        | KillSignal.Null -> Ok (SignalGeneration.ProcessContinues, system)
-        | KillSignal.Signal signal ->
+        match Signal.ofRawSignoUnder (SignalState.numbering system.Process.Signals) signo with
+        | ValueNone -> Ok (Error UnixError.EINVAL)
+        | ValueSome signal ->
             let generation, signals =
                 SignalState.generate
                     liveThreads
@@ -66,11 +67,13 @@ module UnixSignal =
                     system.Process.Signals
 
             Ok (
-                generation,
-                { system with
-                    Process =
-                        { system.Process with
-                            Signals = signals
-                        }
-                }
+                Ok (
+                    generation,
+                    { system with
+                        Process =
+                            { system.Process with
+                                Signals = signals
+                            }
+                    }
+                )
             )

@@ -12,27 +12,21 @@ open WoofWare.PosixKernel
 [<RequireQualifiedAccess>]
 module KillSignalPal =
 
-    /// `SystemNative_Kill`'s screen (`pal_process.c`): `PAL_NONE` (0) is the
-    /// null signal, and `PAL_SIGKILL` (9) and `PAL_SIGSTOP` (19) are those
-    /// signals, read under `numbering`. `None` for anything else, which the
-    /// shim refuses with EINVAL without calling `kill(2)` at all.
+    /// `SystemNative_Kill`'s screen (`pal_process.c`): the signal number it
+    /// hands to `kill(2)`. `PAL_NONE` (0) is the null signal 0, and
+    /// `PAL_SIGKILL` (9) and `PAL_SIGSTOP` (19) are those signals' numbers
+    /// under `numbering`. `None` for anything else, which the shim refuses with
+    /// EINVAL without calling `kill(2)` at all.
     ///
     /// So no catchable signal can be sent through this entry point.
-    let toKillSignal (numbering : SignalNumbering) (pal : int) : KillSignal option =
-        let signal (signo : int) : KillSignal =
-            match Signal.ofRawSignoUnder numbering signo with
-            | ValueSome signal -> KillSignal.Signal signal
-            | ValueNone ->
-                failwith
-                    $"KillSignalPal: %d{signo} is not a signal under the %O{numbering} numbering, but it is that numbering's SIGKILL or SIGSTOP"
-
+    let toSigno (numbering : SignalNumbering) (pal : int) : int option =
         match pal with
-        | 0 -> Some KillSignal.Null
-        | 9 -> Some (signal 9)
+        | 0 -> Some 0
+        | 9 -> Some 9
         | 19 ->
             // The PAL's number is Linux's; the shim hands the host's SIGSTOP
             // to kill(2), which is 17 on Darwin.
             match numbering with
-            | SignalNumbering.Linux -> Some (signal 19)
-            | SignalNumbering.Darwin -> Some (signal 17)
+            | SignalNumbering.Linux -> Some 19
+            | SignalNumbering.Darwin -> Some 17
         | _ -> None

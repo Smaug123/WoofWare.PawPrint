@@ -2426,9 +2426,9 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
-            match KillSignalPal.toKillSignal numbering palSignal with
+            match KillSignalPal.toSigno numbering palSignal with
             | None -> withErrnoOnly ctx UnixError.EINVAL state |> returning -1
-            | Some signal ->
+            | Some signo ->
 
             let liveThreads =
                 state.ThreadState
@@ -2440,18 +2440,19 @@ module NativeSystemNative =
                 )
                 |> ImmutableArray.CreateRange
 
-            match UnixSignal.kill liveThreads pid signal (EmulatedKernel.unix state.Kernel) with
+            match UnixSignal.kill liveThreads pid signo (EmulatedKernel.unix state.Kernel) with
             | Error refusal ->
                 failwith
-                    $"%s{operation}: kill(%d{pid}, %O{signal}) from process %O{UnixSystem.processId (EmulatedKernel.unix state.Kernel)} is not modelled (%O{refusal}); only a signal to the calling process itself is."
-            | Ok (SignalGeneration.ProcessContinues, system) ->
+                    $"%s{operation}: kill(%d{pid}, %d{signo}) from process %O{UnixSystem.processId (EmulatedKernel.unix state.Kernel)} is not modelled (%O{refusal}); only a signal to the calling process itself is."
+            | Ok (Error errno) -> withErrnoOnly ctx errno state |> returning -1
+            | Ok (Ok (SignalGeneration.ProcessContinues, system)) ->
                 state.MapKernel (EmulatedKernel.withUnix system) |> returning 0
-            | Ok (SignalGeneration.ProcessTerminated signal, system) ->
+            | Ok (Ok (SignalGeneration.ProcessTerminated signal, system)) ->
                 // The process never returns from this call.
                 ExecutionResult.SignalTerminated (state.MapKernel (EmulatedKernel.withUnix system), signal)
                 |> NativeHandlerResult.ofExecutionResult
                 |> Some
-            | Ok (SignalGeneration.ProcessStopped signal, _) ->
+            | Ok (Ok (SignalGeneration.ProcessStopped signal, _)) ->
                 failwith
                     $"%s{operation}: %O{signal} would stop the whole process, and PawPrint does not model a stopped process (nothing could continue it)."
         | Some "SystemNative_GetEUid",
