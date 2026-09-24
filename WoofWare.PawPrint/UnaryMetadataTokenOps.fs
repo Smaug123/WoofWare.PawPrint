@@ -366,29 +366,40 @@ module internal UnaryMetadataTokenOps =
 
                 cur, cleared
 
-        let state, target =
-            match pendingConstrained with
-            | None -> state, concretizedMethod
-            | Some constrainedTypeHandle ->
-                let state, implementation, _declaringTypeHandle =
-                    UnaryMetadataCallOps.resolveConstrainedStaticInterfaceMethod
-                        "Ldftn"
-                        ctx
-                        constrainedTypeHandle
-                        method
-                        concretizedMethod
-                        state
+        let pushTarget
+            (target : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+            (state : IlMachineState)
+            : IlMachineState * WhatWeDid
+            =
+            logger.LogDebug (
+                "Pushed pointer to function {LdFtnAssembly}.{LdFtnType}.{LdFtnMethodName}",
+                method.DeclaringAssemblyFullName,
+                method.RequiredDeclaringType.Name,
+                method.Name
+            )
 
-                state, implementation
+            pushFunctionPointer ctx target state
 
-        logger.LogDebug (
-            "Pushed pointer to function {LdFtnAssembly}.{LdFtnType}.{LdFtnMethodName}",
-            method.DeclaringAssemblyFullName,
-            method.RequiredDeclaringType.Name,
-            method.Name
-        )
+        match pendingConstrained with
+        | Some constrainedTypeHandle ->
+            let state, implementation, _declaringTypeHandle =
+                UnaryMetadataCallOps.resolveConstrainedStaticInterfaceMethod
+                    "Ldftn"
+                    ctx
+                    constrainedTypeHandle
+                    method
+                    concretizedMethod
+                    state
 
-        pushFunctionPointer ctx target state
+            pushTarget implementation state
+        | None ->
+
+        match concretizedMethod.Body with
+        | MethodBody.Abstract -> UnaryMetadataCallOps.raiseNamedAbstractMethod ctx state
+        | MethodBody.Il _
+        | MethodBody.InternalCall
+        | MethodBody.PInvoke
+        | MethodBody.RuntimeProvided _ -> pushTarget concretizedMethod state
 
     /// ECMA-335 III.4.18. Pops an object reference and pushes a function pointer to the body that
     /// a `callvirt` of the same token on the same receiver would have run.
