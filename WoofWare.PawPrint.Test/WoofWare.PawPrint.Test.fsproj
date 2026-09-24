@@ -91,6 +91,7 @@
     <Compile Include="TestMarshalEnumFieldLayout.fs" />
     <Compile Include="TestMarshalOffsetOf.fs" />
     <Compile Include="TestMarshalBoolCharFields.fs" />
+    <Compile Include="TestMarshalIllegalFieldNesting.fs" />
     <Compile Include="TestManagedHeap.fs" />
     <Compile Include="TestStaticStorage.fs" />
     <Compile Include="TestByrefContainer.fs" />
@@ -287,6 +288,7 @@
     <Compile Include="TestVirtualMethodSlots.fs" />
     <Compile Include="TestInterfaceDispatchMap.fs" />
     <Compile Include="TestFabricatedInterfaceMethodImpl.fs" />
+    <Compile Include="TestFabricatedAbstractMethodCall.fs" />
     <Compile Include="TestMethodAtSlotShapes.fs" />
     <Compile Include="TestFabricatedVtableLayout.fs" />
     <Compile Include="TestFabricatedSlotAliasing.fs" />
