@@ -403,3 +403,26 @@ module TestMarshalBoolCharFields =
                     |> shouldEqual [ StructMarshalFieldKind.AnsiChar (fst expected, snd expected) ]
                 | Result.Error err -> failwith $"%s{typeName}: expected a marshal plan, got %s{err.Reason}"
         )
+
+    /// An empty field-marshal blob is no descriptor to `IsFieldBlittable` and a refused one to
+    /// `ParseNativeTypeInfo` (see `FieldMarshalDescriptor.Empty`), so CoreCLR lays the struct out
+    /// only when it is blittable. A `bool` field never is. A `char` field is not under an ANSI
+    /// `CharSet`, and is under a Unicode one, where the other fields decide; PawPrint does not
+    /// model that.
+    [<Test>]
+    let ``An empty marshalling blob on a bool or char field is refused exactly where CoreCLR refuses it`` () : unit =
+        match BoolCharMarshal.ofBoolField (Some FieldMarshalDescriptor.Empty) with
+        | Result.Error (MarshalSizeError.NotMarshalable _) -> ()
+        | other -> failwith $"bool: expected NotMarshalable, got %O{other}"
+
+        for charSet, expectRefusal in
+            [
+                CharSet.None, true
+                CharSet.Ansi, true
+                CharSet.Auto, true
+                CharSet.Unicode, false
+            ] do
+            match BoolCharMarshal.ofCharField charSet (Some FieldMarshalDescriptor.Empty), expectRefusal with
+            | Result.Error (MarshalSizeError.NotMarshalable _), true
+            | Result.Error (MarshalSizeError.NotImplemented _), false -> ()
+            | other, _ -> failwith $"char under %O{charSet}: got %O{other}"

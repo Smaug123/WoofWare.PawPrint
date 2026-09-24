@@ -142,6 +142,21 @@ module BoolCharMarshal =
         | Some (FieldMarshalDescriptor.Other UnmanagedType.U1) -> Result.Ok BoolCharMarshal.AnsiChar
         | Some (FieldMarshalDescriptor.Other UnmanagedType.I2)
         | Some (FieldMarshalDescriptor.Other UnmanagedType.U2) -> Result.Ok BoolCharMarshal.Utf16Char
+        | Some FieldMarshalDescriptor.Empty ->
+            // CoreCLR lays the struct out only if it is blittable (see `FieldMarshalDescriptor.Empty`).
+            // An ANSI `char` makes it not blittable; a UTF-16 one leaves that to the other fields.
+            NativeCharSet.ofCharSet charSet
+            |> Result.bind (fun native ->
+                match native with
+                | NativeCharSet.Ansi ->
+                    MarshalSizeError.NotMarshalable
+                        "an empty marshalling descriptor on an ANSI System.Char field, which makes its struct not blittable, and CoreCLR refuses the descriptor in a struct that is not"
+                    |> Result.Error
+                | NativeCharSet.Unicode ->
+                    MarshalSizeError.NotImplemented
+                        "an empty marshalling descriptor on a UTF-16 System.Char field, which CoreCLR accepts in a blittable struct and refuses in any other; PawPrint does not model struct blittability"
+                    |> Result.Error
+            )
         | Some other ->
             MarshalSizeError.NotMarshalable $"[MarshalAs(%O{other})] is not a native type a System.Char field accepts"
             |> Result.Error
