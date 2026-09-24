@@ -296,6 +296,7 @@
     <Compile Include="TestFabricatedCastclassNullable.fs" />
     <Compile Include="TestFabricatedCallvirtMethodSpecMethodDef.fs" />
     <Compile Include="TestFabricatedLdlen.fs" />
+    <Compile Include="TestFabricatedLongFormArgLocal.fs" />
     <Compile Include="TestFabricatedArrayConstructorNewobj.fs" />
     <Compile Include="TestFabricatedEntryPoint.fs" />
     <Compile Include="TestFabricatedIntrinsicWithoutIl.fs" />
