@@ -94,6 +94,7 @@
     <Compile Include="TestByrefContainer.fs" />
     <Compile Include="TestByteViewCrossesContainer.fs" />
     <Compile Include="TestPointerArrayCellByteView.fs" />
+    <Compile Include="TestPointerFieldByteView.fs" />
     <Compile Include="TestStructLeadingByteView.fs" />
     <Compile Include="TestStorageLocation.fs" />
     <Compile Include="TestEmptyArrayByrefWalks.fs" />
