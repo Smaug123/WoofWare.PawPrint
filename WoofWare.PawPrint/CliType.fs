@@ -3770,6 +3770,11 @@ and CliValueType =
         // laid out by its own native layout, which a type with no layout of its own lacks: that
         // makes the field illegal (`IDS_EE_BADMARSHAL_AUTOLAYOUT`), which is how the
         // `NotMarshalable` from `TryComputeNativeLayout` is read below.
+        //
+        // `MarshalInfo` then refuses a value type whose managed size exceeds 0xfff0 bytes
+        // (`IDS_EE_STRUCTTOOCOMPLEX`). But CoreCLR consults `MarshalInfo` only for a containing
+        // struct that is not blittable, and sizes a blittable one by its managed image, which
+        // PawPrint's layout does not model; so such a field is not answered either way.
         let nested (vt : CliValueType) : Result<MarshalFieldNative, MarshalSizeError> =
             if CliValueType.IsHostKnownDateTime concreteTypes assemblies corelib vt then
                 leaf
@@ -3779,7 +3784,16 @@ and CliValueType =
                     }
             else
                 CliValueType.TryComputeNativeLayout concreteTypes assemblies corelib vt
-                |> Result.map MarshalFieldNative.Nested
+                |> Result.bind (fun layout ->
+                    let managedSize = (CliValueType.SizeOf vt).Size
+
+                    if managedSize > 0xfff0 then
+                        MarshalSizeError.NotImplemented
+                            $"a value-type field of %d{managedSize} managed bytes, over the 0xfff0 that CoreCLR's MarshalInfo refuses in a struct that is not blittable; PawPrint does not model struct blittability"
+                        |> Result.Error
+                    else
+                        Result.Ok (MarshalFieldNative.Nested layout)
+                )
 
         let classified : Result<MarshalFieldNative, MarshalSizeError> =
             match CliValueType.TryBoolCharFieldMarshal charSet descriptor contents with

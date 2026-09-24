@@ -486,3 +486,127 @@ public struct IllegalLast {{ public string S; [MarshalAs(UnmanagedType.I1)] publ
         match CliValueType.TryComputeMarshalLayout state.ConcreteTypes state._LoadedAssemblies bct vt with
         | Result.Error (MarshalSizeError.NotMarshalable _) -> ()
         | other -> failwith $"%s{name}: expected NotMarshalable, got %A{other}"
+
+    let private oversizeNamespace : string = "PawPrint.MarshalOversizeNesting"
+
+    /// Managed sizes either side of the 0xfff0 bytes beyond which `MarshalInfo` refuses a
+    /// value-type field (`IDS_EE_STRUCTTOOCOMPLEX`, mlinfo.cpp).
+    let private oversizeSizes : int list = [ 0xfff0 ; 0xfff1 ; 0x10000 ]
+
+    /// Each inner struct, by the field it declares: illegal on its own, legal but not blittable, and
+    /// blittable. The limit is `MarshalInfo`'s, which CoreCLR consults only for a struct that is not
+    /// blittable.
+    let private oversizeInners : (string * string) list =
+        [
+            "Illegal", "[MarshalAs(UnmanagedType.I1)] public int F;"
+            "NotBlittable", "public bool F;"
+            "Blittable", "public byte F;"
+        ]
+
+    let private oversizeBytes : byte array =
+        let body =
+            [
+                for size in oversizeSizes do
+                    for kind, field in oversizeInners do
+                        $"[StructLayout(LayoutKind.Sequential, Size = %d{size})] public struct Inner%s{kind}%d{size} {{ %s{field} }}"
+                        $"public struct Outer%s{kind}%d{size} {{ public Inner%s{kind}%d{size} F; }}"
+                        $"public struct Holder%s{kind}%d{size} {{ public byte A; public Outer%s{kind}%d{size} F; public byte B; }}"
+            ]
+            |> String.concat "\n"
+
+        Roslyn.compileAssembly
+            oversizeNamespace
+            Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+            []
+            [
+                $"using System.Runtime.InteropServices;\nnamespace %s{oversizeNamespace};\n%s{body}\n"
+            ]
+
+    /// A struct holding a value-type field over `MarshalInfo`'s size limit is refused when it is not
+    /// blittable, and sized when it is. PawPrint does not model blittability in its layout, so it
+    /// must refuse to answer for such a field rather than size a struct CoreCLR refuses; at the
+    /// limit it must agree with real .NET.
+    [<Test>]
+    let ``a nested value-type field over MarshalInfo's size limit is never sized where real .NET refuses it``
+        ()
+        : unit
+        =
+        let hostAssembly = System.Reflection.Assembly.Load oversizeBytes
+
+        let dumped =
+            use stream = new MemoryStream (oversizeBytes)
+            AssemblyApi.read loggerFactory (Some $"%s{oversizeNamespace}.dll") stream
+
+        let state = baseState.WithLoadedAssembly dumped
+
+        let hostSize (name : string) : int option =
+            let t =
+                hostAssembly.GetType $"%s{oversizeNamespace}.%s{name}"
+                |> Option.ofObj
+                |> Option.defaultWith (fun () -> failwith $"corpus does not contain %s{name}")
+
+            try
+                Some (Marshal.SizeOf t)
+            with :? ArgumentException ->
+                None
+
+        let pawPrintSize (name : string) : Result<int option, string> =
+            let typeInfo =
+                dumped.TypeDefs
+                |> Seq.map (fun kvp -> kvp.Value)
+                |> Seq.filter (fun ti -> ti.Name = name)
+                |> Seq.exactlyOne
+
+            let state, handle =
+                IlMachineTypeResolution.concretizeType
+                    loggerFactory
+                    bct
+                    state
+                    typeInfo.AssemblyFullName
+                    ImmutableArray.Empty
+                    ImmutableArray.Empty
+                    (TypeDefn.FromDefinition (typeInfo.Identity, System.Reflection.Metadata.SignatureTypeKind.ValueType))
+
+            let zero, state = IlMachineState.cliTypeZeroOfHandle state bct handle
+
+            let vt =
+                match zero with
+                | CliType.ValueType vt -> vt
+                | other -> failwith $"%s{name} should be a value type, but its zero is %O{other}"
+
+            match CliValueType.TryComputeMarshalLayout state.ConcreteTypes state._LoadedAssemblies bct vt with
+            | Result.Ok (size, _) -> Result.Ok (Some size.Size)
+            | Result.Error (MarshalSizeError.NotMarshalable _) -> Result.Ok None
+            | Result.Error (MarshalSizeError.NotImplemented reason) -> Result.Error reason
+
+        let rows =
+            [
+                for size in oversizeSizes do
+                    for kind, _ in oversizeInners do
+                        for container in [ "Outer" ; "Holder" ] do
+                            let name = $"%s{container}%s{kind}%d{size}"
+                            name, size > 0xfff0, kind, hostSize name, pawPrintSize name
+            ]
+
+        let wrong =
+            rows
+            |> List.choose (fun (name, over, _, host, paw) ->
+                match paw with
+                | Result.Ok paw when over ->
+                    Some $"%s{name}: over the limit, PawPrint answered %A{paw} (real .NET: %A{host})"
+                | Result.Ok paw when paw <> host -> Some $"%s{name}: PawPrint %A{paw}, real .NET %A{host}"
+                | Result.Ok _ -> None
+                | Result.Error reason when not over ->
+                    Some $"%s{name}: at the limit, PawPrint refused to answer: %s{reason}"
+                | Result.Error _ -> None
+            )
+
+        wrong |> shouldEqual []
+
+        // Vacuity guard: real .NET does refuse, over the limit, each struct that is not blittable,
+        // and sizes the blittable one, which is why PawPrint cannot answer NotMarshalable there.
+        rows
+        |> List.filter (fun (_, over, _, _, _) -> over)
+        |> List.map (fun (name, _, kind, host, _) -> name, (kind = "Blittable"), host.IsSome)
+        |> List.filter (fun (_, blittable, sized) -> blittable <> sized)
+        |> shouldEqual []
