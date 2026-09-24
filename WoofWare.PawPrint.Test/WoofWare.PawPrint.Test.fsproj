@@ -91,6 +91,7 @@
     <Compile Include="TestMarshalEnumFieldLayout.fs" />
     <Compile Include="TestMarshalOffsetOf.fs" />
     <Compile Include="TestMarshalBoolCharFields.fs" />
+    <Compile Include="TestMarshalIllegalFieldNesting.fs" />
     <Compile Include="TestManagedHeap.fs" />
     <Compile Include="TestStaticStorage.fs" />
     <Compile Include="TestByrefContainer.fs" />

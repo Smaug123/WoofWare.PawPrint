@@ -1237,7 +1237,7 @@ and CliValueTypeStorage =
     | RawBytes of byte[]
 
 /// Where one declared field of a value type lands in that type's *unmanaged* (marshalled)
-/// image, as computed by <see cref="CliValueType.TryComputeMarshalLayout"/>.
+/// image, as computed by <see cref="CliValueType.TryComputeNativeLayout"/>.
 ///
 /// This is the per-field detail that <see cref="CliValueType.TryComputeMarshalSize"/> derives
 /// and then discards. Anything that needs to *write* the unmanaged image (as opposed to
@@ -1254,9 +1254,76 @@ and MarshalFieldPlacement =
         Field : CliField
         /// Byte offset of the field's native form within the unmanaged image.
         NativeOffset : int
-        /// Size and alignment the field's native form contributes.
-        NativeSize : SizeofResult
+        /// What the field's native form is.
+        Native : MarshalFieldNative
     }
+
+    /// Size and alignment the field's native form contributes.
+    member this.NativeSize : SizeofResult = this.Native.Size
+
+/// What one declared field contributes to its containing type's native image: CoreCLR's
+/// `NativeFieldDescriptor` (fieldmarshaler.h), which `ParseNativeType` (fieldmarshaler.cpp:30)
+/// builds from the field's `MarshalInfo`.
+and MarshalFieldNative =
+    /// A native form the layout walk places whole, with no fields of its own: a primitive, a
+    /// `BOOL`, an ANSI `char`, a `DateTime`'s OADate, an inline string or array buffer.
+    | Leaf of SizeofResult
+    /// A value type laid out inline by its own native layout (`NativeFieldCategory::NESTED`).
+    | Nested of NativeLayout
+    /// A field whose managed/native pairing CoreCLR's `MarshalInfo` refuses
+    /// (`NativeFieldCategory::ILLEGAL`). It still occupies one byte, 1-aligned. It makes the type
+    /// that declares it unmarshalable, but a type holding *that* type as a field is laid out as
+    /// usual, with this byte inside it.
+    | Illegal of reason : string
+
+    /// Size and alignment this native form contributes to its containing type.
+    member this.Size : SizeofResult =
+        match this with
+        | MarshalFieldNative.Leaf size -> size
+        | MarshalFieldNative.Nested layout -> layout.Size
+        // The default `NativeFieldDescriptor` (fieldmarshaler.cpp:325).
+        | MarshalFieldNative.Illegal _ ->
+            {
+                Size = 1
+                Alignment = 1
+            }
+
+/// A value type's native (marshalled) image: CoreCLR's `EEClassNativeLayoutInfo`, which a type
+/// with layout has whether or not it can be marshalled.
+and NativeLayout =
+    {
+        Size : SizeofResult
+        /// One per declared instance field, in declaration order. Empty for a value type with
+        /// raw-byte storage, which has no declared fields, although its size is not zero.
+        Placements : MarshalFieldPlacement list
+    }
+
+    /// The first of this type's *own* fields whose native form is illegal, with the reason; `None`
+    /// exactly when CoreCLR's `EEClassNativeLayoutInfo::IsMarshalable` holds
+    /// (classlayoutinfo.cpp:1029). An illegal field of a nested value type does not count.
+    member this.FirstIllegalField : (string * string) option =
+        this.Placements
+        |> List.tryPick (fun placement ->
+            match placement.Native with
+            | MarshalFieldNative.Illegal reason -> Some (placement.Field.Name, reason)
+            | MarshalFieldNative.Leaf _
+            | MarshalFieldNative.Nested _ -> None
+        )
+
+    /// The first illegal field at any depth, searching depth-first in declaration order, with the
+    /// names of the fields leading to it. This is the field CoreCLR names when building this
+    /// type's struct stub fails: the stub builds each nested value type's stub as it reaches that
+    /// field (ilmarshalers.cpp:1111).
+    member this.FirstIllegalFieldAnywhere : (string list * string) option =
+        this.Placements
+        |> List.tryPick (fun placement ->
+            match placement.Native with
+            | MarshalFieldNative.Illegal reason -> Some ([ placement.Field.Name ], reason)
+            | MarshalFieldNative.Nested nested ->
+                nested.FirstIllegalFieldAnywhere
+                |> Option.map (fun (path, reason) -> placement.Field.Name :: path, reason)
+            | MarshalFieldNative.Leaf _ -> None
+        )
 
 and CliValueType =
     private
@@ -3639,14 +3706,55 @@ and CliValueType =
         =
         CliValueType.IsAutoLayoutHandle concreteTypes assemblies vt._Declared
 
-    /// Compute the unmanaged size of a single field, consulting `[MarshalAs(...)]` descriptors
-    /// and the declaring type's `CharSet`. An enum-typed field is sized as its underlying
-    /// primitive, and a `bool` or `char` field by `TryBoolCharFieldMarshal`. Otherwise, without a
-    /// descriptor, falls back to the managed layout size for byte-stable primitives, recurses into
-    /// nested value types, and rejects object references.
+    /// The native types CoreCLR's `MarshalInfo` pairs a primitive field with, besides no
+    /// `[MarshalAs]` at all (mlinfo.cpp:1073-1245); `None` when the field is not one it treats as a
+    /// primitive. `IsFieldBlittable` (fieldmarshaler.cpp:202) accepts exactly the same pairings as
+    /// blittable, so this one table answers both questions.
+    ///
+    /// `fieldType` is the field's declared type, which tells a function pointer from the native
+    /// integer that holds one. An enum field must already have been reduced to its underlying type.
+    static member PrimitiveFieldNativeTypes
+        (fieldType : ConcreteTypeHandle)
+        (contents : CliType)
+        : UnmanagedType list option
+        =
+        match fieldType, contents with
+        | ConcreteTypeHandle.FunctionPointer _, _ -> Some [ UnmanagedType.FunctionPtr ]
+        | ConcreteTypeHandle.Pointer _, _ -> Some []
+        | _, CliType.Numeric numeric ->
+            match numeric with
+            | CliNumericType.Int8 _
+            | CliNumericType.UInt8 _ -> Some [ UnmanagedType.I1 ; UnmanagedType.U1 ]
+            | CliNumericType.Int16 _
+            | CliNumericType.UInt16 _ -> Some [ UnmanagedType.I2 ; UnmanagedType.U2 ]
+            | CliNumericType.Int32 _ -> Some [ UnmanagedType.I4 ; UnmanagedType.U4 ; UnmanagedType.Error ]
+            | CliNumericType.Int64 _ -> Some [ UnmanagedType.I8 ; UnmanagedType.U8 ]
+            | CliNumericType.NativeInt _ -> Some [ UnmanagedType.SysInt ; UnmanagedType.SysUInt ]
+            | CliNumericType.Float32 _ -> Some [ UnmanagedType.R4 ]
+            | CliNumericType.Float64 _ -> Some [ UnmanagedType.R8 ]
+            | CliNumericType.NativeFloat _ ->
+                failwith
+                    $"CliValueType.PrimitiveFieldNativeTypes: a field of type %O{fieldType} holds the evaluation stack's native float, which no field type stores"
+        // `System.IntPtr` and `System.UIntPtr` are `ELEMENT_TYPE_I`/`ELEMENT_TYPE_U`, not structs.
+        | _, CliType.ValueType vt when vt.PrimitiveLikeKind = Some PrimitiveLikeKind.FlattenToNativeInt ->
+            Some [ UnmanagedType.SysInt ; UnmanagedType.SysUInt ]
+        | _, CliType.ValueType _
+        | _, CliType.Bool _
+        | _, CliType.Char _
+        | _, CliType.ObjectRef _
+        | _, CliType.RuntimePointer _ -> None
+
+    /// What a single field contributes to its containing type's native image, consulting its
+    /// `[MarshalAs(...)]` descriptor and the containing type's `CharSet`. An enum-typed field is
+    /// classified as its underlying primitive, and a `bool` or `char` field by
+    /// `TryBoolCharFieldMarshal`. A pairing CoreCLR refuses is `MarshalFieldNative.Illegal`, not an
+    /// error: it still takes a byte of the layout.
     /// The field's nominal `ConcreteTypeHandle` is consulted to validate `ByValTStr`/`ByValArray`
-    /// descriptors against the declared field shape (CoreCLR rejects mismatches).
-    static member TryFieldMarshalSize
+    /// descriptors against the declared field shape.
+    ///
+    /// `Error` is the reason PawPrint does not implement the field's native form, where CoreCLR
+    /// would compute one.
+    static member TryFieldNative
         (concreteTypes : AllConcreteTypes)
         (assemblies : LoadedAssemblies)
         (corelib : BaseClassTypes<DumpedAssembly>)
@@ -3654,7 +3762,7 @@ and CliValueType =
         (descriptor : FieldMarshalDescriptor option)
         (fieldType : ConcreteTypeHandle)
         (contents : CliType)
-        : Result<SizeofResult, MarshalSizeError>
+        : Result<MarshalFieldNative, string>
         =
         // CoreCLR's `MarshalInfo` classifies a field by `PeekElemTypeNormalized` (mlinfo.cpp:863),
         // which reports an enum as its underlying primitive's element type, so an enum field
@@ -3665,148 +3773,191 @@ and CliValueType =
             | Some underlying -> underlying
             | None -> fieldType, contents
 
-        match CliValueType.TryBoolCharFieldMarshal charSet descriptor contents with
-        | Some marshal -> marshal |> Result.map _.NativeSize
-        | None ->
+        let leaf (size : SizeofResult) : Result<MarshalFieldNative, MarshalSizeError> =
+            Result.Ok (MarshalFieldNative.Leaf size)
 
-        match descriptor with
-        | Some (FieldMarshalDescriptor.ByValTStr sizeConst) ->
-            // CoreCLR's `MarshalInfo` rejects ByValTStr unless the managed field is
-            // `System.String`. Validate against the declared field type so non-string
-            // references (e.g. arbitrary class fields) don't silently get a string-buffer
-            // size.
-            if not (CliValueType.IsStringFieldType concreteTypes assemblies corelib fieldType) then
-                MarshalSizeError.NotMarshalable
-                    "[MarshalAs(UnmanagedType.ByValTStr)] is only valid on System.String fields"
-                |> Result.Error
-            elif sizeConst <= 0 then
-                MarshalSizeError.NotMarshalable $"ByValTStr SizeConst=%d{sizeConst} is not positive"
-                |> Result.Error
-            else
-                CliValueType.CharSetByteSize charSet
-                |> Result.map (fun bpc ->
+        // Mirror CoreCLR's `MarshalInfo::MarshalInfo` (mlinfo.cpp:1747): a DateTime-typed field
+        // short-circuits to `MARSHAL_TYPE_DATE` (8 bytes, 8-byte aligned) without recursing into
+        // the struct, even though `System.DateTime` itself is AutoLayout. Any other value type is
+        // laid out by its own native layout, which a type with no layout of its own lacks: that
+        // makes the field illegal (`IDS_EE_BADMARSHAL_AUTOLAYOUT`), which is how the
+        // `NotMarshalable` from `TryComputeNativeLayout` is read below.
+        let nested (vt : CliValueType) : Result<MarshalFieldNative, MarshalSizeError> =
+            if CliValueType.IsHostKnownDateTime concreteTypes assemblies corelib vt then
+                leaf
                     {
-                        Size = sizeConst * bpc
-                        Alignment = bpc
+                        Size = 8
+                        Alignment = 8
                     }
-                )
-        | Some (FieldMarshalDescriptor.ByValArray (sizeConst, Some elementType)) ->
-            // Likewise, ByValArray requires an array-typed field; reject anything else.
-            if not (CliValueType.IsArrayFieldType fieldType) then
+            else
+                CliValueType.TryComputeNativeLayout concreteTypes assemblies corelib vt
+                |> Result.map MarshalFieldNative.Nested
+
+        let classified : Result<MarshalFieldNative, MarshalSizeError> =
+            match CliValueType.TryBoolCharFieldMarshal charSet descriptor contents with
+            | Some marshal ->
+                marshal
+                |> Result.map (fun marshal -> MarshalFieldNative.Leaf marshal.NativeSize)
+            | None ->
+
+            match descriptor with
+            | Some (FieldMarshalDescriptor.ByValTStr sizeConst) ->
+                // CoreCLR's `MarshalInfo` rejects ByValTStr unless the managed field is
+                // `System.String`. Validate against the declared field type so non-string
+                // references (e.g. arbitrary class fields) don't silently get a string-buffer
+                // size.
+                if not (CliValueType.IsStringFieldType concreteTypes assemblies corelib fieldType) then
+                    MarshalSizeError.NotMarshalable
+                        "[MarshalAs(UnmanagedType.ByValTStr)] is only valid on System.String fields"
+                    |> Result.Error
+                elif sizeConst <= 0 then
+                    MarshalSizeError.NotMarshalable $"ByValTStr SizeConst=%d{sizeConst} is not positive"
+                    |> Result.Error
+                else
+                    CliValueType.CharSetByteSize charSet
+                    |> Result.map (fun bpc ->
+                        MarshalFieldNative.Leaf
+                            {
+                                Size = sizeConst * bpc
+                                Alignment = bpc
+                            }
+                    )
+            | Some (FieldMarshalDescriptor.ByValArray _) when not (CliValueType.IsArrayFieldType fieldType) ->
+                // Likewise, ByValArray requires an array-typed field; reject anything else.
                 MarshalSizeError.NotMarshalable
                     "[MarshalAs(UnmanagedType.ByValArray)] is only valid on array-typed fields"
                 |> Result.Error
-            elif sizeConst <= 0 then
-                MarshalSizeError.NotMarshalable $"ByValArray SizeConst=%d{sizeConst} is not positive"
-                |> Result.Error
-            else
-                CliValueType.MarshalSizeOfScalar elementType
-                |> Result.mapError (MarshalSizeError.prefix "ByValArray element type: ")
-                |> Result.map (fun elementSize ->
-                    {
-                        Size = sizeConst * elementSize.Size
-                        Alignment = elementSize.Alignment
-                    }
-                )
-        | Some (FieldMarshalDescriptor.ByValArray (_, None)) ->
-            MarshalSizeError.NotImplemented "ByValArray descriptor without an explicit element type is not supported"
-            |> Result.Error
-        | Some (FieldMarshalDescriptor.Malformed nativeType) ->
-            MarshalSizeError.NotMarshalable
-                $"the field's marshalling descriptor (NATIVE_TYPE 0x%02x{nativeType}) is malformed, and CoreCLR refuses to marshal it"
-            |> Result.Error
-        | Some FieldMarshalDescriptor.Empty ->
-            MarshalSizeError.NotImplemented
-                "the field's marshalling descriptor is empty, which CoreCLR accepts in a blittable struct and refuses in any other; PawPrint does not model struct blittability"
-            |> Result.Error
-        | Some (FieldMarshalDescriptor.Other UnmanagedType.Struct) ->
-            // `[MarshalAs(UnmanagedType.Struct)]` on a value-type field instructs the
-            // marshaller to lay out that struct inline using its own native layout. Recurse
-            // into `TryComputeMarshalSize` so nested marshalling annotations on the inner
-            // struct's fields contribute correctly to the outer size.
-            match contents with
-            | CliType.ValueType vt ->
-                if CliValueType.IsHostKnownDateTime concreteTypes assemblies corelib vt then
-                    Result.Ok
-                        {
-                            Size = 8
-                            Alignment = 8
-                        }
-                else
-                    CliValueType.TryComputeMarshalSize concreteTypes assemblies corelib vt
-            | _ ->
-                MarshalSizeError.NotMarshalable
-                    "[MarshalAs(UnmanagedType.Struct)] is only valid on value-type fields, not reference or primitive contents"
-                |> Result.Error
-        | Some (FieldMarshalDescriptor.Other unmanagedType) ->
-            // CoreCLR's `MarshalInfo` validates a scalar `[MarshalAs]` against the managed
-            // field type and rejects width-mismatched pairs (e.g. `[MarshalAs(I1)] int`).
-            // Mirror that: only accept scalar descriptors when their declared width matches
-            // the field's CLI byte width. Variants whose unmanaged width we don't yet know
-            // (`Bool`, `LPStr`, `Currency`, ...) propagate the scalar-size error verbatim.
-            CliValueType.MarshalSizeOfScalar unmanagedType
-            |> Result.bind (fun descSize ->
-                let cliSize = CliType.SizeOf contents
-
-                if cliSize.Size <> descSize.Size then
-                    MarshalSizeError.NotMarshalable
-                        $"[MarshalAs(%O{unmanagedType})] declares %d{descSize.Size}-byte unmanaged width but managed field has %d{cliSize.Size} bytes"
+            | Some (FieldMarshalDescriptor.ByValArray (sizeConst, Some elementType)) ->
+                if sizeConst <= 0 then
+                    MarshalSizeError.NotMarshalable $"ByValArray SizeConst=%d{sizeConst} is not positive"
                     |> Result.Error
                 else
-                    Result.Ok descSize
-            )
-        | None ->
-            match contents with
-            | CliType.Numeric _
-            | CliType.RuntimePointer _ -> Result.Ok (CliType.SizeOf contents)
-            | CliType.Bool _
-            | CliType.Char _ ->
-                failwith
-                    $"unreachable: TryBoolCharFieldMarshal classifies every bool and char field, but %O{contents} fell through"
-            | CliType.ObjectRef _ ->
-                MarshalSizeError.NotImplemented "object references require managed-to-unmanaged marshalling"
+                    CliValueType.MarshalSizeOfScalar elementType
+                    |> Result.mapError (MarshalSizeError.prefix "ByValArray element type: ")
+                    |> Result.map (fun elementSize ->
+                        MarshalFieldNative.Leaf
+                            {
+                                Size = sizeConst * elementSize.Size
+                                Alignment = elementSize.Alignment
+                            }
+                    )
+            | Some (FieldMarshalDescriptor.ByValArray (_, None)) ->
+                MarshalSizeError.NotImplemented
+                    "ByValArray descriptor without an explicit element type is not supported"
                 |> Result.Error
-            | CliType.ValueType vt ->
-                // Mirror CoreCLR's `MarshalInfo::MarshalInfo` (mlinfo.cpp:1747): a DateTime-typed
-                // field short-circuits to `MARSHAL_TYPE_DATE` (8 bytes, 8-byte aligned) without
-                // recursing into the struct, even though `System.DateTime` itself is AutoLayout.
-                if CliValueType.IsHostKnownDateTime concreteTypes assemblies corelib vt then
-                    Result.Ok
-                        {
-                            Size = 8
-                            Alignment = 8
-                        }
-                else
-                    CliValueType.TryComputeMarshalSize concreteTypes assemblies corelib vt
+            | Some (FieldMarshalDescriptor.Malformed nativeType) ->
+                MarshalSizeError.NotMarshalable
+                    $"the field's marshalling descriptor (NATIVE_TYPE 0x%02x{nativeType}) is malformed, and CoreCLR refuses to marshal it"
+                |> Result.Error
+            | Some FieldMarshalDescriptor.Empty ->
+                MarshalSizeError.NotImplemented
+                    "the field's marshalling descriptor is empty, which CoreCLR accepts in a blittable struct and refuses in any other; PawPrint does not model struct blittability"
+                |> Result.Error
+            | Some (FieldMarshalDescriptor.Other unmanagedType) ->
+                match CliValueType.PrimitiveFieldNativeTypes fieldType contents with
+                | Some accepted ->
+                    // Every pairing CoreCLR accepts on a primitive keeps the primitive's width.
+                    if List.contains unmanagedType accepted then
+                        leaf (CliType.SizeOf contents)
+                    else
+                        MarshalSizeError.NotMarshalable
+                            $"[MarshalAs(%O{unmanagedType})] is not a native type a field of type %O{fieldType} accepts"
+                        |> Result.Error
+                | None ->
 
-    /// Compute the unmanaged size of a value type as `Marshal.SizeOf` would, *and* where each
-    /// declared field lands in that unmanaged image. See `TryComputeMarshalSize` for the
-    /// size-only entry point, which is this function with the placements dropped.
+                match contents with
+                | CliType.ValueType vt ->
+                    // A value type admits `Struct`, which is its default anyway, and nothing else
+                    // (mlinfo.cpp:1694-1935) -- save a `Decimal`, which admits `Currency` too.
+                    if unmanagedType = UnmanagedType.Struct then
+                        nested vt
+                    // `enum<UnmanagedType> 15` is `UnmanagedType.Currency`, which it is an
+                    // obsolescence warning to name.
+                    elif
+                        unmanagedType = enum<UnmanagedType> 15
+                        && CliValueType.IsHostKnownDecimal concreteTypes assemblies corelib vt
+                    then
+                        MarshalSizeError.NotImplemented "[MarshalAs(UnmanagedType.Currency)] on a Decimal field"
+                        |> Result.Error
+                    else
+                        MarshalSizeError.NotMarshalable
+                            $"[MarshalAs(%O{unmanagedType})] is not a native type a value-type field accepts"
+                        |> Result.Error
+                | CliType.ObjectRef _ ->
+                    // Which native types a reference field admits depends on what it references
+                    // (a string, a delegate, a class with layout, ...), which PawPrint does not
+                    // model. But no reference type admits a native *number*.
+                    match unmanagedType with
+                    | UnmanagedType.I1
+                    | UnmanagedType.U1
+                    | UnmanagedType.I2
+                    | UnmanagedType.U2
+                    | UnmanagedType.I4
+                    | UnmanagedType.U4
+                    | UnmanagedType.I8
+                    | UnmanagedType.U8
+                    | UnmanagedType.R4
+                    | UnmanagedType.R8
+                    | UnmanagedType.SysInt
+                    | UnmanagedType.SysUInt
+                    | UnmanagedType.Error ->
+                        MarshalSizeError.NotMarshalable
+                            $"[MarshalAs(%O{unmanagedType})] is a native number, which no reference-type field accepts"
+                        |> Result.Error
+                    | _ ->
+                        MarshalSizeError.NotImplemented
+                            $"[MarshalAs(%O{unmanagedType})] on a reference-type field, whose admissible native types PawPrint does not model"
+                        |> Result.Error
+                | CliType.RuntimePointer _ ->
+                    // A byref: a pointer field is `PrimitiveFieldNativeTypes`'s.
+                    MarshalSizeError.NotImplemented $"[MarshalAs(%O{unmanagedType})] on a field of type %O{fieldType}"
+                    |> Result.Error
+                | CliType.Numeric _
+                | CliType.Bool _
+                | CliType.Char _ ->
+                    failwith $"unreachable: %O{contents} is a primitive, a bool or a char, each classified above"
+            | None ->
+                match contents with
+                | CliType.Numeric _
+                | CliType.RuntimePointer _ -> leaf (CliType.SizeOf contents)
+                | CliType.Bool _
+                | CliType.Char _ ->
+                    failwith
+                        $"unreachable: TryBoolCharFieldMarshal classifies every bool and char field, but %O{contents} fell through"
+                | CliType.ObjectRef _ ->
+                    MarshalSizeError.NotImplemented "object references require managed-to-unmanaged marshalling"
+                    |> Result.Error
+                | CliType.ValueType vt -> nested vt
+
+        match classified with
+        | Result.Ok native -> Result.Ok native
+        | Result.Error (MarshalSizeError.NotMarshalable reason) -> Result.Ok (MarshalFieldNative.Illegal reason)
+        | Result.Error (MarshalSizeError.NotImplemented reason) -> Result.Error reason
+
+    /// Compute a value type's native image as CoreCLR's `EEClassNativeLayoutInfo` has it: its size,
+    /// and where each declared field lands and in what form. Unlike `TryComputeMarshalLayout`, this
+    /// answers for a type that cannot be marshalled because a field of its own is illegal; that
+    /// field takes one byte, 1-aligned (see `MarshalFieldNative.Illegal`). This is the layout a
+    /// containing type nests.
     ///
     /// Lays fields out using the declaring type's `Layout` (sequential or explicit) and packing,
-    /// but with each field sized via `TryFieldMarshalSize` so
-    /// `[MarshalAs(ByValTStr/ByValArray)]` fields contribute their unmanaged byte cost rather
-    /// than the managed CLI size. Type-system context is required so descriptors that depend on
-    /// the field's nominal type (e.g. `ByValTStr` requires `System.String`) can be validated.
+    /// but with each field's form from `TryFieldNative`, so `[MarshalAs(ByValTStr/ByValArray)]`
+    /// fields contribute their unmanaged byte cost rather than the managed CLI size.
     ///
-    /// A `RawBytes`-backed value type has no declared fields, so it yields an empty placement
-    /// list alongside a non-zero size. That is not "nothing to marshal": consumers that write
-    /// the image field by field must reject `RawBytes` storage explicitly rather than reading
-    /// an empty list as an empty struct.
-    static member TryComputeMarshalLayout
+    /// `NotMarshalable` means the type has no native layout at all: it is `LayoutKind.Auto`.
+    static member TryComputeNativeLayout
         (concreteTypes : AllConcreteTypes)
         (assemblies : LoadedAssemblies)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (vt : CliValueType)
-        : Result<SizeofResult * MarshalFieldPlacement list, MarshalSizeError>
+        : Result<NativeLayout, MarshalSizeError>
         =
         // Mirror CoreCLR's `IsStructMarshalable` (fieldmarshaler.cpp:288): a type with
         // `LayoutKind.Auto` reports `HasLayout() == false`, so `Marshal.SizeOf<T>()` throws an
-        // `ArgumentException`. The recursion from `TryFieldMarshalSize` reaches us here too —
-        // the AutoLayout field types CoreCLR marshals anyway (enums, as their underlying
-        // primitive, and `System.DateTime`) are intercepted in `TryFieldMarshalSize` before they
-        // recurse, so by the time we see an AutoLayout type it really is something we should
-        // reject.
+        // `ArgumentException`. The recursion from `TryFieldNative` reaches us here too — the
+        // AutoLayout field types CoreCLR marshals anyway (enums, as their underlying primitive,
+        // and `System.DateTime`) are intercepted in `TryFieldNative` before they recurse, so by
+        // the time we see an AutoLayout type it really has no native layout.
         if CliValueType.IsAutoLayout concreteTypes assemblies vt then
             MarshalSizeError.NotMarshalable "type has [StructLayout(LayoutKind.Auto)] and has no native layout"
             |> Result.Error
@@ -3814,13 +3965,15 @@ and CliValueType =
 
         match vt._Storage with
         | CliValueTypeStorage.RawBytes bytes ->
-            Result.Ok (
+            Result.Ok
                 {
-                    Size = bytes.Length
-                    Alignment = 1
-                },
-                []
-            )
+                    Size =
+                        {
+                            Size = bytes.Length
+                            Alignment = 1
+                        }
+                    Placements = []
+                }
         | CliValueTypeStorage.Fields storage ->
             let minimumSize, packingSize =
                 match vt.Layout with
@@ -3883,7 +4036,7 @@ and CliValueType =
                 | Result.Error _ -> acc
                 | Result.Ok (placed, running, maxAlign) ->
                     match
-                        CliValueType.TryFieldMarshalSize
+                        CliValueType.TryFieldNative
                             concreteTypes
                             assemblies
                             corelib
@@ -3892,8 +4045,10 @@ and CliValueType =
                             field.Type
                             field.Contents
                     with
-                    | Result.Error err -> Result.Error (MarshalSizeError.prefixField field.Name err)
-                    | Result.Ok size ->
+                    | Result.Error reason ->
+                        Result.Error (MarshalSizeError.prefixField field.Name (MarshalSizeError.NotImplemented reason))
+                    | Result.Ok native ->
+                        let size = native.Size
                         let alignmentCap = min size.Alignment packingSize
                         let offset = offsetOf running alignmentCap
 
@@ -3901,7 +4056,7 @@ and CliValueType =
                             {
                                 Field = CliConcreteField.ToCliField field
                                 NativeOffset = offset
-                                NativeSize = size
+                                Native = native
                             }
 
                         // Sequential layout advances the cursor past this field; explicit layout
@@ -3911,21 +4066,28 @@ and CliValueType =
 
             let finish
                 (acc : Result<MarshalFieldPlacement list * int * int, MarshalSizeError>)
-                : Result<SizeofResult * MarshalFieldPlacement list, MarshalSizeError>
+                : Result<NativeLayout, MarshalSizeError>
                 =
                 acc
-                |> Result.map (fun (placed, extent, align) -> computeFinal extent align, List.rev placed)
+                |> Result.map (fun (placed, extent, align) ->
+                    {
+                        Size = computeFinal extent align
+                        Placements = List.rev placed
+                    }
+                )
 
             match seqFields, nonSeqFields with
             | [], [] ->
-                Result.Ok (
-                    bumpZeroSized
-                        {
-                            Size = minimumSize
-                            Alignment = 1
-                        },
-                    []
-                )
+                Result.Ok
+                    {
+                        Size =
+                            bumpZeroSized
+                                {
+                                    Size = minimumSize
+                                    Alignment = 1
+                                }
+                        Placements = []
+                    }
             | _ :: _, [] ->
                 (Result.Ok ([], 0, 0), seqFields)
                 ||> List.fold (fun acc field ->
@@ -3952,6 +4114,34 @@ and CliValueType =
             | _ :: _, _ :: _ ->
                 MarshalSizeError.NotMarshalable "unexpectedly mixed explicit and automatic field offsets"
                 |> Result.Error
+
+    /// Compute the unmanaged size of a value type as `Marshal.SizeOf` would, *and* where each
+    /// declared field lands in that unmanaged image. See `TryComputeMarshalSize` for the
+    /// size-only entry point, which is this function with the placements dropped.
+    ///
+    /// This is `TryComputeNativeLayout`, refused with `NotMarshalable` as CoreCLR's
+    /// `IsStructMarshalable` refuses it when one of the type's own fields is illegal. Every
+    /// placement it returns is therefore a `Leaf` or `Nested` one.
+    ///
+    /// A `RawBytes`-backed value type has no declared fields, so it yields an empty placement
+    /// list alongside a non-zero size. That is not "nothing to marshal": consumers that write
+    /// the image field by field must reject `RawBytes` storage explicitly rather than reading
+    /// an empty list as an empty struct.
+    static member TryComputeMarshalLayout
+        (concreteTypes : AllConcreteTypes)
+        (assemblies : LoadedAssemblies)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (vt : CliValueType)
+        : Result<SizeofResult * MarshalFieldPlacement list, MarshalSizeError>
+        =
+        CliValueType.TryComputeNativeLayout concreteTypes assemblies corelib vt
+        |> Result.bind (fun layout ->
+            match layout.FirstIllegalField with
+            | Some (fieldName, reason) ->
+                MarshalSizeError.prefixField fieldName (MarshalSizeError.NotMarshalable reason)
+                |> Result.Error
+            | None -> Result.Ok (layout.Size, layout.Placements)
+        )
 
     /// Compute the unmanaged size of a value type as `Marshal.SizeOf` would. This is
     /// `TryComputeMarshalLayout` with the per-field placements dropped; see there for the layout
