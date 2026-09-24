@@ -2947,6 +2947,9 @@ module NativeSystemNative =
             // stands between a guest and the BCL's commonest write API.
             // `File.Create` never arrives here: it is `FileShare.None`, and
             // `CanLockTheFile` answers `LOCK_EX` without consulting anything.
+            // So `KernelConfig.FileSystemType = Some Nfs` is the one
+            // configuration under which a `FileShare.Read` handle opened for
+            // writing takes no `flock` at all.
             let operation = "SystemNative_GetFileSystemType"
             let fd = fdArgument operation instruction.Arguments.[0]
 
@@ -2961,10 +2964,10 @@ module NativeSystemNative =
                     state.Kernel.FileSystemType
 
             match answer with
-            | FileSystemTypeAnswer.Reported magic ->
+            | FileSystemTypeAnswer.Reported fields ->
                 // errno untouched on success, as `fstatfs` leaves it.
                 state
-                |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 magic) ctx.Thread
+                |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 (FileSystemTypePal.ofFields fields)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
             | FileSystemTypeAnswer.Failed error ->
