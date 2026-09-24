@@ -671,6 +671,11 @@ module SimulatedUnixPlatform =
     let firstBindFault (platform : SimulatedUnixPlatform) (faults : Set<BindFault>) : BindFault option =
         bindFaultOrder platform |> List.tryFind (fun fault -> Set.contains fault faults)
 
+    /// The greatest `socketAddressLen` Darwin's `bind(2)` will consider at all.
+    /// Above it the answer is `ENAMETOOLONG` rather than `EINVAL`; measured, 255
+    /// is `EINVAL` and 256 is `ENAMETOOLONG`. Linux has no such threshold.
+    let maximumDarwinSocketAddressLength : int = 255
+
     /// How long `bind(2)` insists a `struct sockaddr_in` argument is.
     ///
     /// Measured, and not the same shape on the two: Linux accepts any length from
@@ -680,11 +685,6 @@ module SimulatedUnixPlatform =
     ///
     /// Invisible through the managed API, which always passes
     /// `SocketAddress.Size`; a hand-rolled `[DllImport]` sees it immediately.
-    /// The greatest `socketAddressLen` Darwin's `bind(2)` will consider at all.
-    /// Above it the answer is `ENAMETOOLONG` rather than `EINVAL`; measured, 255
-    /// is `EINVAL` and 256 is `ENAMETOOLONG`. Linux has no such threshold.
-    let maximumDarwinSocketAddressLength : int = 255
-
     let bindAddressLength (platform : SimulatedUnixPlatform) (exactSize : int) (declared : int) : BindLengthVerdict =
         match flavour platform with
         | SimulatedUnixFlavour.Linux ->
@@ -702,14 +702,6 @@ module SimulatedUnixPlatform =
             else
                 BindLengthVerdict.Invalid
 
-    /// May a socket bind to this address, given the addresses this machine holds?
-    ///
-    /// The wildcard always binds. Beyond that the flavours read the same list
-    /// differently, which is measured rather than inferred: `127.9.9.9` binds on
-    /// Linux and is `EADDRNOTAVAIL` on Darwin, because Linux treats every address
-    /// inside a local prefix as assigned while Darwin assigns loopback exactly
-    /// one address.
-    ///
     /// Is this the all-ones broadcast address, or a multicast one
     /// (`224.0.0.0/4`)?
     ///
@@ -728,6 +720,14 @@ module SimulatedUnixPlatform =
     let isBroadcastOrMulticast (address : uint32) : bool =
         address = System.UInt32.MaxValue || (address >>> 28) = 0xEu
 
+    /// May a socket bind to this address, given the addresses this machine holds?
+    ///
+    /// The wildcard always binds. Beyond that the flavours read the same list
+    /// differently, which is measured rather than inferred: `127.9.9.9` binds on
+    /// Linux and is `EADDRNOTAVAIL` on Darwin, because Linux treats every address
+    /// inside a local prefix as assigned while Darwin assigns loopback exactly
+    /// one address.
+    ///
     /// Broadcast and multicast are a further Linux-only allowance
     /// (`255.255.255.255` and `224.0.0.1` bind there and are `EAFNOSUPPORT` on
     /// Darwin). Neither is modelled: PawPrint has no interface to broadcast on,

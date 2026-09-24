@@ -182,10 +182,6 @@ module SockaddrFamilyField =
             }
             declaredLength
 
-/// A reason `bind(2)` refuses, as one of the checks it makes rather than as an
-/// errno: which errno a fault becomes is fixed, but *which fault is reported*
-/// when several hold at once is per-flavour. See
-/// `SimulatedUnixPlatform.bindFaultOrder`.
 /// What this platform's `bind(2)` makes of a declared `socketAddressLen`.
 ///
 /// The two rejections are not interchangeable, and the difference is *when* they
@@ -207,6 +203,10 @@ type BindLengthVerdict =
     /// `EINVAL`, from the `Length` position of this platform's fault order.
     | Invalid
 
+/// A reason `bind(2)` refuses, as one of the checks it makes rather than as an
+/// errno: which errno a fault becomes is fixed, but *which fault is reported*
+/// when several hold at once is per-flavour. See
+/// `SimulatedUnixPlatform.bindFaultOrder`.
 [<RequireQualifiedAccess>]
 type BindFault =
     /// The declared `socketAddressLen` is not one this platform accepts for the
