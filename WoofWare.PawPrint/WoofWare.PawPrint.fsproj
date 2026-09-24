@@ -156,12 +156,14 @@
     <Compile Include="Native\NativeMonitor.fs" />
     <Compile Include="Native\NativeMetadataImport.fs" />
     <Compile Include="Native\NativeRuntimeHelpers.fs" />
-    <Compile Include="Native\NativeMarshal.fs" />
     <Compile Include="Native\NativeGcHandle.fs" />
     <Compile Include="Native\NativeDependentHandle.fs" />
     <Compile Include="Native\NativeBuffer.fs" />
     <Compile Include="Native\NativeException.fs" />
     <Compile Include="Native\NativeRuntimeTypeHelpers.fs" />
+    <!-- After NativeRuntimeTypeHelpers.fs: the Marshal QCalls name the type in CoreCLR's
+         IDS_CANNOT_MARSHAL message with that module's type-name renderer. -->
+    <Compile Include="Native\NativeMarshal.fs" />
     <!-- After NativeRuntimeTypeHelpers.fs: it concretises `System.Reflection.Pointer` through
          that module's `concretizeNonGenericCorelibType`. -->
     <Compile Include="Native\NativeReflectionPointer.fs" />

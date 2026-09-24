@@ -42,6 +42,29 @@ module NativeMarshal =
             |> Some
         | _ -> None
 
+    /// CoreCLR's `IDS_CANNOT_MARSHAL` (mscorrc.rc:387), which `MarshalNative_SizeOfHelper` and
+    /// `MarshalNative_OffsetOf` both raise as an `ArgumentException` naming the rejected type as
+    /// `TypeString::AppendType` spells it with its default `FormatNamespace`.
+    let private raiseCannotMarshal
+        (operation : string)
+        (ctx : NativeCallContext)
+        (typeHandle : RuntimeTypeHandleTarget)
+        (state : IlMachineState)
+        : NativeHandlerResult
+        =
+        let name =
+            NativeRuntimeTypeHelpers.runtimeTypeHandleName
+                operation
+                state
+                NativeRuntimeTypeHelpers.formatNamespaceFlag
+                typeHandle
+
+        NativeHandlerResult.raiseExceptionWithMessage
+            ctx.BaseClassTypes.ArgumentException
+            (Some
+                $"Type '%s{name}' cannot be marshaled as an unmanaged structure; no meaningful size or offset can be computed.")
+            state
+
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -84,7 +107,7 @@ module NativeMarshal =
                 // `ArgumentException` (resource `IDS_CANNOT_MARSHAL`) for types it can't
                 // marshal as unmanaged structures when `throwIfNotMarshalable` is set.
                 // Mirror that with a guest exception so the caller's `try/catch` can handle it.
-                NativeHandlerResult.raiseException ctx.BaseClassTypes.ArgumentException state
+                raiseCannotMarshal operation ctx (RuntimeTypeHandleTarget.Closed typeHandle) state
                 |> Some
             | Result.Error (MarshalSizeError.NotMarshalable reason) ->
                 // `throwIfNotMarshalable=false` path: CoreCLR falls through to
@@ -103,6 +126,96 @@ module NativeMarshal =
                     IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 size.Size)) ctx.Thread state
 
                 NativeHandlerResult.completed state |> Some
+        | "MarshalNative_OffsetOf",
+          "System.Private.CoreLib",
+          "System.Runtime.InteropServices",
+          "Marshal",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) ->
+            // `Marshal.OffsetOf(Type, string)` (Marshal.CoreCLR.cs:41) has already done every
+            // check that depends on the *name*: a null type or name, and a field that is not an
+            // instance field of the type, are all refused in managed code. What reaches us is the
+            // `FieldDesc` reflection found, which may belong to a base class of the type the
+            // guest named.
+            let operation = "MarshalNative_OffsetOf"
+
+            let fieldHandle =
+                // The QCall's PRECONDITION is `pFD != NULL`, and the managed wrapper passes an
+                // `RtFieldInfo`'s own handle, so a null one is a bug.
+                match NativeCall.fieldHandleIdOfRuntimeFieldHandleInternal operation instruction.Arguments.[0] with
+                | None -> failwith $"%s{operation}: null FieldDesc"
+                | Some fieldHandleId ->
+                    match FieldHandleRegistry.resolveFieldFromId fieldHandleId state.FieldHandles with
+                    | Some fieldHandle -> fieldHandle
+                    | None -> failwith $"%s{operation}: field-registry handle %d{fieldHandleId} is not allocated"
+
+            // CoreCLR answers for `pFD->GetApproxEnclosingMethodTable()`: the type that declares
+            // the field, not the one the guest named, so an inherited field is placed within its
+            // base class's layout.
+            match fieldHandle.GetDeclaringTypeHandle () with
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ as declaringType ->
+                // The typical instantiation `G<T>` never has a layout: the type loader grants one
+                // only to a type containing no generic variables (methodtablebuilder.cpp:12707),
+                // so `IsStructMarshalable` fails whatever the fields are.
+                raiseCannotMarshal operation ctx declaringType state |> Some
+            | RuntimeTypeHandleTarget.Closed declaringType ->
+                let sharedInstantiation =
+                    match AllConcreteTypes.lookup declaringType state.ConcreteTypes with
+                    | None ->
+                        failwith $"%s{operation}: declaring type %O{declaringType} is not a registered concrete type"
+                    | Some concrete ->
+                        concrete.Generics
+                        |> Seq.exists (
+                            IlMachineRuntimeMetadata.isSharedTypeArgument
+                                ctx.BaseClassTypes
+                                state
+                                $"%s{operation}: the declaring type %s{AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes declaringType}"
+                        )
+
+                if sharedInstantiation then
+                    // The approximate enclosing MethodTable of an instantiation shared over
+                    // `System.__Canon` is the canonical one, and a field of type `T` there is a
+                    // `__Canon`, which has no native form. Measured on real .NET: `S<string>` is
+                    // refused, naming `S<__Canon>`, when `S<T>` holds a `T` -- even one marked
+                    // `[MarshalAs(ByValTStr)]`, which `S<string>`'s own layout would accept -- and
+                    // answered when it does not.
+                    failwith
+                        $"TODO: %s{operation}: %s{AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes declaringType} is an instantiation shared over System.__Canon, whose native layout CoreCLR computes for the canonical form; PawPrint does not model canonical forms"
+
+                let zero, state =
+                    IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes declaringType
+
+                match
+                    CliType.TryComputeMarshalFieldOffset
+                        state.ConcreteTypes
+                        state._LoadedAssemblies
+                        ctx.BaseClassTypes
+                        declaringType
+                        zero
+                        (fieldHandle.GetFieldDefinitionHandle ())
+                with
+                | Result.Error (MarshalSizeError.NotMarshalable _) ->
+                    raiseCannotMarshal operation ctx (RuntimeTypeHandleTarget.Closed declaringType) state
+                    |> Some
+                | Result.Error (MarshalSizeError.NotImplemented reason) ->
+                    failwith
+                        $"TODO %s{operation}: unimplemented marshalling case for %s{AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes declaringType}: %s{reason}"
+                | Result.Ok offset ->
+                    state
+                    |> IlMachineState.pushToEvalStack
+                        (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim (int64 offset))))
+                        ctx.Thread
+                    |> NativeHandlerResult.completed
+                    |> Some
+            | RuntimeTypeHandleTarget.OpenConstructed _
+            | RuntimeTypeHandleTarget.GenericParameter _
+            | RuntimeTypeHandleTarget.MethodGenericParameter _
+            | RuntimeTypeHandleTarget.DynamicMethodsClass _
+            | RuntimeTypeHandleTarget.Composite _
+            | RuntimeTypeHandleTarget.FunctionPointer _ as other ->
+                // Reflection mints a field handle against a closed type or an open generic
+                // definition only; nothing else declares fields.
+                failwith $"%s{operation}: a FieldDesc's declaring type cannot be %O{other}"
         | "MarshalNative_TryGetStructMarshalStub",
           "System.Private.CoreLib",
           "System.Runtime.InteropServices",

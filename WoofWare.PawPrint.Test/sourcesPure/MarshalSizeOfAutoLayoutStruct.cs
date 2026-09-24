@@ -25,8 +25,11 @@ public class Program
             Marshal.SizeOf(typeof(AutoLayoutStruct));
             return 1;
         }
-        catch (ArgumentException)
+        catch (ArgumentException e)
         {
+            // `IDS_CANNOT_MARSHAL`, naming the type as `TypeString::AppendType` spells it.
+            if (e.Message != "Type 'Program+AutoLayoutStruct' cannot be marshaled as an unmanaged structure; no meaningful size or offset can be computed.")
+                return 2;
             return 0;
         }
     }
