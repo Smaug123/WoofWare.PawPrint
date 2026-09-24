@@ -696,6 +696,31 @@ module internal UnaryMetadataCallOps =
         | IlMachineStateExecution.CallCommitment.Committed
         | IlMachineStateExecution.CallCommitment.Raised -> state, WhatWeDid.Executed
 
+    /// Raise what CoreCLR raises for a `call` or `ldftn` whose operand names an abstract method
+    /// directly, rather than through a `constrained.` prefix that resolves it: a
+    /// `BadImageFormatException` with the JIT's "Bad IL format.". The program counter is left on
+    /// the instruction, for exception dispatch.
+    ///
+    /// Real .NET raises it when it compiles the method holding the instruction, so it arrives
+    /// before that method has run anything, whether or not the instruction would have been reached,
+    /// and none of that method's own handlers can catch it. PawPrint has no compilation step to
+    /// fail and raises it when the instruction executes instead; docs/divergences.md, "A `call` or
+    /// `ldftn` naming an abstract method fails when it is reached", records the difference.
+    let raiseNamedAbstractMethod
+        (ctx : UnaryMetadataIlOpContext)
+        (state : IlMachineState)
+        : IlMachineState * WhatWeDid
+        =
+        // Not an `OpcodeFault`: `OpcodeFaults` excludes failures to bind an instruction's token,
+        // and this is the JIT rejecting the token's target.
+        IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+            ctx.LoggerFactory
+            ctx.BaseClassTypes
+            ctx.BaseClassTypes.BadImageFormatException
+            (Some BadImageFormatMessages.badIl)
+            ctx.Thread
+            state
+
     let executeCall (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         // Split on the operand before anything else: `ctx.ActiveAssembly` and `ctx.MetadataToken`
         // are partial, and a scope operand has neither, so binding them eagerly would fail for a
@@ -853,7 +878,7 @@ module internal UnaryMetadataCallOps =
 
                 cur, cleared
 
-        let state, concretizedMethod, declaringTypeHandle =
+        let state, concretizedMethod, _declaringTypeHandle =
             match preConcretizedMethodGenerics with
             | Some concrete ->
                 ExecutionConcretization.concretizeMethodForExecutionWithConcreteMethodGenerics
@@ -874,10 +899,9 @@ module internal UnaryMetadataCallOps =
                     typeArgsFromMetadata
                     state
 
-        let state, concretizedMethod, declaringTypeHandle =
-            match pendingConstrained with
-            | None -> state, concretizedMethod, declaringTypeHandle
-            | Some constrainedTypeHandle ->
+        match pendingConstrained with
+        | Some constrainedTypeHandle ->
+            let state, implementation, _declaringTypeHandle =
                 resolveConstrainedStaticInterfaceMethod
                     "constrained.call"
                     ctx
@@ -886,7 +910,15 @@ module internal UnaryMetadataCallOps =
                     concretizedMethod
                     state
 
-        enterCallee ctx concretizedMethod state
+            enterCallee ctx implementation state
+        | None ->
+
+        match concretizedMethod.Body with
+        | MethodBody.Abstract -> raiseNamedAbstractMethod ctx state
+        | MethodBody.Il _
+        | MethodBody.InternalCall
+        | MethodBody.PInvoke
+        | MethodBody.RuntimeProvided _ -> enterCallee ctx concretizedMethod state
 
     /// The generic arguments the receiver's runtime type supplies for `declaring`, read off the
     /// link of its class chain whose definition is `declaring`. `None` when no link is: the
@@ -1966,6 +1998,35 @@ module internal UnaryMetadataCallOps =
             // methods, so there is nothing here to call.
             failwith $"TODO: calli through %O{stub}, which PawPrint interprets only as part of a delegate invocation"
         | Some (FunctionPointerTarget.Managed methodToCall) ->
-            executeManagedCalli ctx callSiteSignature CalliEntry.Direct methodToCall state
+            match methodToCall.Body with
+            | MethodBody.Abstract ->
+                // An abstract method still has an entry point, which `GetFunctionPointer` hands
+                // out; entering it is what fails, because there is no code behind it to prepare.
+                // Measured on real .NET as a catchable `BadImageFormatException` carrying the
+                // HRESULT's own text, for an abstract class's method, an interface's and a static
+                // abstract one alike. `calli` does not dispatch, so the receiver plays no part —
+                // one that overrides the method and a null one fail the same way — and nothing
+                // runs first, not even the declaring type's initialiser.
+                //
+                // The exception is the callee's rather than the instruction's, which is why this is
+                // not an `OpcodeFault`: real .NET's trace names the abstract method as its top frame.
+                // PawPrint has no frame to push for it and raises from the `calli`, so the trace
+                // starts at the caller; see docs/divergences.md, "A delegate invocation or `calli`
+                // that fails before entering its target names no frame for it".
+                // `sourcesPure/CallThroughAbstractMethodPointer.cs` pins the rest.
+                //
+                // Don't advance the PC: exception dispatch needs the faulting instruction's offset.
+                IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+                    loggerFactory
+                    baseClassTypes
+                    baseClassTypes.BadImageFormatException
+                    (Some BadImageFormatMessages.ofHResult)
+                    thread
+                    state
+            | MethodBody.Il _
+            | MethodBody.InternalCall
+            | MethodBody.PInvoke
+            | MethodBody.RuntimeProvided _ ->
+                executeManagedCalli ctx callSiteSignature CalliEntry.Direct methodToCall state
         | Some (FunctionPointerTarget.UnboxingStub methodToCall) ->
             executeManagedCalli ctx callSiteSignature CalliEntry.UnboxingStub methodToCall state

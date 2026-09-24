@@ -297,11 +297,11 @@ module AbstractMachine =
             // deliberate trade rather than an oversight — leaving the stub frame up instead puts a
             // `System.Action.Invoke` frame in the trace that real .NET never shows, whose absence
             // `sourcesPure/DelegateCctorFailureTraceHasNoStubFrame.cs` pins. See
-            // docs/divergences.md, "A delegate invocation that fails before entering its target
-            // names no frame for it", for what closing it would take: none of these failures has a
-            // frame available to name, so the fix is to push one that has executed nothing, and
-            // the existing machinery for that (`MethodState.PendingTypeInit`) carries a type to
-            // initialise and would run its `.cctor`.
+            // docs/divergences.md, "A delegate invocation or `calli` that fails before entering its
+            // target names no frame for it", for what closing it would take: none of these
+            // failures has a frame available to name, so the fix is to push one that has executed
+            // nothing, and the existing machinery for that (`MethodState.PendingTypeInit`) carries
+            // a type to initialise and would run its `.cctor`.
             let raiseFromPoppedStub
                 (exceptionType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
                 (message : string option)
@@ -383,20 +383,15 @@ module AbstractMachine =
             // through a virtual call stub, which resolves it before the body is read.
             //
             // Real .NET builds that delegate and fails only here, with a catchable
-            // `BadImageFormatException` whose HResult is `COR_E_BADIMAGEFORMAT`. The message is
-            // measured rather than derived, because it is the CLR's HRESULT text and not the
-            // parameterless constructor's — which is a different string with no HRESULT in it. Its
-            // prose is localisable, so only the numeral is a machine-independent fact and only the
-            // numeral is asserted; this reproduces the invariant-culture wording.
+            // `BadImageFormatException` whose HResult is `COR_E_BADIMAGEFORMAT`, raised by the
+            // abstract method's entry point exactly as a `calli` through it is
+            // (`UnaryMetadataCallOps.executeCalli`).
             //
             // Both an abstract class's method and an interface's behave identically, which
             // `sourcesPure/DelegateToAbstractMethodOverNull.cs` pins.
             match methodPtr.Body with
             | MethodBody.Abstract when not dispatchesOnReceiver ->
-                raiseFromPoppedStub
-                    baseClassTypes.BadImageFormatException
-                    (Some "An attempt was made to load a program with an incorrect format.\n (0x8007000B)")
-                    state
+                raiseFromPoppedStub baseClassTypes.BadImageFormatException (Some BadImageFormatMessages.ofHResult) state
             | MethodBody.Abstract
             | MethodBody.Il _
             | MethodBody.InternalCall
@@ -501,7 +496,7 @@ module AbstractMachine =
                 $"BUG: reached executeOneStep for {MethodOwner.describe instruction.ExecutingMethod.Owner}::{instruction.ExecutingMethod.Name} which is runtime-provided but unclassified ({name}); add explicit handling"
         | MethodBody.Abstract ->
             failwith
-                $"BUG: reached executeOneStep for abstract method {MethodOwner.describe instruction.ExecutingMethod.Owner}::{instruction.ExecutingMethod.Name}; virtual dispatch should have resolved to a concrete override, and a delegate over an abstract target raises BadImageFormatException before calling it"
+                $"reached executeOneStep for abstract method {MethodOwner.describe instruction.ExecutingMethod.Owner}::{instruction.ExecutingMethod.Name}. Virtual dispatch resolves to an override, and call, ldftn, calli and delegate invocation each raise BadImageFormatException rather than push a frame for an abstract method. TODO: MethodBase.Invoke of a static abstract method still arrives here, where real .NET raises a TargetInvocationException wrapping that BadImageFormatException; any other route arriving here is a PawPrint bug"
         | MethodBody.InternalCall
         | MethodBody.PInvoke -> dispatchNative ()
         | MethodBody.Il instructions ->

@@ -195,6 +195,22 @@ module internal ExceptionHResults =
         | Some (_, hresult) -> hresult
         | None -> corEException
 
+/// The messages CoreCLR attaches to the `BadImageFormatException`s it raises for IL that reaches a
+/// method with no body. Both are its invariant-culture wording; the prose is localisable, so a guest
+/// on another UI culture would read different words for the same failure.
+[<RequireQualifiedAccess>]
+module internal BadImageFormatMessages =
+
+    /// `COR_E_BADIMAGEFORMAT`'s own HRESULT text, which is what `COMPlusThrowHR` carries when it is
+    /// given no resource: raised by an abstract method's entry point when something calls through
+    /// it. Not the parameterless constructor's message, which has no HRESULT in it.
+    let ofHResult : string =
+        "An attempt was made to load a program with an incorrect format.\n (0x8007000B)"
+
+    /// `BFA_BAD_IL`: the JIT's refusal of a method body, such as one whose `call` or `ldftn` names an
+    /// abstract method.
+    let badIl : string = "Bad IL format."
+
 /// Helper functions for exception handling
 [<RequireQualifiedAccess>]
 module ExceptionHandling =

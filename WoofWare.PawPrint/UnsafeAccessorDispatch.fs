@@ -1183,7 +1183,7 @@ module internal UnsafeAccessorDispatch =
                 // The body is a `call`, and a `call` to an abstract method is not valid IL. A
                 // `static abstract` interface member is the one static method that can be
                 // abstract. The message is the JIT's rather than the attribute's.
-                state, Error (UnsafeAccessorRefusal.BadImageFormat "Bad IL format.")
+                state, Error (UnsafeAccessorRefusal.BadImageFormat BadImageFormatMessages.badIl)
             | UnsafeAccessorKind.Constructor, _ when targetTypeInfo.TypeAttributes.HasFlag TypeAttributes.Abstract ->
                 // The body is a `newobj`, which the JIT refuses for an abstract class
                 // (`CEEInfo::getNewHelper`).

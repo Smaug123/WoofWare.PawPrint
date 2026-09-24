@@ -635,7 +635,7 @@ The shapes CoreCLR does not share agree between the runtimes: a value-type insta
 
 **Where this lives in code**: `NativeRuntimeFieldHandle.tryExecute`'s `AcquiresContextFromThis` arm; the identity it reports on is `FieldHandle.DeclaringType`.
 
-## A delegate invocation that fails before entering its target names no frame for it
+## A delegate invocation or `calli` that fails before entering its target names no frame for it
 
 **CoreCLR**: when invoking a delegate fails *because of the target itself*, the failure happens
 inside the machinery that is preparing to enter that target, so the target is on the stack when the
@@ -643,10 +643,16 @@ exception is raised and appears as the top frame of its `StackTrace` and as its 
 Measured on .NET 10 for an abstract target closed over a null receiver: `StackTrace` begins
 `at Ab4.M()` and `TargetSite` is `System.String M()`.
 
+The same holds for a `calli` through the entry point `RuntimeMethodHandle.GetFunctionPointer` hands
+out for an abstract method: measured on .NET 10, the `BadImageFormatException` trace begins
+`at Abs.A()`, above the frame that made the call.
+
 **PawPrint**: the delegate's synthetic `Invoke` frame is popped first and the exception is then
 raised into the *caller*, so the trace begins at whatever called `Invoke` and the target is named
-nowhere. `TargetSite` is unreachable for a different reason — `ExceptionNative_GetMethodFromStackTrace`
-is unimplemented, so reading it stops the guest rather than answering wrongly.
+nowhere. A `calli` has no synthetic frame to pop, and raises from the `calli` instruction itself,
+with the same result. `TargetSite` is unreachable for a different reason —
+`ExceptionNative_GetMethodFromStackTrace` is unimplemented, so reading it stops the guest rather than
+answering wrongly.
 
 **Spec status**: outside ECMA-335, which does not specify stack-trace contents.
 
@@ -657,11 +663,12 @@ trade. A stub frame still on the stack when the exception is raised lands in the
 between one frame too many (the stub) and one too few (the target); popping first picks the latter,
 which is the smaller lie because the missing frame is a method that genuinely never ran.
 
-Three delegate-invocation failures have this shape: a `Reflection.Emit` target that could not be
-compiled, an abstract target, and an open delegate over a static abstract interface method, whose
-virtual call stub raises `EntryPointNotFoundException` (measured: real .NET's trace begins
-`at IStaticAbstract.Describe()`). None has a frame available to name — the first because PawPrint
-refused to build the method, the others because an abstract method has no body to enter. A fourth
+Four failures have this shape: three delegate invocations — a `Reflection.Emit` target that could
+not be compiled, an abstract target, and an open delegate over a static abstract interface method,
+whose virtual call stub raises `EntryPointNotFoundException` (measured: real .NET's trace begins
+`at IStaticAbstract.Describe()`) — and a `calli` through an abstract method's entry point. None has
+a frame available to name — the first because PawPrint refused to build the method, the others
+because an abstract method has no body to enter. A fourth
 failure raised the same way is *not* a divergence: an open virtual delegate invoked with a null
 receiver faults in its virtual call stub, and real .NET's `NullReferenceException` trace begins at
 the caller too.
@@ -673,7 +680,7 @@ own clauses are therefore out of scope. It cannot be reused as it stands, becaus
 carries the handle of a type to initialise and `AbstractMachine`'s driver runs that initialiser on
 the next step — so a frame parked there for another reason would run a `.cctor` that nothing asked
 for. Closing this means generalising that field into a reason DU, which is a change to
-`MethodState` and to exception dispatch and so is its own slice; it would fix all three failures at once.
+`MethodState` and to exception dispatch and so is its own slice; it would fix all four failures at once.
 
 **Observable example**:
 
@@ -687,9 +694,47 @@ catch (BadImageFormatException e) { Console.WriteLine(e.StackTrace); }
 ```
 
 **Where this lives in code**: `AbstractMachine.dispatchDelegateInvoke`, whose `raiseFromPoppedStub`
-is the ordering every such failure uses. `sourcesPure/DelegateToAbstractMethodOverNull.cs` and
-`sourcesPure/DelegateBindStaticAbstractInterfaceMethod.cs` pin the exceptions themselves, which are
-faithful; only the traces are not.
+is the ordering every delegate failure uses, and `UnaryMetadataCallOps.executeCalli`.
+`sourcesPure/DelegateToAbstractMethodOverNull.cs`,
+`sourcesPure/DelegateBindStaticAbstractInterfaceMethod.cs` and
+`sourcesPure/CallThroughAbstractMethodPointer.cs` pin the exceptions themselves, which are faithful;
+only the traces are not.
+
+## A `call` or `ldftn` naming an abstract method fails when it is reached
+
+**CoreCLR**: a `call` or `ldftn` whose operand names an abstract method directly is invalid IL, and
+the JIT refuses the method holding it: a `BadImageFormatException` with the message
+"Bad IL format." (`BFA_BAD_IL`), raised when that method is first compiled. Measured on .NET 10 over
+an abstract class's method, an interface's instance method and a static abstract interface method,
+for both instructions. Because it happens at compilation, the method runs nothing at all, the
+exception arrives even when the instruction is on a path that would never execute, and no handler
+inside that method can catch it — the caller's can. The trace's top frame is the method that could
+not be compiled. A `constrained.` prefix that resolves a static abstract member to its implementation
+is legal and unaffected.
+
+**PawPrint**: raises the same exception, with the same message and HResult, when the instruction
+*executes*. So everything the method did before reaching it has happened, a path that never reaches
+it runs normally, and a `try` in that method which covers the instruction catches it. The trace's
+top frame is the same method, as in CoreCLR.
+
+**Spec status**: ECMA-335 II.15.2 forbids the IL outright: abstract virtual methods "shall be called
+only with a callvirt instruction", and "the ldftn instruction shall not be used" to take the address
+of one. It does not say what an implementation does with IL that breaks the rule, or when. No
+compiler emits it: C# uses `callvirt` for an abstract method and cannot take the address of one
+without a `constrained.` receiver.
+
+**Why we chose this**: PawPrint has no compilation step at which to fail, and validating every
+`call`'s and `ldftn`'s target when a method is first entered would resolve all of that method's
+tokens eagerly, which loads assemblies and types in a different order from the program's own
+execution. The exception a well-formed caller observes is the right one either way; only IL that is
+already invalid and that also hides the instruction behind control flow, or wraps it in its own
+handler, can tell the difference. This is the same timing trade PawPrint makes for a
+`DynamicScope` operand the JIT would have rejected.
+
+**Where this lives in code**: `UnaryMetadataCallOps.raiseNamedAbstractMethod`, called from
+`executeCall` and `UnaryMetadataTokenOps.executeLdftn`. `TestFabricatedAbstractMethodCall` pins the
+exception for each shape, with the instruction first in its method and no handler of its own, where
+the two runtimes agree.
 
 ## Simulated time advances per retired instruction
 
