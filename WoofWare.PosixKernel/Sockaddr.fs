@@ -1,37 +1,5 @@
 namespace WoofWare.PosixKernel
 
-/// The four `sizeof`s `SystemNative_GetSocketAddressSizes` reports in one call,
-/// which `System.Net.Primitives`' `SocketAddressPal` class initialiser latches
-/// and every `SocketAddress` is then sized by.
-///
-/// Compile-time properties of the native shim rather than of any socket, like
-/// `reportsBirthTime`. Measured with a `sizeof` probe compiled on macOS arm64 and
-/// on Linux, rather than recalled; all four are invariant of pointer width, since
-/// every member of these structs is fixed-width and the two variable-length tails
-/// (`sun_path`, `sockaddr_storage`'s padding) are sized from a constant.
-type SocketAddressSizes =
-    {
-        /// <summary>
-        /// <c>sizeof(struct sockaddr_in)</c>.
-        /// </summary>
-        /// <example>16 on both Linux and Darwin.</example>
-        InterNetwork : int
-        /// <summary>
-        /// <c>sizeof(struct sockaddr_in6)</c>.
-        /// </summary>
-        /// <example>28 on both Linux and Darwin.</example>
-        InterNetworkV6 : int
-        /// `sizeof(struct sockaddr_un)`. The one of the four that differs: 110 on
-        /// Linux, whose `sun_path` is 108 bytes, against 106 on Darwin, whose is
-        /// 104.
-        UnixDomain : int
-        /// `sizeof(struct sockaddr_storage)`. 128 on both, and the same number
-        /// `SystemNative_GetMaximumAddressSize` reports through its own entry
-        /// point — hence `SimulatedUnixPlatform.maximumSocketAddressSize` rather
-        /// than a second literal.
-        Storage : int
-    }
-
 /// Where a `struct sockaddr`'s address family sits and how wide it is — the only
 /// part of the socket-address layout the two Unixes lay out differently.
 ///
@@ -136,8 +104,8 @@ module InternetV6Sockaddr =
             Width = 2
         }
 
-    /// `sin6_flowinfo`. Nothing in the managed surface reads it, but
-    /// `SystemNative_SetIPv6Address` zeroes it, so it is not merely ignored.
+    /// `sin6_flowinfo`, which a caller filling in a `sockaddr_in6` must set,
+    /// to zero if it has no flow label.
     let flowInfo : SockaddrField =
         {
             Offset = 4
@@ -169,12 +137,6 @@ type SockaddrFamilyField =
     | TwoBytesAtOffsetZero
     /// Darwin and the BSDs: `sa_len` occupies byte 0 and the one-byte
     /// `sa_family_t` follows it at offset 1.
-    ///
-    /// Nothing in the shim writes `sa_len` — grep `pal_networking.c` and there is
-    /// no mention of it. The byte a guest sees there is written by managed code:
-    /// `SocketAddress..ctor` stores `(byte) _size` at index 0 before calling
-    /// `SetAddressFamily`, unconditionally on every platform, so BSD gets its
-    /// length byte and Linux has the same store overwritten by the wider family.
     | OneByteAtOffsetOne
 
 [<RequireQualifiedAccess>]
@@ -185,9 +147,7 @@ module SockaddrFamilyField =
         | SockaddrFamilyField.TwoBytesAtOffsetZero -> 0
         | SockaddrFamilyField.OneByteAtOffsetOne -> 1
 
-    /// Width of the family field in bytes. Also what the shim's
-    /// `sizeof_member(sockaddr, sa_family)` bounds check uses, and what a
-    /// conversion failure truncates the unconvertible value to.
+    /// Width of the family field in bytes.
     let width (field : SockaddrFamilyField) : int =
         match field with
         | SockaddrFamilyField.TwoBytesAtOffsetZero -> 2
@@ -214,10 +174,6 @@ module SockaddrFamilyField =
             }
             declaredLength
 
-/// A reason `bind(2)` refuses, as one of the checks it makes rather than as an
-/// errno: which errno a fault becomes is fixed, but *which fault is reported*
-/// when several hold at once is per-flavour. See
-/// `SimulatedUnixPlatform.bindFaultOrder`.
 /// What this platform's `bind(2)` makes of a declared `socketAddressLen`.
 ///
 /// The two rejections are not interchangeable, and the difference is *when* they
@@ -239,6 +195,10 @@ type BindLengthVerdict =
     /// `EINVAL`, from the `Length` position of this platform's fault order.
     | Invalid
 
+/// A reason `bind(2)` refuses, as one of the checks it makes rather than as an
+/// errno: which errno a fault becomes is fixed, but *which fault is reported*
+/// when several hold at once is per-flavour. See
+/// `SimulatedUnixPlatform.bindFaultOrder`.
 [<RequireQualifiedAccess>]
 type BindFault =
     /// The declared `socketAddressLen` is not one this platform accepts for the

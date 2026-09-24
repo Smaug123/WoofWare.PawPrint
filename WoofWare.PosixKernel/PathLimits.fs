@@ -23,7 +23,7 @@ open System.Collections.Immutable
 /// where counting its NFD expansion would give 510 units and refuse it.
 ///
 /// This is really a property of the *filesystem* rather than the kernel
-/// (`_PC_NAME_MAX` varies per mount on Linux too); PawPrint models one
+/// (`_PC_NAME_MAX` varies per mount on Linux too); this library models one
 /// filesystem per flavour, which is the same simplification it makes elsewhere.
 /// A struct, deliberately: `PathLimits` is one too, so a reference DU here would
 /// make a forged `Unchecked.defaultof<PathLimits>` carry a *null* limit, and
@@ -160,7 +160,7 @@ module PathLimits =
         =
         if maxSymlinkTraversals < 1 then
             failwith
-                $"PathLimits.create: a kernel that permits %d{maxSymlinkTraversals} symlink traversals could not resolve a path through any symbolic link at all; every Unix PawPrint models permits at least one."
+                $"PathLimits.create: a kernel that permits %d{maxSymlinkTraversals} symlink traversals could not resolve a path through any symbolic link at all; every Unix this library models permits at least one."
 
         // Two adjacent `int` parameters are an argument-order hazard, so the
         // bounds are chosen to make a swap a loud failure rather than a subtly
@@ -169,7 +169,7 @@ module PathLimits =
         // traversals, so `create 1024 32 ...` cannot pass both checks.
         if maxSymlinkTraversals > 255 then
             failwith
-                $"PathLimits.create: %d{maxSymlinkTraversals} symlink traversals is far beyond any Unix PawPrint models (Linux permits 40, Darwin 32). Are the first two arguments the wrong way round?"
+                $"PathLimits.create: %d{maxSymlinkTraversals} symlink traversals is far beyond any Unix this library models (Linux permits 40, Darwin 32). Are the first two arguments the wrong way round?"
 
         if pathMaxBytes < 256 then
             failwith

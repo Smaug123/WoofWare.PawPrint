@@ -52,17 +52,12 @@ module ObservedUserAddressLimit =
 /// `EPOLL_PACKED` as `__attribute__((packed))` under `#ifdef __x86_64__` and
 /// empty otherwise, over `{ __poll_t events; __u64 data; }`. The values here are
 /// x86-64's, which is right for `SimulatedUnixPlatform.linuxX64` — the only
-/// Linux platform PawPrint can currently be asked to simulate. A linux-arm64
+/// Linux platform this library presets. A linux-arm64
 /// preset would want 16 and 134_217_727, and this is the one place to teach.
 ///
 /// Kept out of `SimulatedUnixPlatform` itself because every fact derived from
 /// that type is a total function of the flavour, and epoll has no Darwin answer:
-/// `SystemNative_WaitForSocketEvents`' kqueue arm reads neither of these.
-///
-/// Note that `SocketEventBufferElementSize` — the stride of the buffer CoreLib
-/// allocates — is *not* affected, and so is absent here: it is
-/// `max(sizeof(struct epoll_event), sizeof(SocketEvent))`, and that `max` is 16
-/// under either packing.
+/// a wait on a kqueue reads neither of these.
 [<RequireQualifiedAccess>]
 module LinuxEpollLimits =
     /// `sizeof(struct epoll_event)`. The unit of the byte range `epoll_wait`
@@ -73,7 +68,7 @@ module LinuxEpollLimits =
     /// `EP_MAX_EVENTS`, which is `INT_MAX / sizeof(struct epoll_event)`
     /// (fs/eventpoll.c). `epoll_wait` rejects a `maxevents` above this with
     /// EINVAL, and the bound is what keeps `maxevents * EventSize` inside
-    /// `int32` for every count that gets past it — so a handler must consult it
+    /// `int32` for every count that gets past it — so a caller must consult it
     /// before computing that product, not after.
     ///
     /// `TestLinuxEpollLimits` checks the arithmetic rather than trusting the

@@ -218,6 +218,8 @@
     <Compile Include="TestSocketEventsPal.fs" />
     <Compile Include="TestPollEventsPal.fs" />
     <Compile Include="TestFileAdvicePal.fs" />
+    <Compile Include="TestFileSystemTypePal.fs" />
+    <Compile Include="TestSocketShimPal.fs" />
     <Compile Include="KernelSyscall.fs" />
     <Compile Include="TestDirectoryStreamId.fs" />
     <Compile Include="TestTaskState.fs" />

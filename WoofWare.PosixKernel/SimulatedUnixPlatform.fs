@@ -15,23 +15,21 @@ type SimulatedUnixReleaseError =
     | NotPrintableAscii of index : int * character : char
 
 /// Identity of the Unix-shaped platform the simulated process believes it is
-/// running on. Consulted by the `SystemNative_*` entry points that report
-/// host identity — today only `SystemNative_GetUnixRelease`, which surfaces
-/// as `Environment.OSVersion` on a Unix CoreLib.
+/// running on: what `uname(2)` reports, and the flavour every other
+/// platform-dependent answer follows.
 ///
 /// This is a value in kernel state rather than a host read, for the same
-/// reason `ProcessorCount` is: real CoreCLR answers it from `uname(2)`, which
-/// would make a replay depend on the machine that produced it — and worse,
-/// guests branch on `Environment.OSVersion` (feature detection, quirk
-/// workarounds), so letting the host leak in here would change guest
-/// *control flow* between runs.
+/// reason `ProcessorCount` is: reading the host's `uname(2)` would make a
+/// replay depend on the machine that produced it — and worse, programs branch
+/// on the platform they find (feature detection, quirk workarounds), so
+/// letting the host leak in here would change their *control flow* between
+/// runs.
 ///
 /// Modelled as a flavour plus a release string, rather than as a bag of loose
 /// `utsname` fields, so that the facts we report stay mutually consistent as
-/// more of `utsname` gets implemented: a future `SystemNative_GetUnixVersion`
-/// or `SystemNative_GetOSArchitecture` is a new total *function* of the
-/// flavour, not a new independently-settable string that could claim a Darwin
-/// release alongside an x86_64 machine.
+/// more of `utsname` gets modelled: its version or machine field would be a new
+/// total *function* of the flavour, not a new independently-settable string
+/// that could claim a Darwin release alongside an x86_64 machine.
 ///
 /// One representation per platform, which is what the flavour buys: every
 /// platform-dependent fact below is a total function of it, with no failure
@@ -56,25 +54,6 @@ type SimulatedUnixPlatform =
 
     override this.GetHashCode () : int =
         System.HashCode.Combine (this.Flavour, this.Release)
-
-/// What the PAL puts in `DirectoryEntry.NameLength`, which is a fact about the
-/// libc it was compiled against rather than about any directory.
-///
-/// `ConvertDirent` (`pal_io.c:497`) copies `d_namlen` under
-/// `HAVE_DIRENT_NAME_LEN` and writes `-1` otherwise, the sentinel meaning "walk
-/// to the NUL yourself". Established by compiling rather than by reading:
-/// glibc's `struct dirent` has no `d_namlen` member at all (`gcc` rejects
-/// `d.d_namlen`), while macOS's `sys/dirent.h` declares one.
-///
-/// Invisible to managed code — `DirectoryEntry.GetName` takes
-/// `CreateReadOnlySpanFromNullTerminated` for the sentinel and a plain span
-/// otherwise — so only a guest that hand-rolls the P/Invoke can tell.
-[<RequireQualifiedAccess>]
-type DirectoryEntryNameLength =
-    /// The name's length in bytes, as macOS reports it.
-    | Reported
-    /// `-1`, as every libc without `d_namlen` gets.
-    | WalkToTerminator
 
 /// What `getcwd(3)` answers when the current directory has been *removed* — so
 /// there is no path to report — and how small a buffer can still change that
@@ -117,10 +96,11 @@ type GetCwdOrphanAnswer =
     /// residue is a function of libc's internal progress rather than of
     /// anything a kernel decides. Reproducing it faithfully means reproducing
     /// that algorithm, including which of its paths a given capacity takes;
-    /// reproducing it approximately means inventing bytes a guest can read. No
-    /// caller in the BCL reads the destination after a NULL return, so this
-    /// library reports the errno and leaves the buffer alone — recorded in
-    /// `docs/divergences.md` rather than left to be discovered.
+    /// reproducing it approximately means inventing bytes a process can read.
+    /// So this library reports the errno and leaves the buffer alone, a
+    /// divergence only a caller that reads the destination after a NULL return
+    /// could see — recorded in `docs/divergences.md` rather than left to be
+    /// discovered.
     ///
     /// Linux writes nothing on any failure path at any capacity, which is why
     /// only this case needs the note.
@@ -240,16 +220,14 @@ module SimulatedUnixPlatform =
         | Ok platform -> platform
         | Error error -> failwith $"%s{context}: %s{describe error}"
 
-    /// 64-bit x86 Linux, at the exact kernel PawPrint's CI runs: the release
-    /// this reports and the behaviour derived from it below therefore describe
-    /// one real machine rather than a plausible composite. The default, and the
-    /// flavour whose CoreLib actually routes `Environment.OSVersion` through
-    /// `SystemNative_GetUnixRelease` at all (the macOS CoreLib goes via
-    /// `Interop.libobjc.GetOperatingSystemVersion` instead).
+    /// 64-bit x86 Linux, at a kernel release a real machine was running (a
+    /// GitHub Actions Ubuntu runner's): the release this reports and the
+    /// behaviour derived from it below therefore describe one real machine
+    /// rather than a plausible composite. `UnixSystem.defaultUnixPlatform`.
     ///
     /// Naming a real kernel rather than a plausible one matters because facts
     /// derived from a platform are claims about a machine somebody could be
-    /// running. Note the division of labour: identity that a guest reads back,
+    /// running. Note the division of labour: identity that a process reads back,
     /// like this release, belongs to the platform, because it is the same on
     /// every machine running this kernel image; a fact that varies between two
     /// machines running this very kernel, like the user-address limit, is a
@@ -266,9 +244,9 @@ module SimulatedUnixPlatform =
     let flavour (platform : SimulatedUnixPlatform) : SimulatedUnixFlavour = platform.Flavour
 
     /// The `utsname.release` string this platform reports, i.e. exactly what
-    /// `uname -r` would print. Part of PawPrint's replay contract: changing a
-    /// preset's value changes the `Environment.OSVersion` every recorded trace
-    /// on that platform observes.
+    /// `uname -r` would print. Part of every replay's input: changing a
+    /// preset's value changes what every recorded trace on that platform
+    /// observed from `uname(2)`.
     let unixRelease (platform : SimulatedUnixPlatform) : string = platform.Release
 
     /// Re-check the invariant of a value that may not have come from `create`.
@@ -358,21 +336,12 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> false
         | SimulatedUnixFlavour.Darwin -> true
 
-    /// What this platform's PAL puts in `DirectoryEntry.NameLength`. See
-    /// `DirectoryEntryNameLength`.
-    let directoryEntryNameLength (platform : SimulatedUnixPlatform) : DirectoryEntryNameLength =
-        match flavour platform with
-        | SimulatedUnixFlavour.Linux -> DirectoryEntryNameLength.WalkToTerminator
-        | SimulatedUnixFlavour.Darwin -> DirectoryEntryNameLength.Reported
-
-    /// Whether this platform's `stat` reports a creation time.
+    /// Whether this platform's `stat(2)` reports a creation time.
     ///
-    /// A compile-time property of the native shim rather than of any file:
-    /// `ConvertFileStatus` in `pal_io.c` sets `BirthTime` and the
-    /// `HAS_BIRTHTIME` flag under `#if HAVE_STAT_BIRTHTIME` — true on macOS,
-    /// false on Linux, where it hard-zeroes both with the comment "Linux path:
-    /// until we use statx()". So the birth time is a real fact about the inode
-    /// on both, and this governs only whether the guest is told it.
+    /// Darwin's `struct stat` has `st_birthtimespec`; Linux's has no such
+    /// field, and only `statx(2)` reports one (`stx_btime`). The birth time is
+    /// a fact about the inode on both, and this governs only whether `stat`
+    /// tells a caller.
     let reportsBirthTime (platform : SimulatedUnixPlatform) : bool =
         match flavour platform with
         | SimulatedUnixFlavour.Linux -> false
@@ -624,7 +593,7 @@ module SimulatedUnixPlatform =
     /// Which names this platform's filesystem will bind.
     ///
     /// Like `pathLimits`, this is really a property of the mounted filesystem
-    /// rather than of the kernel. It lives here because PawPrint models one
+    /// rather than of the kernel. It lives here because this library models one
     /// filesystem per flavour; a second filesystem on one flavour is what would
     /// make it configuration instead.
     let bindableEntryNames (platform : SimulatedUnixPlatform) : BindableEntryNames =
@@ -633,39 +602,19 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Darwin -> BindableEntryNames.StrictUtf8
 
     /// `sizeof(struct sockaddr_storage)`: the size of the largest socket address
-    /// any Unix we model can hand back, and so the buffer size CoreLib sizes
-    /// every socket-address buffer by. Reported to the guest by
-    /// `SystemNative_GetMaximumAddressSize`.
+    /// any Unix we model can hand back.
     ///
-    /// A compile-time property of the native shim rather than of any socket, like
-    /// `reportsBirthTime`. Unlike that one it takes no flavour: both families
-    /// *define* the constant in their headers rather than computing it
-    /// (`_SS_MAXSIZE` on Darwin, `_SS_SIZE` in glibc's generic `bits/sockaddr.h`)
-    /// and derive the padding members from it, so the value is invariant of
-    /// pointer width as well as agreed between the two — both descend from
-    /// RFC 2553's sample definition. Measured 128 on macOS arm64 and on Linux
-    /// alike, and re-pinned against a real platform on every test run by
-    /// `sourcesPure/SystemNativeGetMaximumAddressSize.cs`. Make it a function of
-    /// the flavour on the day one of them disagrees.
-    ///
-    /// Contrast `sockaddr_un`, which genuinely does differ (106 on Darwin, 110 on
-    /// Linux). That is `SocketAddressSizes.UnixDomain` below, reported through a
-    /// different entry point again; this binding is where the shared 128 is
-    /// defined, and `socketAddressSizes` reads it rather than repeating it.
+    /// Takes no flavour: both families *define* the constant in their headers
+    /// rather than computing it (`_SS_MAXSIZE` on Darwin, `_SS_SIZE` in glibc's
+    /// generic `bits/sockaddr.h`) and derive the padding members from it, so the
+    /// value is invariant of pointer width as well as agreed between the two —
+    /// both descend from RFC 2553's sample definition. Measured 128 on macOS
+    /// arm64 and on Linux alike. Make it a function of the flavour on the day one
+    /// of them disagrees.
     let maximumSocketAddressSize : int = 128
 
-    /// The sizes `SystemNative_GetSocketAddressSizes` reports. See
-    /// `SocketAddressSizes` for where each number was measured.
-    let socketAddressSizes (platform : SimulatedUnixPlatform) : SocketAddressSizes =
-        {
-            InterNetwork = 16
-            InterNetworkV6 = 28
-            UnixDomain =
-                match flavour platform with
-                | SimulatedUnixFlavour.Linux -> 110
-                | SimulatedUnixFlavour.Darwin -> 106
-            Storage = maximumSocketAddressSize
-        }
+    /// `sizeof(struct sockaddr_in)`: 16 on both flavours.
+    let internetSocketAddressSize : int = 16
 
     /// The order `bind(2)` reports its faults in, which is **not** the same on
     /// the two flavours.
@@ -707,6 +656,11 @@ module SimulatedUnixPlatform =
     let firstBindFault (platform : SimulatedUnixPlatform) (faults : Set<BindFault>) : BindFault option =
         bindFaultOrder platform |> List.tryFind (fun fault -> Set.contains fault faults)
 
+    /// The greatest `socketAddressLen` Darwin's `bind(2)` will consider at all.
+    /// Above it the answer is `ENAMETOOLONG` rather than `EINVAL`; measured, 255
+    /// is `EINVAL` and 256 is `ENAMETOOLONG`. Linux has no such threshold.
+    let maximumDarwinSocketAddressLength : int = 255
+
     /// How long `bind(2)` insists a `struct sockaddr_in` argument is.
     ///
     /// Measured, and not the same shape on the two: Linux accepts any length from
@@ -716,11 +670,6 @@ module SimulatedUnixPlatform =
     ///
     /// Invisible through the managed API, which always passes
     /// `SocketAddress.Size`; a hand-rolled `[DllImport]` sees it immediately.
-    /// The greatest `socketAddressLen` Darwin's `bind(2)` will consider at all.
-    /// Above it the answer is `ENAMETOOLONG` rather than `EINVAL`; measured, 255
-    /// is `EINVAL` and 256 is `ENAMETOOLONG`. Linux has no such threshold.
-    let maximumDarwinSocketAddressLength : int = 255
-
     let bindAddressLength (platform : SimulatedUnixPlatform) (exactSize : int) (declared : int) : BindLengthVerdict =
         match flavour platform with
         | SimulatedUnixFlavour.Linux ->
@@ -738,6 +687,24 @@ module SimulatedUnixPlatform =
             else
                 BindLengthVerdict.Invalid
 
+    /// Is this the all-ones broadcast address, or a multicast one
+    /// (`224.0.0.0/4`)?
+    ///
+    /// **This library refuses to bind either**, rather than answering. Measured, the
+    /// rule is not one rule: Linux takes both on a stream socket, Darwin answers
+    /// `EAFNOSUPPORT` there, and on Darwin the answer depends on the socket's
+    /// *kind* besides — a datagram socket binds a multicast group where a stream
+    /// socket does not. Modelling that is modelling multicast, which is group
+    /// membership and an interface to receive on, and this library has neither; a
+    /// bind that succeeded here would become a lie the moment `recvfrom` landed.
+    ///
+    /// So this classifier exists to *refuse* precisely, at the point in
+    /// `bindFaultOrder` where the address is judged — a fault the platform ranks
+    /// earlier still wins, which is what keeps the refusal from swallowing
+    /// answers this library does know.
+    let isBroadcastOrMulticast (address : uint32) : bool =
+        address = System.UInt32.MaxValue || (address >>> 28) = 0xEu
+
     /// May a socket bind to this address, given the addresses this machine holds?
     ///
     /// The wildcard always binds. Beyond that the flavours read the same list
@@ -746,29 +713,11 @@ module SimulatedUnixPlatform =
     /// inside a local prefix as assigned while Darwin assigns loopback exactly
     /// one address.
     ///
-    /// Is this the all-ones broadcast address, or a multicast one
-    /// (`224.0.0.0/4`)?
-    ///
-    /// **PawPrint refuses to bind either**, rather than answering. Measured, the
-    /// rule is not one rule: Linux takes both on a stream socket, Darwin answers
-    /// `EAFNOSUPPORT` there, and on Darwin the answer depends on the socket's
-    /// *kind* besides — a datagram socket binds a multicast group where a stream
-    /// socket does not. Modelling that is modelling multicast, which is group
-    /// membership and an interface to receive on, and PawPrint has neither; a
-    /// bind that succeeded here would become a lie the moment `recvfrom` landed.
-    ///
-    /// So this classifier exists to *refuse* precisely, at the point in
-    /// `bindFaultOrder` where the address is judged — a fault the platform ranks
-    /// earlier still wins, which is what keeps the refusal from swallowing
-    /// answers PawPrint does know.
-    let isBroadcastOrMulticast (address : uint32) : bool =
-        address = System.UInt32.MaxValue || (address >>> 28) = 0xEu
-
     /// Broadcast and multicast are a further Linux-only allowance
     /// (`255.255.255.255` and `224.0.0.1` bind there and are `EAFNOSUPPORT` on
-    /// Darwin). Neither is modelled: PawPrint has no interface to broadcast on,
-    /// and the entry point refuses such an address rather than answering, so a
-    /// guest that needs one gets a diagnosis instead of a wrong errno.
+    /// Darwin). Neither is modelled: this library has no interface to broadcast
+    /// on, and `UnixSocket.bind` refuses such an address rather than answering,
+    /// so a caller that needs one gets a diagnosis instead of a wrong errno.
     let isBindableAddress
         (platform : SimulatedUnixPlatform)
         (localAddresses : uint32 list)
@@ -796,12 +745,12 @@ module SimulatedUnixPlatform =
     /// this against the other faults in `bindFaultOrder`, at
     /// `BindFault.AddressNotLocal`.
     ///
-    /// That is `EADDRNOTAVAIL` in every case PawPrint answers. A broadcast or
+    /// That is `EADDRNOTAVAIL` in every case this library answers. A broadcast or
     /// multicast address faults here too, and its caller refuses it outright
     /// rather than reporting an errno — which is why this is not simply
     /// `not isBindableAddress`. Such an address is not necessarily *unbindable*:
     /// Linux binds `224.0.0.1` on a stream socket quite happily. It is one
-    /// PawPrint declines to answer for, and a host that listed it in
+    /// this library declines to answer for, and a client that listed it in
     /// `LocalAddresses`, or covered it with a `LocalRoutes` prefix, would
     /// otherwise silence the refusal and record a multicast binding that nothing
     /// downstream can honour.
@@ -917,64 +866,6 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> SockaddrFamilyField.TwoBytesAtOffsetZero
         | SimulatedUnixFlavour.Darwin -> SockaddrFamilyField.OneByteAtOffsetOne
 
-    /// Whether this platform's sockets report IPv4 packet information on a
-    /// dual-mode socket — an IPv6 socket receiving IPv4-mapped traffic. Reported
-    /// to the guest by `SystemNative_PlatformSupportsDualModeIPv4PacketInfo`.
-    ///
-    /// A compile-time property of the native shim rather than of any socket, like
-    /// `reportsBirthTime`: upstream the whole function body is
-    /// `#if HAVE_SUPPORT_FOR_DUAL_MODE_IPV4_PACKET_INFO return 1 #else return 0`,
-    /// and `configure.cmake` sets that define to 1 for every Linux target and
-    /// leaves it 0 elsewhere. There is no probe of the running kernel involved, so
-    /// this is not a fact about the machine but about which shim was built.
-    ///
-    /// (Linux includes Android here: the `NOT CLR_CMAKE_TARGET_ANDROID` test
-    /// nested inside that `if` scopes only a `CMAKE_REQUIRED_LIBRARIES` setting,
-    /// not the define.)
-    ///
-    /// Follows the flavour rather than conservatively reporting `false`
-    /// everywhere, because both of CoreLib's readers of it are guest-visible
-    /// control flow (see the handler arm for which): answering `false` while
-    /// impersonating Linux makes a guest see a `PlatformNotSupportedException`
-    /// real Linux does not raise, and does so silently, with no abort and no
-    /// diagnostic.
-    ///
-    /// Answering `true` carries an obligation for whoever implements the socket
-    /// emulation this leads on to: a Linux-flavour `recvmsg` on a dual-mode
-    /// socket must actually produce the IPv4 `pktinfo` control message, because
-    /// CoreLib latches this once per process and will thereafter ask for the
-    /// packet information and expect to be given it. Reporting support and then
-    /// handing back a default `IPPacketInformation` would be the data-level
-    /// version of the lie this function exists to avoid.
-    let supportsDualModeIPv4PacketInfo (platform : SimulatedUnixPlatform) : bool =
-        match flavour platform with
-        | SimulatedUnixFlavour.Linux -> true
-        | SimulatedUnixFlavour.Darwin -> false
-
-    /// The stride of the event buffer `SystemNative_CreateSocketEventBuffer`
-    /// allocates and `SystemNative_WaitForSocketEvents` fills, in bytes.
-    ///
-    /// A compile-time property of the native shim, like `reportsBirthTime`:
-    /// `pal_networking.c` defines `SocketEventBufferElementSize` once per backend,
-    /// as `max(sizeof(struct epoll_event), sizeof(SocketEvent))` under epoll and
-    /// `sizeof(struct kevent)` under kqueue.
-    ///
-    /// Note what the epoll `max` does, because it is the reason this is a total
-    /// function of the flavour where `LinuxEpollLimits.EventSize` is not.
-    /// `sizeof(struct epoll_event)` is architecture-dependent — 12 on x86-64 under
-    /// `EPOLL_PACKED`, 16 everywhere else — and the `max` against the 16-byte
-    /// `SocketEvent` erases exactly that difference, since `max(12, 16)` and
-    /// `max(16, 16)` are both 16. So the buffer stride follows the flavour alone,
-    /// while the `epoll_wait` constants that skip the `max` do not.
-    ///
-    /// `sizeof(struct kevent)` is 32 on every 64-bit Darwin:
-    /// `{ uintptr_t ident; int16_t filter; uint16_t flags; uint32_t fflags;
-    /// intptr_t data; void* udata; }`, measured rather than recalled.
-    let socketEventBufferElementSize (platform : SimulatedUnixPlatform) : int =
-        match flavour platform with
-        | SimulatedUnixFlavour.Linux -> 16
-        | SimulatedUnixFlavour.Darwin -> 32
-
     /// What `fcntl(F_SETFL)` answers on a socket event port — `None` for
     /// success — the `O_NONBLOCK` bit having changed *either way*.
     ///
@@ -987,8 +878,8 @@ module SimulatedUnixPlatform =
     ///
     /// The stored bit changes no modelled wait: both `epoll_wait` and `kevent`
     /// take their blocking behaviour from their own timeout argument rather
-    /// than from the descriptor's status flags, so
-    /// `SystemNative_WaitForSocketEvents` rightly never consults it.
+    /// than from the descriptor's status flags, so a modelled wait rightly never
+    /// consults it.
     let eventPortSetStatusFlagsError (platform : SimulatedUnixPlatform) : UnixError option =
         match flavour platform with
         | SimulatedUnixFlavour.Linux -> None
@@ -998,11 +889,9 @@ module SimulatedUnixPlatform =
     /// every Unix — it is one of the handful of `AF_*` values that predate the
     /// BSD/Linux split and never moved.
     ///
-    /// Exposed alongside `internetV6AddressFamily` because the `sockaddr`
-    /// accessors switch on the raw `sa_family` in the blob rather than on a
-    /// converted value: `SystemNative_GetPort` is a `switch (sockAddr->sa_family)`
-    /// over exactly these two, and `SystemNative_GetIPv4Address` is an equality
-    /// against the first.
+    /// Exposed alongside `internetV6AddressFamily` because a caller reading a
+    /// `sockaddr` switches on the raw `sa_family` in the blob, in the platform's
+    /// own numbering.
     let internetAddressFamily : int = 2
 
     /// Ports a process may bind only as root.
@@ -1051,7 +940,7 @@ module SimulatedUnixPlatform =
     /// a shorter declared length truncates what it writes rather than asking for
     /// a shorter blob.
     let encodeInternetSockaddr (platform : SimulatedUnixPlatform) (endpoint : InternetEndpoint) : byte[] =
-        let realLength = (socketAddressSizes platform).InterNetwork
+        let realLength = internetSocketAddressSize
         let blob = Array.zeroCreate<byte> realLength
 
         BinaryPrimitives.WriteUInt16BigEndian (
@@ -1120,7 +1009,7 @@ module SimulatedUnixPlatform =
     /// (every raw and packet socket: measured, 70 Linux rows change answer
     /// between euid 1000 and euid 0), some sysctl-dependent (Linux's ping
     /// sockets, gated by `net.ipv4.ping_group_range`), and some deterministic
-    /// but simply not modelled. A shape outside this set is a socket PawPrint
+    /// but simply not modelled. A shape outside this set is a socket this library
     /// has not decided how to be, and refusing leaves that decision open where
     /// a guessed errno would not.
     ///

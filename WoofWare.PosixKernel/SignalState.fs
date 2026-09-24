@@ -242,10 +242,9 @@ module SignalState =
     ///
     /// Fails loud on a signal `sigaction(2)` refuses to install a handler
     /// for: the enable bit stands for a disposition the kernel holds, and no
-    /// kernel can hold one for SIGKILL or SIGSTOP. The client's own shim
-    /// refuses those with EINVAL before any state changes (as PawPrint's
-    /// `SystemNative_EnablePosixSignalHandling` arm does), so reaching this
-    /// failure means the client skipped its own `sigaction` screening.
+    /// kernel can hold one for SIGKILL or SIGSTOP. A client's own `sigaction`
+    /// refuses those with EINVAL before any state changes, so reaching this
+    /// failure means the client skipped that screening.
     let enable (signal : Signal) (state : SignalState<'Task, 'Handler>) : SignalState<'Task, 'Handler> =
         let signal = parse "enable" state signal
 

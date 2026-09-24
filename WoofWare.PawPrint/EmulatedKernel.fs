@@ -569,6 +569,11 @@ type EmulatedKernel =
         /// Tracked separately from `LastPInvokeError` because CoreLib's generated
         /// `LibraryImport` stubs read this and then write that. Same `Map` reasoning and
         /// same zero-drops-the-entry canonicalisation as `LastPInvokeError` above.
+        ///
+        /// Held here rather than on `UnixTaskState` because errno is libc's slot,
+        /// not the kernel's, and because this one is not only errno: CoreCLR reuses
+        /// it for Windows last-error too, and `NativeWaitHandle` really does put
+        /// Win32 numbers in it.
         LastSystemError : Map<ThreadId, int>
         /// Globally-scoped pool of native-heap blocks allocated by
         /// `Marshal.AllocHGlobal` / `NativeMemory.Alloc`. Freeing a block
@@ -1046,6 +1051,12 @@ module EmulatedKernel =
 
     /// `create` on `UnixSystem.defaultUnixPlatform`, the platform a host that
     /// configures nothing gets.
+    ///
+    /// That platform, Linux/x64, suits PawPrint as a default for two reasons of
+    /// its own: it is the platform whose CoreLib routes `Environment.OSVersion`
+    /// through `SystemNative_GetUnixRelease` (the macOS CoreLib uses
+    /// `Interop.libobjc.GetOperatingSystemVersion` instead), and it is what
+    /// PawPrint's CI runs on.
     let initial : EmulatedKernel = create UnixSystem.defaultUnixPlatform
 
     /// Apply an operation to the simulated process's own state. Those operations
@@ -1771,7 +1782,13 @@ type KernelConfig =
         /// it could not observe on real .NET. See `EnvironmentPal.tryEncodeEntry`.
         Environment : string list
         /// Logical processor count the guest observes via
-        /// `Environment.ProcessorCount`. Must be at least 1.
+        /// `Environment.ProcessorCount`. Must be at least 1: the real property is
+        /// documented as always positive and BCL callers divide by it, so
+        /// `NativeEnvironment` also asserts the invariant at the point of use.
+        ///
+        /// `Program.prepare` applies it before the entry type's `.cctor` is
+        /// pumped, because CoreLib latches `Environment.ProcessorCount` into a
+        /// static on first read, so a later change would not be observed.
         ProcessorCount : int
         /// Greatest value `address + length` may take for a user buffer the
         /// simulated kernel will accept — the machine's `TASK_SIZE_MAX`. Must
@@ -1849,6 +1866,10 @@ type KernelConfig =
         /// this is simulated kernel state rather than a read of where PawPrint's
         /// own binary sits, and note that whatever a host picks here becomes
         /// part of that run's replay contract.
+        ///
+        /// CoreLib latches this on first read — `Environment.ProcessPath` caches
+        /// under an `Interlocked.CompareExchange` — so a host must set it here
+        /// rather than by record-copy after startup.
         ProcessPath : AbsoluteUnixPath option
         /// The filesystem the guest sees, as the entries of its root directory.
         /// A tree rather than a list of paths; see `SeedEntry`. Every inode is

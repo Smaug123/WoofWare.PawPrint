@@ -24,8 +24,9 @@ type OpenFileDescriptionId =
         match this with
         | OpenFileDescriptionId value -> string<int64> value
 
-/// Identity of a socket. Never guest-visible: `SystemNative_FStat` refuses a
-/// socket, so no modelled syscall reports one.
+/// Identity of a socket. Never visible to the simulated process:
+/// `UnixPathResolution.fstat` refuses a socket, so no modelled syscall reports
+/// one.
 ///
 /// Deliberately *not* an inode number, despite Linux putting sockets on
 /// `sockfs` and giving each one an inode. Measured, a Darwin `AF_INET` socket
@@ -50,7 +51,7 @@ type SocketId =
 /// sits in a listener's accept queue leaves the connection acceptable, and
 /// `accept(2)` then returns a working descriptor onto it. The server side has
 /// no socket at all until that accept. The connection table itself lives on
-/// `EmulatedKernel`, beside the socket table.
+/// `UnixMachineState`, beside the socket table.
 [<Struct>]
 type ConnectionId =
     | ConnectionId of value : int64
@@ -139,7 +140,7 @@ type SocketBinding =
 type ListenState =
     {
         /// The backlog argument `listen(2)` recorded, verbatim. Its one reader
-        /// is the accept-queue capacity check in `EmulatedKernel.connectStream`,
+        /// is the accept-queue capacity check in `UnixConnection.connectSocket`,
         /// which derives the flavour's admission bound from it — measured,
         /// Linux admits `backlog + 1` completed connections and Darwin exactly
         /// `backlog` — so this stores the input to that rule rather than a
@@ -260,7 +261,7 @@ type OpenFileObject =
     /// first lets the second take it.
     ///
     /// So giving each port its own identity here would be wrong in a way a
-    /// guest can see: PawPrint would grant two exclusive locks where Linux
+    /// process can see: this kernel would grant two exclusive locks where Linux
     /// grants one. `OpenFileObject` is the contention key (see this type's
     /// summary), not a general-purpose identity — code that wants to tell two
     /// ports apart wants `OpenFileDescriptionId`, which is what
@@ -278,8 +279,8 @@ type OpenFileObject =
     /// Linux grants two.
     ///
     /// Darwin never reaches this: measured, `flock` on any socket there is
-    /// ENOTSUP, which `SystemNative_FLock` refuses ahead of any contention
-    /// test.
+    /// ENOTSUP, which `UnixDescriptor.flock` refuses to answer
+    /// (`FLockRefusal.DarwinSocket`) ahead of any contention test.
     | Socket of SocketId
 
 /// The mode of an advisory whole-file lock taken by `flock(2)`. "No lock" is
@@ -373,17 +374,15 @@ module ReadinessLevel =
             Err = level.Err
         }
 
-/// One registration held by a socket event port: what
-/// `SystemNative_TryChangeSocketEventRegistration` recorded for one target.
+/// One registration held by a socket event port: what `epoll_ctl(2)` recorded
+/// for one target.
 type SocketEventRegistration =
     {
         /// Which conditions this registration watches. `EPOLLERR` and
         /// `EPOLLHUP` are reported on top of these whatever the caller asked
         /// for, so they are not among them.
         Interest : SocketEventInterest
-        /// The caller's `uintptr_t data`, delivered verbatim in
-        /// `SocketEvent.Data` when an event fires. CoreLib passes
-        /// `SocketAsyncContext.GlobalContextIndex`, a small integer.
+        /// The caller's `epoll_data`, delivered verbatim when an event fires.
         Data : uint64
         /// When this registration's ADD committed, as an ordinal from the
         /// kernel's counter. One signal can make several registrations of the
@@ -422,7 +421,7 @@ type SocketEventPortState =
 /// different offsets on one file must still contend.
 /// `OpenFileDescription.object` is the projection back to identity.
 ///
-/// A standard stream has no offset: PawPrint models the standard streams as
+/// A standard stream has no offset: this library models the standard streams as
 /// pipes (see `FileDescriptorRegistry.initial`), which are not seekable —
 /// `lseek` on one is `ESPIPE`.
 [<RequireQualifiedAccess>]
@@ -439,9 +438,9 @@ type OpenFileTarget =
     /// `VirtualFileSystem.seekTarget` enforces.
     | File of inode : InodeNumber * offset : int64
     /// An epoll instance (Linux) or kqueue (Darwin), handed out by
-    /// `SystemNative_CreateSocketEventPort` and destroyed by
-    /// `SystemNative_CloseSocketEventPort` — which is `close(2)`, which is why
-    /// the port is a descriptor at all rather than a separate kernel table.
+    /// `FileDescriptorRegistry.createSocketEventPort` and destroyed by
+    /// `close(2)`, which is why the port is a descriptor at all rather than a
+    /// separate kernel table.
     ///
     /// No offset, because neither kernel maintains one for it: measured,
     /// Linux's `lseek` on an epoll descriptor is `noop_llseek`, returning 0 for
@@ -457,17 +456,16 @@ type OpenFileTarget =
     /// target, because the `dup` pair shares this description and so this
     /// table.
     | SocketEventPort of state : SocketEventPortState
-    /// A socket, handed out by `SystemNative_Socket`.
+    /// A socket, handed out by `UnixSocket.createSocket`.
     ///
     /// No offset, because neither kernel maintains one: measured, `lseek` on a
     /// socket is ESPIPE on both for every whence in 0..4 and every offset.
     ///
-    /// The socket this names lives in `EmulatedKernel.Sockets`, not here: a
-    /// socket outlives, and can precede, any particular description of it. That
-    /// is not yet true — `SystemNative_Socket` is the only way to make one, and
-    /// it hands back a descriptor in the same breath — but it is what a
-    /// completed connection waiting in a listening socket's backlog *is*, and
-    /// `SystemNative_Accept` produces those.
+    /// The socket this names lives in `UnixMachineState.Sockets`, not here: a
+    /// socket outlives, and can precede, any particular description of it.
+    /// `UnixConnection.accept` is where one precedes its description: it turns a
+    /// completed connection waiting in a listening socket's backlog into a
+    /// socket and a descriptor.
     ///
     /// So the description names a socket rather than containing one, and the
     /// kernel is where a socket's lifetime is decided. `UnixMachineState.socket`
@@ -478,8 +476,8 @@ type OpenFileTarget =
 /// `O_RDWR`.
 ///
 /// A three-case DU rather than a readable/writable pair of booleans, because
-/// `open(2)` has no fourth answer: an access mode of neither is what the shim
-/// rejects with EINVAL before a descriptor exists at all.
+/// there is no fourth: an access mode of neither is refused before a
+/// descriptor exists at all (see `OpenFlags`).
 ///
 /// Fixed when the description is created and never changed afterwards — POSIX
 /// offers no way to alter one, and Linux's nearest equivalent (reopening through
@@ -521,8 +519,7 @@ module FileAccessMode =
 /// produced belongs here.
 ///
 /// Of the status flags, only `O_NONBLOCK` is present: `O_APPEND` is absent
-/// because no modelled syscall can set it, `SystemNative_Open` accepting
-/// neither bit.
+/// because no modelled syscall can set it, `OpenFlags` carrying neither bit.
 type OpenFileDescription =
     {
         /// What this description refers to, and where in it.
@@ -532,11 +529,11 @@ type OpenFileDescription =
         AccessMode : FileAccessMode
         /// Whether `O_NONBLOCK` is set. On the description, not the
         /// descriptor — that is where POSIX keeps the status flags, and why a
-        /// `dup(2)` pair shares them. Set through
-        /// `SystemNative_FcntlSetIsNonBlocking` (`fcntl(F_SETFL)`).
+        /// `dup(2)` pair shares them. Set through `fcntl(F_SETFL)`, which is
+        /// `UnixSocket.setNonBlocking`.
         ///
         /// `true` is recorded only against a target whose every modelled
-        /// transfer honours it — see `setNonBlocking` — so a handler that
+        /// transfer honours it — see `setNonBlocking` — so a caller that
         /// consults this may trust it rather than re-checking the target kind.
         NonBlocking : bool
         /// The `flock(2)` lock this description holds, if any.
@@ -545,11 +542,9 @@ type OpenFileDescription =
         /// and is why two `open(2)` calls on one path contend while a `dup(2)`
         /// pair does not.
         ///
-        /// This is `flock(2)` specifically. `fcntl(2)` record locks — which
-        /// CoreLib reaches through `SystemNative_LockFileRegion`, and hence
-        /// `FileStream.Lock` — belong to a *(process, file)* pair instead, and
-        /// so must not be stored here when they land; see the note on
-        /// `FileDescriptorRegistry`.
+        /// This is `flock(2)` specifically. `fcntl(2)` record locks belong to a
+        /// *(process, file)* pair instead, and so must not be stored here when
+        /// they land; see the note on `FileDescriptorRegistry`.
         Flock : FlockMode option
     }
 
@@ -583,19 +578,17 @@ module OpenFileDescription =
 /// allocates a fresh descriptor pointing at the same description. State that
 /// belongs to the description (offset, status flags) is therefore shared by
 /// every descriptor that names it, while the per-descriptor flags — `FD_CLOEXEC`,
-/// to which POSIX-2024 adds `FD_CLOFORK` — are not. PawPrint models neither
+/// to which POSIX-2024 adds `FD_CLOFORK` — are not. This library models neither
 /// per-descriptor flag, because it models neither `fork` nor `exec`.
 ///
 /// Beware that the descriptor/description split does not exhaust kernel state.
-/// `fcntl(2)` record locks — which CoreLib reaches through
-/// `SystemNative_LockFileRegion`, and hence `FileStream.Lock`, on the Linux
-/// platform PawPrint simulates — are associated with a *(process, file)* pair:
+/// `fcntl(2)` record locks are associated with a *(process, file)* pair:
 /// closing *any* descriptor for that file drops them, even one whose
 /// description another live descriptor still shares. (Measured on macOS: with
 /// `b = dup a`, a lock taken via `a` was released by `close b`.) `flock(2)`
 /// locks, by contrast, do belong to the description, and so live in
 /// `OpenFileDescription.Flock`. A record lock must *not* join them there when
-/// `SystemNative_LockFileRegion` lands: it would inherit the wrong release rule.
+/// record locks are modelled: it would inherit the wrong release rule.
 type FileDescriptorRegistry =
     private
         {
@@ -603,7 +596,7 @@ type FileDescriptorRegistry =
             /// file descriptor names.
             Fds : Map<int, OpenFileDescriptionId>
             /// The open file descriptions themselves. A description is live
-            /// exactly while some descriptor in `Fds` names it; PawPrint models
+            /// exactly while some descriptor in `Fds` names it; this library models
             /// none of the references that would make liveness more than
             /// reachability (`SCM_RIGHTS` descriptor passing, `mmap`).
             Descriptions : Map<OpenFileDescriptionId, OpenFileDescription>
@@ -620,8 +613,7 @@ type FileDescriptorRegistry =
 [<RequireQualifiedAccess>]
 type FileDescriptorDupError =
     /// The supplied fd is not a live entry in the table. `dup(2)` reports
-    /// this as `EBADF`; the SystemNative_Dup handler translates this into
-    /// a -1 return and `LastSystemError = EBADF`.
+    /// this as `EBADF`.
     | BadFd
 
 [<RequireQualifiedAccess>]
@@ -633,7 +625,7 @@ type FileDescriptorCloseError =
 /// What `flock(2)` was asked to do, once the operation bits have been decoded.
 ///
 /// `LOCK_NB` is not part of this: the registry reports that the lock is
-/// unavailable, and the handler decides between failing and waiting.
+/// unavailable, and `UnixDescriptor.flock` decides between failing and waiting.
 [<RequireQualifiedAccess>]
 type FlockRequest =
     /// `LOCK_SH` or `LOCK_EX`. Replaces whatever lock this description already
@@ -654,10 +646,9 @@ type SocketEventTrigger =
     | EdgeTriggered
     | LevelTriggered
 
-/// What `SystemNative_TryChangeSocketEventRegistration` asked a port to do,
-/// once the wrapper has derived the op from the caller's *claims* — ADD when
-/// the claimed current set is NONE, DEL when the new set is NONE, MOD
-/// otherwise. The claims are never checked against the table; the table's own
+/// What `epoll_ctl(2)` was asked to do to a port: ADD, MOD or DEL. A caller
+/// may derive the op from *claims* of its own — for example, ADD when a
+/// claimed current set is empty, DEL when the new set is, and MOD otherwise. The claims are never checked against the table; the table's own
 /// answers (`AlreadyRegistered`, `NotRegistered`) are what happens when a
 /// caller lies.
 [<RequireQualifiedAccess>]
@@ -754,9 +745,9 @@ type FileDescriptorRegistryDefect =
     /// exclusive. This is the mutual-exclusion property itself rather than a
     /// bookkeeping check.
     | ConflictingFlocks of first : OpenFileDescriptionId * second : OpenFileDescriptionId
-    /// Two distinct open file descriptions name the same socket. PawPrint
+    /// Two distinct open file descriptions name the same socket. This library
     /// models no way to produce that — `dup(2)` shares a description rather
-    /// than copying it — and it would be guest-visible through `flock`, which
+    /// than copying it — and it would be visible to a process through `flock`, which
     /// contends between descriptions naming one object but not within one.
     | DuplicateSocketId of first : OpenFileDescriptionId * second : OpenFileDescriptionId * socket : SocketId
     /// A socket event port's interest table registers an open file description
@@ -786,18 +777,16 @@ module FileDescriptorRegistry =
     /// stdin (fd 0), stdout (fd 1), stderr (fd 2).
     ///
     /// The three descriptors name three *distinct* descriptions, which models a
-    /// process launched with each standard stream separately redirected — the
-    /// shape `RealRuntime` itself uses when it launches a guest on real .NET as
-    /// PawPrint's differential oracle, giving it three separate pipes.
+    /// process launched with each standard stream separately redirected to its
+    /// own pipe.
     ///
     /// This is not the only shape a real process can inherit, and not the
     /// terminal one. Under a tty, fds 0/1/2 are `dup`s of a *single*
     /// `O_RDWR` description: measured via `forkpty`, setting `O_NONBLOCK`
     /// through fd 1 becomes visible on fds 0 and 2, and `write(0, _, _)`
-    /// succeeds. PawPrint has already committed against that model elsewhere —
-    /// `SystemNative_IsATty` always reports 0, and `SystemNative_Write` to fd 0
-    /// returns `EBADF`, which is true only of a redirected `O_RDONLY` stdin.
-    /// Seeding one shared description here would contradict both.
+    /// succeeds. Seeding one shared description here would contradict what
+    /// this library answers elsewhere: `UnixReadWrite.write` to fd 0 returns
+    /// `EBADF`, which is true only of a redirected `O_RDONLY` stdin.
     let initial : FileDescriptorRegistry =
         {
             Fds = Map.empty |> Map.add 0 stdinId |> Map.add 1 stdoutId |> Map.add 2 stderrId
@@ -831,9 +820,9 @@ module FileDescriptorRegistry =
     /// The description `fd` names *and* its identity, if `fd` is live.
     ///
     /// For callers that need both, which is otherwise two lookups whose results
-    /// could not be shown to agree: `SystemNative_WaitForSocketEvents` keys the
-    /// waiter it parks on the identity, while which answer it gives at all
-    /// depends on the target.
+    /// could not be shown to agree: `UnixPoll.admitSocketWait` keys the waiter
+    /// it parks on the identity, while which answer it gives at all depends on
+    /// the target.
     let tryFindWithId
         (fd : int)
         (registry : FileDescriptorRegistry)
@@ -848,7 +837,7 @@ module FileDescriptorRegistry =
                 // through a lookup means the table was mutated by something
                 // other than this module's operations.
                 failwith
-                    $"file descriptor %d{fd} names open file description %O{id}, which is not present in the table (this is an interpreter bug)"
+                    $"file descriptor %d{fd} names open file description %O{id}, which is not present in the table (this is a bug in this library: every descriptor names a description in the table)"
         )
 
     /// The description `fd` names, if `fd` is live.
@@ -910,7 +899,7 @@ module FileDescriptorRegistry =
     /// `Error BadFd` (= `EBADF`) when `fd` is not currently live.
     ///
     /// Closing one descriptor of a `dup` pair leaves the other's description
-    /// intact — true of everything PawPrint models, though not of POSIX in
+    /// intact — true of everything this library models, though not of POSIX in
     /// general (see the record-lock note on `FileDescriptorRegistry`).
     ///
     /// The descriptor-table half of `close(2)`, and only that half: it drops
@@ -925,7 +914,7 @@ module FileDescriptorRegistry =
     /// naming one: closing a `dup(2)` of a live descriptor destroys nothing and
     /// answers `None`. The caller needs this because a description can be the
     /// last reference to a *kernel object* whose lifetime is decided elsewhere —
-    /// `EmulatedKernel.Sockets` is the one that exists today — and this registry
+    /// `UnixMachineState.Sockets` is the one that exists today — and this registry
     /// cannot reach that state to clean it up itself.
     let dropDescriptor
         (fd : int)
@@ -994,24 +983,19 @@ module FileDescriptorRegistry =
     /// Fresh, unlike `dup`: two `open` calls on one path give two descriptions,
     /// which is why they can hold separate offsets and separate `flock` locks.
     ///
-    /// The offset starts at 0 for *every* flag, not merely the ones PawPrint
-    /// accepts. `O_APPEND` is no exception: measured on both platforms, a
+    /// The offset starts at 0 for *every* flag, not merely the ones `OpenFlags`
+    /// carries. `O_APPEND` is no exception: measured on both platforms, a
     /// descriptor opened `O_WRONLY | O_APPEND` on a five-byte file reports 0
     /// from `lseek(0, SEEK_CUR)` immediately afterwards, and only reaches 6
     /// after a one-byte write. The flag repositions to the end before each
     /// individual *write*, not at open time, so when the write path lands it
     /// belongs there.
     ///
-    /// The BCL would not exercise it in any case: `Interop.Sys.OpenFlags` has no
-    /// append bit at all, and `SafeFileHandle.Init` implements `FileMode.Append`
-    /// as `OpenOrCreate` plus an explicit seek to the end
-    /// (SafeFileHandle.Unix.cs:255).
-    ///
     /// Total — there is no failure mode at this level. Whether the path
-    /// resolves, whether the flags are ones PawPrint honours, and whether the
+    /// resolves, whether the flags are ones this library honours, and whether the
     /// process may open the file at all are decided before this is reached; a
-    /// real kernel's `EMFILE`/`ENFILE` would belong here, but PawPrint models
-    /// no descriptor limit (`RLIMIT_NOFILE` is not in the interop surface).
+    /// real kernel's `EMFILE`/`ENFILE` would belong here, but this library
+    /// models no descriptor limit (`RLIMIT_NOFILE`).
     let openFile
         (inode : InodeNumber)
         (accessMode : FileAccessMode)
@@ -1031,13 +1015,10 @@ module FileDescriptorRegistry =
                     {
                         Target = OpenFileTarget.File (inode, 0L)
                         AccessMode = accessMode
-                        // `SystemNative_Open` accepts no `O_NONBLOCK` bit, so
-                        // every modelled open starts blocking.
+                        // `OpenFlags` carries no `O_NONBLOCK` bit, so every
+                        // modelled open starts blocking.
                         NonBlocking = false
-                        // `open(2)` never takes a lock; `FileStream` issues a
-                        // separate `flock` immediately afterwards, which is
-                        // why `FileShare` is not atomic with opening on Unix
-                        // (CoreLib's own comment says so).
+                        // `open(2)` never takes a lock.
                         Flock = None
                     }
                     registry.Descriptions
@@ -1053,12 +1034,12 @@ module FileDescriptorRegistry =
     /// `OpenFileObject.SocketEventPort`).
     ///
     /// The access mode is `ReadWrite`, and that is load-bearing rather than
-    /// cosmetic: `SystemNative_Read` checks `FileAccessMode.permitsRead` before
+    /// cosmetic: `UnixReadWrite.read` checks `FileAccessMode.permitsRead` before
     /// it looks at the target kind and answers `EBADF` if it fails, whereas a
     /// real port answers `EINVAL` (Linux) or `ENXIO` (Darwin) — measured. Both
     /// kernels open the underlying anonymous file `O_RDWR`.
     ///
-    /// Total, like `openFile` and for the same reason: PawPrint models no
+    /// Total, like `openFile` and for the same reason: this library models no
     /// descriptor limit, so there is no `EMFILE`/`ENFILE` to report.
     let createSocketEventPort (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
         let id = registry.NextId
@@ -1096,18 +1077,18 @@ module FileDescriptorRegistry =
     /// this is reached only once a caller has asked it.
     ///
     /// `socketId` is minted by the caller, because the socket it names lives in
-    /// the emulated kernel's socket table rather than here; `EmulatedKernel.createSocket`
-    /// is the one operation that allocates both and is the only thing that
+    /// the emulated kernel's socket table rather than here; `UnixSocket.createSocket`
+    /// and `UnixConnection.accept` allocate both, and are the only things that
     /// should call this.
     ///
     /// The access mode is `ReadWrite`, and that is load-bearing rather than
     /// cosmetic, for the reason `createSocketEventPort`'s is:
-    /// `SystemNative_Read` and `SystemNative_Write` test the access mode before
+    /// `UnixReadWrite.read` and `UnixReadWrite.write` test the access mode before
     /// they look at the target, so anything narrower would answer EBADF where a
     /// real socket answers about its connection state instead (measured:
     /// ENOTCONN, EINVAL, or a block, never EBADF).
     ///
-    /// Total, like `openFile` and `createSocketEventPort`: PawPrint models no
+    /// Total, like `openFile` and `createSocketEventPort`: this library models no
     /// descriptor limit, so there is no `EMFILE`/`ENFILE` to report, and no
     /// resource a socket could exhaust.
     let createSocket (socketId : SocketId) (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
@@ -1124,8 +1105,8 @@ module FileDescriptorRegistry =
                     {
                         Target = OpenFileTarget.Socket socketId
                         AccessMode = FileAccessMode.ReadWrite
-                        // No `SOCK_NONBLOCK`: the shim's type conversion adds
-                        // `SOCK_CLOEXEC` only, and CoreLib switches a socket to
+                        // No `SOCK_NONBLOCK`: `UnixSocket.createSocket` takes no
+                        // type flags, and a caller switches a socket to
                         // non-blocking through a separate fcntl afterwards.
                         NonBlocking = false
                         // `socket(2)` takes no lock, exactly as `open(2)` does not.
@@ -1202,7 +1183,9 @@ module FileDescriptorRegistry =
         let description =
             match Map.tryFind id registry.Descriptions with
             | Some description -> description
-            | None -> failwith $"open file description %O{id} is not present in the table (this is an interpreter bug)"
+            | None ->
+                failwith
+                    $"open file description %O{id} is not present in the table (this is a bug in the caller of FileDescriptorRegistry.flockOn, which holds the identity of a description it let close destroy)"
 
         let withFlock (flock : FlockMode option) : FileDescriptorRegistry =
             { registry with
@@ -1246,9 +1229,9 @@ module FileDescriptorRegistry =
     /// This is Linux's mechanism. Darwin diverges in three measured ways — it
     /// answers `ENOTSUP` for a pipe, it validates the operation differently,
     /// and it *keeps* a lock that a failed conversion would drop here. None of
-    /// those live in this module: deciding what a Darwin-flavoured kernel does
-    /// is the handler's job, and it currently refuses rather than modelling it
-    /// (see `SystemNative_FLock` in `NativeSystemNative.fs`).
+    /// those live in this module: `UnixDescriptor.flock` decides what a
+    /// Darwin-flavoured kernel does, and refuses (`FLockRefusal`) wherever
+    /// Darwin would answer differently.
     ///
     /// `Acquire` replaces any lock this description already held, so a
     /// conversion cannot conflict with itself: `SH` to `EX` succeeds when this
@@ -1262,7 +1245,7 @@ module FileDescriptorRegistry =
     /// BSD-derived behaviour, and measured: with `a` and `b` both holding `SH`,
     /// a failed `a: SH -> EX` leaves `a` unlocked on Linux (a third description
     /// can then take `EX` once `b` releases) but still holding `SH` on Darwin.
-    /// PawPrint simulates Linux. The *error* is the same on both platforms, so
+    /// This module models Linux. The *error* is the same on both platforms, so
     /// only a third description can tell them apart, which is what the test for
     /// this uses.
     ///
@@ -1282,8 +1265,8 @@ module FileDescriptorRegistry =
     /// Total in the offset — every non-negative `int64` is a position a real
     /// kernel would accept, including far past the end of the file — and
     /// *partial* in the descriptor: reaching this with an fd that is not live,
-    /// or one naming an unseekable object, is an interpreter bug rather than a
-    /// guest error. Both callers (`SystemNative_LSeek` and `SystemNative_Read`)
+    /// or one naming an unseekable object, is a bug in the caller. This
+    /// library's callers (`UnixDescriptor.lseek` and `UnixReadWrite.read`)
     /// have already resolved the description and rejected `EBADF`/`ESPIPE`
     /// before they get here.
     ///
@@ -1294,12 +1277,12 @@ module FileDescriptorRegistry =
     let setOffset (fd : int) (offset : int64) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =
         if offset < 0L then
             failwith
-                $"setOffset: fd %d{fd} was asked to move to offset %d{offset}, which is negative. No kernel permits a negative file offset; the caller must reject this as EINVAL before storing it (this is an interpreter bug)."
+                $"setOffset: fd %d{fd} was asked to move to offset %d{offset}, which is negative. No kernel permits a negative file offset; the caller must reject this as EINVAL before storing it (this is a bug in the caller of FileDescriptorRegistry.setOffset)."
 
         match Map.tryFind fd registry.Fds with
         | None ->
             failwith
-                $"setOffset: fd %d{fd} is not a live file descriptor, so there is no offset to move (this is an interpreter bug: the caller should have answered EBADF)."
+                $"setOffset: fd %d{fd} is not a live file descriptor, so there is no offset to move (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have answered EBADF)."
         | Some id ->
 
         let description =
@@ -1307,18 +1290,18 @@ module FileDescriptorRegistry =
             | Some description -> description
             | None ->
                 failwith
-                    $"file descriptor %d{fd} names open file description %O{id}, which is not present in the table (this is an interpreter bug)"
+                    $"file descriptor %d{fd} names open file description %O{id}, which is not present in the table (this is a bug in this library: every descriptor names a description in the table)"
 
         match description.Target with
         | OpenFileTarget.StandardStream role ->
             failwith
-                $"setOffset: fd %d{fd} names standard stream %O{role}, which PawPrint models as a pipe and so has no file offset (this is an interpreter bug: the caller should have answered ESPIPE)."
+                $"setOffset: fd %d{fd} names standard stream %O{role}, which this library models as a pipe and so has no file offset (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have answered ESPIPE)."
         | OpenFileTarget.SocketEventPort _ ->
             failwith
-                $"setOffset: fd %d{fd} names a socket event port, which holds no file offset on either platform — Linux's lseek on one is noop_llseek and Darwin's is ESPIPE (this is an interpreter bug: the caller should have answered without moving a position)."
+                $"setOffset: fd %d{fd} names a socket event port, which holds no file offset on either platform — Linux's lseek on one is noop_llseek and Darwin's is ESPIPE (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have answered without moving a position)."
         | OpenFileTarget.Socket socketId ->
             failwith
-                $"setOffset: fd %d{fd} names socket %O{socketId}, which holds no file offset on either platform — `lseek` on a socket is ESPIPE on both (this is an interpreter bug: the caller should have answered ESPIPE)."
+                $"setOffset: fd %d{fd} names socket %O{socketId}, which holds no file offset on either platform — `lseek` on a socket is ESPIPE on both (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have answered ESPIPE)."
         | OpenFileTarget.File (inode, _) ->
 
         { registry with
@@ -1336,12 +1319,12 @@ module FileDescriptorRegistry =
     /// shared with every descriptor `dup(2)` has produced for it.
     ///
     /// Like `setOffset`, *partial* in the descriptor: the caller
-    /// (`SystemNative_FcntlSetIsNonBlocking`) has already answered `EBADF` for
+    /// (`UnixSocket.setNonBlocking`) has already answered `EBADF` for
     /// a dead fd. It has also refused to *set* the flag on a standard stream —
     /// modelled as a pipe, whose reads a real kernel's `O_NONBLOCK` turns into
-    /// `EAGAIN` while PawPrint's stream handlers would block regardless, so a
+    /// `EAGAIN` while this library's stream reads would block regardless, so a
     /// stored `true` there would be a divergence nothing could see coming, and
-    /// is an interpreter bug here. Clearing is always honest and always
+    /// is a bug in the caller here. Clearing is always honest and always
     /// permitted. A socket event port stores freely: measured on both
     /// flavours, `F_SETFL` genuinely toggles the bit there (even on Darwin,
     /// where the call also reports ENOTTY — the caller's business, not this
@@ -1352,7 +1335,7 @@ module FileDescriptorRegistry =
         match Map.tryFind fd registry.Fds with
         | None ->
             failwith
-                $"setNonBlocking: fd %d{fd} is not a live file descriptor, so there is no description to flag (this is an interpreter bug: the caller should have answered EBADF)."
+                $"setNonBlocking: fd %d{fd} is not a live file descriptor, so there is no description to flag (this is a bug in the caller of FileDescriptorRegistry.setNonBlocking, which should have answered EBADF)."
         | Some id ->
 
         let description =
@@ -1360,12 +1343,12 @@ module FileDescriptorRegistry =
             | Some description -> description
             | None ->
                 failwith
-                    $"file descriptor %d{fd} names open file description %O{id}, which is not present in the table (this is an interpreter bug)"
+                    $"file descriptor %d{fd} names open file description %O{id}, which is not present in the table (this is a bug in this library: every descriptor names a description in the table)"
 
         match description.Target, value with
         | OpenFileTarget.StandardStream role, true ->
             failwith
-                $"setNonBlocking: fd %d{fd} names standard stream %O{role}, and no modelled stream transfer consults O_NONBLOCK, so a stored `true` would silently keep blocking semantics (this is an interpreter bug: the caller should have refused)."
+                $"setNonBlocking: fd %d{fd} names standard stream %O{role}, and no modelled stream transfer consults O_NONBLOCK, so a stored `true` would silently keep blocking semantics (this is a bug in the caller of FileDescriptorRegistry.setNonBlocking, which should have refused)."
         | OpenFileTarget.StandardStream _, false
         | OpenFileTarget.SocketEventPort _, _
         | OpenFileTarget.File _, _
@@ -1381,10 +1364,8 @@ module FileDescriptorRegistry =
                     registry.Descriptions
         }
 
-    /// Mirrors Linux's `epoll_ctl(2)` as
-    /// `SystemNative_TryChangeSocketEventRegistration` reaches it: apply
-    /// `change` to the interest table of the port `portFd` names, for the
-    /// target `targetFd` names.
+    /// Mirrors Linux's `epoll_ctl(2)`: apply `change` to the interest table of
+    /// the port `portFd` names, for the target `targetFd` names.
     ///
     /// The registration key is the (fd number, open file description) pair,
     /// which is epoll's own key: an ADD through a `dup` of a registered target
@@ -1392,10 +1373,10 @@ module FileDescriptorRegistry =
     /// the same table because the pair shares one description.
     ///
     /// This is Linux's mechanism, exactly as `flock` above is: kqueue registers
-    /// per-(ident, filter) with answers that differ on most rows, and deciding
-    /// what a Darwin-flavoured kernel does is the handler's job (it currently
-    /// refuses; see `SystemNative_TryChangeSocketEventRegistration` in
-    /// `NativeSystemNative.fs`).
+    /// per-(ident, filter) with answers that differ on most rows, and
+    /// `UnixPoll.changeSocketEventRegistration` decides what a
+    /// Darwin-flavoured kernel does (it refuses, with
+    /// `SocketEventRegistrationRefusal.UnmodelledFlavour`).
     ///
     /// Refuses (a failwith, not an error) an `Add` whose target is another
     /// socket event port: the simple case measures as success, but epoll's ADD
@@ -1532,7 +1513,7 @@ module FileDescriptorRegistry =
         match Map.tryFind portId registry.Descriptions with
         | None ->
             failwith
-                $"appendSocketEventReady: %O{portId} names no live open file description; the caller resolved it moments ago, so this is an interpreter bug."
+                $"appendSocketEventReady: %O{portId} names no live open file description; the caller resolved it moments ago, so this is a bug in the caller of FileDescriptorRegistry.appendSocketEventReady."
         | Some description ->
 
         match description.Target with
@@ -1540,16 +1521,16 @@ module FileDescriptorRegistry =
         | OpenFileTarget.File _
         | OpenFileTarget.Socket _ ->
             failwith
-                $"appendSocketEventReady: %O{portId} is not a socket event port; the caller resolved it as one moments ago, so this is an interpreter bug."
+                $"appendSocketEventReady: %O{portId} is not a socket event port; the caller resolved it as one moments ago, so this is a bug in the caller of FileDescriptorRegistry.appendSocketEventReady."
         | OpenFileTarget.SocketEventPort portState ->
 
         if not (Map.containsKey key portState.Registrations) then
             failwith
-                $"appendSocketEventReady: %A{key} is not registered with port %O{portId}, so it cannot become pending on it (this is an interpreter bug)."
+                $"appendSocketEventReady: %A{key} is not registered with port %O{portId}, so it cannot become pending on it (this is a bug in the caller of FileDescriptorRegistry.appendSocketEventReady)."
 
         if List.contains key portState.Ready then
             failwith
-                $"appendSocketEventReady: %A{key} is already pending on port %O{portId}; a pending entry keeps its place rather than being re-queued, so the caller should not have asked (this is an interpreter bug)."
+                $"appendSocketEventReady: %A{key} is already pending on port %O{portId}; a pending entry keeps its place rather than being re-queued, so the caller should not have asked (this is a bug in the caller of FileDescriptorRegistry.appendSocketEventReady)."
 
         { registry with
             Descriptions =
@@ -1580,24 +1561,25 @@ module FileDescriptorRegistry =
         match Map.tryFind portId registry.Descriptions with
         | None ->
             failwith
-                $"setSocketEventReady: %O{portId} names no live open file description (this is an interpreter bug)."
+                $"setSocketEventReady: %O{portId} names no live open file description (this is a bug in the caller of FileDescriptorRegistry.setSocketEventReady, which derived the list from a different table)."
         | Some description ->
 
         match description.Target with
         | OpenFileTarget.StandardStream _
         | OpenFileTarget.File _
         | OpenFileTarget.Socket _ ->
-            failwith $"setSocketEventReady: %O{portId} is not a socket event port (this is an interpreter bug)."
+            failwith
+                $"setSocketEventReady: %O{portId} is not a socket event port (this is a bug in the caller of FileDescriptorRegistry.setSocketEventReady, which derived the list from a different table)."
         | OpenFileTarget.SocketEventPort portState ->
 
         for key in ready do
             if not (Map.containsKey key portState.Registrations) then
                 failwith
-                    $"setSocketEventReady: %A{key} is not registered with port %O{portId} (this is an interpreter bug)."
+                    $"setSocketEventReady: %A{key} is not registered with port %O{portId} (this is a bug in the caller of FileDescriptorRegistry.setSocketEventReady, which derived the list from a different table)."
 
         if List.length (List.distinct ready) <> List.length ready then
             failwith
-                $"setSocketEventReady: the ready list for port %O{portId} repeats an entry (this is an interpreter bug)."
+                $"setSocketEventReady: the ready list for port %O{portId} repeats an entry (this is a bug in the caller of FileDescriptorRegistry.setSocketEventReady, which derived the list from a different table)."
 
         { registry with
             Descriptions =
@@ -1885,11 +1867,12 @@ module FileDescriptorRegistry =
                 Descriptions = Map.add id (f (Map.find id registry.Descriptions)) registry.Descriptions
             }
 
-/// One entry in `EmulatedKernel.OutputLog`: the role the guest targeted (a
+/// One entry in `UnixProcessState.OutputLog`: the role the process targeted (a
 /// writable standard stream — stdout or stderr) and the byte payload of
-/// that single `SystemNative_Write` call. Chunks are not coalesced across
-/// calls because guest write boundaries matter for diagnostics (line
-/// boundaries, prompt boundaries) and for matching real-CLR observability.
+/// that single `write(2)` call. Chunks are not coalesced across
+/// calls because write boundaries matter for diagnostics (line
+/// boundaries, prompt boundaries) and are what a real reader of the stream
+/// could observe.
 type OutputLogEntry =
     {
         Role : FileDescriptorRole

@@ -102,7 +102,7 @@ module SymlinkTarget =
     let describe (error : SymlinkTargetError) : string =
         match error with
         | SymlinkTargetError.Empty ->
-            "symlink target is null or empty; Linux rejects that with ENOENT while macOS accepts it, so PawPrint declines to represent it"
+            "symlink target is null or empty; Linux rejects that with ENOENT while macOS accepts it, so this library declines to represent it"
         | SymlinkTargetError.Text defect -> $"symlink target %s{UnixPathText.describe defect}"
 
     /// <summary>

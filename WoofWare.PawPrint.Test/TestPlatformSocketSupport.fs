@@ -137,5 +137,5 @@ class Program
                     $"SystemNative_PlatformSupportsDualModeIPv4PacketInfo returned %d{measured} on this host, but upstream (pal_networking.c) can only return 0 or 1."
 
             (measured = 1)
-            |> shouldEqual (SimulatedUnixPlatform.supportsDualModeIPv4PacketInfo (HostPlatform.platformOf flavour))
+            |> shouldEqual (SocketShimPal.supportsDualModeIPv4PacketInfo (HostPlatform.platformOf flavour))
         )

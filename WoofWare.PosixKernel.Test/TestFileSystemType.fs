@@ -1,30 +1,24 @@
 namespace WoofWare.PosixKernel.Test
 
+open System.IO
 open System.Runtime.InteropServices
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// `SystemNative_GetFileSystemType`: the table of what `fstatfs(2)` answers for
-/// each kind of descriptor, and the coherence rule between a mount's type and
-/// the flavour claiming to have mounted it.
+/// `fstatfs(2)`: the table of what it answers for each kind of descriptor, and
+/// the coherence rule between a mount's type and the flavour claiming to have
+/// mounted it.
 ///
-/// The *file* row is deliberately absent from the host comparison below.
-/// PawPrint's filesystem is in memory and claims to be whatever
-/// `KernelConfig.FileSystemType` says, where this host's `/tmp` is on ext4,
-/// APFS or overlayfs depending on the machine — so a host measurement is no
-/// oracle for it. What the host *is* an oracle for is every row that turns on
-/// the kind of kernel object rather than on the mount, and those are the rows
-/// no guest could pin against anything but PawPrint's own beliefs.
+/// The *file* row is deliberately absent from the per-object host comparison
+/// below. The library's filesystem is in memory and claims to be whatever
+/// mount type its client configures, where this host's `/tmp` is on ext4,
+/// APFS or overlayfs depending on the machine — so a host measurement is an
+/// oracle for it only where the host happens to have that filesystem, which
+/// the APFS test below checks. What the host *is* always an oracle for is
+/// every row that turns on the kind of kernel object rather than on the mount.
 [<TestFixture>]
 module TestFileSystemType =
-
-    /// The real export, in the shim this test host runs against — the exact
-    /// function the model claims to reproduce, rather than a hand-transcribed
-    /// `struct statfs` read that would have to fork by platform. Precedent:
-    /// `TestPlatformSocketSupport` measures its entry point the same way.
-    [<DllImport("libSystem.Native", EntryPoint = "SystemNative_GetFileSystemType", SetLastError = true)>]
-    extern uint32 private hostGetFileSystemType(nativeint fd)
 
     [<DllImport("libc", SetLastError = true)>]
     extern int private pipe(int[] fds)
@@ -44,6 +38,9 @@ module TestFileSystemType =
 
     [<DllImport("libc")>]
     extern int private close(int fd)
+
+    [<DllImport("libc", EntryPoint = "open", SetLastError = true)>]
+    extern int private hostOpen(string path, int flags, int mode)
 
     /// The machine a simulated process boots with on `flavour`'s platform.
     let private machineOn (flavour : SimulatedUnixFlavour) : UnixMachineState =
@@ -70,38 +67,52 @@ module TestFileSystemType =
             EmulatedFileSystemType.Nfs
         ]
 
-    [<Test>]
-    let ``each filesystem's magic number is the one CoreLib reads it back as`` () : unit =
-        // Transcribed from `Interop.Sys.UnixFileSystemTypes` in the runtime
-        // source, which is the only thing that consumes these numbers: whatever
-        // PawPrint reports, CoreLib casts straight to that enum. An outside
-        // oracle rather than a restatement — these come from upstream, not from
-        // the table under test — and each was also seen on a live kernel
-        // (tmpfs on Linux's `/dev/shm`, APFS on a macOS `/tmp`).
-        EmulatedFileSystemType.magic EmulatedFileSystemType.Tmpfs
-        |> shouldEqual 0x01021994u
-
-        EmulatedFileSystemType.magic EmulatedFileSystemType.Apfs |> shouldEqual 0x1Au
-        EmulatedFileSystemType.magic EmulatedFileSystemType.Nfs |> shouldEqual 0x6969u
+    let private utf8 (name : string) : UnixByteString =
+        match UnixByteString.ofString name with
+        | Ok name -> name
+        | Error defect -> failwith $"test bug: %s{name} is not a Unix string: %O{defect}"
 
     [<Test>]
-    let ``no two filesystems share a magic number`` () : unit =
-        // They are distinguishable to `CanLockTheFile`, which is the whole
-        // point of the `Nfs` case: a collision would make a configuration
-        // silently mean a different one.
-        everyFileSystemType
-        |> List.map EmulatedFileSystemType.magic
-        |> List.distinct
-        |> List.length
-        |> shouldEqual (List.length everyFileSystemType)
+    let ``each filesystem's type fields are the ones its kernel reports`` () : unit =
+        // Linux's are the magic numbers in `<linux/magic.h>`, tmpfs's measured
+        // on `/dev/shm`. Darwin's APFS row was measured by `fstatfs` on macOS
+        // 26.6, and its NFS row read from the NFS kext's registration (see the
+        // comments on `EmulatedFileSystemType.fieldsFor`). An outside oracle
+        // rather than a restatement: these come from kernels, not from the
+        // table under test.
+        EmulatedFileSystemType.fieldsFor SimulatedUnixFlavour.Linux EmulatedFileSystemType.Tmpfs
+        |> shouldEqual (FileSystemTypeFields.Linux 0x01021994L)
+
+        EmulatedFileSystemType.fieldsFor SimulatedUnixFlavour.Linux EmulatedFileSystemType.Nfs
+        |> shouldEqual (FileSystemTypeFields.Linux 0x6969L)
+
+        EmulatedFileSystemType.fieldsFor SimulatedUnixFlavour.Darwin EmulatedFileSystemType.Apfs
+        |> shouldEqual (FileSystemTypeFields.Darwin (0x1Au, utf8 "apfs"))
+
+        EmulatedFileSystemType.fieldsFor SimulatedUnixFlavour.Darwin EmulatedFileSystemType.Nfs
+        |> shouldEqual (FileSystemTypeFields.Darwin (2u, utf8 "nfs"))
 
     [<Test>]
-    let ``no filesystem reports zero`` () : unit =
-        // Zero is how the PAL reports *failure*, so a filesystem whose magic
-        // were 0 would be indistinguishable from a descriptor that does not
-        // exist — and `CanLockTheFile` would refuse to lock it.
-        for fsType in everyFileSystemType do
-            EmulatedFileSystemType.magic fsType |> shouldNotEqual 0u
+    let ``no two filesystems a flavour mounts share type fields`` () : unit =
+        // A collision would make a configuration silently mean a different
+        // one to any caller that tells mounts apart by type.
+        for flavour in everyFlavour do
+            let fields =
+                everyCoherentPair
+                |> List.filter (fst >> (=) flavour)
+                |> List.map (fun (flavour, fsType) -> EmulatedFileSystemType.fieldsFor flavour fsType)
+
+            fields |> List.distinct |> List.length |> shouldEqual (List.length fields)
+
+    [<Test>]
+    let ``type fields for a pair that describes no machine are refused`` () : unit =
+        for flavour, fsType in
+            [
+                SimulatedUnixFlavour.Darwin, EmulatedFileSystemType.Tmpfs
+                SimulatedUnixFlavour.Linux, EmulatedFileSystemType.Apfs
+            ] do
+            Assert.Throws (fun () -> EmulatedFileSystemType.fieldsFor flavour fsType |> ignore<FileSystemTypeFields>)
+            |> ignore<exn>
 
     [<Test>]
     let ``every flavour's default is a filesystem that flavour can mount`` () : unit =
@@ -199,7 +210,7 @@ module TestFileSystemType =
                 EmulatedFileSystemType.reportedFor flavour fsType (Some (OpenFileObject.File (InodeNumber 7L)))
 
             answer
-            |> shouldEqual (FileSystemTypeAnswer.Reported (EmulatedFileSystemType.magic fsType))
+            |> shouldEqual (FileSystemTypeAnswer.Reported (EmulatedFileSystemType.fieldsFor flavour fsType))
 
     [<Test>]
     let ``a descriptor that is not on the mount ignores the mount's type`` () : unit =
@@ -257,18 +268,16 @@ module TestFileSystemType =
                 |> ignore<exn>
 
     [<Test>]
-    let ``this host's own shim answers what the model says for each kind of object`` () : unit =
-        // The outside oracle for the rows no guest can arbitrate: a guest
-        // asserting them would only be restating PawPrint's beliefs back at
-        // itself. Each row is manufactured on the real kernel, handed to the
-        // real PAL, and compared with what the model says a kernel of *this*
-        // host's flavour would answer.
+    let ``this host's own fstatfs answers what the model says for each kind of object`` () : unit =
+        // The outside oracle for the rows that turn on the kind of object. Each
+        // row is manufactured on the real kernel, handed to its `fstatfs`, and
+        // compared with what the model says a kernel of *this* host's flavour
+        // would answer.
         //
         // Only this host's column is checked, so macOS covers Darwin locally
-        // and CI covers Linux. That is the same split `pathLimits` lives with,
-        // and the reason the per-flavour guests exist alongside this.
+        // and CI covers Linux. That is the same split `pathLimits` lives with.
         match HostPlatform.flavour () with
-        | None -> Assert.Ignore $"no Unix shim to measure (%s{RuntimeInformation.OSDescription})"
+        | None -> Assert.Ignore $"no Unix kernel to measure (%s{RuntimeInformation.OSDescription})"
         | Some flavour ->
 
         let anonymousInode () : int =
@@ -296,22 +305,20 @@ module TestFileSystemType =
             let rows =
                 [
                     // Both ends, because the model has one answer for a stream
-                    // whatever its direction and a kernel that disagreed would
-                    // show up here rather than in a guest.
+                    // whatever its direction, and a kernel that disagreed would
+                    // show up here.
                     "pipe read end", ends.[0], Some (OpenFileObject.StandardStream FileDescriptorRole.StandardInput)
                     "pipe write end", ends.[1], Some (OpenFileObject.StandardStream FileDescriptorRole.StandardOutput)
                     "AF_INET socket", sock, Some (OpenFileObject.Socket (SocketId 1L))
                     "anonymous inode", port, Some OpenFileObject.AnonymousInode
                     // An fd this process does not hold. 4242 rather than -1, so
-                    // that a shim screening negative numbers before the syscall
+                    // that a libc screening negative numbers before the syscall
                     // could not be what produced the answer.
                     "unheld descriptor", 4242, None
                 ]
 
             for label, fd, target in rows do
-                Marshal.SetLastSystemError 0
-                let hostSaid = hostGetFileSystemType (nativeint fd)
-                let hostErrno = Marshal.GetLastWin32Error ()
+                let hostSaid = HostFileSystemType.answerFor flavour fd
 
                 // The mount is irrelevant to every row here, which the test
                 // above pins independently; the flavour's default is passed
@@ -319,23 +326,40 @@ module TestFileSystemType =
                 let modelSaid =
                     EmulatedFileSystemType.reportedFor flavour (EmulatedFileSystemType.defaultFor flavour) target
 
-                match modelSaid with
-                | FileSystemTypeAnswer.Reported magic ->
-                    if hostSaid <> magic then
-                        failwith
-                            $"a %s{label} on this %O{flavour} host reports filesystem 0x%X{hostSaid}, but EmulatedFileSystemType.reportedFor says 0x%X{magic}."
-                | FileSystemTypeAnswer.Failed error ->
-                    // The PAL folds every failure to 0, so the number alone
-                    // cannot tell "no such descriptor" from "not on a
-                    // filesystem" — the errno is what separates them, and it
-                    // is what a guest declaring `SetLastError` would see.
-                    let expected = UnixError.toRawErrno error
-
-                    if hostSaid <> 0u || hostErrno <> expected then
-                        failwith
-                            $"a %s{label} on this %O{flavour} host reports 0x%X{hostSaid} with errno %d{hostErrno}, but EmulatedFileSystemType.reportedFor says it fails with %O{error} (errno %d{expected})."
+                if hostSaid <> modelSaid then
+                    failwith
+                        $"a %s{label} on this %O{flavour} host: fstatfs answers %A{hostSaid}, but EmulatedFileSystemType.reportedFor says %A{modelSaid}."
         finally
             close ends.[0] |> ignore<int>
             close ends.[1] |> ignore<int>
             close sock |> ignore<int>
             close port |> ignore<int>
+
+    [<Test>]
+    let ``a file on this host's APFS reports what the model says for APFS`` () : unit =
+        // The file row, checked where the host has the filesystem: a macOS
+        // temporary directory is on APFS. Skips anywhere else, including a
+        // macOS whose temporary directory is on some other filesystem.
+        match HostPlatform.flavour () with
+        | Some SimulatedUnixFlavour.Darwin ->
+            let path = Path.GetTempPath ()
+            let fd = hostOpen (path, 0, 0)
+
+            if fd < 0 then
+                failwith $"open(%s{path}) failed: errno %d{Marshal.GetLastWin32Error ()}"
+
+            try
+                let expected =
+                    EmulatedFileSystemType.fieldsFor SimulatedUnixFlavour.Darwin EmulatedFileSystemType.Apfs
+
+                match HostFileSystemType.answerFor SimulatedUnixFlavour.Darwin fd with
+                | FileSystemTypeAnswer.Reported (FileSystemTypeFields.Darwin (_, name) as fields) when
+                    name = utf8 "apfs"
+                    ->
+                    if fields <> expected then
+                        failwith
+                            $"%s{path} is on APFS, whose fstatfs reports %A{fields}, but EmulatedFileSystemType.fieldsFor says %A{expected}."
+                | other -> Assert.Ignore $"%s{path} is not on APFS: fstatfs answers %A{other}"
+            finally
+                close fd |> ignore<int>
+        | _ -> Assert.Ignore "no Darwin kernel to measure"
