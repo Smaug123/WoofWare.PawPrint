@@ -281,6 +281,7 @@
     <Compile Include="TestVariableSizeNewobj.fs" />
     <Compile Include="TestNativeMdUtf8String.fs" />
     <Compile Include="TestNativeRuntimeMethodHandle.fs" />
+    <Compile Include="TestFunctionPointerOutcome.fs" />
     <Compile Include="TestVirtualMethodSlots.fs" />
     <Compile Include="TestInterfaceDispatchMap.fs" />
     <Compile Include="TestFabricatedInterfaceMethodImpl.fs" />
