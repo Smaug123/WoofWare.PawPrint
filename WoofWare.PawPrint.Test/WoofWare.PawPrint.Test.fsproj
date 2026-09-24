@@ -90,6 +90,7 @@
     <Compile Include="TestMarshalLayout.fs" />
     <Compile Include="TestMarshalEnumFieldLayout.fs" />
     <Compile Include="TestMarshalOffsetOf.fs" />
+    <Compile Include="TestMarshalBoolCharFields.fs" />
     <Compile Include="TestManagedHeap.fs" />
     <Compile Include="TestStaticStorage.fs" />
     <Compile Include="TestByrefContainer.fs" />
@@ -281,6 +282,7 @@
     <Compile Include="TestVariableSizeNewobj.fs" />
     <Compile Include="TestNativeMdUtf8String.fs" />
     <Compile Include="TestNativeRuntimeMethodHandle.fs" />
+    <Compile Include="TestFunctionPointerOutcome.fs" />
     <Compile Include="TestVirtualMethodSlots.fs" />
     <Compile Include="TestInterfaceDispatchMap.fs" />
     <Compile Include="TestFabricatedInterfaceMethodImpl.fs" />

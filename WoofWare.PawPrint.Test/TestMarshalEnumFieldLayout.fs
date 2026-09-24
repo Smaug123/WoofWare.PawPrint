@@ -64,10 +64,16 @@ module TestMarshalEnumFieldLayout =
             "ulong"
             "float"
             "double"
+            // Not blittable: a 4-byte BOOL, and (under these shapes' default Ansi `CharSet`) a
+            // one-byte ANSI char.
+            "bool"
+            "char"
         ]
 
-    /// Structs whose own fields are enums, so an enum is reached through a nested value type.
-    let private nestedKinds : string list = [ "NestE16" ; "NestE64" ; "NestExplicit" ]
+    /// Structs whose own fields are enums, so an enum is reached through a nested value type, and
+    /// one whose UTF-16 `char` keeps it blittable.
+    let private nestedKinds : string list =
+        [ "NestE16" ; "NestE64" ; "NestExplicit" ; "NestCharUnicode" ]
 
     let private fixedCorpus : string =
         """
@@ -94,6 +100,8 @@ public struct NestE16 { public byte T; public E16 K; }
 public struct NestE64 { public E8 T; public E64 K; }
 [StructLayout(LayoutKind.Explicit)]
 public struct NestExplicit { [FieldOffset(1)] public EU32 K; [FieldOffset(0)] public E8 T; }
+[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+public struct NestCharUnicode { public E8 T; public char K; }
 """
 
     [<RequireQualifiedAccess>]
@@ -279,19 +287,37 @@ public struct NestExplicit { [FieldOffset(1)] public EU32 K; [FieldOffset(0)] pu
             let described = String.concat "\n" failures
             failwith $"%d{failures.Length} of %d{shapes.Length} shapes disagree:\n%s{described}"
 
+    /// Whether real .NET treats `t` as blittable. Only the struct stub of a non-blittable type
+    /// runs a Cleanup pass, and that zeroes the image, so `DestroyStructure` over a dirty buffer
+    /// leaves it dirty exactly when the type is blittable.
+    let private hostIsBlittable (t : System.Type) : bool =
+        let size = Marshal.SizeOf t
+        let dirty = 0xABuy
+        let buffer = Marshal.AllocHGlobal size
+
+        try
+            for i in 0 .. size - 1 do
+                Marshal.WriteByte (buffer, i, dirty)
+
+            Marshal.DestroyStructure (buffer, t)
+            [ 0 .. size - 1 ] |> List.forall (fun i -> Marshal.ReadByte (buffer, i) = dirty)
+        finally
+            Marshal.FreeHGlobal buffer
+
     [<Test>]
-    let ``A struct of enums and primitives is blittable, and its managed size is its native size`` () : unit =
-        // CoreCLR's `IsFieldBlittable` sees an enum field as its normalised primitive, so every
-        // generated shape is blittable and `MarshalNative_TryGetStructMarshalStub` takes the
-        // memmove arm. That arm reports PawPrint's *managed* size as the native size, which is
-        // sound only while the two coincide; check it against real .NET's native size.
+    let ``Blittability agrees with real .NET, and a blittable struct's managed size is its native size`` () : unit =
+        // CoreCLR's `IsFieldBlittable` sees an enum field as its normalised primitive, so a shape
+        // is blittable unless it holds a `bool` or an ANSI `char`. A blittable shape takes the
+        // memmove arm of `MarshalNative_TryGetStructMarshalStub`, which reports PawPrint's
+        // *managed* size as the native size, which is sound only while the two coincide; check
+        // that against real .NET's native size too.
         let failures =
             shapes
             |> List.choose (fun shape ->
                 let vt, state = pawPrintZero shape
 
                 let blittable =
-                    StructMarshalStub.isStructStrictlyNumericBlittable
+                    StructMarshalStub.isBlittableStruct
                         state.ConcreteTypes
                         state._LoadedAssemblies
                         bct
@@ -299,12 +325,13 @@ public struct NestExplicit { [FieldOffset(1)] public EU32 K; [FieldOffset(0)] pu
 
                 let managedSize = (CliType.SizeOf (CliType.ValueType vt)).Size
                 let hostSize = Marshal.SizeOf (hostType shape)
+                let hostBlittable = hostIsBlittable (hostType shape)
 
-                if blittable && managedSize = hostSize then
+                if blittable = hostBlittable && (not blittable || managedSize = hostSize) then
                     None
                 else
                     Some
-                        $"%s{render shape}\n  blittable: %b{blittable}, PawPrint managed size %d{managedSize}, real .NET native size %d{hostSize}"
+                        $"%s{render shape}\n  blittable: %b{blittable} (real .NET: %b{hostBlittable}), PawPrint managed size %d{managedSize}, real .NET native size %d{hostSize}"
             )
 
         match failures with
@@ -347,3 +374,14 @@ public struct NestExplicit { [FieldOffset(1)] public EU32 K; [FieldOffset(0)] pu
         // Real .NET must actually pad before an enum field, or nothing here distinguishes an
         // enum's own alignment from a byte-aligned guess.
         int (Marshal.OffsetOf (hostType shapes.[0], fieldName 1)) |> shouldEqual 8
+
+        // Both blittability answers must occur, and among the blittable shapes some must hold a
+        // UTF-16 `char`, or the blittability comparison is one-sided.
+        let blittable, notBlittable =
+            shapes |> List.partition (fun shape -> hostIsBlittable (hostType shape))
+
+        notBlittable |> shouldNotEqual []
+
+        blittable
+        |> List.exists (fun shape -> shape.Fields |> List.exists (fun (kind, _) -> kind = "NestCharUnicode"))
+        |> shouldEqual true

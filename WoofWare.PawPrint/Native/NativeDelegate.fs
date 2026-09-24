@@ -1092,8 +1092,7 @@ module NativeDelegate =
                             state,
                             Error (
                                 ctx.BaseClassTypes.InvalidOperationException,
-                                Some
-                                    "Could not execute the method because either the method itself or the containing type is not fully instantiated."
+                                Some NativeRuntimeMethodHandle.containsGenericVariablesMessage
                             )
                         | BindTarget.Metadata (method, _), DelegateBindingShape.Closed when
                             method.IsStatic && method.IsVirtual

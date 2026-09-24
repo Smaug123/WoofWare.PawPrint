@@ -509,10 +509,10 @@ module internal UnaryMetadataTokenOps =
             // Calling through the pointer is unaffected, which is why the boxed-receiver case in
             // `LdvirtftnVirtualDispatch.cs` passes: `callMethodWithCommitment` converts an
             // `ObjectRef` receiver to a byref into the box for a value-type callee, which is what
-            // an unboxing stub does. Only pointer *identity* is lost, and observing that needs two
-            // pointers to the same struct method obtained by different routes — which C# cannot
-            // express, since it offers no way to take `ldftn` of a struct method against an object
-            // receiver.
+            // an unboxing stub does. Only pointer *identity* is lost. `RuntimeMethodHandle.GetFunctionPointer`
+            // does answer the stub for a struct's virtual method, but C# can hold this pointer only
+            // inside a delegate, whose `_methodPtr` is private, so comparing the two takes private
+            // reflection.
             //
             // This cannot be guarded the way the sealed-declaring-type case above is: that shape is
             // unreachable from C#, whereas this one is ordinary code (`ICounter c = someStruct;

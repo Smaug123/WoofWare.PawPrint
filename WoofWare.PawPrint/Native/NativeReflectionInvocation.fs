@@ -89,46 +89,12 @@ module internal NativeReflectionInvocation =
             | None ->
                 failwith $"%s{operation}: method-registry id %d{methodHandleId} did not resolve to a known MethodHandle"
 
-        let methodInfo =
-            NativeRuntimeMethodHandle.methodInfoOfMetadataIdentity operation state identity
-
-        let declaringTypeHandle =
-            NativeRuntimeMethodHandle.requireClosedDeclaringType operation identity
-
-        let typeGenerics =
-            match declaringTypeHandle with
-            | ConcreteTypeHandle.Concrete _ ->
-                match AllConcreteTypes.lookup declaringTypeHandle state.ConcreteTypes with
-                | Some declaringType -> declaringType.Generics
-                | None ->
-                    failwith
-                        $"%s{operation}: declaring type handle %O{declaringTypeHandle} was not concretized, so the target method cannot be resolved"
-            | ConcreteTypeHandle.Byref _
-            | ConcreteTypeHandle.Pointer _
-            | ConcreteTypeHandle.FunctionPointer _
-            | ConcreteTypeHandle.OneDimArrayZero _
-            | ConcreteTypeHandle.Array _ ->
-                // The runtime-generated array methods (Get/Set/Address/.ctor) are the only members
-                // of a structural type. CoreCLR resolves their signatures against
-                // `GetClassOrArrayInstantiation`, which PawPrint does not model — it stores array
-                // element types structurally in the handle rather than as a generic argument
-                // vector. `Array_CreateInstance` is the supported route to those.
-                failwith
-                    $"TODO: %s{operation} on a method whose declaring type is the structural type %O{declaringTypeHandle}; CoreCLR resolves such a signature against GetClassOrArrayInstantiation, which PawPrint does not model"
-
-        let methodGenerics = identity.GetMethodGenerics () |> ImmutableArray.CreateRange
-
-        if methodInfo.Generics.Length <> methodGenerics.Length then
-            failwith
-                $"TODO: %s{operation} on generic method definition %s{methodInfo.Name}: it declares %d{methodInfo.Generics.Length} generic parameter(s) but the handle carries %d{methodGenerics.Length} generic argument(s); the managed reflection layer is expected to reject an uninstantiated generic method before the QCall"
-
-        let state, concretized, _declaringTypeHandle =
-            ExecutionConcretization.concretizeMethodWithAllGenerics
+        let state, concretized, declaringTypeHandle =
+            NativeRuntimeMethodHandle.concretizeClosedMetadataIdentity
                 ctx.LoggerFactory
                 ctx.BaseClassTypes
-                typeGenerics
-                methodInfo
-                methodGenerics
+                operation
+                identity
                 state
 
         state,
