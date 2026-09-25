@@ -470,8 +470,9 @@ module Intrinsics =
             |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "Unsafe", "IsNullRef" ->
-            // The JIT intrinsic compares the byref argument against the null
-            // managed byref.
+            // CoreCLR's UNSAFE__BYREF_IS_NULL stub is `ldarg.0; ldc.i4.0; conv.u; ceq; ret`, so this
+            // is the `ceq` opcode's own comparison against a native-int zero: whatever spelling of
+            // a null byref `ceq` recognises, this recognises too.
             let t =
                 let generics = Seq.toList methodToCall.Generics
 
@@ -489,10 +490,11 @@ module Intrinsics =
             let arg, state = IlMachineState.popEvalStack currentThread state
 
             let isNullRef =
-                match arg with
-                | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> true
-                | EvalStackValue.ManagedPointer _ -> false
-                | other -> failwith $"Unsafe.IsNullRef: expected managed byref argument, got %O{other}"
+                EvalStackValueComparisons.ceqDeferred
+                    state.PointerHashState
+                    arg
+                    (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L))
+                |> StorageLocation.resolveCeq baseClassTypes state
 
             state
             |> IlMachineState.pushToEvalStack (CliType.ofBool isNullRef) currentThread
@@ -2618,16 +2620,20 @@ module Intrinsics =
             // The IntPtr/UIntPtr overloads exist for native-sized element indices
             // (e.g. `Unsafe.Add(ref T, (nint)n)`). All three are JIT-lowered to
             // `sizeof * offset + base`, so we treat them uniformly.
-            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteByref tFromParam ; ConcreteInt32 state.ConcreteTypes ],
-              MethodReturnType.Returns (ConcreteByref tFromRet)
-            | [ ConcreteByref tFromParam ; ConcreteIntPtr state.ConcreteTypes ],
-              MethodReturnType.Returns (ConcreteByref tFromRet)
-            | [ ConcreteByref tFromParam ; ConcreteUIntPtr state.ConcreteTypes ],
-              MethodReturnType.Returns (ConcreteByref tFromRet) when tFromParam = t && tFromRet = t -> ()
-            | _ ->
-                failwith
-                    $"TODO: Unsafe.Add: only the (ref T, int32), (ref T, IntPtr), and (ref T, UIntPtr) overloads are implemented; got params %A{methodToCall.Signature.ParameterTypes}"
+            let modelled =
+                match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+                | [ ConcreteByref tFromParam ; ConcreteInt32 state.ConcreteTypes ],
+                  MethodReturnType.Returns (ConcreteByref tFromRet)
+                | [ ConcreteByref tFromParam ; ConcreteIntPtr state.ConcreteTypes ],
+                  MethodReturnType.Returns (ConcreteByref tFromRet)
+                | [ ConcreteByref tFromParam ; ConcreteUIntPtr state.ConcreteTypes ],
+                  MethodReturnType.Returns (ConcreteByref tFromRet) when tFromParam = t && tFromRet = t -> true
+                | _ -> false
+
+            // Any other overload runs the VM's stub.
+            if not modelled then
+                IntrinsicResult.Unrecognised
+            else
 
             let offset, state = IlMachineState.popEvalStack currentThread state
             let src, state = IlMachineState.popEvalStack currentThread state
@@ -2656,17 +2662,21 @@ module Intrinsics =
             // share a single generated IL body, so they share this arm; `elementOffsetArgument`
             // is where the reasoning about the declared parameter's width and signedness lives.
             // `(void*, int32)` is excluded because its first argument is a pointer rather than a
-            // byref, which is a different walk; `Unsafe.Add` does not implement it either.
-            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteByref tFromParam ; ConcreteInt32 state.ConcreteTypes ],
-              MethodReturnType.Returns (ConcreteByref tFromRet)
-            | [ ConcreteByref tFromParam ; ConcreteIntPtr state.ConcreteTypes ],
-              MethodReturnType.Returns (ConcreteByref tFromRet)
-            | [ ConcreteByref tFromParam ; ConcreteUIntPtr state.ConcreteTypes ],
-              MethodReturnType.Returns (ConcreteByref tFromRet) when tFromParam = t && tFromRet = t -> ()
-            | _ ->
-                failwith
-                    $"TODO: Unsafe.Subtract: only the (ref T, int32), (ref T, IntPtr), and (ref T, UIntPtr) overloads are implemented; got params %A{methodToCall.Signature.ParameterTypes} and return %A{methodToCall.Signature.ReturnType}"
+            // byref, which is a different walk; like `Unsafe.Add`'s, it runs the VM's stub.
+            let modelled =
+                match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+                | [ ConcreteByref tFromParam ; ConcreteInt32 state.ConcreteTypes ],
+                  MethodReturnType.Returns (ConcreteByref tFromRet)
+                | [ ConcreteByref tFromParam ; ConcreteIntPtr state.ConcreteTypes ],
+                  MethodReturnType.Returns (ConcreteByref tFromRet)
+                | [ ConcreteByref tFromParam ; ConcreteUIntPtr state.ConcreteTypes ],
+                  MethodReturnType.Returns (ConcreteByref tFromRet) when tFromParam = t && tFromRet = t -> true
+                | _ -> false
+
+            // Any other overload runs the VM's stub.
+            if not modelled then
+                IntrinsicResult.Unrecognised
+            else
 
             let offset, state = IlMachineState.popEvalStack currentThread state
             let src, state = IlMachineState.popEvalStack currentThread state

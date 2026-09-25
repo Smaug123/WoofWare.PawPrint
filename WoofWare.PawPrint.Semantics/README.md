@@ -30,6 +30,11 @@ What lives here:
   a given CPU: `ldc.i4 0/1; ret` for a query, a `PlatformNotSupportedException` throw for an
   instruction the CPU lacks. The interpreter runs a method's own IL or its lowering, and refuses
   the rest unless it implements the method itself; an analyser can read the same bodies.
+* `VmSubstitution` — the IL CoreCLR's VM runs in place of CoreLib's body for each
+  `System.Runtime.CompilerServices.Unsafe` method corelib.h binds, transcribed from
+  `getILIntrinsicImplementationForUnsafe` (jitinterface.cpp). The interpreter runs a stub where it
+  has no implementation of its own; an analyser can read every one, including those whose CoreLib
+  body works but is not what CoreCLR runs.
 * `HardwareIntrinsicsProfile` — the virtual CPU as the guest sees it: which hardware-intrinsic
   classes answer `IsSupported` and which vector APIs answer `IsHardwareAccelerated`. PawPrint runs
   on `ScalarOnly`, where every answer is false.

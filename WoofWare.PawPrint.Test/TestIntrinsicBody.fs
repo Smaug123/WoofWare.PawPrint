@@ -315,6 +315,57 @@ module TestIntrinsicBody =
         if not failures.IsEmpty then
             failwith (String.concat "\n" failures)
 
+    [<TestCaseSource(nameof coreLibs)>]
+    let ``VmSubstitution has a stub for exactly the Unsafe methods corelib.h binds`` (which : string) : unit =
+        let corelib = coreLib which
+        let methods = methodsOf corelib
+
+        let rows = vmSubstituted |> List.filter (fun n -> n.Class = "Unsafe")
+
+        // The binder takes one method per row, so a row that names several (a `NoSig` row whose
+        // name is overloaded) would need the binder's choice among them modelled.
+        for row in rows do
+            match methods |> List.filter (names row) with
+            | [ _ ] -> ()
+            | found -> failwith $"corelib.h's row %A{row} names %d{found.Length} methods in this CoreLib"
+
+        let bound =
+            methods
+            |> List.filter (fun m -> rows |> List.exists (fun row -> names row m))
+            |> List.map describe
+            |> Set.ofList
+
+        let stubbed =
+            methods
+            |> List.filter (fun m -> (VmSubstitution.unsafeStub corelib m.Handle).IsSome)
+            |> List.map describe
+            |> Set.ofList
+
+        bound.Count |> shouldEqual rows.Length
+        stubbed |> shouldEqual bound
+
+    [<TestCaseSource(nameof coreLibs)>]
+    let ``every Unsafe placeholder runs the VM's stub`` (which : string) : unit =
+        let corelib = coreLib which
+
+        let placeholders =
+            methodsOf corelib
+            |> List.filter (fun m ->
+                m.Class = "Unsafe"
+                && IntrinsicBody.isIntrinsic corelib m.Handle
+                && IntrinsicBody.classify corelib m.Handle = IntrinsicBody.VmSubstitution
+            )
+
+        placeholders |> List.length |> shouldBeGreaterThan 20
+
+        for m in placeholders do
+            match
+                IntrinsicBody.loweredBody HardwareIntrinsicsProfile.ScalarOnly corelib m.Handle,
+                VmSubstitution.unsafeStub corelib m.Handle
+            with
+            | Some lowered, Some stub -> lowered.Instructions.Length |> shouldEqual stub.Instructions.Length
+            | _ -> failwith $"%s{describe m}: a placeholder with no stub to run"
+
     [<Test>]
     let ``the pinned linux-x64 CoreLib has thousands of JIT expansions`` () : unit =
         // A floor, not a snapshot: if resolving a self-call through a MemberRef or MethodSpec
@@ -1022,27 +1073,25 @@ public static class Driver
 
         assertRefused "DelegateToPlaceholderDriver" driver "Placeholder"
 
-    /// `Unsafe.IsAddressGreaterThan<T>` is an intrinsic PawPrint does not implement, and its CoreLib
+    /// `Unsafe.IsAddressGreaterThan<T>` has no implementation in `Intrinsics.call`, and its CoreLib
     /// body is `throw new PlatformNotSupportedException()`: real .NET substitutes
-    /// `ldarg.0; ldarg.1; cgt.un; ret` and this guest returns 2. Running the placeholder would hand
-    /// the guest a catchable exception real .NET never raises, so PawPrint must refuse, and must do
-    /// so on the `calli` route as on any other. If PawPrint comes to implement it, this guest needs
-    /// another unimplemented VM-substituted intrinsic.
-    let private callsUnimplementedIntrinsicThroughCalli =
+    /// `ldarg.0; ldarg.1; cgt.un; ret`, and so must PawPrint, on the `calli` route as on any
+    /// other. Running the placeholder would hand the guest a catchable exception real .NET never
+    /// raises. Array elements are ordered by index, so real .NET returns 1.
+    let private callsSubstitutedIntrinsicThroughCalli =
         """
 using System;
 using System.Runtime.CompilerServices;
 
-unsafe class CallsUnimplementedIntrinsicThroughCalli
+unsafe class CallsSubstitutedIntrinsicThroughCalli
 {
     static int Main()
     {
-        int a = 0;
-        int b = 0;
+        int[] a = new int[2];
         delegate*<in int, in int, bool> greater = &Unsafe.IsAddressGreaterThan<int>;
         try
         {
-            return greater(in a, in b) ? 1 : 2;
+            return greater(in a[1], in a[0]) ? 1 : 2;
         }
         catch (PlatformNotSupportedException)
         {
@@ -1053,9 +1102,9 @@ unsafe class CallsUnimplementedIntrinsicThroughCalli
 """
 
     [<Test>]
-    let ``an unimplemented VM-substituted intrinsic reached by calli is refused`` () : unit =
-        let name = "CallsUnimplementedIntrinsicThroughCalli.cs"
-        let image = Roslyn.compileWithSymbols [ callsUnimplementedIntrinsicThroughCalli ]
+    let ``a VM-substituted intrinsic reached by calli runs the VM's stub`` () : unit =
+        let name = "CallsSubstitutedIntrinsicThroughCalli.cs"
+        let image = Roslyn.compileWithSymbols [ callsSubstitutedIntrinsicThroughCalli ]
 
         let _messages, loggerFactory =
             LoggerFactory.makeTestWithProperties [ "source_file", name ]
@@ -1064,18 +1113,14 @@ unsafe class CallsUnimplementedIntrinsicThroughCalli
         let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
         use peImage = new MemoryStream (image)
 
-        let exn =
-            Assert.Catch (fun () ->
-                BoundedRun.runWith
-                    loggerFactory
-                    BoundedRun.defaultMaxSteps
-                    name
-                    (Some name)
-                    peImage
-                    (HostConfig.Default dotnetRuntimes)
-                |> ignore<RunOutcome>
-            )
-
-        exn.Message |> shouldContainText "TODO: implement JIT intrinsic"
-        exn.Message |> shouldContainText "Unsafe.IsAddressGreaterThan"
-        exn.Message |> shouldContainText "VM substitutes"
+        match
+            BoundedRun.runWith
+                loggerFactory
+                BoundedRun.defaultMaxSteps
+                name
+                (Some name)
+                peImage
+                (HostConfig.Default dotnetRuntimes)
+        with
+        | RunOutcome.NormalExit (state, _) -> state.LatchedExitCode |> shouldEqual 1
+        | other -> failwith $"expected the guest to exit normally, got %O{other}"
