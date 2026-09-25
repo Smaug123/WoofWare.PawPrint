@@ -20,11 +20,15 @@ namespace WoofWare.PawPrint
 module internal StorageLocation =
     /// Lazy resolution of the root's `CliType` template. Consumed by
     /// `byteLocation` (via `IlMachineManagedByref.walkProjectionByteOffset`)
-    /// only when a `Field` projection appears in the chain. Variants whose `Field`-projection layout cannot be
-    /// resolved (e.g. `PeByteRange`, `ExposedClassObject`) or
-    /// where no typed cell starts at the root byte offset
-    /// (`StackMemoryByte` / `NativeMemoryByte`) raise — the caller wraps
-    /// in try/with and degrades to the coarse `SharedStorageKey` path.
+    /// only when the chain *begins* with a `Field` projection. Variants whose `Field`-projection
+    /// layout cannot be resolved (e.g. `PeByteRange`, `ExposedClassObject`) raise — the caller
+    /// wraps in try/with and degrades to the coarse `SharedStorageKey` path.
+    ///
+    /// A `StackMemoryByte` / `NativeMemoryByte` root reaches here only for a chain beginning with
+    /// a name-keyed `Field`, which has no declaring type to lay out: `byteLocation` anchors every
+    /// other `Field`-first chain over such a root to its declaring type's layout first
+    /// (`IlMachineManagedByref.tryAnchorRawRootFieldPrefixToLayout`). The name-keyed field is
+    /// resolved against the typed cell starting at the root offset, and raises when there is none.
     let private rootTemplate (state : IlMachineState) (root : ByrefRoot) : CliType =
         match root with
         | ByrefRoot.LocalVariable (thread, frame, local) ->
@@ -92,6 +96,13 @@ module internal StorageLocation =
             let templateFor (ty : ConcreteType<ConcreteTypeHandle>) : CliType =
                 IlMachineManagedByref.zeroForConcreteType baseClassTypes state ty
 
+            let root, projs =
+                match IlMachineManagedByref.tryAnchorRawRootFieldPrefixToLayout state ptr with
+                | ValueSome (ManagedPointerSource.Byref (root, projs)) -> root, projs
+                | ValueSome other ->
+                    failwith $"interpreter bug: anchoring the byref %O{ptr} produced the non-byref %O{other}"
+                | ValueNone -> root, projs
+
             let rootTemplateThunk () = rootTemplate state root
 
             try
@@ -108,8 +119,9 @@ module internal StorageLocation =
     /// Coarse storage discriminator used purely to decide whether two byrefs
     /// *could* share underlying storage when `byteLocation` cannot derive a
     /// flat byte offset (e.g. an unresolved concrete-type for a
-    /// `ReinterpretAs` target, or a `StackMemoryByte` whose root offset has
-    /// no covering typed cell). `byteLocation` folds `Field` projections
+    /// `ReinterpretAs` target, or a `StackMemoryByte` root whose chain begins
+    /// with a name-keyed `Field` and has no typed cell at the root offset to
+    /// resolve it against). `byteLocation` folds `Field` projections
     /// into a precise byte offset whenever the root template is available,
     /// so the fallback path here is reached only when that resolution
     /// fails; equal keys then mean an overlapping `Memmove` is undecidable

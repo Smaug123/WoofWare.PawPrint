@@ -112,6 +112,7 @@
     <Compile Include="TestByrefComparison.fs" />
     <Compile Include="TestByrefOrdering.fs" />
     <Compile Include="TestRawRootFieldPrefixByteView.fs" />
+    <Compile Include="TestRawRootFieldLayoutDisplacement.fs" />
     <Compile Include="TestContextSwitchPrior.fs" />
     <Compile Include="TestOpcodeFaults.fs" />
     <Compile Include="TestStackShape.fs" />

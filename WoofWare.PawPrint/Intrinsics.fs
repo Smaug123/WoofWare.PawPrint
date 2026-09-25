@@ -883,7 +883,13 @@ module Intrinsics =
                                 $"Interlocked.CompareExchange(ref native-int,...): expected NativeInt at byref target, got %O{other}"
 
                     let state =
-                        if NativeIntSourceComparison.equalsForCli state.PointerHashState currentSrc comparandSrc then
+                        if
+                            EvalStackValueComparisons.ceqDeferred
+                                state.PointerHashState
+                                (EvalStackValue.NativeInt currentSrc)
+                                (EvalStackValue.NativeInt comparandSrc)
+                            |> StorageLocation.resolveCeq baseClassTypes state
+                        then
                             let newValue =
                                 EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.NativeInt valueSrc)
 

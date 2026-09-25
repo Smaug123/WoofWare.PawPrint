@@ -553,13 +553,26 @@ module EvalStackValueComparisons =
                 (EvalStackValue.NativeInt var2)
         | EvalStackValue.ManagedPointer _, _ -> failwith $"bad ceq: ManagedPointer vs {var2}"
 
-    /// `ceq`, but returning the byref case's deferral rather than failing on it, so a caller
-    /// with `IlMachineState` can resolve it to byte coordinates (`StorageLocation.resolveCeq`).
+    /// The byref a comparison operand carries, if it carries one. A byref reaches `cgt.un` or
+    /// `clt.un` as itself, as the native int `conv.u` or `conv.i` made of it (the shape C#
+    /// pointer comparison produces), or as the int64 `conv.u8` or `conv.i8` made of that. These
+    /// are exactly the operands the comparisons route to `orderByrefs` and `ceqDeferred` defers; a
+    /// bit-pattern placeholder is not one, and the caller has already unwrapped it to its bits.
+    let private tryByrefOperand (v : EvalStackValue) : ManagedPointerSource option =
+        match v with
+        | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref _ as p)
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer (ManagedPointerSource.Byref _ as p))
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer (ManagedPointerSource.Byref _ as p),
+                                                              _)) -> Some p
+        | _ -> None
+
+    /// `ceq`, but returning the deferral of a pair of byrefs rather than failing on it, so a
+    /// caller with `IlMachineState` can resolve it to byte coordinates
+    /// (`StorageLocation.resolveCeq`).
     ///
-    /// Only the byref-vs-byref arm defers. The limit: a byref compared against a
-    /// `NativeInt` re-enters `ceq` proper and so still fails loudly on an undecidable pair,
-    /// because that recursion routes through `NativeIntSourceComparison` rather than through
-    /// this function. Widening that is its own change.
+    /// A byref defers however it is compared: as itself, as the native int `conv.u` or `conv.i`
+    /// made of it (which is how C# compares pointers: `&p[0].A == &p[1].B` is a `ceq` of two
+    /// native ints, each wrapping a byref), or as the int64 widened from that.
     let ceqDeferred (counters : PointerHashState) (var1 : EvalStackValue) (var2 : EvalStackValue) : CeqOutcome =
         // Must precede the match, exactly as in `ceq`. A `ManagedPointer (NativeIntPlaceholder
         // bits)` is a bit pattern wearing a byref's clothes; comparing it *structurally* against
@@ -575,20 +588,24 @@ module EvalStackValueComparisons =
                 "byref"
                 (ManagedPointerSource.unsafeAssumeNormalisedForComparison p1)
                 (ManagedPointerSource.unsafeAssumeNormalisedForComparison p2)
-        | _ -> CeqOutcome.Decided (ceq counters var1 var2)
+        | _ ->
 
-    /// The byref a comparison operand carries, if it carries one. A byref reaches `cgt.un` or
-    /// `clt.un` as itself, as the native int `conv.u` or `conv.i` made of it (the shape C#
-    /// pointer comparison produces), or as the int64 `conv.u8` or `conv.i8` made of that. These
-    /// are exactly the operands the comparisons route to `orderByrefs`; a bit-pattern
-    /// placeholder is not one, and the caller has already unwrapped it to its bits.
-    let private tryByrefOperand (v : EvalStackValue) : ManagedPointerSource option =
-        match v with
-        | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref _ as p)
-        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer (ManagedPointerSource.Byref _ as p))
-        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer (ManagedPointerSource.Byref _ as p),
-                                                              _)) -> Some p
-        | _ -> None
+        // Every other pair of byref-carrying operands `ceq` compares through
+        // `NativeIntSourceComparison`'s native-int-wrapped byref arm, which is `ceqNormalised` on
+        // the same two byrefs. An int64 against a byref or a native int is not a pair `ceq`
+        // accepts, and is left for it to refuse.
+        let isInt64 (v : EvalStackValue) =
+            match v with
+            | EvalStackValue.Int64 _ -> true
+            | _ -> false
+
+        match tryByrefOperand var1, tryByrefOperand var2 with
+        | Some p1, Some p2 when isInt64 var1 = isInt64 var2 ->
+            ManagedPointerSource.ceqNormalisedDeferred
+                "native-int-wrapped byref"
+                (ManagedPointerSource.unsafeAssumeNormalisedForComparison p1)
+                (ManagedPointerSource.unsafeAssumeNormalisedForComparison p2)
+        | _ -> CeqOutcome.Decided (ceq counters var1 var2)
 
     /// `compare` (one of `cgtUn`, `cltUn`), but returning the byref pair's deferral rather than
     /// failing on it, so a caller with `IlMachineState` can resolve it to byte coordinates
