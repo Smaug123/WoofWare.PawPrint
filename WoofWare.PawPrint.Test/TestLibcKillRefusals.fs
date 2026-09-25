@@ -36,7 +36,37 @@ class Program
 }
 """
 
-    let private run (platform : SimulatedUnixPlatform) (signo : int) : RunOutcome =
+    /// Registers SIGINFO (29 on Darwin) at the shim with nothing to dispatch
+    /// it, so a SIGINFO sent to the process stays queued, and then runs the
+    /// shim's non-cancelled handling for SIGINFO, which restores the kernel's
+    /// default of discarding it.
+    let private queuedThenRestoredGuest : string =
+        """
+using System;
+using System.Runtime.InteropServices;
+
+class Program
+{
+    [DllImport("libc", EntryPoint = "kill", SetLastError = true)]
+    static extern int Kill(int pid, int sig);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_EnablePosixSignalHandling")]
+    static extern int Enable(int signalCode);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_HandleNonCanceledPosixSignal")]
+    static extern void HandleNonCanceled(int signalCode);
+
+    static int Main(string[] args)
+    {
+        if (Enable(29) != 1) return 1;
+        if (Kill(Environment.ProcessId, 29) != 0) return 2;
+        HandleNonCanceled(29);
+        return 42;
+    }
+}
+"""
+
+    let private runSource (source : string) (platform : SimulatedUnixPlatform) (signo : int) : RunOutcome =
         let description = $"kill(self, %d{signo})"
 
         let _messages, loggerFactory =
@@ -44,7 +74,7 @@ class Program
 
         use _loggerFactoryResource = loggerFactory
         let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
-        use peImage = new MemoryStream (Roslyn.compile [ guest ])
+        use peImage = new MemoryStream (Roslyn.compile [ source ])
 
         BoundedRun.run
             loggerFactory
@@ -61,6 +91,8 @@ class Program
                         Argv = [ string<int> signo ]
                     }
             }
+
+    let private run (platform : SimulatedUnixPlatform) (signo : int) : RunOutcome = runSource guest platform signo
 
     let private refused (platform : SimulatedUnixPlatform) (signo : int) (reason : string) : unit =
         let exn = Assert.Catch<exn> (fun () -> run platform signo |> ignore<RunOutcome>)
@@ -84,3 +116,17 @@ class Program
     [<Test>]
     let ``SIGCONT with no handler is refused`` () : unit =
         refused SimulatedUnixPlatform.linuxX64 18 "has no stopped state"
+
+    [<Test>]
+    let ``restoring the default of a signal with an instance still queued is refused`` () : unit =
+        // The real shim has already written the queued instance to its pipe,
+        // and keeps the registration bit that sends it to the callback; the
+        // model would discard it as ignored.
+        let exn =
+            Assert.Catch<exn> (fun () ->
+                runSource queuedThenRestoredGuest SimulatedUnixPlatform.macOsArm64 29
+                |> ignore<RunOutcome>
+            )
+
+        exn.Message |> shouldContainText "SystemNative_HandleNonCanceledPosixSignal"
+        exn.Message |> shouldContainText "still queued"

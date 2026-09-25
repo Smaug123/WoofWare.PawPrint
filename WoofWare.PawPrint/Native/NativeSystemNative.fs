@@ -5902,6 +5902,20 @@ module NativeSystemNative =
                     // sends only once every token is unregistered —
                     // reinstalls the handler, exactly as it re-enables
                     // here.
+                    //
+                    // An instance still pending here is one the real shim's
+                    // native handler has already written to its pipe, and
+                    // since the registration bit stays set, it still reaches
+                    // the callback. Clearing the enable bit would make the
+                    // model discard it as ignored instead, so that is
+                    // refused.
+                    if
+                        SignalState.pending state.Kernel.Signals
+                        |> List.exists (fun pending -> pending.Signal = signal)
+                    then
+                        failwith
+                            $"%s{operation}: %O{signal} under the %O{numbering} numbering has an instance still queued. The real shim restores the kernel's default but keeps the registration that sends the queued instance to the callback; PawPrint's pending set would discard it as ignored, and does not represent the shim's queue separately."
+
                     state.MapKernel (fun kernel ->
                         { kernel with
                             Process =
