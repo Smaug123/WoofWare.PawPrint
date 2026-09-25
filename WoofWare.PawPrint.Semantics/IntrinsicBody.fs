@@ -1,6 +1,5 @@
 namespace WoofWare.PawPrint
 
-open System.Collections.Immutable
 open System.Reflection.Metadata
 
 /// What a must-expand intrinsic asks CoreCLR's JIT for.
@@ -39,7 +38,8 @@ type IntrinsicBody =
     /// A CoreLib method whose IL cannot return, declared on one of the four classes for which
     /// CoreCLR's VM substitutes IL of its own (`getILIntrinsicImplementationFor*`,
     /// jitinterface.cpp): the body CoreLib ships throws `PlatformNotSupportedException` in place of
-    /// the one the runtime supplies.
+    /// the one the runtime supplies. `VmSubstitution` transcribes that IL where it is the same for
+    /// every instantiation.
     | VmSubstitution
     /// The method has no IL: an InternalCall, a P/Invoke, a runtime-provided or an abstract body.
     | NoIl
@@ -269,25 +269,10 @@ module IntrinsicBody =
             else
                 IntrinsicBody.OwnIl
 
-    let private body (instructions : IlOp list) : MethodInstructions<TypeDefn> =
-        let located =
-            ((0, []), instructions)
-            ||> List.fold (fun (offset, acc) op -> offset + IlOp.NumberOfBytes op, (op, offset) :: acc)
-            |> snd
-            |> List.rev
-
-        {
-            Instructions = located
-            Locations = located |> List.map (fun (op, offset) -> offset, op) |> Map.ofList
-            LocalsInit = false
-            LocalVars = None
-            ExceptionRegions = ImmutableArray.Empty
-        }
-
     let private returnsConstant (value : bool) : MethodInstructions<TypeDefn> =
         let load = if value then NullaryIlOp.LdcI4_1 else NullaryIlOp.LdcI4_0
 
-        body [ IlOp.Nullary load ; IlOp.Nullary NullaryIlOp.Ret ]
+        IlStub.ofInstructions [ IlOp.Nullary load ; IlOp.Nullary NullaryIlOp.Ret ]
 
     /// The body CoreCLR's JIT puts in place of an instruction the CPU lacks
     /// (`impUnsupportedNamedIntrinsic`, importercalls.cpp): a call to the helper bound to
@@ -321,7 +306,7 @@ module IntrinsicBody =
         // must-throw node carries a dummy value of the method's return type: every path through
         // IL must end in a branch, `ret` or `throw`, and `ldnull; throw` needs no knowledge of the
         // signature.
-        body [ call ; IlOp.Nullary NullaryIlOp.LdNull ; IlOp.Nullary NullaryIlOp.Throw ]
+        IlStub.ofInstructions [ call ; IlOp.Nullary NullaryIlOp.LdNull ; IlOp.Nullary NullaryIlOp.Throw ]
 
     /// The IL that stands in for the placeholder `expansion`, a JIT expansion in `corelib`, on a
     /// CPU `profile` describes: what the JIT's expansion does, written as IL. `None` where that is
@@ -344,8 +329,12 @@ module IntrinsicBody =
         | JitExpansion.Primitive -> None
 
     /// The IL that stands in for `method`'s own on a CPU `profile` describes, when its own is a
-    /// placeholder that `lower` can replace. `None` means the method's own body is what runs, or
+    /// placeholder that IL can replace: a JIT expansion that `lower` writes, or a VM substitution
+    /// that `VmSubstitution` transcribes. `None` means the method's own body is what runs, or
     /// else that no IL can: `classify` says which.
+    ///
+    /// A method whose own IL works is given its own IL here even when the VM substitutes it, so
+    /// this is what runs, not what CoreCLR runs; `VmSubstitution.unsafeStub` answers the latter.
     let loweredBody
         (profile : HardwareIntrinsicsProfile)
         (assembly : DumpedAssembly)
@@ -355,8 +344,8 @@ module IntrinsicBody =
         if isIntrinsic assembly method then
             match classify assembly method with
             | IntrinsicBody.JitExpansion expansion -> lower profile assembly expansion
+            | IntrinsicBody.VmSubstitution -> VmSubstitution.unsafeStub assembly method
             | IntrinsicBody.OwnIl
-            | IntrinsicBody.VmSubstitution
             | IntrinsicBody.NoIl -> None
         else
             None

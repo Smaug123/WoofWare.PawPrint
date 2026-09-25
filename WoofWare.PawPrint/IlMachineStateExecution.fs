@@ -2167,7 +2167,7 @@ module IlMachineStateExecution =
                     // PawPrint has no implementation of its own, so the call gets what CoreCLR runs
                     // when its JIT does not expand the call: the method's IL, unless that IL is a
                     // placeholder, in which case the IL that does what the JIT's expansion does on
-                    // this run's CPU. A body with no IL is already PawPrint's implementation of the
+                    // this run's CPU, or the IL CoreCLR's VM substitutes. A body with no IL is already PawPrint's implementation of the
                     // method -- `NativeDispatch` for an InternalCall or P/Invoke, delegate or accessor
                     // dispatch for a runtime-provided body -- so the call proceeds to it as though
                     // unmarked.
@@ -2190,8 +2190,16 @@ module IlMachineStateExecution =
                             failwith
                                 $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey key} in Intrinsics.call: its IL calls itself, which is CoreCLR's placeholder for a body its JIT must expand, and on this CPU the expansion (%A{expansion}) is code the JIT emits itself"
                     | IntrinsicBody.VmSubstitution ->
-                        failwith
-                            $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey key} in Intrinsics.call: CoreCLR's VM substitutes its body, and the IL CoreLib ships in its place cannot return"
+                        match VmSubstitution.unsafeStub declaringAssy handle with
+                        | Some stub ->
+                            let stub = MethodInstructions.setLocalVars<TypeDefn, ConcreteTypeHandle> None stub
+
+                            methodToCall
+                            |> MethodInfo.setMethodVars (MethodBody.Il stub) methodToCall.Signature
+                            |> IntrinsicOutcome.RunIl
+                        | None ->
+                            failwith
+                                $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey key} in Intrinsics.call: CoreCLR's VM substitutes its body, and the IL CoreLib ships in its place cannot return"
 
         match outcome with
         | IntrinsicOutcome.Handled (state, commitment) -> state, commitment
