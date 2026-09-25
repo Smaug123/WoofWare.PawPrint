@@ -98,6 +98,45 @@ jobs:
       - name: Run Alejandra
         run: nix develop --command alejandra --check .
 
+  check-docstring-attachment:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0 # the check compares against the commit this change starts from
+      - name: Check every docstring still documents what it did
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            # A pull_request checkout is GitHub's merge of the branch into main:
+            # its first parent is that main, and its second the branch's head.
+            git rev-parse --verify --quiet HEAD^2 > /dev/null || { echo "expected a merge commit at HEAD for a pull_request event" >&2; exit 2; }
+            base="$(git rev-parse HEAD^1)"
+            range="HEAD^1..HEAD^2"
+          elif [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != 0000000000000000000000000000000000000000 ]; then
+            base="$PUSH_BEFORE"
+            range="$PUSH_BEFORE..HEAD"
+          else
+            base="$(git rev-parse HEAD^1)"
+            range="HEAD^1..HEAD"
+          fi
+          set +e
+          scripts/check-docstring-attachment-branch.sh "$base"
+          status=$?
+          set -e
+          # The check reports every change of subject it cannot explain, and a
+          # change that repairs a detachment, or renames onto a name used
+          # elsewhere, is one of those. A commit in the change that carries this
+          # trailer says a person read the report and found nothing detached.
+          if [ "$status" -eq 1 ] && git log --format=%B "$range" | grep -qx 'Docstring-attachment: reviewed'; then
+            echo "::warning::docstring-attachment reported changes of subject, and a commit in this change says they were reviewed"
+            exit 0
+          fi
+          exit "$status"
+
   flake-check:
     name: Check flake
     runs-on: ubuntu-latest
@@ -232,7 +271,7 @@ jobs:
 
   all-required-checks-complete:
     if: ${{ always() }}
-    needs: [check-dotnet-format, check-nix-format, build, build-nix, flake-check, nuget-pack, expected-pack, github-release-dry-run]
+    needs: [check-dotnet-format, check-nix-format, check-docstring-attachment, build, build-nix, flake-check, nuget-pack, expected-pack, github-release-dry-run]
     runs-on: ubuntu-latest
     steps:
       - uses: G-Research/common-actions/check-required-lite@2b7dc49cb14f3344fbe6019c14a31165e258c059

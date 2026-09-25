@@ -25,6 +25,20 @@ Two shapes are reported:
           a declaration that brings its own, freshly-written docstring is the
           commonest way to strand one, and is reported too
 
+Three ways prose deliberately changes subject are not reported:
+  * A rename. The declaration takes its docstring to a name that did not exist
+    before, and the name it had exists nowhere afterwards.
+  * A split. The implementation moves to a new declaration, taking the prose,
+    and the old name stays behind as a wrapper whose own new docstring refers to
+    the new declaration, in backticks or a `cref`. (A wrapper left with no
+    docstring, or with one that does not refer to where the prose went, is
+    reported.)
+  * A one-line docstring shared by several declarations, when one of them is
+    added, deleted or given prose of its own while the others keep the text.
+A detachment reported as MOVED is therefore both a loss and a gain: some
+declaration lost the block and some other declaration gained it. MERGED is
+subject to the rename and split exceptions too.
+
 WHAT THIS CANNOT SEE, and so must be checked by hand:
   * A docstring that was reworded in the same commit that moved it. Rewording
     changes the key, so the block reads as deleted-and-added and no pairing is
@@ -47,10 +61,18 @@ WHAT THIS CANNOT SEE, and so must be checked by hand:
     rather than by an identifier, which keeps it distinguishable but means an
     unrelated edit to that line reads as a changed subject. Teaching the regex
     the form removes the noise; the check is correct either way.
-  * A short docstring shared verbatim by several declarations. Blocks are keyed
-    by text, so the subjects are compared as a multiset and adding a *new*
-    declaration that reuses an existing one-liner is reported as MOVED. Read the
-    report: if every old name is still there, nothing was detached.
+  * A definition deleted, and a new one written where it stood beneath the
+    orphaned docstring. That is indistinguishable from a rename, and passes.
+  * A rename or split is recognised only when the paths passed include every
+    file the change touched, and when the old name is declared nowhere else
+    afterwards and the new one nowhere else before, local bindings and other
+    types' fields included. Where a name is reused like that, a rename is
+    reported as MOVED: read the report, and if the prose went with its
+    declaration, nothing was detached. The same goes for renaming an overloaded
+    member or a declaration form the regex does not know, whose subject changes
+    whenever its text does.
+  * A change that repairs a detachment. Moving prose back to its subject is a
+    loss and a gain like any other, and is reported.
   * A same-named, same-kind pair that is not adjacent. A subject is its kind and
     its name, which separates `type Foo` from `module Foo`; the signature is
     added only where two *successive* declarations share a name and kind,
@@ -97,17 +119,26 @@ def signature(lines: list[str], k: int) -> str:
     F# puts a long parameter list on its own lines, so two overloads can share
     a first line of just `member _.Foo` and differ only below it. Taking one
     line would make them the same subject, which is the thing the signature is
-    there to prevent. The signature ends at the `=` that starts the body; an
-    `abstract` member has none, so a blank line or the next docstring stops it
-    too.
+    there to prevent. The signature ends at the `=` that starts the body, and
+    excludes it, so that editing an overload's body leaves it the same subject.
+    That `=` is the first one outside brackets: an attribute's arguments, as in
+    `[<Param(Name = "value")>]`, can hold one too. An `abstract` member has no
+    body, so a blank line or the next docstring stops the signature as well.
     """
     out = []
+    depth = 0
     for line in lines[k : k + 24]:
         if out and (not line.strip() or line.strip().startswith("///")):
             break
+        for i, ch in enumerate(line):
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                depth -= 1
+            elif ch == "=" and depth == 0:
+                out.append(line[:i])
+                return " ".join(" ".join(out).split())
         out.append(line)
-        if "=" in line:
-            break
     return " ".join(" ".join(out).split())
 
 
@@ -221,6 +252,25 @@ def pairs(text: str, ambiguous: set[str] = frozenset()) -> dict[str, list[str | 
     return out
 
 
+def declared(text: str, ambiguous: set[str] = frozenset()) -> Counter:
+    """Every declaration in `text`, as the subject `pairs` would give it.
+
+    Also every non-blank line under the `<unparsed>` prefix, since that is how
+    `pairs` names a subject the regex does not know: whether such a subject still
+    exists is then a question about whether its line does.
+    """
+    lines = text.split("\n")
+    out: Counter = Counter()
+    for k, line in enumerate(lines):
+        m = DECL.match(line)
+        if m:
+            kind, name = next(kv for kv in m.groupdict().items() if kv[1])
+            out[signature(lines, k) if name in ambiguous else f"{kind} {name}"] += 1
+        elif line.strip():
+            out["<unparsed> " + " ".join(line.split())] += 1
+    return out
+
+
 def exists_exactly(f: str) -> bool:
     """Whether `f` exists spelt exactly that way.
 
@@ -255,8 +305,9 @@ def read(f: str, ref: str | None) -> str | None:
 
 def sides(
     files: list[str], ref: str
-) -> tuple[dict[str, list[str | None]], dict[str, list[str | None]]]:
-    """The old and new (docstring -> subjects) maps, built together."""
+) -> tuple[dict[str, list[str | None]], dict[str, list[str | None]], Counter, Counter]:
+    """The old and new (docstring -> subjects) maps, built together, and the
+    declarations present on each side."""
     texts = [(read(f, ref), read(f, None)) for f in files]
 
     # One ambiguity set over every path and both revisions. Deriving it per file
@@ -268,13 +319,16 @@ def sides(
 
     old: dict[str, list[str | None]] = {}
     new: dict[str, list[str | None]] = {}
+    declared_old: Counter = Counter()
+    declared_new: Counter = Counter()
     for was, now in texts:
-        for text, acc in ((was, old), (now, new)):
+        for text, acc, decls in ((was, old, declared_old), (now, new, declared_new)):
             if text is None:
                 continue
             for k, v in pairs(text, ambiguous).items():
                 acc.setdefault(k, []).extend(v)
-    return old, new
+            decls.update(declared(text, ambiguous))
+    return old, new, declared_old, declared_new
 
 
 def split_into(text: str, old: dict[str, list[str | None]], memo) -> list[str] | None:
@@ -295,6 +349,101 @@ def split_into(text: str, old: dict[str, list[str | None]], memo) -> list[str] |
     return None
 
 
+def bare_name(subject: str | None) -> str | None:
+    """The name in a `kind name` subject, or None for any other form.
+
+    A double-backticked name (`quoted`) is an identity like any other, and is
+    how every test in this repository is named.
+    """
+    if subject is None or subject.startswith("<unparsed>"):
+        return None
+    parts = subject.split(" ", 1)
+    if len(parts) != 2:
+        return None
+    if parts[0] == "quoted":
+        return parts[1]
+    return parts[1] if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_']*", parts[1]) else None
+
+
+def unexplained(
+    lost: Counter,
+    gained: Counter,
+    declared_old: Counter,
+    declared_new: Counter,
+    old: dict[str, list[str | None]],
+    new_by_subject: dict[str, list[str]],
+) -> tuple[Counter, Counter]:
+    """`lost` and `gained` with every deliberate move of prose taken out of both.
+
+    Prose can leave a declaration for one that did not exist before in two ways
+    that are not detachments. A rename: the name it had exists nowhere afterwards.
+    A split: the implementation moved to a new, more general declaration, which
+    took its prose, and the old name stayed behind as a thin wrapper whose own new
+    docstring names the new declaration. A detachment looks like neither when the
+    paths passed include every file the change touched. The declaration that lost
+    its prose still exists, having moved or been displaced, and has no docstring
+    that refers onward; or it is gone and the prose has landed on one that already
+    existed. Each lost declaration is paired with at most one gained one. Prose
+    that now precedes nothing (`None`) is never the far end of either: that is a
+    definition deleted from under its docstring.
+
+    Both ends must be subjects named by kind and identifier. An overload's
+    signature or an unparsed line changes whenever its text does, so its absence
+    from one side says nothing about whether the declaration went away. The
+    wrapper's docstring must be new to it in this change, because a subject names
+    every same-named declaration at once, and one elsewhere that always said as
+    much is no evidence about this one.
+    """
+    fresh = [s for s in gained.elements() if bare_name(s) is not None and declared_old[s] == 0]
+
+    def refers_to(was: str, now: str) -> bool:
+        # An explicit reference, in backticks or a `cref`: the name used as an
+        # ordinary word is no evidence that the prose went on purpose.
+        name = bare_name(now)
+        if name is None:
+            return False
+        reference = re.compile(
+            r"`" + re.escape(name) + r"`"
+            + r'|cref="[^"]*(?<![A-Za-z0-9_\'])' + re.escape(name) + r'"'
+        )
+        return any(
+            reference.search(block)
+            for block in new_by_subject.get(was, ())
+            if was not in old.get(block, ())
+        )
+
+    # A maximum matching, not a greedy one: one block can be shared by a
+    # declaration that was renamed and one that was split, and a rename may pair
+    # with any fresh declaration while a split only with the one it names, so
+    # taking the first fit lets the rename claim the split's partner.
+    losers = list(lost.elements())
+    fits = [
+        [
+            j
+            for j, now in enumerate(fresh)
+            if bare_name(was) is not None and (declared_new[was] == 0 or refers_to(was, now))
+        ]
+        for was in losers
+    ]
+    partner: dict[int, int] = {}
+
+    def augment(i: int, seen: set[int]) -> bool:
+        for j in fits[i]:
+            if j in seen:
+                continue
+            seen.add(j)
+            if j not in partner or augment(partner[j], seen):
+                partner[j] = i
+                return True
+        return False
+
+    for i in range(len(losers)):
+        augment(i, set())
+    explained_lost = Counter(losers[i] for i in partner.values())
+    explained_gained = Counter(fresh[j] for j in partner)
+    return lost - explained_lost, gained - explained_gained
+
+
 def names(subs: list[str | None]) -> list[str]:
     return sorted(x or "<none>" for x in subs)
 
@@ -304,6 +453,8 @@ def stranded_prefix(
     subjects: list[str | None],
     old: dict[str, list[str | None]],
     new_by_subject: dict[str, list[str]],
+    declared_old: Counter,
+    declared_new: Counter,
 ) -> list[str] | None:
     """`text` as a block that stood on its own before, plus prose that is new.
 
@@ -338,16 +489,19 @@ def stranded_prefix(
         # whole words.
         return f" {block} ".find(f" {head} ") >= 0
 
-    def detached(head: str) -> bool:
+    def detached(head: str) -> Counter:
         # Per declaration and with multiplicity, because a subject is a kind and
         # a name: one block documenting two same-named declarations must be found
         # inside two docstrings still, or one of the two has lost it.
+        lost: Counter = Counter()
         for subject, count in Counter(old[head]).items():
             if subject is None:
-                return True
-            if sum(1 for t in new_by_subject.get(subject, ()) if holds(t, head)) < count:
-                return True
-        return False
+                lost[None] += count
+                continue
+            kept = sum(1 for t in new_by_subject.get(subject, ()) if holds(t, head))
+            if kept < count:
+                lost[subject] += count - kept
+        return lost
 
     for i in range(len(text) - 1, 0, -1):
         head = text[:i]
@@ -356,9 +510,17 @@ def stranded_prefix(
         # Per occurrence, not per key: one normalised block can precede several
         # declarations, and the ones this opening already documented say nothing
         # about the ones it did not.
-        if not +(Counter(subjects) - Counter(old[head])):
+        gained = Counter(subjects) - Counter(old[head])
+        if not +gained:
             continue
-        if not detached(head):
+        lost = detached(head)
+        if not +lost:
+            continue
+        # A declaration renamed in the same change that added a paragraph to its
+        # docstring: the old name is gone, the new one is new, and the prose is
+        # its own. Stranded only if some loss is not accounted for that way.
+        lost, _ = unexplained(lost, gained, declared_old, declared_new, old, new_by_subject)
+        if not +lost:
             continue
         return [head, text[i + 1 :]]
     return None
@@ -398,7 +560,13 @@ def main() -> int:
         )
         return 2
 
-    old, new = sides(files, ref)
+    old, new, declared_old, declared_new = sides(files, ref)
+    # Every docstring each declaration now has, by subject.
+    new_by_subject: dict[str, list[str]] = {}
+    for key, subs in new.items():
+        for sub in subs:
+            if sub is not None:
+                new_by_subject.setdefault(sub, []).append(key)
     if not old:
         print(
             f"none of the {len(files)} file(s) given exist at {ref}, so there is "
@@ -410,7 +578,22 @@ def main() -> int:
 
     bad = 0
     for key, subs in old.items():
-        if key in new and names(subs) != names(new[key]):
+        if key not in new:
+            continue
+        # Prose that moved leaves one declaration and arrives at another, so a
+        # detachment is a loss *and* a gain. A gain alone is a one-line docstring
+        # reused by a new declaration beside the ones that still have it; a loss
+        # alone is a declaration deleted, or its docstring reworded, while others
+        # keep the shared text. Prose left documenting nothing gains `None`.
+        lost, gained = unexplained(
+            Counter(subs) - Counter(new[key]),
+            Counter(new[key]) - Counter(subs),
+            declared_old,
+            declared_new,
+            old,
+            new_by_subject,
+        )
+        if +lost and +gained:
             bad += 1
             print(f"MOVED   {names(subs)} -> {names(new[key])}")
             print(f"        {key[:150]}")
@@ -425,17 +608,12 @@ def main() -> int:
     # whether this block documents any of the ones that opening already did, and
     # whether any of those has stopped opening its docstring with it.
     memo: dict[str, list[str] | None] = {}
-    new_by_subject: dict[str, list[str]] = {}
-    for key, subs in new.items():
-        for sub in subs:
-            if sub is not None:
-                new_by_subject.setdefault(sub, []).append(key)
 
     for key in new:
         if key in old:
             continue
         parts = split_into(key, old, memo) or stranded_prefix(
-            key, new[key], old, new_by_subject
+            key, new[key], old, new_by_subject, declared_old, declared_new
         )
         if parts and len(parts) > 1:
             bad += 1

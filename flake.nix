@@ -205,9 +205,10 @@
             touch $out
           '';
         # The docstring-attachment check is the oracle a definition-moving commit is held
-        # to, and it is only as good as its own contract: fifteen shapes in a throwaway
-        # repository, seven of which must be reported and eight of which must not. Runs
-        # here so that a change to the checker cannot quietly retire it.
+        # to, and it is only as good as its own contract: thirty-six shapes in a throwaway
+        # repository, eighteen of which must be reported and eighteen of which must not. The
+        # wrapper CI runs has a contract of its own, that it never passes without having
+        # compared anything. Runs here so that a change to either cannot quietly retire it.
         docstring-attachment =
           pkgs.runCommand "docstring-attachment" {
             buildInputs = [pkgs.python3 pkgs.git pkgs.bash];
@@ -215,6 +216,9 @@
           ''
             export HOME=$TMPDIR
             ${pkgs.bash}/bin/bash ${./scripts/test-docstring-attachment.sh} \
+              ${./scripts/check-docstring-attachment.py}
+            ${pkgs.bash}/bin/bash ${./scripts/test-docstring-attachment-branch.sh} \
+              ${./scripts/check-docstring-attachment-branch.sh} \
               ${./scripts/check-docstring-attachment.py}
             touch $out
           '';
