@@ -552,6 +552,108 @@ module TestIntrinsicBody =
 
         IntrinsicBody.isIntrinsic assembly m.Handle |> shouldEqual false
 
+    // -- A body naming itself through a TypeRef back to its own assembly --
+
+    let private selfByTypeRefName = "SelfByTypeRef"
+
+    /// An image whose `[Intrinsic]` `Methods::Self` calls `target`. Building it once with no target,
+    /// loading that build, and building again with the loaded `Self` as the target makes the call
+    /// a MemberRef whose parent is a TypeRef scoped to an AssemblyRef naming this very assembly.
+    let private fabricateSelfByTypeRef (target : System.Reflection.MethodInfo option) : byte[] =
+        let builder =
+            PersistedAssemblyBuilder (AssemblyName selfByTypeRefName, typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule selfByTypeRefName
+
+        let intrinsic =
+            let ty =
+                typeof<obj>.Assembly.GetType ("System.Runtime.CompilerServices.IntrinsicAttribute", true)
+
+            let ctor =
+                ty.GetConstructor (
+                    BindingFlags.Instance ||| BindingFlags.Public ||| BindingFlags.NonPublic,
+                    Type.EmptyTypes
+                )
+
+            CustomAttributeBuilder (ctor, Array.empty)
+
+        let methods =
+            modul.DefineType ("Methods", TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed)
+
+        let self = methods.DefineMethod ("Self", staticMethod, typeof<int>, Type.EmptyTypes)
+        self.SetCustomAttribute intrinsic
+        let il = self.GetILGenerator ()
+
+        match target with
+        | None -> il.Emit OpCodes.Ldc_I4_0
+        | Some target -> il.Emit (OpCodes.Call, target)
+
+        il.Emit OpCodes.Ret
+        methods.CreateType () |> ignore<Type>
+
+        use image = new MemoryStream ()
+        builder.Save image
+        image.ToArray ()
+
+    let private selfByTypeRef : Lazy<byte[]> =
+        lazy
+            (let first =
+                System.Runtime.Loader
+                    .AssemblyLoadContext(selfByTypeRefName, true)
+                    .LoadFromStream (new MemoryStream (fabricateSelfByTypeRef None))
+
+             fabricateSelfByTypeRef (Some (first.GetType("Methods").GetMethod "Self")))
+
+    [<Test>]
+    let ``a body naming itself through a TypeRef to its own assembly is a JIT expansion`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use stream = new MemoryStream (selfByTypeRef.Force ())
+        let assembly = Assembly.read loggerFactory None stream
+
+        // The shape under test: the call's parent is a TypeRef, not the TypeDef.
+        assembly.Members.Values
+        |> Seq.exists (fun m ->
+            match m.Parent with
+            | MetadataToken.TypeReference _ -> m.PrettyName = "Self"
+            | _ -> false
+        )
+        |> shouldEqual true
+
+        let m =
+            methodsOf assembly
+            |> List.filter (fun m -> m.Class = "Methods" && m.Name = "Self")
+            |> List.exactlyOne
+
+        IntrinsicBody.classify assembly m.Handle
+        |> shouldEqual IntrinsicBody.JitExpansion
+
+    [<Test>]
+    let ``a placeholder naming itself through a TypeRef is refused rather than recursed into`` () : unit =
+        let driver =
+            """
+public static class Driver
+{
+    public static int Main() => Methods.Self();
+}
+"""
+
+        match
+            FabricatedGuest.runOnPawPrintBounded
+                selfByTypeRefName
+                (selfByTypeRef.Force ())
+                "SelfByTypeRefDriver"
+                driver
+                50_000L
+        with
+        | FabricatedOutcome.Exited code -> failwith $"expected PawPrint to refuse Self, but the guest exited %d{code}"
+        | FabricatedOutcome.Failed e ->
+            let rec innermost (e : exn) : exn =
+                match e.InnerException with
+                | null -> e
+                | inner -> innermost inner
+
+            (innermost e).Message |> shouldContainText "calls itself"
+
     // -- End to end: what the interpreter does with each classification --
 
     let rec private innermost (e : exn) : exn =
