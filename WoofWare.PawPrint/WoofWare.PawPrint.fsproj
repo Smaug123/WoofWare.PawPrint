@@ -153,6 +153,8 @@
     <Compile Include="Native\DirectoryEntryPal.fs" />
     <Compile Include="Native\SocketShimPal.fs" />
     <Compile Include="Native\NativeCall.fs" />
+    <Compile Include="Native\StartupSignalDispositions.fs" />
+    <Compile Include="Native\NativeLibc.fs" />
     <Compile Include="Native\NativeGc.fs" />
     <Compile Include="Native\NativeGcFrameRegistration.fs" />
     <Compile Include="Native\NativeEnvironment.fs" />

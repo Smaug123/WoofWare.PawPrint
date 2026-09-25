@@ -40,11 +40,15 @@ module TestKillSignalPal =
     [<Test>]
     let ``each member names the signal its name says, under either numbering`` () : unit =
         for numbering in everyNumbering do
-            KillSignalPal.toKillSignal numbering enumMembers.["None"]
-            |> shouldEqual (Some KillSignal.Null)
+            KillSignalPal.toSigno numbering enumMembers.["None"] |> shouldEqual (Some 0)
 
-            match KillSignalPal.toKillSignal numbering enumMembers.["SIGKILL"] with
-            | Some (KillSignal.Signal signal) ->
+            let signalOf (signo : int) : Signal =
+                match Signal.ofRawSignoUnder numbering signo with
+                | ValueSome signal -> signal
+                | ValueNone -> failwith $"%d{signo} is not a signal under %O{numbering}"
+
+            match KillSignalPal.toSigno numbering enumMembers.["SIGKILL"] |> Option.map signalOf with
+            | Some signal ->
                 // 9 under every numbering: POSIX's XSI option fixes it.
                 Signal.toRawSignoUnder numbering signal |> shouldEqual 9
                 Signal.isUncatchableUnder numbering signal |> shouldEqual true
@@ -53,8 +57,8 @@ module TestKillSignalPal =
                 |> shouldEqual DefaultDisposition.Terminate
             | other -> failwith $"SIGKILL under %O{numbering}: %O{other}"
 
-            match KillSignalPal.toKillSignal numbering enumMembers.["SIGSTOP"] with
-            | Some (KillSignal.Signal signal) ->
+            match KillSignalPal.toSigno numbering enumMembers.["SIGSTOP"] |> Option.map signalOf with
+            | Some signal ->
                 Signal.isUncatchableUnder numbering signal |> shouldEqual true
 
                 Signal.defaultDispositionUnder numbering signal
@@ -75,9 +79,9 @@ module TestKillSignalPal =
 
         for pal in -3 .. 70 do
             if pal <> 9 && pal <> 19 then
-                let modelled = KillSignalPal.toKillSignal SignalNumbering.Linux pal
+                let modelled = KillSignalPal.toSigno SignalNumbering.Linux pal
 
-                KillSignalPal.toKillSignal SignalNumbering.Darwin pal |> shouldEqual modelled
+                KillSignalPal.toSigno SignalNumbering.Darwin pal |> shouldEqual modelled
 
                 match hostNumbering with
                 | None -> ()
@@ -87,6 +91,6 @@ module TestKillSignalPal =
                     let result = hostKill (self, pal)
 
                     match modelled with
-                    | Some KillSignal.Null -> result |> shouldEqual 0
+                    | Some 0 -> result |> shouldEqual 0
                     | Some other -> failwith $"%d{pal} unexpectedly maps to %O{other}"
                     | None -> result |> shouldEqual -1

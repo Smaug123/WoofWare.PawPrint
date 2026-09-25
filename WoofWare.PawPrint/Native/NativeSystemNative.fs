@@ -2420,40 +2420,13 @@ module NativeSystemNative =
             let palSignal = NativeCall.int32Argument operation instruction.Arguments.[1]
             let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
 
-            let returning (value : int) (state : IlMachineState) : NativeHandlerResult option =
-                state
-                |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 value)) ctx.Thread
+            match KillSignalPal.toSigno numbering palSignal with
+            | None ->
+                withErrnoOnly ctx UnixError.EINVAL state
+                |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 -1)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-
-            match KillSignalPal.toKillSignal numbering palSignal with
-            | None -> withErrnoOnly ctx UnixError.EINVAL state |> returning -1
-            | Some signal ->
-
-            let liveThreads =
-                state.ThreadState
-                |> Seq.choose (fun (KeyValue (thread, ts)) ->
-                    if ThreadStatus.canReceiveSignal ts.Status then
-                        Some thread
-                    else
-                        None
-                )
-                |> ImmutableArray.CreateRange
-
-            match UnixSignal.kill liveThreads pid signal (EmulatedKernel.unix state.Kernel) with
-            | Error refusal ->
-                failwith
-                    $"%s{operation}: kill(%d{pid}, %O{signal}) from process %O{UnixSystem.processId (EmulatedKernel.unix state.Kernel)} is not modelled (%O{refusal}); only a signal to the calling process itself is."
-            | Ok (SignalGeneration.ProcessContinues, system) ->
-                state.MapKernel (EmulatedKernel.withUnix system) |> returning 0
-            | Ok (SignalGeneration.ProcessTerminated signal, system) ->
-                // The process never returns from this call.
-                ExecutionResult.SignalTerminated (state.MapKernel (EmulatedKernel.withUnix system), signal)
-                |> NativeHandlerResult.ofExecutionResult
-                |> Some
-            | Ok (SignalGeneration.ProcessStopped signal, _) ->
-                failwith
-                    $"%s{operation}: %O{signal} would stop the whole process, and PawPrint does not model a stopped process (nothing could continue it)."
+            | Some signo -> NativeLibc.kill operation ctx pid signo |> Some
         | Some "SystemNative_GetEUid",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32) ->
@@ -5929,6 +5902,20 @@ module NativeSystemNative =
                     // sends only once every token is unregistered —
                     // reinstalls the handler, exactly as it re-enables
                     // here.
+                    //
+                    // An instance still pending here is one the real shim's
+                    // native handler has already written to its pipe, and
+                    // since the registration bit stays set, it still reaches
+                    // the callback. Clearing the enable bit would make the
+                    // model discard it as ignored instead, so that is
+                    // refused.
+                    if
+                        SignalState.pending state.Kernel.Signals
+                        |> List.exists (fun pending -> pending.Signal = signal)
+                    then
+                        failwith
+                            $"%s{operation}: %O{signal} under the %O{numbering} numbering has an instance still queued. The real shim restores the kernel's default but keeps the registration that sends the queued instance to the callback; PawPrint's pending set would discard it as ignored, and does not represent the shim's queue separately."
+
                     state.MapKernel (fun kernel ->
                         { kernel with
                             Process =
