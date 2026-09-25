@@ -48,8 +48,8 @@ module TestIntrinsicContracts =
             IntrinsicPrimitive.AtomicExchange AtomicOperand.Int64,
             "Interlocked.Exchange(ref Unsafe.NullRef<long>(), 1L);"
             // `Interlocked.Add` is `ExchangeAdd(ref location, value) + value`.
-            IntrinsicPrimitive.AtomicAdd AtomicOperand.Int32, "Interlocked.Add(ref Unsafe.NullRef<int>(), 1);"
-            IntrinsicPrimitive.AtomicAdd AtomicOperand.Int64, "Interlocked.Add(ref Unsafe.NullRef<long>(), 1L);"
+            IntrinsicPrimitive.AtomicAdd AtomicAddOperand.Int32, "Interlocked.Add(ref Unsafe.NullRef<int>(), 1);"
+            IntrinsicPrimitive.AtomicAdd AtomicAddOperand.Int64, "Interlocked.Add(ref Unsafe.NullRef<long>(), 1L);"
             IntrinsicPrimitive.MethodTableOf,
             internalStatic "RuntimeHelpers" "GetMethodTable" None "new object[] { null }"
             IntrinsicPrimitive.ArrayDataReference, "MemoryMarshal.GetArrayDataReference((int[])null);"
@@ -95,8 +95,8 @@ module TestIntrinsicContracts =
             IntrinsicPrimitive.AtomicExchange AtomicOperand.Int32, "Interlocked.Exchange(ref Unsafe.AsRef<int>(at), 1);"
             IntrinsicPrimitive.AtomicExchange AtomicOperand.Int64,
             "Interlocked.Exchange(ref Unsafe.AsRef<long>(at), 1L);"
-            IntrinsicPrimitive.AtomicAdd AtomicOperand.Int32, "Interlocked.Add(ref Unsafe.AsRef<int>(at), 1);"
-            IntrinsicPrimitive.AtomicAdd AtomicOperand.Int64, "Interlocked.Add(ref Unsafe.AsRef<long>(at), 1L);"
+            IntrinsicPrimitive.AtomicAdd AtomicAddOperand.Int32, "Interlocked.Add(ref Unsafe.AsRef<int>(at), 1);"
+            IntrinsicPrimitive.AtomicAdd AtomicAddOperand.Int64, "Interlocked.Add(ref Unsafe.AsRef<long>(at), 1L);"
         ]
 
     [<Test>]
@@ -134,8 +134,11 @@ module TestIntrinsicContracts =
         Set.difference performed (Set.union exercised unexercised)
         |> shouldEqual Set.empty
 
-    [<Test>]
-    let ``real .NET raises exactly the faults each primitive's contract states`` () : unit =
+    /// A guest that performs each of `calls` with its contract's null arguments, and, when
+    /// `misalignment` holds, each of `misalignedCalls` on a location crossing 16 bytes. It exits
+    /// 0 when each behaves as its contract and the platform say, and otherwise with the code
+    /// `failure` explains.
+    let private guest (calls : (IntrinsicPrimitive * string) list) (misalignment : bool) : string =
         let cases =
             calls
             |> List.mapi (fun i (primitive, statement) ->
@@ -162,7 +165,7 @@ module TestIntrinsicContracts =
         let misalignedBase = 2 * calls.Length
 
         let misaligned =
-            misalignedCalls
+            (if misalignment then misalignedCalls else [])
             |> List.mapi (fun i (_, statement) ->
                 $"""
         fixed (byte* p = buffer)
@@ -182,8 +185,7 @@ module TestIntrinsicContracts =
             )
             |> String.concat ""
 
-        let source =
-            $"""
+        $"""
 using System;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -203,9 +205,12 @@ unsafe class Program
 }}
 """
 
-        match RealRuntime.executeWithRealRuntime [||] (Roslyn.compile [ source ]) with
-        | RealRuntimeResult.NormalExit 0 -> ()
-        | RealRuntimeResult.NormalExit code when code > misalignedBase ->
+
+    /// What the guest's exit code `code` says went wrong, for the same `calls`.
+    let private failure (calls : (IntrinsicPrimitive * string) list) (code : int) : string =
+        let misalignedBase = 2 * calls.Length
+
+        if code > misalignedBase then
             let primitive, statement = misalignedCalls.[(code - misalignedBase - 1) / 2]
 
             let what =
@@ -214,8 +219,8 @@ unsafe class Program
                 else
                     "raised DataMisalignedException off Arm64"
 
-            failwith $"%A{primitive}, performed as `%s{statement}` on a location crossing 16 bytes, %s{what}"
-        | RealRuntimeResult.NormalExit code ->
+            $"%A{primitive}, performed as `%s{statement}` on a location crossing 16 bytes, %s{what}"
+        else
             let primitive, statement = calls.[(code - 1) / 2]
 
             let what =
@@ -224,5 +229,110 @@ unsafe class Program
                 else
                     "raised a NullReferenceException its contract does not state"
 
-            failwith $"%A{primitive}, performed as `%s{statement}`, %s{what}"
+            $"%A{primitive}, performed as `%s{statement}`, %s{what}"
+
+    [<Test>]
+    let ``real .NET raises exactly the faults each primitive's contract states`` () : unit =
+        match RealRuntime.executeWithRealRuntime [||] (Roslyn.compile [ guest calls true ]) with
+        | RealRuntimeResult.NormalExit 0 -> ()
+        | RealRuntimeResult.NormalExit code -> failwith (failure calls code)
         | other -> failwith $"the guest did not exit normally: %O{other}"
+
+    /// The primitives `Intrinsics.performPrimitive` refuses, which PawPrint therefore cannot be
+    /// held to here.
+    let private unimplemented : Set<IntrinsicPrimitive> =
+        Set.ofList
+            [
+                IntrinsicPrimitive.VolatileReadByref
+                IntrinsicPrimitive.ReciprocalEstimate FloatWidth.Double
+                IntrinsicPrimitive.ReciprocalEstimate FloatWidth.Single
+                IntrinsicPrimitive.ReciprocalSqrtEstimate FloatWidth.Double
+                IntrinsicPrimitive.ReciprocalSqrtEstimate FloatWidth.Single
+                IntrinsicPrimitive.MultiplyAddEstimate FloatWidth.Double
+                IntrinsicPrimitive.MultiplyAddEstimate FloatWidth.Single
+                IntrinsicPrimitive.ConvertToIntegerNative FloatWidth.Double
+                IntrinsicPrimitive.ConvertToIntegerNative FloatWidth.Single
+            ]
+
+    /// PawPrint's virtual CPU never requires alignment, so only the null faults are compared.
+    [<Test>]
+    let ``PawPrint raises exactly the faults each primitive it implements has in its contract`` () : unit =
+        let implemented =
+            calls
+            |> List.filter (fun (primitive, _) -> not (unimplemented.Contains primitive))
+
+        implemented |> List.length |> shouldBeGreaterThan 15
+
+        let image = Roslyn.compile [ guest implemented false ]
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        use peImage = new System.IO.MemoryStream (image)
+
+        match
+            Program.run
+                loggerFactory
+                (Some "IntrinsicContracts.cs")
+                peImage
+                (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
+        with
+        | RunOutcome.NormalExit (state, _) ->
+            match state.LatchedExitCode with
+            | 0 -> ()
+            | code -> failwith (failure implemented code)
+        | other -> failwith $"PawPrint did not run the guest to completion: %O{other}"
+
+
+    /// A primitive is performed at its method's call to itself, so a fault it raises comes from
+    /// that method's frame, as it does on real .NET for a caller compiled for debugging (an
+    /// optimised caller has these atomics expanded in its own body, and loses the frame).
+    [<Test>]
+    let ``a primitive's fault comes from the frame of the method that performs it`` () : unit =
+        let source =
+            """
+using System;
+using System.Diagnostics;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+class Program
+{
+    static int Frames(Exception e, string method)
+    {
+        var trace = new StackTrace(e);
+        if (trace.GetFrame(0).GetMethod().Name != method) return 1;
+        if (trace.GetFrame(1).GetMethod().Name != "Main") return 2;
+        return 0;
+    }
+
+    static int Main(string[] args)
+    {
+        try { Interlocked.CompareExchange(ref Unsafe.NullRef<int>(), 1, 0); return 10; }
+        catch (NullReferenceException e) { if (Frames(e, "CompareExchange") != 0) return 11; }
+        try { Interlocked.Exchange(ref Unsafe.NullRef<long>(), 1L); return 20; }
+        catch (NullReferenceException e) { if (Frames(e, "Exchange") != 0) return 21; }
+        try { MemoryMarshal.GetArrayDataReference((int[])null); return 30; }
+        catch (NullReferenceException e) { if (Frames(e, "GetArrayDataReference") != 0) return 31; }
+        return 0;
+    }
+}
+"""
+
+        let image = Roslyn.compile [ source ]
+
+        RealRuntime.executeWithRealRuntime [||] image
+        |> shouldEqual (RealRuntimeResult.NormalExit 0)
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        use peImage = new System.IO.MemoryStream (image)
+
+        match
+            Program.run
+                loggerFactory
+                (Some "PrimitiveFaultFrames.cs")
+                peImage
+                (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
+        with
+        | RunOutcome.NormalExit (state, _) -> state.LatchedExitCode |> shouldEqual 0
+        | other -> failwith $"PawPrint did not run the guest to completion: %O{other}"

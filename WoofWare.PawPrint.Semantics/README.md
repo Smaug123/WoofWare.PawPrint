@@ -35,7 +35,7 @@ What lives here:
   CoreLib intrinsic is called (barriers, atomics, `GetMethodTable`, the estimates, ...), how each
   CoreLib method is recognised as one, and each operation's contract: the faults it raises and
   under what conditions, whether it returns, and the nullness of its result. `TestIntrinsicContracts`
-  holds the contracts to real .NET.
+  holds the contracts to real .NET, and PawPrint's implementations to the contracts.
 * `VmSubstitution` — the IL CoreCLR's VM runs in place of CoreLib's body for each
   `System.Runtime.CompilerServices.Unsafe` method corelib.h binds, transcribed from
   `getILIntrinsicImplementationForUnsafe` (jitinterface.cpp). The interpreter runs a stub where it

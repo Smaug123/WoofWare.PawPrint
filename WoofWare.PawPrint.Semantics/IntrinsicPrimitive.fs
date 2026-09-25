@@ -10,6 +10,12 @@ type AtomicOperand =
     | Int32
     | Int64
 
+/// The operand of an atomic addition: CoreLib has one for these two widths only.
+[<RequireQualifiedAccess>]
+type AtomicAddOperand =
+    | Int32
+    | Int64
+
 /// An operation CoreCLR's runtime performs in code of its own when a CoreLib intrinsic is called:
 /// something no IL body expresses, on any CPU or on the CPU a run describes.
 ///
@@ -31,7 +37,7 @@ type IntrinsicPrimitive =
     /// `Interlocked.Exchange(ref x, value)`, atomically.
     | AtomicExchange of AtomicOperand
     /// `Interlocked.ExchangeAdd(ref x, value)`, atomically, returning the old value.
-    | AtomicAdd of AtomicOperand
+    | AtomicAdd of AtomicAddOperand
     /// `RuntimeHelpers.GetMethodTable(object)`: the object's type pointer.
     | MethodTableOf
     /// `MemoryMarshal.GetArrayDataReference<T>(T[])`: a byref to element 0, without a bounds
@@ -172,8 +178,8 @@ module IntrinsicPrimitive =
             atomicOperand a |> Option.map IntrinsicPrimitive.AtomicExchange
         | "System.Threading", "Interlocked", "ExchangeAdd", [ Shape.RefOf a ; Shape.Of b ], 0 when a = b ->
             match atomicOperand a with
-            | Some AtomicOperand.Int32 -> Some (IntrinsicPrimitive.AtomicAdd AtomicOperand.Int32)
-            | Some AtomicOperand.Int64 -> Some (IntrinsicPrimitive.AtomicAdd AtomicOperand.Int64)
+            | Some AtomicOperand.Int32 -> Some (IntrinsicPrimitive.AtomicAdd AtomicAddOperand.Int32)
+            | Some AtomicOperand.Int64 -> Some (IntrinsicPrimitive.AtomicAdd AtomicAddOperand.Int64)
             | _ -> None
         | "System.Runtime.CompilerServices", "RuntimeHelpers", "GetMethodTable", [ Shape.Of PrimitiveType.Object ], 0 ->
             Some IntrinsicPrimitive.MethodTableOf
@@ -250,8 +256,8 @@ module IntrinsicPrimitive =
         // `gtNewAtomicNode` addresses the location directly: a null one faults at the access, and
         // so can a misaligned one, except that a byte cannot be misaligned.
         | IntrinsicPrimitive.AtomicCompareExchange AtomicOperand.UInt8
-        | IntrinsicPrimitive.AtomicExchange AtomicOperand.UInt8
-        | IntrinsicPrimitive.AtomicAdd AtomicOperand.UInt8 -> dereferencesFirstArgument ResultNullness.NotAReference
+        | IntrinsicPrimitive.AtomicExchange AtomicOperand.UInt8 ->
+            dereferencesFirstArgument ResultNullness.NotAReference
         | IntrinsicPrimitive.AtomicCompareExchange _
         | IntrinsicPrimitive.AtomicExchange _
         | IntrinsicPrimitive.AtomicAdd _ -> atomicallyAccessesFirstArgument ResultNullness.NotAReference
