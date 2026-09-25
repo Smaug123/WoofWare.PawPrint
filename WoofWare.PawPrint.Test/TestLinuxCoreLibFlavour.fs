@@ -189,8 +189,7 @@ public class Program
         loadedCorelibPath terminalState |> shouldEqual (corelibPath frameworkDir)
 
     /// `BitOperations.LeadingZeroCount`'s uint32 and uint64 overloads are modelled as arms, but
-    /// its `(nuint)` overload is allowlisted instead, so on that one PawPrint runs CoreLib's own
-    /// IL. That IL is exactly what differs between flavours: the `IsSupported` guards ahead of
+    /// its `(nuint)` overload is not, so on that one PawPrint runs CoreLib's own IL. That IL is exactly what differs between flavours: the `IsSupported` guards ahead of
     /// the forwarding call are folded to constants when CoreLib was built for another
     /// architecture, and are live calls when it was built for this one. A macOS/arm64 run
     /// therefore cannot stand in for the x64 flavour that CI and production interpret.
@@ -216,14 +215,14 @@ public class Program
         if (BitOperations.LeadingZeroCount(0ul) != 64) return 3;
         if (BitOperations.LeadingZeroCount(1ul) != 63) return 4;
 
-        // The allowlisted forwarder, whose CoreLib IL is what this test exists to run.
+        // The forwarder, whose CoreLib IL is what this test exists to run.
         int width = IntPtr.Size * 8;
         if (BitOperations.LeadingZeroCount((nuint)0) != width) return 5;
         if (BitOperations.LeadingZeroCount((nuint)1) != width - 1) return 6;
         if (BitOperations.LeadingZeroCount(nuint.MaxValue) != 0) return 7;
         if (BitOperations.LeadingZeroCount(default(nuint)) != width) return 8;
 
-        // The allowlisted IBinaryInteger wrappers.
+        // The IBinaryInteger wrappers, whose IL also runs.
         if (uint.LeadingZeroCount(1u) != 31u) return 9;
         if (ulong.LeadingZeroCount(1ul) != 63ul) return 10;
         if (nuint.LeadingZeroCount((nuint)1) != (nuint)(width - 1)) return 11;

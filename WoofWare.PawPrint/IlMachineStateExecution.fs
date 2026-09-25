@@ -1621,30 +1621,6 @@ module IlMachineStateExecution =
         /// caller could usefully continue from: every caller must propagate rather than carry on.
         | Aborted of FatalError
 
-    /// How a call reaches its callee, which decides what a *type-level* `[Intrinsic]` on the
-    /// callee's declaring type demands.
-    ///
-    /// CoreCLR's JIT treats an intrinsic specially only at a call instruction that names it. A
-    /// callee entered through its entry point is compiled as an ordinary method, so the only
-    /// intrinsic-ness that still applies to it is the callee's own: a method-level `[Intrinsic]`,
-    /// under which the runtime may substitute the body (`getMethodInfoHelper`, jitinterface.cpp).
-    /// Whatever in that body relies on the JIT sits at the body's own call instructions, which are
-    /// themselves `NamedByInstruction`.
-    ///
-    /// So a member that only a type-level `[Intrinsic]` marks stops at the unimplemented-intrinsic
-    /// gate when `NamedByInstruction`, but when `ThroughEntryPoint` runs its IL unless PawPrint
-    /// implements it. An implementation, where there is one, serves either route, since it stands
-    /// for the member's body.
-    [<RequireQualifiedAccess>]
-    type CallRoute =
-        /// A `call`, `callvirt` or `newobj` names the callee, in guest code or in an IL stub the
-        /// runtime generates.
-        | NamedByInstruction
-        /// The callee is entered through its entry point: a delegate's invocation, a `calli`, a
-        /// reflective invoke, or the runtime itself running managed code (a class constructor, the
-        /// constructor of an exception it raises).
-        | ThroughEntryPoint
-
     /// What a call site does to the thread on the way into its callee: whether it is still in
     /// cooperative mode when the callee's prologue runs.
     ///
@@ -1844,7 +1820,6 @@ module IlMachineStateExecution =
         (wasClassConstructor : bool)
         (advanceProgramCounterOfCaller : bool)
         (callSiteTransition : CallSiteTransition)
-        (callRoute : CallRoute)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (thread : ThreadId)
@@ -1859,13 +1834,8 @@ module IlMachineStateExecution =
 
         let activeMethodState = threadState.MethodState
 
-        // The method named at the call site, before any virtual/interface resolution. Retained
-        // because the *type-level* `[Intrinsic]` check below is keyed on it; see there.
-        let callSiteMethod = methodToCall
-
         // Virtual/interface resolution runs before the `[Intrinsic]` classification below, so
-        // that `isIntrinsic` and `intrinsicKey` describe the method we are actually about to
-        // execute.
+        // that `intrinsic` describes the method we are actually about to execute.
         let shouldPerformVirtualResolution =
             performInterfaceResolution && methodToCall.DispatchesVirtually
 
@@ -1918,111 +1888,34 @@ module IlMachineStateExecution =
                 failwith
                     $"CallMethod: declaring assembly for %O{methodToCall} is not loaded: %O{methodToCall.DeclaringAssemblyFullName}"
 
-        let getMemberRefParentType (handle : MemberReferenceHandle) : TypeRef =
-            match declaringAssy.Members.[handle].Parent with
-            | MetadataToken.TypeReference r -> declaringAssy.TypeRefs.[r]
-            | x -> failwith $"{x}"
-
-        // Check for intrinsics first
-        let methodHasIntrinsicAttribute =
-            MethodInfo.isJITIntrinsic getMemberRefParentType declaringAssy.Methods methodToCall
-
-        // The two `[Intrinsic]` checks deliberately use different methods as their basis.
+        // Whether the method about to run is a JIT intrinsic, as `IntrinsicBody.isIntrinsic` reads
+        // it off that method and its declaring type: after virtual resolution, so that
+        // `callvirt ICloneable::Clone()` is recognised as `Array::Clone`.
         //
-        //  * Method-level `[Intrinsic]` (above) is a property of the body we are about to run, so
-        //    it is keyed on the post-resolution method. For example,
-        //    `callvirt ICloneable::Clone()` must be recognised as `Array::Clone`.
+        // A method the runtime synthesised is never an intrinsic, and there is no TypeDef row to
+        // ask about one: CoreCLR never intrinsic-classifies synthesised code, and this also covers
+        // the struct-marshal stub, whose owner is the type being *marshalled*.
         //
-        //  * Type-level `[Intrinsic]` is a property of the call site's static type. CoreCLR makes
-        //    every member of such a type an intrinsic only for the hardware-intrinsic classes
-        //    (`fIsHardwareIntrinsic`, methodtablebuilder.cpp); on any other type (`Int128`,
-        //    `Vector128<T>`, ...) PawPrint treats the marker as a gate that sends the type's own
-        //    API surface through review. Either way it says nothing about that type's
-        //    `System.Object` overrides. `Int128.GetHashCode` is plain
-        //    `HashCode.Combine(_lower, _upper)` and carries no method-level attribute, so
-        //    `callvirt Object::GetHashCode()` on a boxed `Int128` must interpret it as normal.
-        //    A callee reached `CallRoute.ThroughEntryPoint` has no call site for the JIT to
-        //    treat specially, so there the type-level check only offers PawPrint's own
-        //    implementation, and an unimplemented member runs its IL rather than stopping at the
-        //    gate (see `IntrinsicResult.Unrecognised` below): a delegate bound by
-        //    `ldvirtftn Object::GetHashCode` on a boxed `Int128` holds `Int128::GetHashCode`
-        //    itself, and must run it just as the `callvirt` does.
-        //
-        // When no resolution happened the two coincide, so this only diverges for `callvirt`.
-        let callSiteDeclaringAssy =
-            match state.LoadedAssembly callSiteMethod.DeclaringAssemblyFullName with
-            | Some assy -> assy
-            | None ->
-                failwith
-                    $"CallMethod: declaring assembly for call-site method %O{callSiteMethod} is not loaded: %O{callSiteMethod.DeclaringAssemblyFullName}"
-
-        let callSiteGetMemberRefParentType (handle : MemberReferenceHandle) : TypeRef =
-            match callSiteDeclaringAssy.Members.[handle].Parent with
-            | MetadataToken.TypeReference r -> callSiteDeclaringAssy.TypeRefs.[r]
-            | x -> failwith $"{x}"
-
-        // An abstract call-site declaration has no IL of its own, so a type-level `[Intrinsic]`
-        // inherited from it is a hint about the interface, not about the override we resolved
-        // to. `IEnumerator<T>` carries a type-level `[Intrinsic]`, so without this suppression
-        // every `callvirt IEnumerator<T>::get_Current()` would be rejected even though it
-        // resolves to an ordinary `SZGenericArrayEnumerator<T>` body.
-        let callSiteBodyIsAbstract =
-            match callSiteMethod.Body with
-            | MethodBody.Abstract -> true
-            | _ -> false
-
-        // A method the runtime synthesised is never an intrinsic, and asking whether it is would
-        // crash: both of the remaining questions -- the type-level `[Intrinsic]` and the method
-        // key -- read a TypeDef row, and a `Reflection.Emit` method has none. `isJITIntrinsic`
-        // already answers `false` for a synthesised method on the same reasoning
-        // (Domain/MethodInfo.fs), so this keys on the same thing rather than on whether the owner
-        // happens to be a type.
-        //
-        // Keyed on the *kind* rather than on `TryDeclaringType`: CoreCLR never
-        // intrinsic-classifies synthesised code, and this also covers
-        // the struct-marshal stub, whose owner is the type being *marshalled*: without this, a
-        // `[Intrinsic]`-attributed struct being marshalled would divert its stub into
-        // `Intrinsics.call` and fail with a TODO naming the subject type.
-        //
-        // `callSiteMethod` need not be tested separately: a synthesised method has
-        // `DispatchesVirtually = false` and this path is reached with
-        // `performInterfaceResolution = false`, so resolution can never make one of the pair
-        // synthesised and the other not.
-        let isSynthesised =
+        // `[Intrinsic]` on an abstract method is a JIT inlining hint for the call site only: there
+        // is no body to implement or to run. Virtual resolution has already run above, so this
+        // matters only where it was skipped or found no implementation.
+        let intrinsic : (MethodDefinitionHandle * IntrinsicMethodKeys.IntrinsicMethodKey) option =
             match methodToCall with
-            | MethodInfo.Synthesised _ -> true
-            | MethodInfo.Metadata _ -> false
+            | MethodInfo.Synthesised _ -> None
+            | MethodInfo.Metadata (_, facts) ->
+                match methodToCall.Body with
+                | MethodBody.Abstract -> None
+                | MethodBody.Il _
+                | MethodBody.InternalCall
+                | MethodBody.PInvoke
+                | MethodBody.RuntimeProvided _ ->
+                    if IntrinsicBody.isIntrinsic declaringAssy facts.Handle then
+                        Some (facts.Handle, Intrinsics.methodKey state methodToCall)
+                    else
+                        None
 
-        let declaringTypeHasIntrinsicAttribute =
-            not isSynthesised
-            && not callSiteBodyIsAbstract
-            && MethodInfo.hasIntrinsicAttribute
-                callSiteGetMemberRefParentType
-                callSiteDeclaringAssy.Methods
-                callSiteDeclaringAssy.TypeDefs.[callSiteMethod.RequiredDeclaringType.Definition.Get].Attributes
-
-        // `[Intrinsic]` on an abstract/interface method is a JIT inlining hint for the
-        // call site only — there is no IL to interpret. Virtual resolution has already run
-        // above, so `methodToCall` is normally the concrete override and this guard rarely
-        // triggers. It only matters when resolution was skipped (`performInterfaceResolution = false`)
-        // or found no implementation.
-        let isAbstractBody =
-            match methodToCall.Body with
-            | MethodBody.Abstract -> true
-            | _ -> false
-
-        let isIntrinsic =
-            (methodHasIntrinsicAttribute || declaringTypeHasIntrinsicAttribute)
-            && not isAbstractBody
-
-        // `None` exactly when there is no metadata to key on; see `isSynthesised` above. Every
-        // consumer below therefore has to say what it does for a synthesised method, and each says
-        // the same thing: it is not that intrinsic.
         let intrinsicKey : IntrinsicMethodKeys.IntrinsicMethodKey option =
-            if isSynthesised then
-                None
-            else
-                Some (Intrinsics.methodKey state methodToCall)
+            intrinsic |> Option.map snd
 
         // `static T Activator.CreateInstance<T>()` is marked `[Intrinsic]` because the JIT inlines it
         // to an allocate+ctor sequence. The managed IL bottoms out in InternalCalls
@@ -2216,7 +2109,6 @@ module IlMachineStateExecution =
                     false
                     false
                     advanceProgramCounterOfCaller
-                    CallRoute.ThroughEntryPoint
                     concretizedCtor.Generics
                     concretizedCtor
                     thread
@@ -2230,20 +2122,10 @@ module IlMachineStateExecution =
             else
                 None
 
-        // `None` for a method the gate does not apply to. The body is fingerprinted only when a
-        // `safeIntrinsics` row names the method.
-        let state, gateVerdict =
-            match intrinsicKey with
-            | Some key when isIntrinsic ->
-                let state, verdict = IntrinsicMethodKeys.safeIntrinsicVerdict state methodToCall key
-                state, Some verdict
-            | _ -> state, None
-
         match
-            match gateVerdict with
-            | None
-            | Some IntrinsicMethodKeys.SafeIntrinsicVerdict.Reviewed -> None
-            | Some verdict ->
+            match intrinsic with
+            | None -> None
+            | Some (handle, key) ->
                 match tryHandleActivatorCreateInstance () with
                 | Some result -> Some result
                 | None ->
@@ -2271,55 +2153,22 @@ module IlMachineStateExecution =
                     raiseRuntimeExceptionWithMessage loggerFactory baseClassTypes exnType message thread state
                     |> fst
                     |> fun state -> Some (state, CallCommitment.Raised)
-                | IntrinsicResult.Unrecognised when
-                    not methodHasIntrinsicAttribute
-                    && (
-                        match callRoute with
-                        | CallRoute.ThroughEntryPoint -> true
-                        | CallRoute.NamedByInstruction -> false
-                    )
-                    ->
-                    // Only the type-level gate sent this here, and it does not apply off a call
-                    // instruction; see `CallRoute`. A method-level `[Intrinsic]` still stops,
-                    // because the runtime may substitute that method's body on every route.
-                    None
                 | IntrinsicResult.Unrecognised ->
-                    // Refusing guards against *interpreting* an `[Intrinsic]` body the JIT may
-                    // always replace. Only an IL body can be interpreted. Any other body is
-                    // already PawPrint's implementation of the method -- `NativeDispatch` for an
-                    // InternalCall or P/Invoke, delegate or accessor dispatch for a
-                    // runtime-provided body -- so the call proceeds to it as though unmarked.
-                    //
-                    // That is CoreCLR's order too: `impIntrinsic` (importercalls.cpp) tries to
-                    // expand the intrinsic and otherwise emits an ordinary call. Outside NativeAOT
-                    // it insists on expansion only for a method's recursive call to itself
-                    // (importercalls.cpp:3104), which a method with no IL cannot make.
-                    match methodToCall.Body with
-                    | MethodBody.Il _ ->
-                        // A verdict exists only when `isIntrinsic` held, which needs the key.
-                        let key = Intrinsics.formatMethodKey (Option.get intrinsicKey)
-
-                        match verdict with
-                        | IntrinsicMethodKeys.SafeIntrinsicVerdict.NotListed ->
-                            failwith
-                                $"TODO: implement JIT intrinsic %s{key}, or add it to safeIntrinsics after reviewing its IL"
-                        | IntrinsicMethodKeys.SafeIntrinsicVerdict.UnreviewedBody (found, reviewed) ->
-                            let reviewed = reviewed |> List.map _.Hex |> String.concat ", "
-
-                            failwith
-                                $"TODO: JIT intrinsic %s{key} is listed in safeIntrinsics, but its IL body has fingerprint %s{found.Hex}, which is not one its row reviewed (%s{reviewed}). Review this body's IL and add its fingerprint to the row, or implement it in Intrinsics.call"
-                        | IntrinsicMethodKeys.SafeIntrinsicVerdict.ListedWithoutIlBody ->
-                            failwith
-                                $"logic error: %s{key} has an IL body, but the safeIntrinsics verdict found none to fingerprint"
-                        | IntrinsicMethodKeys.SafeIntrinsicVerdict.Reviewed ->
-                            failwith
-                                $"logic error: %s{key} was reviewed as safe to interpret, so it cannot reach the refusal of an unreviewed intrinsic"
-                    | MethodBody.InternalCall
-                    | MethodBody.PInvoke
-                    | MethodBody.RuntimeProvided _ -> None
-                    | MethodBody.Abstract ->
+                    // PawPrint has no implementation of its own, so the call gets what CoreCLR runs
+                    // when its JIT does not expand the call: the method's IL, unless that IL is a
+                    // placeholder. A body with no IL is already PawPrint's implementation of the
+                    // method -- `NativeDispatch` for an InternalCall or P/Invoke, delegate or accessor
+                    // dispatch for a runtime-provided body -- so the call proceeds to it as though
+                    // unmarked.
+                    match IntrinsicBody.classify declaringAssy handle with
+                    | IntrinsicBody.OwnIl
+                    | IntrinsicBody.NoIl -> None
+                    | IntrinsicBody.JitExpansion ->
                         failwith
-                            $"logic error: %s{Intrinsics.formatMethodKey (Option.get intrinsicKey)} was classified as an intrinsic, but its body is abstract, which `isIntrinsic` excludes"
+                            $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey key} in Intrinsics.call: its IL calls itself, which is CoreCLR's placeholder for a body its JIT must expand"
+                    | IntrinsicBody.VmSubstitution ->
+                        failwith
+                            $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey key} in Intrinsics.call: CoreCLR's VM substitutes its body, and the IL CoreLib ships in its place cannot return"
         with
         | Some result -> result
         | None ->
@@ -2602,7 +2451,6 @@ module IlMachineStateExecution =
         (performInterfaceResolution : bool)
         (wasClassConstructor : bool)
         (advanceProgramCounterOfCaller : bool)
-        (callRoute : CallRoute)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (thread : ThreadId)
@@ -2628,7 +2476,6 @@ module IlMachineStateExecution =
             // and the wrapper's own guard below then fails loudly, because such a caller has no way
             // to propagate the abort.
             CallSiteTransition.StaysCooperative
-            callRoute
             methodGenerics
             methodToCall
             thread
@@ -2820,7 +2667,6 @@ module IlMachineStateExecution =
                     true
                     true
                     false
-                    CallRoute.ThroughEntryPoint
                     // constructor is surely not generic
                     ImmutableArray.Empty
                     fullyConvertedMethod
@@ -2956,7 +2802,6 @@ module IlMachineStateExecution =
                 false // no interface resolution
                 false // wasClassConstructor
                 false // do NOT advance caller PC — dispatch needs the faulting instruction's offset
-                CallRoute.ThroughEntryPoint
                 concretizedCtor.Generics
                 concretizedCtor
                 currentThread

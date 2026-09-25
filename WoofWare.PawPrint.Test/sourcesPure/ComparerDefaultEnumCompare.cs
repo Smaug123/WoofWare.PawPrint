@@ -2,10 +2,10 @@ using System.Collections.Generic;
 
 // Calling the comparer `Comparer<TEnum>.Default` returns. Which comparer that *selection* picks is
 // the sibling `ComparerDefault.cs`'s subject; here `EnumComparer<T>.Compare` delegates to
-// `RuntimeHelpers.EnumCompareTo<T>`, an [Intrinsic] PawPrint runs as IL via the `safeIntrinsics`
-// allowlist rather than servicing itself.
+// `RuntimeHelpers.EnumCompareTo<T>`, an [Intrinsic] whose own IL PawPrint runs rather than
+// servicing it itself.
 //
-// One enum per underlying type, because the IL that entry admits bottoms out in
+// One enum per underlying type, because that IL bottoms out in
 // `Enum.CompareTo(object)`, which switches on the runtime element type and calls that primitive's
 // own `CompareTo` — so the underlying type is the axis along which the comparison can go wrong, and
 // an int-backed enum alone pins only one of the eight arms a C# enum can reach.

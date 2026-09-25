@@ -153,13 +153,8 @@ public class BitOperationsPopCountTests
     public static int TestUInt128Wrapper()
     {
         // UInt128's PopCount carries no method-level [Intrinsic], but its declaring type does,
-        // and a type-level marker routes every member -- so this needs its own allowlist entry.
-        // Its body is ulong.PopCount(_lower) + ulong.PopCount(_upper).
-        //
-        // Conversions are spelled from `ulong` so they bind to the widening op_Implicit that
-        // PR #1132 allowlisted; `(UInt128)0` would instead emit op_Explicit(Int32), which is
-        // not part of that cluster. Comparisons are spelled `!(a == b)` for the same reason:
-        // that cluster has op_Equality but no op_Inequality.
+        // so it is an intrinsic whose own IL runs. Its body is
+        // ulong.PopCount(_lower) + ulong.PopCount(_upper).
         if (!(UInt128.PopCount((UInt128)0ul) == (UInt128)0ul)) return 164;
         if (!(UInt128.PopCount((UInt128)1ul) == (UInt128)1ul)) return 165;
         if (!(UInt128.PopCount((UInt128)ulong.MaxValue) == (UInt128)64ul)) return 166;
@@ -180,9 +175,8 @@ public class BitOperationsPopCountTests
 
     public static int TestInt128Wrapper()
     {
-        // Int128.PopCount is reachable without any conversion at all -- `default(Int128)` needs
-        // neither a ctor nor an operator -- so it needs its own allowlist entry despite the
-        // method carrying no [Intrinsic] of its own; the type-level one on Int128 routes it.
+        // Int128.PopCount carries no [Intrinsic] of its own; the type-level one on Int128 makes it
+        // an intrinsic whose own IL runs.
         // Its body is ulong.PopCount(_lower) + ulong.PopCount(_upper), widened back to Int128.
         if (!(Int128.PopCount(default(Int128)) == (Int128)0ul)) return 180;
         if (!(Int128.PopCount((Int128)1ul) == (Int128)1ul)) return 181;

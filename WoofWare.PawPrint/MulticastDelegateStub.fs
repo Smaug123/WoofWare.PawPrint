@@ -258,7 +258,6 @@ module MulticastDelegateStub =
                     false
                     false // this frame has no program counter to advance
                     IlMachineStateExecution.CallSiteTransition.StaysCooperative
-                    IlMachineStateExecution.CallRoute.NamedByInstruction
                     invoke.Generics
                     invoke
                     thread

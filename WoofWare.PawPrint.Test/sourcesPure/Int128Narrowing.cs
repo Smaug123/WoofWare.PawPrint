@@ -2,19 +2,15 @@ using System;
 
 public class Int128NarrowingTests
 {
-    // `Int128` carries a *type-level* [Intrinsic], so every member of it reaches PawPrint's
-    // intrinsic dispatcher. The allowlisted members are `.ctor(ulong, ulong)`, `op_Equality`,
-    // `op_Inequality`, `get_MinValue`, `get_MaxValue`, the widening `op_Implicit` overloads,
-    // `op_Addition`, `op_LessThan`, `op_GreaterThan`, and now the narrowing `op_Explicit` *to
-    // Int64 only*. So this file may cast an `Int128` to `long` but to nothing else, and may not
-    // spell `<=` or `>=` between two `Int128`s.
+    // `Int128` carries a *type-level* [Intrinsic], so every member of it is a JIT intrinsic to
+    // PawPrint, which runs a member's own IL unless `Intrinsics.call` implements it.
+    // The subject here is the narrowing `op_Explicit` to `Int64`.
     //
     // `op_Explicit(Int128) -> long` is `ldarg.0; ldfld _lower; ret`: it returns the low half
     // reinterpreted as signed and never looks at the high half. That makes it unchecked by
     // construction -- there is no branch in which it could throw -- and it is the reason a value
     // outside `long`'s range narrows to its low 64 bits rather than faulting. C#'s `checked` cast
-    // calls `op_CheckedExplicit`, a different method that is not allowlisted and does not appear
-    // here.
+    // calls `op_CheckedExplicit`, a different method, which does not appear here.
 
     public static int TestSmallValuesRoundTrip()
     {
@@ -75,7 +71,7 @@ public class Int128NarrowingTests
 
     public static int TestAgreesWithTheOrderingAndAddition()
     {
-        // The three allowlisted operations have to tell one story. Adding 1 to a value whose low
+        // Narrowing, ordering and addition have to tell one story. Adding 1 to a value whose low
         // half is all ones carries into the high half, so the narrowed result drops from -1 to 0
         // even though the 128-bit value went *up*.
         Int128 lowAllOnes = new Int128(0ul, ulong.MaxValue);
@@ -90,7 +86,7 @@ public class Int128NarrowingTests
 
 public class TimeSpanFromMillisecondsTests
 {
-    // The reason the four Int128 members above were allowlisted at all.
+    // Why the Int128 members above matter to a real program.
     // `TimeSpan.FromMilliseconds(long milliseconds, long microseconds)` computes
     //   Int128 totalMicroseconds = Math.BigMul(milliseconds, 1000) + microseconds;
     // and then `FromMicroseconds(Int128)` bound-checks it with `>` and `<` before narrowing with

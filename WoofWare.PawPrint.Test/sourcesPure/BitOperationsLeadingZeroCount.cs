@@ -91,8 +91,8 @@ public class BitOperationsLeadingZeroCountTests
     {
         // The wrappers UInt32/UInt64/UIntPtr/Int32/Int64/IntPtr.LeadingZeroCount are
         // themselves [Intrinsic] in CoreLib, but their IL bodies are simple
-        // `(T)BitOperations.LeadingZeroCount(value)` calls. Exercise them directly to
-        // guard the safeIntrinsics entries that let their IL run.
+        // `(T)BitOperations.LeadingZeroCount(value)` calls. Exercise them directly, since it is
+        // their own IL that runs.
         int width = IntPtr.Size * 8;
 
         if (uint.LeadingZeroCount(0u) != 32u) return 1;

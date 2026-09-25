@@ -3,9 +3,9 @@ using System.Collections.Generic;
 // Calling the equality comparer `EqualityComparer<TEnum>.Default` returns. Which comparer that
 // *selection* picks is the sibling `ComparerDefault.cs`'s subject; here
 // `EnumEqualityComparer<T>.Equals` delegates to `RuntimeHelpers.EnumEquals<T>`, an [Intrinsic]
-// PawPrint runs as IL via the `safeIntrinsics` allowlist rather than servicing itself.
+// whose own IL PawPrint runs rather than servicing it itself.
 //
-// One enum per underlying type, because the IL that entry admits bottoms out in
+// One enum per underlying type, because that IL bottoms out in
 // `Enum.Equals(object)`, which switches on the runtime element type and compares the two boxes'
 // raw bytes at that type's *width*. Width is the whole axis here, and it is the one an int-backed
 // enum alone cannot pin: signedness does not enter, since that switch folds I1 with U1, I2 with U2

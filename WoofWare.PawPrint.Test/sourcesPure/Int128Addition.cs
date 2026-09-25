@@ -2,12 +2,9 @@ using System;
 
 public class Int128AdditionTests
 {
-    // `Int128` carries a *type-level* [Intrinsic], so every member of it reaches PawPrint's
-    // intrinsic dispatcher. Only the allowlisted members may appear here: `.ctor(ulong, ulong)`,
-    // `op_Equality`, `op_Inequality`, `get_MinValue`, `get_MaxValue`, the widening `op_Implicit`
-    // overloads, and `op_Addition` itself. Nothing here may call `ToString`, `Equals`,
-    // `GetHashCode`, the comparison operators, `get_Zero`/`get_One`, or the narrowing
-    // `op_Explicit` conversions.
+    // `Int128` carries a *type-level* [Intrinsic], so every member of it is a JIT intrinsic to
+    // PawPrint, which runs a member's own IL unless `Intrinsics.call` implements it.
+    // The subject here is `op_Addition`.
     //
     // op_Addition's body is
     //   ldarg.0; ldfld _lower; ldarg.1; ldfld _lower; add; stloc.0

@@ -183,16 +183,12 @@ set is a deliberate commit against a pinned image.
 primitive *does* or which route a method takes, the fact cannot be classified from the image's
 shape, and lives in a table instead — keyed on a runtime only where nothing finer will do:
 
-* `IntrinsicMethodKeys`' `safeIntrinsics` rows name no version at all. Each row carries the
-  fingerprints of the IL bodies its review covered (`IlBodyFingerprint`: a hash of the body's
-  signature, locals, instructions and exception regions, every token rendered by what it
-  names), and the `[Intrinsic]` gate interprets a listed method only when its body is one of
-  them; any other body is refused, naming the fingerprint found. What a row's verdict depends
-  on is the body, so that is what it keys on. A row for a method that is not `[Intrinsic]` on
-  some runtime is never consulted there, so a net11-only row is simply added; a body that
-  changed between majors is refused on the new one until someone re-reviews it and appends
-  its fingerprint. `TestSafeIntrinsicFingerprints` audits the table against the CoreLib the
-  suite runs on and the pinned linux-x64 CoreLib, printing any unreviewed body a row names.
+* `[Intrinsic]` methods need no version key at all. `IntrinsicBody` (in
+  `WoofWare.PawPrint.Semantics`) classifies each by its body, as CoreCLR treats it: its own
+  IL, a self-calling placeholder the JIT must expand, or a placeholder the VM substitutes.
+  PawPrint runs the first and refuses the other two unless `Intrinsics.call` implements them.
+  A body that changed between majors therefore runs as it now stands; only a method that
+  became a placeholder needs an implementation.
 * `NativeDispatch` keeps the single handler list that `handlersFor` selects; adding
   `Net11` makes that `match` incomplete, which is where the per-runtime composition gets
   decided, against a real image. Nothing composes it earlier, because the measured deltas are
@@ -210,12 +206,12 @@ shape, and lives in a table instead — keyed on a runtime only where nothing fi
 (osx-arm64 and linux-x64), with 10.0.9 as a servicing control that differs from 10.0.7 in none
 of what follows:
 
-* `safeIntrinsics`: of 163 rows, 160 name bodies identical across the two majors. Three name
-  bodies that changed, and each needs re-review, not a version switch:
+* Intrinsic bodies: of the 163 bodies PawPrint's former review list named, 160 are identical
+  across the two majors. Three changed, none of them into a placeholder:
   `Span<T>.ToArray` and `ReadOnlySpan<T>.ToArray` (now via `CopyTo`), and
   `Vector<T>.get_IsSupported` (now `call Scalar<T>.get_IsSupported`). Three rows' bodies differ
   between osx-arm64 and linux-x64, on both majors (`BitOperations.PopCount` ×2,
-  `TrailingZeroCount(ulong)`), which is why a row can list more than one fingerprint.
+  `TrailingZeroCount(ulong)`).
 * Native entry points: of the 296 identities PawPrint's handlers name, 32 are absent on net11
   and 2 changed signature. 29 of the absent ones are QCalls or InternalCalls, which only
   CoreLib can declare, so a handler for one the loaded CoreLib does not declare is never
@@ -249,7 +245,7 @@ codebase's review standard.
 | `AppContext.Setup` arity | `SetupShape` classification; four-arg arm reads the out-slot back |
 | `Setup` skips the four host properties; new `AppContext_TryGetHostPropertyValue` QCall | net11 row in the QCall handler set; `appcontext` skill updated alongside |
 | `RuntimeFieldInfoStub` relayout | stub-layout classification, writer and readers together |
-| `EqualityComparer<T>.Create` intrinsic | an ordinary `safeIntrinsics` row with its body's fingerprint; the method does not exist on net10, so the row is never consulted there |
+| `EqualityComparer<T>.Create` intrinsic | nothing: its own IL runs |
 | `FastAllocateString` gained `[Intrinsic]` | **version-agnostic bug, fixed on net10 (stage 2)**: a method PawPrint implements natively must reach that implementation regardless of an `[Intrinsic]` marker; the gate at the `isSafeIntrinsic` check in `IlMachineStateExecution` ran ahead of native dispatch |
 | `Monitor.Enter` runs `ObjectHeader.AcquireThinLock`, reading twelve bytes before `RawData.Data` | real interpreter work (object-header addressing); net11-only code path, exercised by the net11 CI leg |
 | `Environment.CurrentManagedThreadId` reads a thread-static CoreCLR fills natively | net11 row: seed `ManagedThreadId.t_currentManagedThreadId` at thread creation |
@@ -258,9 +254,9 @@ codebase's review standard.
 | `TestLinuxCoreLibFlavour` sentinel import absent from net11 CoreLib | replaced by the `Environment.OSVersion` arm, a distinction both majors have (#1508) |
 | `PosixSignal` membership / `GetPlatformSignalNumber` answers changed | PAL functions `match` on the runtime, arriving with `Net11` |
 | `SystemNative_Kill` takes a raw signo on net11; net10's shim screens `Interop.Sys.Signals` {0, 9, 19} | same; `KillSignalPal`'s screen is net10 behaviour, and on net11 would refuse a raw SIGTERM or Darwin's SIGSTOP (17) with EINVAL |
-| `System.Half` and `SZArrayHelper` carry a *type-level* `[Intrinsic]` on net11 (net10: neither type; `SZArrayHelper.GetEnumerator` alone at method level), so all 265 `Half` members and every `IList<T>`/`ICollection<T>` operation on an array reach the gate | review and fingerprint those bodies as rows, or implement them in `Intrinsics.call`; until then the gate refuses them on net11 |
-| other IL-bodied methods newly `[Intrinsic]` on net11: `Task.FromResult`, `Task.CompletedTask`, seven `ValueTask`/`ValueTask<T>` members, `Comparer<T>.Create`, `Enum.Equals`, `RuntimeHelpers.SetNextCallAsyncContinuation`/`SetNextCallGenericContext`/`WriteBarrier`, three `AsyncHelpers` and three `StructureMarshaler<T>` members, `Interlocked.And<T>`/`Or<T>`/`CompareExchange(int*, int, int)`, and several hundred SIMD and `System.Numerics` members | the same: a row or an `Intrinsics.call` arm each, as the net11 leg reaches them |
-| `Span<T>.ToArray`, `ReadOnlySpan<T>.ToArray` and `Vector<T>.get_IsSupported` bodies changed | the gate refuses them on net11 by fingerprint; re-review, then append the net11 fingerprints (`Scalar<T>.get_IsSupported`, which the last now calls, may need its own row) |
+| `System.Half` and `SZArrayHelper` carry a *type-level* `[Intrinsic]` on net11 (net10: neither type; `SZArrayHelper.GetEnumerator` alone at method level), so all 265 `Half` members and every `IList<T>`/`ICollection<T>` operation on an array are intrinsics | nothing where their IL is their semantics; an `Intrinsics.call` arm for any placeholder among them |
+| other IL-bodied methods newly `[Intrinsic]` on net11: `Task.FromResult`, `Task.CompletedTask`, seven `ValueTask`/`ValueTask<T>` members, `Comparer<T>.Create`, `Enum.Equals`, `RuntimeHelpers.SetNextCallAsyncContinuation`/`SetNextCallGenericContext`/`WriteBarrier`, three `AsyncHelpers` and three `StructureMarshaler<T>` members, `Interlocked.And<T>`/`Or<T>`/`CompareExchange(int*, int, int)`, and several hundred SIMD and `System.Numerics` members | the same: an `Intrinsics.call` arm for each placeholder, as the net11 leg reaches them |
+| `Span<T>.ToArray`, `ReadOnlySpan<T>.ToArray` and `Vector<T>.get_IsSupported` bodies changed | nothing: the new bodies run as IL (`Scalar<T>.get_IsSupported`, which the last now calls, needs an arm if it is a placeholder) |
 | `TestKillSignalPal` reads a type net11 removed | skip the host read on a net11 host (above) |
 
 ## What the RC1 frontier measurement adds
@@ -602,9 +598,9 @@ mutation-testing skill applies to each table/classifier they introduce.
    (current layout live), each with its readers. The fabricated-image machinery
    (`FabricatedGuest`, and the fabricated-image-load-oracle practice) can exercise the
    refusal arms without a net11 CoreLib.
-5. **Fingerprinted intrinsic rows.** Each `safeIntrinsics` row lists the fingerprints of the IL
-   bodies it was reviewed against, and the gate refuses any other body. This needs no version
-   key, so it is the whole of this stage: `NativeDispatch` composition and the versioned PAL
+5. **Intrinsic body classification.** `IntrinsicBody` decides from the body alone whether an
+   `[Intrinsic]` method's IL may run, so it needs no version key, and it is the whole of this
+   stage: `NativeDispatch` composition and the versioned PAL
    rows are decided when `Net11` makes their `match`es incomplete (stage 6), against a real
    image.
 6. **Nix, tests and CI for a second runtime**, as designed above, in PRs that each keep `main`
@@ -644,8 +640,8 @@ mutation-testing skill applies to each table/classifier they introduce.
    * `TestNativeWaitOneCore`'s per-runtime lookup;
    * the thread-static seed, and the `LockHeldByOtherThread.cs` mismatch;
    * the other new QCalls, and the vtable slots;
-   * the `Half` and `SZArrayHelper` type-level `[Intrinsic]`s and the other newly-`[Intrinsic]`
-     bodies, and the three re-reviews of changed `safeIntrinsics` bodies;
+   * any placeholders among the `Half` and `SZArrayHelper` type-level `[Intrinsic]`s and the
+     other newly-`[Intrinsic]` bodies;
    * the two PAL facts, with their out-of-process net11 probes.
 
    Each PR un-parks its cases

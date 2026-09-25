@@ -79,7 +79,7 @@ public class BitOperationsLog2Tests
     {
         // The wrappers UInt32.Log2 / UInt64.Log2 / UIntPtr.Log2 are themselves [Intrinsic]
         // in CoreLib but their IL bodies are simple `(T)BitOperations.Log2(value)` calls.
-        // Exercise them directly to guard the safeIntrinsics entries that let their IL run.
+        // Exercise them directly, since it is their own IL that runs.
         if (uint.Log2(8u) != 3u) return 1;
         if (uint.Log2(0u) != 0u) return 2;
         if (uint.Log2(uint.MaxValue) != 31u) return 3;
