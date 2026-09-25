@@ -2240,9 +2240,11 @@ module IlMachineStateExecution =
                                 false
                                 state
                             |> fun state -> IntrinsicOutcome.Handled (state, CallCommitment.Committed)
-                        | SelfCallExpansion.JitCode ->
+                        | SelfCallExpansion.HardwareInstruction _
+                        | SelfCallExpansion.Primitive _
+                        | SelfCallExpansion.Unrecognised as expanded ->
                             failwith
-                                $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey key} in Intrinsics.call: its IL calls itself, which is CoreCLR's placeholder for a body its JIT must expand, and on this CPU the expansion (%A{expansion}) is code the JIT emits itself"
+                                $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey key} in Intrinsics.call: its IL calls itself, which is CoreCLR's placeholder for a body its JIT must expand, and on this CPU that call is %A{expanded}"
                     | IntrinsicBody.VmSubstitution ->
                         match VmSubstitution.unsafeStub declaringAssy handle with
                         | Some stub ->

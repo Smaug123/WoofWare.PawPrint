@@ -243,9 +243,14 @@ module TestIntrinsicBody =
             "RuntimeHelpers"
             "GetMethodTable"
             [ "object" ]
-            (IntrinsicBody.JitExpansion JitExpansion.Primitive)
+            (IntrinsicBody.JitExpansion (JitExpansion.Primitive IntrinsicPrimitive.MethodTableOf))
 
-        expect "System.Threading" "Volatile" "ReadBarrier" [] (IntrinsicBody.JitExpansion JitExpansion.Primitive)
+        expect
+            "System.Threading"
+            "Volatile"
+            "ReadBarrier"
+            []
+            (IntrinsicBody.JitExpansion (JitExpansion.Primitive IntrinsicPrimitive.ReadBarrier))
         // Placeholders that throw, which the VM replaces.
         expect "System.Runtime.CompilerServices" "Unsafe" "As" [ "object" ] IntrinsicBody.VmSubstitution
         expect "System.Runtime.CompilerServices" "RuntimeHelpers" "IsBitwiseEquatable" [] IntrinsicBody.VmSubstitution
@@ -474,7 +479,14 @@ module TestIntrinsicBody =
         let expansions = expansionsOf corelib
 
         expansions
-        |> List.filter (fun (_, e) -> e <> JitExpansion.Primitive)
+        |> List.filter (fun (_, e) ->
+            match e with
+            | JitExpansion.IsSupportedQuery _
+            | JitExpansion.IsHardwareAcceleratedQuery _
+            | JitExpansion.HardwareInstruction _ -> true
+            | JitExpansion.Primitive _
+            | JitExpansion.Unrecognised -> false
+        )
         |> List.length
         |> shouldBeGreaterThan 1_000
 
@@ -488,7 +500,7 @@ module TestIntrinsicBody =
                             []
 
                     match expansion, IntrinsicBody.expandSelfCall HardwareIntrinsicsProfile.ScalarOnly expansion with
-                    | JitExpansion.Primitive, SelfCallExpansion.JitCode -> ()
+                    | JitExpansion.Primitive p, SelfCallExpansion.Primitive p' when p = p' -> ()
                     | JitExpansion.IsSupportedQuery c, SelfCallExpansion.Constant false
                     | JitExpansion.IsHardwareAcceleratedQuery c, SelfCallExpansion.Constant false
                     | JitExpansion.HardwareInstruction c, SelfCallExpansion.ThrowPlatformNotSupported ->
@@ -515,6 +527,25 @@ module TestIntrinsicBody =
 
         let expand (profile : HardwareIntrinsicsProfile) (e : JitExpansion) = IntrinsicBody.expandSelfCall profile e
 
+        let cpusWithInstructionSets =
+            [
+                supporting
+                    {
+                        Namespace = "System.Runtime.Intrinsics.X86"
+                        Path = [ "X86Base" ]
+                    }
+                supporting
+                    {
+                        Namespace = "System.Runtime.Intrinsics.Arm"
+                        Path = [ "AdvSimd" ]
+                    }
+                accelerating
+                    {
+                        Namespace = "System.Runtime.Intrinsics"
+                        Path = [ "Vector128" ]
+                    }
+            ]
+
         let failures =
             [
                 for m, expansion in expansionsOf corelib do
@@ -534,44 +565,65 @@ module TestIntrinsicBody =
                     | JitExpansion.HardwareInstruction c ->
                         // A CPU that has the instruction runs it.
                         for profile in [ supporting c ; accelerating c ] do
-                            if expand profile expansion <> SelfCallExpansion.JitCode then
+                            if expand profile expansion <> SelfCallExpansion.HardwareInstruction c then
                                 yield $"%s{describe m}: not the JIT's own code on a CPU that has %O{c}"
-                    | JitExpansion.Primitive -> ()
+                    | JitExpansion.Primitive p ->
+                        // The profile does not decide what a primitive computes.
+                        for profile in cpusWithInstructionSets do
+                            if expand profile expansion <> SelfCallExpansion.Primitive p then
+                                yield $"%s{describe m}: not the primitive on a CPU with instruction sets"
+                    | JitExpansion.Unrecognised -> yield $"%s{describe m}: unrecognised"
             ]
 
         if not failures.IsEmpty then
             failwith (String.concat "\n" failures)
 
-    /// The JIT expansions on the pinned linux-x64 CoreLib that are not hardware intrinsics: each
-    /// is an operation CoreCLR's JIT emits code for itself, so no IL can stand in for it.
-    let private linuxPrimitives : string list =
+    /// The JIT expansions on the pinned linux-x64 CoreLib that are not hardware intrinsics, each
+    /// with the operation CoreCLR's JIT emits for it.
+    let private linuxPrimitives : (string * IntrinsicPrimitive) list =
         [
-            "System.Double::ConvertToIntegerNative(float64)"
-            "System.Double::MultiplyAddEstimate(float64, float64, float64)"
-            "System.Math::ReciprocalEstimate(float64)"
-            "System.Math::ReciprocalSqrtEstimate(float64)"
-            "System.MathF::ReciprocalEstimate(single)"
-            "System.MathF::ReciprocalSqrtEstimate(single)"
-            "System.Runtime.CompilerServices.RuntimeHelpers::GetMethodTable(object)"
-            "System.Runtime.CompilerServices.RuntimeHelpers::IsReferenceOrContainsReferences()"
-            "System.Runtime.CompilerServices.StaticsHelpers::VolatileReadAsByref(ref nint)"
-            "System.Runtime.InteropServices.MemoryMarshal::GetArrayDataReference(arr[<method param 0>])"
-            "System.Single::ConvertToIntegerNative(single)"
-            "System.Single::MultiplyAddEstimate(single, single, single)"
-            "System.Threading.Interlocked::CompareExchange(ref int32, int32, int32)"
-            "System.Threading.Interlocked::CompareExchange(ref int64, int64, int64)"
-            "System.Threading.Interlocked::CompareExchange(ref uint16, uint16, uint16)"
-            "System.Threading.Interlocked::CompareExchange(ref uint8, uint8, uint8)"
-            "System.Threading.Interlocked::Exchange(ref int32, int32)"
-            "System.Threading.Interlocked::Exchange(ref int64, int64)"
-            "System.Threading.Interlocked::Exchange(ref uint16, uint16)"
-            "System.Threading.Interlocked::Exchange(ref uint8, uint8)"
-            "System.Threading.Interlocked::ExchangeAdd(ref int32, int32)"
-            "System.Threading.Interlocked::ExchangeAdd(ref int64, int64)"
-            "System.Threading.Interlocked::MemoryBarrier()"
-            "System.Threading.Thread::FastPollGC()"
-            "System.Threading.Volatile::ReadBarrier()"
-            "System.Threading.Volatile::WriteBarrier()"
+            "System.Double::ConvertToIntegerNative(float64)",
+            IntrinsicPrimitive.ConvertToIntegerNative FloatWidth.Double
+            "System.Double::MultiplyAddEstimate(float64, float64, float64)",
+            IntrinsicPrimitive.MultiplyAddEstimate FloatWidth.Double
+            "System.Math::ReciprocalEstimate(float64)", IntrinsicPrimitive.ReciprocalEstimate FloatWidth.Double
+            "System.Math::ReciprocalSqrtEstimate(float64)", IntrinsicPrimitive.ReciprocalSqrtEstimate FloatWidth.Double
+            "System.MathF::ReciprocalEstimate(single)", IntrinsicPrimitive.ReciprocalEstimate FloatWidth.Single
+            "System.MathF::ReciprocalSqrtEstimate(single)", IntrinsicPrimitive.ReciprocalSqrtEstimate FloatWidth.Single
+            "System.Runtime.CompilerServices.RuntimeHelpers::GetMethodTable(object)", IntrinsicPrimitive.MethodTableOf
+            "System.Runtime.CompilerServices.RuntimeHelpers::IsReferenceOrContainsReferences()",
+            IntrinsicPrimitive.IsReferenceOrContainsReferences
+            "System.Runtime.CompilerServices.StaticsHelpers::VolatileReadAsByref(ref nint)",
+            IntrinsicPrimitive.VolatileReadByref
+            "System.Runtime.InteropServices.MemoryMarshal::GetArrayDataReference(arr[<method param 0>])",
+            IntrinsicPrimitive.ArrayDataReference
+            "System.Single::ConvertToIntegerNative(single)", IntrinsicPrimitive.ConvertToIntegerNative FloatWidth.Single
+            "System.Single::MultiplyAddEstimate(single, single, single)",
+            IntrinsicPrimitive.MultiplyAddEstimate FloatWidth.Single
+            "System.Threading.Interlocked::CompareExchange(ref int32, int32, int32)",
+            IntrinsicPrimitive.AtomicCompareExchange AtomicOperand.Int32
+            "System.Threading.Interlocked::CompareExchange(ref int64, int64, int64)",
+            IntrinsicPrimitive.AtomicCompareExchange AtomicOperand.Int64
+            "System.Threading.Interlocked::CompareExchange(ref uint16, uint16, uint16)",
+            IntrinsicPrimitive.AtomicCompareExchange AtomicOperand.UInt16
+            "System.Threading.Interlocked::CompareExchange(ref uint8, uint8, uint8)",
+            IntrinsicPrimitive.AtomicCompareExchange AtomicOperand.UInt8
+            "System.Threading.Interlocked::Exchange(ref int32, int32)",
+            IntrinsicPrimitive.AtomicExchange AtomicOperand.Int32
+            "System.Threading.Interlocked::Exchange(ref int64, int64)",
+            IntrinsicPrimitive.AtomicExchange AtomicOperand.Int64
+            "System.Threading.Interlocked::Exchange(ref uint16, uint16)",
+            IntrinsicPrimitive.AtomicExchange AtomicOperand.UInt16
+            "System.Threading.Interlocked::Exchange(ref uint8, uint8)",
+            IntrinsicPrimitive.AtomicExchange AtomicOperand.UInt8
+            "System.Threading.Interlocked::ExchangeAdd(ref int32, int32)",
+            IntrinsicPrimitive.AtomicAdd AtomicOperand.Int32
+            "System.Threading.Interlocked::ExchangeAdd(ref int64, int64)",
+            IntrinsicPrimitive.AtomicAdd AtomicOperand.Int64
+            "System.Threading.Interlocked::MemoryBarrier()", IntrinsicPrimitive.FullBarrier
+            "System.Threading.Thread::FastPollGC()", IntrinsicPrimitive.GcPoll
+            "System.Threading.Volatile::ReadBarrier()", IntrinsicPrimitive.ReadBarrier
+            "System.Threading.Volatile::WriteBarrier()", IntrinsicPrimitive.WriteBarrier
         ]
 
     [<Test>]
@@ -580,8 +632,11 @@ module TestIntrinsicBody =
 
         let found =
             expansionsOf corelib
-            |> List.filter (fun (_, e) -> e = JitExpansion.Primitive)
-            |> List.map (fst >> describe)
+            |> List.choose (fun (m, e) ->
+                match e with
+                | JitExpansion.Primitive p -> Some (describe m, p)
+                | _ -> None
+            )
             |> Set.ofList
 
         let expected = Set.ofList linuxPrimitives
@@ -589,9 +644,76 @@ module TestIntrinsicBody =
         let missing = Set.difference expected found
 
         if not unexpected.IsEmpty || not missing.IsEmpty then
-            let unexpected = unexpected |> Seq.map (sprintf "  %s") |> String.concat "\n"
-            let missing = missing |> Seq.map (sprintf "  %s") |> String.concat "\n"
-            failwith $"primitives not on the list:\n%s{unexpected}\nlisted but not primitives:\n%s{missing}"
+            let show (entries : Set<string * IntrinsicPrimitive>) =
+                entries |> Seq.map (fun (m, p) -> $"  %s{m} as %A{p}") |> String.concat "\n"
+
+            failwith $"primitives not on the list:\n%s{show unexpected}\nlisted but not found:\n%s{show missing}"
+
+    [<TestCaseSource(nameof coreLibs)>]
+    let ``every JIT expansion in CoreLib is recognised`` (which : string) : unit =
+        let corelib = coreLib which
+
+        let unrecognised =
+            expansionsOf corelib
+            |> List.filter (fun (_, e) -> e = JitExpansion.Unrecognised)
+            |> List.map (fst >> describe)
+
+        if not unrecognised.IsEmpty then
+            failwith (String.concat "\n" unrecognised)
+
+    /// Whether a parameter or return type can hold a null: a reference, a byref or a pointer.
+    let rec private canBeNull (ty : TypeDefn) : bool =
+        match ty with
+        | TypeDefn.Modified m -> canBeNull m.Unmodified
+        | TypeDefn.PrimitiveType PrimitiveType.Object
+        | TypeDefn.PrimitiveType PrimitiveType.String
+        | TypeDefn.Byref _
+        | TypeDefn.Pointer _
+        | TypeDefn.OneDimensionalArrayLowerBoundZero _
+        | TypeDefn.Array _ -> true
+        | _ -> false
+
+    [<TestCaseSource(nameof coreLibs)>]
+    let ``every primitive's contract fits the signature of each method that performs it`` (which : string) : unit =
+        let corelib = coreLib which
+
+        let primitives =
+            methodsOf corelib
+            |> List.choose (fun m -> IntrinsicPrimitive.recognise corelib m.Handle |> Option.map (fun p -> m, p))
+
+        primitives |> List.length |> shouldBeGreaterThan 25
+
+        let failures =
+            [
+                for m, p in primitives do
+                    let definition = corelib.Methods.[m.Handle]
+                    let parameters = definition.Signature.ParameterTypes
+                    let contract = IntrinsicPrimitive.contract p
+
+                    for _, condition in contract.Raises do
+                        match condition with
+                        | FaultCondition.ArgumentNull i ->
+                            if i >= parameters.Length || not (canBeNull parameters.[i]) then
+                                yield $"%s{describe m}: %A{p} faults on a null argument %d{i}, which cannot be null"
+                        | FaultCondition.ArgumentMisaligned i ->
+                            if i >= parameters.Length || not (canBeNull parameters.[i]) then
+                                yield
+                                    $"%s{describe m}: %A{p} faults on a misaligned argument %d{i}, which addresses nothing"
+
+                    match contract.Result, definition.Signature.ReturnType with
+                    | ResultNullness.NotAReference, MethodReturnType.Returns ty when canBeNull ty ->
+                        yield $"%s{describe m}: %A{p} returns %O{ty}, but its contract says no reference"
+                    | (ResultNullness.NonNull | ResultNullness.MaybeNull), MethodReturnType.Returns ty when
+                        not (canBeNull ty)
+                        ->
+                        yield $"%s{describe m}: %A{p} returns %O{ty}, but its contract describes a reference"
+                    | (ResultNullness.NonNull | ResultNullness.MaybeNull), MethodReturnType.Void ->
+                        yield $"%s{describe m}: %A{p} returns nothing, but its contract describes a reference"
+                    | _ -> ()
+            ]
+
+        if not failures.IsEmpty then
+            failwith (String.concat "\n" failures)
 
     // -- Fabricated images: each route by which a body can name itself, and what does not count --
 
@@ -788,13 +910,13 @@ module TestIntrinsicBody =
                 "Methods",
                 "SelfDirect",
                 ([] : string list),
-                IntrinsicBody.JitExpansion JitExpansion.Primitive
+                IntrinsicBody.JitExpansion JitExpansion.Unrecognised
             )
             TestCaseData (
                 "Methods",
                 "SelfGeneric",
                 ([] : string list),
-                IntrinsicBody.JitExpansion JitExpansion.Primitive
+                IntrinsicBody.JitExpansion JitExpansion.Unrecognised
             )
             TestCaseData ("Methods", "CallsOverload", [ "int32" ], IntrinsicBody.OwnIl)
             TestCaseData ("Methods", "AlwaysThrows", ([] : string list), IntrinsicBody.OwnIl)
@@ -803,14 +925,14 @@ module TestIntrinsicBody =
                 "Generic",
                 "SelfOnGeneric",
                 ([] : string list),
-                IntrinsicBody.JitExpansion JitExpansion.Primitive
+                IntrinsicBody.JitExpansion JitExpansion.Unrecognised
             )
             TestCaseData ("IntrinsicType", "Plain", ([] : string list), IntrinsicBody.OwnIl)
             TestCaseData (
                 "IntrinsicType",
                 "Placeholder",
                 ([] : string list),
-                IntrinsicBody.JitExpansion JitExpansion.Primitive
+                IntrinsicBody.JitExpansion JitExpansion.Unrecognised
             )
             TestCaseData ("Unsafe", "As", [ "object" ], IntrinsicBody.OwnIl)
         ]
@@ -918,7 +1040,7 @@ module TestIntrinsicBody =
             |> List.exactlyOne
 
         IntrinsicBody.classify assembly m.Handle
-        |> shouldEqual (IntrinsicBody.JitExpansion JitExpansion.Primitive)
+        |> shouldEqual (IntrinsicBody.JitExpansion JitExpansion.Unrecognised)
 
     [<Test>]
     let ``a placeholder naming itself through a TypeRef is refused rather than recursed into`` () : unit =

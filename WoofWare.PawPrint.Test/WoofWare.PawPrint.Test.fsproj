@@ -318,6 +318,7 @@
     <Compile Include="TestUnresolvableDeclaration.fs" />
     <Compile Include="TestCrossAssemblySlotContent.fs" />
     <Compile Include="LinuxCoreLibFlavour.fs" />
+    <Compile Include="TestIntrinsicContracts.fs" />
     <Compile Include="TestHardwareIntrinsicsProfile.fs" />
     <Compile Include="TestEmulatedRuntime.fs" />
     <Compile Include="TestLinuxCoreLibFlavour.fs" />
