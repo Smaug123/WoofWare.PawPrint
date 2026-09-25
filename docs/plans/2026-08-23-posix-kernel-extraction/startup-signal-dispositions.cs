@@ -11,7 +11,10 @@
 // DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1.
 //
 // Measured 2026-09-24 on .NET 10.0.7 / Darwin 25.6.0 arm64 and .NET 10.0.12 /
-// Linux 6.18.5 aarch64 (glibc 2.41). The survivors are transcribed in
+// Linux 6.18.5 aarch64 (glibc 2.41), and on 2026-09-25 on .NET 10.0.12 /
+// Linux x86-64 under Rosetta (`container run --arch amd64`). The x86-64 run
+// differs in one row: SIGTRAP exits 132 (SIGILL) instead of surviving. The
+// signals that do not kill the process as their default says are transcribed in
 // WoofWare.PawPrint/Native/StartupSignalDispositions.fs, and
 // WoofWare.PawPrint.Test/TestStartupSignalDispositions.fs repeats the
 // survival half against the host's runtime.

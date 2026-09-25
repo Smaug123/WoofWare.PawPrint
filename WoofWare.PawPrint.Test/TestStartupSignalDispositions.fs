@@ -9,9 +9,9 @@ open WoofWare.PosixKernel
 open WoofWare.PosixKernel.Test
 
 /// `StartupSignalDispositions` against the real runtime this test host runs:
-/// a program that sends itself each signal in turn must survive exactly the
-/// signals the table and the kernel's defaults say it survives, and die of
-/// every other.
+/// a program that sends itself each signal in turn must end as the kernel's
+/// default says for every signal the table does not name, and must not end
+/// that way for any signal it does.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestStartupSignalDispositions =
@@ -55,7 +55,7 @@ class Program
 """
 
     [<Test>]
-    let ``the host runtime survives exactly the signals the table says it does`` () : unit =
+    let ``the host runtime departs from the kernel default exactly where the table says`` () : unit =
         HostPlatform.onUnixHost (fun flavour ->
             let numbering =
                 SimulatedUnixPlatform.signalNumbering (HostPlatform.platformOf flavour)
@@ -90,26 +90,38 @@ class Program
                             | ValueSome signal -> signal
                             | ValueNone -> failwith "unreachable: filtered above"
 
-                        let survives =
-                            StartupSignalDispositions.survivesDespiteTerminatingDefault numbering signal
-                            || Signal.defaultDispositionUnder numbering signal <> DefaultDisposition.Terminate
+                        let diedOfIt = RealRuntimeResult.NormalExit (128 + signo)
+                        let survived = RealRuntimeResult.NormalExit 42
 
-                        let expected =
-                            if survives then
-                                RealRuntimeResult.NormalExit 42
-                            else
-                                RealRuntimeResult.NormalExit (128 + signo)
+                        let overridden =
+                            StartupSignalDispositions.overridesTerminatingDefault numbering signal
+
+                        let terminatesByDefault =
+                            Signal.defaultDispositionUnder numbering signal = DefaultDisposition.Terminate
 
                         // A row the launcher ignores says nothing about the
-                        // runtime unless the runtime survives it anyway.
-                        let inherited = hostIgnores signo && not survives
+                        // runtime unless the runtime's own disposition decides
+                        // it anyway.
+                        let inherited = hostIgnores signo && terminatesByDefault && not overridden
 
                         if inherited then
                             printfn
                                 $"signo %d{signo} (%O{signal}): not checked, because this test host ignores it and the oracle's child inherits that."
-                        elif observed.[signo] <> expected then
-                            yield
-                                $"signo %d{signo} (%O{signal}): expected %O{expected}, the real runtime gave %O{observed.[signo]}"
+                        elif overridden then
+                            // What the runtime's disposition does instead is
+                            // not one answer: the process survives most of
+                            // these, but on x86-64 Linux SIGTRAP kills it with
+                            // SIGILL. The table claims only that the default
+                            // is not what happens.
+                            if observed.[signo] = diedOfIt then
+                                yield
+                                    $"signo %d{signo} (%O{signal}): the table says the runtime overrides the default, but the real runtime died of it (%O{diedOfIt})"
+                        else
+                            let expected = if terminatesByDefault then diedOfIt else survived
+
+                            if observed.[signo] <> expected then
+                                yield
+                                    $"signo %d{signo} (%O{signal}): expected %O{expected}, the real runtime gave %O{observed.[signo]}"
                 ]
 
             if not mismatches.IsEmpty then

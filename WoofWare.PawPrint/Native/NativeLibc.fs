@@ -9,9 +9,8 @@ open WoofWare.PosixKernel
 [<RequireQualifiedAccess>]
 type UnmodelledSelfSignal =
     /// The runtime catches or ignores this signal from startup, so a real
-    /// process survives it; the model starts every signal at its kernel
-    /// default, which would terminate the process. See
-    /// `StartupSignalDispositions`.
+    /// process is not terminated by it as the kernel's default says; the model
+    /// starts every signal at that default. See `StartupSignalDispositions`.
     | StartupDisposition of Signal
     /// A signal whose kernel default is to continue a stopped process, with no
     /// handler registered. A real process, never stopped, carries on; the model
@@ -30,7 +29,7 @@ module UnmodelledSelfSignal =
     let describe (refusal : UnmodelledSelfSignal) : string =
         match refusal with
         | UnmodelledSelfSignal.StartupDisposition signal ->
-            $"a real CoreCLR process catches or ignores %O{signal} from startup and survives it, where PawPrint's kernel model starts it at its default, which terminates the process. Modelling the runtime's startup dispositions is not done yet."
+            $"a real CoreCLR process catches or ignores %O{signal} from startup, so it is not terminated by the signal as the kernel's default says (usually it survives; on x86-64 Linux, SIGTRAP kills it with SIGILL instead). PawPrint's kernel model starts the signal at its default. Modelling the runtime's startup dispositions is not done yet."
         | UnmodelledSelfSignal.ContinueWithoutHandler signal ->
             $"%O{signal} with no handler registered continues a stopped process, and a running one carries on regardless; PawPrint has no stopped state, and would leave the signal pending for a dispatcher that refuses it."
         | UnmodelledSelfSignal.WouldCoalesce signal ->
@@ -58,7 +57,7 @@ module NativeLibc =
         let signal = Signal.canonicalUnder numbering signal
         let claimed = SignalState.isEnabled signal signals
 
-        if StartupSignalDispositions.survivesDespiteTerminatingDefault numbering signal then
+        if StartupSignalDispositions.overridesTerminatingDefault numbering signal then
             // Whether or not a handler is registered. Registering one does not
             // restore the kernel's default (pal_signal.c): `InstallSignalHandler`
             // leaves an ignored signal ignored, and for a signal that already

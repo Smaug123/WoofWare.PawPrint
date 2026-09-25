@@ -42,14 +42,14 @@ module TestNativeLibc =
             let actual =
                 [ 1 .. Signal.highestSignoUnder numbering ]
                 |> List.filter (fun signo ->
-                    StartupSignalDispositions.survivesDespiteTerminatingDefault numbering (signal numbering signo)
+                    StartupSignalDispositions.overridesTerminatingDefault numbering (signal numbering signo)
                 )
                 |> Set.ofList
 
             (numbering, actual) |> shouldEqual (numbering, survivingSignos numbering)
 
     [<Test>]
-    let ``a signal the runtime survives from startup is refused, whatever the state`` () : unit =
+    let ``a signal whose default the runtime overrides from startup is refused, whatever the state`` () : unit =
         for numbering in everyNumbering do
             for signo in survivingSignos numbering do
                 let sent = signal numbering signo
