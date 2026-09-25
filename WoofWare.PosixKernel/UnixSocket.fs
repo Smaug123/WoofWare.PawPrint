@@ -302,7 +302,7 @@ module SocketOptionRefusal =
         | SocketOptionRefusal.ListenerWithQueuedConnections socket ->
             $"socket %O{socket} is listening with completed connections in its accept queue, and the call would change its SO_REUSEADDR. Measured on both flavours, each queued connection keeps the value the listener had when that connection completed, so an accept after the change returns a socket carrying the old value. This kernel does not record that per-connection copy: it gives the accepted socket the listener's value at accept time. Record the value with each queued connection before allowing the change."
         | SocketOptionRefusal.UnmodelledOption (socket, level, optionName) ->
-            $"socket %O{socket} was asked about option %d{optionName} at level %d{level}, and SO_REUSEADDR at SOL_SOCKET is the only option this kernel models. A real kernel either knows this option, in which case its value is socket state nothing here holds, or answers an errno nobody has measured for it; ENOPROTOOPT would be a guess either way. SO_ERROR in particular is refused because reading it consumes a pending connect refusal, which changes what the next connect(2) answers on both flavours and what poll(2) reports on Linux. Model the option before asking for it."
+            $"socket %O{socket} was asked about option %d{optionName} at level %d{level}, and SO_REUSEADDR at SOL_SOCKET is the only option this kernel models. A real kernel either knows this option, in which case its value is socket state nothing here holds, or answers an errno nobody has measured for it; ENOPROTOOPT would be a guess either way. SO_ERROR in particular is refused because reading it consumes a pending connect refusal, which changes what the next connect(2) answers and what poll(2) reports on Linux, and turns a Darwin RefusedPendingDelivery socket into a Dead one. Model the option before asking for it."
 
 /// Whether a `setsockopt(2)` reaches the point at which the kernel copies the
 /// option's value in, which is where a client that cannot always produce those
@@ -1079,7 +1079,7 @@ module UnixSocket =
 
         // Darwin refuses every option on a socket that can neither send nor
         // receive any more, ahead of the length and the copy: measured EINVAL
-        // after a refused connect, before and after the refusal is delivered,
+        // after a refused connect, whether or not the refusal is still pending,
         // even through an unmapped value. Linux takes the option in every phase.
         let darwinShutDown =
             flavour = SimulatedUnixFlavour.Darwin

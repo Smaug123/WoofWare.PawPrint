@@ -92,9 +92,10 @@ type TrailingSeparatorPolicy =
 /// Carried on `ResolvedTarget.Directory` rather than left to the caller to read
 /// off its own path, because a symlink expansion replaces the final component:
 /// with `l1 -> "."` and `l2 -> "d/.."`, the paths "l1/" and "l2/" are the same
-/// shape but land on different navigation. Probed on macOS, `rmdir` owes them
-/// different errnos — EINVAL and ENOTEMPTY respectively — so the distinction is
-/// guest-observable and unrecoverable from the original path.
+/// shape but land on different navigation, so the navigation is unrecoverable
+/// from the original path. Which navigation it was is guest-observable: Linux's
+/// `rmdir` owes "d/." EINVAL and "d/.." ENOTEMPTY, and Darwin's owes the root
+/// reached by either one EBUSY where "/" itself is EISDIR.
 [<RequireQualifiedAccess>]
 type FinalNavigation =
     /// The path named no component at all: "/" itself, or a symlink whose
@@ -103,8 +104,9 @@ type FinalNavigation =
     /// The last component consumed was ".". `rmdir` owes this EINVAL — except
     /// on Darwin at the root itself, which is EBUSY.
     | Current
-    /// The last component consumed was "..". `rmdir` owes this ENOTEMPTY —
-    /// except on Darwin at the root itself, which is EBUSY.
+    /// The last component consumed was "..". `rmdir` owes this ENOTEMPTY on
+    /// Linux. Darwin owes it EINVAL, as for `Current` — except at the root
+    /// itself, which is EBUSY.
     | Parent
 
 /// Where a path resolution ended up.

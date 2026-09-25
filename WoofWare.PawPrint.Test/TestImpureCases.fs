@@ -1385,11 +1385,11 @@ module TestImpureCases =
             }
             {
                 // The same divergences under Darwin's answers: EOPNOTSUPP on
-                // the listening socket, EISCONN retries, the dead-socket
-                // latch after a refusal (EINVAL forever), AF_UNSPEC refused
-                // everywhere, exact-length sockaddr, capacity = backlog.
-                // Expectations confirmed on real macOS .NET before the
-                // handler existed.
+                // the listening socket, EISCONN retries after an establishment
+                // and after a refusal alike (the refusal is never delivered by
+                // connect), AF_UNSPEC refused everywhere, exact-length
+                // sockaddr, capacity = backlog. Expectations confirmed on real
+                // macOS 27 .NET.
                 FileName = "SocketConnectDarwin.cs"
                 ExpectedReturnCode = 0
                 KernelConfig =

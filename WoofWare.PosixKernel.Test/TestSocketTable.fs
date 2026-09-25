@@ -919,7 +919,7 @@ module TestSocketTable =
         outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EISCONN)
 
     [<Test>]
-    let ``a refusal delivery resets a Linux socket and kills a Darwin one`` () : unit =
+    let ``a refusal delivery resets a Linux socket, and a Darwin socket never has one delivered`` () : unit =
         // No listener anywhere: loopback:9999 refuses.
         let fresh () =
             forge [ 3, OpenFileDescriptionId 10L, OpenFileTarget.Socket (SocketId 0L) ] [ 0L, someSocket ] 1L
@@ -943,7 +943,7 @@ module TestSocketTable =
 
         outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EINPROGRESS)
 
-        // Darwin: the delivery latches the socket dead.
+        // Darwin: every retry answers EISCONN and the error stays pending.
         let darwin =
             let baseKernel = fresh ()
 
@@ -954,16 +954,31 @@ module TestSocketTable =
                     }
             }
 
-        let _, kernel = connect (SocketId 0L) true (loopback 9999us) darwin
-        let outcome, kernel = connect (SocketId 0L) true (loopback 9999us) kernel
+        let _, darwinPending = connect (SocketId 0L) true (loopback 9999us) darwin
+
+        let outcome, kernel = connect (SocketId 0L) true (loopback 9999us) darwinPending
+
+        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EISCONN)
+        kernel |> shouldEqual darwinPending
+
+        (UnixMachineState.socket (SocketId 0L) kernel.Machine).Phase
+        |> shouldEqual SocketPhase.RefusedPendingDelivery
+
+        let outcome, _ = connect (SocketId 0L) true (loopback 9999us) kernel
+        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EISCONN)
+
+        // A blocking refusal delivers inline and leaves nothing pending, and
+        // the socket then answers EISCONN just the same.
+        let outcome, kernel = connect (SocketId 0L) false (loopback 9999us) darwin
 
         outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
 
         (UnixMachineState.socket (SocketId 0L) kernel.Machine).Phase
         |> shouldEqual SocketPhase.Dead
 
-        let outcome, _ = connect (SocketId 0L) true (loopback 9999us) kernel
-        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EINVAL)
+        let outcome, afterRetry = connect (SocketId 0L) true (loopback 9999us) kernel
+        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EISCONN)
+        afterRetry |> shouldEqual kernel
 
     [<Test>]
     let ``an explicitly bound client keeps its binding through connect`` () : unit =
@@ -1629,9 +1644,10 @@ module TestSocketTable =
     /// provenances (implicit; bind(2) to loopback; bind(2) to the wildcard) —
     /// measured: the pending attempt resolves the source to loopback on both
     /// flavours, and the delivery then reverts it to whatever bind(2) locked
-    /// on Linux (the wildcard when nothing was) while Darwin keeps it.
+    /// on Linux (the wildcard when nothing was). Darwin keeps it, through the
+    /// retry that answers EISCONN and after a blocking refusal alike.
     [<Test>]
-    let ``a refusal delivery reverts the source to what bind was given on Linux and keeps it on Darwin`` () : unit =
+    let ``a refusal reverts the source to what bind was given on Linux and keeps it on Darwin`` () : unit =
         let provenances =
             [
                 // (pre-connect binding, Linux post-delivery address)
@@ -1676,6 +1692,8 @@ module TestSocketTable =
                             }
                     }
 
+                let start = kernel
+
                 let outcome, kernel = connect (SocketId 0L) true (loopback 9999us) kernel
 
                 outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EINPROGRESS)
@@ -1692,12 +1710,14 @@ module TestSocketTable =
 
                 let outcome, kernel = connect (SocketId 0L) true (loopback 9999us) kernel
 
-                outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
+                // Darwin's connect never delivers the pending refusal.
+                outcome
+                |> shouldEqual (ConnectOutcome.Failed (if darwin then UnixError.EISCONN else UnixError.ECONNREFUSED))
 
                 let delivered =
                     match (UnixMachineState.socket (SocketId 0L) kernel.Machine).Binding with
                     | Some binding -> binding
-                    | None -> failwith "expected the delivery to keep the socket bound"
+                    | None -> failwith "expected the retry to keep the socket bound"
 
                 delivered.Endpoint.Port |> shouldEqual pending.Endpoint.Port
 
@@ -1708,6 +1728,14 @@ module TestSocketTable =
                     else
                         linuxAddress
                 )
+
+                if darwin then
+                    let outcome, blocked = connect (SocketId 0L) false (loopback 9999us) start
+                    outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
+
+                    match (UnixMachineState.socket (SocketId 0L) blocked.Machine).Binding with
+                    | Some binding -> binding.Endpoint.Address |> shouldEqual InternetEndpoint.LoopbackAddress
+                    | None -> failwith "expected the blocking refusal to keep the socket bound"
 
     /// Darwin drops a SYN only for a port held by a *bound but unconnected*
     /// socket. A port held by established ends (after their listener closed)

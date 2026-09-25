@@ -235,10 +235,11 @@ module SimulatedUnixPlatform =
     let linuxX64 : SimulatedUnixPlatform =
         createOrFail "SimulatedUnixPlatform.linuxX64" SimulatedUnixFlavour.Linux "6.17.0-1022-azure"
 
-    /// 64-bit ARM macOS. The release is the *Darwin* kernel's, so `24.6.0`
-    /// (macOS 15.6) rather than `15.6.0`.
+    /// 64-bit ARM macOS 27.0. The release is the *Darwin* kernel's, so
+    /// `27.0.0` rather than `27.0`; as for `linuxX64`, it names the kernel the
+    /// Darwin behaviour below was measured against.
     let macOsArm64 : SimulatedUnixPlatform =
-        createOrFail "SimulatedUnixPlatform.macOsArm64" SimulatedUnixFlavour.Darwin "24.6.0"
+        createOrFail "SimulatedUnixPlatform.macOsArm64" SimulatedUnixFlavour.Darwin "27.0.0"
 
     /// Which Unix this platform is.
     let flavour (platform : SimulatedUnixPlatform) : SimulatedUnixFlavour = platform.Flavour

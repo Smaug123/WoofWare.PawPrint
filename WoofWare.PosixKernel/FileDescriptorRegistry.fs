@@ -158,9 +158,10 @@ type ListenState =
 /// also be connected, and two fields would represent that conjunction only to
 /// forbid it by invariant.
 ///
-/// The refusal-delivery transitions (`RefusedPendingDelivery` → `Idle` on
-/// Linux, → `Dead` on Darwin) are measured, `probe3.c`/`probe4.c` 2026-08-21;
-/// see docs/plans/2026-08-21-socket-connect.md for the full table.
+/// What a refused socket's later connects answer is measured:
+/// `probe3.c`/`probe4.c` on Linux (2026-08-21; see
+/// docs/plans/2026-08-21-socket-connect.md for the full table), and Darwin
+/// 27.0.0 (2026-09-25).
 [<RequireQualifiedAccess>]
 type SocketPhase =
     /// Fresh from `socket(2)`, dissolved by a Linux `AF_UNSPEC` connect, or
@@ -177,12 +178,14 @@ type SocketPhase =
     | EstablishedPendingReport of connection : ConnectionId
     /// Connected. `connect(2)` answers EISCONN.
     | Established of connection : ConnectionId
-    /// A non-blocking connect was refused and no later connect has delivered
-    /// the pending ECONNREFUSED yet. The delivering connect transitions to
-    /// `Idle` (Linux) or `Dead` (Darwin).
+    /// A non-blocking connect was refused and the ECONNREFUSED is still
+    /// pending. On Linux the next `connect(2)` delivers it and transitions to
+    /// `Idle`. Darwin's `connect(2)` never delivers it: every one answers
+    /// EISCONN, whatever the destination, and the socket stays here.
     | RefusedPendingDelivery
-    /// Darwin's post-refusal latch: every later `connect(2)` answers EINVAL,
-    /// whatever the destination. Unreachable under the Linux flavour.
+    /// Darwin's refused socket after a *blocking* refusal, which delivered the
+    /// error inline: nothing is pending, and every later `connect(2)` answers
+    /// EISCONN, whatever the destination. Unreachable under the Linux flavour.
     | Dead
     /// A datagram socket's default peer, set by `connect(2)` on it. Filters
     /// nothing yet — no receive path exists — but re-connect re-targets it

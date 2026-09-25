@@ -6,7 +6,8 @@ using System.Runtime.InteropServices;
 // under PawPrint, and every fact below is one both must agree on.
 //
 // The rows they do *not* agree on are the root-navigation arms (Linux gives "/"
-// EBUSY and "/." EINVAL, Darwin gives them EISDIR and EBUSY) and whether a
+// EBUSY and "/." EINVAL, Darwin gives them EISDIR and EBUSY), ".." below the
+// root (ENOTEMPTY on Linux, EINVAL on Darwin), and whether a
 // trailing separator reaches past a final symlink — which is the divergence
 // that *destroys different objects*, since Darwin's `rmdir("ld/")` removes the
 // link's target. Those live in sourcesImpure/RmDirWiring{Linux,Darwin}Seeded.cs
@@ -214,13 +215,11 @@ class Program
 
         // ---- the navigation arms, below the root ----
 
-        // "." is EINVAL and ".." is ENOTEMPTY on both kernels once the
-        // directory reached is not the root — which is what `nav/kid` is two
-        // levels deep for. (The root itself splits by flavour, so it is not
+        // "." is EINVAL on both kernels once the directory reached is not the
+        // root — which is what `nav/kid` is two levels deep for. (The root
+        // itself splits by flavour, as does ".." everywhere, so neither is
         // asserted here.)
         bad = Refused("nav/kid/.", PAL_EINVAL, "nav/kid");
-        if (bad != 0) return bad;
-        bad = Refused("nav/kid/..", PAL_ENOTEMPTY, "nav/kid");
         if (bad != 0) return bad;
 
         // ...and the ordinary case still works, so the arms above are refusals
