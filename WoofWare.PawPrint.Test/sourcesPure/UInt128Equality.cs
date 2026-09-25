@@ -2,10 +2,8 @@ using System;
 
 public class UInt128EqualityTests
 {
-    // `UInt128` carries a *type-level* [Intrinsic], so every member of it is a JIT intrinsic
-    // as far as PawPrint's call path is concerned. Only the members this file exercises are
-    // allowlisted, so nothing here may call `ToString`, `Equals`, `GetHashCode`, arithmetic,
-    // or the explicit narrowing conversions.
+    // `UInt128` carries a *type-level* [Intrinsic], so every member of it is a JIT intrinsic to
+    // PawPrint, which runs a member's own IL unless `Intrinsics.call` implements it.
 
     public static int TestDefaultAndMinValue()
     {

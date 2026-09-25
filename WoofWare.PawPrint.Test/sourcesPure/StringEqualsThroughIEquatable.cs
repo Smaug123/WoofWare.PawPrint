@@ -3,10 +3,9 @@
 //
 // `IEquatable<string>::Equals` is abstract and not intrinsic, so it clears the intrinsic
 // check; resolution then selects the instance `String.Equals(string)`, which IS
-// `[Intrinsic]`. Once classification moved post-resolution, this call started being
-// dispatched as an intrinsic — and the hand-written `String.Equals` arm in Intrinsics.fs
-// only accepts the STATIC two-argument overload, so the call failed outright until the
-// instance overload was added to the safe-intrinsic allowlist.
+// `[Intrinsic]`, so this call is dispatched as an intrinsic. The hand-written `String.Equals` arm in
+// Intrinsics.fs accepts only the STATIC two-argument overload, so the instance overload must fall
+// through to its own IL.
 //
 // The direct (non-interface) call is exercised too: `String.Equals(string)` is virtual
 // final, so it is never subject to virtual resolution and reaches the classifier directly.

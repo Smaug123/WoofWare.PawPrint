@@ -911,7 +911,6 @@ module NativeRuntimeTypeQCall =
                         false
                         false
                         false
-                        IlMachineStateExecution.CallRoute.ThroughEntryPoint
                         concretizedCtor.Generics
                         concretizedCtor
                         ctx.Thread

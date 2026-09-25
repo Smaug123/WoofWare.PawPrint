@@ -23,6 +23,10 @@ What lives here:
   float32 slot to double because another path delivers a double there. What a token-bearing
   instruction does to the stack comes in as data (`StackShapeTokens` reads it from a PE module's
   own signature blobs); the interpreter checks its own stack against the analysis in Debug builds.
+* `IntrinsicBody` — what CoreCLR executes for an `[Intrinsic]` method: its own IL, or one of two
+  placeholders, IL that calls itself (which the JIT must expand) or a CoreLib body that cannot return
+  (which the VM substitutes). The interpreter runs the first and refuses the placeholders unless it
+  implements the method itself; an analyser can trust exactly the bodies classified as its own IL.
 
 The dependency direction is the invariant: this library sees `WoofWare.PawPrint.Domain` and never
 `WoofWare.PawPrint`, so nothing in here can reach the interpreter's mutable machine state. That is

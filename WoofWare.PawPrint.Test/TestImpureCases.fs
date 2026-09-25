@@ -227,12 +227,11 @@ module TestImpureCases =
             // it fits the stackalloc, so `SystemNative_GetCwd` succeeds and
             // ERANGE never enters into it, but decoding the bytes back with
             // `Marshal.PtrToStringUTF8` takes CoreLib's non-ASCII UTF-8 path,
-            // which stops at the unreviewed JIT intrinsic
-            // `System.Numerics.BitOperations.TrailingZeroCount(uint32)`
-            // (`IlMachineStateExecution.fs`, "TODO: implement JIT intrinsic").
-            // The ASCII siblings in `cases` cover the same handler; what is
-            // missing is an intrinsic, not anything about the current
-            // directory. `TestAbsoluteUnixPath` covers the UTF-8 encoding of
+            // which stops in `Utf8Utility.GetPointerToFirstInvalidByte` at a
+            // `cgt.un` between two byrefs into one stackalloc block ("refusing
+            // cgt.un: no structural order between byrefs"). The ASCII siblings
+            // in `cases` cover the same handler; what is missing is byref
+            // ordering, not anything about the current directory. `TestAbsoluteUnixPath` covers the UTF-8 encoding of
             // such a path directly in the meantime.
             currentDirectoryCase "/héllo/中文/🐶"
         ]

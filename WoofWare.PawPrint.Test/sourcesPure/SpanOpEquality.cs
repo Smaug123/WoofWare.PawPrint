@@ -5,7 +5,7 @@ namespace SpanOpEqualityTest
     // The `Span<T>` sibling of `ReadOnlySpanOpEquality.cs`. `Span<T>.op_Equality` has IL of
     // the same shape as the ReadOnlySpan one — `_length` compare, then `Unsafe.AreSame` over
     // the two `_reference` byrefs — but it is a distinct method on a distinct type, so it
-    // needs its own allowlist entry and its own coverage.
+    // needs its own coverage.
     //
     // Unlike the ReadOnlySpan file, this one can use `array.AsSpan(...)` freely: those
     // overloads return `Span<T>`, which is exactly the type under test here.

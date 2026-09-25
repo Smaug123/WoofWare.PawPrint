@@ -2,10 +2,8 @@ using System;
 
 public class Int128ConversionsTests
 {
-    // `Int128` carries a *type-level* [Intrinsic], so every member of it reaches PawPrint's
-    // intrinsic dispatcher. Only the members this file exercises are allowlisted, so nothing
-    // here may call `ToString`, `Equals`, `GetHashCode`, arithmetic, the comparison
-    // operators, or the explicit narrowing conversions.
+    // `Int128` carries a *type-level* [Intrinsic], so every member of it is a JIT intrinsic to
+    // PawPrint, which runs a member's own IL unless `Intrinsics.call` implements it.
     //
     // The subject is the eleven widening `op_Implicit` overloads, which come in two body
     // shapes. The six from unsigned sources are `ldc.i4.0; conv.i8; <arg>; conv.u8; newobj`

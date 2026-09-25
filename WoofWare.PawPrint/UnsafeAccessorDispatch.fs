@@ -1429,7 +1429,6 @@ module internal UnsafeAccessorDispatch =
                     false
                     false // `markDispatched` has already moved this frame's program counter
                     IlMachineStateExecution.CallSiteTransition.StaysCooperative
-                    IlMachineStateExecution.CallRoute.NamedByInstruction // CoreCLR generates the accessor as IL that calls the target
                     target.Generics
                     target
                     thread

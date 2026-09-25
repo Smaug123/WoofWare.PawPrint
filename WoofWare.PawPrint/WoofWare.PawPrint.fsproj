@@ -80,7 +80,6 @@
     <Compile Include="EmulatedKernel.fs" />
     <Compile Include="RuntimeConfig.fs" />
     <Compile Include="HostConfig.fs" />
-    <Compile Include="IlBodyFingerprint.fs" />
     <Compile Include="IlMachineStateModel.fs" />
     <Compile Include="GuestLocation.fs" />
     <Compile Include="UnhandledExceptionReport.fs" />

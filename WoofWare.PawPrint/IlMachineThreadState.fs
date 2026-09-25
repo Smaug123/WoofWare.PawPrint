@@ -339,7 +339,6 @@ module IlMachineThreadState =
                 _MemberResolutions = Map.empty
                 _ConcretisedMethods = Map.empty
                 _ZeroValues = Map.empty
-                _IlBodyFingerprints = Map.empty
                 Logger = logger
                 LoggerFactory = lf
                 NextThreadId = 0

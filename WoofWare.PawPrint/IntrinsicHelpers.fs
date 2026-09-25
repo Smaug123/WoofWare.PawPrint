@@ -478,8 +478,8 @@ module internal IntrinsicHelpers =
     // primitive element types whatever the hardware can do — and
     // `ThrowHelper.ThrowForUnsupportedIntrinsicsVectorNNNBaseType` /
     // `ThrowForUnsupportedNumericsVectorBaseType` raise NotSupportedException on paths that
-    // are live under a scalar profile whenever it is false. Their honest IL bodies are
-    // allowlisted in `safeIntrinsics` instead. Hardware capability for those types is the
+    // are live under a scalar profile whenever it is false. Their honest IL bodies run
+    // instead. Hardware capability for those types is the
     // separate `IsHardwareAccelerated` query, answered by `vectorAccelerationAvailable`.
     //
     // Coverage source: src/libraries/System.Private.CoreLib/src/System/Runtime/Intrinsics

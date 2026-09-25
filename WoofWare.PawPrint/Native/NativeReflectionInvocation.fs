@@ -711,7 +711,6 @@ module internal NativeReflectionInvocation =
                         false
                         false
                         IlMachineStateExecution.CallSiteTransition.StaysCooperative
-                        IlMachineStateExecution.CallRoute.ThroughEntryPoint // `RuntimeMethodHandle_InvokeMethod` enters the method through its entry point
                         target.Method.Generics
                         target.Method
                         ctx.Thread

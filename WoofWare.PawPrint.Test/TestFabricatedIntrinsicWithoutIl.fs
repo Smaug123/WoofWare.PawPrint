@@ -12,8 +12,8 @@ open WoofWare.PawPrint
 
 /// An `[Intrinsic]` method with no IL body runs the implementation its body kind names.
 ///
-/// PawPrint refuses to *interpret* an `[Intrinsic]` method's IL unless that IL has been reviewed,
-/// because the shipped body can be a placeholder the JIT always replaces. A method with no IL has
+/// PawPrint refuses to *interpret* an `[Intrinsic]` method's IL where that IL is a placeholder the
+/// runtime always replaces (`IntrinsicBody`), and implements such a method itself. A method with no IL has
 /// nothing to misinterpret: a P/Invoke, an InternalCall or a runtime-synthesised body is already
 /// PawPrint's own implementation, so the marker must not stop the call reaching it. .NET 11 put
 /// `[Intrinsic]` on the `String.FastAllocateString(MethodTable*, nint)` InternalCall, which is how
@@ -24,7 +24,7 @@ open WoofWare.PawPrint
 /// is fabricated. CoreCLR honours `[Intrinsic]` only in CoreLib (`methodtablebuilder.cpp`, the
 /// `GetModule()->IsSystem()` guards), so the real runtime just runs these methods; PawPrint
 /// classifies an application through a MemberRef by the attribute's name alone, so it treats them as
-/// intrinsics. That difference is what lets a non-CoreLib image reach the gate, and the fixture
+/// intrinsics. That difference is what lets a non-CoreLib image reach intrinsic dispatch, and the fixture
 /// checks PawPrint still classifies each method as `[Intrinsic]` so it cannot pass vacuously once
 /// the difference is gone.
 [<TestFixture>]

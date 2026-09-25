@@ -3,8 +3,7 @@ using System.Threading.Tasks;
 using System.Threading.Tasks.Sources;
 
 // `ValueTask<T>.ConfigureAwait(bool)` (issue #957). The method is `[Intrinsic]`; PawPrint runs
-// the managed body, which is what the JIT does too outside the runtime-async await peephole (see
-// the safe-intrinsic allowlist entry for the citation).
+// the managed body, which is what the JIT does too outside the runtime-async await peephole.
 //
 // The body copies `_obj`, `_result`, `_token` and the new flag into a fresh ValueTask<T> and wraps
 // it in a ConfiguredValueTaskAwaitable<T>, so each test below is chosen to fail if one of those

@@ -53,7 +53,6 @@
     <Compile Include="TestGuestLocation.fs" />
     <Compile Include="TestGuestFailure.fs" />
     <Compile Include="TestUnsafeAccessorRefusals.fs" />
-    <Compile Include="TestIntrinsicCallRoute.fs" />
     <Compile Include="CrossAssemblyHarness.fs" />
     <Compile Include="FabricatedGuest.fs" />
     <Compile Include="TestCrossAssemblyOracle.fs" />
@@ -70,7 +69,6 @@
     <Compile Include="TestEvalStack.fs" />
     <Compile Include="TestMixedWidthComparisons.fs" />
     <Compile Include="TestIntrinsicValueArguments.fs" />
-    <Compile Include="TestIntrinsicReturnShape.fs" />
     <Compile Include="TestTaggedPointerBits.fs" />
     <Compile Include="TestNativeIntSource.fs" />
     <Compile Include="TestPointerHashSynthesis.fs" />
@@ -314,13 +312,13 @@
     <Compile Include="TestFabricatedArrayConstructorNewobj.fs" />
     <Compile Include="TestFabricatedEntryPoint.fs" />
     <Compile Include="TestFabricatedIntrinsicWithoutIl.fs" />
+    <Compile Include="TestIntrinsicBody.fs" />
     <Compile Include="TestFabricatedFieldMarshal.fs" />
     <Compile Include="TestSetupShape.fs" />
     <Compile Include="TestUnresolvableDeclaration.fs" />
     <Compile Include="TestCrossAssemblySlotContent.fs" />
     <Compile Include="LinuxCoreLibFlavour.fs" />
     <Compile Include="TestEmulatedRuntime.fs" />
-    <Compile Include="TestSafeIntrinsicFingerprints.fs" />
     <Compile Include="TestLinuxCoreLibFlavour.fs" />
     <Compile Include="TestEvpDigestNatives.fs" />
     <Compile Include="TestInlineArrayLayout.fs" />

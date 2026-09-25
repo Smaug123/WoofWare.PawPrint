@@ -3,11 +3,10 @@ using System.Net.Sockets;
 // `System.Net.Sockets.Socket`'s constructor, the managed consumer sitting on top of the emulated
 // `SystemNative_Socket` that the sibling `SocketCreateScreens.cs` reaches by hand-rolled P/Invoke.
 //
-// It is here because it is what motivated allowlisting `RuntimeHelpers.EnumEquals`: `SocketErrorPal`
+// It reaches the [Intrinsic] `RuntimeHelpers.EnumEquals`, whose own IL PawPrint runs: `SocketErrorPal`
 // keys its errno table on the enum `Interop.Error`, so a `Dictionary` operation on it asks
 // `EqualityComparer<Interop.Error>.Default`, whose `EnumEqualityComparer<T>.Equals` is that
-// [Intrinsic]'s only caller in this path. Measured rather than assumed: with the allowlist entry
-// removed this guest stops at "TODO: implement JIT intrinsic ... EnumEquals(Error, Error)".
+// [Intrinsic]'s only caller in this path.
 //
 // The property reads are the point, not the constructor returning: they pin that the descriptor the
 // interpreter created is the one the triple asked for, and that its state is the *unbound* one, so a

@@ -2,13 +2,10 @@ using System;
 
 public class Int128ComparisonTests
 {
-    // `Int128` carries a *type-level* [Intrinsic], so every member of it reaches PawPrint's
-    // intrinsic dispatcher. Only the allowlisted members may appear here: `.ctor(ulong, ulong)`,
-    // `op_Equality`, `op_Inequality`, `get_MinValue`, `get_MaxValue`, the widening `op_Implicit`
-    // overloads, `op_Addition`, and now `op_LessThan` and `op_GreaterThan`. In particular
-    // `op_LessThanOrEqual` and `op_GreaterThanOrEqual` are *not* allowlisted, so this file may
-    // never write `<=` or `>=` between two `Int128`s; it spells those `!(a > b)` and `!(a < b)`.
-    // (Comparisons between `int` loop counters are ordinary int32 comparisons and are fine.)
+    // `Int128` carries a *type-level* [Intrinsic], so every member of it is a JIT intrinsic to
+    // PawPrint, which runs a member's own IL unless `Intrinsics.call` implements it.
+    // The subject here is `op_LessThan` and `op_GreaterThan`, so this file spells `<=` and `>=`
+    // between two `Int128`s as `!(a > b)` and `!(a < b)`, keeping to those two operators.
     //
     // Both operators have the same shape. op_LessThan is
     //   ldarg.0; ldfld _upper; ldarg.1; ldfld _upper; blt  TRUE
@@ -153,7 +150,7 @@ public class Int128ComparisonTests
 
     public static int TestAgreesWithAdditionAcrossTheWrap()
     {
-        // Ordering and the already-allowlisted addition have to tell one consistent story about
+        // Ordering and addition have to tell one consistent story about
         // where the low half's wrap point is: adding 1 to a value whose low half is all ones must
         // produce something the comparison also calls larger.
         Int128 justBelowWrap = new Int128(0ul, ulong.MaxValue);

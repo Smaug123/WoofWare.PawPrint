@@ -17,8 +17,6 @@ module Intrinsics =
 
     let formatMethodKey (key : IntrinsicMethodKey) : string = IntrinsicMethodKeys.formatMethodKey key
 
-    let isListed (key : IntrinsicMethodKey) : bool = IntrinsicMethodKeys.isListed key
-
     /// The int32 value argument of an intrinsic whose signature match already established
     /// that the parameter's declared type is int32.
     ///
@@ -784,8 +782,8 @@ module Intrinsics =
             // appropriate processor fence. PawPrint single-steps a deterministic
             // virtual CPU, so there is no host memory reordering for a fence to
             // constrain; the no-op is correct for the same reason as the `volatile.`
-            // IL prefix (NullaryIlOp.fs). Cannot live in safeIntrinsics because the
-            // IL would loop forever.
+            // IL prefix (NullaryIlOp.fs). Without this arm the call would be refused, since the
+            // IL calls itself (`IntrinsicBody.JitExpansion`).
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Threading/Interlocked.cs#L713-L714
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], MethodReturnType.Void -> ()
@@ -1142,8 +1140,8 @@ module Intrinsics =
             // [Intrinsic] internal static void Thread.FastPollGC() => Thread.FastPollGC();
             // The managed IL body is an infinite self-recursive call; the JIT replaces
             // every call site with an inline fast GC poll. PawPrint has no GC, so the
-            // intrinsic is a pure no-op. This cannot live in safeIntrinsics because
-            // executing the IL would loop forever.
+            // intrinsic is a pure no-op. Without this arm the call would be refused, since the IL
+            // calls itself (`IntrinsicBody.JitExpansion`).
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Threading/Thread.cs#L390-L391
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], MethodReturnType.Void -> ()
@@ -1156,8 +1154,8 @@ module Intrinsics =
             // and the JIT replaces the call with the appropriate processor fence. PawPrint
             // does not model memory-ordering effects across threads, and even if it did the
             // single-stepping interpreter has no instruction reordering to fence against,
-            // so the no-op is correct. Cannot live in safeIntrinsics because the IL would
-            // loop forever.
+            // so the no-op is correct. Without this arm the call would be refused, since the IL
+            // calls itself (`IntrinsicBody.JitExpansion`).
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Threading/Volatile.cs#L236-L245
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], MethodReturnType.Void -> ()
@@ -1334,7 +1332,7 @@ module Intrinsics =
             // Bruijn lookup table backed by a PE byte range, which PawPrint does not model.
             // The other overloads' bodies are IL PawPrint can already run — they either
             // forward outright or, for uint64, split into halves that land back here — so
-            // they are allowlisted in `safeIntrinsics` rather than duplicated as arms.
+            // they run as IL rather than being duplicated as arms.
             //
             // Delegating to the host BCL is deterministic, for the same reason the sibling
             // LeadingZeroCount arm records: the method is a pure function of the argument's
@@ -1357,7 +1355,9 @@ module Intrinsics =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) currentThread
                 |> advanceCaller
                 |> IntrinsicResult.Completed
-            | _ -> failwith $"BitOperations.TrailingZeroCount: unexpected signature %s{formatMethodKey intrinsicKey}"
+            | _ ->
+                // Every other overload's IL is what runs; see above.
+                IntrinsicResult.Unrecognised
         | CorelibAssembly, "BitOperations", "LeadingZeroCount" when
             intrinsicKey.DeclaringTypeFullName = "System.Numerics.BitOperations"
             ->
@@ -1377,36 +1377,38 @@ module Intrinsics =
             //
             // Only the two widths the BCL implements separately are modelled here.
             // The `(nuint)` overload's body is `ldarg.0; conv.u8; call LeadingZeroCount(uint64);
-            // ret` — IL PawPrint can run — so it is allowlisted in `safeIntrinsics` and reaches
-            // the uint64 arm below rather than duplicating a width decision on this side.
+            // ret` — IL PawPrint can run — so it has no arm of its own, and reaches the uint64 arm
+            // below rather than duplicating a width decision on this side.
             //
             // Each arm narrows the bits back to its own operand width before calling the host
             // method of that same width: the bits arrive widened to int64, and the zeros the
             // widening introduced are not the operand's.
-            let result, state =
-                match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-                | [ ConcreteUInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
-                    let arg, state = IlMachineState.popEvalStack currentThread state
+            let complete (result : int) (state : IlMachineState) : IntrinsicResult =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) currentThread
+                |> advanceCaller
+                |> IntrinsicResult.Completed
 
-                    let value =
-                        bitPatternValueArgument "BitOperations.LeadingZeroCount(uint)" arg
-                        |> uint32<int64>
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteUInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
+                let arg, state = IlMachineState.popEvalStack currentThread state
 
-                    System.Numerics.BitOperations.LeadingZeroCount value, state
-                | [ ConcreteUInt64 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
-                    let arg, state = IlMachineState.popEvalStack currentThread state
+                let value =
+                    bitPatternValueArgument "BitOperations.LeadingZeroCount(uint)" arg
+                    |> uint32<int64>
 
-                    let value =
-                        bitPatternValueArgument "BitOperations.LeadingZeroCount(ulong)" arg
-                        |> uint64<int64>
+                complete (System.Numerics.BitOperations.LeadingZeroCount value) state
+            | [ ConcreteUInt64 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
+                let arg, state = IlMachineState.popEvalStack currentThread state
 
-                    System.Numerics.BitOperations.LeadingZeroCount value, state
-                | _ -> failwith $"BitOperations.LeadingZeroCount: unexpected signature %s{formatMethodKey intrinsicKey}"
+                let value =
+                    bitPatternValueArgument "BitOperations.LeadingZeroCount(ulong)" arg
+                    |> uint64<int64>
 
-            state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) currentThread
-            |> advanceCaller
-            |> IntrinsicResult.Completed
+                complete (System.Numerics.BitOperations.LeadingZeroCount value) state
+            | _ ->
+                // Every other overload's IL is what runs; see above.
+                IntrinsicResult.Unrecognised
         | CorelibAssembly, "BitOperations", "Log2" ->
             // BitOperations.Log2 is a JIT intrinsic in the real CLR. The BCL IL body falls
             // through to a software fallback that reads from a De Bruijn lookup table backed
@@ -1461,8 +1463,7 @@ module Intrinsics =
                 |> IntrinsicResult.Completed
             | _ -> failwith $"BitOperations.Log2: unexpected signature %s{formatMethodKey intrinsicKey}"
         | CorelibAssembly, "Math", "Pow" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
-            // Math.Pow has no IL body at all, so it cannot be allowlisted in safeIntrinsics:
-            // CoreCLR declares it `[Intrinsic]` + `MethodImplOptions.InternalCall` and the JIT
+            // Math.Pow has no IL body at all: CoreCLR declares it `[Intrinsic]` + `MethodImplOptions.InternalCall` and the JIT
             // lowers it to a call into the platform C library's `pow`.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/Math.CoreCLR.cs#L84-L86
             //
@@ -1560,8 +1561,7 @@ module Intrinsics =
             |> IntrinsicResult.Completed
         | CorelibAssembly, "Math", "Sqrt" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
             // Declared the same way as the three above -- `[Intrinsic]` +
-            // `MethodImplOptions.InternalCall`, no IL body -- so it likewise cannot be
-            // allowlisted in `safeIntrinsics`.
+            // `MethodImplOptions.InternalCall`, no IL body -- so it likewise has no IL to run.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/Math.CoreCLR.cs#L112-L114
             //
             // The reason for computing it in-tree is different from theirs, though. The JIT
@@ -1598,7 +1598,7 @@ module Intrinsics =
             |> IntrinsicResult.Completed
         | CorelibAssembly, "Math", "Ceiling" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
             // Declared like the four above -- `[Intrinsic]` + `MethodImplOptions.InternalCall`,
-            // no IL body -- so it likewise cannot be allowlisted in `safeIntrinsics`. The JIT
+            // no IL body -- so it likewise has no IL to run. The JIT
             // lowers it to `roundsd`/`frintp` where the hardware has them and to the platform
             // C library's `ceil` otherwise.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/Math.CoreCLR.cs#L51-L53
@@ -1637,8 +1637,8 @@ module Intrinsics =
             && intrinsicKey.ParameterShapes = [ "System.Double" ]
             ->
             // The odd one out among the five `System.Math` arms above: this one is `[Intrinsic]`
-            // but *not* `MethodImplOptions.InternalCall`, so it does have an IL body and could
-            // in principle be allowlisted in `safeIntrinsics` and run.
+            // but *not* `MethodImplOptions.InternalCall`, so it does have an IL body, which is what
+            // PawPrint would run in the absence of this arm.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Math.cs#L1306-L1348
             //
             // That body is not the definition, though. It is a managed emulation of the
@@ -1685,8 +1685,8 @@ module Intrinsics =
             // `MethodImplOptions.InternalCall`, so it does have an IL body. Unlike `Math.Round`
             // that body cannot be run even in principle: it is `ModF(d, &d); return d;`, and
             // `ModF` is itself `InternalCall` with no IL, forwarding to the platform C library's
-            // `modf` (classlibnative/float/floatdouble.cpp:226). Allowlisting this method in
-            // `safeIntrinsics` would therefore only move the failure one frame down.
+            // `modf` (classlibnative/float/floatdouble.cpp:226). Running that IL would therefore
+            // only move the failure one frame down.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Math.cs#L1489-L1494
             //
             // The JIT does not use that body: it lowers the call to `roundsd` with an immediate
