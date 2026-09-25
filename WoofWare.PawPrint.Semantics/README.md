@@ -25,11 +25,12 @@ What lives here:
   own signature blobs); the interpreter checks its own stack against the analysis in Debug builds.
 * `IntrinsicBody` — what CoreCLR executes for an `[Intrinsic]` method: its own IL, or one of two
   placeholders, IL that calls itself (which the JIT must expand) or a CoreLib body that cannot return
-  (which the VM substitutes). A JIT expansion on a hardware-intrinsic class is a capability query or
-  an instruction, and `IntrinsicBody.lower` writes the IL that does what the JIT's expansion does on
-  a given CPU: `ldc.i4 0/1; ret` for a query, a `PlatformNotSupportedException` throw for an
-  instruction the CPU lacks. The interpreter runs a method's own IL or its lowering, and refuses
-  the rest unless it implements the method itself; an analyser can read the same bodies.
+  (which the VM substitutes). Only a placeholder's call to itself is expanded; the rest of its IL
+  runs. On a hardware-intrinsic class that call is a capability query or an instruction, and
+  `IntrinsicBody.expandSelfCall` says what it does on a given CPU: yields a constant for a query,
+  raises `PlatformNotSupportedException` for an instruction the CPU lacks. The interpreter runs a
+  method's own IL, expands its self-call, and refuses the rest unless it implements the method
+  itself; an analyser can treat the self-call the same way.
 * `VmSubstitution` — the IL CoreCLR's VM runs in place of CoreLib's body for each
   `System.Runtime.CompilerServices.Unsafe` method corelib.h binds, transcribed from
   `getILIntrinsicImplementationForUnsafe` (jitinterface.cpp). The interpreter runs a stub where it

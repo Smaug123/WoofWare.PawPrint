@@ -2165,28 +2165,82 @@ module IlMachineStateExecution =
                     |> fun state -> IntrinsicOutcome.Handled (state, CallCommitment.Raised)
                 | IntrinsicResult.Unrecognised ->
                     // PawPrint has no implementation of its own, so the call gets what CoreCLR runs
-                    // when its JIT does not expand the call: the method's IL, unless that IL is a
-                    // placeholder, in which case the IL that does what the JIT's expansion does on
-                    // this run's CPU, or the IL CoreCLR's VM substitutes. A body with no IL is already PawPrint's implementation of the
-                    // method -- `NativeDispatch` for an InternalCall or P/Invoke, delegate or accessor
+                    // when its JIT does not expand the call: the method's IL, except that a
+                    // placeholder's call to itself is what the JIT's expansion does on this run's
+                    // CPU, and a VM-substituted body is the IL CoreCLR's VM runs instead. A body
+                    // with no IL is already PawPrint's implementation of the method --
+                    // `NativeDispatch` for an InternalCall or P/Invoke, delegate or accessor
                     // dispatch for a runtime-provided body -- so the call proceeds to it as though
                     // unmarked.
                     //
-                    // `StackShapeOfMethod` finds the lowered body through `IntrinsicBody.loweredBody`,
-                    // which decides as this does.
+                    // `StackShapeOfMethod` finds a substituted body through
+                    // `IntrinsicBody.substitutedBody`, which decides as this does.
                     match IntrinsicBody.classify declaringAssy handle with
                     | IntrinsicBody.OwnIl
                     | IntrinsicBody.NoIl -> IntrinsicOutcome.RunIl methodToCall
                     | IntrinsicBody.JitExpansion expansion ->
-                        match IntrinsicBody.lower state.HardwareIntrinsics declaringAssy expansion with
-                        | Some lowered ->
-                            let lowered =
-                                MethodInstructions.setLocalVars<TypeDefn, ConcreteTypeHandle> None lowered
+                        // `gtIsRecursiveCall`: only the method's call to itself is must-expand. A
+                        // call from anywhere else, a delegate's included, runs the method's IL,
+                        // which reaches that call.
+                        if not (MethodInfo.NominallyEqual activeMethodState.ExecutingMethod methodToCall) then
+                            IntrinsicOutcome.RunIl methodToCall
+                        else
 
-                            methodToCall
-                            |> MethodInfo.setMethodVars (MethodBody.Il lowered) methodToCall.Signature
-                            |> IntrinsicOutcome.RunIl
-                        | None ->
+                        match IntrinsicBody.expandSelfCall state.HardwareIntrinsics expansion with
+                        | SelfCallExpansion.Constant value ->
+                            if MethodInfo.arity methodToCall <> 0 || not methodToCall.IsStatic then
+                                failwith
+                                    $"%s{Intrinsics.formatMethodKey key}: a capability query must be a static method with no parameters"
+
+                            let state = IlMachineState.pushToEvalStack (CliType.ofBool value) thread state
+
+                            let state =
+                                if advanceProgramCounterOfCaller then
+                                    IlMachineState.advanceProgramCounter thread state
+                                else
+                                    state
+
+                            IntrinsicOutcome.Handled (state, CallCommitment.Committed)
+                        | SelfCallExpansion.ThrowPlatformNotSupported ->
+                            if not methodToCall.IsStatic then
+                                failwith
+                                    $"%s{Intrinsics.formatMethodKey key}: a hardware instruction must be a static method"
+
+                            let state =
+                                (state, [ 1 .. MethodInfo.arity methodToCall ])
+                                ||> List.fold (fun state _ -> IlMachineState.popEvalStack thread state |> snd)
+
+                            let helper =
+                                declaringAssy.Methods.[IntrinsicBody.platformNotSupportedHelper declaringAssy]
+
+                            let state, helper, _ =
+                                ExecutionConcretization.concretizeMethodWithAllGenerics
+                                    loggerFactory
+                                    baseClassTypes
+                                    ImmutableArray.Empty
+                                    helper
+                                    ImmutableArray.Empty
+                                    state
+
+                            // The helper throws, so its frame never returns to advance the caller.
+                            callMethod
+                                loggerFactory
+                                baseClassTypes
+                                None
+                                ConstructionState.NotConstructing
+                                false
+                                false
+                                advanceProgramCounterOfCaller
+                                helper.Generics
+                                helper
+                                thread
+                                state.ThreadState.[thread]
+                                None
+                                ReturnValueDisposition.PushToCaller
+                                false
+                                state
+                            |> fun state -> IntrinsicOutcome.Handled (state, CallCommitment.Committed)
+                        | SelfCallExpansion.JitCode ->
                             failwith
                                 $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey key} in Intrinsics.call: its IL calls itself, which is CoreCLR's placeholder for a body its JIT must expand, and on this CPU the expansion (%A{expansion}) is code the JIT emits itself"
                     | IntrinsicBody.VmSubstitution ->
