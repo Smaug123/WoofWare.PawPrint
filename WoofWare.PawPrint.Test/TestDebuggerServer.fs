@@ -162,6 +162,46 @@ class Program
 }
 """
 
+    let private objectAndArrayLocalsSource =
+        """
+class Program
+{
+    static int Main(string[] args)
+    {
+        object value = new object();
+        int[] numbers = new int[3];
+        return value == null || numbers == null ? 1 : 0;
+    }
+}
+"""
+
+    /// Three writes, alternating streams. Each `Write` on the console's autoflushing writers is
+    /// one `write(2)`, so each is exactly one `OutputLog` entry.
+    let private interleavedOutputSource =
+        """
+using System;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        Console.Out.Write("out-1");
+        Console.Error.Write("err-2");
+        Console.Out.Write("out-3");
+        return 0;
+    }
+}
+"""
+
+    let private expectedInterleavedOutput : (string * string) list =
+        [ "stdout", "out-1" ; "stderr", "err-2" ; "stdout", "out-3" ]
+
+    /// `(stream, text)` of a `{ stream, bytesBase64 }` object, as both a step event's `output` and
+    /// an `/output` entry are written.
+    let private outputEntry (entry : JsonElement) : string * string =
+        let bytes = Convert.FromBase64String (entry.GetProperty("bytesBase64").GetString ())
+        entry.GetProperty("stream").GetString (), Text.Encoding.UTF8.GetString bytes
+
     type private RunningServer =
         {
             App : WebApplication
@@ -869,4 +909,139 @@ class Program
                 // is 4, so a renderer reporting the number the call named would say that instead.
                 status.GetProperty("port").GetInt64 () |> shouldEqual 3L
             | other -> failwith $"expected exactly one thread parked on socket events, got %d{List.length other}"
+        }
+
+    [<Test>]
+    let ``Debugger HTTP step events carry each guest write, attributed to its step`` () : Task =
+        task {
+            use server = startServer interleavedOutputSource
+            use client = client server (Some token)
+
+            let writes = ResizeArray<int64 * (string * string)> ()
+            let mutable finished = false
+            let mutable remaining = 1000
+
+            while not finished && remaining > 0 do
+                remaining <- remaining - 1
+
+                let! step = client.PostAsync ("step?count=1000", emptyContent ())
+                step.StatusCode |> shouldEqual HttpStatusCode.OK
+                use! stepJson = jsonDocument step
+
+                for event in stepJson.RootElement.GetProperty("events").EnumerateArray () do
+                    let output = event.GetProperty "output"
+
+                    if output.ValueKind <> JsonValueKind.Null then
+                        writes.Add (event.GetProperty("step").GetInt64 (), outputEntry output)
+
+                finished <-
+                    stepJson.RootElement.GetProperty("session").GetProperty("status").GetString ()
+                    <> "running"
+
+            finished |> shouldEqual true
+            writes |> Seq.map snd |> Seq.toList |> shouldEqual expectedInterleavedOutput
+
+            let steps = writes |> Seq.map fst |> Seq.toList
+            steps |> shouldEqual (List.sort steps |> List.distinct)
+        }
+
+    [<Test>]
+    let ``Debugger HTTP output reports the guest's whole output log`` () : Task =
+        task {
+            use server = startServer interleavedOutputSource
+            use client = client server (Some token)
+
+            let readOutput () : Task<(string * string) list> =
+                task {
+                    let! output = client.GetAsync "output"
+                    output.StatusCode |> shouldEqual HttpStatusCode.OK
+                    use! outputJson = jsonDocument output
+
+                    return
+                        outputJson.RootElement.GetProperty("entries").EnumerateArray ()
+                        |> Seq.map outputEntry
+                        |> Seq.toList
+                }
+
+            let! before = readOutput ()
+            before |> shouldEqual []
+
+            // `/run` reports only its last few events, so the writes inside a long run are
+            // recoverable only from the log.
+            let! run = client.PostAsync ("run?maxSteps=1000000", emptyContent ())
+            run.StatusCode |> shouldEqual HttpStatusCode.OK
+            use! runJson = jsonDocument run
+
+            runJson.RootElement.GetProperty("session").GetProperty("status").GetString ()
+            |> shouldEqual "finished"
+
+            let! after = readOutput ()
+            after |> shouldEqual expectedInterleavedOutput
+        }
+
+    [<Test>]
+    let ``Debugger HTTP names the types of heap objects and of locals`` () : Task =
+        task {
+            use server = startServer objectAndArrayLocalsSource
+            use client = client server (Some token)
+
+            let mutable addresses = None
+            let mutable lastLocals = ""
+
+            for _ = 1 to 20 do
+                if addresses.IsNone then
+                    let! step = client.PostAsync ("step?count=1", emptyContent ())
+                    step.StatusCode |> shouldEqual HttpStatusCode.OK
+
+                    let! thread = client.GetAsync "thread/0"
+                    use! threadJson = jsonDocument thread
+
+                    let frame = activeFrame threadJson.RootElement
+                    lastLocals <- frame.GetProperty("locals").ToString ()
+
+                    match
+                        frame.GetProperty("locals").EnumerateArray ()
+                        |> Seq.map tryObjectAddress
+                        |> Seq.toList
+                    with
+                    // A Debug build adds a third local, the temporary holding the return value.
+                    | [ Some value ; Some numbers ; None ] -> addresses <- Some (value, numbers)
+                    | _ -> ()
+
+            let value, numbers =
+                match addresses with
+                | Some addresses -> addresses
+                | None ->
+                    failwith $"Did not observe both locals holding objects within 20 steps; last saw %s{lastLocals}"
+
+            // `#<handle>` numbers depend on the order types were first concretised, which is not
+            // this test's business, so they are masked out.
+            let unnumbered (description : string) : string =
+                Text.RegularExpressions.Regex.Replace (description, "#[0-9]+", "#_")
+
+            let heapTypeDescription (address : int) : Task<string> =
+                task {
+                    let! heap = client.GetAsync $"heap/%d{address}"
+                    heap.StatusCode |> shouldEqual HttpStatusCode.OK
+                    use! heapJson = jsonDocument heap
+                    return heapJson.RootElement.GetProperty("typeDescription").GetString () |> unnumbered
+                }
+
+            let! valueType = heapTypeDescription value
+            valueType |> shouldEqual "System.Object#_ [System.Private.CoreLib]"
+            let! numbersType = heapTypeDescription numbers
+            numbersType |> shouldEqual "System.Int32#_ [System.Private.CoreLib][]"
+
+            let! il = client.GetAsync "thread/0/active-method/il"
+            use! ilJson = jsonDocument il
+
+            ilJson.RootElement.GetProperty("locals").EnumerateArray ()
+            |> Seq.map (fun local -> local.GetProperty("typeDescription").GetString () |> unnumbered)
+            |> Seq.toList
+            |> shouldEqual
+                [
+                    "System.Object#_ [System.Private.CoreLib]"
+                    "System.Int32#_ [System.Private.CoreLib][]"
+                    "System.Int32#_ [System.Private.CoreLib]"
+                ]
         }

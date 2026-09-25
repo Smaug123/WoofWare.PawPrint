@@ -70,6 +70,7 @@ curl -s -H 'Authorization: Bearer TOKEN' http://127.0.0.1:PORT/thread/0
 curl -s -H 'Authorization: Bearer TOKEN' 'http://127.0.0.1:PORT/thread/0/stack-summary?edgeFrames=12&topMethods=8'
 curl -s -H 'Authorization: Bearer TOKEN' 'http://127.0.0.1:PORT/thread/0/active-method/il?context=8'
 curl -s -H 'Authorization: Bearer TOKEN' http://127.0.0.1:PORT/heap/1
+curl -s -H 'Authorization: Bearer TOKEN' http://127.0.0.1:PORT/output
 curl -s -H 'Authorization: Bearer TOKEN' -X POST -d '' http://127.0.0.1:PORT/reset
 curl -s -H 'Authorization: Bearer TOKEN' -X POST -d '' http://127.0.0.1:PORT/stop
 ```
@@ -77,14 +78,17 @@ curl -s -H 'Authorization: Bearer TOKEN' -X POST -d '' http://127.0.0.1:PORT/sto
 Endpoint summary:
 
 - `GET /state`: session status, step count, loaded assemblies, thread summaries, heap counts.
-- `POST /step?count=N`: execute up to `N` scheduler steps and return each event plus the new summary.
+- `POST /step?count=N`: execute up to `N` scheduler steps and return each event plus the new summary. An event's `output` is `null`, or `{ stream, bytesBase64 }` for the one write that step made to stdout or stderr.
 - `POST /run?maxSteps=N`: execute at most `N` steps and return recent events. Use this to move forward safely, not to prove termination. If `/stop` cancels an active run, the response includes `cancelled: true`.
 - `GET /thread/{id}`: full frame list for a thread, including active frame, IL offset, current instruction, source location, eval stack, args, and locals.
 - `GET /thread/{id}/stack-summary`: compact stack summary for deep stacks. Optional query parameters: `edgeFrames` (default 12, max 100) and `topMethods` (default 8, max 100).
-- `GET /thread/{id}/active-method/il`: IL for the thread's active frame, including resolved metadata-token text and the active instruction. Optional query parameter: `context` instructions before/after the active offset (omitted means full method, max 500).
-- `GET /heap/{address}`: inspect an object or array at a managed heap address. Use structured `objectAddress` fields from stack, argument, local, and array-element values when available.
+- `GET /thread/{id}/active-method/il`: IL for the thread's active frame, including resolved metadata-token text, the active instruction, and each local's type as both its handle (`type`) and `typeDescription`. Optional query parameter: `context` instructions before/after the active offset (omitted means full method, max 500).
+- `GET /heap/{address}`: inspect an object or array at a managed heap address, including its `typeDescription`. Use structured `objectAddress` fields from stack, argument, local, and array-element values when available.
+- `GET /output`: everything the guest has written so far, as `entries` of `{ stream, bytesBase64 }` in write order across both streams. `/run` reports only its last few events, so a write inside a long run is recoverable only from here.
 - `POST /reset`: recreate the debugger session from the original DLL and arguments.
 - `POST /stop`: stop the server cleanly.
+
+`typeDescription` is `AllConcreteTypes.describe`'s rendering, such as `System.Object#3 [System.Private.CoreLib]`: the `#3` is the concrete-type handle and the bracket the assembly, which is what tells two same-named types apart. Handle numbers depend on the order types were first concretised, so do not compare them across runs.
 
 ### Source locations
 
