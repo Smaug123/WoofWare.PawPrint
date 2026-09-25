@@ -5,19 +5,19 @@ namespace WoofWare.PosixKernel
 ///
 /// The *consumer* half of the port model. The producer half -- seeding the
 /// pending list when a registration is added or modified, and signalling a
-/// registration when its target's level changes -- is still the client's, so
-/// this library can say whether a port would deliver while owning no modelled
-/// operation that makes one start to.
+/// registration when its target's level changes -- belongs to the operations
+/// that make those changes: `UnixPoll.changeSocketEventRegistration`, and the
+/// socket operations in `UnixConnection`.
 [<RequireQualifiedAccess>]
 module SocketEventPort =
 
     /// The epoll readiness of the descriptor `targetId` names, for computing
     /// what a registration on it would report.
     ///
-    /// A standard stream's level is a constant of the launch shape PawPrint
+    /// A standard stream's level is a constant of the launch shape this library
     /// models (measured, `pipes.c`): stdin is the read end of a pipe whose
-    /// write end the launcher closed — the same claim `SystemNative_Read`'s
-    /// immediate-EOF makes — which presents `EPOLLHUP`, and the output
+    /// write end the launcher closed — the same claim `UnixReadWrite.read`'s
+    /// immediate end-of-file makes — which presents `EPOLLHUP`, and the output
     /// streams are write ends with space and a live reader, which present
     /// `EPOLLOUT`. No modelled operation changes either, so the streams need
     /// no producer. A file or port target cannot reach here: the registry
@@ -30,7 +30,7 @@ module SocketEventPort =
         match Map.tryFind targetId (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
         | None ->
             failwith
-                $"SocketEventPort.epollReadinessOfDescription: %O{targetId} names no live open file description. FileDescriptorRegistry.dropDescriptor sweeps destroyed descriptions out of every interest table, so this is an interpreter bug."
+                $"SocketEventPort.epollReadinessOfDescription: %O{targetId} names no live open file description. FileDescriptorRegistry.dropDescriptor sweeps destroyed descriptions out of every interest table, so this is a bug in this library."
         | Some description ->
 
         match description.Target with
@@ -46,10 +46,10 @@ module SocketEventPort =
             }
         | OpenFileTarget.File _ ->
             failwith
-                $"SocketEventPort.epollReadinessOfDescription: %O{targetId} is a regular file, which epoll_ctl answers EPERM for, so no registration can name it (this is an interpreter bug)."
+                $"SocketEventPort.epollReadinessOfDescription: %O{targetId} is a regular file, which epoll_ctl answers EPERM for, so no registration can name it (this is a bug in this library)."
         | OpenFileTarget.SocketEventPort _ ->
             failwith
-                $"SocketEventPort.epollReadinessOfDescription: %O{targetId} is itself a socket event port; the registry refuses a nested-port registration, so no registration can name it (this is an interpreter bug)."
+                $"SocketEventPort.epollReadinessOfDescription: %O{targetId} is itself a socket event port; the registry refuses a nested-port registration, so no registration can name it (this is a bug in this library)."
 
     /// Each pending entry of the port, in delivery order, with what it would
     /// report if `epoll_wait` re-polled it right now: the target's current
@@ -66,7 +66,7 @@ module SocketEventPort =
                 | Some registration -> registration
                 | None ->
                     failwith
-                        $"SocketEventPort.annotatedReady: pending entry %A{key} has no registration. FileDescriptorRegistryDefect.SocketEventReadyEntryUnregistered exists to make this unreachable, so this is an interpreter bug."
+                        $"SocketEventPort.annotatedReady: pending entry %A{key} has no registration. FileDescriptorRegistryDefect.SocketEventReadyEntryUnregistered exists to make this unreachable, so the system breaks UnixSystem.checkInvariants: this is a bug in this library, or in a caller that assembled the state by hand."
 
             let reported =
                 epollReadinessOfDescription targetId system
@@ -103,7 +103,7 @@ module SocketEventPort =
         | OpenFileTarget.File _
         | OpenFileTarget.Socket _ ->
             failwith
-                $"SocketEventPort.hasDeliverableEvent: %O{portId} is not a socket event port, so no wait can be parked on it (this is an interpreter bug)."
+                $"SocketEventPort.hasDeliverableEvent: %O{portId} is not a socket event port, so no wait can be parked on it (this is a bug in the caller of SocketEventPort.hasDeliverableEvent)."
         | OpenFileTarget.SocketEventPort portState ->
             annotatedReady portState system
             |> List.exists (fun (_, _, reported) -> not (ReadinessLevel.isEmpty reported))
@@ -130,19 +130,20 @@ module SocketEventPort =
         =
         if maxCount <= 0 then
             failwith
-                $"SocketEventPort.drain: maxCount %d{maxCount} is not positive; epoll answers EINVAL for it before reaching the ready list, so this is an interpreter bug."
+                $"SocketEventPort.drain: maxCount %d{maxCount} is not positive; epoll answers EINVAL for it before reaching the ready list, so this is a bug in the caller of SocketEventPort.drain."
 
         match Map.tryFind portId (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
         | None ->
             failwith
-                $"SocketEventPort.drain: %O{portId} names no live open file description (this is an interpreter bug)."
+                $"SocketEventPort.drain: %O{portId} names no live open file description (this is a bug in the caller of SocketEventPort.drain)."
         | Some description ->
 
         match description.Target with
         | OpenFileTarget.StandardStream _
         | OpenFileTarget.File _
         | OpenFileTarget.Socket _ ->
-            failwith $"SocketEventPort.drain: %O{portId} is not a socket event port (this is an interpreter bug)."
+            failwith
+                $"SocketEventPort.drain: %O{portId} is not a socket event port (this is a bug in the caller of SocketEventPort.drain)."
         | OpenFileTarget.SocketEventPort portState ->
 
         let rec walk

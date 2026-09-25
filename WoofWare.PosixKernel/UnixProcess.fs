@@ -19,26 +19,22 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// In-memory model of the simulated process's Unix file descriptor
         /// table. Pre-seeded at startup with stdin (0), stdout (1), stderr
         /// (2), matching the kernel's behaviour of populating these slots
-        /// at `exec` time. SystemNative_Dup / Close / Read / Write etc.
-        /// route through this table; the host's real fds are never used.
+        /// at `exec` time. Every descriptor operation this library models
+        /// routes through this table; the host's real fds are never used.
         FileDescriptors : FileDescriptorRegistry
-        /// Ordered, append-only log of every write the guest has performed
-        /// against a writable standard stream via `SystemNative_Write`.
+        /// Ordered, append-only log of every write the process has performed
+        /// against a writable standard stream via `UnixReadWrite.write`.
         /// Each entry carries the destination `Role` and the exact byte
         /// payload of that one call (chunks are not coalesced; ordering
-        /// across roles is preserved). Acts as the canonical record the
-        /// driver's end-of-run host drain reads from, and is what
-        /// PawPrint-only tests assert on instead of trying to capture host
-        /// stdout. The log grows unboundedly: a guest that prints
-        /// gigabytes will pay the memory cost, but PawPrint is a slow
-        /// deterministic interpreter and a guest of that scale is not in
-        /// scope. Bound this with a streaming sink (consuming `StepEffect.
-        /// WroteToFd` at each step) when a need arises.
+        /// across roles is preserved). It is the canonical record of what the
+        /// process wrote to its standard streams, for a client to drain to
+        /// wherever those streams really go. The log grows unboundedly: a
+        /// process that prints gigabytes will pay the memory cost.
         ///
         /// The single ordered log (rather than per-stream buffers)
-        /// preserves cross-stream ordering: a guest that writes
+        /// preserves cross-stream ordering: a process that writes
         /// `err1, out1, err2` is replayed in that order under `2>&1`,
-        /// matching real-CLR behaviour. Per-stream views are derived in
+        /// as it would be on a real kernel. Per-stream views are derived in
         /// `OutputLogEntry.bytesFor`.
         OutputLog : ImmutableArray<OutputLogEntry>
         /// The environment the process was started with: the `envp` that
@@ -58,21 +54,20 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// holds rather than a name it re-walks.
         ///
         /// This is the whole of the process's current directory. The *path* —
-        /// what `SystemNative_GetCwd`, and hence `Environment.CurrentDirectory`
-        /// and every relative `Path.GetFullPath`, reports — is derived from this
+        /// what `getcwd(3)` reports — is derived from this
         /// inode and the filesystem by `UnixPathResolution.currentDirectoryPath`, and is
         /// not stored: a path is a fact about the directory graph, which a
         /// `rename` of any ancestor rewrites, and a second copy could only go
         /// stale. That derivation is also what makes the path the **physical**
         /// one, every symlink resolved away, which is what `getcwd(3)` reports
-        /// and so not necessarily the spelling `KernelConfig.CurrentDirectory`
-        /// used.
+        /// and so not necessarily the spelling a client passed to
+        /// `UnixSystem.withFileSystemAndCurrentDirectory`.
         ///
         /// Derived when the kernel is built, by the one setter that takes the
         /// current directory and the filesystem together — so this is not a
-        /// knob a host may set on its own.
+        /// knob a client may set on its own.
         ///
-        /// Once a guest can delete a directory, the inode outliving its own path
+        /// Once a process can delete a directory, the inode outliving its own path
         /// is an ordinary state rather than a broken one: relative lookups keep
         /// working from here while `getcwd` has nothing to answer. A real kernel
         /// splits the two the same way.
@@ -85,32 +80,23 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// `lstat("target")` succeeds while `lstat("../inner/target")` is
         /// EACCES.
         CurrentDirectoryInode : InodeNumber
-        /// Path to the executable that started the simulated process, as
-        /// observed through `SystemNative_GetProcessPath` and hence
-        /// `Environment.ProcessPath`.
+        /// Path to the executable that started the simulated process.
         ///
         /// `None` is an *answer*, not a request for a default: it says this
         /// process has no executable path, which the entry point reports the way
         /// both Unix flavours do — a null return with errno `ENOENT`. That is
-        /// the truth about a PawPrint guest by default, because PawPrint models
-        /// no `exec(2)`: nothing started this process from a file, and the
+        /// the truth about a simulated process by default, because this library
+        /// models no `exec(2)`: nothing started this process from a file, and the
         /// emulated filesystem contains no image of it. Contrast
         /// `FileSystemType`, whose `None` *does* mean "derive one from the flavour".
         ///
         /// Not resolved against `FileSystem`. Real `realpath` succeeds only if
-        /// every component resolves, so a host that wants
-        /// `File.Exists(Environment.ProcessPath)` to hold must seed the file
-        /// itself; see docs/divergences.md. The same is already true of
-        /// `CurrentDirectory`.
-        ///
-        /// CoreLib latches this on first read — `Environment.ProcessPath` caches
-        /// under an `Interlocked.CompareExchange` — so hosts must set it via
-        /// `KernelConfig` rather than by record-copy after startup.
+        /// every component resolves, so a client that wants the path to name a
+        /// file must seed the file itself.
         ProcessPath : AbsoluteUnixPath option
-        /// Every directory stream `SystemNative_OpenDir` has handed out and
-        /// `SystemNative_CloseDir` has not yet reclaimed, under the id minted for
-        /// it. `DirectoryStreamBlocks` is what turns a guest's `DIR*` into one of
-        /// these ids.
+        /// Every directory stream `UnixNamespace.opendir` has handed out and the
+        /// client has not yet reclaimed, under the id minted for it. A client
+        /// maps its own handle for a stream (a `DIR*`) to one of these ids.
         ///
         /// A stream is *not* a descriptor kind. Measured on both kernels,
         /// `opendir` consumes a file descriptor — an `open` either side of one
@@ -121,22 +107,20 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// the name buffer have no home in `File (inode, offset)`.
         ///
         /// An absent key is not a default and must never be read as one. Every id
-        /// `DirectoryStreamBlocks` names is present here — a `DIR*` is a client's
-        /// concept, so it is the client's `checkInvariants` that enforces it (in
-        /// PawPrint, as `EmulatedKernelDefect.DirectoryStreamBlockDangling`) — so an absent one is
-        /// an interpreter bug rather than anything a guest did, and
-        /// `directoryStream` says so loudly rather than inventing an errno, the
-        /// way `UnixMachineState.connection` does for a `ConnectionId`.
+        /// a client's handles name should be present here — a `DIR*` is a
+        /// client's concept, so it is the client's own invariants that enforce
+        /// it — so an absent one is a bug in the client, and
+        /// `UnixNamespace.readdir` says so loudly rather than inventing an errno,
+        /// the way `UnixMachineState.connection` does for a `ConnectionId`.
         DirectoryStreams : Map<DirectoryStreamId, DirectoryStream>
-        /// The id `withNewDirectoryStream` will hand out next.
+        /// The id `UnixNamespace.opendir` will hand out next.
         NextDirectoryStreamId : DirectoryStreamId
         /// The effective user ID the simulated process runs as, reported by
-        /// `stat` as every inode's `st_uid` and by `SystemNative_GetEUid`.
+        /// `stat` as every inode's `st_uid` and by `geteuid(2)`.
         ///
-        /// Process-wide rather than per-inode: no managed caller can change a
-        /// file's owner, because `SystemNative_ChOwn` does not exist anywhere in
-        /// the runtime's interop surface, so a per-inode field could never make
-        /// two inodes differ and would carry no information this does not.
+        /// Process-wide rather than per-inode: this library models no `chown(2)`,
+        /// so a per-inode field could never make two inodes differ and would
+        /// carry no information this does not.
         UserId : uint32
         /// The effective group ID, reported as every inode's `st_gid`. See
         /// `UserId`.
@@ -145,10 +129,9 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// `open(O_CREAT)` clears from the mode its caller asked for.
         ///
         /// Process state rather than filesystem state, and immutable for the
-        /// whole run: CoreLib's interop surface has no `SystemNative_UMask` at
-        /// all, so no guest can read or change it, and a host that wants to
-        /// replay a differently-masked process sets it once through
-        /// `KernelConfig`.
+        /// whole run: this library models no `umask(2)`, so the process cannot
+        /// read or change it, and a client that wants a differently-masked
+        /// process sets it once with `UnixProcessState.withUmask`.
         ///
         /// Deliberately *not* consulted for seed entries. A seed describes a
         /// tree that some other process built, so this run's mask has no bearing
@@ -162,10 +145,8 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// and nothing here models either end.
         ProcessId : ProcessId
         /// Pure data model of the simulated process's signal disposition,
-        /// per-thread sigprocmasks, and pending-signal queue. Populated by
-        /// future slices: nothing in the simulator dispatches signals yet,
-        /// so the field stays at `SignalState.initial` across every run today.
-        /// Held on `EmulatedKernel` (rather than per-thread) because POSIX
+        /// per-thread sigprocmasks, and pending-signal queue.
+        /// Held on the process (rather than per-thread) because POSIX
         /// signal disposition is process-wide; the per-thread piece lives
         /// inside `SignalState.Blocked`.
         Signals : SignalState<'Task, 'Handler>

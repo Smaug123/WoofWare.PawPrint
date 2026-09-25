@@ -111,7 +111,7 @@ module DirectoryEntryName =
             $"name contains '%c{UnixPathText.separator}' at byte index %d{index}, so it is a path rather than a single entry name"
         | FileNameError.Text defect -> $"name %s{UnixPathText.describe defect}"
         | FileNameError.Reserved name ->
-            $"\"%s{name}\" is a path component, not an entry name; PawPrint derives it from the directory graph rather than storing it"
+            $"\"%s{name}\" is a path component, not an entry name; this library derives it from the directory graph rather than storing it"
 
     /// <summary>Parse a single directory-entry name, or throw.</summary>
     /// <remarks>This is <c>FileName.parse</c> except it throws instead of describing the error as a Result.</remarks>

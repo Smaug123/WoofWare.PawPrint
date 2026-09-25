@@ -184,6 +184,26 @@
               ${./scripts/pal-residue-allowlist.txt}
             touch $out
           '';
+        # Fails `nix flake check` when a WoofWare.PosixKernel source line names
+        # WoofWare.PawPrint or one of its symbols (`KernelConfig`, `EmulatedKernel`, ...).
+        # The library is meant to read as a POSIX simulator that knows nothing of the client
+        # it was extracted from, and prose is where that knowledge crept back in. Runs the
+        # checker's own contract first, so that a change to the checker cannot quietly
+        # retire it.
+        pawprint-references =
+          pkgs.runCommand "pawprint-references" {
+            buildInputs = [pkgs.python3 pkgs.bash];
+          }
+          ''
+            ${pkgs.bash}/bin/bash ${./scripts/test-pawprint-references.sh} \
+              ${./scripts/check-pawprint-references.py}
+            ${pkgs.python3}/bin/python3 ${./scripts/check-pawprint-references.py} \
+              ${pkgs.lib.fileset.toSource {
+              root = ./WoofWare.PosixKernel;
+              fileset = pkgs.lib.fileset.fileFilter (f: f.hasExt "fs") ./WoofWare.PosixKernel;
+            }}
+            touch $out
+          '';
         # The docstring-attachment check is the oracle a definition-moving commit is held
         # to, and it is only as good as its own contract: thirty-six shapes in a throwaway
         # repository, eighteen of which must be reported and eighteen of which must not. The

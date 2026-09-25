@@ -149,6 +149,9 @@
     <Compile Include="Native\PosixSignalPal.fs" />
     <Compile Include="Native\KillSignalPal.fs" />
     <Compile Include="Native\FileAdvicePal.fs" />
+    <Compile Include="Native\FileSystemTypePal.fs" />
+    <Compile Include="Native\DirectoryEntryPal.fs" />
+    <Compile Include="Native\SocketShimPal.fs" />
     <Compile Include="Native\NativeCall.fs" />
     <Compile Include="Native\NativeGc.fs" />
     <Compile Include="Native\NativeGcFrameRegistration.fs" />

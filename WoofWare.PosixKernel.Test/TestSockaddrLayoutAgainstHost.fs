@@ -96,13 +96,10 @@ module TestSockaddrLayoutAgainstHost =
     // Sizes
     // ------------------------------------------------------------------
 
-    /// `sizeof(struct sockaddr_in)` and `sizeof(struct sockaddr_in6)`, which
-    /// `SystemNative_GetSocketAddressSizes` reports and this library states.
+    /// `sizeof(struct sockaddr_in)`, which this library states.
     [<Test>]
-    let ``the address sizes are this machine's`` () : unit =
-        let sizes = SimulatedUnixPlatform.socketAddressSizes (hostPlatform ())
-        (v4 ()).Length |> shouldEqual sizes.InterNetwork
-        (v6 ()).Length |> shouldEqual sizes.InterNetworkV6
+    let ``the internet address size is this machine's`` () : unit =
+        (v4 ()).Length |> shouldEqual SimulatedUnixPlatform.internetSocketAddressSize
 
     // ------------------------------------------------------------------
     // The fields both platforms agree about

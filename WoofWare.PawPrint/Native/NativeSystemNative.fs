@@ -1247,7 +1247,7 @@ module NativeSystemNative =
                 outputs
                 |> List.map (fun (name, pointer) -> requireStorage operation name pointer)
 
-            let sizes = SimulatedUnixPlatform.socketAddressSizes state.Kernel.UnixPlatform
+            let sizes = SocketShimPal.socketAddressSizes state.Kernel.UnixPlatform
 
             let values =
                 [ sizes.InterNetwork ; sizes.InterNetworkV6 ; sizes.UnixDomain ; sizes.Storage ]
@@ -1340,6 +1340,14 @@ module NativeSystemNative =
             // `int32_t SystemNative_SetAddressFamily(uint8_t* socketAddress,
             // int32_t socketAddressLen, int32_t addressFamily)`
             // (pal_networking.c:735).
+            //
+            // Nothing in the shim writes a BSD `sa_len` — grep
+            // `pal_networking.c` and there is no mention of it. The byte a guest
+            // sees there is written by managed code: `SocketAddress..ctor`
+            // stores `(byte) _size` at index 0 before calling
+            // `SetAddressFamily`, unconditionally on every platform, so BSD gets
+            // its length byte and Linux has the same store overwritten by the
+            // wider family.
             let operation = "SystemNative_SetAddressFamily"
             let platform = state.Kernel.UnixPlatform
 
@@ -1428,7 +1436,7 @@ module NativeSystemNative =
 
             let blobStorage = requireStorage operation "socketAddress" blob
             let platformFamily = readSockaddrFamily ctx operation platform blobStorage state
-            let sizes = SimulatedUnixPlatform.socketAddressSizes platform
+            let sizes = SocketShimPal.socketAddressSizes platform
 
             // `switch (sockAddr->sa_family)` over `AF_INET` and `AF_INET6`, on the
             // raw platform number in the blob rather than on a converted one.
@@ -1499,7 +1507,7 @@ module NativeSystemNative =
 
             let blobStorage = requireStorage operation "socketAddress" blob
             let platformFamily = readSockaddrFamily ctx operation platform blobStorage state
-            let sizes = SimulatedUnixPlatform.socketAddressSizes platform
+            let sizes = SocketShimPal.socketAddressSizes platform
 
             // `switch (sockAddr->sa_family)` over `AF_INET` and `AF_INET6`, on the
             // raw platform number in the blob rather than on a converted one.
@@ -1554,7 +1562,7 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
-            let sizes = SimulatedUnixPlatform.socketAddressSizes platform
+            let sizes = SocketShimPal.socketAddressSizes platform
 
             if
                 blob = BufferPointer.RawAddress 0UL
@@ -1607,7 +1615,7 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
-            let sizes = SimulatedUnixPlatform.socketAddressSizes platform
+            let sizes = SocketShimPal.socketAddressSizes platform
 
             if
                 blob = BufferPointer.RawAddress 0UL
@@ -1666,7 +1674,7 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
-            let sizes = SimulatedUnixPlatform.socketAddressSizes platform
+            let sizes = SocketShimPal.socketAddressSizes platform
 
             if
                 blob = BufferPointer.RawAddress 0UL
@@ -1749,7 +1757,7 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
-            let sizes = SimulatedUnixPlatform.socketAddressSizes platform
+            let sizes = SocketShimPal.socketAddressSizes platform
 
             if
                 blob = BufferPointer.RawAddress 0UL
@@ -1844,7 +1852,7 @@ module NativeSystemNative =
             // an `#if` on how the shim was built — no socket, no errno and no
             // state, like `SystemNative_GetMaximumAddressSize` above. Unlike that
             // one it takes the flavour;
-            // `SimulatedUnixPlatform.supportsDualModeIPv4PacketInfo` records the
+            // `SocketShimPal.supportsDualModeIPv4PacketInfo` records the
             // cmake condition it comes from and why we answer as the platform we
             // impersonate rather than conservatively.
             //
@@ -1870,7 +1878,7 @@ module NativeSystemNative =
             // it is true, that second one sets `SocketOptionLevel.IP` /
             // `SocketOptionName.PacketInformation`.
             let supported =
-                SimulatedUnixPlatform.supportsDualModeIPv4PacketInfo state.Kernel.UnixPlatform
+                SocketShimPal.supportsDualModeIPv4PacketInfo state.Kernel.UnixPlatform
 
             pushInt32 (if supported then 1 else 0) ctx |> Some
         | Some "SystemNative_GetErrNo",
@@ -2843,7 +2851,7 @@ module NativeSystemNative =
                     $"%s{operation}: an entry of %d{nameBytes.Length} bytes does not fit the %d{directoryNameBufferBytes}-byte `d_name` buffer. No name either modelled kernel can store is this long, so this filesystem was seeded with one that could not exist."
 
             let nameLength =
-                match SimulatedUnixPlatform.directoryEntryNameLength state.Kernel.UnixPlatform with
+                match DirectoryEntryPal.directoryEntryNameLength state.Kernel.UnixPlatform with
                 | DirectoryEntryNameLength.Reported -> nameBytes.Length
                 | DirectoryEntryNameLength.WalkToTerminator -> -1
 
@@ -2947,6 +2955,9 @@ module NativeSystemNative =
             // stands between a guest and the BCL's commonest write API.
             // `File.Create` never arrives here: it is `FileShare.None`, and
             // `CanLockTheFile` answers `LOCK_EX` without consulting anything.
+            // So `KernelConfig.FileSystemType = Some Nfs` is the one
+            // configuration under which a `FileShare.Read` handle opened for
+            // writing takes no `flock` at all.
             let operation = "SystemNative_GetFileSystemType"
             let fd = fdArgument operation instruction.Arguments.[0]
 
@@ -2961,10 +2972,10 @@ module NativeSystemNative =
                     state.Kernel.FileSystemType
 
             match answer with
-            | FileSystemTypeAnswer.Reported magic ->
+            | FileSystemTypeAnswer.Reported fields ->
                 // errno untouched on success, as `fstatfs` leaves it.
                 state
-                |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 magic) ctx.Thread
+                |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 (FileSystemTypePal.ofFields fields)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
             | FileSystemTypeAnswer.Failed error ->
@@ -4816,8 +4827,7 @@ module NativeSystemNative =
                     destination
                     (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer pointer)))
 
-            let stride =
-                SimulatedUnixPlatform.socketEventBufferElementSize state.Kernel.UnixPlatform
+            let stride = SocketEventsPal.socketEventBufferElementSize state.Kernel.UnixPlatform
 
             // In `int64`, because the point is to decide whether the product fits the
             // interpreter's `int32` byte-offset model before anything truncates it.
@@ -5200,7 +5210,7 @@ module NativeSystemNative =
                             $"%s{operation}: the event buffer is %O{buffer}, which names no storage. A real epoll_wait passes access_ok at wait time and fails only when the copy-out faults (EFAULT with the consumed events lost), behaviour PawPrint does not model. Pass a real buffer."
 
                 let elementSize =
-                    SimulatedUnixPlatform.socketEventBufferElementSize state.Kernel.UnixPlatform
+                    SocketEventsPal.socketEventBufferElementSize state.Kernel.UnixPlatform
 
                 let bytes = Array.zeroCreate<byte> (List.length delivered * elementSize)
 

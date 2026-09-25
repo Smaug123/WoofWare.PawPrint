@@ -34,9 +34,9 @@ type OsThreadId =
         match this with
         | OsThreadId.OsThreadId i -> $"<os thread #%i{i}>"
 
-/// One thread's in-flight `SystemNative_WaitForSocketEvents` call: the state
-/// the syscall captured when it was entered, which outlives anything the
-/// guest does to its arguments afterwards. The port is held by *description
+/// One thread's in-flight wait on a socket event port (`epoll_wait` or
+/// `kevent`): the state the syscall captured when it was entered, which
+/// outlives anything the process does to its arguments afterwards. The port is held by *description
 /// identity*, exactly as the real syscall holds a file reference: the fd the
 /// wait was called through is never consulted again, and `UnixDescriptor.close`
 /// refuses the close that would destroy the description under a waiter (on
@@ -105,35 +105,30 @@ type ParkedSyscall =
 /// What the emulated kernel knows about one task — one scheduling entity, what
 /// `gettid(2)` names.
 ///
-/// Every live thread has exactly one of these, minted at thread creation;
-/// `IlMachineState.checkInvariants` refuses a state where the two sets differ.
-/// That is what makes the record total: `Cpu` and `OsThreadId` were fields on
-/// `ThreadState` precisely because a `Map` has no truthful default for an absent
-/// key, and the answer is that there is never an absent key rather than that a
-/// default exists.
+/// A client mints one for every thread at its creation, and keeps the set of
+/// tasks equal to its set of live threads. That is what makes the record
+/// total: `Cpu` and `OsThreadId` have no truthful default, so a `Map` of each
+/// would have no honest answer for an absent key, and the answer is that there
+/// is never an absent key rather than that a default exists.
 ///
 /// The per-thread errno is *not* here. On a real Unix errno lives in libc, not
 /// in the kernel: the kernel returns an error code and the syscall wrapper
-/// stores it. PawPrint's `LastSystemError` is that wrapper's slot — CoreCLR
-/// reuses it for Windows last-error too, and `NativeWaitHandle` really does put
-/// Win32 numbers in it — so it stays on `EmulatedKernel` with
-/// `LastPInvokeError`.
+/// stores it, so the slot belongs to the client.
 type UnixTaskState =
     {
         /// The simulated logical processor this task is pinned to: what
         /// `sched_getcpu(3)` reports while it runs.
         ///
-        /// Assigned once, at thread creation, by `cpuForRotation`. PawPrint's
-        /// scheduler runs one task at a time and never migrates one between
-        /// cores, so "pinned to" and "currently executing on" coincide. This is
-        /// the seat a future core-aware scheduler would rewrite.
+        /// Assigned once, at thread creation, by `cpuForRotation`. This library
+        /// has no scheduler: under a client that runs one task at a time and
+        /// never migrates one between cores, "pinned to" and "currently
+        /// executing on" coincide, and a core-aware client would rewrite this.
         Cpu : CpuId
-        /// The OS thread identifier this task reports to the guest, and which
-        /// `System.Threading.Lock` uses as its owner identity.
+        /// The OS thread identifier this task reports, as `gettid(2)` does.
         ///
         /// Assigned once, at thread creation, and never reused: real kernels
-        /// recycle thread ids, but a recycled one here would let a stale
-        /// `Lock._owningThreadId` be mistaken for a live owner.
+        /// recycle thread ids, but a recycled one here would let a stale owner
+        /// identity recorded by a user-space lock be mistaken for a live owner.
         OsThreadId : OsThreadId
         /// The syscall this task is blocked in, if it is blocked in one.
         ///
@@ -156,8 +151,7 @@ type UnixTaskState =
 /// The tasks a simulated process owns, by whatever a client uses to name one.
 ///
 /// Generic in the task name for the same reason `SignalState` is: the identity
-/// of a scheduling entity is the client's, not this library's. WoofWare.PawPrint
-/// names them by its interpreter-private `ThreadId`; anything else would do.
+/// of a scheduling entity is the client's, not this library's.
 [<RequireQualifiedAccess>]
 module UnixTaskTable =
 
