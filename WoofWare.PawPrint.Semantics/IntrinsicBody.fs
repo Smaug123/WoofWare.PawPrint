@@ -17,7 +17,10 @@ type JitExpansion =
     /// Any other placeholder on a hardware-intrinsic class: the instruction itself.
     | HardwareInstruction of IntrinsicClass
     /// A placeholder the JIT implements in code of its own, such as a memory barrier.
-    | Primitive
+    | Primitive of IntrinsicPrimitive
+    /// A placeholder this classification does not know: an operation of a runtime other than the
+    /// ones it was transcribed from, or a method outside CoreLib that calls itself.
+    | Unrecognised
 
 /// What CoreCLR's JIT emits at a must-expand call site: a call from a JIT-expansion method to
 /// itself, which is where `gtIsRecursiveCall` (importercalls.cpp) applies. The rest of the
@@ -32,8 +35,12 @@ type SelfCallExpansion =
     /// `PlatformNotSupportedException`. The helper's frame is in `new StackTrace(e)`, and out of
     /// the formatted trace because its class is `[StackTraceHidden]`.
     | ThrowPlatformNotSupported
-    /// Code the JIT emits itself: an instruction the CPU has, or a `JitExpansion.Primitive`.
-    | JitCode
+    /// The CPU has the instruction, and the JIT emits it.
+    | HardwareInstruction of IntrinsicClass
+    /// The runtime's own operation, whose effect on a caller is `IntrinsicPrimitive.contract`.
+    | Primitive of IntrinsicPrimitive
+    /// A `JitExpansion.Unrecognised` placeholder: what the JIT emits is not known.
+    | Unrecognised
 
 /// What CoreCLR executes when it calls a method it treats as a JIT intrinsic.
 ///
@@ -250,7 +257,9 @@ module IntrinsicBody =
             assembly.ThisAssemblyDefinition.Name.Name <> corelib
             || not (isHardwareIntrinsicNamespace intrinsicClass.Namespace)
         then
-            JitExpansion.Primitive
+            match IntrinsicPrimitive.recognise assembly method with
+            | Some primitive -> JitExpansion.Primitive primitive
+            | None -> JitExpansion.Unrecognised
         elif isQuery "get_IsSupported" then
             JitExpansion.IsSupportedQuery intrinsicClass
         elif isQuery "get_IsHardwareAccelerated" then
@@ -316,10 +325,15 @@ module IntrinsicBody =
             SelfCallExpansion.Constant (profile.IsHardwareAccelerated.Contains c)
         | JitExpansion.HardwareInstruction c ->
             if profile.IsSupported.Contains c || profile.IsHardwareAccelerated.Contains c then
-                SelfCallExpansion.JitCode
+                SelfCallExpansion.HardwareInstruction c
             else
                 SelfCallExpansion.ThrowPlatformNotSupported
-        | JitExpansion.Primitive -> SelfCallExpansion.JitCode
+        // Not answered from the profile: the profile is what the capability queries report, and
+        // the JIT picks the instructions for these from the real CPU's baseline, which every CPU
+        // has (with `DOTNET_EnableHWIntrinsic=0` on Arm64, `Math.ReciprocalEstimate` still
+        // estimates in hardware).
+        | JitExpansion.Primitive primitive -> SelfCallExpansion.Primitive primitive
+        | JitExpansion.Unrecognised -> SelfCallExpansion.Unrecognised
 
     /// The IL CoreCLR's VM runs in place of `method`'s own, when its own is a placeholder that
     /// `VmSubstitution` transcribes. `None` means the method's own body is what runs, or else that

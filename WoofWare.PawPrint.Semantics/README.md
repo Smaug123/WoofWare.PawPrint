@@ -31,6 +31,11 @@ What lives here:
   raises `PlatformNotSupportedException` for an instruction the CPU lacks. The interpreter runs a
   method's own IL, expands its self-call, and refuses the rest unless it implements the method
   itself; an analyser can treat the self-call the same way.
+* `IntrinsicPrimitive` — the operations CoreCLR's runtime performs in code of its own when a
+  CoreLib intrinsic is called (barriers, atomics, `GetMethodTable`, the estimates, ...), how each
+  CoreLib method is recognised as one, and each operation's contract: the faults it raises and
+  under what conditions, whether it returns, and the nullness of its result. `TestIntrinsicContracts`
+  holds the contracts to real .NET.
 * `VmSubstitution` — the IL CoreCLR's VM runs in place of CoreLib's body for each
   `System.Runtime.CompilerServices.Unsafe` method corelib.h binds, transcribed from
   `getILIntrinsicImplementationForUnsafe` (jitinterface.cpp). The interpreter runs a stub where it
