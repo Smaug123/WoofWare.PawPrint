@@ -21,6 +21,7 @@
         <Compile Include="OpcodeFaults.fs" />
         <Compile Include="StackShape.fs" />
         <Compile Include="StackShapeTokens.fs" />
+        <Compile Include="HardwareIntrinsicsProfile.fs" />
         <Compile Include="IntrinsicBody.fs" />
         <EmbeddedResource Include="version.json" />
     </ItemGroup>

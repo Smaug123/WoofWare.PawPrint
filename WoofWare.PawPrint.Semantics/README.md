@@ -25,8 +25,14 @@ What lives here:
   own signature blobs); the interpreter checks its own stack against the analysis in Debug builds.
 * `IntrinsicBody` — what CoreCLR executes for an `[Intrinsic]` method: its own IL, or one of two
   placeholders, IL that calls itself (which the JIT must expand) or a CoreLib body that cannot return
-  (which the VM substitutes). The interpreter runs the first and refuses the placeholders unless it
-  implements the method itself; an analyser can trust exactly the bodies classified as its own IL.
+  (which the VM substitutes). A JIT expansion on a hardware-intrinsic class is a capability query or
+  an instruction, and `IntrinsicBody.lower` writes the IL that does what the JIT's expansion does on
+  a given CPU: `ldc.i4 0/1; ret` for a query, a `PlatformNotSupportedException` throw for an
+  instruction the CPU lacks. The interpreter runs a method's own IL or its lowering, and refuses
+  the rest unless it implements the method itself; an analyser can read the same bodies.
+* `HardwareIntrinsicsProfile` — the virtual CPU as the guest sees it: which hardware-intrinsic
+  classes answer `IsSupported` and which vector APIs answer `IsHardwareAccelerated`. PawPrint runs
+  on `ScalarOnly`, where every answer is false.
 
 The dependency direction is the invariant: this library sees `WoofWare.PawPrint.Domain` and never
 `WoofWare.PawPrint`, so nothing in here can reach the interpreter's mutable machine state. That is

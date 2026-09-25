@@ -71,7 +71,6 @@
     <Compile Include="AssemblyProbe.fs" />
     <Compile Include="TypeResolution.fs" />
     <Compile Include="SignatureComparison.fs" />
-    <Compile Include="HardwareIntrinsicsProfile.fs" />
     <Compile Include="DebuggerState.fs" />
     <Compile Include="SignalHandler.fs" />
     <Compile Include="Native\ClockPal.fs" />

@@ -3,10 +3,6 @@ namespace WoofWare.PawPrint
 open Microsoft.Extensions.Logging
 
 module internal IntrinsicHelpers =
-    /// Intrinsic provider type names whose `get_IsSupported` query is modelled as always false
-    /// under PawPrint's current scalar-only virtual hardware profile.
-    val scalarOnlyFalseIsSupportedIntrinsics : Set<string>
-
     /// CoreCLR's `MethodTable::IsValueTypeImpl`, as the reflection surface sees it: byrefs,
     /// pointers, function pointers and arrays are TypeDescs and answer false, and everything
     /// else is asked of its metadata. `operation` names the caller in the diagnostic raised
@@ -37,10 +33,6 @@ module internal IntrinsicHelpers =
         offset : int64 ->
         src : EvalStackValue ->
             EvalStackValue * IlMachineState
-
-    /// Read the deterministic virtual CPU profile for the CoreLib vector type named by an
-    /// intrinsic `get_IsHardwareAccelerated` method.
-    val vectorAccelerationAvailable : declaringTypeName : string -> profile : HardwareIntrinsicsProfile -> bool
 
     /// Interpret an eval-stack value as a pointer argument accepted by CoreLib pointer intrinsics,
     /// rejecting unmanaged non-null addresses that PawPrint cannot dereference.

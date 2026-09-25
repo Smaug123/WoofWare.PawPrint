@@ -186,7 +186,8 @@ shape, and lives in a table instead — keyed on a runtime only where nothing fi
 * `[Intrinsic]` methods need no version key at all. `IntrinsicBody` (in
   `WoofWare.PawPrint.Semantics`) classifies each by its body, as CoreCLR treats it: its own
   IL, a self-calling placeholder the JIT must expand, or a placeholder the VM substitutes.
-  PawPrint runs the first and refuses the other two unless `Intrinsics.call` implements them.
+  PawPrint runs the first, runs a hardware-intrinsic placeholder as the IL `IntrinsicBody.lower`
+  writes for it, and refuses the rest unless `Intrinsics.call` implements them.
   A body that changed between majors therefore runs as it now stands; only a method that
   became a placeholder needs an implementation.
 * `NativeDispatch` keeps the single handler list that `handlersFor` selects; adding

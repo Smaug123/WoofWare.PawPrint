@@ -200,17 +200,6 @@ module Intrinsics =
         // In general, some implementations are in:
         // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L192
         match methodToCall.DeclaringAssemblyFullName, methodToCall.RequiredDeclaringType.Name, methodToCall.Name with
-        | CorelibAssembly, _, "get_IsSupported" when
-            scalarOnlyFalseIsSupportedIntrinsics.Contains intrinsicKey.DeclaringTypeFullName
-            ->
-            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
-            | _ -> failwith $"bad signature for %s{formatMethodKey intrinsicKey}"
-
-            state
-            |> IlMachineState.pushToEvalStack (CliType.ofBool false) currentThread
-            |> advanceCaller
-            |> IntrinsicResult.Completed
         | CorelibAssembly, ("ReadOnlySpan`1" | "Span`1"), ".ctor" when
             intrinsicKey.ParameterShapes = [ "*" ; "System.Int32" ]
             && (intrinsicKey.DeclaringTypeFullName = "System.ReadOnlySpan`1"
@@ -233,29 +222,6 @@ module Intrinsics =
             |> IntrinsicResult.Completed
         | CorelibAssembly, "SpanHelpers", "SequenceEqual" when isSpanHelpersByteSequenceEqual state methodToCall ->
             spanHelpersSequenceEqual baseClassTypes currentThread advanceCaller methodToCall state
-            |> IntrinsicResult.Completed
-        | CorelibAssembly, ("Vector128" | "Vector256" | "Vector512"), "get_IsHardwareAccelerated"
-        | CorelibAssembly, "Vector", "get_IsHardwareAccelerated" when
-            // System.Runtime.Intrinsics.Vector{128,256,512}.IsHardwareAccelerated and
-            // System.Numerics.Vector.IsHardwareAccelerated are JIT intrinsic capability queries
-            // whose IL bodies are recursive self-calls the JIT replaces with a constant. PawPrint
-            // models a deterministic virtual CPU profile; the default scalar-only profile reports
-            // them unavailable without consulting the host. The fully-qualified-name guard on the
-            // "Vector" arm rejects any unrelated CoreLib type that happens to share the short name.
-            methodToCall.RequiredDeclaringType.Name <> "Vector"
-            || intrinsicKey.DeclaringTypeFullName = "System.Numerics.Vector"
-            ->
-            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
-            | _ ->
-                failwith
-                    $"bad signature for System.Private.CoreLib.%s{MethodOwner.describe methodToCall.Owner}.get_IsHardwareAccelerated"
-
-            let isAccelerated =
-                vectorAccelerationAvailable methodToCall.RequiredDeclaringType.Name state.HardwareIntrinsics
-
-            IlMachineState.pushToEvalStack (CliType.ofBool isAccelerated) currentThread state
-            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "Object", "MemberwiseClone" ->
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/Object.CoreCLR.cs#L26-L45
