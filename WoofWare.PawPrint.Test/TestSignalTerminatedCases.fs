@@ -43,6 +43,12 @@ module TestSignalTerminatedCases =
                 FileName = "KillSelf.cs"
                 Signo = 9
             }
+            {
+                // libc's kill(2) of SIGTERM to itself, with a
+                // PosixSignalRegistration handler that does not cancel it.
+                FileName = "PosixSignalKillNotCancelled.cs"
+                Signo = 15
+            }
         ]
 
     [<TestCaseSource(nameof cases)>]

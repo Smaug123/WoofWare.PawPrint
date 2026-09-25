@@ -42,11 +42,13 @@ open WoofWare.PosixKernel
 /// `pthread_kill`-style branch where the receiver thread itself takes the
 /// hit, the receiver id will be needed and this discard goes away.
 ///
-/// The handler's `int` return value (real CoreCLR's "0 = run default
-/// disposition, 1 = consumed") is dropped on the floor. The
+/// The handler's `int` return value is real CoreCLR's "0 = not handled,
+/// 1 = handled": on 0, `SignalHandlerLoop` goes on to call
+/// `SystemNative_HandleNonCanceledPosixSignal` itself. PawPrint does not model
+/// that step, so `reParkAfterHandler` refuses a 0. The
 /// `SignalDelivery.Default*` cases are refused loudly: a default that
 /// terminates or stops is applied when the signal is generated (see
-/// `SystemNative_Kill`), so one reaches this poll only by becoming receivable
+/// `NativeLibc.kill`), so one reaches this poll only by becoming receivable
 /// later, after an unblock, and nothing sets a signal mask yet.
 [<RequireQualifiedAccess>]
 module SignalDispatch =
@@ -250,8 +252,25 @@ module SignalDispatch =
 
     /// Called from `Program.stepPrepared` when `ExecutionResult.Terminated`
     /// fires for the dispatcher's bottom frame (i.e. the handler `ret`urned
-    /// past its own frame). Resets the dispatcher to its idle shape
+    /// past its own frame), with the handler's `int` result still on the
+    /// dispatcher's evaluation stack. Resets the dispatcher to its idle shape
     /// (Parked + sentinel frame id + no live frames) so the next deliverable
     /// signal can wake it.
+    ///
+    /// Fails if the handler returned 0. `OnPosixSignal` does so when it finds
+    /// no registration for the signal, which happens when the last one is
+    /// disposed after the signal was dispatched; the real `SignalHandlerLoop`
+    /// then applies the signal's default through
+    /// `SystemNative_HandleNonCanceledPosixSignal`, which this dispatcher does
+    /// not do.
     let reParkAfterHandler (dispatcher : ThreadId) (state : IlMachineState) : IlMachineState =
+        match IlMachineState.peekEvalStack dispatcher state with
+        | Some (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ->
+            failwith
+                "SignalDispatch.reParkAfterHandler: the signal handler returned 0, reporting that nothing handled the signal (OnPosixSignal found no registration for it). The real SignalHandlerLoop would then apply the signal's default through SystemNative_HandleNonCanceledPosixSignal; PawPrint's dispatcher does not model that step."
+        | Some (EvalStackValue.Int32 (Int32Source.Verbatim _)) -> ()
+        | other ->
+            failwith
+                $"SignalDispatch.reParkAfterHandler: expected the signal handler's Int32 result on dispatcher %O{dispatcher}'s evaluation stack, found %O{other}."
+
         IlMachineState.reParkDispatcher dispatcher state

@@ -396,10 +396,9 @@ module SignalState =
         // it enters the queue: if every receiver blocks it, it genuinely
         // stays pending — a later handler can still claim it — and if one
         // does not, `nextDelivery`'s scan discards it. A real Linux kernel
-        // drops that receivable case at generation rather than on the next
-        // poll, but the two are indistinguishable to a guest: the pending set
-        // is not observable between the two moments through any modelled
-        // path.
+        // drops that receivable case at generation, which is what `generate`
+        // does; this function has no live threads to decide receivability
+        // with, so it leaves the case to the scan.
         let ignoredNow =
             not (Set.contains entry.Signal state.Enabled)
             && Signal.defaultDispositionUnder state.Numbering entry.Signal = DefaultDisposition.Ignore
@@ -450,11 +449,11 @@ module SignalState =
     /// Generate `entry`: decide what it does to the process at once, and queue
     /// it (see `enqueue`) if its effect, if any, comes later.
     ///
-    /// A signal that no handler claims, whose kernel default is to terminate or
-    /// to stop the process, and which some thread in `liveThreads` could
-    /// receive, terminates or stops the process here rather than being queued.
-    /// Every other signal is queued, including one that every thread blocks,
-    /// which takes effect once a thread can receive it.
+    /// A signal that no handler claims, and which some thread in `liveThreads`
+    /// could receive, takes its kernel default here rather than being queued:
+    /// it terminates the process, stops it, or, if the default is to ignore it,
+    /// is discarded. Every other signal is queued, including one that every
+    /// thread blocks, which takes effect once a thread can receive it.
     let generate
         (liveThreads : ImmutableArray<'Task>)
         (entry : PendingSignal<'Task>)
@@ -483,7 +482,11 @@ module SignalState =
                 match Signal.defaultDispositionUnder state.Numbering entry.Signal with
                 | DefaultDisposition.Terminate -> Some (SignalGeneration.ProcessTerminated entry.Signal)
                 | DefaultDisposition.Stop -> Some (SignalGeneration.ProcessStopped entry.Signal)
-                | DefaultDisposition.Ignore
+                // Discarded without ever being pending, on both kernels. Were it
+                // queued instead, it would sit there until the client next
+                // polled `nextDelivery`, and a handler installed in between
+                // would receive a signal that was ignored when it was sent.
+                | DefaultDisposition.Ignore -> Some SignalGeneration.ProcessContinues
                 | DefaultDisposition.Continue -> None
 
         match immediate with

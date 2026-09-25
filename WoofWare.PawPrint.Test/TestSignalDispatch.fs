@@ -668,6 +668,12 @@ module TestSignalDispatch =
             )
 
         let state = SignalDispatch.trySpawnHandler baseClassTypes state
+
+        // The handler's `ret` leaves its result on the dispatcher's stack: 1
+        // is "handled".
+        let state =
+            IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) dispatcher state
+
         let state = SignalDispatch.reParkAfterHandler dispatcher state
 
         let dispatcherTs = state.ThreadState |> Map.find dispatcher
@@ -675,6 +681,45 @@ module TestSignalDispatch =
         dispatcherTs.MethodStates.Count |> shouldEqual 0
         dispatcherTs.ActiveMethodState |> shouldEqual (FrameId -1)
         dispatcherTs.NextFrameId |> shouldEqual 0
+
+    [<Test>]
+    let ``reParkAfterHandler refuses a handler that reports the signal unhandled`` () : unit =
+        // `OnPosixSignal` returns 0 when no registration for the signal is
+        // left, and the real `SignalHandlerLoop` then applies the default,
+        // which this dispatcher does not model.
+        let state, dispatcher, _ = preparedState ()
+        let runnableSibling = ThreadId 99
+
+        let state =
+            { state with
+                ThreadState =
+                    state.ThreadState
+                    |> Map.add runnableSibling (stubThreadState ThreadStatus.Runnable)
+            }
+
+        let state =
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    Process =
+                        { kernel.Process with
+                            Signals =
+                                kernel.Signals
+                                |> SignalState.enable Signal.SIGINT
+                                |> SignalState.enqueue
+                                    {
+                                        Signal = Signal.SIGINT
+                                        Target = ValueNone
+                                    }
+                        }
+                }
+            )
+
+        let state =
+            SignalDispatch.trySpawnHandler baseClassTypes state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) dispatcher
+
+        (fun () -> SignalDispatch.reParkAfterHandler dispatcher state |> ignore<IlMachineState>)
+        |> shouldFail<exn>
 
     [<Test>]
     let ``trySpawnHandler passes PosixSignalInvalid (0) for signals with no managed enum`` () : unit =
