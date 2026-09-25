@@ -1811,6 +1811,16 @@ module IlMachineStateExecution =
             failwith
                 $"logic error: asked for the permitted faults of %s{MethodOwner.describe methodState.ExecutingMethod.Owner}::%s{methodState.ExecutingMethod.Name}, whose body is %O{body} rather than IL; only an instruction has an OpcodeFaults entry"
 
+    /// What a call does once `callMethod` has offered it to PawPrint's own intrinsic
+    /// implementations.
+    [<RequireQualifiedAccess>]
+    type private IntrinsicOutcome =
+        /// An implementation handled the call.
+        | Handled of IlMachineState * CallCommitment
+        /// The call runs this method's IL: the callee's own, or the IL `IntrinsicBody.lower` puts
+        /// in place of its placeholder.
+        | RunIl of WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+
     let rec callMethodWithCommitment
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -2122,12 +2132,12 @@ module IlMachineStateExecution =
             else
                 None
 
-        match
+        let outcome =
             match intrinsic with
-            | None -> None
+            | None -> IntrinsicOutcome.RunIl methodToCall
             | Some (handle, key) ->
                 match tryHandleActivatorCreateInstance () with
-                | Some result -> Some result
+                | Some result -> IntrinsicOutcome.Handled result
                 | None ->
 
                 match
@@ -2140,7 +2150,7 @@ module IlMachineStateExecution =
                         advanceProgramCounterOfCaller
                         state
                 with
-                | IntrinsicResult.Completed result -> Some (result, CallCommitment.Committed)
+                | IntrinsicResult.Completed result -> IntrinsicOutcome.Handled (result, CallCommitment.Committed)
                 | IntrinsicResult.RaiseException (state, exnType, message) ->
                     // The intrinsic described an exception rather than raising it, because it
                     // cannot see `raiseRuntimeException` (compile order) and because raising it
@@ -2152,26 +2162,40 @@ module IlMachineStateExecution =
                     // frame, exactly as for an opcode-manufactured exception.
                     raiseRuntimeExceptionWithMessage loggerFactory baseClassTypes exnType message thread state
                     |> fst
-                    |> fun state -> Some (state, CallCommitment.Raised)
+                    |> fun state -> IntrinsicOutcome.Handled (state, CallCommitment.Raised)
                 | IntrinsicResult.Unrecognised ->
                     // PawPrint has no implementation of its own, so the call gets what CoreCLR runs
                     // when its JIT does not expand the call: the method's IL, unless that IL is a
-                    // placeholder. A body with no IL is already PawPrint's implementation of the
+                    // placeholder, in which case the IL that does what the JIT's expansion does on
+                    // this run's CPU. A body with no IL is already PawPrint's implementation of the
                     // method -- `NativeDispatch` for an InternalCall or P/Invoke, delegate or accessor
                     // dispatch for a runtime-provided body -- so the call proceeds to it as though
                     // unmarked.
+                    //
+                    // `StackShapeOfMethod` finds the lowered body through `IntrinsicBody.loweredBody`,
+                    // which decides as this does.
                     match IntrinsicBody.classify declaringAssy handle with
                     | IntrinsicBody.OwnIl
-                    | IntrinsicBody.NoIl -> None
-                    | IntrinsicBody.JitExpansion ->
-                        failwith
-                            $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey key} in Intrinsics.call: its IL calls itself, which is CoreCLR's placeholder for a body its JIT must expand"
+                    | IntrinsicBody.NoIl -> IntrinsicOutcome.RunIl methodToCall
+                    | IntrinsicBody.JitExpansion expansion ->
+                        match IntrinsicBody.lower state.HardwareIntrinsics declaringAssy expansion with
+                        | Some lowered ->
+                            let lowered =
+                                MethodInstructions.setLocalVars<TypeDefn, ConcreteTypeHandle> None lowered
+
+                            methodToCall
+                            |> MethodInfo.setMethodVars (MethodBody.Il lowered) methodToCall.Signature
+                            |> IntrinsicOutcome.RunIl
+                        | None ->
+                            failwith
+                                $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey key} in Intrinsics.call: its IL calls itself, which is CoreCLR's placeholder for a body its JIT must expand, and on this CPU the expansion (%A{expansion}) is code the JIT emits itself"
                     | IntrinsicBody.VmSubstitution ->
                         failwith
                             $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey key} in Intrinsics.call: CoreCLR's VM substitutes its body, and the IL CoreLib ships in its place cannot return"
-        with
-        | Some result -> result
-        | None ->
+
+        match outcome with
+        | IntrinsicOutcome.Handled (state, commitment) -> state, commitment
+        | IntrinsicOutcome.RunIl methodToCall ->
 
         // Get zero values for all parameters.
         //

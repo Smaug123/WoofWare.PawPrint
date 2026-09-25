@@ -243,9 +243,9 @@ module TestIntrinsicBody =
             "RuntimeHelpers"
             "GetMethodTable"
             [ "object" ]
-            IntrinsicBody.JitExpansion
+            (IntrinsicBody.JitExpansion JitExpansion.Primitive)
 
-        expect "System.Threading" "Volatile" "ReadBarrier" [] IntrinsicBody.JitExpansion
+        expect "System.Threading" "Volatile" "ReadBarrier" [] (IntrinsicBody.JitExpansion JitExpansion.Primitive)
         // Placeholders that throw, which the VM replaces.
         expect "System.Runtime.CompilerServices" "Unsafe" "As" [ "object" ] IntrinsicBody.VmSubstitution
         expect "System.Runtime.CompilerServices" "RuntimeHelpers" "IsBitwiseEquatable" [] IntrinsicBody.VmSubstitution
@@ -268,10 +268,21 @@ module TestIntrinsicBody =
         let x86 = classify "System.Runtime.Intrinsics.X86" "X86Base"
         let arm = classify "System.Runtime.Intrinsics.Arm" "ArmBase"
 
-        match x86, arm with
-        | IntrinsicBody.JitExpansion, IntrinsicBody.OwnIl
-        | IntrinsicBody.OwnIl, IntrinsicBody.JitExpansion -> ()
-        | _ -> failwith $"expected one JIT expansion and one OwnIl, got X86Base %A{x86} and ArmBase %A{arm}"
+        let query (ns : string) (cls : string) =
+            IntrinsicBody.JitExpansion (
+                JitExpansion.IsSupportedQuery
+                    {
+                        Namespace = ns
+                        Path = [ cls ]
+                    }
+            )
+
+        if x86 = query "System.Runtime.Intrinsics.X86" "X86Base" then
+            arm |> shouldEqual IntrinsicBody.OwnIl
+        elif arm = query "System.Runtime.Intrinsics.Arm" "ArmBase" then
+            x86 |> shouldEqual IntrinsicBody.OwnIl
+        else
+            failwith $"expected one IsSupported query and one OwnIl, got X86Base %A{x86} and ArmBase %A{arm}"
 
     [<TestCaseSource(nameof coreLibs)>]
     let ``VmSubstitution is exactly the VM's substitutions whose IL is a placeholder`` (which : string) : unit =
@@ -314,11 +325,273 @@ module TestIntrinsicBody =
             methodsOf corelib
             |> List.filter (fun m ->
                 IntrinsicBody.isIntrinsic corelib m.Handle
-                && IntrinsicBody.classify corelib m.Handle = IntrinsicBody.JitExpansion
+                && (
+                    match IntrinsicBody.classify corelib m.Handle with
+                    | IntrinsicBody.JitExpansion _ -> true
+                    | _ -> false
+                )
             )
             |> List.length
 
         expansions |> shouldBeGreaterThan 3_700
+
+    // -- What each placeholder asks the JIT for, and the IL that answers it on a given CPU --
+
+    /// The class `method` is declared on, walked from the NestedClass rows independently of
+    /// `IntrinsicBody`.
+    let private classOf
+        (assembly : DumpedAssembly)
+        (method : System.Reflection.Metadata.MethodDefinitionHandle)
+        : IntrinsicClass
+        =
+        let rec walk (ty : TypeInfo<GenericParamFromMetadata, TypeDefn>) (path : string list) =
+            if ty.IsNested then
+                walk assembly.TypeDefs.[ty.DeclaringType] (ty.Name :: path)
+            else
+                {
+                    Namespace = ty.Namespace
+                    Path = ty.Name :: path
+                }
+
+        walk assembly.TypeDefs.[assembly.Methods.[method].RequiredDeclaringType.Definition.Get] []
+
+    /// Every intrinsic in `corelib` whose IL is a JIT expansion, with what it expands to.
+    let private expansionsOf (corelib : DumpedAssembly) : (Method * JitExpansion) list =
+        methodsOf corelib
+        |> List.choose (fun m ->
+            if IntrinsicBody.isIntrinsic corelib m.Handle then
+                match IntrinsicBody.classify corelib m.Handle with
+                | IntrinsicBody.JitExpansion expansion -> Some (m, expansion)
+                | _ -> None
+            else
+                None
+        )
+
+    /// Whether `body` is exactly `ldc.i4 <value>; ret`.
+    let private returnsConstant (value : bool) (body : MethodInstructions<TypeDefn>) : bool =
+        match body.Instructions with
+        | [ IlOp.Nullary NullaryIlOp.LdcI4_0, _ ; IlOp.Nullary NullaryIlOp.Ret, _ ] -> not value
+        | [ IlOp.Nullary NullaryIlOp.LdcI4_1, _ ; IlOp.Nullary NullaryIlOp.Ret, _ ] -> value
+        | _ -> false
+
+    /// Whether `body` calls the helper CoreCLR's JIT calls for an instruction the CPU lacks
+    /// (`CORINFO_HELP_THROW_PLATFORM_NOT_SUPPORTED`, bound in corelib.h), and cannot return.
+    let private throwsPlatformNotSupported (corelib : DumpedAssembly) (body : MethodInstructions<TypeDefn>) : bool =
+        let callsHelper =
+            match body.Instructions with
+            | (IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Call,
+                                        MetadataOperand.FromMetadata {
+                                                                         Token = MetadataToken.MethodDef helper
+                                                                     }),
+               _) :: _ ->
+                let definition = corelib.Methods.[helper]
+                let ty = corelib.TypeDefs.[definition.RequiredDeclaringType.Definition.Get]
+
+                ty.Namespace = "Internal.Runtime.CompilerHelpers"
+                && ty.Name = "ThrowHelpers"
+                && definition.Name = "ThrowPlatformNotSupportedException"
+                && definition.Signature.ParameterTypes.IsEmpty
+            | _ -> false
+
+        let returns =
+            StackShape.reachable body
+            |> Set.exists (fun offset ->
+                match body.Locations.[offset] with
+                | IlOp.Nullary NullaryIlOp.Ret -> true
+                | _ -> false
+            )
+
+        callsHelper && not returns
+
+    [<Test>]
+    let ``hardware-intrinsic placeholders classify by the question they ask the JIT`` () : unit =
+        let corelib = coreLib "linux-x64"
+
+        let expansionOf (ns : string) (cls : string) (name : string) =
+            IntrinsicBody.classify corelib (find corelib ns cls name [])
+
+        let x86 (path : string list) : IntrinsicClass =
+            {
+                Namespace = "System.Runtime.Intrinsics.X86"
+                Path = path
+            }
+
+        expansionOf "System.Runtime.Intrinsics.X86" "X86Base" "get_IsSupported"
+        |> shouldEqual (IntrinsicBody.JitExpansion (JitExpansion.IsSupportedQuery (x86 [ "X86Base" ])))
+
+        expansionOf "System.Runtime.Intrinsics.X86" "X86Base" "Pause"
+        |> shouldEqual (IntrinsicBody.JitExpansion (JitExpansion.HardwareInstruction (x86 [ "X86Base" ])))
+
+        expansionOf "System.Runtime.Intrinsics" "Vector128" "get_IsHardwareAccelerated"
+        |> shouldEqual (
+            IntrinsicBody.JitExpansion (
+                JitExpansion.IsHardwareAcceleratedQuery
+                    {
+                        Namespace = "System.Runtime.Intrinsics"
+                        Path = [ "Vector128" ]
+                    }
+            )
+        )
+
+        expansionOf "System.Numerics" "Vector" "get_IsHardwareAccelerated"
+        |> shouldEqual (
+            IntrinsicBody.JitExpansion (
+                JitExpansion.IsHardwareAcceleratedQuery
+                    {
+                        Namespace = "System.Numerics"
+                        Path = [ "Vector" ]
+                    }
+            )
+        )
+
+        // A nested class is its own instruction set, with its own query.
+        expansionsOf corelib
+        |> List.filter (fun (m, _) ->
+            m.Name = "get_IsSupported"
+            && classOf corelib m.Handle = x86 [ "Avx512F" ; "VL" ]
+        )
+        |> List.map snd
+        |> shouldEqual [ JitExpansion.IsSupportedQuery (x86 [ "Avx512F" ; "VL" ]) ]
+
+    [<TestCaseSource(nameof coreLibs)>]
+    let ``every hardware-intrinsic placeholder lowers to IL on the scalar-only profile`` (which : string) : unit =
+        let corelib = coreLib which
+        let expansions = expansionsOf corelib
+
+        expansions
+        |> List.filter (fun (_, e) -> e <> JitExpansion.Primitive)
+        |> List.length
+        |> shouldBeGreaterThan 1_000
+
+        let failures =
+            [
+                for m, expansion in expansions do
+                    let lowered =
+                        IntrinsicBody.lower HardwareIntrinsicsProfile.ScalarOnly corelib expansion
+
+                    let ownClass (c : IntrinsicClass) =
+                        if c <> classOf corelib m.Handle then
+                            [ $"%s{describe m}: names the class %O{c}, not its own" ]
+                        else
+                            []
+
+                    match expansion, lowered with
+                    | JitExpansion.Primitive, None -> ()
+                    | JitExpansion.Primitive, Some _ -> yield $"%s{describe m}: a primitive was lowered to IL"
+                    | JitExpansion.IsSupportedQuery c, Some body
+                    | JitExpansion.IsHardwareAcceleratedQuery c, Some body ->
+                        yield! ownClass c
+
+                        if not (returnsConstant false body) then
+                            yield $"%s{describe m}: a capability query did not lower to `ldc.i4.0; ret`"
+                    | JitExpansion.HardwareInstruction c, Some body ->
+                        yield! ownClass c
+
+                        if not (throwsPlatformNotSupported corelib body) then
+                            yield
+                                $"%s{describe m}: an instruction did not lower to a PlatformNotSupportedException throw"
+                    | _, None -> yield $"%s{describe m}: %A{expansion} did not lower"
+            ]
+
+        if not failures.IsEmpty then
+            failwith (String.concat "\n" failures)
+
+    [<TestCaseSource(nameof coreLibs)>]
+    let ``a placeholder's lowering follows the profile`` (which : string) : unit =
+        let corelib = coreLib which
+
+        let supporting (c : IntrinsicClass) =
+            { HardwareIntrinsicsProfile.ScalarOnly with
+                IsSupported = Set.singleton c
+            }
+
+        let accelerating (c : IntrinsicClass) =
+            { HardwareIntrinsicsProfile.ScalarOnly with
+                IsHardwareAccelerated = Set.singleton c
+            }
+
+        let lowersToConstant (value : bool) (profile : HardwareIntrinsicsProfile) (e : JitExpansion) =
+            match IntrinsicBody.lower profile corelib e with
+            | Some body -> returnsConstant value body
+            | None -> false
+
+        let failures =
+            [
+                for m, expansion in expansionsOf corelib do
+                    match expansion with
+                    | JitExpansion.IsSupportedQuery c ->
+                        if not (lowersToConstant true (supporting c) expansion) then
+                            yield $"%s{describe m}: not true on a CPU supporting %O{c}"
+
+                        if not (lowersToConstant false (accelerating c) expansion) then
+                            yield $"%s{describe m}: IsSupported answered from the IsHardwareAccelerated set"
+                    | JitExpansion.IsHardwareAcceleratedQuery c ->
+                        if not (lowersToConstant true (accelerating c) expansion) then
+                            yield $"%s{describe m}: not true on a CPU accelerating %O{c}"
+
+                        if not (lowersToConstant false (supporting c) expansion) then
+                            yield $"%s{describe m}: IsHardwareAccelerated answered from the IsSupported set"
+                    | JitExpansion.HardwareInstruction c ->
+                        // A CPU that has the instruction runs it, which no IL can express.
+                        for profile in [ supporting c ; accelerating c ] do
+                            if (IntrinsicBody.lower profile corelib expansion).IsSome then
+                                yield $"%s{describe m}: lowered to IL on a CPU that has %O{c}"
+                    | JitExpansion.Primitive -> ()
+            ]
+
+        if not failures.IsEmpty then
+            failwith (String.concat "\n" failures)
+
+    /// The JIT expansions on the pinned linux-x64 CoreLib that are not hardware intrinsics: each
+    /// is an operation CoreCLR's JIT emits code for itself, so no IL can stand in for it.
+    let private linuxPrimitives : string list =
+        [
+            "System.Double::ConvertToIntegerNative(float64)"
+            "System.Double::MultiplyAddEstimate(float64, float64, float64)"
+            "System.Math::ReciprocalEstimate(float64)"
+            "System.Math::ReciprocalSqrtEstimate(float64)"
+            "System.MathF::ReciprocalEstimate(single)"
+            "System.MathF::ReciprocalSqrtEstimate(single)"
+            "System.Runtime.CompilerServices.RuntimeHelpers::GetMethodTable(object)"
+            "System.Runtime.CompilerServices.RuntimeHelpers::IsReferenceOrContainsReferences()"
+            "System.Runtime.CompilerServices.StaticsHelpers::VolatileReadAsByref(ref nint)"
+            "System.Runtime.InteropServices.MemoryMarshal::GetArrayDataReference(arr[<method param 0>])"
+            "System.Single::ConvertToIntegerNative(single)"
+            "System.Single::MultiplyAddEstimate(single, single, single)"
+            "System.Threading.Interlocked::CompareExchange(ref int32, int32, int32)"
+            "System.Threading.Interlocked::CompareExchange(ref int64, int64, int64)"
+            "System.Threading.Interlocked::CompareExchange(ref uint16, uint16, uint16)"
+            "System.Threading.Interlocked::CompareExchange(ref uint8, uint8, uint8)"
+            "System.Threading.Interlocked::Exchange(ref int32, int32)"
+            "System.Threading.Interlocked::Exchange(ref int64, int64)"
+            "System.Threading.Interlocked::Exchange(ref uint16, uint16)"
+            "System.Threading.Interlocked::Exchange(ref uint8, uint8)"
+            "System.Threading.Interlocked::ExchangeAdd(ref int32, int32)"
+            "System.Threading.Interlocked::ExchangeAdd(ref int64, int64)"
+            "System.Threading.Interlocked::MemoryBarrier()"
+            "System.Threading.Thread::FastPollGC()"
+            "System.Threading.Volatile::ReadBarrier()"
+            "System.Threading.Volatile::WriteBarrier()"
+        ]
+
+    [<Test>]
+    let ``the linux-x64 CoreLib's primitive JIT expansions are the JIT's own operations`` () : unit =
+        let corelib = coreLib "linux-x64"
+
+        let found =
+            expansionsOf corelib
+            |> List.filter (fun (_, e) -> e = JitExpansion.Primitive)
+            |> List.map (fst >> describe)
+            |> Set.ofList
+
+        let expected = Set.ofList linuxPrimitives
+        let unexpected = Set.difference found expected
+        let missing = Set.difference expected found
+
+        if not unexpected.IsEmpty || not missing.IsEmpty then
+            let unexpected = unexpected |> Seq.map (sprintf "  %s") |> String.concat "\n"
+            let missing = missing |> Seq.map (sprintf "  %s") |> String.concat "\n"
+            failwith $"primitives not on the list:\n%s{unexpected}\nlisted but not primitives:\n%s{missing}"
 
     // -- Fabricated images: each route by which a body can name itself, and what does not count --
 
@@ -511,14 +784,34 @@ module TestIntrinsicBody =
     let fabricatedCases : TestCaseData list =
         [
             TestCaseData ("Methods", "Ordinary", ([] : string list), IntrinsicBody.OwnIl)
-            TestCaseData ("Methods", "SelfDirect", ([] : string list), IntrinsicBody.JitExpansion)
-            TestCaseData ("Methods", "SelfGeneric", ([] : string list), IntrinsicBody.JitExpansion)
+            TestCaseData (
+                "Methods",
+                "SelfDirect",
+                ([] : string list),
+                IntrinsicBody.JitExpansion JitExpansion.Primitive
+            )
+            TestCaseData (
+                "Methods",
+                "SelfGeneric",
+                ([] : string list),
+                IntrinsicBody.JitExpansion JitExpansion.Primitive
+            )
             TestCaseData ("Methods", "CallsOverload", [ "int32" ], IntrinsicBody.OwnIl)
             TestCaseData ("Methods", "AlwaysThrows", ([] : string list), IntrinsicBody.OwnIl)
             TestCaseData ("Virtuals", "SelfVirtual", ([] : string list), IntrinsicBody.OwnIl)
-            TestCaseData ("Generic", "SelfOnGeneric", ([] : string list), IntrinsicBody.JitExpansion)
+            TestCaseData (
+                "Generic",
+                "SelfOnGeneric",
+                ([] : string list),
+                IntrinsicBody.JitExpansion JitExpansion.Primitive
+            )
             TestCaseData ("IntrinsicType", "Plain", ([] : string list), IntrinsicBody.OwnIl)
-            TestCaseData ("IntrinsicType", "Placeholder", ([] : string list), IntrinsicBody.JitExpansion)
+            TestCaseData (
+                "IntrinsicType",
+                "Placeholder",
+                ([] : string list),
+                IntrinsicBody.JitExpansion JitExpansion.Primitive
+            )
             TestCaseData ("Unsafe", "As", [ "object" ], IntrinsicBody.OwnIl)
         ]
         |> List.map (fun c -> c.SetArgDisplayNames $"%O{c.Arguments.[0]}::%O{c.Arguments.[1]} is %O{c.Arguments.[3]}")
@@ -625,7 +918,7 @@ module TestIntrinsicBody =
             |> List.exactlyOne
 
         IntrinsicBody.classify assembly m.Handle
-        |> shouldEqual IntrinsicBody.JitExpansion
+        |> shouldEqual (IntrinsicBody.JitExpansion JitExpansion.Primitive)
 
     [<Test>]
     let ``a placeholder naming itself through a TypeRef is refused rather than recursed into`` () : unit =

@@ -95,8 +95,14 @@ module StackShapeOfMethod =
 
         let definition = assembly.Methods.[facts.Handle]
 
+        // The body `callMethod` runs, which for a placeholder is the IL lowered in its place.
         let body =
-            match MethodInfo.tryIlBody definition with
+            match IntrinsicBody.loweredBody state.HardwareIntrinsics assembly facts.Handle with
+            | Some lowered -> Some lowered
+            | None -> MethodInfo.tryIlBody definition
+
+        let body =
+            match body with
             | Some body -> body
             | None ->
                 failwith
