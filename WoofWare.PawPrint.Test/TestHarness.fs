@@ -41,6 +41,9 @@ type OraclePolicy =
     /// talking about; but on a matching host it is as good a differential case as
     /// anything in `sourcesPure`, and CI runs Linux.
     ///
+    /// On Darwin it also rests on the host running the major release the Darwin flavour
+    /// models, which `TestDarwinReleaseAgainstHost` asserts by name.
+    ///
     /// Matching flavours makes the comparison *possible*, not automatically valid: the
     /// emulated kernel and the host kernel still disagree about the release string, the
     /// processor count, the clock, the filesystem type under any path, directory

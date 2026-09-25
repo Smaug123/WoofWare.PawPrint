@@ -210,9 +210,9 @@ module TestPureCases =
                     // rather than merely answering the wrong errno.
                     name "ld", SeedEntry.Symlink (target "full")
                     name "dang", SeedEntry.Symlink (target "nx")
-                    // Two levels, so that "nav/kid/." and "nav/kid/.." reach a
-                    // directory that is not the root -- the flavours agree there
-                    // and diverge at the root itself.
+                    // Two levels, so that "nav/kid/." reaches a directory that
+                    // is not the root -- the flavours agree there and diverge at
+                    // the root itself.
                     name "nav", SeedEntry.directory (Map.ofList [ name "kid", SeedEntry.directory Map.empty ])
                     // Opened before it is removed, which is the row that shows a
                     // descriptor outliving the last name.

@@ -71,6 +71,7 @@ class Program
     // Interop.Error, the PAL error enum.
     const int PAL_EACCES = 0x10002;
     const int PAL_EBUSY = 0x1000A;
+    const int PAL_EINVAL = 0x1001C;
     const int PAL_EISDIR = 0x1001F;
     const int PAL_ELOOP = 0x10020;
     const int PAL_ENOENT = 0x1002D;
@@ -153,6 +154,16 @@ class Program
         foreach (string p in new[] { ".", "./", "..", "/.", "/..", "lroot/.", "lroot/.." })
         {
             bad = Refused(p, PAL_EBUSY);
+            if (bad != 0) return bad;
+        }
+
+        // Below the root, "." and ".." are both EINVAL, where Linux gives ".."
+        // ENOTEMPTY. These reach `nowrite`'s child and `nowrite` itself, neither
+        // of which this caller can remove from, so the navigation arm also beats
+        // the write check.
+        foreach (string p in new[] { "nowrite/kdir/.", "nowrite/kdir/.." })
+        {
+            bad = Refused(p, PAL_EINVAL);
             if (bad != 0) return bad;
         }
 

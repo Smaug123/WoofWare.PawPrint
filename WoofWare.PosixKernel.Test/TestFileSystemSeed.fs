@@ -399,7 +399,7 @@ module TestFileSystemSeed =
         SimulatedUnixPlatform.createOrFail "test" SimulatedUnixFlavour.Linux "6.17.0-1022-azure"
         |> shouldEqual linux
 
-        SimulatedUnixPlatform.createOrFail "test" SimulatedUnixFlavour.Darwin "24.6.0"
+        SimulatedUnixPlatform.createOrFail "test" SimulatedUnixFlavour.Darwin "27.0.0"
         |> shouldEqual darwin
 
     [<Test>]

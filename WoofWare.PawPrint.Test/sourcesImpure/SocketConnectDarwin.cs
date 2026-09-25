@@ -5,10 +5,9 @@ using System.Threading;
 // `SystemNative_Connect`'s flavour-divergent rows under the Darwin flavour,
 // plus the raw errno numbers its failures leave for a `SetLastError = true`
 // import. The flavour-independent rows live differentially in
-// `SocketConnect.cs`; every row here was measured on macOS 26 (probes
-// `connect_probe.c` / `probe2.c` / `probe3.c`, 2026-08-21) and this guest's
-// expectations were confirmed by running it on real macOS .NET before the
-// handler existed.
+// `SocketConnect.cs`; every row here was measured on macOS 27.0 (Darwin
+// 27.0.0), and this guest's expectations are confirmed by running it on real
+// macOS .NET.
 //
 // The Darwin-only facts:
 //
@@ -19,10 +18,11 @@ using System.Threading;
 //     answer exists only inside the real kernel's handshake window, which
 //     PawPrint's instantaneous model has no equivalent of — the sleep below
 //     keeps the real-.NET confirmation run on the settled side of it;
-//   * a connect retry after an async refusal delivers the pending error —
-//     ECONNREFUSED — exactly once, and then latches the socket dead: every
-//     later connect answers EINVAL (Linux instead resets the socket for a
-//     fresh attempt);
+//   * a connect retry after an async refusal answers EISCONN, and so does
+//     every later one, whatever the destination: connect never delivers the
+//     pending ECONNREFUSED (Linux delivers it once and then resets the socket
+//     for a fresh attempt). A blocking refusal answers ECONNREFUSED inline,
+//     and every later connect EISCONN just the same;
 //   * AF_UNSPEC is refused everywhere: EADDRNOTAVAIL on an unconnected TCP
 //     socket (which stays usable), EISCONN on a connected one, and
 //     EAFNOSUPPORT on a UDP socket whether or not a peer filter is set
@@ -197,17 +197,17 @@ class SocketConnectDarwin
         if (ConnectReportingErrno(c2, dst, V4Size) != PAL_EISCONN) return 24;
         if (Marshal.GetLastSystemError() != EISCONN) return 25;
 
-        // --- retry after an async refusal: ECONNREFUSED delivered once,
-        //     then the socket is dead ---
+        // --- retry after an async refusal: EISCONN, and the refusal is
+        //     never delivered ---
         IntPtr c4 = Make(SOCK_STREAM, PT_TCP);
         if (c4 == (IntPtr)(-1)) return 26;
         if (SetIsNonBlocking(c4, 1) != 0) return 27;
         if (Connect(c4, deadDst, V4Size) != PAL_EINPROGRESS) return 28;
         Thread.Sleep(200);
-        if (ConnectReportingErrno(c4, deadDst, V4Size) != PAL_ECONNREFUSED) return 29;
-        if (Marshal.GetLastSystemError() != ECONNREFUSED) return 30;
-        // Darwin keeps the resolved source through the delivery (Linux
-        // reverts it to what bind locked).
+        if (ConnectReportingErrno(c4, deadDst, V4Size) != PAL_EISCONN) return 29;
+        if (Marshal.GetLastSystemError() != EISCONN) return 30;
+        // Darwin keeps the resolved source through the retry (Linux's
+        // delivery reverts it to what bind locked).
         int postLen = V4Size;
         if (GetSockName(c4, outAddr, &postLen) != PAL_SUCCESS) return 31;
         uint postSource = 0;
@@ -216,20 +216,20 @@ class SocketConnectDarwin
         ushort postPort = 0;
         if (GetPort(outAddr, postLen, &postPort) != PAL_SUCCESS) return 34;
         if (postPort == 0) return 35;
-        if (ConnectReportingErrno(c4, deadDst, V4Size) != PAL_EINVAL) return 36;
-        if (Marshal.GetLastSystemError() != EINVAL) return 37;
-        if (ConnectReportingErrno(c4, dst, V4Size) != PAL_EINVAL) return 38;
-        if (Marshal.GetLastSystemError() != EINVAL) return 39;
+        if (ConnectReportingErrno(c4, deadDst, V4Size) != PAL_EISCONN) return 36;
+        if (Marshal.GetLastSystemError() != EISCONN) return 37;
+        if (ConnectReportingErrno(c4, dst, V4Size) != PAL_EISCONN) return 38;
+        if (Marshal.GetLastSystemError() != EISCONN) return 39;
         if (Close(c4) != 0) return 40;
 
-        // --- a *blocking* refusal delivers inline and latches the socket
-        //     dead just the same: EINVAL even toward a live listener ---
+        // --- a *blocking* refusal delivers inline, and the socket answers
+        //     EISCONN afterwards just the same, even toward a live listener ---
         IntPtr c5 = Make(SOCK_STREAM, PT_TCP);
         if (c5 == (IntPtr)(-1)) return 41;
         if (ConnectReportingErrno(c5, deadDst, V4Size) != PAL_ECONNREFUSED) return 42;
         if (Marshal.GetLastSystemError() != ECONNREFUSED) return 43;
-        if (ConnectReportingErrno(c5, dst, V4Size) != PAL_EINVAL) return 44;
-        if (Marshal.GetLastSystemError() != EINVAL) return 45;
+        if (ConnectReportingErrno(c5, dst, V4Size) != PAL_EISCONN) return 44;
+        if (Marshal.GetLastSystemError() != EISCONN) return 45;
         if (Close(c5) != 0) return 46;
 
         // --- AF_UNSPEC on an unconnected TCP socket: EADDRNOTAVAIL, and

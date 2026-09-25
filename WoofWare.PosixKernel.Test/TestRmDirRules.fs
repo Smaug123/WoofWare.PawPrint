@@ -16,8 +16,8 @@ open WoofWare.PosixKernel
 /// where Linux gives EINVAL — so those rows are pinned here, where the model's
 /// root really is one.
 ///
-/// Every row below is measured on macOS 26.6/APFS at uid 501, and Linux 6.x
-/// arm64 at uid 1000 and uid 0, one fresh tree per row.
+/// Every row below is measured on macOS 27.0/APFS (Darwin 27.0.0) at uid 501,
+/// and Linux 6.x arm64 at uid 1000 and uid 0, one fresh tree per row.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestRmDirRules =
@@ -236,9 +236,10 @@ module TestRmDirRules =
             refuses platform UnixError.EINVAL [ "d/." ; "nest/inner/." ]
 
     [<Test>]
-    let ``a path ending in ".." below the root is ENOTEMPTY on both`` () : unit =
-        for platform in [ linux ; darwin ] do
-            refuses platform UnixError.ENOTEMPTY [ "nest/inner/.." ]
+    let ``a path ending in ".." below the root is ENOTEMPTY on Linux and EINVAL on Darwin`` () : unit =
+        // Darwin gives ".." what it gives ".", once the root is out of the way.
+        refuses linux UnixError.ENOTEMPTY [ "nest/inner/.." ]
+        refuses darwin UnixError.EINVAL [ "nest/inner/.." ]
 
     [<Test>]
     let ``the navigation arms beat the write check on both`` () : unit =
@@ -247,7 +248,9 @@ module TestRmDirRules =
         // both kernels answer the navigation's errno rather than EACCES.
         for platform in [ linux ; darwin ] do
             refuses platform UnixError.EINVAL [ "nowrite/kdir/." ]
-            refuses platform UnixError.ENOTEMPTY [ "nowrite/kdir/.." ]
+
+        refuses linux UnixError.ENOTEMPTY [ "nowrite/kdir/.." ]
+        refuses darwin UnixError.EINVAL [ "nowrite/kdir/.." ]
 
     [<Test>]
     let ``an over-long component is ENAMETOOLONG on both`` () : unit =
@@ -314,15 +317,14 @@ module TestRmDirRules =
     let ``Darwin specialises the root inode rather than the path`` () : unit =
         // XNU refuses a mount's root vnode before it looks at which navigation
         // got there; PawPrint mounts one filesystem, so that is the root. Below
-        // the root the two flavours agree again, which is what `nest/inner`
+        // the root, "." and ".." are both EINVAL, which is what `nest/inner`
         // pins.
-        // "d/.." is in the EBUSY list rather than the ENOTEMPTY one because `d`
+        // "d/.." is in the EBUSY list rather than the EINVAL one because `d`
         // is a child of *this* root, so climbing out of it reaches the root.
         // That is why the corpus carries `nest/inner`: only a directory two
-        // levels down can show that Darwin agrees with Linux below the root.
+        // levels down can show what Darwin answers for ".." below the root.
         refuses darwin UnixError.EBUSY [ "/." ; "/.." ; "lroot/." ; "lroot/.." ; "." ; "./" ; ".." ; "d/.." ; "lcur/" ]
-        refuses darwin UnixError.EINVAL [ "d/." ; "nest/inner/." ]
-        refuses darwin UnixError.ENOTEMPTY [ "nest/inner/.." ]
+        refuses darwin UnixError.EINVAL [ "d/." ; "nest/inner/." ; "nest/inner/.." ]
 
     [<Test>]
     let ``Darwin traverses a final symlink for a trailing separator`` () : unit =
@@ -330,8 +332,8 @@ module TestRmDirRules =
         // then imposes the demand — which is how each of these lands on what the
         // link *named* rather than on the link.
         refuses darwin UnixError.ENOTDIR [ "lf/" ]
-        refuses darwin UnixError.ENOTEMPTY [ "lfull/" ; "lpar/" ]
-        refuses darwin UnixError.EINVAL [ "nest/lcur/" ]
+        refuses darwin UnixError.ENOTEMPTY [ "lfull/" ]
+        refuses darwin UnixError.EINVAL [ "nest/lcur/" ; "lpar/" ]
         refuses darwin UnixError.ENOENT [ "dang/" ]
         refuses darwin UnixError.ELOOP [ "cyc/" ]
 

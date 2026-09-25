@@ -652,9 +652,8 @@ module UnixConnection =
 
                 if not nonBlocking then
                     // The refusal is delivered inline, and the socket's fate
-                    // diverges by flavour exactly as for the deferred
-                    // delivery below: measured, a Linux retry is a fresh
-                    // attempt and a Darwin one answers EINVAL forever.
+                    // diverges by flavour: measured, a Linux retry is a fresh
+                    // attempt and a Darwin one answers EISCONN forever.
                     let phase =
                         match flavour with
                         | SimulatedUnixFlavour.Linux -> SocketPhase.Idle
@@ -683,11 +682,11 @@ module UnixConnection =
 
                     failed UnixError.ECONNREFUSED system
                 else
-                    // EINPROGRESS now; the first later connect delivers
-                    // ECONNREFUSED. Measured on both — with no SO_ERROR read
-                    // in between, which would consume the pending error and
-                    // change these answers; `getsockopt` refuses SO_ERROR, so
-                    // only this path is reachable.
+                    // EINPROGRESS now, with ECONNREFUSED pending. On Linux the
+                    // first later connect delivers it, unless an SO_ERROR read
+                    // has consumed it first; `getsockopt` refuses SO_ERROR, so
+                    // only the delivering path is reachable. Darwin's connect
+                    // never delivers it (measured).
                     let system =
                         { system with
                             Machine =
@@ -781,7 +780,7 @@ module UnixConnection =
                     failed UnixError.ECONNREFUSED system
                 | SocketPhase.Dead ->
                     failwith
-                        "UnixConnection.connectSocket: a stream socket is in SocketPhase.Dead under the Linux flavour, which only Darwin's refusal delivery produces. This is a bug in this library, or in a caller that assembled the state by hand."
+                        "UnixConnection.connectSocket: a stream socket is in SocketPhase.Dead under the Linux flavour, which only a Darwin blocking refusal produces. This is a bug in this library, or in a caller that assembled the state by hand."
                 | SocketPhase.Established _ -> fail UnixError.EISCONN
                 | SocketPhase.Listening _ ->
                     // Measured: Linux answers a connect on the listening
@@ -808,20 +807,19 @@ module UnixConnection =
                     failwith
                         "UnixConnection.connectSocket: the declared length passed the AF_INET verdict but the destination was not supplied; the caller reads it whenever the length reaches it. This is a bug in the caller of UnixConnection.connectSocket."
             | SimulatedUnixFlavour.Darwin ->
-                // The state arms answer first — measured three ways: the
-                // dead latch beats a good destination, EISCONN beats
-                // AF_UNSPEC, and the refusal delivery beats a changed
-                // destination.
+                // The state arms answer first — measured: a refused socket's
+                // EISCONN beats a good destination, AF_UNSPEC and an
+                // oversized sockaddr, and a connected socket's beats
+                // AF_UNSPEC.
                 match sock.Phase with
                 | SocketPhase.EstablishedPendingReport _ ->
                     failwith
                         "UnixConnection.connectSocket: a stream socket is in SocketPhase.EstablishedPendingReport under the Darwin flavour, which never constructs it (its retry answers EISCONN directly). This is a bug in this library, or in a caller that assembled the state by hand."
-                | SocketPhase.RefusedPendingDelivery ->
-                    // Deliver once; the socket is then dead (measured).
-                    failed UnixError.ECONNREFUSED (withPhase SocketPhase.Dead system)
+                | SocketPhase.RefusedPendingDelivery
                 | SocketPhase.Dead ->
-                    // Measured, whatever the destination.
-                    fail UnixError.EINVAL
+                    // Measured, whatever the destination, and whether or not
+                    // the refusal is still pending: connect never delivers it.
+                    fail UnixError.EISCONN
                 | SocketPhase.Established _ ->
                     // Measured, including against an AF_UNSPEC destination.
                     fail UnixError.EISCONN

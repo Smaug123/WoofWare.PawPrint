@@ -154,6 +154,12 @@ class Program
             if (bad != 0) return bad;
         }
 
+        // Below the root too, where Darwin gives ".." EINVAL instead. This one
+        // reaches `nowrite`, which this caller cannot write, so the navigation
+        // arm also beats the write check.
+        bad = Refused("nowrite/kdir/..", PAL_ENOTEMPTY);
+        if (bad != 0) return bad;
+
         // ---- a trailing separator never traverses the final symlink ----
 
         // `TrailingSeparatorPolicy.Ignore`, so no ELOOP for the cycle, no

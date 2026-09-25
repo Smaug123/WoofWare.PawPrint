@@ -443,8 +443,9 @@ module RmDirRules =
     ///    `rmdir("/..")` and — through `lroot -> "/"` — `rmdir("lroot/.")` are
     ///    EBUSY, where Linux answers those EINVAL and ENOTEMPTY. So Darwin
     ///    specialises the *inode* where Linux specialises the path.
-    ///  * Any other directory reached by "." is EINVAL, and by ".." is
-    ///    ENOTEMPTY — agreeing with Linux once the root is out of the way.
+    ///  * Any other directory reached by "." or ".." is EINVAL, and that
+    ///    beats the write check: `rmdir("nowrite/kdir/..")` is EINVAL. Linux
+    ///    agrees about "." and gives ".." ENOTEMPTY.
     ///  * A free final name is ENOENT.
     ///  * The target not being a directory is ENOTDIR, and beats the write
     ///    check: `rmdir("nowrite/kid")` is ENOTDIR where `rmdir("nowrite/kdir")`
@@ -469,16 +470,12 @@ module RmDirRules =
         | ResolvedTarget.Directory (inode, reachedBy) ->
             match reachedBy with
             | FinalNavigation.Root -> RmDirVerdict.Refuse UnixError.EISDIR
-            | FinalNavigation.Current ->
-                if inode = VirtualFileSystem.root vfs then
-                    RmDirVerdict.Refuse UnixError.EBUSY
-                else
-                    RmDirVerdict.Refuse UnixError.EINVAL
+            | FinalNavigation.Current
             | FinalNavigation.Parent ->
                 if inode = VirtualFileSystem.root vfs then
                     RmDirVerdict.Refuse UnixError.EBUSY
                 else
-                    RmDirVerdict.Refuse UnixError.ENOTEMPTY
+                    RmDirVerdict.Refuse UnixError.EINVAL
         | ResolvedTarget.Entry (directory, name, existing) ->
 
         match existing with
