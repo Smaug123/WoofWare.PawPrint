@@ -1513,6 +1513,11 @@ module ManagedPointerSource =
     ///
     /// This is what makes root disjointness insufficient on its own: two byrefs on different
     /// roots are different addresses only while each stays within the root it started from.
+    ///
+    /// A localloc or native-heap root names one byte of its block, and a `Field` step off it
+    /// moves the byref to another byte of the same block, so for such a root the extent this
+    /// answers about is the block. Two roots on one block are therefore not disjoint storage at
+    /// all, and `ceqNormalisedDeferred` defers them separately.
     let private mayLeaveRootExtent (root : ByrefRoot) (projs : ByrefProjection list) : bool =
         // Canonically there is at most one `ByteOffset` and it is last — `appendProjection`
         // coalesces adjacent offsets, so a second one cannot arrive without an intervening
@@ -1540,6 +1545,14 @@ module ManagedPointerSource =
                 // which may well be the *next* range's base, so it is not inside.
                 not (cursor > 0L && cursor < int64<int> size)
             | RootCursorBound.Unbounded -> true
+
+    /// Do these two roots index bytes of one localloc or native-heap block?
+    let private rootsIndexOneRawBlock (root1 : ByrefRoot) (root2 : ByrefRoot) : bool =
+        match root1, root2 with
+        | ByrefRoot.StackMemoryByte (thread1, frame1, block1, _), ByrefRoot.StackMemoryByte (thread2, frame2, block2, _) ->
+            thread1 = thread2 && frame1 = frame2 && block1 = block2
+        | ByrefRoot.NativeMemoryByte (block1, _), ByrefRoot.NativeMemoryByte (block2, _) -> block1 = block2
+        | _ -> false
 
     /// Whether two byrefs sharing a root name the same address, or `None` when saying
     /// so would need field-offset layout that byref comparison does not carry.
@@ -1636,6 +1649,22 @@ module ManagedPointerSource =
                 raw1,
                 raw2,
                 $"TODO (CEQ): %s{context} compares byrefs on different roots where at least one carries a byte cursor this comparison cannot place within its root, so it may have left that root's extent; deciding that needs layout this comparison does not carry. Got %O{raw1} vs %O{raw2}"
+            )
+        | ManagedPointerSource.Byref (root1, projs1), ManagedPointerSource.Byref (root2, projs2) when
+            rootsIndexOneRawBlock root1 root2
+            && projs1 <> projs2
+            && (containsField projs1 || containsField projs2)
+            ->
+            // Two bytes of one localloc or native-heap block are different roots, but not
+            // different storage: a `Field` step off such a root is address arithmetic, moving the
+            // byref forward from its byte by the field's offset in its declaring type, so
+            // `ref p->B` off byte 0 is `ref *(int*)((byte*)p + 4)` off byte 4. Equal chains move
+            // both byrefs by the same amount, because a field's offset is a fact about its
+            // declaring type, so those stay as far apart as their roots and fall to the arm below.
+            CeqOutcome.NeedsByteLocation (
+                raw1,
+                raw2,
+                $"TODO (CEQ): %s{context} compares byrefs off two bytes of one localloc or native-heap block, at least one through a `Field` step, which moves it from its byte by the field's offset in its declaring type — layout that byref comparison does not carry. Got %O{raw1} vs %O{raw2}"
             )
         | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (obj1, field1), _),
           ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (obj2, field2), _) when obj1 = obj2 && field1 <> field2 ->

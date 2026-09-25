@@ -3207,6 +3207,13 @@ and CliValueType =
 
         targetField.Offset, targetField.Size
 
+    /// A value laid out as `field` is, for a caller that consults only its layout: the cell the
+    /// field was last given, which explicit layout may since have overwritten through an
+    /// overlapping field. Unlike `DereferenceFieldById`, this never reconciles overlapping fields,
+    /// so it answers for a field whose current value could not be rebuilt from its bytes.
+    static member FieldLayoutTemplateById (field : FieldId) (cvt : CliValueType) : CliType =
+        (CliValueType.FindFieldById field cvt).Contents
+
     /// Returns the offset and size.
     static member GetFieldLayout (field : string) (cvt : CliValueType) : int * int =
         CliValueType.GetFieldLayoutById (FieldId.named field) cvt
@@ -5177,6 +5184,12 @@ module CliType =
         | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
         | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
         | CliType.ValueType cvt -> CliValueType.GetFieldLayoutById field cvt
+
+    /// See `CliValueType.FieldLayoutTemplateById`.
+    let getFieldLayoutTemplateById (field : FieldId) (value : CliType) : CliType =
+        match value with
+        | CliType.ValueType cvt -> CliValueType.FieldLayoutTemplateById field cvt
+        | other -> failwith $"getFieldLayoutTemplateById: field %O{field} of non-value-type %O{other}"
 
     /// Returns None if there isn't *exactly* one field that starts there. This rules out some valid programs.
     let getFieldAt (offset : int) (value : CliType) : CliConcreteField option =

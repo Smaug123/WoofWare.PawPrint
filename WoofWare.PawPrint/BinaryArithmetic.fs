@@ -89,15 +89,31 @@ module private ArithmeticTarget =
                     failwith
                         $"byref %O{ptr} has a byte-, element- or field-addressed root and no projections, which the arms above already match (this is an interpreter bug)"
 
-    let getFieldContainerValue
+    /// A value laid out as the container of `field` is, for callers that consult only its layout:
+    /// where `field` sits, and which field sits at another offset.
+    ///
+    /// Inside a localloc or native-heap block that is the layout of the type declaring `field`,
+    /// whatever the memory holds: a `Field` step there is address arithmetic in that type's
+    /// layout (`IlMachineManagedByref.tryAnchorRawRootFieldPrefixToLayout`). Every other
+    /// container is read, and its value's own layout answers.
+    let getFieldContainerLayout
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (container : FieldContainer)
+        (field : FieldId)
         : CliType
         =
         match container with
         | FieldContainer.HeapObject addr -> CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
-        | FieldContainer.ByrefContainer ptr -> IlMachineState.readManagedByref baseClassTypes state ptr
+        | FieldContainer.ByrefContainer ptr ->
+            match ptr, FieldId.tryDeclaringType field with
+            | ManagedPointerSource.Byref (root, _), Some declaringHandle when IlMachineManagedByref.isRawByteRoot root ->
+                match AllConcreteTypes.lookup declaringHandle state.ConcreteTypes with
+                | Some declaringType -> IlMachineManagedByref.zeroForConcreteType baseClassTypes state declaringType
+                | None ->
+                    failwith
+                        $"field %O{field} names declaring type %O{declaringHandle}, which is not in the concrete-type registry, so its layout in %O{container} cannot be read"
+            | _ -> IlMachineState.readManagedByref baseClassTypes state ptr
 
 /// Whether an arithmetic operation wraps on overflow (`add`, `sub`) or traps
 /// (`add.ovf`, `sub.ovf`). This is only observable in the pointer helpers at
@@ -421,7 +437,8 @@ module ArithmeticOperation =
                 v
             |> Choice1Of2
         | ArithmeticTarget.FieldTarget (container, field) ->
-            let obj = ArithmeticTarget.getFieldContainerValue baseClassTypes state container
+            let obj =
+                ArithmeticTarget.getFieldContainerLayout baseClassTypes state container field
 
             let offset, _ = CliType.getFieldLayoutById field obj
             let offset = checkedAddInt32 "field byte offset" offset v
@@ -638,7 +655,31 @@ module ArithmeticOperation =
         | ManagedPointerSource.Byref (ByrefRoot.Argument _, _), _
         | _, ManagedPointerSource.Byref (ByrefRoot.Argument _, _) when not (sameArgumentRoot ptr1 ptr2) ->
             failwith $"refusing to operate on pointers to arguments: %O{ptr1} and %O{ptr2}"
-        | ManagedPointerSource.Byref _, ManagedPointerSource.Byref _ ->
+        | ManagedPointerSource.Byref (root1, _), ManagedPointerSource.Byref (root2, _) ->
+            // Two byrefs into one localloc or native-heap block are two byte coordinates in it,
+            // however each was spelt: a `Field` step there is a layout displacement, so
+            // `&p[1].A - &p[0].B` is arithmetic on the coordinates `StorageLocation` computes,
+            // which read no memory.
+            let rawBlockDifference =
+                if
+                    IlMachineManagedByref.isRawByteRoot root1
+                    && IlMachineManagedByref.isRawByteRoot root2
+                then
+                    match
+                        StorageLocation.resolve baseClassTypes state ptr1,
+                        StorageLocation.resolve baseClassTypes state ptr2
+                    with
+                    | StorageLocation.LocationResolution.Located (_, Some (storage1, offset1)),
+                      StorageLocation.LocationResolution.Located (_, Some (storage2, offset2)) when storage1 = storage2 ->
+                        Some (offset1 - offset2)
+                    | _ -> None
+                else
+                    None
+
+            match rawBlockDifference with
+            | Some difference -> difference |> verbatimInt64 |> Choice2Of2
+            | None ->
+
             match ArithmeticTarget.decompose ptr1, ArithmeticTarget.decompose ptr2 with
             | ArithmeticTarget.StackMemoryTarget (thread1, frame1, block1, byteOffset1),
               ArithmeticTarget.StackMemoryTarget (thread2, frame2, block2, byteOffset2) ->
@@ -816,8 +857,11 @@ module ArithmeticOperation =
                     failwith
                         $"refusing to subtract pointers to fields of different containers: %O{container1} vs %O{container2}"
 
-                let obj1 = ArithmeticTarget.getFieldContainerValue baseClassTypes state container1
-                let obj2 = ArithmeticTarget.getFieldContainerValue baseClassTypes state container2
+                let obj1 =
+                    ArithmeticTarget.getFieldContainerLayout baseClassTypes state container1 field1
+
+                let obj2 =
+                    ArithmeticTarget.getFieldContainerLayout baseClassTypes state container2 field2
 
                 let offset1, _ = CliType.getFieldLayoutById field1 obj1
                 let offset2, _ = CliType.getFieldLayoutById field2 obj2
