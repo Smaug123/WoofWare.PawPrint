@@ -199,3 +199,96 @@ class Program
 """
 
         runSource flavour "IsaInstructionThrows.cs" source |> shouldEqual 0
+
+    /// Only a placeholder's call to itself is expanded; the rest of its IL runs. On the linux-x64
+    /// CoreLib, `Avx2.GatherVector128` checks its scale before calling itself, so on a CPU
+    /// without AVX2 an invalid scale raises `ArgumentOutOfRangeException` from that check and only
+    /// a valid one reaches the self-call and `PlatformNotSupportedException`. (Other
+    /// architectures' CoreLibs carry a twin that throws `PlatformNotSupportedException` first.)
+    [<Test>]
+    let ``Scalar-only profile runs a placeholder's own IL up to its self-call`` () : unit =
+        let source =
+            """
+using System;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
+
+unsafe class Program
+{
+    static int Main(string[] args)
+    {
+        int[] data = new int[4];
+        fixed (int* p = data)
+        {
+            try
+            {
+                Avx2.GatherVector128(p, default(Vector128<int>), 3);
+                return 1;
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+            }
+            catch (PlatformNotSupportedException)
+            {
+                return 2;
+            }
+
+            try
+            {
+                Avx2.GatherVector128(p, default(Vector128<int>), 4);
+                return 3;
+            }
+            catch (PlatformNotSupportedException)
+            {
+            }
+        }
+
+        return 0;
+    }
+}
+"""
+
+        runSource "linux-x64" "GatherScaleCheck.cs" source |> shouldEqual 0
+
+    /// CoreCLR's JIT compiles an instruction the CPU lacks to a call to
+    /// `ThrowHelpers.ThrowPlatformNotSupportedException`, so the exception's captured frames are
+    /// that helper, the instruction's method, then its caller. The helper's class is
+    /// `[StackTraceHidden]`, which keeps it out of the formatted `StackTrace` but not out of
+    /// `new StackTrace(e)`. Measured on real .NET 10 on osx-arm64 with
+    /// `DOTNET_EnableHWIntrinsic=0`, for `ArmBase.Yield`, called directly and through a delegate.
+    /// PawPrint does not yet hide `[StackTraceHidden]` frames from the formatted trace
+    /// (`sourcesPure/ExceptionDispatchInfoThrowPreservesTrace.cs`), so only the captured frames
+    /// are compared here.
+    [<Test>]
+    let ``Scalar-only profile raises PlatformNotSupportedException from CoreCLR's throw helper`` () : unit =
+        let source =
+            """
+using System;
+using System.Diagnostics;
+using System.Runtime.Intrinsics.X86;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        try
+        {
+            X86Base.Pause();
+            return 1;
+        }
+        catch (PlatformNotSupportedException e)
+        {
+            var trace = new StackTrace(e);
+            if (trace.FrameCount != 3) return 2;
+            if (trace.GetFrame(0).GetMethod().Name != "ThrowPlatformNotSupportedException") return 3;
+            if (trace.GetFrame(0).GetMethod().DeclaringType.Name != "ThrowHelpers") return 4;
+            if (trace.GetFrame(1).GetMethod().Name != "Pause") return 5;
+            if (trace.GetFrame(2).GetMethod().Name != "Main") return 6;
+            if (!e.StackTrace.Contains("X86Base.Pause")) return 7;
+            return 0;
+        }
+    }
+}
+"""
+
+        runSource "linux-x64" "PlatformNotSupportedFrames.cs" source |> shouldEqual 0

@@ -359,11 +359,8 @@ module TestIntrinsicBody =
         placeholders |> List.length |> shouldBeGreaterThan 20
 
         for m in placeholders do
-            match
-                IntrinsicBody.loweredBody HardwareIntrinsicsProfile.ScalarOnly corelib m.Handle,
-                VmSubstitution.unsafeStub corelib m.Handle
-            with
-            | Some lowered, Some stub -> lowered.Instructions.Length |> shouldEqual stub.Instructions.Length
+            match IntrinsicBody.substitutedBody corelib m.Handle, VmSubstitution.unsafeStub corelib m.Handle with
+            | Some substituted, Some stub -> substituted.Instructions.Length |> shouldEqual stub.Instructions.Length
             | _ -> failwith $"%s{describe m}: a placeholder with no stub to run"
 
     [<Test>]
@@ -418,42 +415,6 @@ module TestIntrinsicBody =
                 None
         )
 
-    /// Whether `body` is exactly `ldc.i4 <value>; ret`.
-    let private returnsConstant (value : bool) (body : MethodInstructions<TypeDefn>) : bool =
-        match body.Instructions with
-        | [ IlOp.Nullary NullaryIlOp.LdcI4_0, _ ; IlOp.Nullary NullaryIlOp.Ret, _ ] -> not value
-        | [ IlOp.Nullary NullaryIlOp.LdcI4_1, _ ; IlOp.Nullary NullaryIlOp.Ret, _ ] -> value
-        | _ -> false
-
-    /// Whether `body` calls the helper CoreCLR's JIT calls for an instruction the CPU lacks
-    /// (`CORINFO_HELP_THROW_PLATFORM_NOT_SUPPORTED`, bound in corelib.h), and cannot return.
-    let private throwsPlatformNotSupported (corelib : DumpedAssembly) (body : MethodInstructions<TypeDefn>) : bool =
-        let callsHelper =
-            match body.Instructions with
-            | (IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Call,
-                                        MetadataOperand.FromMetadata {
-                                                                         Token = MetadataToken.MethodDef helper
-                                                                     }),
-               _) :: _ ->
-                let definition = corelib.Methods.[helper]
-                let ty = corelib.TypeDefs.[definition.RequiredDeclaringType.Definition.Get]
-
-                ty.Namespace = "Internal.Runtime.CompilerHelpers"
-                && ty.Name = "ThrowHelpers"
-                && definition.Name = "ThrowPlatformNotSupportedException"
-                && definition.Signature.ParameterTypes.IsEmpty
-            | _ -> false
-
-        let returns =
-            StackShape.reachable body
-            |> Set.exists (fun offset ->
-                match body.Locations.[offset] with
-                | IlOp.Nullary NullaryIlOp.Ret -> true
-                | _ -> false
-            )
-
-        callsHelper && not returns
-
     [<Test>]
     let ``hardware-intrinsic placeholders classify by the question they ask the JIT`` () : unit =
         let corelib = coreLib "linux-x64"
@@ -505,7 +466,10 @@ module TestIntrinsicBody =
         |> shouldEqual [ JitExpansion.IsSupportedQuery (x86 [ "Avx512F" ; "VL" ]) ]
 
     [<TestCaseSource(nameof coreLibs)>]
-    let ``every hardware-intrinsic placeholder lowers to IL on the scalar-only profile`` (which : string) : unit =
+    let ``every hardware-intrinsic placeholder's self-call is answered on the scalar-only profile``
+        (which : string)
+        : unit
+        =
         let corelib = coreLib which
         let expansions = expansionsOf corelib
 
@@ -517,38 +481,26 @@ module TestIntrinsicBody =
         let failures =
             [
                 for m, expansion in expansions do
-                    let lowered =
-                        IntrinsicBody.lower HardwareIntrinsicsProfile.ScalarOnly corelib expansion
-
                     let ownClass (c : IntrinsicClass) =
                         if c <> classOf corelib m.Handle then
                             [ $"%s{describe m}: names the class %O{c}, not its own" ]
                         else
                             []
 
-                    match expansion, lowered with
-                    | JitExpansion.Primitive, None -> ()
-                    | JitExpansion.Primitive, Some _ -> yield $"%s{describe m}: a primitive was lowered to IL"
-                    | JitExpansion.IsSupportedQuery c, Some body
-                    | JitExpansion.IsHardwareAcceleratedQuery c, Some body ->
+                    match expansion, IntrinsicBody.expandSelfCall HardwareIntrinsicsProfile.ScalarOnly expansion with
+                    | JitExpansion.Primitive, SelfCallExpansion.JitCode -> ()
+                    | JitExpansion.IsSupportedQuery c, SelfCallExpansion.Constant false
+                    | JitExpansion.IsHardwareAcceleratedQuery c, SelfCallExpansion.Constant false
+                    | JitExpansion.HardwareInstruction c, SelfCallExpansion.ThrowPlatformNotSupported ->
                         yield! ownClass c
-
-                        if not (returnsConstant false body) then
-                            yield $"%s{describe m}: a capability query did not lower to `ldc.i4.0; ret`"
-                    | JitExpansion.HardwareInstruction c, Some body ->
-                        yield! ownClass c
-
-                        if not (throwsPlatformNotSupported corelib body) then
-                            yield
-                                $"%s{describe m}: an instruction did not lower to a PlatformNotSupportedException throw"
-                    | _, None -> yield $"%s{describe m}: %A{expansion} did not lower"
+                    | _, answer -> yield $"%s{describe m}: %A{expansion} expands to %A{answer}"
             ]
 
         if not failures.IsEmpty then
             failwith (String.concat "\n" failures)
 
     [<TestCaseSource(nameof coreLibs)>]
-    let ``a placeholder's lowering follows the profile`` (which : string) : unit =
+    let ``a placeholder's self-call follows the profile`` (which : string) : unit =
         let corelib = coreLib which
 
         let supporting (c : IntrinsicClass) =
@@ -561,32 +513,29 @@ module TestIntrinsicBody =
                 IsHardwareAccelerated = Set.singleton c
             }
 
-        let lowersToConstant (value : bool) (profile : HardwareIntrinsicsProfile) (e : JitExpansion) =
-            match IntrinsicBody.lower profile corelib e with
-            | Some body -> returnsConstant value body
-            | None -> false
+        let expand (profile : HardwareIntrinsicsProfile) (e : JitExpansion) = IntrinsicBody.expandSelfCall profile e
 
         let failures =
             [
                 for m, expansion in expansionsOf corelib do
                     match expansion with
                     | JitExpansion.IsSupportedQuery c ->
-                        if not (lowersToConstant true (supporting c) expansion) then
+                        if expand (supporting c) expansion <> SelfCallExpansion.Constant true then
                             yield $"%s{describe m}: not true on a CPU supporting %O{c}"
 
-                        if not (lowersToConstant false (accelerating c) expansion) then
+                        if expand (accelerating c) expansion <> SelfCallExpansion.Constant false then
                             yield $"%s{describe m}: IsSupported answered from the IsHardwareAccelerated set"
                     | JitExpansion.IsHardwareAcceleratedQuery c ->
-                        if not (lowersToConstant true (accelerating c) expansion) then
+                        if expand (accelerating c) expansion <> SelfCallExpansion.Constant true then
                             yield $"%s{describe m}: not true on a CPU accelerating %O{c}"
 
-                        if not (lowersToConstant false (supporting c) expansion) then
+                        if expand (supporting c) expansion <> SelfCallExpansion.Constant false then
                             yield $"%s{describe m}: IsHardwareAccelerated answered from the IsSupported set"
                     | JitExpansion.HardwareInstruction c ->
-                        // A CPU that has the instruction runs it, which no IL can express.
+                        // A CPU that has the instruction runs it.
                         for profile in [ supporting c ; accelerating c ] do
-                            if (IntrinsicBody.lower profile corelib expansion).IsSome then
-                                yield $"%s{describe m}: lowered to IL on a CPU that has %O{c}"
+                            if expand profile expansion <> SelfCallExpansion.JitCode then
+                                yield $"%s{describe m}: not the JIT's own code on a CPU that has %O{c}"
                     | JitExpansion.Primitive -> ()
             ]
 

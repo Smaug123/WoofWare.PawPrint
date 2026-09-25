@@ -19,21 +19,37 @@ type JitExpansion =
     /// A placeholder the JIT implements in code of its own, such as a memory barrier.
     | Primitive
 
+/// What CoreCLR's JIT emits at a must-expand call site: a call from a JIT-expansion method to
+/// itself, which is where `gtIsRecursiveCall` (importercalls.cpp) applies. The rest of the
+/// method's IL is its own and runs as written; for most placeholders the self-call is the whole
+/// body, but some guard it (`Avx2.GatherVector128` validates its scale first).
+[<RequireQualifiedAccess>]
+type SelfCallExpansion =
+    /// The call takes no arguments and yields this Boolean.
+    | Constant of bool
+    /// The call's arguments are discarded and `IntrinsicBody.platformNotSupportedHelper` is
+    /// called in its place (`impUnsupportedNamedIntrinsic`, importercalls.cpp), which throws
+    /// `PlatformNotSupportedException`. The helper's frame is in `new StackTrace(e)`, and out of
+    /// the formatted trace because its class is `[StackTraceHidden]`.
+    | ThrowPlatformNotSupported
+    /// Code the JIT emits itself: an instruction the CPU has, or a `JitExpansion.Primitive`.
+    | JitCode
+
 /// What CoreCLR executes when it calls a method it treats as a JIT intrinsic.
 ///
 /// `[Intrinsic]` permits the JIT to replace a call with code of its own, and it usually does so
 /// only as an optimisation. Under MinOpts it expands nothing it is not obliged to
 /// (`impIntrinsic`, importercalls.cpp), and otherwise emits an ordinary call to the method's IL;
-/// so for most intrinsics the IL is a complete implementation. There are two exceptions, and each
-/// is a placeholder body that must not be run as it stands.
+/// so for most intrinsics the IL is a complete implementation. There are two exceptions: IL with a
+/// call to itself that must not run as a call, and a body the VM replaces outright.
 [<RequireQualifiedAccess>]
 type IntrinsicBody =
     /// The method's own IL is its semantics.
     | OwnIl
     /// The IL calls the method itself, non-virtually. By CoreCLR's convention that call is a
     /// placeholder the JIT must expand ("The recursive non-virtual calls to Jit intrinsics are
-    /// must-expand by convention", importercalls.cpp), so interpreting the IL recurses without end.
-    /// `IntrinsicBody.lower` gives the IL that stands in for it, where IL can.
+    /// must-expand by convention", importercalls.cpp), so interpreting that call recurses without
+    /// end. `IntrinsicBody.expandSelfCall` says what the call does instead.
     | JitExpansion of JitExpansion
     /// A CoreLib method whose IL cannot return, declared on one of the four classes for which
     /// CoreCLR's VM substitutes IL of its own (`getILIntrinsicImplementationFor*`,
@@ -269,16 +285,10 @@ module IntrinsicBody =
             else
                 IntrinsicBody.OwnIl
 
-    let private returnsConstant (value : bool) : MethodInstructions<TypeDefn> =
-        let load = if value then NullaryIlOp.LdcI4_1 else NullaryIlOp.LdcI4_0
-
-        IlStub.ofInstructions [ IlOp.Nullary load ; IlOp.Nullary NullaryIlOp.Ret ]
-
-    /// The body CoreCLR's JIT puts in place of an instruction the CPU lacks
-    /// (`impUnsupportedNamedIntrinsic`, importercalls.cpp): a call to the helper bound to
-    /// `CORINFO_HELP_THROW_PLATFORM_NOT_SUPPORTED` (corelib.h), which `corelib` defines.
-    let private throwsPlatformNotSupported (corelib : DumpedAssembly) : MethodInstructions<TypeDefn> =
-        let helper =
+    /// The CoreLib method CoreCLR binds to `CORINFO_HELP_THROW_PLATFORM_NOT_SUPPORTED`
+    /// (corelib.h): `Internal.Runtime.CompilerHelpers.ThrowHelpers.ThrowPlatformNotSupportedException()`.
+    let platformNotSupportedHelper (corelib : DumpedAssembly) : MethodDefinitionHandle =
+        let found =
             corelib.TryGetTopLevelTypeDef "Internal.Runtime.CompilerHelpers" "ThrowHelpers"
             |> Option.toList
             |> List.collect (fun ty -> List.ofSeq ty.Methods)
@@ -286,65 +296,46 @@ module IntrinsicBody =
                 m.Name = "ThrowPlatformNotSupportedException"
                 && m.IsStatic
                 && m.Signature.ParameterTypes.IsEmpty
+                && m.Signature.GenericParameterCount = 0
             )
             |> List.choose (fun m -> m.TryMetadata)
 
-        let helper =
-            match helper with
-            | [ facts ] -> facts.Handle
-            | found ->
-                failwith
-                    $"IntrinsicBody: expected %s{corelib.DefinitionFullName} to define one ThrowHelpers.ThrowPlatformNotSupportedException(), found %d{found.Length}"
+        match found with
+        | [ facts ] -> facts.Handle
+        | found ->
+            failwith
+                $"IntrinsicBody: expected %s{corelib.DefinitionFullName} to define one ThrowHelpers.ThrowPlatformNotSupportedException(), found %d{found.Length}"
 
-        let call =
-            IlOp.UnaryMetadataToken (
-                UnaryMetadataTokenIlOp.Call,
-                MetadataOperand.FromMetadata (SourcedMetadataToken.make corelib.Name (MetadataToken.MethodDef helper))
-            )
-
-        // The helper never returns. What follows it only closes the body, as the JIT's
-        // must-throw node carries a dummy value of the method's return type: every path through
-        // IL must end in a branch, `ret` or `throw`, and `ldnull; throw` needs no knowledge of the
-        // signature.
-        IlStub.ofInstructions [ call ; IlOp.Nullary NullaryIlOp.LdNull ; IlOp.Nullary NullaryIlOp.Throw ]
-
-    /// The IL that stands in for the placeholder `expansion`, a JIT expansion in `corelib`, on a
-    /// CPU `profile` describes: what the JIT's expansion does, written as IL. `None` where that is
-    /// code the JIT emits itself, which is a `JitExpansion.Primitive` or an instruction the CPU
-    /// has.
-    let lower
-        (profile : HardwareIntrinsicsProfile)
-        (corelib : DumpedAssembly)
-        (expansion : JitExpansion)
-        : MethodInstructions<TypeDefn> option
-        =
+    /// What a call from a method whose body `classify` finds to be `expansion` to itself does, on
+    /// a CPU `profile` describes. A call to that method from anywhere else runs its IL, which
+    /// reaches that site.
+    let expandSelfCall (profile : HardwareIntrinsicsProfile) (expansion : JitExpansion) : SelfCallExpansion =
         match expansion with
-        | JitExpansion.IsSupportedQuery c -> Some (returnsConstant (profile.IsSupported.Contains c))
-        | JitExpansion.IsHardwareAcceleratedQuery c -> Some (returnsConstant (profile.IsHardwareAccelerated.Contains c))
+        | JitExpansion.IsSupportedQuery c -> SelfCallExpansion.Constant (profile.IsSupported.Contains c)
+        | JitExpansion.IsHardwareAcceleratedQuery c ->
+            SelfCallExpansion.Constant (profile.IsHardwareAccelerated.Contains c)
         | JitExpansion.HardwareInstruction c ->
             if profile.IsSupported.Contains c || profile.IsHardwareAccelerated.Contains c then
-                None
+                SelfCallExpansion.JitCode
             else
-                Some (throwsPlatformNotSupported corelib)
-        | JitExpansion.Primitive -> None
+                SelfCallExpansion.ThrowPlatformNotSupported
+        | JitExpansion.Primitive -> SelfCallExpansion.JitCode
 
-    /// The IL that stands in for `method`'s own on a CPU `profile` describes, when its own is a
-    /// placeholder that IL can replace: a JIT expansion that `lower` writes, or a VM substitution
-    /// that `VmSubstitution` transcribes. `None` means the method's own body is what runs, or
-    /// else that no IL can: `classify` says which.
+    /// The IL CoreCLR's VM runs in place of `method`'s own, when its own is a placeholder that
+    /// `VmSubstitution` transcribes. `None` means the method's own body is what runs, or else that
+    /// no IL can: `classify` says which.
     ///
     /// A method whose own IL works is given its own IL here even when the VM substitutes it, so
     /// this is what runs, not what CoreCLR runs; `VmSubstitution.unsafeStub` answers the latter.
-    let loweredBody
-        (profile : HardwareIntrinsicsProfile)
+    let substitutedBody
         (assembly : DumpedAssembly)
         (method : MethodDefinitionHandle)
         : MethodInstructions<TypeDefn> option
         =
         if isIntrinsic assembly method then
             match classify assembly method with
-            | IntrinsicBody.JitExpansion expansion -> lower profile assembly expansion
             | IntrinsicBody.VmSubstitution -> VmSubstitution.unsafeStub assembly method
+            | IntrinsicBody.JitExpansion _
             | IntrinsicBody.OwnIl
             | IntrinsicBody.NoIl -> None
         else
