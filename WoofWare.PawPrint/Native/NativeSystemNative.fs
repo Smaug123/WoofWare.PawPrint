@@ -5863,13 +5863,12 @@ module NativeSystemNative =
             // (SIGCONT, SIGTSTP, SIGTTIN, SIGTTOU, SIGCHLD, SIGURG,
             // SIGWINCH; see `PosixSignalPal.handledWithoutRestoring`). Its
             // `default:` arm does nothing either if the disposition it saved
-            // when it installed its handler was a handler of its own (which
-            // its handler has already run, unless the signal is SIGINT,
-            // SIGQUIT or SIGTERM) or `SIG_IGN`. Otherwise it restores that
-            // saved disposition, which is then the default, and re-raises
-            // the signal with `kill(2)`, so the process gets the kernel's
-            // default: this arm sends it through the kernel model as a
-            // signal the process sends itself.
+            // when it installed its handler was a handler (which its own
+            // handler has already run, unless the signal is SIGINT, SIGQUIT
+            // or SIGTERM) or `SIG_IGN`. Otherwise it restores that saved
+            // disposition and re-raises the signal with `kill(2)`, so the
+            // process gets the kernel's default: this arm sends it through
+            // the kernel model as a signal the process sends itself.
             //
             // Which signal a signo names, and so which arm it takes, is
             // read under the configured platform's numbering: 29 is SIGIO
@@ -5903,9 +5902,6 @@ module NativeSystemNative =
             | SignalDisposition.Catch _ when not (PosixSignalShim.isCancelableTermination numbering signal) ->
                 // The shim's handler ran the saved handler already.
                 NativeHandlerResult.completed state |> Some
-            | SignalDisposition.Ignore ->
-                // "Original handler doesn't do anything."
-                NativeHandlerResult.completed state |> Some
             | SignalDisposition.Catch saved ->
                 // SIGINT, SIGQUIT or SIGTERM, restored to a handler the
                 // shim did not run: that handler would run on the re-raise.
@@ -5913,6 +5909,10 @@ module NativeSystemNative =
                 // nothing else installs one.
                 failwith
                     $"%s{operation}: %O{signal} under the %O{numbering} numbering would be restored to %O{saved} and re-raised, running native code PawPrint does not model."
+            // The shim returns early for a saved SIG_IGN ("Original handler
+            // doesn't do anything"). Restoring the ignore and re-raising the
+            // signal, as below, discards it, which comes to the same thing.
+            | SignalDisposition.Ignore
             | SignalDisposition.Default ->
 
             match Signal.defaultDispositionUnder numbering signal with
