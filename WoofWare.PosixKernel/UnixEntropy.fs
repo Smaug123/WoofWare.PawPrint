@@ -91,17 +91,18 @@ module GetEntropyRefusal =
 [<RequireQualifiedAccess>]
 module UnixEntropy =
 
-    // Measured on Linux 6.18.5 (arm64, 4 KiB pages): 0x7FFFF000 for requests of
-    // INT_MAX, 2^31, 2^31 + 4096, 2^40 and SIZE_MAX alike, and the whole
-    // request for every size measured up to 256 MiB. It depends on the page
-    // size, and x86-64's is 4 KiB too, which is the only Linux this library
-    // simulates. `TestEntropyAgainstHost` measures it again on a Linux host.
-
-    /// The most bytes one `getrandom` moves, however many were asked for:
-    /// Linux's `MAX_RW_COUNT`, which is `INT_MAX` rounded down to a whole page.
-    /// A larger request is not an error; it returns this many.
-    [<Literal>]
-    let getRandomMaxTransfer : uint64 = 0x7FFF_F000UL
+    /// The most bytes one `getrandom` moves on `platform`, however many were
+    /// asked for: Linux's `MAX_RW_COUNT`, which is `INT_MAX` rounded down to a
+    /// whole page. A larger request is not an error; it returns this many.
+    let getRandomMaxTransfer (platform : SimulatedUnixPlatform) : uint64 =
+        // Measured with 4 KiB pages, the only size a Linux platform admits:
+        // 0x7FFFF000 on 6.18.5 aarch64 for requests of INT_MAX, 2^31,
+        // 2^31 + 4096, 2^40 and SIZE_MAX alike, and the whole request for every
+        // size measured up to 256 MiB; and 0x7FFFF000 on 6.12 x86-64 for INT_MAX,
+        // 2^31 and SIZE_MAX. `TestEntropyAgainstHost` measures it again on a
+        // Linux host.
+        let pageBytes = SimulatedPageSize.bytes (SimulatedUnixPlatform.pageSize platform)
+        uint64 (System.Int32.MaxValue &&& ~~~(pageBytes - 1))
 
     /// The most bytes one `getentropy` will be asked for. A longer request is
     /// EINVAL, and moves nothing.
@@ -195,7 +196,7 @@ module UnixEntropy =
         // Clamped before the buffer is screened, so it is the clamped range the
         // screen sees: measured, a request of SIZE_MAX into storage that holds
         // the clamped count succeeds rather than faulting.
-        let length = int (min count getRandomMaxTransfer)
+        let length = int (min count (getRandomMaxTransfer system.Machine.UnixPlatform))
 
         match transfer buffer length system with
         | Error refusal -> Error (GetRandomRefusal.Buffer refusal)

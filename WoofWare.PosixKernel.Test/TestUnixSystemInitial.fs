@@ -94,19 +94,23 @@ module TestUnixSystemInitial =
     // What it deliberately does not fix
     // ------------------------------------------------------------------
 
-    /// `UserAddressLimit` is a property of the machine's paging depth rather
-    /// than of its kernel, and is documented as configuration rather than a
-    /// derivation, so this row exists to catch a later "helpful" derivation
-    /// that would quietly change what a caller gets.
+    /// The buffer check's limit is a property of the machine's paging depth as
+    /// well as of its architecture, so the default is the commonest machine of
+    /// each architecture's, and a platform that screens nothing has none. Stated
+    /// as literals rather than by calling the derivation the constructor calls.
     [<Test>]
-    let ``the machine-shaped fields do not vary by flavour`` () : unit =
-        let linux : UnixSystem<int, string> =
-            UnixSystem.initial SimulatedUnixPlatform.linuxX64
+    let ``the buffer check follows the platform's architecture`` () : unit =
+        let checkOn (platform : SimulatedUnixPlatform) : UserBufferCheck =
+            (UnixSystem.initial<int, string> platform).Machine.UserBufferCheck
 
-        let darwin : UnixSystem<int, string> =
-            UnixSystem.initial SimulatedUnixPlatform.macOsArm64
+        checkOn SimulatedUnixPlatform.linuxX64
+        |> shouldEqual (UserBufferCheck.BeforeOperation 0x0000_7FFF_FFFF_F000UL)
 
-        darwin.Machine.UserAddressLimit |> shouldEqual linux.Machine.UserAddressLimit
+        checkOn SimulatedUnixPlatform.linuxArm64
+        |> shouldEqual (UserBufferCheck.BeforeOperation 0x0001_0000_0000_0000UL)
+
+        checkOn SimulatedUnixPlatform.macOsArm64
+        |> shouldEqual UserBufferCheck.AtCopyTime
 
     /// The ephemeral range and the process identity are each flavour's shipped
     /// defaults, stated as literals rather than by calling the derivation the

@@ -18,8 +18,9 @@ open WoofWare.PosixKernel
 ///
 /// The advice is Linux's raw `POSIX_FADV_*` number (0 to 5 on x86-64 and on
 /// aarch64 alike), screened where the kernel screens it: after the descriptor.
-/// The Linux rows were measured on both architectures and agree row for row
-/// (`measured-fadvise-linux.txt` on aarch64, `measured-fadvise-linux-x86_64.txt`).
+/// The Linux rows were measured on aarch64 (`measured-fadvise-linux.txt`); the
+/// kernel path is architecture-independent, and x86-64 is not separately
+/// measured.
 /// Darwin's libc has no such call, and `posixFadvise` refuses there rather than
 /// answer for a call no program could have made.
 [<TestFixture>]
