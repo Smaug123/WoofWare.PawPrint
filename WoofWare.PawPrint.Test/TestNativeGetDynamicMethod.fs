@@ -2510,7 +2510,7 @@ public static class Entry
                         qCallModule
                         namePtr
                         sigPtr
-                        CliType.Numeric (CliNumericType.Int32 1)
+                        CliType.Numeric (CliNumericType.Int32 minimalSignature.Length)
                         resolverHandle
                         resultHandle
                     ]
