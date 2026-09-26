@@ -119,11 +119,15 @@ static int make(enum kind k)
     switch (k)
     {
     case K_CLOSED:
-    {
-        int fd = dup(0);
-        close(fd);
-        return fd;
-    }
+        // A fixed number far above anything the probe opens. Not a freshly
+        // closed descriptor: the next descriptor made would reuse its number,
+        // so an epfd made that way would name the target.
+        if (fcntl(1000, F_GETFD) != -1)
+        {
+            fprintf(stderr, "make: fd 1000 is open\n");
+            exit(2);
+        }
+        return 1000;
     case K_NEG:
         return -1;
     case K_FILE:
