@@ -24,6 +24,9 @@ using System.Runtime.InteropServices;
 // lowest-free, so the one an `open` returns immediately afterwards is one above
 // the stream's.
 //
+// Reading the stream after its descriptor has gone is EBADF, as it is on a real
+// libc, whose `readdir` is a `getdents` on that descriptor.
+//
 // The exit code is the index of the first check that failed; 0 means all passed.
 //
 // Seed (see TestImpureCases.enumerateClosedFdSeed): gone/ (an empty directory)
@@ -35,6 +38,19 @@ class Program
 
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_CloseDir", SetLastError = true)]
     static extern int CloseDir(IntPtr dir);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_ReadDir")]
+    static extern unsafe int ReadDir(IntPtr dir, DirectoryEntry* entry);
+
+    // Must match `Interop.Sys.DirectoryEntry` exactly: a pointer then two 32-bit
+    // fields, 16 bytes.
+    [StructLayout(LayoutKind.Sequential)]
+    unsafe struct DirectoryEntry
+    {
+        public byte* Name;
+        public int NameLength;
+        public int InodeType;
+    }
 
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_Open", SetLastError = true)]
     static extern unsafe IntPtr Open(byte* path, int flags, int mode);
@@ -79,6 +95,19 @@ class Program
 
         IntPtr streamFd = probe - 1;
         if (Close(streamFd) != 0) return 4;
+
+        // `readdir` reads through the descriptor, so with it gone the read is
+        // EBADF: the shim returns the raw errno (9 on both kernels), leaves it
+        // in errno, and zeroes the entry. Garbage first, so that a handler that
+        // skipped the zeroing is caught.
+        DirectoryEntry entry;
+        entry.Name = (byte*)1;
+        entry.NameLength = 7;
+        entry.InodeType = 7;
+        Marshal.SetLastSystemError(0);
+        if (ReadDir(stream, &entry) != 9) return 8;
+        if (Marshal.GetLastSystemError() != 9) return 9;
+        if (entry.Name != null || entry.NameLength != 0 || entry.InodeType != 0) return 10;
 
         // Now nothing but the stream holds the directory, and this removes its
         // last name.

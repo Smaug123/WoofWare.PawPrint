@@ -1869,6 +1869,7 @@ module TestUnixSystemStep =
                         NoFollow = false
                         CloseOnExec = false
                         Synchronous = false
+                        Directory = false
                     }
                     path
                     0
@@ -3683,6 +3684,7 @@ module TestUnixSystemStep =
             NoFollow = false
             CloseOnExec = false
             Synchronous = false
+            Directory = false
         }
 
     let private openedFd (answer : SyscallAnswer * UnixSystem<int, string>) : int =
@@ -3969,6 +3971,7 @@ module TestUnixSystemStep =
                     { plainOpen with
                         CloseOnExec = true
                         Synchronous = true
+                        Directory = false
                     }
                     (statPath "/d/inner/t")
                     0o666
@@ -4111,6 +4114,7 @@ module TestUnixSystemStep =
 
             match UnixNamespace.readdir id system with
             | ReadDirAnswer.EndOfStream, system -> List.rev acc, system
+            | ReadDirAnswer.Failed error, _ -> failwith $"readdir failed with %O{error}"
             | ReadDirAnswer.Entry (name, kind), system ->
                 let text = System.Text.Encoding.UTF8.GetString (name.AsSpan ())
                 go (fuel - 1) ((text, kind) :: acc) system

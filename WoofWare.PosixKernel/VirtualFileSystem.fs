@@ -205,23 +205,24 @@ module DirectoryStreamName =
 
 /// How far through a directory an open stream has read.
 ///
-/// A *name*, not a position. Measured on both kernels at 5000 entries — well
-/// past glibc's 32 KB `readdir` buffer — deleting each entry as it is returned
-/// skips nothing and leaves the directory empty, so a real filesystem hands out
-/// a stable per-entry cookie rather than an index into a shifting list. A
-/// position would break the usual recursive delete, which removes each child
-/// while enumerating the live stream and then `rmdir`s the parent: an
-/// enumeration that skipped anything would leave the parent non-empty, and the
-/// `rmdir` would answer ENOTEMPTY.
+/// A *name*, not a position. Measured on both kernels at 3000 entries, one
+/// `getdents` call at a time and at every buffer size up to 64 KiB, deleting
+/// each entry as it is returned skips nothing and leaves the directory empty.
+/// A cursor that counted entries would break the usual recursive delete, which
+/// removes each child while enumerating the live stream and then `rmdir`s the
+/// parent: an enumeration that skipped anything would leave the parent
+/// non-empty, and the `rmdir` would answer ENOTEMPTY.
 ///
 /// Four cases rather than a `FileName option`, because "returned `..`, not yet
 /// `.`" is a real position of the stream and neither dot is expressible as a
 /// `FileName`.
 ///
-/// What this does *not* claim is agreement with a real kernel about mutations:
-/// whether an entry added after `opendir` becomes visible is unspecified, and
-/// both kernels' answers are artefacts of when `getdents` happened to run. See
-/// `docs/divergences.md`.
+/// What this does *not* claim is agreement with a real kernel about the order,
+/// or about what a mutation part-way through does. Both are exact rules on each
+/// real filesystem, and neither is this one: tmpfs yields the newest link first
+/// and resumes by a per-directory offset, APFS yields in the order of a hash of
+/// the name and resumes after the last key it returned. This model's order is
+/// its own. See `docs/divergences.md`.
 ///
 /// The cases are declared in the order the stream visits them.
 [<RequireQualifiedAccess>]
@@ -236,6 +237,25 @@ type DirectoryCursor =
     | ReturnedDotDot
     /// `.` has been handed back, which is the end of the stream.
     | ReturnedDot
+
+/// Where an open file description onto a directory is positioned.
+///
+/// Held on the description, as both kernels hold it: measured, a `dup` of the
+/// descriptor continues where the original stopped, a second `open` of the
+/// same directory starts afresh, and `lseek(fd, 0, SEEK_SET)` rewinds.
+[<RequireQualifiedAccess>]
+type DirectoryPosition =
+    /// A point this library's walk can resume from.
+    | Cursor of cursor : DirectoryCursor
+    /// A nonzero offset that `lseek(2)` moved the description to.
+    ///
+    /// Both kernels accept any non-negative offset on a directory and report it
+    /// back, but what the next read yields from it is each filesystem's own:
+    /// tmpfs resumes from the entry with the greatest offset at or below it,
+    /// APFS skips that many entries or answers EAGAIN depending on its high
+    /// word. Neither is an offset this model mints, so reading from here is
+    /// refused rather than guessed. Always positive: offset 0 is `Cursor Start`.
+    | Unenumerable of offset : int64
 
 /// Identity of one open directory stream. Never visible to the simulated
 /// process: it holds a `DIR*`, and what that pointer is made of is the
@@ -255,23 +275,19 @@ type DirectoryStreamId =
 /// One open directory stream: what `opendir(3)` returns and `readdir`/`closedir`
 /// consume.
 ///
-/// Held in `UnixProcessState.DirectoryStreams` rather than on the descriptor,
-/// because libc keeps a `DIR`'s buffer and position in userspace and the
-/// descriptor carries only the kernel's. The consequence is that two `opendir`s
-/// of one directory advance independently, and a `dup` of the descriptor would
-/// not share the cursor. A process reaches that descriptor only through
-/// `dirfd(3)`, which this library does not model.
+/// A descriptor and nothing that moves. The stream's position is the
+/// position of that descriptor's open file description, which is where the
+/// kernel keeps it, so `readdir` is a read through `Fd`: a `dup` of the
+/// descriptor shares it, and two `opendir`s of one directory advance
+/// independently because each opens its own description.
 type DirectoryStream =
     {
         /// The descriptor `opendir` opened, closed again by `closedir`.
         Fd : int
-        /// The directory being enumerated. Also reachable through `Fd`, but
-        /// held directly so that a guest which closed that descriptor behind the
-        /// stream's back — undefined behaviour on a real libc, and possible here
-        /// because fd numbers are guessable — does not turn into a crash.
+        /// The directory `opendir` opened, pinned until `closedir` even if the
+        /// process closes `Fd` behind the stream's back -- undefined behaviour
+        /// on a real libc, and possible here because fd numbers are guessable.
         Inode : InodeNumber
-        /// How far through `Inode` this stream has read.
-        Cursor : DirectoryCursor
     }
 
 [<RequireQualifiedAccess>]
@@ -1237,14 +1253,13 @@ module VirtualFileSystem =
     /// among the names is the map's, which matches no kernel at all.
     ///
     /// A stream over a directory `rmdir` has since removed is at end-of-stream
-    /// at once, `.` and `..` included: probed on both kernels, `opendir` then
-    /// `rmdir` then `readdir` answers NULL without yielding either dot. That is
-    /// one of the two orderings a real kernel produces — reading an entry
-    /// *first* and then removing yields the whole listing on both, because the
-    /// answer depends on when `getdents` ran — so it is a lawful choice rather
-    /// than a measured rule, and it is the less convenient of the two.
-    /// `isOrphanedDirectory` is the whole test, because an orphan is empty by
-    /// construction.
+    /// at once, `.` and `..` included, from every cursor position. That is the
+    /// kernel's own rule rather than a choice: measured one `getdents` call at a
+    /// time, both kernels stop yielding anything from a removed directory
+    /// whatever had been read. (Linux says so with ENOENT, which
+    /// `UnixNamespace.readDirectoryEntry` answers before it gets here; glibc
+    /// turns that into end-of-stream.) `isOrphanedDirectory` is the whole test,
+    /// because an orphan is empty by construction.
     let nextDirectoryEntry
         (directory : InodeNumber)
         (cursor : DirectoryCursor)

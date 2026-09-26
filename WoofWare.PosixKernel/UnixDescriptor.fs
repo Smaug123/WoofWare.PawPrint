@@ -29,6 +29,13 @@ type LSeekRefusal =
     /// `SEEK_END` on a directory whose size this kernel cannot state: one on an
     /// NFS mount.
     | DirectoryEnd of inode : InodeNumber
+    /// `SEEK_CUR` on a directory that has been read part of the way through.
+    ///
+    /// Both kernels answer, but with a value only their own filesystem mints:
+    /// tmpfs reports the offset of the next entry it will yield, APFS a count of
+    /// entries returned under a per-directory sequence number in the high 32
+    /// bits. This kernel's position is a name, and no number stands for it.
+    | DirectoryPosition of inode : InodeNumber
 
 [<RequireQualifiedAccess>]
 module LSeekRefusal =
@@ -47,6 +54,8 @@ module LSeekRefusal =
             $"whence %d{whence} is %s{named} on the simulated platform. This kernel models file contents as a byte array with no notion of sparseness, so it cannot say where the data and holes are; and the two platforms transpose the numbers (3 is SEEK_DATA on Linux and SEEK_HOLE on Darwin), so the raw value does not name one operation."
         | LSeekRefusal.DirectoryEnd inode ->
             $"inode %O{inode} is a directory on an NFS mount, and was asked to seek relative to its end. An NFS directory's size is whatever the server's own filesystem reports, which nothing in this machine determines, so this kernel cannot say where the end is. SEEK_SET and SEEK_CUR on a directory are portable and are supported, as is SEEK_END on a tmpfs or APFS directory."
+        | LSeekRefusal.DirectoryPosition inode ->
+            $"inode %O{inode} is a directory that this description has read part of the way through, and SEEK_CUR asks where it is. A real kernel answers with its own filesystem's resumption cookie (the next entry's offset on tmpfs; a sequence number and an entry count on APFS), which is not a number this kernel's position corresponds to. SEEK_CUR is answered at the start of a directory, and after a SEEK_SET or SEEK_END moved the description."
 
 /// Why this kernel will not answer an `flock`.
 ///
@@ -325,8 +334,11 @@ module UnixDescriptor =
 
     /// `lseek(2)`: move `fd`'s file offset and report where it lands.
     ///
-    /// Refuses the two inputs for which real kernels have been measured to
-    /// disagree without a portable answer; see `LSeekRefusal`.
+    /// On a directory, the position is where the next read of its entries
+    /// resumes, and offset 0 rewinds to the first of them.
+    ///
+    /// Refuses the inputs whose answer this kernel cannot state; see
+    /// `LSeekRefusal`.
     let lseek<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (offset : int64)
@@ -391,7 +403,8 @@ module UnixDescriptor =
                 // EINVAL on Linux (whence checked first) and ESPIPE on Darwin
                 // (seekability checked first).
                 Some DescriptorFault.NotSeekable
-            | Some (OpenFileTarget.File _) -> None
+            | Some (OpenFileTarget.File _)
+            | Some (OpenFileTarget.Directory _) -> None
 
         let ordered : UnixError option =
             match descriptorFault with
@@ -469,9 +482,16 @@ module UnixDescriptor =
                 failwith
                     $"UnixDescriptor.lseek: whence %d{whence} passed the validity and semantics checks but is not one of SEEK_SET, SEEK_CUR or SEEK_END (this is a bug in this library)"
 
+        // A directory's position is a number only at its start and where an
+        // `lseek` put it; anywhere else it is a name (see
+        // `LSeekRefusal.DirectoryPosition`).
         let inode, current =
             match target with
-            | Some (OpenFileTarget.File (inode, current)) -> inode, current
+            | Some (OpenFileTarget.File (inode, current)) -> inode, Ok current
+            | Some (OpenFileTarget.Directory (inode, DirectoryPosition.Cursor DirectoryCursor.Start)) -> inode, Ok 0L
+            | Some (OpenFileTarget.Directory (inode, DirectoryPosition.Unenumerable offset)) -> inode, Ok offset
+            | Some (OpenFileTarget.Directory (inode, DirectoryPosition.Cursor _)) ->
+                inode, Error (LSeekRefusal.DirectoryPosition inode)
             | _ ->
                 failwith
                     $"UnixDescriptor.lseek: fd %d{fd} is not a seekable file, but the descriptor checks above did not reject it (this is a bug in this library)"
@@ -539,6 +559,18 @@ module UnixDescriptor =
                     failwith
                         "UnixDescriptor.lseek: the file size was consulted on a path that does not consult it (this is a bug in this library)"
 
+        let current =
+            match seekWhence, current with
+            | SeekWhence.Current, current -> current
+            // `seekTarget` does not consult the current position for these, so
+            // a directory part of the way through is no obstacle to them.
+            | SeekWhence.Set, current
+            | SeekWhence.End, current -> current |> Result.defaultValue 0L |> Ok
+
+        match current with
+        | Error refusal -> Error refusal
+        | Ok current ->
+
         match VirtualFileSystem.seekTarget seekWhence current sizeOf offset with
         | Error SeekFault.Negative ->
             // EINVAL on both, and the offset is left where it was — measured, a
@@ -554,12 +586,28 @@ module UnixDescriptor =
             | SimulatedUnixFlavour.Darwin -> Ok (SyscallAnswer.Failed UnixError.EOVERFLOW, system)
         | Ok position ->
 
+        let registry =
+            match target with
+            | Some (OpenFileTarget.Directory _) ->
+                // Measured on both, with the arithmetic above exactly a regular
+                // file's (EINVAL below zero; EINVAL on Linux and EOVERFLOW on
+                // Darwin past INT64_MAX): any non-negative offset is accepted and
+                // reported back, and offset 0 rewinds to the first entry.
+                let directoryPosition =
+                    if position = 0L then
+                        DirectoryPosition.Cursor DirectoryCursor.Start
+                    else
+                        DirectoryPosition.Unenumerable position
+
+                FileDescriptorRegistry.setDirectoryPosition fd directoryPosition system.Process.FileDescriptors
+            | _ -> FileDescriptorRegistry.setOffset fd position system.Process.FileDescriptors
+
         Ok (
             SyscallAnswer.Completed position,
             { system with
                 Process =
                     { system.Process with
-                        FileDescriptors = FileDescriptorRegistry.setOffset fd position system.Process.FileDescriptors
+                        FileDescriptors = registry
                     }
             }
         )
@@ -626,7 +674,8 @@ module UnixDescriptor =
             // is no unseekable-versus-unwritable tie for the platforms to break
             // differently, so this arm deliberately carries no Darwin flag.
             Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
-        | OpenFileTarget.File (inode, _) ->
+        | OpenFileTarget.File (inode, _)
+        | OpenFileTarget.Directory (inode, _) ->
 
         // A descriptor not open for writing is EINVAL rather than EBADF —
         // `ftruncate(2)` differs from `write(2)` here, and it is measured on both
@@ -694,6 +743,7 @@ module UnixDescriptor =
             // dispatches to.
             Ok (FileAdviceAnswer.Failed UnixError.ESPIPE)
         | OpenFileTarget.File _
+        | OpenFileTarget.Directory _
         | OpenFileTarget.SocketEventPort _
         | OpenFileTarget.Socket _ ->
 
@@ -1012,6 +1062,7 @@ module UnixDescriptor =
             match description.Target with
             | OpenFileTarget.StandardStream _
             | OpenFileTarget.File _
+            | OpenFileTarget.Directory _
             | OpenFileTarget.Socket _ -> None
             | OpenFileTarget.SocketEventPort _ ->
 
@@ -1086,7 +1137,8 @@ module UnixDescriptor =
             match description.Target with
             | OpenFileTarget.StandardStream _
             | OpenFileTarget.SocketEventPort _
-            | OpenFileTarget.File _ -> Ok (system.Machine.Sockets, system.Machine.Connections, [])
+            | OpenFileTarget.File _
+            | OpenFileTarget.Directory _ -> Ok (system.Machine.Sockets, system.Machine.Connections, [])
             | OpenFileTarget.Socket socketId ->
 
             let dying =
@@ -1237,7 +1289,8 @@ module UnixDescriptor =
             | Some description ->
 
             match description.Target with
-            | OpenFileTarget.File (inode, _) -> forgetIfUnheld inode closed
+            | OpenFileTarget.File (inode, _)
+            | OpenFileTarget.Directory (inode, _) -> forgetIfUnheld inode closed
             | OpenFileTarget.StandardStream _
             | OpenFileTarget.SocketEventPort _
             | OpenFileTarget.Socket _ -> closed

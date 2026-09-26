@@ -83,7 +83,6 @@ module TestUnixSystemInvariants =
                                     {
                                         Fd = 3
                                         Inode = fileInode
-                                        Cursor = DirectoryCursor.Start
                                     }
                                 ]
                         NextDirectoryStreamId = DirectoryStreamId 1L
@@ -115,7 +114,6 @@ module TestUnixSystemInvariants =
                                     {
                                         Fd = 3
                                         Inode = absent
-                                        Cursor = DirectoryCursor.Start
                                     }
                                 ]
                         NextDirectoryStreamId = DirectoryStreamId 1L

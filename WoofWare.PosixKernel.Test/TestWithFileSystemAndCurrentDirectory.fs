@@ -433,6 +433,7 @@ module TestWithFileSystemAndCurrentDirectory =
             NoFollow = false
             CloseOnExec = false
             Synchronous = false
+            Directory = false
         }
 
     let private replaceFileSystem (system : UnixSystem<int, string>) : UnixSystem<int, string> =

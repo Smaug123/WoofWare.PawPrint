@@ -80,7 +80,8 @@ module LinuxReadiness =
             ||| (if level.RdHup then EpollEvents.RdHup else 0u)
             ||| (if level.Hup then EpollEvents.Hup else 0u)
             ||| (if level.Err then EpollEvents.Err else 0u)
-        | OpenFileTarget.File _ ->
+        | OpenFileTarget.File _
+        | OpenFileTarget.Directory _ ->
             // Measured through `poll`: a regular file answers IN|OUT|RDNORM|
             // WRNORM at every offset, empty or not, and under every access
             // mode, and a directory answers the same. Files have no `->poll`
@@ -162,6 +163,7 @@ module SocketEventPort =
         match description.Target with
         | OpenFileTarget.StandardStream _
         | OpenFileTarget.File _
+        | OpenFileTarget.Directory _
         | OpenFileTarget.Socket _ ->
             failwith
                 $"SocketEventPort.hasDeliverableEvent: %O{portId} is not a socket event port, so no wait can be parked on it (this is a bug in the caller of SocketEventPort.hasDeliverableEvent)."
@@ -202,6 +204,7 @@ module SocketEventPort =
         match description.Target with
         | OpenFileTarget.StandardStream _
         | OpenFileTarget.File _
+        | OpenFileTarget.Directory _
         | OpenFileTarget.Socket _ ->
             failwith
                 $"SocketEventPort.drain: %O{portId} is not a socket event port (this is a bug in the caller of SocketEventPort.drain)."
@@ -564,6 +567,7 @@ module UnixPoll =
             match description.Target with
             | OpenFileTarget.StandardStream _
             | OpenFileTarget.File _
+            | OpenFileTarget.Directory _
             | OpenFileTarget.Socket _ ->
                 // A live descriptor onto the wrong kind of object. EINVAL is
                 // epoll's own answer for it, and it is the last of the four
@@ -589,6 +593,7 @@ module UnixPoll =
             match description.Target with
             | OpenFileTarget.StandardStream _
             | OpenFileTarget.File _
+            | OpenFileTarget.Directory _
             | OpenFileTarget.Socket _ ->
                 // EBADF, where epoll says EINVAL: kqueue folds "not a kqueue"
                 // into "bad descriptor". Measured on a socket too, and for both
@@ -686,7 +691,8 @@ module UnixPoll =
         // `file_can_poll`: the target must have a `->poll` handler, which a
         // regular file and a directory lack.
         match targetDescription.Target with
-        | OpenFileTarget.File _ -> failed EpollCtlError.TargetNotPollable
+        | OpenFileTarget.File _
+        | OpenFileTarget.Directory _ -> failed EpollCtlError.TargetNotPollable
         | OpenFileTarget.StandardStream _
         | OpenFileTarget.SocketEventPort _
         | OpenFileTarget.Socket _ ->
@@ -699,6 +705,7 @@ module UnixPoll =
             | OpenFileTarget.SocketEventPort _
             | OpenFileTarget.StandardStream _
             | OpenFileTarget.File _
+            | OpenFileTarget.Directory _
             | OpenFileTarget.Socket _ -> None
 
         match portState with
@@ -710,6 +717,7 @@ module UnixPoll =
             | OpenFileTarget.SocketEventPort _ -> true
             | OpenFileTarget.StandardStream _
             | OpenFileTarget.File _
+            | OpenFileTarget.Directory _
             | OpenFileTarget.Socket _ -> false
 
         // The EPOLLEXCLUSIVE screen, ahead of the table (so ahead of EEXIST
@@ -938,6 +946,7 @@ module UnixPoll =
             | OpenFileTarget.SocketEventPort _ -> Error (PollRefusal.UnmodelledTarget entry.Fd)
             | OpenFileTarget.Socket _
             | OpenFileTarget.File _
+            | OpenFileTarget.Directory _
             | OpenFileTarget.StandardStream _ ->
                 // `do_pollfd`'s own shape: the level, filtered by the request
                 // with POLLERR and POLLHUP added whatever was asked.
