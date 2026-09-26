@@ -406,16 +406,22 @@ public class Parent
 {
     public static int Value = 1;
     public static void Gone() { }
+    public static void Varargs(__arglist) { }
 }
 
 public class GoneType { }
+
+public class GoneException : System.Exception { }
 """
 
         let version2 =
             """
 namespace Provider;
 
-public class Parent { }
+public class Parent
+{
+    public static void Varargs(__arglist) { }
+}
 """
 
         let client =
@@ -439,6 +445,14 @@ public static class Uses
         Provider.GoneType x = null;
         return x != null;
     }
+    public static int CatchGone(int x)
+    {
+        try { return 1 / x; }
+        catch (Provider.GoneException) { return 42; }
+    }
+    static void Accept(Provider.GoneType x) { }
+    public static void PassGone() { Accept(null); }
+    public static void PassGoneAsVararg() { Provider.Parent.Varargs(__arglist((Provider.GoneType)null)); }
     public static bool CaughtLocalOfGone()
     {
         try
@@ -498,6 +512,12 @@ public static class Uses
                 // Named by no instruction, only by the type of a local.
                 "LocalOfGone", "=System.TypeLoadException"
                 "CaughtLocalOfGone", "=System.TypeLoadException"
+                // Named only by a `catch` clause.
+                "CatchGone", "=System.TypeLoadException"
+                // Named only by the signature of the method called.
+                "PassGone", "=System.TypeLoadException"
+                // Named only by a vararg call site's extra arguments, which no definition declares.
+                "PassGoneAsVararg", "=System.TypeLoadException"
             ] do
             let bound = against1 methodName
             let unbound = against2 methodName
@@ -507,6 +527,137 @@ public static class Uses
 
             if not (unbound.Contains failure) then
                 failwith $"%s{methodName} against the provider lacking what it uses: %A{Set.toList unbound}"
+
+    /// Loads each image of `images` by its simple name, so that one refers to another.
+    type private ImagesContext (images : Map<string, byte[]>) =
+        inherit System.Runtime.Loader.AssemblyLoadContext ("Images", isCollectible = true)
+
+        override this.Load (name : AssemblyName) : Assembly =
+            match images.TryFind name.Name with
+            | Some image -> this.LoadFromStream (new MemoryStream (image))
+            | None -> null
+
+    [<Test>]
+    let ``a module initializer runs when another module first binds to what it declares`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let provider =
+            """
+namespace Provider;
+
+static class Init
+{
+    [System.Runtime.CompilerServices.ModuleInitializer]
+    internal static void Run() => throw new System.InvalidOperationException();
+}
+
+public static class P
+{
+    public static int Field;
+    public static void M() { }
+    public static void CallsM() { M(); }
+}
+
+public class Base { }
+"""
+
+        let client =
+            """
+namespace Client;
+
+public class Derived : Provider.Base
+{
+    public static void Static() { }
+}
+
+public static class Uses
+{
+    public static void CallM() { Provider.P.M(); }
+    public static int CaughtCallM()
+    {
+        try { Provider.P.M(); return 0; }
+        catch (System.TypeInitializationException) { return 1; }
+    }
+    public static int ReadField() => Provider.P.Field;
+    public static object NewDerived() => new Derived();
+    public static System.Type TypeOfDerived() => typeof(Derived);
+    public static void CallDerivedStatic() { Derived.Static(); }
+    public static int Local() => 1;
+}
+"""
+
+        let compile (name : string) (references : byte[] list) (text : string) : byte[] =
+            Roslyn.compileAssembly
+                name
+                OutputKind.DynamicallyLinkedLibrary
+                (references
+                 |> List.map (fun image -> MetadataReference.CreateFromImage (ImmutableArray.CreateRange image)))
+                [ text ]
+
+        let providerImage = compile "Provider" [] provider
+        let clientImage = compile "Client" [ providerImage ] client
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let providerAssembly = read "Provider" providerImage
+        let clientAssembly = read "Client" clientImage
+
+        let providerReference =
+            clientAssembly.AssemblyReferences.Values
+            |> Seq.find (fun r -> r.Name.Name = "Provider")
+
+        let mutable analysis =
+            analysisOver
+                [ clientAssembly ; providerAssembly ]
+                (fun loaded -> fst (loaded.WithBoundReference providerReference providerAssembly))
+
+        let reportsInitialisation (assembly : DumpedAssembly) (typeName : string) (methodName : string) : bool =
+            let next, escapes =
+                EscapeAnalysis.escapes analysis (methodNamed assembly typeName methodName)
+
+            analysis <- next
+            render analysis escapes |> Set.contains "=System.TypeInitializationException"
+
+        // Each in a context of its own, since a module initializer that failed fails every later
+        // binding the same way.
+        let escapesOnRealRuntime (methodName : string) : bool =
+            let context =
+                new ImagesContext (Map.ofList [ "Provider", providerImage ; "Client", clientImage ])
+
+            try
+                let uses = context.LoadFromAssemblyName(AssemblyName "Client").GetType "Client.Uses"
+
+                try
+                    uses.GetMethod(methodName).Invoke ((null : obj), Array.empty<obj>)
+                    |> ignore<obj>
+
+                    false
+                with :? TargetInvocationException ->
+                    true
+            finally
+                context.Unload ()
+
+        for methodName in
+            [
+                "CallM"
+                "CaughtCallM"
+                "ReadField"
+                "NewDerived"
+                // Provider is reached only through Derived's base type.
+                "TypeOfDerived"
+                "CallDerivedStatic"
+            ] do
+            escapesOnRealRuntime methodName |> shouldEqual true
+
+            if not (reportsInitialisation clientAssembly "Client.Uses" methodName) then
+                failwith $"%s{methodName} binds into Provider, whose module initializer throws"
+
+        escapesOnRealRuntime "Local" |> shouldEqual false
+        reportsInitialisation clientAssembly "Client.Uses" "Local" |> shouldEqual false
+        // A module's own code runs only once its initializer has.
+        reportsInitialisation providerAssembly "Provider.P" "CallsM"
+        |> shouldEqual false
 
     /// `int32[,]`'s constructor taking lower bounds and lengths raises `ArgumentOutOfRangeException`
     /// for bounds whose upper end overflows; the one taking lengths alone does not. C# spells

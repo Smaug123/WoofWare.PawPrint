@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint.Analysis
 open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
+open System.Reflection.Metadata.Ecma335
 open Microsoft.Extensions.Logging
 open WoofWare.PawPrint
 
@@ -40,9 +41,10 @@ type internal LocalFacts =
         Opaque : (int * Opacity) list
         Calls : (int * MethodKey) list
         Regions : ExceptionRegion list
-        /// What binding the tokens the body names and the types of its locals can throw: a member
-        /// or type the assembly it is looked for in does not have. The JIT binds them before the
-        /// body runs, so none of the body's own handlers can catch these.
+        /// What binding the tokens the body names, the types of its locals and of its `catch`
+        /// clauses can throw: a member or type the assembly it is looked for in does not have, or
+        /// a module initializer that fails. The JIT binds them before the body runs, so none of
+        /// the body's own handlers can catch these.
         BindingFailures : Set<ThrownType>
     }
 
@@ -80,11 +82,12 @@ type EscapeAnalysisState =
 /// so almost every method can escape <c>StackOverflowException</c>; a report that wants to drop
 /// those does so knowingly.
 ///
-/// That holds for assemblies that agree with each other. A member or type that an assembly names
-/// and the loaded one it is looked for in lacks is reported, as the exception binding it throws,
-/// and signals that they do not. A member that has become inaccessible to its caller, or a generic
-/// instantiation that a constraint added since rejects, is not checked, and the exception it causes
-/// is not reported.
+/// That holds for assemblies that agree with each other. A member or type that a body names and
+/// the loaded assembly it is looked for in lacks is reported, as the exception binding it throws,
+/// and signals that they do not. What else such a disagreement can break is not checked, and the
+/// exception it causes is not reported: a member that has become inaccessible to its caller, a
+/// generic instantiation that a constraint added since rejects, or a named type whose own base
+/// type, interfaces or fields are gone.
 ///
 /// A method's summary is computed once and shared by every instantiation of it: a generic
 /// method's IL is the same for all of them, and the calls whose target an instantiation decides
@@ -499,6 +502,159 @@ module EscapeAnalysis =
         | TypeDefn.FunctionPointer _
         | TypeDefn.Void -> state, true
 
+    /// Does every type reference in each of `spellings` name a type?
+    let private allBind
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (spellings : TypeDefn seq)
+        : EscapeAnalysisState * bool
+        =
+        ((state, true), spellings)
+        ||> Seq.fold (fun (state, soFar) spelling ->
+            if soFar then
+                spellingBinds state assembly spelling
+            else
+                state, false
+        )
+
+    /// The types a method signature spells: its return type, if any, and its parameters'.
+    let private signatureTypes (signature : TypeMethodSignature<TypeDefn>) : TypeDefn list =
+        match signature.ReturnType with
+        | MethodReturnType.Void -> signature.ParameterTypes
+        | MethodReturnType.Returns ty -> ty :: signature.ParameterTypes
+
+    /// The type definitions a spelling names that resolve, arguments included.
+    let rec private namedIdentities
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (spelling : TypeDefn)
+        : EscapeAnalysisState * ResolvedTypeIdentity list
+        =
+        match spelling with
+        | TypeDefn.FromReference (typeRef, _) ->
+            match resolveTypeRef state assembly typeRef with
+            | state, Some identity -> state, [ identity ]
+            | state, None -> state, []
+        | TypeDefn.FromDefinition (identity, _) -> state, [ identity ]
+        | TypeDefn.GenericInstantiation (root, arguments) ->
+            ((state, []), Seq.append [ root ] arguments)
+            ||> Seq.fold (fun (state, acc) spelling ->
+                let state, named = namedIdentities state assembly spelling
+                state, named @ acc
+            )
+        | TypeDefn.Array (element, _)
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element
+        | TypeDefn.Pointer element
+        | TypeDefn.Byref element
+        | TypeDefn.Pinned element -> namedIdentities state assembly element
+        | TypeDefn.Modified modified -> namedIdentities state assembly modified.Unmodified
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.GenericMethodParameter _
+        | TypeDefn.FunctionPointer _
+        | TypeDefn.Void -> state, []
+
+    /// Does this assembly have a module initializer, the type initializer of `<Module>`?
+    let private hasModuleInitializer (state : EscapeAnalysisState) (assemblyFullName : string) : bool =
+        let assembly = assemblyOf state assemblyFullName
+
+        match assembly.TypeDefs.TryGetValue (MetadataTokens.TypeDefinitionHandle 1) with
+        | true, globalType when globalType.Name = "<Module>" ->
+            globalType.Methods |> List.exists (fun m -> m.Name = ".cctor" && m.IsStatic)
+        | _ -> false
+
+    /// Whether binding a token with this opcode activates the modules of what it names, running
+    /// each one's module initializer first if it has not run: CoreCLR's `CEEInfo::resolveToken`
+    /// does for a method, a static field, and the type of a `box`, `constrained.` or `ldtoken`. A
+    /// field token counts whatever the opcode, since `ldfld` may name a static field.
+    let private activatesModules (op : UnaryMetadataTokenIlOp) : bool =
+        match op with
+        | UnaryMetadataTokenIlOp.Call
+        | UnaryMetadataTokenIlOp.Callvirt
+        | UnaryMetadataTokenIlOp.Newobj
+        | UnaryMetadataTokenIlOp.Ldftn
+        | UnaryMetadataTokenIlOp.Ldvirtftn
+        | UnaryMetadataTokenIlOp.Jmp
+        | UnaryMetadataTokenIlOp.Stfld
+        | UnaryMetadataTokenIlOp.Stsfld
+        | UnaryMetadataTokenIlOp.Ldfld
+        | UnaryMetadataTokenIlOp.Ldflda
+        | UnaryMetadataTokenIlOp.Ldsfld
+        | UnaryMetadataTokenIlOp.Ldsflda
+        | UnaryMetadataTokenIlOp.Box
+        | UnaryMetadataTokenIlOp.Constrained
+        | UnaryMetadataTokenIlOp.Ldtoken -> true
+        | UnaryMetadataTokenIlOp.Calli
+        | UnaryMetadataTokenIlOp.Castclass
+        | UnaryMetadataTokenIlOp.Newarr
+        | UnaryMetadataTokenIlOp.Ldelema
+        | UnaryMetadataTokenIlOp.Isinst
+        | UnaryMetadataTokenIlOp.Unbox_Any
+        | UnaryMetadataTokenIlOp.Stelem
+        | UnaryMetadataTokenIlOp.Ldelem
+        | UnaryMetadataTokenIlOp.Initobj
+        | UnaryMetadataTokenIlOp.Stobj
+        | UnaryMetadataTokenIlOp.Cpobj
+        | UnaryMetadataTokenIlOp.Ldobj
+        | UnaryMetadataTokenIlOp.Sizeof
+        | UnaryMetadataTokenIlOp.Unbox
+        | UnaryMetadataTokenIlOp.Mkrefany
+        | UnaryMetadataTokenIlOp.Refanyval -> false
+
+    /// The types whose modules binding `token` activates, as `CEEInfo::EnsureActive` walks them:
+    /// the type it names, or the type declaring what it names, with every type argument spelled,
+    /// and all their base types.
+    let private activatedTypes
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (token : MetadataToken)
+        : EscapeAnalysisState * ResolvedTypeIdentity list
+        =
+        // A MemberRef's parent stands for the type declaring its target, which is the parent or
+        // one of its base types.
+        let rec spelled (state : EscapeAnalysisState) (token : MetadataToken) =
+            match token with
+            | MetadataToken.TypeDefinition handle -> state, [ assembly.TypeDefs.[handle].Identity ]
+            | MetadataToken.MethodDef handle -> state, [ assembly.Methods.[handle].RequiredDeclaringType.Identity ]
+            | MetadataToken.TypeReference handle ->
+                namedIdentities
+                    state
+                    assembly
+                    (TypeDefn.FromReference (assembly.TypeRefs.[handle], SignatureTypeKind.Unknown))
+            | MetadataToken.TypeSpecification handle ->
+                namedIdentities state assembly assembly.TypeSpecs.[handle].Signature
+            | MetadataToken.MethodSpecification handle ->
+                let spec = assembly.MethodSpecs.[handle]
+                let state, inner = spelled state spec.Method
+
+                ((state, inner), spec.Signature)
+                ||> Seq.fold (fun (state, acc) argument ->
+                    let state, named = namedIdentities state assembly argument
+                    state, named @ acc
+                )
+            | MetadataToken.MemberReference handle -> spelled state assembly.Members.[handle].Parent
+            | MetadataToken.FieldDefinition handle -> state, [ assembly.Fields.[handle].DeclaringType.Identity ]
+            | _ -> state, []
+
+        let state, named = spelled state token
+
+        // Every base type, from each type named.
+        let rec withBases
+            (state : EscapeAnalysisState)
+            (pending : ResolvedTypeIdentity list)
+            (seen : Set<ResolvedTypeIdentity>)
+            =
+            match pending with
+            | [] -> state, seen
+            | identity :: rest when seen.Contains identity -> withBases state rest seen
+            | identity :: rest ->
+                match baseOf state identity with
+                | state, Some parent -> withBases state (parent :: rest) (seen.Add identity)
+                | state, None -> withBases state rest (seen.Add identity)
+
+        let state, all = withBases state named Set.empty
+        state, Set.toList all
+
     /// Bind the metadata token an instruction names, as the JIT does before the body runs: what it
     /// names when that is a method, and what binding it can throw.
     let rec private bindToken
@@ -511,9 +667,12 @@ module EscapeAnalysis =
             [ ThrownType.Exactly (corelibException state "TypeLoadException") ]
 
         match token with
-        | MetadataToken.MethodDef _ ->
+        | MetadataToken.MethodDef handle ->
             let state, target = callTarget state assembly token
-            state, Some target, []
+
+            match allBind state assembly (signatureTypes assembly.Methods.[handle].Signature) with
+            | state, true -> state, Some target, []
+            | state, false -> state, Some target, typeLoad ()
         | MetadataToken.MethodSpecification handle ->
             let spec = assembly.MethodSpecs.[handle]
             let state, target, failures = bindToken state assembly spec.Method
@@ -539,14 +698,18 @@ module EscapeAnalysis =
 
             let state, target, failures =
                 match assembly.Members.[handle].Signature with
-                | MemberSignature.Method _ ->
+                | MemberSignature.Method signature ->
+                    let state, signatureBinds = allBind state assembly (signatureTypes signature)
+                    let signatureFailures = if signatureBinds then [] else typeLoad ()
+
                     match callTarget state assembly token with
                     | state, CallTarget.Missing ->
                         state,
                         Some CallTarget.Missing,
-                        [ ThrownType.Exactly (corelibException state "MissingMethodException") ]
+                        ThrownType.Exactly (corelibException state "MissingMethodException")
+                        :: signatureFailures
                     | state, CallTarget.TypeMissing -> state, Some CallTarget.TypeMissing, typeLoad ()
-                    | state, target -> state, Some target, []
+                    | state, target -> state, Some target, signatureFailures
                 | MemberSignature.Field _ ->
                     let assemblies, target =
                         FieldReferenceResolution.resolve
@@ -725,8 +888,31 @@ module EscapeAnalysis =
             // 0. Bind the token the instruction names, which the JIT does before the body runs.
             let state, methodTarget, bindingFailures =
                 match op with
-                | IlOp.UnaryMetadataToken (_, MetadataOperand.FromMetadata token) ->
+                | IlOp.UnaryMetadataToken (tokenOp, MetadataOperand.FromMetadata token) ->
                     let state, target, failures = bindToken state assembly token.Token
+
+                    // Binding also runs the module initializer of every other module it activates;
+                    // this module's has run, since its code is running.
+                    let state, initializes =
+                        if activatesModules tokenOp then
+                            let state, activated = activatedTypes state assembly token.Token
+
+                            state,
+                            activated
+                            |> List.exists (fun identity ->
+                                identity.AssemblyFullName <> assembly.DefinitionFullName
+                                && hasModuleInitializer state identity.AssemblyFullName
+                            )
+                        else
+                            state, false
+
+                    let failures =
+                        if initializes then
+                            ThrownType.Exactly (corelibException state "TypeInitializationException")
+                            :: failures
+                        else
+                            failures
+
                     state, target, Set.union bindingFailures (Set.ofList failures)
                 | _ -> state, None, bindingFailures
 
@@ -826,7 +1012,8 @@ module EscapeAnalysis =
 
             state, raises, opaque, calls, bindingFailures
 
-        // The JIT loads the type of every local before the body runs, as it binds every token.
+        // The JIT loads the type of every local and every `catch` clause before the body runs, as
+        // it binds every token.
         let state, localFailures =
             ((state, Set.empty), Option.defaultValue ImmutableArray.Empty body.LocalVars)
             ||> Seq.fold (fun (state, failures) local ->
@@ -834,6 +1021,16 @@ module EscapeAnalysis =
                 | state, true -> state, failures
                 | state, false ->
                     state, Set.add (ThrownType.Exactly (corelibException state "TypeLoadException")) failures
+            )
+
+        let state, localFailures =
+            ((state, localFailures), body.ExceptionRegions)
+            ||> Seq.fold (fun (state, failures) region ->
+                match region with
+                | ExceptionRegion.Catch (ExceptionCatchType.FromMetadata token, _) ->
+                    let state, _, clauseFailures = bindToken state assembly token
+                    state, Set.union failures (Set.ofList clauseFailures)
+                | _ -> state, failures
             )
 
         let state, raises, opaque, calls, bindingFailures =
