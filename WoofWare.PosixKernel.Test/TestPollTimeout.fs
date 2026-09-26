@@ -414,6 +414,26 @@ module TestPollTimeout =
             count |> shouldEqual 1
         | other -> failwith $"expected the dup's close to succeed, got %A{other}"
 
+    [<Test>]
+    let ``closing a polled directory descriptor is refused too`` () : unit =
+        // A directory presents IN|OUT|RDNORM|WRNORM, so only a request for none of
+        // them, such as PRI alone, leaves it waiting.
+        let directory, registry =
+            FileDescriptorRegistry.openDirectory (InodeNumber 1L) idle.Process.FileDescriptors
+
+        let _, parked = parks [ entry directory 0x0002s ] 10 (withRegistry registry idle)
+        UnixSystem.checkInvariants parked |> shouldEqual []
+
+        match UnixDescriptor.close directory parked with
+        | Error (CloseRefusal.PolledDescriptor (fd, waiter)) ->
+            fd |> shouldEqual directory
+            waiter |> shouldEqual task
+        | other -> failwith $"expected the close to be refused, got %A{other}"
+
+        let reported, count, _ = parked |> after 10_000_000L |> finishes
+        reported |> shouldEqual [ 0s ]
+        count |> shouldEqual 0
+
     /// `system` with `fd` closed and a file opened in its place, as only a caller
     /// going around `UnixDescriptor.close` could.
     let private forgeRebind (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
