@@ -84,20 +84,6 @@ type UnixSystemDefect<'Task> =
     /// directory's position is always a place in its entries and never a byte
     /// offset.
     | DescriptionKindMismatch of description : OpenFileDescriptionId * inode : InodeNumber
-    /// An open directory stream names an inode the filesystem no longer holds.
-    ///
-    /// Unreachable by construction — `UnixProcessState.heldInodes` counts a stream's inode
-    /// among the things pinning it, so `UnixDescriptor.forgetIfUnheld` cannot free one out from under
-    /// a stream — which is exactly why a violation is a bug in this library (or
-    /// in a caller that assembled the state by hand) rather than something the
-    /// process did. The next `readdir` would crash, and this names the cause
-    /// instead.
-    | DanglingDirectoryStreamInode of stream : DirectoryStreamId * inode : InodeNumber
-    /// An open directory stream names an inode that is not a directory.
-    | DirectoryStreamIsNotADirectory of stream : DirectoryStreamId * inode : InodeNumber
-    /// The stream table holds an id at or above `NextDirectoryStreamId`, so the
-    /// next `opendir` would hand out an id that is already in use.
-    | NextDirectoryStreamIdNotFresh of nextDirectoryStreamId : DirectoryStreamId * existing : DirectoryStreamId
     /// A socket's phase references a connection the connection table does not
     /// hold.
     | DanglingConnection of socket : SocketId * connection : ConnectionId
@@ -392,27 +378,6 @@ module UnixSystem =
                 | OpenFileTarget.Socket _ -> None
             )
 
-        let danglingStreams =
-            system.Process.DirectoryStreams
-            |> Map.toList
-            |> List.choose (fun (id, stream) ->
-                match VirtualFileSystem.tryGetContent stream.Inode system.Machine.FileSystem with
-                | Some (InodeContent.Directory _) -> None
-                | Some (InodeContent.RegularFile _)
-                | Some (InodeContent.Symlink _) ->
-                    Some (UnixSystemDefect.DirectoryStreamIsNotADirectory (id, stream.Inode))
-                | None -> Some (UnixSystemDefect.DanglingDirectoryStreamInode (id, stream.Inode))
-            )
-
-        let directoryStreamFreshness =
-            system.Process.DirectoryStreams
-            |> Map.toList
-            |> List.map fst
-            |> List.filter (fun id -> id >= system.Process.NextDirectoryStreamId)
-            |> List.map (fun id ->
-                UnixSystemDefect.NextDirectoryStreamIdNotFresh (system.Process.NextDirectoryStreamId, id)
-            )
-
         let currentDirectory =
             match VirtualFileSystem.tryGetContent system.Process.CurrentDirectoryInode system.Machine.FileSystem with
             | Some (InodeContent.Directory _) -> []
@@ -690,8 +655,6 @@ module UnixSystem =
         @ unreferenced
         @ freshness
         @ danglingInodes
-        @ danglingStreams
-        @ directoryStreamFreshness
         @ currentDirectory
         @ danglingConnections
         @ orphanConnections
@@ -914,8 +877,6 @@ module UnixSystem =
             Process =
                 {
                     FileDescriptors = FileDescriptorRegistry.initial
-                    DirectoryStreams = Map.empty
-                    NextDirectoryStreamId = DirectoryStreamId 0L
                     OutputLog = ImmutableArray<OutputLogEntry>.Empty
                     Environment = []
                     // The default current directory is the root, which every filesystem
@@ -1004,8 +965,8 @@ module UnixSystem =
     /// current directory could not spell.
     ///
     /// A **boot-time** operation: it crashes if the process still holds any
-    /// handle onto the filesystem being replaced — an open descriptor or a
-    /// directory stream — because the new filesystem hands out its own inode
+    /// handle onto the filesystem being replaced — an open descriptor onto a
+    /// file or directory — because the new filesystem hands out its own inode
     /// numbers, and such a handle would afterwards name a graph that no longer
     /// exists or, undetectably, whatever the new one gave the same number. The
     /// current directory is not such a handle: replacing it is the point.
@@ -1070,17 +1031,7 @@ module UnixSystem =
                 | OpenFileTarget.Socket _ -> None
             )
 
-        // Counted separately from the descriptions, and not because a stream
-        // usually lacks one: `opendir` takes a descriptor too. It is for the
-        // stream whose descriptor a guest closed out from under it, which
-        // `UnixProcessState.heldInodes` documents and which a descriptions-only
-        // guard would let through.
-        let strandedStreams =
-            system.Process.DirectoryStreams
-            |> Map.toList
-            |> List.map (fun (id, stream) -> $"directory stream %O{id} onto %O{stream.Inode}")
-
-        match strandedDescriptions @ strandedStreams with
+        match strandedDescriptions with
         | [] -> ()
         | stranded ->
             let listed = String.concat "; " stranded

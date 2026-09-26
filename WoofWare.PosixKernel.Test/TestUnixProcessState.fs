@@ -43,8 +43,6 @@ module TestUnixProcessState =
             Environment = []
             CurrentDirectoryInode = rootInode
             ProcessPath = None
-            DirectoryStreams = Map.empty
-            NextDirectoryStreamId = DirectoryStreamId 0L
             Credentials = Credentials.ofIds (UserId.parseOrFail context 1000u) (GroupId.parseOrFail context 1000u) []
             Umask = PermissionBits.parseOrFail context 0o022
             ProcessId = ProcessId.parseOrFail context 4242
@@ -175,31 +173,26 @@ module TestUnixProcessState =
         // One of each kind that can hold one, and one of each that cannot, so a
         // rule that answered "every description" or "no description" fails.
         let fileInode = InodeNumber 7L
-        let streamInode = InodeNumber 9L
+        let directoryInode = InodeNumber 9L
 
         let _fd, withFile =
             FileDescriptorRegistry.openFile fileInode FileAccessMode.ReadOnly FileDescriptorRegistry.initial
 
-        let _sock, withSocket = FileDescriptorRegistry.createSocket (SocketId 1L) withFile
+        let _directoryFd, withDirectory =
+            FileDescriptorRegistry.openDirectory directoryInode withFile
 
-        let streamFd, registry = FileDescriptorRegistry.createSocketEventPort withSocket
+        let _sock, withSocket =
+            FileDescriptorRegistry.createSocket (SocketId 1L) withDirectory
+
+        let _portFd, registry = FileDescriptorRegistry.createSocketEventPort withSocket
 
         let proc =
             { empty with
                 FileDescriptors = registry
-                DirectoryStreams =
-                    Map.ofList
-                        [
-                            DirectoryStreamId 0L,
-                            {
-                                Fd = streamFd
-                                Inode = streamInode
-                            }
-                        ]
             }
 
         UnixProcessState.heldInodes proc
-        |> shouldEqual (Set.ofList [ rootInode ; fileInode ; streamInode ])
+        |> shouldEqual (Set.ofList [ rootInode ; fileInode ; directoryInode ])
 
     [<Test>]
     let ``a socket is named by exactly the descriptions that name it`` () : unit =

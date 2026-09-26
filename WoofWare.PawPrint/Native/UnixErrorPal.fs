@@ -14,7 +14,8 @@ open WoofWare.PosixKernel
 /// The table below is a second exhaustive match over `UnixError`, so the
 /// compiler keeps it complete but cannot keep it *correct*. Its oracle is not
 /// the library but upstream: `TestUnixErrorPal` re-derives every value from the
-/// pinned `Interop.Errors.cs` and fails if this disagrees.
+/// pinned `Interop.Errors.cs`, and puts every raw number from -300 to 4096 to
+/// the real shim, and fails if this disagrees.
 [<RequireQualifiedAccess>]
 module UnixErrorPal =
 
@@ -24,12 +25,10 @@ module UnixErrorPal =
     let palSuccess : int = 0
 
     /// `Interop.Error.ENONSTANDARD`, which upstream's
-    /// `ConvertErrorPlatformToPal` returns for any errno it does not recognise.
-    /// PawPrint returns it only where "unrecognised" is platform-independent —
-    /// a raw errno inside the portable range that the PAL enum has no name for,
-    /// today only `ENOTBLK`. Where "unrecognised" instead means "means
-    /// different things on different Unixes", `ofRawErrno` fails rather than
-    /// answering this; see there.
+    /// `ConvertErrorPlatformToPal` returns for any errno its switch has no
+    /// `case` for: a number the platform names no error for, a negative, or an
+    /// error `Interop.Error` has no member for (`ENOTBLK`, `ENOKEY`, `EAUTH`
+    /// and many more; `toPal` answers it for those).
     [<Literal>]
     let palNonStandard : int = 0x1FFFF
 
@@ -95,16 +94,109 @@ module UnixErrorPal =
         | UnixError.ENOSYS -> 0x10037
         | UnixError.EDEADLK -> 0x10010
         | UnixError.ENOLCK -> 0x1002F
+        | UnixError.ENOMSG -> 0x10032
+        | UnixError.EIDRM -> 0x10018
+        | UnixError.ENODATA -> 0x10071
+        | UnixError.ENOLINK -> 0x10030
+        | UnixError.EPROTO -> 0x10044
+        | UnixError.EMULTIHOP -> 0x10024
+        | UnixError.EBADMSG -> 0x10009
+        | UnixError.EDESTADDRREQ -> 0x10011
+        | UnixError.ENOPROTOOPT -> 0x10033
+        | UnixError.EPFNOSUPPORT -> 0x10060
+        | UnixError.ENETDOWN -> 0x10026
+        | UnixError.ENETUNREACH -> 0x10028
+        | UnixError.ENETRESET -> 0x10027
+        | UnixError.ECONNABORTED -> 0x1000D
+        | UnixError.ENOBUFS -> 0x1002A
+        | UnixError.ESHUTDOWN -> 0x1006C
+        | UnixError.EHOSTDOWN -> 0x10070
+        | UnixError.EHOSTUNREACH -> 0x10017
+        | UnixError.EALREADY -> 0x10007
+        | UnixError.ESTALE -> 0x1004B
+        | UnixError.EDQUOT -> 0x10013
+        | UnixError.ECANCELED -> 0x1000B
+        | UnixError.EOWNERDEAD -> 0x10041
+        | UnixError.ENOTRECOVERABLE -> 0x1003B
+        // Errors the enum has no member for: the shim's switch has no `case`
+        // for them, so it answers ENONSTANDARD.
+        | UnixError.ENOTBLK
+        | UnixError.ENOSTR
+        | UnixError.ETIME
+        | UnixError.ENOSR
+        | UnixError.EREMOTE
+        | UnixError.EUSERS
+        | UnixError.ETOOMANYREFS
+        | UnixError.ECHRNG
+        | UnixError.EL2NSYNC
+        | UnixError.EL3HLT
+        | UnixError.EL3RST
+        | UnixError.ELNRNG
+        | UnixError.EUNATCH
+        | UnixError.ENOCSI
+        | UnixError.EL2HLT
+        | UnixError.EBADE
+        | UnixError.EBADR
+        | UnixError.EXFULL
+        | UnixError.ENOANO
+        | UnixError.EBADRQC
+        | UnixError.EBADSLT
+        | UnixError.EBFONT
+        | UnixError.ENONET
+        | UnixError.ENOPKG
+        | UnixError.EADV
+        | UnixError.ESRMNT
+        | UnixError.ECOMM
+        | UnixError.EDOTDOT
+        | UnixError.ENOTUNIQ
+        | UnixError.EBADFD
+        | UnixError.EREMCHG
+        | UnixError.ELIBACC
+        | UnixError.ELIBBAD
+        | UnixError.ELIBSCN
+        | UnixError.ELIBMAX
+        | UnixError.ELIBEXEC
+        | UnixError.ERESTART
+        | UnixError.ESTRPIPE
+        | UnixError.EUCLEAN
+        | UnixError.ENOTNAM
+        | UnixError.ENAVAIL
+        | UnixError.EISNAM
+        | UnixError.EREMOTEIO
+        | UnixError.ENOMEDIUM
+        | UnixError.EMEDIUMTYPE
+        | UnixError.ENOKEY
+        | UnixError.EKEYEXPIRED
+        | UnixError.EKEYREVOKED
+        | UnixError.EKEYREJECTED
+        | UnixError.ERFKILL
+        | UnixError.EHWPOISON
+        | UnixError.EPROCLIM
+        | UnixError.EBADRPC
+        | UnixError.ERPCMISMATCH
+        | UnixError.EPROGUNAVAIL
+        | UnixError.EPROGMISMATCH
+        | UnixError.EPROCUNAVAIL
+        | UnixError.EFTYPE
+        | UnixError.EAUTH
+        | UnixError.ENEEDAUTH
+        | UnixError.EPWROFF
+        | UnixError.EDEVERR
+        | UnixError.EBADEXEC
+        | UnixError.EBADARCH
+        | UnixError.ESHLIBVERS
+        | UnixError.EBADMACHO
+        | UnixError.ENOATTR
+        | UnixError.ENOPOLICY
+        | UnixError.EQFULL
+        | UnixError.ENOTCAPABLE -> palNonStandard
 
     /// PawPrint's `SystemNative_ConvertErrorPlatformToPal`: raw errno to PAL
-    /// `Interop.Error`.
+    /// `Interop.Error`, for a caller that names no platform.
     ///
-    ///   * **Portable and named** — answer its PAL value.
-    ///   * **Portable but unnamed** — the number means the same thing on every
-    ///     Unix we model, but the BCL's `Interop.Error` has no entry for it.
-    ///     `ENOTBLK` (15) is the only such value. Upstream's switch has no case
-    ///     for it either, so it falls through to `Error_ENONSTANDARD` — and that
-    ///     answer is platform-independent, so we can give it too.
+    ///   * **Portable** — the number means the same error on every Unix we
+    ///     model, so answer its PAL value (which is `ENONSTANDARD` for
+    ///     `ENOTBLK`, the one such error `Interop.Error` has no member for).
     ///   * **Negative** — POSIX errnos are positive, so every Unix we model
     ///     falls through to `ENONSTANDARD` for these; that is unambiguous and
     ///     needs no platform table, so we answer it. Reachable through
@@ -118,7 +210,7 @@ module UnixErrorPal =
     ///     upstream returns `Error_ENOTEMPTY`, so this fails loudly instead.
     ///
     /// Only the last case diverges from upstream; the others answer exactly what
-    /// the C does.
+    /// the C does. `ofRawErrnoUnder` answers the last case too.
     let ofRawErrno (raw : int) : int =
         if raw = 0 then
             palSuccess
@@ -126,26 +218,21 @@ module UnixErrorPal =
 
         match UnixError.ofRawErrno raw with
         | Some error -> toPal error
-        | None when UnixError.isPortableRawErrno raw ->
-            // ENOTBLK, today the only member of this class.
-            palNonStandard
         | None when UnixError.isUnambiguouslyNonStandardRawErrno raw -> palNonStandard
         | None ->
 
         failwith
-            $"UnixErrorPal.ofRawErrno: cannot convert raw errno %d{raw} to a PAL Interop.Error value. PawPrint only maps the errnos that name the same error on every Unix it models (1-34 except 11); outside that set a raw number is platform-dependent — 39 is ENOTEMPTY on Linux but EDESTADDRREQ on Darwin, and 11 is EAGAIN on Linux but EDEADLK on Darwin. Upstream's ConvertErrorPlatformToPal answers ENONSTANDARD here because it was compiled against one platform's <errno.h> and this call site named no platform. If a guest legitimately needs this errno, use ofRawErrnoUnder, or decide the numbering (see issue #956); if it reached here via Marshal.SetLastSystemError, the guest is asserting a platform PawPrint does not model."
+            $"UnixErrorPal.ofRawErrno: cannot convert raw errno %d{raw} to a PAL Interop.Error value. Without a platform, PawPrint only maps the errnos that name the same error on every Unix it models (1-34 except 11); outside that set a raw number is platform-dependent — 39 is ENOTEMPTY on Linux but EDESTADDRREQ on Darwin, and 11 is EAGAIN on Linux but EDEADLK on Darwin. Upstream's ConvertErrorPlatformToPal answers from the one platform's <errno.h> it was compiled against, and this call site named no platform. Use ofRawErrnoUnder."
 
     /// `ofRawErrno` for a caller that knows which numbering the kernel reports —
-    /// which is every caller inside the emulated kernel.
+    /// which is every caller inside the emulated kernel — and so total, exactly
+    /// as the shim compiled for that platform is.
     ///
-    /// A table entry whose raw number is platform-dependent becomes matchable,
-    /// so raw 40 answers `ELOOP` under Linux and raw 39 answers `ENOTEMPTY`. A
-    /// number the table does not contain at all still fails loudly rather than
-    /// falling through to `ENONSTANDARD`: raw 72 under Linux is
-    /// `EMULTIHOP`, which PawPrint has not modelled, and `ENONSTANDARD` would
-    /// silently take a guest down the wrong branch of an
-    /// `if (errorInfo.Error == ...)`. Knowing the platform does not conjure a
-    /// table entry.
+    /// A number the platform's `<errno.h>` names an error for answers that
+    /// error's PAL value, so raw 40 is `ELOOP` under Linux and `EMSGSIZE` under
+    /// Darwin. Any other number is one the shim's switch has no `case` for, so
+    /// it answers `ENONSTANDARD`: `UnixError`'s table holds every error either
+    /// header names, and every `Interop.Error` member names one of them.
     let ofRawErrnoUnder (reporting : RawErrnoNumbering) (raw : int) : int =
         if raw = 0 then
             palSuccess
@@ -153,8 +240,4 @@ module UnixErrorPal =
 
         match UnixError.ofRawErrnoUnder reporting raw with
         | Some error -> toPal error
-        | None when UnixError.isPortableRawErrno raw -> palNonStandard
-        | None when UnixError.isUnambiguouslyNonStandardRawErrno raw -> palNonStandard
-        | None ->
-            failwith
-                $"UnixErrorPal.ofRawErrnoUnder: cannot convert raw errno %d{raw} to a PAL Interop.Error value under the %O{reporting} numbering. The number is outside the portable set (1-34 except 11) and the table has no entry for it on this platform. Answering ENONSTANDARD would silently take a guest down the wrong branch of an `if (errorInfo.Error == ...)`, so this fails instead. Add the error to UnixError's table (with RawErrnoPortability.PlatformDependent if the two Unixes disagree); if it reached here via Marshal.SetLastSystemError, the guest is asserting an errno PawPrint does not model."
+        | None -> palNonStandard

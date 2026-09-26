@@ -43,6 +43,14 @@ type RawErrnoPortability =
     /// raw 62 is <c>ELOOP</c> on Darwin but <c>ETIME</c> on Linux.
     /// </example>
     | PlatformDependent of linux : int * darwin : int
+    /// This error exists only on Linux: Darwin's `<errno.h>` has no name for
+    /// it, and the number is either unassigned there or a different error.
+    /// `ENOKEY` is one.
+    | LinuxOnly of linux : int
+    /// This error exists only on Darwin: Linux's `<errno.h>` has no name for
+    /// it, and the number is either unassigned there or a different error.
+    /// `EAUTH` is one.
+    | DarwinOnly of darwin : int
 
 /// <summary>
 /// The conventional errors a syscall can report.
@@ -54,9 +62,9 @@ type RawErrnoPortability =
 /// Call <c>UnixError.toRawErrnoUnder</c> to get an integer out directly for a given platform, or
 /// <c>UnixError.rawNumbering</c> to get a representation which can be interpreted on any platform.
 ///
-/// This vocabulary was chosen empirically during development of a .NET runtime emulation.
-/// It may therefore lack some errors you expect to be there, because I didn't encounter them.
-/// Let me know if you find something you need (e.g. <c>ENOTBLK</c> is a known example).
+/// There is a case for every error either modelled Unix's <c>&lt;errno.h&gt;</c> names, including those only one of them has
+/// (such as Linux's <c>ENOKEY</c> and Darwin's <c>EAUTH</c>).
+/// A second spelling of the same error, like <c>EWOULDBLOCK</c> for <c>EAGAIN</c>, has no case of its own.
 /// </remarks>
 [<RequireQualifiedAccess>]
 type UnixError =
@@ -429,10 +437,198 @@ type UnixError =
     /// and Darwin 78.
     | ENOSYS
     /// Resource deadlock would occur. The V7 transposition with `EAGAIN`:
-    /// Linux 35, Darwin 11.
+    /// Linux 35, Darwin 11. Linux's `EDEADLOCK` is another name for it.
     | EDEADLK
     /// No locks available. Linux 37, Darwin 77.
     | ENOLCK
+    /// Block device required.
+    | ENOTBLK
+    /// No message of desired type.
+    | ENOMSG
+    /// Identifier removed.
+    | EIDRM
+    /// Device not a stream.
+    | ENOSTR
+    /// No data available.
+    | ENODATA
+    /// Timer expired.
+    | ETIME
+    /// Out of streams resources.
+    | ENOSR
+    /// Object is remote.
+    | EREMOTE
+    /// Link has been severed.
+    | ENOLINK
+    /// Protocol error.
+    | EPROTO
+    /// Multihop attempted.
+    | EMULTIHOP
+    /// Bad message.
+    | EBADMSG
+    /// Too many users.
+    | EUSERS
+    /// Destination address required.
+    | EDESTADDRREQ
+    /// Protocol not available.
+    | ENOPROTOOPT
+    /// Protocol family not supported.
+    | EPFNOSUPPORT
+    /// Network is down.
+    | ENETDOWN
+    /// Network is unreachable.
+    | ENETUNREACH
+    /// Network dropped connection on reset.
+    | ENETRESET
+    /// Software caused connection abort.
+    | ECONNABORTED
+    /// No buffer space available.
+    | ENOBUFS
+    /// Cannot send after transport endpoint shutdown.
+    | ESHUTDOWN
+    /// Too many references: cannot splice.
+    | ETOOMANYREFS
+    /// Host is down.
+    | EHOSTDOWN
+    /// No route to host.
+    | EHOSTUNREACH
+    /// Operation already in progress.
+    | EALREADY
+    /// Stale file handle.
+    | ESTALE
+    /// Disk quota exceeded.
+    | EDQUOT
+    /// Operation canceled.
+    | ECANCELED
+    /// Owner died.
+    | EOWNERDEAD
+    /// State not recoverable.
+    | ENOTRECOVERABLE
+    /// Channel number out of range. Linux only.
+    | ECHRNG
+    /// Level 2 not synchronized. Linux only.
+    | EL2NSYNC
+    /// Level 3 halted. Linux only.
+    | EL3HLT
+    /// Level 3 reset. Linux only.
+    | EL3RST
+    /// Link number out of range. Linux only.
+    | ELNRNG
+    /// Protocol driver not attached. Linux only.
+    | EUNATCH
+    /// No CSI structure available. Linux only.
+    | ENOCSI
+    /// Level 2 halted. Linux only.
+    | EL2HLT
+    /// Invalid exchange. Linux only.
+    | EBADE
+    /// Invalid request descriptor. Linux only.
+    | EBADR
+    /// Exchange full. Linux only.
+    | EXFULL
+    /// No anode. Linux only.
+    | ENOANO
+    /// Invalid request code. Linux only.
+    | EBADRQC
+    /// Invalid slot. Linux only.
+    | EBADSLT
+    /// Bad font file format. Linux only.
+    | EBFONT
+    /// Machine is not on the network. Linux only.
+    | ENONET
+    /// Package not installed. Linux only.
+    | ENOPKG
+    /// Advertise error. Linux only.
+    | EADV
+    /// Srmount error. Linux only.
+    | ESRMNT
+    /// Communication error on send. Linux only.
+    | ECOMM
+    /// RFS specific error. Linux only.
+    | EDOTDOT
+    /// Name not unique on network. Linux only.
+    | ENOTUNIQ
+    /// File descriptor in bad state. Linux only.
+    | EBADFD
+    /// Remote address changed. Linux only.
+    | EREMCHG
+    /// Can not access a needed shared library. Linux only.
+    | ELIBACC
+    /// Accessing a corrupted shared library. Linux only.
+    | ELIBBAD
+    /// .lib section in a.out corrupted. Linux only.
+    | ELIBSCN
+    /// Attempting to link in too many shared libraries. Linux only.
+    | ELIBMAX
+    /// Cannot exec a shared library directly. Linux only.
+    | ELIBEXEC
+    /// Interrupted system call should be restarted. Linux only.
+    | ERESTART
+    /// Streams pipe error. Linux only.
+    | ESTRPIPE
+    /// Structure needs cleaning. Linux only.
+    | EUCLEAN
+    /// Not a XENIX named type file. Linux only.
+    | ENOTNAM
+    /// No XENIX semaphores available. Linux only.
+    | ENAVAIL
+    /// Is a named type file. Linux only.
+    | EISNAM
+    /// Remote I/O error. Linux only.
+    | EREMOTEIO
+    /// No medium found. Linux only.
+    | ENOMEDIUM
+    /// Wrong medium type. Linux only.
+    | EMEDIUMTYPE
+    /// Required key not available. Linux only.
+    | ENOKEY
+    /// Key has expired. Linux only.
+    | EKEYEXPIRED
+    /// Key has been revoked. Linux only.
+    | EKEYREVOKED
+    /// Key was rejected by service. Linux only.
+    | EKEYREJECTED
+    /// Operation not possible due to RF-kill. Linux only.
+    | ERFKILL
+    /// Memory page has hardware error. Linux only.
+    | EHWPOISON
+    /// Too many processes. Darwin only.
+    | EPROCLIM
+    /// RPC struct is bad. Darwin only.
+    | EBADRPC
+    /// RPC version wrong. Darwin only.
+    | ERPCMISMATCH
+    /// RPC prog. not avail. Darwin only.
+    | EPROGUNAVAIL
+    /// Program version wrong. Darwin only.
+    | EPROGMISMATCH
+    /// Bad procedure for program. Darwin only.
+    | EPROCUNAVAIL
+    /// Inappropriate file type or format. Darwin only.
+    | EFTYPE
+    /// Authentication error. Darwin only.
+    | EAUTH
+    /// Need authenticator. Darwin only.
+    | ENEEDAUTH
+    /// Device power is off. Darwin only.
+    | EPWROFF
+    /// Device error. Darwin only.
+    | EDEVERR
+    /// Bad executable (or shared library). Darwin only.
+    | EBADEXEC
+    /// Bad CPU type in executable. Darwin only.
+    | EBADARCH
+    /// Shared library version mismatch. Darwin only.
+    | ESHLIBVERS
+    /// Malformed Mach-o file. Darwin only.
+    | EBADMACHO
+    /// Attribute not found. Darwin only.
+    | ENOATTR
+    /// Policy not found. Darwin only.
+    | ENOPOLICY
+    /// Interface output queue is full. Darwin only.
+    | EQFULL
+    /// Capabilities insufficient. Darwin only.
+    | ENOTCAPABLE
 
 [<RequireQualifiedAccess>]
 module UnixError =
@@ -483,7 +679,6 @@ module UnixError =
             UnixError.EAFNOSUPPORT
             UnixError.EPROTOTYPE
             UnixError.EPROTONOSUPPORT
-            UnixError.ESOCKTNOSUPPORT
             UnixError.EADDRINUSE
             UnixError.EADDRNOTAVAIL
             UnixError.EOPNOTSUPP
@@ -499,12 +694,111 @@ module UnixError =
             UnixError.ENOSYS
             UnixError.EDEADLK
             UnixError.ENOLCK
+            UnixError.ENOTBLK
+            UnixError.ENOMSG
+            UnixError.EIDRM
+            UnixError.ENOSTR
+            UnixError.ENODATA
+            UnixError.ETIME
+            UnixError.ENOSR
+            UnixError.EREMOTE
+            UnixError.ENOLINK
+            UnixError.EPROTO
+            UnixError.EMULTIHOP
+            UnixError.EBADMSG
+            UnixError.EUSERS
+            UnixError.EDESTADDRREQ
+            UnixError.ENOPROTOOPT
+            UnixError.ESOCKTNOSUPPORT
+            UnixError.EPFNOSUPPORT
+            UnixError.ENETDOWN
+            UnixError.ENETUNREACH
+            UnixError.ENETRESET
+            UnixError.ECONNABORTED
+            UnixError.ENOBUFS
+            UnixError.ESHUTDOWN
+            UnixError.ETOOMANYREFS
+            UnixError.EHOSTDOWN
+            UnixError.EHOSTUNREACH
+            UnixError.EALREADY
+            UnixError.ESTALE
+            UnixError.EDQUOT
+            UnixError.ECANCELED
+            UnixError.EOWNERDEAD
+            UnixError.ENOTRECOVERABLE
+            UnixError.ECHRNG
+            UnixError.EL2NSYNC
+            UnixError.EL3HLT
+            UnixError.EL3RST
+            UnixError.ELNRNG
+            UnixError.EUNATCH
+            UnixError.ENOCSI
+            UnixError.EL2HLT
+            UnixError.EBADE
+            UnixError.EBADR
+            UnixError.EXFULL
+            UnixError.ENOANO
+            UnixError.EBADRQC
+            UnixError.EBADSLT
+            UnixError.EBFONT
+            UnixError.ENONET
+            UnixError.ENOPKG
+            UnixError.EADV
+            UnixError.ESRMNT
+            UnixError.ECOMM
+            UnixError.EDOTDOT
+            UnixError.ENOTUNIQ
+            UnixError.EBADFD
+            UnixError.EREMCHG
+            UnixError.ELIBACC
+            UnixError.ELIBBAD
+            UnixError.ELIBSCN
+            UnixError.ELIBMAX
+            UnixError.ELIBEXEC
+            UnixError.ERESTART
+            UnixError.ESTRPIPE
+            UnixError.EUCLEAN
+            UnixError.ENOTNAM
+            UnixError.ENAVAIL
+            UnixError.EISNAM
+            UnixError.EREMOTEIO
+            UnixError.ENOMEDIUM
+            UnixError.EMEDIUMTYPE
+            UnixError.ENOKEY
+            UnixError.EKEYEXPIRED
+            UnixError.EKEYREVOKED
+            UnixError.EKEYREJECTED
+            UnixError.ERFKILL
+            UnixError.EHWPOISON
+            UnixError.EPROCLIM
+            UnixError.EBADRPC
+            UnixError.ERPCMISMATCH
+            UnixError.EPROGUNAVAIL
+            UnixError.EPROGMISMATCH
+            UnixError.EPROCUNAVAIL
+            UnixError.EFTYPE
+            UnixError.EAUTH
+            UnixError.ENEEDAUTH
+            UnixError.EPWROFF
+            UnixError.EDEVERR
+            UnixError.EBADEXEC
+            UnixError.EBADARCH
+            UnixError.ESHLIBVERS
+            UnixError.EBADMACHO
+            UnixError.ENOATTR
+            UnixError.ENOPOLICY
+            UnixError.EQFULL
+            UnixError.ENOTCAPABLE
         ]
 
     let private portable (raw : int) : RawErrnoPortability = RawErrnoPortability.Portable raw
 
     let private platformDependent (linux : int) (darwin : int) : RawErrnoPortability =
         RawErrnoPortability.PlatformDependent (linux, darwin)
+
+    let private linuxOnly (linux : int) : RawErrnoPortability = RawErrnoPortability.LinuxOnly linux
+
+    let private darwinOnly (darwin : int) : RawErrnoPortability = RawErrnoPortability.DarwinOnly darwin
 
     /// <summary>
     /// Describe the errno corresponding to a <c>UnixError</c>, in a way that is agnostic about the flavour of
@@ -514,8 +808,12 @@ module UnixError =
     /// Use <c>toRawErrnoUnder</c> to get an actual integer.
     /// </remarks>
     let rawNumbering (error : UnixError) : RawErrnoPortability =
-        // Transcribed from the kernel ABI headers, and checked against the host's
-        // own errno.h by `TestUnixError`.
+        // Transcribed from Linux's asm-generic/errno-base.h and asm-generic/errno.h
+        // (the same on x86-64 and aarch64) and Darwin's sys/errno.h (the macOS
+        // 26.4 SDK). `TestUnixError` holds this to a checked-in transcription of
+        // both, and checks that against the host's own header and strerror;
+        // docs/plans/2026-08-23-posix-kernel-extraction/errno-table.sh is the
+        // probe that produced it.
         match error with
         | UnixError.EPERM -> portable 1
         | UnixError.ENOENT -> portable 2
@@ -574,9 +872,6 @@ module UnixError =
         // Raw 93 is EPROTONOSUPPORT on Linux and ENOATTR on Darwin,
         // while raw 43 is EPROTONOSUPPORT on Darwin and EIDRM on Linux.
         | UnixError.EPROTONOSUPPORT -> platformDependent 93 43
-        // Raw 94 is ESOCKTNOSUPPORT on Linux and EBADMSG on Darwin, while
-        // raw 44 is ESOCKTNOSUPPORT on Darwin and ECHRNG on Linux.
-        | UnixError.ESOCKTNOSUPPORT -> platformDependent 94 44
         | UnixError.EADDRINUSE -> platformDependent 98 48
         | UnixError.EADDRNOTAVAIL -> platformDependent 99 49
         | UnixError.EOPNOTSUPP -> platformDependent 95 102
@@ -586,9 +881,9 @@ module UnixError =
         | UnixError.EISCONN -> platformDependent 106 56
         | UnixError.EINPROGRESS -> platformDependent 115 36
         | UnixError.ECONNREFUSED -> platformDependent 111 61
-        // Linux has one number for ENOTSUP and EOPNOTSUPP, so under its
-        // numbering raw 95 decodes as EOPNOTSUPP, the first of the pair in
-        // `all`. Darwin keeps them apart: 45 against 102.
+        // Linux has one number for ENOTSUP and EOPNOTSUPP, which decodes as
+        // EOPNOTSUPP (see `decodesUnder`). Darwin keeps them apart: 45
+        // against 102.
         | UnixError.ENOTSUP -> platformDependent 95 45
         | UnixError.ENOTCONN -> platformDependent 107 57
         | UnixError.ETIMEDOUT -> platformDependent 110 60
@@ -601,6 +896,101 @@ module UnixError =
         // and EAGAIN on Darwin, and raw 11 the reverse.
         | UnixError.EDEADLK -> platformDependent 35 11
         | UnixError.ENOLCK -> platformDependent 37 77
+        | UnixError.ENOTBLK -> portable 15
+        | UnixError.ENOMSG -> platformDependent 42 91
+        | UnixError.EIDRM -> platformDependent 43 90
+        | UnixError.ENOSTR -> platformDependent 60 99
+        | UnixError.ENODATA -> platformDependent 61 96
+        | UnixError.ETIME -> platformDependent 62 101
+        | UnixError.ENOSR -> platformDependent 63 98
+        | UnixError.EREMOTE -> platformDependent 66 71
+        | UnixError.ENOLINK -> platformDependent 67 97
+        | UnixError.EPROTO -> platformDependent 71 100
+        | UnixError.EMULTIHOP -> platformDependent 72 95
+        | UnixError.EBADMSG -> platformDependent 74 94
+        | UnixError.EUSERS -> platformDependent 87 68
+        | UnixError.EDESTADDRREQ -> platformDependent 89 39
+        | UnixError.ENOPROTOOPT -> platformDependent 92 42
+        | UnixError.ESOCKTNOSUPPORT -> platformDependent 94 44
+        | UnixError.EPFNOSUPPORT -> platformDependent 96 46
+        | UnixError.ENETDOWN -> platformDependent 100 50
+        | UnixError.ENETUNREACH -> platformDependent 101 51
+        | UnixError.ENETRESET -> platformDependent 102 52
+        | UnixError.ECONNABORTED -> platformDependent 103 53
+        | UnixError.ENOBUFS -> platformDependent 105 55
+        | UnixError.ESHUTDOWN -> platformDependent 108 58
+        | UnixError.ETOOMANYREFS -> platformDependent 109 59
+        | UnixError.EHOSTDOWN -> platformDependent 112 64
+        | UnixError.EHOSTUNREACH -> platformDependent 113 65
+        | UnixError.EALREADY -> platformDependent 114 37
+        | UnixError.ESTALE -> platformDependent 116 70
+        | UnixError.EDQUOT -> platformDependent 122 69
+        | UnixError.ECANCELED -> platformDependent 125 89
+        | UnixError.EOWNERDEAD -> platformDependent 130 105
+        | UnixError.ENOTRECOVERABLE -> platformDependent 131 104
+        | UnixError.ECHRNG -> linuxOnly 44
+        | UnixError.EL2NSYNC -> linuxOnly 45
+        | UnixError.EL3HLT -> linuxOnly 46
+        | UnixError.EL3RST -> linuxOnly 47
+        | UnixError.ELNRNG -> linuxOnly 48
+        | UnixError.EUNATCH -> linuxOnly 49
+        | UnixError.ENOCSI -> linuxOnly 50
+        | UnixError.EL2HLT -> linuxOnly 51
+        | UnixError.EBADE -> linuxOnly 52
+        | UnixError.EBADR -> linuxOnly 53
+        | UnixError.EXFULL -> linuxOnly 54
+        | UnixError.ENOANO -> linuxOnly 55
+        | UnixError.EBADRQC -> linuxOnly 56
+        | UnixError.EBADSLT -> linuxOnly 57
+        | UnixError.EBFONT -> linuxOnly 59
+        | UnixError.ENONET -> linuxOnly 64
+        | UnixError.ENOPKG -> linuxOnly 65
+        | UnixError.EADV -> linuxOnly 68
+        | UnixError.ESRMNT -> linuxOnly 69
+        | UnixError.ECOMM -> linuxOnly 70
+        | UnixError.EDOTDOT -> linuxOnly 73
+        | UnixError.ENOTUNIQ -> linuxOnly 76
+        | UnixError.EBADFD -> linuxOnly 77
+        | UnixError.EREMCHG -> linuxOnly 78
+        | UnixError.ELIBACC -> linuxOnly 79
+        | UnixError.ELIBBAD -> linuxOnly 80
+        | UnixError.ELIBSCN -> linuxOnly 81
+        | UnixError.ELIBMAX -> linuxOnly 82
+        | UnixError.ELIBEXEC -> linuxOnly 83
+        | UnixError.ERESTART -> linuxOnly 85
+        | UnixError.ESTRPIPE -> linuxOnly 86
+        | UnixError.EUCLEAN -> linuxOnly 117
+        | UnixError.ENOTNAM -> linuxOnly 118
+        | UnixError.ENAVAIL -> linuxOnly 119
+        | UnixError.EISNAM -> linuxOnly 120
+        | UnixError.EREMOTEIO -> linuxOnly 121
+        | UnixError.ENOMEDIUM -> linuxOnly 123
+        | UnixError.EMEDIUMTYPE -> linuxOnly 124
+        | UnixError.ENOKEY -> linuxOnly 126
+        | UnixError.EKEYEXPIRED -> linuxOnly 127
+        | UnixError.EKEYREVOKED -> linuxOnly 128
+        | UnixError.EKEYREJECTED -> linuxOnly 129
+        | UnixError.ERFKILL -> linuxOnly 132
+        | UnixError.EHWPOISON -> linuxOnly 133
+        | UnixError.EPROCLIM -> darwinOnly 67
+        | UnixError.EBADRPC -> darwinOnly 72
+        | UnixError.ERPCMISMATCH -> darwinOnly 73
+        | UnixError.EPROGUNAVAIL -> darwinOnly 74
+        | UnixError.EPROGMISMATCH -> darwinOnly 75
+        | UnixError.EPROCUNAVAIL -> darwinOnly 76
+        | UnixError.EFTYPE -> darwinOnly 79
+        | UnixError.EAUTH -> darwinOnly 80
+        | UnixError.ENEEDAUTH -> darwinOnly 81
+        | UnixError.EPWROFF -> darwinOnly 82
+        | UnixError.EDEVERR -> darwinOnly 83
+        | UnixError.EBADEXEC -> darwinOnly 85
+        | UnixError.EBADARCH -> darwinOnly 86
+        | UnixError.ESHLIBVERS -> darwinOnly 87
+        | UnixError.EBADMACHO -> darwinOnly 88
+        | UnixError.ENOATTR -> darwinOnly 93
+        | UnixError.ENOPOLICY -> darwinOnly 103
+        | UnixError.EQFULL -> darwinOnly 106
+        | UnixError.ENOTCAPABLE -> darwinOnly 107
 
     /// <summary>
     /// The raw <c>&lt;errno.h&gt;</c> integer for this error, if that number would be the same across all
@@ -616,17 +1006,38 @@ module UnixError =
         | RawErrnoPortability.PlatformDependent (linux, darwin) ->
             failwith
                 $"UnixError.toRawErrno: %O{error} has no platform-independent errno number (Linux reports %d{linux}, Darwin reports %d{darwin}), so no number is right without knowing the platform. Reporting either would hand a process a number its configured SimulatedUnixPlatform contradicts. Use UnixError.toRawErrnoUnder with the platform instead."
+        | RawErrnoPortability.LinuxOnly linux ->
+            failwith
+                $"UnixError.toRawErrno: %O{error} exists only on Linux, where it is %d{linux}; Darwin has no such error, so the number is not platform-independent. Use UnixError.toRawErrnoUnder with the platform instead."
+        | RawErrnoPortability.DarwinOnly darwin ->
+            failwith
+                $"UnixError.toRawErrno: %O{error} exists only on Darwin, where it is %d{darwin}; Linux has no such error, so the number is not platform-independent. Use UnixError.toRawErrnoUnder with the platform instead."
+
+    /// The raw `<errno.h>` number for this error on the chosen platform, or
+    /// `None` if that platform has no such error (`ENOKEY` under Darwin, say).
+    let tryToRawErrnoUnder (reporting : RawErrnoNumbering) (error : UnixError) : int option =
+        match rawNumbering error, reporting with
+        | RawErrnoPortability.Portable value, _ -> Some value
+        | RawErrnoPortability.PlatformDependent (linux, _), RawErrnoNumbering.Linux -> Some linux
+        | RawErrnoPortability.PlatformDependent (_, darwin), RawErrnoNumbering.Darwin -> Some darwin
+        | RawErrnoPortability.LinuxOnly linux, RawErrnoNumbering.Linux -> Some linux
+        | RawErrnoPortability.DarwinOnly darwin, RawErrnoNumbering.Darwin -> Some darwin
+        | RawErrnoPortability.LinuxOnly _, RawErrnoNumbering.Darwin
+        | RawErrnoPortability.DarwinOnly _, RawErrnoNumbering.Linux -> None
 
     /// <summary>
     /// The raw <c>&lt;errno.h&gt;</c> integer for this error on the chosen platform.
     /// </summary>
+    /// <remarks>
+    /// Throws for an error the chosen platform does not have, such as <c>ENOKEY</c> under Darwin:
+    /// no number is right for it there. <c>tryToRawErrnoUnder</c> answers <c>None</c> instead.
+    /// </remarks>
     let toRawErrnoUnder (reporting : RawErrnoNumbering) (error : UnixError) : int =
-        match rawNumbering error with
-        | RawErrnoPortability.Portable value -> value
-        | RawErrnoPortability.PlatformDependent (linux, darwin) ->
-            match reporting with
-            | RawErrnoNumbering.Linux -> linux
-            | RawErrnoNumbering.Darwin -> darwin
+        match tryToRawErrnoUnder reporting error with
+        | Some raw -> raw
+        | None ->
+            failwith
+                $"UnixError.toRawErrnoUnder: %O{error} does not exist under the %O{reporting} numbering (its numbering is %A{rawNumbering error}), so no number is right for it there. Whatever produced it for a %O{reporting} process has answered with another flavour's error."
 
     /// <summary>
     /// Whether the integer is an errno which is portable across all WoofWare.PosixKernel's modelled Unixes.
@@ -637,8 +1048,7 @@ module UnixError =
     /// The number 11 is <c>EAGAIN</c> on Linux but <c>EDEADLK</c> on Darwin, so is not portable.
     /// </example>
     /// <remarks>
-    /// This only indicates errnos which we <i>know</i> to be portable.
-    /// There may coincidentally be portable errnos which <c>isPortableRawErrno</c> says are not portable.
+    /// These are exactly the numbers <c>ofRawErrno</c> converts.
     /// </remarks>
     let isPortableRawErrno (raw : int) : bool = raw >= 1 && raw <= 34 && raw <> 11
 
@@ -654,8 +1064,7 @@ module UnixError =
     /// Convert a portable raw integer errno to a structured error.
     /// </summary>
     /// <remarks>
-    /// This returns <c>None</c> for non-portable errnos, as well as for errnos WoofWare.PosixKernel
-    /// simply doesn't recognise.
+    /// This returns <c>None</c> for non-portable errnos, and for numbers no modelled Unix names an error for.
     ///
     /// Use <c>ofRawErrnoUnder</c> to convert an errno if you already know the platform you're simulating.
     /// </remarks>
@@ -664,17 +1073,51 @@ module UnixError =
         |> List.tryFind (fun error ->
             match rawNumbering error with
             | RawErrnoPortability.Portable value -> value = raw
-            | RawErrnoPortability.PlatformDependent _ -> false
+            | RawErrnoPortability.PlatformDependent _
+            | RawErrnoPortability.LinuxOnly _
+            | RawErrnoPortability.DarwinOnly _ -> false
         )
+
+    // Linux gives ENOTSUP and EOPNOTSUPP one number, 95, and the kernel's own
+    // name for it is EOPNOTSUPP: its headers define no ENOTSUP, which glibc's
+    // <errno.h> adds as a synonym. So under Linux the number decodes as
+    // EOPNOTSUPP, and ENOTSUP is only ever encoded.
+    let private decodesUnder (reporting : RawErrnoNumbering) (error : UnixError) : bool =
+        match reporting, error with
+        | RawErrnoNumbering.Linux, UnixError.ENOTSUP -> false
+        | _, _ -> true
+
+    let private decodeTable (reporting : RawErrnoNumbering) : Map<int, UnixError> =
+        all
+        |> List.filter (decodesUnder reporting)
+        |> List.fold
+            (fun (table : Map<int, UnixError>) error ->
+                match tryToRawErrnoUnder reporting error with
+                | None -> table
+                | Some raw ->
+                    match Map.tryFind raw table with
+                    | Some other ->
+                        failwith
+                            $"UnixError: %O{other} and %O{error} are both %d{raw} under the %O{reporting} numbering, and neither is declared the other's alias. The table is mis-transcribed."
+                    | None -> Map.add raw error table
+            )
+            Map.empty
+
+    let private linuxDecode : Map<int, UnixError> = decodeTable RawErrnoNumbering.Linux
+
+    let private darwinDecode : Map<int, UnixError> =
+        decodeTable RawErrnoNumbering.Darwin
 
     /// <summary>
     /// Convert a raw integer errno to a structured error on the specified platform.
     /// </summary>
     /// <remarks>
     /// Unlike <c>ofRawErrno</c>, this returns values for platform-dependent entries too.
-    /// It can still return <c>None</c> for errnos that are valid but which WoofWare.PosixKernel doesn't yet model.
-    /// Where a platform gives two errors one number, the first of them in <c>all</c> is answered:
+    /// It returns <c>None</c> exactly for a number that platform's <c>&lt;errno.h&gt;</c> names no error for.
+    /// Where a platform gives two errors one number, one of them is answered:
     /// Linux's 95 is <c>EOPNOTSUPP</c>, never <c>ENOTSUP</c>.
     /// </remarks>
     let ofRawErrnoUnder (reporting : RawErrnoNumbering) (raw : int) : UnixError option =
-        all |> List.tryFind (fun error -> toRawErrnoUnder reporting error = raw)
+        match reporting with
+        | RawErrnoNumbering.Linux -> Map.tryFind raw linuxDecode
+        | RawErrnoNumbering.Darwin -> Map.tryFind raw darwinDecode

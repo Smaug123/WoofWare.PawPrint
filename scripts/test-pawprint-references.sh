@@ -26,7 +26,7 @@ let docstring = 1
 let comment = 2
 let message () = failwith "see NativeSystemNative.fs (this is a PawPrint bug)"
 let code = IlMachineState.foo
-/// Checked by `EmulatedKernelDefect.DirectoryStreamBlockDangling`.
+/// Checked by `EmulatedKernelDefect.SignalDispatcherWithoutTask`.
 let prefix = 3
 /// Applied by `Program.prepare` before the `.cctor` runs.
 let program = 4
@@ -41,7 +41,7 @@ EOF
 cat > "$tmp/lib/Nested/B.fs" <<'EOF'
 module B
 /// `NativeEnvironment` asserts it; `HostConfig` launches it.
-// A `DIR*` is keyed through DirectoryStreamBlocks.
+// A `DIR*` is keyed through DirectoryStreamFds.
 // NextLowLevelMonitorId numbers the LowLevelMonitor table.
 let nested = 1
 EOF
@@ -71,7 +71,7 @@ expected_hits=(
   "A.fs:13: PawPrint:"
   "Nested/B.fs:2: NativeEnvironment:"
   "Nested/B.fs:2: HostConfig:"
-  "Nested/B.fs:3: DirectoryStreamBlocks:"
+  "Nested/B.fs:3: DirectoryStreamFds:"
   "Nested/B.fs:4: NextLowLevelMonitorId:"
   "Nested/B.fs:4: LowLevelMonitor:"
 )

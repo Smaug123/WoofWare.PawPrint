@@ -469,70 +469,31 @@ module TestWithFileSystemAndCurrentDirectory =
         thrown.Message |> shouldContainText "still holds"
 
     [<Test>]
-    let ``replacing the filesystem under a descriptor-less directory stream is refused`` () : unit =
-        // The holder a guard written over the descriptions alone would miss.
-        // `heldInodes` counts a directory stream separately for exactly this
-        // case, which its own comment describes: a guest may close the
-        // descriptor `opendir` took out from under the stream, and the stream
-        // still names the directory afterwards.
-        let answer, withStream =
-            UnixNamespace.opendir (UnixPath.ofAbsolute (absolute "/outer")) (booted "/")
-
-        match answer with
-        | OpenDirAnswer.Failed error -> failwith $"opendir on /outer failed: %O{error}."
-        | OpenDirAnswer.Opened _ ->
-
-        let closed =
-            match UnixDescriptor.close 3 withStream with
-            | Ok (SyscallAnswer.Completed 0L, system) -> system
-            | other -> failwith $"closing the stream's descriptor did not succeed: %A{other}."
-
-        // The point of the row: no description remains, and the stream does. So
-        // a guard reading only descriptions would let this system through.
-        closed.Process.FileDescriptors
-        |> FileDescriptorRegistry.descriptions
-        |> Map.toList
-        |> List.filter (fun (_, description) ->
-            match description.Target with
-            | OpenFileTarget.File _ -> true
-            | _ -> false
-        )
-        |> shouldBeEmpty
-
-        closed.Process.DirectoryStreams |> Map.isEmpty |> shouldEqual false
-
-        // Asserted on the guard firing rather than on the wording: the message
-        // names both holders whichever one triggered it, so matching "directory
-        // stream" would pass for the descriptor row too. The setup above is
-        // what makes this row specific.
-        let thrown =
-            Assert.Throws<exn> (fun () -> replaceFileSystem closed |> ignore<UnixSystem<int, string>>)
-
-        thrown.Message |> shouldContainText "still holds"
-
-    [<Test>]
     let ``a handle onto the current directory itself is refused`` () : unit =
         // The case a set of inode *values* cannot answer. Standing at `/` and
-        // opening `/` gives a descriptor and a stream that both name the very
-        // inode the current directory names, so exempting the current directory
-        // by value erases them from the reckoning and the guard sees nothing
-        // held at all. They would then carry into the replacement filesystem
-        // and silently retarget, because the new graph reissues the root's
-        // number -- `checkInvariants` cannot see that.
-        let answer, withStream =
-            UnixNamespace.opendir (UnixPath.ofAbsolute (absolute "/")) (booted "/")
+        // opening `/` gives a descriptor that names the very inode the current
+        // directory names, so exempting the current directory by value erases
+        // it from the reckoning and the guard sees nothing held at all. It would
+        // then carry into the replacement filesystem and silently retarget,
+        // because the new graph reissues the root's number -- `checkInvariants`
+        // cannot see that.
+        let withDescriptor =
+            match DirectoryReading.openDirectory (UnixPath.ofAbsolute (absolute "/")) (booted "/") with
+            | Ok _, system -> system
+            | Error error, _ -> failwith $"opening / failed: %O{error}."
 
-        match answer with
-        | OpenDirAnswer.Failed error -> failwith $"opendir on / failed: %O{error}."
-        | OpenDirAnswer.Opened _ ->
-
-        withStream.Process.DirectoryStreams
+        withDescriptor.Process.FileDescriptors
+        |> FileDescriptorRegistry.descriptions
         |> Map.toList
-        |> List.map (fun (_, stream) -> stream.Inode)
-        |> shouldEqual [ withStream.Process.CurrentDirectoryInode ]
+        |> List.choose (fun (_, description) ->
+            match description.Target with
+            | OpenFileTarget.Directory (inode, _) -> Some inode
+            | _ -> None
+        )
+        |> shouldEqual [ withDescriptor.Process.CurrentDirectoryInode ]
 
         let thrown =
-            Assert.Throws<exn> (fun () -> replaceFileSystem withStream |> ignore<UnixSystem<int, string>>)
+            Assert.Throws<exn> (fun () -> replaceFileSystem withDescriptor |> ignore<UnixSystem<int, string>>)
 
         thrown.Message |> shouldContainText "still holds"
 

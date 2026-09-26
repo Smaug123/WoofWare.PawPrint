@@ -173,13 +173,13 @@ module TestVirtualFileSystemAgainstHost =
     /// platform is named — which a *test* may do, because it knows which host
     /// it is running on.
     let private hostErrno (error : UnixError) : int =
-        match UnixError.rawNumbering error with
-        | RawErrnoPortability.Portable value -> value
-        | RawErrnoPortability.PlatformDependent (linux, darwin) ->
+        let numbering =
             if RuntimeInformation.IsOSPlatform OSPlatform.OSX then
-                darwin
+                RawErrnoNumbering.Darwin
             else
-                linux
+                RawErrnoNumbering.Linux
+
+        UnixError.toRawErrnoUnder numbering error
 
     // ------------------------------------------------------------- the corpus
 

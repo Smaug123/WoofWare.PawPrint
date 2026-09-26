@@ -257,39 +257,6 @@ type DirectoryPosition =
     /// refused rather than guessed. Always positive: offset 0 is `Cursor Start`.
     | Unenumerable of offset : int64
 
-/// Identity of one open directory stream. Never visible to the simulated
-/// process: it holds a `DIR*`, and what that pointer is made of is the
-/// client's business, not this kernel's.
-///
-/// Minted monotonically and never reused, as `SocketId` and `InodeNumber` are;
-/// `UnixProcessState.NextDirectoryStreamId` is the counter, and
-/// `UnixSystem.checkInvariants` refuses a table holding an id at or above it.
-[<Struct>]
-type DirectoryStreamId =
-    | DirectoryStreamId of value : int64
-
-    override this.ToString () : string =
-        match this with
-        | DirectoryStreamId value -> string<int64> value
-
-/// One open directory stream: what `opendir(3)` returns and `readdir`/`closedir`
-/// consume.
-///
-/// A descriptor and nothing that moves. The stream's position is the
-/// position of that descriptor's open file description, which is where the
-/// kernel keeps it, so `readdir` is a read through `Fd`: a `dup` of the
-/// descriptor shares it, and two `opendir`s of one directory advance
-/// independently because each opens its own description.
-type DirectoryStream =
-    {
-        /// The descriptor `opendir` opened, closed again by `closedir`.
-        Fd : int
-        /// The directory `opendir` opened, pinned until `closedir` even if the
-        /// process closes `Fd` behind the stream's back -- undefined behaviour
-        /// on a real libc, and possible here because fd numbers are guessable.
-        Inode : InodeNumber
-    }
-
 [<RequireQualifiedAccess>]
 module VirtualFileSystem =
 
@@ -1274,7 +1241,7 @@ module VirtualFileSystem =
             | Some _
             | None ->
                 failwith
-                    $"VirtualFileSystem.nextDirectoryEntry: inode %O{directory} is not a directory this filesystem holds. A directory stream's inode is pinned by the descriptor that opened it, so this is a bug in the caller of VirtualFileSystem.nextDirectoryEntry."
+                    $"VirtualFileSystem.nextDirectoryEntry: inode %O{directory} is not a directory this filesystem holds. A directory being read is pinned by the descriptor reading it, so this is a bug in the caller of VirtualFileSystem.nextDirectoryEntry."
 
         if isOrphanedDirectory directory vfs then
             None
