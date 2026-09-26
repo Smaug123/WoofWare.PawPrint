@@ -43,7 +43,7 @@ module TestProcessPath =
     [<Test>]
     let ``toKernel preserves None rather than substituting a default`` () : unit =
         // `KernelConfig` holds two `option` fields whose `None`s mean different
-        // things: `FileSystemType`'s asks `toKernel` to derive a value from the
+        // things: `Mount`'s asks `toKernel` to derive a value from the
         // flavour, while `ProcessPath`'s *is* the answer. This is the test that
         // stops the second from being "fixed" into the first.
         let kernel = KernelConfig.toKernel KernelConfig.Default

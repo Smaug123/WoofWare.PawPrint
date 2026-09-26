@@ -622,12 +622,12 @@ module UnixSystem =
         let fileSystemType =
             let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
 
-            if EmulatedFileSystemType.isReportableUnder flavour system.Machine.FileSystemType then
+            let fsType = EmulatedMount.fileSystemType system.Machine.Mount
+
+            if EmulatedFileSystemType.isReportableUnder flavour fsType then
                 []
             else
-                [
-                    UnixSystemDefect.FileSystemTypeNotReportable (flavour, system.Machine.FileSystemType)
-                ]
+                [ UnixSystemDefect.FileSystemTypeNotReportable (flavour, fsType) ]
 
         let userBufferCheck =
             if UnixMachineState.isUserBufferCheckOf system.Machine.UnixPlatform system.Machine.UserBufferCheck then
@@ -821,7 +821,7 @@ module UnixSystem =
     /// only the three standard streams open.
     ///
     /// The three fields the platform *fixes* are derived from it rather than
-    /// taken as arguments — `SoMaxConn`, `FileSystemType`, and the platform
+    /// taken as arguments — `SoMaxConn`, `Mount`, and the platform
     /// itself — because a machine whose flavour and those disagree is one no
     /// real system could be: `EmulatedFileSystemType.isReportableUnder` says
     /// outright that a Darwin kernel never reports tmpfs. Building the record
@@ -872,7 +872,7 @@ module UnixSystem =
                     UserBufferCheck = defaultUserBufferCheck platform
                     UnixPlatform = platform
                     FileSystem = filesystem
-                    FileSystemType = EmulatedFileSystemType.defaultFor flavour
+                    Mount = EmulatedMount.defaultFor flavour
                 }
             Process =
                 {

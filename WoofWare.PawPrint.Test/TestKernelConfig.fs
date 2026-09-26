@@ -128,7 +128,7 @@ module TestKernelConfig =
                 }
 
         kernel.UnixPlatform |> shouldEqual SimulatedUnixPlatform.macOsArm64
-        kernel.FileSystemType |> shouldEqual EmulatedFileSystemType.Apfs
+        kernel.Mount |> shouldEqual (EmulatedMount.Apfs ApfsMount.defaults)
         kernel.SoMaxConn |> shouldEqual 128
         kernel.EphemeralPortRange |> shouldEqual (49152us, 65535us)
 

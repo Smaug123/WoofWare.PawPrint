@@ -8,7 +8,7 @@ using System.Runtime.InteropServices;
 // *file* is a property of whichever mount the oracle's scratch directory
 // happens to be on — ext4 in CI, APFS on a Mac, overlayfs in a container — so
 // the real runtime would answer with a fact about the machine that ran it.
-// PawPrint's answer is `KernelConfig.FileSystemType`, which is a choice the
+// PawPrint's answer is `KernelConfig.Mount`, which is a choice the
 // host makes. `sourcesPure/WriteSeeded.cs` and
 // `sourcesPure/FlockContentionSeeded.cs` carry what *is* portable: that the
 // reported filesystem is one CoreCLR will take a shared lock on, and hence that

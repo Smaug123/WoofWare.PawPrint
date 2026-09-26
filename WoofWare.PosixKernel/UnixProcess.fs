@@ -88,7 +88,8 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// the truth about a simulated process by default, because this library
         /// models no `exec(2)`: nothing started this process from a file, and the
         /// emulated filesystem contains no image of it. Contrast
-        /// `FileSystemType`, whose `None` *does* mean "derive one from the flavour".
+        /// `UnixMachineState.withMount`, whose `None` *does* mean "derive one from
+        /// the flavour".
         ///
         /// Not resolved against `FileSystem`. Real `realpath` succeeds only if
         /// every component resolves, so a client that wants the path to name a
