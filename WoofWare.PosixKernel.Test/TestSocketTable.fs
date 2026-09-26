@@ -410,11 +410,19 @@ module TestSocketTable =
                         |> List.filter (fun inode -> inode <> VirtualFileSystem.root kernel.Machine.FileSystem)
 
                     if not (List.isEmpty candidates) then
+                        let inode = candidates.[rng.Next candidates.Length]
+
+                        // A directory gets a directory description, as `open(2)`
+                        // gives it one.
                         let _, registry =
-                            FileDescriptorRegistry.openFile
-                                candidates.[rng.Next candidates.Length]
-                                FileAccessMode.ReadOnly
-                                kernel.Process.FileDescriptors
+                            match VirtualFileSystem.tryGetContent inode kernel.Machine.FileSystem with
+                            | Some (InodeContent.Directory _) ->
+                                FileDescriptorRegistry.openDirectory inode kernel.Process.FileDescriptors
+                            | _ ->
+                                FileDescriptorRegistry.openFile
+                                    inode
+                                    FileAccessMode.ReadOnly
+                                    kernel.Process.FileDescriptors
 
                         kernel <-
                             { kernel with
