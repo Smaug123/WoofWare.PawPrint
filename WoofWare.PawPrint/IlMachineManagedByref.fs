@@ -411,7 +411,8 @@ module IlMachineManagedByref =
 
         let updatedCell =
             match CliType.ByteAddressability current with
-            | CliByteAddressability.ByteAddressable -> CliType.WithBytesAtIfChanged 0 (CliType.ToBytes newValue) current
+            | CliByteAddressability.ByteAddressable ->
+                CliType.WithValueBytesAtIfChanged 0 (CliType.ValueBytesOf newValue) current
             | CliByteAddressability.SymbolicallyAddressable _
             | CliByteAddressability.Rejected _ ->
                 if isProvableNoOpWrite current newValue then
@@ -895,6 +896,13 @@ module IlMachineManagedByref =
         // Keep this caller-side check even though CliType byte helpers validate too: this layer
         // can report which byref shape requested the byte view, while CliType protects direct
         // callers of the byte helpers.
+        //
+        // A value with an undefined leaf has an image of numbers and undefined bytes, which the
+        // value-byte helpers read and write; they refuse any other byte of it themselves.
+        if CliType.HasUndefinedLeaf value then
+            ()
+        else
+
         match CliType.ByteAddressability value with
         | CliByteAddressability.ByteAddressable -> ()
         | CliByteAddressability.SymbolicallyAddressable rejection
@@ -905,6 +913,12 @@ module IlMachineManagedByref =
     /// A cell's width, for a byte view that can serve *named* bytes: a cell whose bytes only name
     /// a native int still has a width, and only a cell with no byte image at all is refused.
     let private namedByteCellSize (context : string) (value : CliType) : int =
+        // As in `validateByteAddressableCell`: `CliType.ImageBytesAt` serves a value with an
+        // undefined leaf, and refuses its other obstructions byte by byte.
+        if CliType.HasUndefinedLeaf value then
+            CliType.sizeOf value
+        else
+
         match CliType.ByteAddressability value with
         | CliByteAddressability.ByteAddressable
         | CliByteAddressability.SymbolicallyAddressable _ -> CliType.sizeOf value
@@ -912,9 +926,9 @@ module IlMachineManagedByref =
             failwith
                 $"refusing byte view over %s{rejection.Description} in %s{context}. Value layout:\n%s{CliType.DescribeByteLayout None value}"
 
-    let private namedCellBytesAt (context : string) (offset : int) (count : int) (value : CliType) : UInt8Source[] =
+    let private namedCellBytesAt (context : string) (offset : int) (count : int) (value : CliType) : ImageBytes =
         namedByteCellSize context value |> ignore
-        CliType.SymbolicBytesAt offset count value
+        CliType.ImageBytesAt offset count value
 
     let private byteAddressableCellSize (context : string) (value : CliType) : int =
         validateByteAddressableCell context value
@@ -924,20 +938,18 @@ module IlMachineManagedByref =
         validateByteAddressableCell context value
         CliType.BytesAt offset count value
 
+    /// `bytes` written over `value` at `offset`, keeping `value`'s shape, or `None` if nothing
+    /// changes. A byte written or overwritten may be undefined: see
+    /// `CliType.WithValueBytesAtIfChanged`.
     let private withByteAddressableCellBytesAtIfChanged
         (context : string)
         (offset : int)
-        (bytes : byte[])
+        (bytes : ValueByte[])
         (value : CliType)
         : CliType option
         =
-        match value with
-        // Defined bytes written over an undefined cell are exact: the cell keeps its shape, and
-        // the bytes not written stay as undefined as they were.
-        | CliType.Undefined _ -> ()
-        | _ -> validateByteAddressableCell context value
-
-        CliType.WithBytesAtIfChanged offset bytes value
+        validateByteAddressableCell context value
+        CliType.WithValueBytesAtIfChanged offset bytes value
 
     let private splitTrailingByteView (src : AddressedByref) : (ByrefRoot * ByrefProjection list * int) voption =
         match List.rev src.Projections with
@@ -1072,10 +1084,11 @@ module IlMachineManagedByref =
         | ValueSome cellValue, _
         | _, ValueSome cellValue -> cellValue
         | ValueNone, ValueNone ->
-            // A `UInt8Source[]` rather than a `byte[]`: an array cell can hold a byte that names a
-            // native int rather than holding a number, which is how a `Reflection.Emit` signature
-            // blob carries a type its `SignatureHelper` had no module to spell as a token.
-            let buf = Array.create<UInt8Source> targetSize (UInt8Source.Verbatim 0uy)
+            // Named bytes rather than a `byte[]`: an array cell can hold a byte that names a native
+            // int rather than holding a number, which is how a `Reflection.Emit` signature blob
+            // carries a type its `SignatureHelper` had no module to spell as a token; and one can
+            // hold an undefined value, whose undefined bytes are read as undefined.
+            let mutable parts : ImageBytes list = []
             let mutable filled = 0
             let mutable cell = index + cellAdvance
             let mutable inCellOffset = inCellStart
@@ -1094,12 +1107,15 @@ module IlMachineManagedByref =
                 let bytes =
                     namedCellBytesAt $"array %O{arr} element %d{cell}" inCellOffset take cellValue
 
-                Array.blit bytes 0 buf filled take
+                parts <- bytes :: parts
                 filled <- filled + take
                 cell <- cell + 1
                 inCellOffset <- 0
 
-            CliType.ofSymbolicBytesLike targetTemplate buf
+            parts
+            |> List.rev
+            |> ImageBytes.concat $"byte-view read of array %O{arr}"
+            |> CliType.OfImageBytesLike targetTemplate
 
     /// Read `byteOffset ..` out of a PE byte range and rebuild a value of `targetTemplate`'s
     /// shape from those bytes. The read is bounds-checked against the range's own declared
@@ -1218,6 +1234,11 @@ module IlMachineManagedByref =
         =
         let obj = ManagedHeap.get addr state.ManagedHeap
 
+        // A payload with an undefined leaf is served byte by byte; see `validateByteAddressableCell`.
+        if CliType.HasUndefinedLeaf (CliType.ValueType obj.Contents) then
+            obj
+        else
+
         match CliValueType.ByteAddressability obj.Contents with
         // A boxed value whose bytes only *name* a native int is served the same way a stack local
         // or an array cell holding one is: the read comes back naming the handle and the position
@@ -1306,8 +1327,8 @@ module IlMachineManagedByref =
             failwith
                 $"boxed value byte-view read at offset %d{byteOffset} for %d{targetSize} bytes is outside %d{payloadSize}-byte boxed payload at %O{addr}"
 
-        CliValueType.SymbolicBytesAt byteOffset targetSize existing.Contents
-        |> CliType.ofSymbolicBytesLike targetTemplate
+        CliType.ImageBytesAt byteOffset targetSize (CliType.ValueType existing.Contents)
+        |> CliType.OfImageBytesLike targetTemplate
 
     /// A read of `targetTemplate` at `byteOffset` of a raw memory block, answered by naming a cell
     /// of the typed value `covering` — the block's `tryFindCellCovering` at `byteOffset` — when
@@ -1393,8 +1414,8 @@ module IlMachineManagedByref =
         match
             StackMemoryPool.readValueBytes (UninitialisedMemory.Stack (thread, frame, block)) byteOffset targetSize pool
         with
-        | BlockBytes.Defined buf -> CliType.ofSymbolicBytesLike targetTemplate buf
-        | BlockBytes.SomeUndefined bytes -> CliType.OfValueBytesLike targetTemplate bytes
+        | ImageBytes.Defined buf -> CliType.ofSymbolicBytesLike targetTemplate buf
+        | ImageBytes.SomeUndefined bytes -> CliType.OfValueBytesLike targetTemplate bytes
 
     /// Mirror of `readStackMemoryBytesAs` for native-heap blocks. Use-after-free is
     /// reported if the block was freed.
@@ -1441,8 +1462,8 @@ module IlMachineManagedByref =
         | None ->
 
         match NativeMemoryPool.readValueBytes block byteOffset targetSize pool with
-        | BlockBytes.Defined buf -> CliType.ofSymbolicBytesLike targetTemplate buf
-        | BlockBytes.SomeUndefined bytes -> CliType.OfValueBytesLike targetTemplate bytes
+        | ImageBytes.Defined buf -> CliType.ofSymbolicBytesLike targetTemplate buf
+        | ImageBytes.SomeUndefined bytes -> CliType.OfValueBytesLike targetTemplate bytes
 
     let internal zeroForConcreteType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1921,7 +1942,7 @@ module IlMachineManagedByref =
                             | Some path -> Ok (readCellNamedForByteRead path cell targetTemplate)
                             | None ->
                                 namedCellBytesAt $"single-cell byref %O{src}" offset targetSize cell
-                                |> CliType.ofSymbolicBytesLike targetTemplate
+                                |> CliType.OfImageBytesLike targetTemplate
                                 |> Ok
                         else
                             match List.tryLast projs with
@@ -1956,7 +1977,7 @@ module IlMachineManagedByref =
                         $"TODO: byte-view read of %d{targetSize} bytes does not fit in plain primitive cell of size %d{rawSize}: %O{src}"
 
                 namedCellBytesAt $"plain byref %O{src}" 0 targetSize raw
-                |> CliType.ofSymbolicBytesLike targetTemplate
+                |> CliType.OfImageBytesLike targetTemplate
 
     /// The storage cell a byref names, for reads the bytewise path cannot serve.
     ///
@@ -2314,12 +2335,24 @@ module IlMachineManagedByref =
 
         go rootValue projs newValue
 
+    /// `bytes` as numbers, for a destination that can hold nothing else. Refuses an undefined
+    /// byte, naming `context`.
+    let private definedBytesOrRefuse (context : string) (bytes : ValueByte[]) : byte[] =
+        bytes
+        |> Array.map (fun b ->
+            match b with
+            | ValueByte.Defined b -> b
+            | ValueByte.Undefined origin ->
+                failwith
+                    $"TODO: %s{context} cannot hold an undefined byte, and one descended from %O{origin} was written to it"
+        )
+
     let private writeArrayBytes
         (state : IlMachineState)
         (arr : ManagedHeapAddress)
         (index : int)
         (byteOffset : int)
-        (bytes : byte[])
+        (bytes : ValueByte[])
         : IlMachineState
         =
         let shape = ManagedHeap.getArrayShape arr state.ManagedHeap
@@ -2369,7 +2402,7 @@ module IlMachineManagedByref =
             // A run of zero bytes is the one byte-level write that is meaningful against
             // storage with no byte rendering.
             let updated =
-                if cellBytes |> Array.forall (fun b -> b = 0uy) then
+                if cellBytes |> Array.forall (fun b -> b = ValueByte.Defined 0uy) then
                     // The slot count the BCL derives is `byteLength / sizeof(IntPtr)`, which
                     // covers the element exactly only because a GC-containing value type ends on
                     // a pointer boundary. `CliValueType.SizeOfFieldStorage` guarantees that, so
@@ -2541,7 +2574,7 @@ module IlMachineManagedByref =
         (state : IlMachineState)
         (addr : ManagedHeapAddress)
         (byteOffset : int)
-        (bytes : byte[])
+        (bytes : ValueByte[])
         : IlMachineState
         =
         let existing, payloadSize =
@@ -2551,7 +2584,15 @@ module IlMachineManagedByref =
             failwith
                 $"boxed value byte-view write at offset %d{byteOffset} for %d{bytes.Length} bytes is outside %d{payloadSize}-byte boxed payload at %O{addr}"
 
-        match CliValueType.WithBytesAtIfChanged byteOffset bytes existing.Contents with
+        let updatedContents =
+            CliType.WithValueBytesAtIfChanged byteOffset bytes (CliType.ValueType existing.Contents)
+            |> Option.map (fun updated ->
+                match updated with
+                | CliType.ValueType contents -> contents
+                | other -> failwith $"unreachable: a boxed value's payload was rebuilt as %O{other}"
+            )
+
+        match updatedContents with
         | None -> state
         | Some updatedContents ->
             let updated =
@@ -2817,10 +2858,14 @@ module IlMachineManagedByref =
                 rootOffset + int64<int> rootRelativeOffset |> byteViewOffsetWithinInt32 projs
 
             match container with
-            | ByteStorageIdentity.Array arr -> Some (writeArrayBytes state arr 0 offset (CliType.ToBytes newValue))
+            | ByteStorageIdentity.Array arr -> Some (writeArrayBytes state arr 0 offset (CliType.ValueBytesOf newValue))
             | ByteStorageIdentity.HeapObject addr ->
-                Some (writeHeapValueBytes state addr offset (CliType.ToBytes newValue))
-            | ByteStorageIdentity.String str -> Some (writeStringBytes state str 0 offset (CliType.ToBytes newValue))
+                Some (writeHeapValueBytes state addr offset (CliType.ValueBytesOf newValue))
+            | ByteStorageIdentity.String str ->
+                CliType.ValueBytesOf newValue
+                |> definedBytesOrRefuse $"string %O{str}"
+                |> writeStringBytes state str 0 offset
+                |> Some
             | ByteStorageIdentity.StackMemory (thread, frame, block) ->
                 Some (writeStackMemoryAt state thread frame block offset newValue)
             | ByteStorageIdentity.NativeMemory block -> Some (writeNativeMemoryAt state block offset newValue)
@@ -3102,7 +3147,7 @@ module IlMachineManagedByref =
         | Some updatedState -> updatedState
         | None ->
 
-        let bytes = CliType.ToBytes newValue
+        let bytes = CliType.ValueBytesOf newValue
 
         match src with
         | {
@@ -3130,7 +3175,7 @@ module IlMachineManagedByref =
         | {
               Root = ByrefRoot.StringCharAt (str, charIndex)
               Projections = []
-          } -> writeStringBytes state str charIndex 0 bytes
+          } -> writeStringBytes state str charIndex 0 (definedBytesOrRefuse $"string %O{str}" bytes)
         | {
               Root = ByrefRoot.ArrayElement (arr, index)
               Projections = []
@@ -3221,7 +3266,8 @@ module IlMachineManagedByref =
                         (rootRelativeByteOffset outerProjs rootByteOffset byteOffset)
                         newValue
                 | ByrefRoot.ArrayElement (arr, index), [] -> writeArrayBytes state arr index byteOffset bytes
-                | ByrefRoot.StringCharAt (str, charIndex), [] -> writeStringBytes state str charIndex byteOffset bytes
+                | ByrefRoot.StringCharAt (str, charIndex), [] ->
+                    writeStringBytes state str charIndex byteOffset (definedBytesOrRefuse $"string %O{str}" bytes)
                 | ByrefRoot.HeapValue addr, [] -> writeHeapValueBytes state addr byteOffset bytes
                 | _, prefixProjs ->
                     let rootValue = readRootValueFor state outerRoot prefixProjs
@@ -3846,10 +3892,10 @@ module IlMachineManagedByref =
         | CliByteAddressabilityRejection.Int64SourceNotByteAddressable _
         // A byte naming a native int is provenance of exactly this kind: flattening it would
         // need the number it does not have.
-        | CliByteAddressabilityRejection.UInt8SourceNotByteAddressable _
-        // So is an undefined byte: a store moves it, and a byte scatter would need a number for
-        // it. Whole-cell replacement at the payload's own width is the move.
-        | CliByteAddressabilityRejection.UndefinedByte _ -> true
+        | CliByteAddressabilityRejection.UInt8SourceNotByteAddressable _ -> true
+        // Not an undefined byte: it has an image, of numbers and undefined bytes, which the byte
+        // scatter writes as it is.
+        | CliByteAddressabilityRejection.UndefinedByte _
         | CliByteAddressabilityRejection.ObjectReference
         | CliByteAddressabilityRejection.RuntimePointer
         | CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _

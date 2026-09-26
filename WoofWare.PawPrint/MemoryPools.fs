@@ -6,16 +6,6 @@ type MemoryBlockInitialization =
     | ZeroInitialized
     | Uninitialized
 
-/// The bytes of a range of a block, as a read of a typed value needs them.
-[<RequireQualifiedAccess>]
-type BlockBytes =
-    /// Every byte has content: it was written, or the block was zero-initialised. A byte may
-    /// name a native int rather than hold a number (see `UInt8Source`).
-    | Defined of UInt8Source[]
-    /// At least one byte is undefined: nothing ever wrote it, or what was written there was
-    /// itself undefined. Every other byte is a number.
-    | SomeUndefined of ValueByte[]
-
 /// Frame-owned typed-cell storage for `localloc`. A block stores typed CliType
 /// "cells" at known offsets together with a sparse byte overlay for raw byte
 /// writes that don't correspond to a typed cell. Bytes that are not covered by
@@ -458,7 +448,7 @@ module MemoryBlock =
 
         result
 
-    /// The bytes of `[offset, offset + count)` as a typed read needs them: `BlockBytes.Defined`,
+    /// The bytes of `[offset, offset + count)` as a typed read needs them: `ImageBytes.Defined`,
     /// exactly as `readNamedBytes` gives them, when every byte has content, and otherwise each
     /// byte as a number or as undefined. A byte nothing wrote is undefined and descends from
     /// `origin` applied to its offset. A range holding an undefined byte and also a byte with no
@@ -470,7 +460,7 @@ module MemoryBlock =
         (offset : int)
         (count : int)
         (block : MemoryBlock)
-        : BlockBytes
+        : ImageBytes
         =
         checkRange "MemoryBlock.readValueBytes" containerDesc block.Size offset count
 
@@ -486,7 +476,7 @@ module MemoryBlock =
             )
 
         if not anyUndefined then
-            readNamedBytes containerDesc offset count block |> BlockBytes.Defined
+            readNamedBytes containerDesc offset count block |> ImageBytes.Defined
         else
 
         Array.init
@@ -506,7 +496,7 @@ module MemoryBlock =
                         failwith
                             $"MemoryBlock.readValueBytes: the range [%d{offset}, %d{offset + count}) of %s{containerDesc} holds an undefined byte, and its byte %d{pos} is a %s{rejection.Description}, which has no number to read alongside it"
             )
-        |> BlockBytes.SomeUndefined
+        |> ImageBytes.SomeUndefined
 
     /// <see cref="readNamedBytes" />, for callers whose currency is a `byte[]`: a byte that names a
     /// native int rather than holding a number is refused by name. Defined in terms of it so the
@@ -644,7 +634,7 @@ module StackMemoryPool =
         (offset : int)
         (count : int)
         (pool : StackMemoryPool)
-        : BlockBytes
+        : ImageBytes
         =
         let blockId =
             match memory with
@@ -791,7 +781,7 @@ module NativeMemoryPool =
         (offset : int)
         (count : int)
         (pool : NativeMemoryPool)
-        : BlockBytes
+        : ImageBytes
         =
         let origin (pos : int) : UninitialisedByte =
             {

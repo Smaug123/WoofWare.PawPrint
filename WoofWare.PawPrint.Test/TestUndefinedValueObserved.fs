@@ -297,3 +297,33 @@ unsafe class Program
                                                        _) -> method.Name |> shouldEqual "TypeOf"
                 | other -> failwith $"expected the constrained callvirt's read of hasValue, got %O{other}"
             )
+
+    [<Test>]
+    let ``Reading an unwritten byte of a local through a byte pointer gives that byte's undefined value`` () : unit =
+        let source =
+            """
+using System.Runtime.CompilerServices;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    static int Main(string[] args)
+    {
+        byte* bytes = stackalloc byte[4];
+        bytes[0] = 42;
+        int local = *(int*)bytes;
+        // Byte 0 of `local` is defined; byte 2 is not.
+        if (*(byte*)&local != 42) return 1;
+        return *((byte*)&local + 2) == 0 ? 0 : 2;
+    }
+}
+"""
+
+        run
+            "UndefinedLocalByte.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.UInt8
+                stackOrigins observation.Value |> shouldEqual [ 2 ]
+            )
