@@ -99,20 +99,24 @@ type UnixMachineState =
         /// different value with `UnixMachineState.withProcessorCount`, which
         /// refuses anything below 1, since programs divide by it.
         ProcessorCount : int
-        /// Greatest value `address + length` may take for a user buffer the
-        /// kernel will accept — the machine's `TASK_SIZE_MAX`. Consulted only
-        /// where `SimulatedUnixPlatform.screensUserBufferUpFront` says the
-        /// kernel screens before performing the operation, but a real fact
-        /// about every machine regardless.
+        /// Whether this machine's kernel screens a read or write buffer before
+        /// it performs the operation, and if so the greatest value
+        /// `address + length` may take: the machine's `TASK_SIZE_MAX`.
         ///
-        /// Configuration rather than a constant derived from the platform
-        /// because it varies by *machine*: 2^47 less a page with four-level
-        /// paging on x86-64, 2^56 less a page with five-level, 2^48 on a
-        /// 48-bit-VA arm64. Two GitHub runners of the same image were measured
-        /// disagreeing, so no value derived from the flavour or the kernel
-        /// release could be right everywhere. See `ObservedUserAddressLimit`
-        /// for the values real machines have been seen to have.
-        UserAddressLimit : uint64
+        /// Whether it screens is the platform's
+        /// `SimulatedUnixPlatform.screensUserBufferUpFront`. The limit is
+        /// configuration rather than a constant derived from the platform,
+        /// because it varies by *machine* as well as by architecture: 2^47 less
+        /// a page with four-level paging on x86-64, 2^56 less a page with
+        /// five-level, 2^48 on a 48-bit-VA arm64. Two GitHub runners of the same
+        /// image were measured disagreeing, so no value derived from the kernel
+        /// could be right everywhere.
+        ///
+        /// `UnixSystem.initial` sets the platform's default, and
+        /// `UnixMachineState.withUserAddressLimit` another limit the platform's
+        /// architecture has. `UnixSystem.checkInvariants` reports a check that
+        /// disagrees with the platform (`UnixSystemDefect.UserBufferCheckNotOfPlatform`).
+        UserBufferCheck : UserBufferCheck
         /// Unix-shaped platform identity the simulated process reports, as
         /// observed through `uname(2)`, and the flavour every other
         /// platform-dependent answer follows.
@@ -163,14 +167,42 @@ type EphemeralPortUse =
 [<RequireQualifiedAccess>]
 module UnixMachineState =
 
-    /// Set the greatest range end a user buffer may reach. Rejects zero, which
-    /// leaves no address usable as a buffer and so describes no machine.
+    /// Whether `check` is one a machine on `platform` can have: an up-front
+    /// screen exactly where the platform screens, at a limit that machines of the
+    /// platform's architecture have been observed to have.
+    let isUserBufferCheckOf (platform : SimulatedUnixPlatform) (check : UserBufferCheck) : bool =
+        match check with
+        | UserBufferCheck.AtCopyTime -> not (SimulatedUnixPlatform.screensUserBufferUpFront platform)
+        | UserBufferCheck.BeforeOperation limit ->
+            SimulatedUnixPlatform.screensUserBufferUpFront platform
+            && ObservedUserAddressLimit.architectureOf limit = Some (SimulatedUnixPlatform.architecture platform)
+
+    /// Set the greatest range end a user buffer may reach: the machine's
+    /// `TASK_SIZE_MAX`.
+    ///
+    /// Refused on a platform that screens no buffer up front, which has no such
+    /// limit to set, and for a limit no machine of the platform's architecture
+    /// has been observed to have (see `ObservedUserAddressLimit`).
     let withUserAddressLimit (limit : uint64) (machine : UnixMachineState) : UnixMachineState =
-        if limit = 0UL then
-            failwith "UserAddressLimit must be positive; got 0, which is a machine with no user address space"
+        let platform = machine.UnixPlatform
+
+        if not (SimulatedUnixPlatform.screensUserBufferUpFront platform) then
+            failwith
+                $"UnixMachineState.withUserAddressLimit: a %O{SimulatedUnixPlatform.flavour platform} kernel screens no buffer before performing an operation, so it has no user address limit to set; got 0x%x{limit}."
+
+        let architecture = SimulatedUnixPlatform.architecture platform
+
+        match ObservedUserAddressLimit.architectureOf limit with
+        | Some observed when observed = architecture -> ()
+        | Some observed ->
+            failwith
+                $"UnixMachineState.withUserAddressLimit: 0x%x{limit} is the TASK_SIZE_MAX of an %O{observed} machine, but this platform is %O{architecture}."
+        | None ->
+            failwith
+                $"UnixMachineState.withUserAddressLimit: no %O{architecture} machine has been observed with a TASK_SIZE_MAX of 0x%x{limit}; ObservedUserAddressLimit lists those that have."
 
         { machine with
-            UserAddressLimit = limit
+            UserBufferCheck = UserBufferCheck.BeforeOperation limit
         }
 
     /// Set the logical-processor count the simulated process reports. Rejects
@@ -312,14 +344,9 @@ module UnixMachineState =
             FileSystemType = resolved
         }
 
-    /// Whether, and where, this machine's machine screens a read or write buffer
-    /// before performing the operation: the flavour decides whether, the
-    /// machine's address-space limit decides where.
-    let userBufferCheck (machine : UnixMachineState) : UserBufferCheck =
-        if SimulatedUnixPlatform.screensUserBufferUpFront machine.UnixPlatform then
-            UserBufferCheck.BeforeOperation machine.UserAddressLimit
-        else
-            UserBufferCheck.AtCopyTime
+    /// Whether, and where, this machine's kernel screens a read or write buffer
+    /// before performing the operation. See `UnixMachineState.UserBufferCheck`.
+    let userBufferCheck (machine : UnixMachineState) : UserBufferCheck = machine.UserBufferCheck
 
     /// The socket `socketId` names.
     ///

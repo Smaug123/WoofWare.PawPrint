@@ -799,7 +799,7 @@ type EmulatedKernel =
         nanoseconds / ClockPal.nanosecondsPerTick
 
     member this.ProcessorCount : int = this.Machine.ProcessorCount
-    member this.UserAddressLimit : uint64 = this.Machine.UserAddressLimit
+    member this.UserBufferCheck : UserBufferCheck = this.Machine.UserBufferCheck
     member this.UnixPlatform : SimulatedUnixPlatform = this.Machine.UnixPlatform
     member this.FileSystem : VirtualFileSystem = this.Machine.FileSystem
     member this.FileSystemType : EmulatedFileSystemType = this.Machine.FileSystemType
@@ -1791,11 +1791,13 @@ type KernelConfig =
         /// static on first read, so a later change would not be observed.
         ProcessorCount : int
         /// Greatest value `address + length` may take for a user buffer the
-        /// simulated kernel will accept — the machine's `TASK_SIZE_MAX`. Must
-        /// be positive. See `EmulatedKernel.UserAddressLimit` for why this is
-        /// configuration rather than a property of the platform, and
-        /// `ObservedUserAddressLimit` for values real machines have.
-        UserAddressLimit : uint64
+        /// simulated kernel will accept — the machine's `TASK_SIZE_MAX`. `None`
+        /// takes the platform's default (`UnixSystem.defaultUserBufferCheck`).
+        /// `Some` must be a limit machines of the platform's architecture have
+        /// (`ObservedUserAddressLimit`), on a platform that screens buffers up
+        /// front at all; see `UnixMachineState.UserBufferCheck` for why this is
+        /// configuration rather than a property of the platform.
+        UserAddressLimit : uint64 option
         /// Virtual time charged per retired IL instruction, in 100 ns ticks — the speed of the
         /// simulated machine. Must be at least 1. See
         /// `EmulatedKernel.InstructionCostTicks` for why this is part of the replay contract,
@@ -1941,7 +1943,7 @@ type KernelConfig =
         {
             Environment = []
             ProcessorCount = UnixSystem.defaultProcessorCount
-            UserAddressLimit = UnixSystem.defaultUserAddressLimit
+            UserAddressLimit = None
             InstructionCostTicks = EmulatedKernel.defaultInstructionCostTicks
             ClockJitter = ClockJitterStrategy.Disabled
             OptimalMaxSpinWaitsPerSpinIteration = EmulatedKernel.defaultOptimalMaxSpinWaitsPerSpinIteration
@@ -1984,7 +1986,11 @@ module KernelConfig =
         EmulatedKernel.create platform
         |> EmulatedKernel.withEnvironment "KernelConfig.Environment" config.Environment
         |> EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount config.ProcessorCount)
-        |> EmulatedKernel.mapMachine (UnixMachineState.withUserAddressLimit config.UserAddressLimit)
+        |> EmulatedKernel.mapMachine (fun machine ->
+            match config.UserAddressLimit with
+            | None -> machine
+            | Some limit -> UnixMachineState.withUserAddressLimit limit machine
+        )
         |> EmulatedKernel.withInstructionCostTicks config.InstructionCostTicks
         |> EmulatedKernel.withClockJitter config.ClockJitter
         |> EmulatedKernel.withOptimalMaxSpinWaitsPerSpinIteration config.OptimalMaxSpinWaitsPerSpinIteration

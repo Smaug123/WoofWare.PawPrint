@@ -62,7 +62,8 @@
     <Compile Include="TestResolutionSplit.fs" />
     <Compile Include="TestVirtualFileSystemAgainstHost.fs" />
     <Compile Include="TestBindingAgainstHost.fs" />
-    <Compile Include="TestLinuxEpollLimits.fs" />
+    <Compile Include="TestArchitectureFacts.fs" />
+    <Compile Include="TestArchitectureAgainstHost.fs" />
     <Compile Include="TestCreatableSockets.fs" />
     <Compile Include="TestAccept.fs" />
     <Compile Include="TestBind.fs" />

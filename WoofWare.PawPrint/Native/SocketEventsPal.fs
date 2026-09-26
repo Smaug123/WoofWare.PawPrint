@@ -92,7 +92,7 @@ module SocketEventsPal =
     /// `sizeof(struct kevent)` under kqueue.
     ///
     /// Note what the epoll `max` does, because it is the reason this is a total
-    /// function of the flavour where `LinuxEpollLimits.EventSize` is not.
+    /// function of the flavour where `LinuxEpollLimits.eventSize` is not.
     /// `sizeof(struct epoll_event)` is architecture-dependent — 12 on x86-64 under
     /// `EPOLL_PACKED`, 16 everywhere else — and the `max` against the 16-byte
     /// `SocketEvent` erases exactly that difference, since `max(12, 16)` and

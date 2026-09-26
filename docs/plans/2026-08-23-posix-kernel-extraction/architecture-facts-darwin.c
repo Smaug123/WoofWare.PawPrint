@@ -13,9 +13,22 @@
 // * that `read` screens no buffer up front: a read at end of file into the
 //   last address there is.
 //
-// Measured on this machine (Darwin 27.0.0, Apple silicon) natively and under
-// Rosetta. There is no Intel Mac to hand, and macOS 27 runs on none, so the
-// x86-64 rows are Rosetta's.
+// Results on Darwin 27.0.0, Apple silicon, 2026-09-26 (arm64 only: the x86-64
+// build would not run, "bad CPU type in executable", because this machine has
+// no Rosetta, and macOS 27 runs on no Intel machine, so Darwin x86-64 is
+// unmeasured):
+//
+//   page size                  16384 from all four sources
+//   sizeof(struct kevent)      32 (kevent64_s: 48)
+//   kevent nevents             no upper bound: 32776 samples and INT_MAX all
+//                              answer 0 on an empty kqueue
+//   getentropy                 255 and 256 succeed, 257 is EINVAL
+//   socket address sizes       128, 16, 28, 106
+//   read at UINTPTR_MAX        0 at end of file: no up-front screen
+//
+// None of these is an architecture-dependent fact the library models as
+// independent, as far as one architecture can show; the page size is the one
+// that differs from Linux's.
 //
 // Build: clang -Wall -arch arm64 -o arch-arm64 architecture-facts-darwin.c
 //        clang -Wall -arch x86_64 -o arch-x86_64 architecture-facts-darwin.c

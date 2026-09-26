@@ -370,19 +370,22 @@ module UnixPoll =
             | None -> Ok (SocketWaitAdmission.Failed UnixError.EBADF)
             | Some (port, description) ->
 
+            let architecture = SimulatedUnixPlatform.architecture system.Machine.UnixPlatform
+
             // The kernel's predicate is `maxevents <= 0 || maxevents > EP_MAX_EVENTS`.
             // Zero is the only non-positive value that reaches here, negatives
             // having been screened by the caller.
-            if maxEvents = 0 || maxEvents > LinuxEpollLimits.MaxEvents then
+            if maxEvents = 0 || maxEvents > LinuxEpollLimits.maxEvents architecture then
                 Ok (SocketWaitAdmission.Failed UnixError.EINVAL)
             else
 
             // The byte range `access_ok(events, maxevents * sizeof(struct
             // epoll_event))` screens. This multiplication is safe only *below*
             // the cap just applied, which is what `EP_MAX_EVENTS` exists for: it
-            // is `INT_MAX / EventSize`, so every count that reaches here has a
+            // is `INT_MAX / eventSize`, so every count that reaches here has a
             // product inside `int32`.
-            let bufferExtent = uint64 maxEvents * uint64 LinuxEpollLimits.EventSize
+            let bufferExtent =
+                uint64 maxEvents * uint64 (LinuxEpollLimits.eventSize architecture)
 
             // Not a mappedness check. On 64-bit Linux `access_ok` only rejects
             // ranges reaching into the kernel half, so a merely-unmapped
