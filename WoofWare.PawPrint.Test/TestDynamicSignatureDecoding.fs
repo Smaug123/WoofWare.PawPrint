@@ -570,8 +570,28 @@ module TestDynamicSignatureDecoding =
     /// never writes one.
     [<Test>]
     let ``refuses a non-canonical array shape`` () : unit =
-        // ARRAY int32, rank 2, one size (3), no lower bounds.
-        let blob =
+        // Each shape breaks exactly one rule, so no rule's check is covered by another's. After
+        // ARRAY int32: rank, size count, sizes, lower-bound count, lower bounds.
+        let shapes =
+            [
+                "a size", [| 0x02uy ; 0x01uy ; 0x03uy ; 0x02uy ; 0x00uy ; 0x00uy |]
+                "no lower bounds", [| 0x02uy ; 0x00uy ; 0x00uy |]
+                "too few lower bounds", [| 0x02uy ; 0x00uy ; 0x01uy ; 0x00uy |]
+                "a non-zero lower bound", [| 0x02uy ; 0x00uy ; 0x02uy ; 0x00uy ; 0x01uy |]
+                "rank zero", [| 0x00uy ; 0x00uy ; 0x00uy |]
+            ]
+
+        for description, shape in shapes do
+            let blob =
+                Array.concat [ [| 0x00uy ; 0x01uy ; 0x08uy ; 0x14uy ; 0x08uy |] ; shape ]
+                |> verbatim
+
+            let exn = Assert.Throws<Exception> (fun () -> decodeMethod blob |> ignore)
+
+            exn.Message |> shouldContainText "ArrayShape"
+
+        // The canonical shape itself decodes, so the refusals above are about the shape alone.
+        decodeMethod (
             verbatim
                 [|
                     0x00uy
@@ -580,13 +600,14 @@ module TestDynamicSignatureDecoding =
                     0x14uy
                     0x08uy
                     0x02uy
-                    0x01uy
-                    0x03uy
+                    0x00uy
+                    0x02uy
+                    0x00uy
                     0x00uy
                 |]
-
-        let exn = Assert.Throws<Exception> (fun () -> decodeMethod blob |> ignore)
-        exn.Message |> shouldContainText "ArrayShape"
+        )
+        |> fun decoded -> decoded.ParameterTypes |> Seq.toList
+        |> shouldEqual [ TypeDefn.Array (TypeDefn.PrimitiveType PrimitiveType.Int32, 2) ]
 
     [<Test>]
     let ``the doubling method's signature decodes`` () : unit =
