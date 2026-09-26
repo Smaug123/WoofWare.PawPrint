@@ -1,7 +1,7 @@
 using System;
 using System.IO;
 
-// What `KernelConfig.FileSystemType` actually buys, on the one filesystem where
+// What `KernelConfig.Mount`'s type actually buys, on the one filesystem where
 // it changes behaviour rather than just a reported number.
 //
 // `SafeFileHandle.CanLockTheFile` refuses to take a *shared* lock under write
@@ -21,7 +21,7 @@ using System.IO;
 // The exit code is the index of the first check that failed; 0 means all passed.
 // Kept below 128, since an exit code is eight bits.
 //
-// Seed (see TestImpureCases): f = "hello". Kernel: FileSystemType = Nfs.
+// Seed (see TestImpureCases): f = "hello". Kernel: Mount = Nfs.
 class Program
 {
     static FileStream Open(FileAccess access, FileShare share)

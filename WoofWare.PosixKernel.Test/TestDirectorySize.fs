@@ -334,7 +334,7 @@ module TestDirectorySize =
 
         let system =
             { system with
-                Machine = UnixMachineState.withFileSystemType (Some fsType) system.Machine
+                Machine = UnixMachineState.withMount (Some (EmulatedMount.defaultOf fsType)) system.Machine
             }
 
         let system =
@@ -640,7 +640,7 @@ module TestDirectorySize =
         let wanted =
             EmulatedFileSystemType.defaultFor flavour
             |> EmulatedFileSystemType.fieldsFor flavour
-            |> FileSystemTypeAnswer.Reported
+            |> Ok
 
         if not (Directory.Exists candidate) then
             None
@@ -653,7 +653,7 @@ module TestDirectorySize =
         else
 
         try
-            if HostFileSystemType.answerFor flavour fd = wanted then
+            if HostFileSystemType.typeFieldsFor flavour fd = wanted then
                 Some candidate
             else
                 None

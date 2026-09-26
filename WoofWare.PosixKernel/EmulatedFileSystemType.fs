@@ -49,14 +49,6 @@ type FileSystemTypeFields =
     /// such as `apfs`.
     | Darwin of fType : uint32 * fsTypeName : UnixByteString
 
-/// What `fstatfs(2)` does when asked about one descriptor.
-[<RequireQualifiedAccess>]
-type FileSystemTypeAnswer =
-    /// `fstatfs` succeeded, naming the filesystem with these fields.
-    | Reported of fields : FileSystemTypeFields
-    /// `fstatfs` failed with this errno.
-    | Failed of error : UnixError
-
 [<RequireQualifiedAccess>]
 module EmulatedFileSystemType =
     /// The type-naming fields `fstatfs(2)` reports for a file on a mount of
@@ -172,57 +164,106 @@ module EmulatedFileSystemType =
         | EmulatedFileSystemType.Nfs, SimulatedUnixFlavour.Linux
         | EmulatedFileSystemType.Nfs, SimulatedUnixFlavour.Darwin -> true
 
-    /// What `fstatfs(2)` answers about one descriptor: `None` for an fd the
-    /// process does not hold.
-    ///
-    /// Every row measured on both flavours (macOS 26.6, Linux 6.x), for both
-    /// ends of a pipe, an `AF_INET` and an `AF_UNIX` socket, an epoll port, a
-    /// kqueue, a regular file, a directory and an unknown descriptor.
-    ///
-    /// Refuses a `flavour` and `mount` that do not describe one machine.
-    let reportedFor
-        (flavour : SimulatedUnixFlavour)
-        (mount : EmulatedFileSystemType)
-        (target : OpenFileObject option)
-        : FileSystemTypeAnswer
-        =
-        // The two arguments are a *pair*: a file's answer comes from the mount
-        // and every other descriptor's from the flavour, so a caller supplying
-        // one of each would get a machine that is Linux for its pipes and macOS
-        // for its files. `UnixSystem.initial` derives the type from the
-        // flavour and `UnixMachineState.withFileSystemType` refuses one the
-        // flavour cannot mount, but no client can be made to go through
-        // either: a state record assembled field by field bypasses both.
-        // Checking here rather than trusting the caller is what keeps this
-        // function's contract true wherever it is reached.
-        if not (isReportableUnder flavour mount) then
-            failwith
-                $"EmulatedFileSystemType.reportedFor: asked what a %O{flavour} kernel reports for a %O{mount} mount, which %O{flavour} cannot have. The flavour and the mount type have come apart; they constrain each other (see EmulatedFileSystemType.isReportableUnder) and must be chosen together rather than set one at a time."
+/// `f_fsid`: the two words `statfs(2)` reports to identify a mounted
+/// filesystem, `val[0]` and `val[1]` on both flavours.
+type FileSystemId =
+    {
+        /// `f_fsid.val[0]`.
+        First : int32
+        /// `f_fsid.val[1]`.
+        Second : int32
+    }
 
-        /// Darwin's `fstatfs` refuses every object that is not on a
-        /// filesystem, uniformly; Linux's succeeds and names the
-        /// pseudo-filesystem the object lives on. So each of these rows is a
-        /// measured number rather than an invention — unlike `fstat`, which
-        /// refuses the same descriptors because it owes them seventeen fields
-        /// and the platforms agree on none of them.
-        let pseudoFileSystem (linux : int64) : FileSystemTypeAnswer =
-            match flavour with
-            | SimulatedUnixFlavour.Linux -> FileSystemTypeAnswer.Reported (FileSystemTypeFields.Linux linux)
-            | SimulatedUnixFlavour.Darwin -> FileSystemTypeAnswer.Failed UnixError.EINVAL
+/// The configuration of a tmpfs mount that `statfs(2)` can see.
+///
+/// Its capacity is not configurable: a tmpfs mounted with `size=0,nr_inodes=0`
+/// has no limit, and every count `statfs(2)` reports for it is 0. That is the
+/// only capacity this library's filesystem has, since it never refuses a write
+/// for space.
+type TmpfsMount =
+    {
+        /// The `f_fsid` the mount reports. A real tmpfs draws it at random when
+        /// it is mounted, so any value is one a real mount could report.
+        FileSystemId : FileSystemId
+    }
 
-        match target with
-        | None -> FileSystemTypeAnswer.Failed UnixError.EBADF
-        // Regular files and directories alike: measured identical, and one
-        // mount has one answer.
-        | Some (OpenFileObject.File _) -> FileSystemTypeAnswer.Reported (fieldsFor flavour mount)
-        // This library models the standard streams as pipes (see
-        // `FileDescriptorRegistry.initial`), so this row is a consequence of
-        // that existing decision rather than a new one: Linux's `pipefs`.
-        | Some (OpenFileObject.StandardStream _) -> pseudoFileSystem 0x50495045L
-        // Linux's `sockfs`.
-        | Some (OpenFileObject.Socket _) -> pseudoFileSystem 0x534F434BL
-        // Linux's `anon_inodefs`, which is where an epoll port lives — and
-        // exactly the granularity this answer needs, which is why
-        // `OpenFileObject` folding every anonymous object into one case costs
-        // nothing here.
-        | Some OpenFileObject.AnonymousInode -> pseudoFileSystem 0x09041934L
+[<RequireQualifiedAccess>]
+module TmpfsMount =
+    /// A tmpfs mount whose `f_fsid` is one a real `/dev/shm` reported.
+    let defaults : TmpfsMount =
+        {
+            // Measured 2026-09-26 on `/dev/shm` in a Linux 6.18.5 container:
+            // `da683e7a:5631524e`. Any fixed value would do as well; this one
+            // is at least a draw a real kernel made.
+            FileSystemId =
+                {
+                    First = int32 0xda683e7au
+                    Second = 0x5631524e
+                }
+        }
+
+/// The configuration of an APFS mount that `statfs(2)` can see.
+type ApfsMount =
+    {
+        /// `f_iosize`, the transfer size the filesystem advises. It varies
+        /// between APFS containers: 1 MiB on a Mac's internal disk, 2 MiB on a
+        /// disk image.
+        IoSize : int32
+        /// `f_owner`: the user that mounted the volume. 0 for the volumes a Mac
+        /// mounts at boot.
+        Owner : uint32
+        /// `f_mntfromname`: the device the volume was mounted from, such as
+        /// `/dev/disk3s5`.
+        MountedFrom : UnixByteString
+    }
+
+[<RequireQualifiedAccess>]
+module ApfsMount =
+    /// An APFS mount as a Mac's internal disk would present it: a 1 MiB
+    /// transfer size, mounted by root, from the first volume of the first disk.
+    let defaults : ApfsMount =
+        {
+            IoSize = 1048576
+            Owner = 0u
+            MountedFrom =
+                match UnixByteString.ofString "/dev/disk1s1" with
+                | Ok name -> name
+                | Error defect ->
+                    failwith
+                        $"ApfsMount.defaults: the device name is not a Unix string (%O{defect}) (this is a bug in this library)"
+        }
+
+/// The one filesystem a machine has mounted, with what its type lets a caller
+/// of `statfs(2)` configure about it.
+[<RequireQualifiedAccess>]
+type EmulatedMount =
+    /// A tmpfs; see `TmpfsMount`.
+    | Tmpfs of TmpfsMount
+    /// An APFS volume; see `ApfsMount`.
+    | Apfs of ApfsMount
+    /// An NFS mount. Nothing about it is configurable, because everything
+    /// `statfs(2)` reports about one beyond its type comes from the server, and
+    /// this library refuses to state it.
+    | Nfs
+
+[<RequireQualifiedAccess>]
+module EmulatedMount =
+    /// The type of filesystem this mount is.
+    let fileSystemType (mount : EmulatedMount) : EmulatedFileSystemType =
+        match mount with
+        | EmulatedMount.Tmpfs _ -> EmulatedFileSystemType.Tmpfs
+        | EmulatedMount.Apfs _ -> EmulatedFileSystemType.Apfs
+        | EmulatedMount.Nfs -> EmulatedFileSystemType.Nfs
+
+    /// A mount of this type with its default configuration.
+    let defaultOf (fsType : EmulatedFileSystemType) : EmulatedMount =
+        match fsType with
+        | EmulatedFileSystemType.Tmpfs -> EmulatedMount.Tmpfs TmpfsMount.defaults
+        | EmulatedFileSystemType.Apfs -> EmulatedMount.Apfs ApfsMount.defaults
+        | EmulatedFileSystemType.Nfs -> EmulatedMount.Nfs
+
+    /// The mount a machine of this flavour has when a client expresses no
+    /// preference: `EmulatedFileSystemType.defaultFor`'s type, with its
+    /// default configuration.
+    let defaultFor (flavour : SimulatedUnixFlavour) : EmulatedMount =
+        defaultOf (EmulatedFileSystemType.defaultFor flavour)

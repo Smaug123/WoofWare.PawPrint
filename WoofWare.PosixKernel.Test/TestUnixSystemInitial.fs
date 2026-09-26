@@ -43,19 +43,19 @@ module TestUnixSystemInitial =
     let ``the filesystem type is one that flavour can report`` (flavour : string) : unit =
         let platform, expected =
             match flavour with
-            | "linux" -> SimulatedUnixPlatform.linuxX64, EmulatedFileSystemType.Tmpfs
-            | "darwin" -> SimulatedUnixPlatform.macOsArm64, EmulatedFileSystemType.Apfs
+            | "linux" -> SimulatedUnixPlatform.linuxX64, EmulatedMount.Tmpfs TmpfsMount.defaults
+            | "darwin" -> SimulatedUnixPlatform.macOsArm64, EmulatedMount.Apfs ApfsMount.defaults
             | other -> failwith $"unknown flavour %s{other}"
 
         let system : UnixSystem<int, string> = UnixSystem.initial platform
-        system.Machine.FileSystemType |> shouldEqual expected
+        system.Machine.Mount |> shouldEqual expected
 
         // The rule the pair exists to satisfy, asserted directly: a machine
         // claiming a type its flavour never mounts would hand a guest a fact no
         // real system could tell it.
         EmulatedFileSystemType.isReportableUnder
             (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform)
-            system.Machine.FileSystemType
+            (EmulatedMount.fileSystemType system.Machine.Mount)
         |> shouldEqual true
 
     /// `somaxconn` left unconfigured is the machine's own flavour's default,

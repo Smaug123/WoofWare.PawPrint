@@ -642,14 +642,14 @@ module TestUnixSystemInvariants =
     let ``a mount the flavour cannot report is a defect`` () : unit =
         // Reachable only by assembling the record by hand: `UnixSystem.initial`
         // derives the type from the flavour, and
-        // `UnixMachineState.withFileSystemType` refuses one the machine's
+        // `UnixMachineState.withMount` refuses one the machine's
         // flavour cannot mount.
         let linux = UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
 
         { linux with
             Machine =
                 { linux.Machine with
-                    FileSystemType = EmulatedFileSystemType.Apfs
+                    Mount = EmulatedMount.Apfs ApfsMount.defaults
                 }
         }
         |> UnixSystem.checkInvariants
@@ -664,7 +664,7 @@ module TestUnixSystemInvariants =
             { darwin with
                 Machine =
                     { darwin.Machine with
-                        FileSystemType = EmulatedFileSystemType.Nfs
+                        Mount = EmulatedMount.Nfs
                     }
             }
         |> UnixSystem.checkInvariants
