@@ -226,7 +226,7 @@
     <Compile Include="TestFileSystemTypePal.fs" />
     <Compile Include="TestSocketShimPal.fs" />
     <Compile Include="KernelSyscall.fs" />
-    <Compile Include="TestDirectoryStreamId.fs" />
+    <Compile Include="TestDirectoryStreamFds.fs" />
     <Compile Include="TestTaskState.fs" />
         <Compile Include="TestUnixSystemProjection.fs" />
     <Compile Include="TestFlockBlocking.fs" />

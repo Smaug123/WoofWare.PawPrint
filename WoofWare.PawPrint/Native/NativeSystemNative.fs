@@ -2715,8 +2715,23 @@ module NativeSystemNative =
             // succeed, "f" and "f/" are both ENOTDIR. Nothing reads
             // `TrailingSeparatorDemanded`, because a directory is demanded
             // outright whether the separator was there or not.
-            match UnixNamespace.opendir path (EmulatedKernel.unix state.Kernel) with
-            | OpenDirAnswer.Failed error, system ->
+            // `opendir(3)` is this open: glibc's is
+            // `openat(O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY)`, measured, and
+            // `O_NONBLOCK` means nothing to a directory.
+            let flags : OpenFlags =
+                {
+                    Access = FileAccessMode.ReadOnly
+                    Create = false
+                    Exclusive = false
+                    Truncate = false
+                    NoFollow = false
+                    CloseOnExec = true
+                    Synchronous = false
+                    Directory = true
+                }
+
+            match UnixNamespace.openPath flags path 0 (EmulatedKernel.unix state.Kernel) with
+            | SyscallAnswer.Failed error, system ->
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
                 state.MapKernel (EmulatedKernel.withUnix system)
@@ -2727,18 +2742,13 @@ module NativeSystemNative =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-            | OpenDirAnswer.Opened id, system ->
+            | SyscallAnswer.Completed fd, system ->
 
             // The block whose address the guest holds as its `DIR*`, and whose
             // bytes are the `d_name` buffer each `ReadDir` refills. One
             // allocation per stream rather than one per entry, because
             // `DirectoryEntry.Name` points into the stream's own storage and
             // stays valid only until the next `readdir`.
-            //
-            // This address is PawPrint's half of the stream: the library minted
-            // the identity and has no addresses of its own, so binding the two
-            // is the client's step. `checkInvariants` refuses a state in which
-            // only one of them happened.
             let handle, state =
                 NativeCall.allocateNativeHeapBlob
                     operation
@@ -2755,7 +2765,7 @@ module NativeSystemNative =
                     failwith
                         $"%s{operation}: the name buffer allocation returned an unexpected pointer shape (%O{other}); this is an interpreter bug."
 
-            state.MapKernel (EmulatedKernel.withDirectoryStreamBlock block id)
+            state.MapKernel (EmulatedKernel.withDirectoryStreamFd block (int fd))
             |> IlMachineState.pushToEvalStack'
                 (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer handle))
                 ctx.Thread
@@ -2770,7 +2780,7 @@ module NativeSystemNative =
         // read through a descriptor the guest closed or replaced behind the
         // stream's back; a `DIR*` this kernel never issued is undefined
         // behaviour on a real libc rather than an errno, so
-        // `EmulatedKernel.directoryStreamId` refuses instead of inventing EBADF.
+        // `EmulatedKernel.directoryStreamFd` refuses instead of inventing EBADF.
         //
         // The output parameter is matched loosely, as `SystemNative_Stat`'s is
         // and for the same reason: `Interop.Sys.DirectoryEntry` is internal to
@@ -2790,7 +2800,7 @@ module NativeSystemNative =
             let output =
                 NativeCall.managedPointerOfPointerArgument operation "outputEntry" instruction.Arguments.[1]
 
-            let id = EmulatedKernel.directoryStreamId block state.Kernel
+            let fd = EmulatedKernel.directoryStreamFd block state.Kernel
 
             // `errno = 0` before the `readdir`, which the C does itself
             // (pal_io.c:511) so that it can tell "end of stream" from "failed"
@@ -2804,8 +2814,18 @@ module NativeSystemNative =
             // enumerated a directory would still see the old errno.
             let state = state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread 0)
 
-            match UnixNamespace.readdir id (EmulatedKernel.unix state.Kernel) with
-            | ReadDirAnswer.EndOfStream, system ->
+            let answer, system =
+                match UnixNamespace.readDirectoryEntry fd (EmulatedKernel.unix state.Kernel) with
+                | Ok result -> result
+                | Error refusal ->
+                    failwith
+                        $"%s{operation}: the DIR* reads through fd %d{fd}, and %s{ReadDirectoryRefusal.describe refusal} No CoreLib caller can reach this: nothing in it asks for a directory stream's descriptor."
+
+            match answer with
+            // glibc's `readdir` turns the ENOENT a removed directory answers into
+            // end-of-stream.
+            | ReadDirectoryAnswer.EndOfDirectory
+            | ReadDirectoryAnswer.Failed UnixError.ENOENT ->
                 // "0 returned with null result -> end-of-stream". The C
                 // `memset`s the output struct first, with the comment "managed
                 // out param must be initialized", so the guest sees a null
@@ -2822,7 +2842,7 @@ module NativeSystemNative =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-            | ReadDirAnswer.Failed error, system ->
+            | ReadDirectoryAnswer.Failed error ->
                 // "kernel set errno -> failure": the same zeroed entry, and the
                 // raw errno as the return value. Reachable only by a guest that
                 // closed or replaced the stream's descriptor behind its back.
@@ -2835,9 +2855,12 @@ module NativeSystemNative =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim raw)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-            | ReadDirAnswer.Entry (name, kind), system ->
+            | ReadDirectoryAnswer.Entry record ->
 
-            let nameBytes = name.AsSpan().ToArray ()
+            let nameBytes =
+                (DirectoryStreamName.toByteString record.Name |> UnixByteString.toBytes).AsSpan().ToArray ()
+
+            let kind = record.Kind
 
             if nameBytes.Length + 1 > directoryNameBufferBytes then
                 // No name either kernel can store reaches this: Linux bounds a
@@ -2846,7 +2869,7 @@ module NativeSystemNative =
                 // assertion that nothing has put a longer name in the graph.
                 //
                 // The buffer's size is the ABI's rather than the kernel's, which
-                // is why this check is here and not in `UnixNamespace.readdir`.
+                // is why this check is here and not in `UnixNamespace.readDirectoryEntry`.
                 failwith
                     $"%s{operation}: an entry of %d{nameBytes.Length} bytes does not fit the %d{directoryNameBufferBytes}-byte `d_name` buffer. No name either modelled kernel can store is this long, so this filesystem was seeded with one that could not exist."
 
@@ -2908,19 +2931,15 @@ module NativeSystemNative =
                     operation
                     (NativeCall.managedPointerOfPointerArgument operation "dir" instruction.Arguments.[0])
 
-            let stream = EmulatedKernel.directoryStream block state.Kernel
+            let fd = EmulatedKernel.directoryStreamFd block state.Kernel
 
-            // Forget the stream *before* closing the descriptor under it: the
-            // close is what reaps a directory whose last name went away while
-            // this stream held it, and `heldInodes` counts this entry among the
-            // things holding it.
             let state =
                 state.MapKernel (EmulatedKernel.withoutDirectoryStream block)
                 |> IlMachineState.freeNativeMemory block
 
             let state, result =
-                match UnixDescriptor.close stream.Fd (EmulatedKernel.unix state.Kernel) with
-                | Error refusal -> failwith (closeRefusalMessage operation stream.Fd refusal)
+                match UnixDescriptor.close fd (EmulatedKernel.unix state.Kernel) with
+                | Error refusal -> failwith (closeRefusalMessage operation fd refusal)
                 | Ok (SyscallAnswer.Completed _, system) -> withAnswered system state, 0
                 | Ok (SyscallAnswer.Failed error, system) ->
                     // EBADF, reachable only if the guest closed the stream's own
@@ -2929,17 +2948,7 @@ module NativeSystemNative =
                     // `close` on that fd, so EBADF is what a real one reports.
                     withErrno ctx error system state, -1
 
-            // Reaped here rather than left to `UnixDescriptor.close`, which does it
-            // only for the descriptor it actually closed. Two paths reach this
-            // with the directory still in the graph and nothing holding it: the
-            // guest closed the stream's own descriptor beforehand (the EBADF arm
-            // above), or that descriptor number has since been reused, in which
-            // case `close` reaped the *replacement's* inode instead. Both are
-            // undefined behaviour on a real libc, but neither may leave this
-            // kernel with an inode no path reaches — `checkInvariants` would
-            // report it, and it would be PawPrint's bookkeeping at fault rather
-            // than the guest's. Idempotent when the descriptor did the job.
-            state.MapKernel (EmulatedKernel.mapUnix (UnixDescriptor.forgetIfUnheld stream.Inode))
+            state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some

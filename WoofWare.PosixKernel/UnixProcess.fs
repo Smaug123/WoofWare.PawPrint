@@ -94,26 +94,6 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// every component resolves, so a client that wants the path to name a
         /// file must seed the file itself.
         ProcessPath : AbsoluteUnixPath option
-        /// Every directory stream `UnixNamespace.opendir` has handed out and the
-        /// client has not yet reclaimed, under the id minted for it. A client
-        /// maps its own handle for a stream (a `DIR*`) to one of these ids.
-        ///
-        /// A stream is *not* a descriptor kind. Measured on both kernels,
-        /// `opendir` consumes a file descriptor — an `open` either side of one
-        /// returned fds 3 and 5 — so the descriptor is an ordinary
-        /// `OpenFileTarget.Directory`, which holds the stream's position and
-        /// pins the inode through `heldInodes`. What a stream adds to it is only
-        /// which descriptor it reads through.
-        ///
-        /// An absent key is not a default and must never be read as one. Every id
-        /// a client's handles name should be present here — a `DIR*` is a
-        /// client's concept, so it is the client's own invariants that enforce
-        /// it — so an absent one is a bug in the client, and
-        /// `UnixNamespace.readdir` says so loudly rather than inventing an errno,
-        /// the way `UnixMachineState.connection` does for a `ConnectionId`.
-        DirectoryStreams : Map<DirectoryStreamId, DirectoryStream>
-        /// The id `UnixNamespace.opendir` will hand out next.
-        NextDirectoryStreamId : DirectoryStreamId
         /// Who the simulated process is: its real, effective and saved user and
         /// group IDs, and its supplementary groups.
         ///
@@ -296,16 +276,3 @@ module UnixProcessState =
         )
         |> Set.ofSeq
         |> Set.add proc.CurrentDirectoryInode
-        // An open directory stream holds its directory too. The descriptor it
-        // opened already does, so this adds nothing while the stream is intact
-        // — it is here for the guest that closes that descriptor out from under
-        // the stream, which is undefined behaviour on a real libc but a
-        // guessable fd number away here. Without it the directory could be
-        // reaped while the stream still names it, which
-        // `UnixSystemDefect.DanglingDirectoryStreamInode` reports.
-        |> Set.union (
-            proc.DirectoryStreams
-            |> Map.toSeq
-            |> Seq.map (fun (_, stream) -> stream.Inode)
-            |> Set.ofSeq
-        )

@@ -16,6 +16,7 @@
     <Compile Include="HostFileSystemType.fs" />
     <Compile Include="ReuseAddress.fs" />
     <Compile Include="PathText.fs" />
+    <Compile Include="DirectoryReading.fs" />
     <Compile Include="BindingProbes.fs" />
     <Compile Include="TestUnixTaskTable.fs" />
     <Compile Include="CredentialsGen.fs" />
