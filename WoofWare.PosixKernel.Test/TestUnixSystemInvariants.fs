@@ -389,11 +389,14 @@ module TestUnixSystemInvariants =
 
     /// `system` with one registered task, parked as `parked` says.
     let private withTask (parked : ParkedSyscall option) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        { system with
-            Tasks =
-                UnixTaskTable.register task (CpuId 0) (OsThreadId 1u) Map.empty
-                |> UnixTaskTable.withParked task parked
-        }
+        let registered =
+            { system with
+                Tasks = UnixTaskTable.register task (CpuId 0) (OsThreadId 1u) Map.empty
+            }
+
+        match parked with
+        | None -> registered
+        | Some parked -> UnixWait.park task parked registered
 
     /// A description id nothing in `system` holds.
     let private absentDescription : OpenFileDescriptionId = OpenFileDescriptionId 999L
@@ -448,6 +451,70 @@ module TestUnixSystemInvariants =
         )
         |> UnixSystem.checkInvariants
         |> shouldEqual [ UnixSystemDefect.ParkedSocketWaitOnNonPort (task, stdoutDescription, target) ]
+
+    /// `system` with tasks 1 and 2 parked on stdout's description, in that order.
+    let private twoParked : UnixSystem<int, string> =
+        let stdoutDescription =
+            match FileDescriptorRegistry.tryFindWithId 1 system.Process.FileDescriptors with
+            | Some (id, _) -> id
+            | None -> failwith "the fixture has no stdout"
+
+        let parked =
+            ParkedSyscall.Flock
+                {
+                    Requester = stdoutDescription
+                    Mode = FlockMode.Shared
+                }
+
+        { system with
+            Tasks =
+                Map.empty
+                |> UnixTaskTable.register 1 (CpuId 0) (OsThreadId 1u)
+                |> UnixTaskTable.register 2 (CpuId 0) (OsThreadId 2u)
+        }
+        |> UnixWait.park 1 parked
+        |> UnixWait.park 2 parked
+
+    /// `system` with task `name`'s park stamped `ordinal`, as only a record copy past
+    /// `UnixWait.park` could.
+    let private forgeOrdinal (name : int) (ordinal : ParkOrdinal) (system : UnixSystem<int, string>) =
+        let task = UnixTaskTable.get name system.Tasks
+
+        { system with
+            Tasks =
+                system.Tasks
+                |> Map.add
+                    name
+                    { task with
+                        Parked =
+                            task.Parked
+                            |> Option.map (fun park ->
+                                { park with
+                                    Ordinal = ordinal
+                                }
+                            )
+                    }
+        }
+
+    [<Test>]
+    let ``parks minted by UnixWait are sound`` () : unit =
+        UnixSystem.checkInvariants twoParked |> shouldEqual []
+
+    [<Test>]
+    let ``two parks stamped with one ordinal are a defect`` () : unit =
+        let first = (UnixTaskTable.parkOf 1 twoParked.Tasks |> Option.get).Ordinal
+
+        forgeOrdinal 2 first twoParked
+        |> UnixSystem.checkInvariants
+        |> shouldEqual [ UnixSystemDefect.DuplicateParkOrdinal first ]
+
+    [<Test>]
+    let ``a park stamped at or past the next ordinal is a defect`` () : unit =
+        let next = twoParked.Machine.NextParkOrdinal
+
+        forgeOrdinal 2 next twoParked
+        |> UnixSystem.checkInvariants
+        |> shouldEqual [ UnixSystemDefect.ParkOrdinalNotFresh (next, 2, next) ]
 
     /// The control for the three rows above: a park onto a live object of the
     /// right kind is sound, so those rows are not passing because every park
