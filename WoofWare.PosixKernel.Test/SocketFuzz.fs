@@ -89,12 +89,12 @@ module SocketFuzz =
     /// refusal from a defect without reading text.
     exception private ModelRefusal of string
 
-    /// `close(2)`. A refusal is the model's, and is reported as one; an errno
-    /// comes back, because that is an answer.
     /// The task the fuzzer's `poll`s are made by. The sequences are otherwise
     /// taskless, so it is registered for each call rather than kept in the state.
     let private pollTask : int = 1
 
+    /// `close(2)`. A refusal is the model's, and is reported as one; an errno
+    /// comes back, because that is an answer.
     let private closeFd (fd : int) (system : UnixSystem<int, string>) : Result<UnixSystem<int, string>, UnixError> =
         match UnixDescriptor.close fd system with
         | Error refusal -> raise (ModelRefusal $"close of fd %d{fd} refused: %s{CloseRefusal.describe refusal}")

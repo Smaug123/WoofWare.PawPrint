@@ -47,6 +47,11 @@ type PollRefusal =
     /// not deliver signals into a sleeping syscall, so it has no condition to
     /// park on.
     | UnendingWait of timeoutMilliseconds : int
+    /// Nothing is ready, and the timeout ends past the last instant the
+    /// machine's monotonic clock (`UnixMachineState.NanosecondsSinceBoot`,
+    /// an `int64` of nanoseconds) can represent: `nanosecondsSinceBoot` plus
+    /// `timeoutMilliseconds` overflows it.
+    | DeadlineBeyondClock of nanosecondsSinceBoot : int64 * timeoutMilliseconds : int
 
 /// What became of a `poll(2)` this kernel could answer.
 [<RequireQualifiedAccess>]
@@ -70,6 +75,8 @@ module PollRefusal =
             $"this kernel is %O{flavour}-flavoured, and `poll(2)` is modelled here for Linux only. Darwin's answer is not one level masked by the request: it registers a kqueue filter per group of requested bits, so which bits were asked together decides what is reported (a vnode bit on a socket answers POLLNVAL, a reported HUP suppresses OUT, and a request of 0 reports nothing even for a descriptor that is not open). Model that before polling under this flavour."
         | PollRefusal.UnmodelledTarget fd ->
             $"fd %d{fd} names a socket event port, which this kernel does not answer `poll(2)` for. Linux answers it by re-polling the port's ready list, as `epoll_wait` does, and what that walk leaves in the list is unmeasured; model that before answering."
+        | PollRefusal.DeadlineBeyondClock (now, timeoutMilliseconds) ->
+            $"the machine has been up for %d{now} ns and the timeout is %d{timeoutMilliseconds}ms, which ends past the last nanosecond the monotonic clock can represent. Linux's source saturates such a deadline, making the wait infinite, but that is unmeasured."
         | PollRefusal.UnendingWait timeoutMilliseconds ->
             $"no entry names a descriptor and the timeout is %d{timeoutMilliseconds}ms, which `poll(2)` reads as infinite, so a real poll sleeps until a signal interrupts it. This library delivers no signal into a sleeping syscall, so nothing could end the wait."
 
@@ -803,14 +810,26 @@ module UnixPoll =
         // returns before it; every negative timeout is infinite. Returning at
         // the deadline is this library's answer; a real wait returns at or a
         // little after it.
+        let now = system.Machine.NanosecondsSinceBoot
+
         let deadline =
             if milliseconds > 0 then
-                Some (
-                    system.Machine.NanosecondsSinceBoot
-                    + int64 milliseconds * nanosecondsPerMillisecond
-                )
+                let timeout = int64 milliseconds * nanosecondsPerMillisecond
+
+                if now > System.Int64.MaxValue - timeout then
+                    None
+                else
+                    Some (now + timeout)
             else
                 None
+
+        // A positive timeout whose deadline the clock cannot represent. Linux
+        // saturates such a deadline and so waits for ever, by reading of its
+        // source rather than by measurement, which would take 292 years of
+        // uptime; so this is refused rather than answered.
+        if milliseconds > 0 && deadline.IsNone then
+            Error (PollRefusal.DeadlineBeyondClock (now, milliseconds))
+        else
 
         let watchesNothing =
             parkedEntries

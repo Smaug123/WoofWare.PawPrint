@@ -321,6 +321,24 @@ module TestPollTimeout =
                 |> shouldEqual (Error (PollRefusal.UnendingWait milliseconds))
 
     [<Test>]
+    let ``a deadline past the clock's range is refused, and one just inside it parks`` () : unit =
+        let timeout = 1_000_000L
+
+        let nearTheEnd (uptime : int64) : UnixSystem<int, string> =
+            { idle with
+                Machine = UnixMachineState.advanceClock uptime idle.Machine
+            }
+
+        UnixPoll.poll task [ entry listener pollIn ] 1 (nearTheEnd (System.Int64.MaxValue - timeout + 1L))
+        |> shouldEqual (Error (PollRefusal.DeadlineBeyondClock (System.Int64.MaxValue - timeout + 1L, 1)))
+
+        let _, parked =
+            parks [ entry listener pollIn ] 1 (nearTheEnd (System.Int64.MaxValue - timeout))
+
+        UnixWait.deadlines (Set.singleton task) parked
+        |> shouldEqual [ System.Int64.MaxValue ]
+
+    [<Test>]
     let ``a wait with nothing to watch and a deadline sleeps until it`` () : unit =
         let condition, parked = parks [ entry -1 pollIn ] 3 idle
 

@@ -5519,6 +5519,8 @@ module NativeSystemNative =
                             " The measured Darwin rows are in docs/plans/2026-08-23-socket-poll and docs/plans/2026-08-23-posix-kernel-extraction/poll-alphabet.c."
                         | PollRefusal.UnmodelledTarget _ ->
                             " No managed caller reaches it: CoreLib polls only sockets (System.Net.Sockets), a standard stream (ConsolePal.Write) and an inotify descriptor (FileSystemWatcher, a kind PawPrint does not model), so this is a hand-rolled P/Invoke."
+                        | PollRefusal.DeadlineBeyondClock _ ->
+                            " PawPrint's virtual clock stops far short of this horizon, so the guest has been jumping it with long timed waits."
                         | PollRefusal.UnendingWait _ ->
                             " CoreLib's own infinite polls always name a descriptor, so this is a hand-rolled P/Invoke polling nothing, which on a real runtime hangs until a signal."
 
