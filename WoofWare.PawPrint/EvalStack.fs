@@ -1058,7 +1058,11 @@ module EvalStackValue =
                 | NativeIntSource.OpaqueHashBits bits ->
                     failwith
                         $"refusing to coerce synthesised pointer-hash bits 0x%x{bits} to runtime pointer (would forge a dereferenceable address)"
-            | EvalStackValue.NullObjectRef -> failwith "cannot coerce null object reference to runtime pointer"
+            // Hand-written IL can pass `ldnull` where a byref or pointer is expected. Its bits are
+            // zero, which is what CoreCLR passes, and the callee faults when it dereferences it;
+            // `Unsafe.As` normalises the same spelling to this one.
+            | EvalStackValue.NullObjectRef ->
+                CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
             | EvalStackValue.ObjectRef addr -> failwith $"cannot coerce object reference %O{addr} to runtime pointer"
             | _ -> failwith $"TODO: %O{popped}"
         | CliType.Char _ ->
@@ -1161,6 +1165,55 @@ module EvalStackValue =
             failwith
                 $"refusing to view the leading %d{size} bytes of %O{popped.Declared} as %O{target}: the storage there is a reference, and reinterpreting it would forge address bits"
         | contents -> CliType.OfBytesLike target (CliType.ToBytes contents)
+
+    /// `toCliTypeCoerced` for an argument passed to a parameter of type `target`, which also takes
+    /// the conversions CoreCLR's importer inserts at a call (`impImplicitIorI4Cast`,
+    /// importer.cpp). On a 64-bit target an int32 is one width, and a native int, an int64, an
+    /// object reference and a byref are all the other: an int32 sign-extends into a wider integer
+    /// parameter, a wider value narrows into one of int32 width or less, and `ldnull` is zero ("We also allow an
+    /// implicit conversion of a ldnull into a TYP_I_IMPL(0)"). Narrowing a value whose bits
+    /// PawPrint does not model is refused rather than synthesising them.
+    let toArgumentCoerced (target : CliType) (popped : EvalStackValue) : CliType =
+        // A parameter of int32 width or narrower takes the int32 the narrowing gives, and is then
+        // stored as any int32 argument is: truncated to its own width.
+        let int32Width =
+            match target with
+            | CliType.Numeric (CliNumericType.Int8 _)
+            | CliType.Numeric (CliNumericType.UInt8 _)
+            | CliType.Numeric (CliNumericType.Int16 _)
+            | CliType.Numeric (CliNumericType.UInt16 _)
+            | CliType.Numeric (CliNumericType.Int32 _)
+            | CliType.Bool _
+            | CliType.Char _ -> true
+            | _ -> false
+
+        match target, popped with
+        | _, EvalStackValue.NativeInt _
+        | _, EvalStackValue.Int64 _
+        | _, EvalStackValue.ManagedPointer _
+        | _, EvalStackValue.NullObjectRef when int32Width ->
+            match tryExactIntegerBits popped with
+            | ValueSome bits ->
+                toCliTypeCoerced target (EvalStackValue.Int32 (Int32Source.Verbatim (int32<int64> bits)))
+            | ValueNone ->
+                failwith
+                    $"refusing to narrow %O{popped} into an argument of type %O{target}; its bits are an address PawPrint does not model, and synthesising them would register a pointer identity for a value that parameter cannot legally hold"
+        | CliType.Numeric (CliNumericType.Int64 _), EvalStackValue.Int32 src ->
+            let value = Int32Source.value "widening an int32 argument to an int64 parameter" src
+            CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim (int64<int32> value)))
+        // Pointer-sized into int64 is the same width: the bits pass as they are, and
+        // `widenedNativeInt` keeps a pointer's provenance rather than fabricating them.
+        | CliType.Numeric (CliNumericType.Int64 _), EvalStackValue.NativeInt src ->
+            CliType.Numeric (CliNumericType.Int64 (Int64Source.widenedNativeInt src true))
+        | CliType.Numeric (CliNumericType.Int64 _), EvalStackValue.ManagedPointer ptr ->
+            CliType.Numeric (
+                CliNumericType.Int64 (Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ptr) true)
+            )
+        | CliType.Numeric (CliNumericType.Int64 _), EvalStackValue.NullObjectRef ->
+            CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))
+        | CliType.Numeric (CliNumericType.NativeInt _), EvalStackValue.NullObjectRef ->
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
+        | _ -> toCliTypeCoerced target popped
 
 type EvalStack =
     {

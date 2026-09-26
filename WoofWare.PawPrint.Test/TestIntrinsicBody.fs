@@ -617,9 +617,9 @@ module TestIntrinsicBody =
             "System.Threading.Interlocked::Exchange(ref uint8, uint8)",
             IntrinsicPrimitive.AtomicExchange AtomicOperand.UInt8
             "System.Threading.Interlocked::ExchangeAdd(ref int32, int32)",
-            IntrinsicPrimitive.AtomicAdd AtomicOperand.Int32
+            IntrinsicPrimitive.AtomicAdd AtomicAddOperand.Int32
             "System.Threading.Interlocked::ExchangeAdd(ref int64, int64)",
-            IntrinsicPrimitive.AtomicAdd AtomicOperand.Int64
+            IntrinsicPrimitive.AtomicAdd AtomicAddOperand.Int64
             "System.Threading.Interlocked::MemoryBarrier()", IntrinsicPrimitive.FullBarrier
             "System.Threading.Thread::FastPollGC()", IntrinsicPrimitive.GcPoll
             "System.Threading.Volatile::ReadBarrier()", IntrinsicPrimitive.ReadBarrier

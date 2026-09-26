@@ -2132,6 +2132,24 @@ module IlMachineStateExecution =
             else
                 None
 
+        // An intrinsic's result as the call's outcome, or `None` where the intrinsic declined.
+        let handled (result : IntrinsicResult) : IntrinsicOutcome option =
+            match result with
+            | IntrinsicResult.Completed result -> Some (IntrinsicOutcome.Handled (result, CallCommitment.Committed))
+            | IntrinsicResult.RaiseException (state, exnType, message) ->
+                // The intrinsic described an exception rather than raising it, because it
+                // cannot see `raiseRuntimeException` (compile order) and because raising it
+                // here is what makes an *unhandled* one expressible: `raiseRuntimeException`
+                // defers dispatch to the ctor's `Ret`, which can report
+                // `ExecutionResult.UnhandledException`. The intrinsic has deliberately not
+                // advanced the PC, so dispatch sees the faulting instruction's offset.
+                // `WhatWeDid` is always `Executed` here — the ctor frame is now the active
+                // frame, exactly as for an opcode-manufactured exception.
+                raiseRuntimeExceptionWithMessage loggerFactory baseClassTypes exnType message thread state
+                |> fst
+                |> fun state -> Some (IntrinsicOutcome.Handled (state, CallCommitment.Raised))
+            | IntrinsicResult.Unrecognised -> None
+
         let outcome =
             match intrinsic with
             | None -> IntrinsicOutcome.RunIl methodToCall
@@ -2139,6 +2157,21 @@ module IlMachineStateExecution =
                 match tryHandleActivatorCreateInstance () with
                 | Some result -> IntrinsicOutcome.Handled result
                 | None ->
+
+                let performPrimitive (primitive : IntrinsicPrimitive) : IntrinsicOutcome =
+                    match
+                        Intrinsics.performPrimitive
+                            loggerFactory
+                            baseClassTypes
+                            primitive
+                            methodToCall
+                            thread
+                            advanceProgramCounterOfCaller
+                            state
+                        |> handled
+                    with
+                    | Some outcome -> outcome
+                    | None -> failwith $"BUG: Intrinsics.performPrimitive did not perform %A{primitive}"
 
                 match
                     Intrinsics.call
@@ -2149,21 +2182,10 @@ module IlMachineStateExecution =
                         thread
                         advanceProgramCounterOfCaller
                         state
+                    |> handled
                 with
-                | IntrinsicResult.Completed result -> IntrinsicOutcome.Handled (result, CallCommitment.Committed)
-                | IntrinsicResult.RaiseException (state, exnType, message) ->
-                    // The intrinsic described an exception rather than raising it, because it
-                    // cannot see `raiseRuntimeException` (compile order) and because raising it
-                    // here is what makes an *unhandled* one expressible: `raiseRuntimeException`
-                    // defers dispatch to the ctor's `Ret`, which can report
-                    // `ExecutionResult.UnhandledException`. The intrinsic has deliberately not
-                    // advanced the PC, so dispatch sees the faulting instruction's offset.
-                    // `WhatWeDid` is always `Executed` here — the ctor frame is now the active
-                    // frame, exactly as for an opcode-manufactured exception.
-                    raiseRuntimeExceptionWithMessage loggerFactory baseClassTypes exnType message thread state
-                    |> fst
-                    |> fun state -> IntrinsicOutcome.Handled (state, CallCommitment.Raised)
-                | IntrinsicResult.Unrecognised ->
+                | Some outcome -> outcome
+                | None ->
                     // PawPrint has no implementation of its own, so the call gets what CoreCLR runs
                     // when its JIT does not expand the call: the method's IL, except that a
                     // placeholder's call to itself is what the JIT's expansion does on this run's
@@ -2240,8 +2262,8 @@ module IlMachineStateExecution =
                                 false
                                 state
                             |> fun state -> IntrinsicOutcome.Handled (state, CallCommitment.Committed)
+                        | SelfCallExpansion.Primitive primitive -> performPrimitive primitive
                         | SelfCallExpansion.HardwareInstruction _
-                        | SelfCallExpansion.Primitive _
                         | SelfCallExpansion.Unrecognised as expanded ->
                             failwith
                                 $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey key} in Intrinsics.call: its IL calls itself, which is CoreCLR's placeholder for a body its JIT must expand, and on this CPU that call is %A{expanded}"
@@ -2253,6 +2275,12 @@ module IlMachineStateExecution =
                             methodToCall
                             |> MethodInfo.setMethodVars (MethodBody.Il stub) methodToCall.Signature
                             |> IntrinsicOutcome.RunIl
+                        | None ->
+
+                        // A substitution that depends on the method's instantiation, which the VM
+                        // makes for the whole body, so it is performed at any call.
+                        match Intrinsics.primitiveOf state methodToCall with
+                        | Some primitive -> performPrimitive primitive
                         | None ->
                             failwith
                                 $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey key} in Intrinsics.call: CoreCLR's VM substitutes its body, and the IL CoreLib ships in its place cannot return"
@@ -2281,7 +2309,7 @@ module IlMachineStateExecution =
         // Helper to pop and coerce a single argument
         let popAndCoerceArg zeroType methodState =
             let value, newState = MethodState.popFromStack methodState
-            EvalStackValue.toCliTypeCoerced zeroType value, newState
+            EvalStackValue.toArgumentCoerced zeroType value, newState
 
         let thisArgCoercionTarget
             (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
