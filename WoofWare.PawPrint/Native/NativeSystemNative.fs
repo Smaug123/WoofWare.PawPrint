@@ -5730,8 +5730,8 @@ module NativeSystemNative =
             // PawPrint has no terminal but mirrors the dedicated-thread shape:
             // on first init we allocate a fresh `ThreadId` for the
             // signal dispatcher and park it (status `ThreadStatus.Parked`),
-            // recording its id in `Signals.Init`. A future slice will wake
-            // that thread out of `Parked` to actually invoke handlers.
+            // recording its id in `PosixSignalShim`. `SignalDispatch` wakes
+            // that thread out of `Parked` to invoke the managed callback.
             // The call is idempotent: a second invocation preserves the
             // already-allocated dispatcher (BCL initializers may run more
             // than once across the surface). Real native code returns 0 on
@@ -5739,17 +5739,14 @@ module NativeSystemNative =
             // process); PawPrint always reports success because there is no
             // underlying syscall that could fail.
             let state =
-                if SignalState.isInitialized state.Kernel.Signals then
+                if PosixSignalShim.isInitialized state.Kernel.PosixSignalShim then
                     state
                 else
                     let state, dispatcher = IlMachineState.allocateParkedThread state
 
                     state.MapKernel (fun kernel ->
                         { kernel with
-                            Process =
-                                { kernel.Process with
-                                    Signals = SignalState.markInitialized dispatcher kernel.Signals
-                                }
+                            PosixSignalShim = PosixSignalShim.markInitialized dispatcher kernel.PosixSignalShim
                         }
                     )
 
@@ -5826,10 +5823,10 @@ module NativeSystemNative =
             // a function-pointer-typed `delegate* unmanaged<int, PosixSignal, int>`.
             // Real native code stashes the raw pointer into a global
             // (`g_posixSignalHandler`) and the signal-handling thread later
-            // invokes it after a signal is queued. PawPrint just records the
-            // managed identity of the target method on `SignalState` — the
-            // forthcoming signal-delivery slice reads it back at dispatch
-            // time. We refuse anything other than a real
+            // invokes it after a signal is queued. PawPrint records the
+            // managed identity of the target method on `PosixSignalShim`,
+            // and `SignalDispatch` reads it back at dispatch time. We refuse
+            // anything other than a real
             // `NativeIntSource.FunctionPointer`: any other tag means the
             // value didn't come from `Ldftn` on a managed method, so we
             // have no callable identity to record and silently dropping it
@@ -5847,10 +5844,7 @@ module NativeSystemNative =
 
             state.MapKernel (fun kernel ->
                 { kernel with
-                    Process =
-                        { kernel.Process with
-                            Signals = SignalState.setHandler (SignalHandler.ofMethodInfo mi) kernel.Signals
-                        }
+                    PosixSignalShim = PosixSignalShim.setHandler (SignalHandler.ofMethodInfo mi) kernel.PosixSignalShim
                 }
             )
             |> NativeHandlerResult.completed

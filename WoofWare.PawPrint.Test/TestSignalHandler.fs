@@ -1,12 +1,13 @@
 namespace WoofWare.PawPrint.Test
 
 open System.Collections.Immutable
+open FsCheck
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
-/// Focused tests for the `SignalHandler` wrapper that `SignalState.Handler`
+/// Focused tests for the `SignalHandler` wrapper that `PosixSignalShim`
 /// stores. The wrapper exists so a `MethodInfo` (whose naked structural
 /// equality is unstable — its `ImmutableArray` fields and `MethodBody` payloads
 /// compare by reference) can be embedded in a structurally-compared
@@ -14,9 +15,9 @@ open WoofWare.PosixKernel
 /// These tests pin down:
 ///   * `MethodInfo.NominallyEqual` correctly identifies the same underlying
 ///     method even when the two `MethodInfo` records were constructed
-///     independently (so `SignalState.setHandler` is idempotent in practice).
+///     independently (so `PosixSignalShim.setHandler` is idempotent in practice).
 ///   * Distinct methods compare unequal at both the `SignalHandler` and
-///     enclosing `SignalState` layers.
+///     enclosing `PosixSignalShim` layers.
 ///   * `GetHashCode` agrees with `Equals` for the equal-handler case.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -82,11 +83,8 @@ module TestSignalHandler =
         state, method
 
     [<Test>]
-    let ``empty SignalState has no handler installed`` () : unit =
-        let empty : SignalState<ThreadId, SignalHandler> =
-            SignalState.initial SignalNumbering.Linux
-
-        empty |> SignalState.handler |> shouldEqual None
+    let ``the initial shim has no handler installed`` () : unit =
+        PosixSignalShim.initial |> PosixSignalShim.handler |> shouldEqual None
 
     [<Test>]
     let ``setHandler then handler round-trips the installed handler`` () : unit =
@@ -94,9 +92,9 @@ module TestSignalHandler =
         let handler = SignalHandler.ofMethodInfo method
 
         let installed =
-            SignalState.initial SignalNumbering.Linux
-            |> SignalState.setHandler handler
-            |> SignalState.handler
+            PosixSignalShim.initial
+            |> PosixSignalShim.setHandler handler
+            |> PosixSignalShim.handler
 
         match installed with
         | Some h -> h |> shouldEqual handler
@@ -137,8 +135,8 @@ module TestSignalHandler =
         handler.Equals (null : obj) |> shouldEqual false
 
     [<Test>]
-    let ``SignalState structural equality survives an installed handler`` () : unit =
-        // `EmulatedKernel` (which embeds `SignalState`) is compared
+    let ``PosixSignalShim structural equality survives an installed handler`` () : unit =
+        // `EmulatedKernel` (which embeds `PosixSignalShim`) is compared
         // structurally for deterministic state dedup. Two states built
         // independently with the same logical handler installed must compare
         // equal — otherwise dedup would split semantically-equivalent states.
@@ -146,30 +144,30 @@ module TestSignalHandler =
         let _, methodB = concretizeObjectMethod state "GetHashCode"
 
         let stateA =
-            SignalState.initial SignalNumbering.Linux
-            |> SignalState.markInitialized (ThreadId 42)
-            |> SignalState.setHandler (SignalHandler.ofMethodInfo methodA)
+            PosixSignalShim.initial
+            |> PosixSignalShim.markInitialized (ThreadId 42)
+            |> PosixSignalShim.setHandler (SignalHandler.ofMethodInfo methodA)
 
         let stateB =
-            SignalState.initial SignalNumbering.Linux
-            |> SignalState.markInitialized (ThreadId 42)
-            |> SignalState.setHandler (SignalHandler.ofMethodInfo methodB)
+            PosixSignalShim.initial
+            |> PosixSignalShim.markInitialized (ThreadId 42)
+            |> PosixSignalShim.setHandler (SignalHandler.ofMethodInfo methodB)
 
         stateA |> shouldEqual stateB
         hash stateA |> shouldEqual (hash stateB)
 
     [<Test>]
-    let ``SignalState distinguishes states whose handlers differ`` () : unit =
+    let ``PosixSignalShim distinguishes states whose handlers differ`` () : unit =
         let state, getHashCode = concretizeObjectMethod (baseState ()) "GetHashCode"
         let _, toString = concretizeObjectMethod state "ToString"
 
         let stateA =
-            SignalState.initial SignalNumbering.Linux
-            |> SignalState.setHandler (SignalHandler.ofMethodInfo getHashCode)
+            PosixSignalShim.initial
+            |> PosixSignalShim.setHandler (SignalHandler.ofMethodInfo getHashCode)
 
         let stateB =
-            SignalState.initial SignalNumbering.Linux
-            |> SignalState.setHandler (SignalHandler.ofMethodInfo toString)
+            PosixSignalShim.initial
+            |> PosixSignalShim.setHandler (SignalHandler.ofMethodInfo toString)
 
         stateA |> shouldNotEqual stateB
 
@@ -186,9 +184,80 @@ module TestSignalHandler =
         let handlerB = SignalHandler.ofMethodInfo toString
 
         let installed =
-            SignalState.initial SignalNumbering.Linux
-            |> SignalState.setHandler handlerA
-            |> SignalState.setHandler handlerB
-            |> SignalState.handler
+            PosixSignalShim.initial
+            |> PosixSignalShim.setHandler handlerA
+            |> PosixSignalShim.setHandler handlerB
+            |> PosixSignalShim.handler
 
         installed |> shouldEqual (Some handlerB)
+
+    /// The shim's two slots against a model of them: the dispatcher is the first
+    /// thread marked, which every later mark leaves in place, and the handler is
+    /// the last one set. The two slots are independent, so a shim is determined
+    /// by those two answers alone, which the structural comparison checks.
+    [<Test>]
+    let ``the shim keeps the first dispatcher marked and the last handler set`` () : unit =
+        let state, getHashCode = concretizeObjectMethod (baseState ()) "GetHashCode"
+        let state, toString = concretizeObjectMethod state "ToString"
+        // A second concretisation of the same method: equal as a handler, but a
+        // different `MethodInfo` object, so a shim comparing by reference would
+        // tell the two apart.
+        let _, getHashCodeAgain = concretizeObjectMethod state "GetHashCode"
+
+        let handlers : SignalHandler array =
+            [|
+                SignalHandler.ofMethodInfo getHashCode
+                SignalHandler.ofMethodInfo toString
+                SignalHandler.ofMethodInfo getHashCodeAgain
+            |]
+
+        let handlerAt (i : int) : SignalHandler =
+            handlers.[((i % handlers.Length) + handlers.Length) % handlers.Length]
+
+        // `Choice1Of2 t` marks thread `t` as the dispatcher; `Choice2Of2 i` sets
+        // a handler.
+        let property (ops : Choice<int, int> list) : unit =
+            let apply (shim : PosixSignalShim) (op : Choice<int, int>) : PosixSignalShim =
+                match op with
+                | Choice1Of2 thread -> PosixSignalShim.markInitialized (ThreadId thread) shim
+                | Choice2Of2 i -> PosixSignalShim.setHandler (handlerAt i) shim
+
+            let shim = List.fold apply PosixSignalShim.initial ops
+
+            let expectedDispatcher : ThreadId option =
+                ops
+                |> List.tryPick (
+                    function
+                    | Choice1Of2 thread -> Some (ThreadId thread)
+                    | Choice2Of2 _ -> None
+                )
+
+            let expectedHandler : SignalHandler option =
+                ops
+                |> List.rev
+                |> List.tryPick (
+                    function
+                    | Choice1Of2 _ -> None
+                    | Choice2Of2 i -> Some (handlerAt i)
+                )
+
+            PosixSignalShim.signalThread shim |> shouldEqual expectedDispatcher
+            PosixSignalShim.isInitialized shim |> shouldEqual expectedDispatcher.IsSome
+            PosixSignalShim.handler shim |> shouldEqual expectedHandler
+
+            let rebuilt =
+                PosixSignalShim.initial
+                |> (
+                    match expectedDispatcher with
+                    | Some dispatcher -> PosixSignalShim.markInitialized dispatcher
+                    | None -> id
+                )
+                |> (
+                    match expectedHandler with
+                    | Some handler -> PosixSignalShim.setHandler handler
+                    | None -> id
+                )
+
+            shim |> shouldEqual rebuilt
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 500, property)
