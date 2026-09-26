@@ -208,22 +208,6 @@ module IlMachineState =
         | Some u -> Error u
         | None -> Ok value
 
-    /// `readManagedByrefBytesAs`, for a runtime-implemented method that uses what it reads; see
-    /// `readManagedByrefForUse`.
-    let readManagedByrefBytesAsForUse
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (src : AddressedByref)
-        (targetTemplate : CliType)
-        : Result<CliType, UndefinedValue>
-        =
-        let value =
-            IlMachineManagedByref.readManagedByrefBytesAs baseClassTypes state src targetTemplate
-
-        match CliType.tryFindUndefined value with
-        | Some u -> Error u
-        | None -> Ok value
-
     let readPeByteRangeBytesAs = IlMachineManagedByref.readPeByteRangeBytesAs
 
     let writeManagedByrefBytesOrTypedCell =

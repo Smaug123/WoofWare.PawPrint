@@ -426,6 +426,13 @@ unsafe class Program
 
     static int Main(string[] args)
     {
+        byte* existing = stackalloc byte[2];
+        existing[0] = (byte)'e';
+        existing[1] = 0;
+        // The second fails with EEXIST, which is then the thread's last error.
+        if (MkDir(existing, 0x1ff) != 0) return 2;
+        if (MkDir(existing, 0x1ff) == 0) return 3;
+
         byte* path = stackalloc byte[3];
         path[0] = (byte)'d';
         path[2] = 0;
@@ -435,10 +442,19 @@ unsafe class Program
 }
 """
 
-        run
+        TestPureCases.runPawPrintSource
             "UndefinedNativePath.cs"
             source
-            (fun observation ->
+            KernelConfig.Default
+            (fun _ outcome ->
+                match outcome with
+                | RunOutcome.UndefinedValueObserved (state, thread, _) ->
+                    // Reported at the state from before the call, so the P/Invoke's clearing of
+                    // the last error on entry is not part of it.
+                    EmulatedKernel.lastSystemErrorFor thread state.Kernel |> shouldEqual 17
+                | _ -> ()
+
+                let observation = observed outcome
                 observation.Value.Kind |> shouldEqual UndefinedPrimitive.UInt8
                 stackOrigins observation.Value |> shouldEqual [ 1 ]
                 expectReadByRuntime "MkDir" "the path it reads" observation
