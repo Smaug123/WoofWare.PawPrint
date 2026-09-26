@@ -176,7 +176,7 @@ module InterfaceDispatch =
         let expandParents =
             not (
                 ty.Identity.AssemblyFullName = baseClassTypes.Corelib.DefinitionFullName
-                && DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo
+                && LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo
             )
 
         let rec expand

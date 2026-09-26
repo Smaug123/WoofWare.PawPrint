@@ -192,7 +192,7 @@ public class H2_BaseThenMarker<A, B> where A : BaseType where B : IMarker { }
             let defn =
                 TypeDefn.FromDefinition (
                     typeInfo.Identity,
-                    DumpedAssembly.signatureTypeKind bct initialState._LoadedAssemblies typeInfo
+                    LoadedTypeInfo.signatureTypeKind bct initialState._LoadedAssemblies typeInfo
                 )
 
             name, defn, hostType name

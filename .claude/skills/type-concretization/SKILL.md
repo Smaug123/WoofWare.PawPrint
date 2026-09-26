@@ -49,7 +49,7 @@ let contextMethodGenerics = currentMethod.Generics
 
 2. **Assembly loading context**: The `loadAssembly` function expects the assembly that contains the reference as the first parameter, not the target assembly
 
-3. **Type forwarding**: Use `Assembly.resolveTypeRef` which handles type forwarding and exported types correctly
+3. **Type forwarding**: Use `LoadedTypeResolution.resolveTypeRef` which handles type forwarding and exported types correctly
 
 ## Key Files
 
@@ -63,7 +63,7 @@ let contextMethodGenerics = currentMethod.Generics
   - `concretizeFieldForExecution`: Prepares fields for access
   - Manages the flow of generic contexts through execution
 
-- **WoofWare.PawPrint.Loader/CrossAssemblyResolution.fs**:
+- **WoofWare.PawPrint.Loader/LoadedTypeResolution.fs** (`LoadedTypeResolution`; `TypeResolution` wraps each of these in a load-and-retry loop):
   - `resolveTypeRef`: Resolves type references across assemblies
   - `resolveTopLevelTypeFromName`: Discovers top-level types (by namespace + name), falling back to exported types
   - `resolveTypeFromExport`: Follows type forwarding chains

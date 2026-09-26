@@ -854,7 +854,7 @@ module NativeRuntimeTypeQCall =
 
                 let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
 
-                if DumpedAssembly.isValueType ctx.BaseClassTypes state._LoadedAssemblies typeInfo then
+                if LoadedTypeInfo.isValueType ctx.BaseClassTypes state._LoadedAssemblies typeInfo then
                     // CoreCLR's QCall asserts !pVMT->IsByRefLike() and routes value types
                     // away from this path elsewhere; the only documented consumer
                     // (ArraySortHelper) instantiates reference types. If a value-type ever
@@ -1073,7 +1073,7 @@ module NativeRuntimeTypeQCall =
 
                     if typeInfo.Generics.IsEmpty then
                         let stk =
-                            DumpedAssembly.signatureTypeKind ctx.BaseClassTypes state._LoadedAssemblies typeInfo
+                            LoadedTypeInfo.signatureTypeKind ctx.BaseClassTypes state._LoadedAssemblies typeInfo
 
                         let state, typeHandle =
                             IlMachineState.concretizeType
@@ -2161,7 +2161,7 @@ module NativeRuntimeTypeQCall =
                     $"TODO: %s{operation} was asked to allocate the Nullable %s{typeInfo.Namespace}.%s{typeInfo.Name}, as RuntimeMethodHandle.ReboxToNullable does when reflection coerces an argument to a Nullable<T> parameter; PawPrint boxes the underlying value instead, so there is no object here whose raw data Unbox_Nullable could write the nullable's layout into"
             | _ -> ()
 
-            if DumpedAssembly.isValueType ctx.BaseClassTypes state._LoadedAssemblies typeInfo then
+            if LoadedTypeInfo.isValueType ctx.BaseClassTypes state._LoadedAssemblies typeInfo then
                 // Any other value type: `pMT->Allocate()` produces a box, and PawPrint's heap has
                 // no representation for one that arrived here rather than through `box`. Neither
                 // caller can produce this — `Delegate.InternalAlloc` asserts its argument derives

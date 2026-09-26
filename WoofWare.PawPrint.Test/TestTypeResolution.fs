@@ -120,7 +120,7 @@ public class Consumer
                 consumer
 
         let resolvedAssembly, identity, resolvedType =
-            AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty innerRef
+            LoadedTypeResolution.resolveTypeRef assemblies consumer ImmutableArray.Empty innerRef
             |> getResolvedIdentity
 
         resolvedAssembly.Name.FullName |> shouldEqual defining.Name.FullName
@@ -269,11 +269,11 @@ public class Consumer
                 consumer
 
         let _, topLevelIdentity, _ =
-            AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty topLevelRef
+            LoadedTypeResolution.resolveTypeRef assemblies consumer ImmutableArray.Empty topLevelRef
             |> getResolvedIdentity
 
         let _, nestedIdentity, _ =
-            AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty nestedRef
+            LoadedTypeResolution.resolveTypeRef assemblies consumer ImmutableArray.Empty nestedRef
             |> getResolvedIdentity
 
         topLevelIdentity |> shouldNotEqual nestedIdentity
@@ -328,11 +328,11 @@ public class Consumer
                 consumer
 
         let firstAssembly, firstIdentity, firstType =
-            AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty innerRef
+            LoadedTypeResolution.resolveTypeRef assemblies consumer ImmutableArray.Empty innerRef
             |> getResolvedIdentity
 
         let secondAssembly, secondIdentity, secondType =
-            AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty innerRef
+            LoadedTypeResolution.resolveTypeRef assemblies consumer ImmutableArray.Empty innerRef
             |> getResolvedIdentity
 
         firstAssembly.Name.FullName |> shouldEqual secondAssembly.Name.FullName
@@ -399,7 +399,7 @@ public class Consumer
         let identities =
             nestedRefs
             |> List.map (fun typeRef ->
-                AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty typeRef
+                LoadedTypeResolution.resolveTypeRef assemblies consumer ImmutableArray.Empty typeRef
                 |> getResolvedIdentity
             )
             |> List.map (fun (_, identity, _) -> identity)
@@ -428,7 +428,7 @@ public class Consumer
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                AssemblyApi.resolveTypeRef assemblies dumped ImmutableArray.Empty consumer
+                LoadedTypeResolution.resolveTypeRef assemblies dumped ImmutableArray.Empty consumer
                 |> ignore
             )
 
@@ -479,7 +479,7 @@ public class Placeholder { }
                 forwarder
 
         let resolvedAssembly, identity, resolvedType =
-            AssemblyApi.resolveTypeFromExport forwarder assemblies ImmutableArray.Empty exportedType
+            LoadedTypeResolution.resolveTypeFromExport forwarder assemblies ImmutableArray.Empty exportedType
             |> getResolvedIdentity
 
         resolvedAssembly.Name.FullName |> shouldEqual target.Name.FullName
@@ -627,7 +627,7 @@ public class Placeholder { }
             }
 
         let resolvedAssembly, identity, resolvedType =
-            AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty globalTypeRef
+            LoadedTypeResolution.resolveTypeRef assemblies consumer ImmutableArray.Empty globalTypeRef
             |> getResolvedIdentity
 
         resolvedAssembly.Name.FullName |> shouldEqual target.Name.FullName
@@ -695,7 +695,7 @@ public class Placeholder
         let assemblies = loadedAssemblies [ target ; middle ; outer ]
 
         let resolvedAssembly, identity, resolvedType =
-            AssemblyApi.resolveTypeFromExport outer assemblies ImmutableArray.Empty exportedType
+            LoadedTypeResolution.resolveTypeFromExport outer assemblies ImmutableArray.Empty exportedType
             |> getResolvedIdentity
 
         resolvedAssembly.Name.FullName |> shouldEqual target.Name.FullName
@@ -760,7 +760,7 @@ public class Outer
         let assemblies = loadedAssemblies [ target ; forwarder ]
 
         let resolvedAssembly, identity, resolvedType =
-            AssemblyApi.resolveTypeFromExport forwarder assemblies ImmutableArray.Empty nestedExport
+            LoadedTypeResolution.resolveTypeFromExport forwarder assemblies ImmutableArray.Empty nestedExport
             |> getResolvedIdentity
 
         resolvedAssembly.Name.FullName |> shouldEqual target.Name.FullName
@@ -1485,7 +1485,7 @@ public class Consumer
                 ]
 
         let resolvedAssembly, identity, resolvedType =
-            AssemblyApi.resolveTypeRef assemblies consumer fullArgs innerRef
+            LoadedTypeResolution.resolveTypeRef assemblies consumer fullArgs innerRef
             |> getResolvedIdentity
 
         resolvedAssembly.Name.FullName |> shouldEqual defining.Name.FullName
@@ -1494,7 +1494,7 @@ public class Consumer
 
         // No arguments leaves the type open.
         let _, identity, openType =
-            AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty innerRef
+            LoadedTypeResolution.resolveTypeRef assemblies consumer ImmutableArray.Empty innerRef
             |> getResolvedIdentity
 
         identity |> shouldEqual expectedIdentity
@@ -1510,7 +1510,8 @@ public class Consumer
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                AssemblyApi.resolveTypeRef assemblies consumer shortArgs innerRef |> ignore
+                LoadedTypeResolution.resolveTypeRef assemblies consumer shortArgs innerRef
+                |> ignore
             )
 
         Assert.That (ex.Message, Does.Contain "Inner`1")
@@ -1522,7 +1523,8 @@ public class Consumer
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                AssemblyApi.resolveTypeRef assemblies consumer longArgs innerRef |> ignore
+                LoadedTypeResolution.resolveTypeRef assemblies consumer longArgs innerRef
+                |> ignore
             )
 
         Assert.That (ex.Message, Does.Contain "Inner`1")
@@ -1576,7 +1578,7 @@ public class Placeholder { }
         let fullArgs = distinctPrimitiveArgs 2
 
         let resolvedAssembly, identity, resolvedType =
-            AssemblyApi.resolveTypeFromExport forwarder assemblies fullArgs nestedExport
+            LoadedTypeResolution.resolveTypeFromExport forwarder assemblies fullArgs nestedExport
             |> getResolvedIdentity
 
         resolvedAssembly.Name.FullName |> shouldEqual target.Name.FullName
@@ -1587,7 +1589,7 @@ public class Placeholder { }
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                AssemblyApi.resolveTypeFromExport forwarder assemblies shortArgs nestedExport
+                LoadedTypeResolution.resolveTypeFromExport forwarder assemblies shortArgs nestedExport
                 |> ignore
             )
 

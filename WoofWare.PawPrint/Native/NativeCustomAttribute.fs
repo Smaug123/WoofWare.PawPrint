@@ -399,7 +399,7 @@ module NativeCustomAttribute =
 
                 let attrTypeInfo = attrAssembly.TypeDefs.[concreteType.Definition.Get]
 
-                if DumpedAssembly.isValueType ctx.BaseClassTypes state._LoadedAssemblies attrTypeInfo then
+                if LoadedTypeInfo.isValueType ctx.BaseClassTypes state._LoadedAssemblies attrTypeInfo then
                     failwith
                         $"TODO: %s{operation}: value-typed attribute %s{attrTypeInfo.Namespace}.%s{attrTypeInfo.Name} would need unboxing for `this` slot; CoreCLR's value-type branch is unreachable from the BCL filter and is not yet modelled here"
 

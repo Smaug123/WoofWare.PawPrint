@@ -22,7 +22,8 @@
              single definition without making it Domain API. -->
         <Compile Include="..\WoofWare.PawPrint.Domain\ImmutableArray.fs" Link="ImmutableArray.fs" />
         <Compile Include="LoadedAssemblies.fs" />
-        <Compile Include="CrossAssemblyResolution.fs" />
+        <Compile Include="LoadedTypeResolution.fs" />
+        <Compile Include="LoadedTypeInfo.fs" />
         <Compile Include="TypeConcretisation.fs" />
         <Compile Include="VtableSlot.fs" />
         <Compile Include="AssemblyProbe.fs" />

@@ -90,7 +90,7 @@ public unsafe struct Nest
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : IlMachineState * ConcreteTypeHandle
         =
-        let kind = DumpedAssembly.signatureTypeKind bct state._LoadedAssemblies typeInfo
+        let kind = LoadedTypeInfo.signatureTypeKind bct state._LoadedAssemblies typeInfo
 
         IlMachineTypeResolution.concretizeType
             loggerFactory

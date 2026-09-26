@@ -357,7 +357,7 @@ public static class Program
 
 
     /// As `concretiseGuestClass`, but for a value type. `SignatureTypeKind` is not cosmetic here:
-    /// it is what `DumpedAssembly.isValueType` — and so the handler's refusal — keys on.
+    /// it is what `LoadedTypeInfo.isValueType` — and so the handler's refusal — keys on.
     let private concretiseGuestStruct
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

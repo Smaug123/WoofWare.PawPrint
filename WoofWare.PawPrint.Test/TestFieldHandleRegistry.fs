@@ -110,7 +110,7 @@ public class GenericHolder<T>
              ])
             ||> List.fold (fun state ty ->
                 let typeDefn =
-                    DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies ty
+                    LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies ty
 
                 let state, _ =
                     IlMachineState.concretizeType
@@ -508,7 +508,7 @@ public class GenericHolder<T>
         // Build `GenericHolder<int>` as a closed instantiation, mirroring what
         // `typeof(GenericHolder<int>)` would yield in the guest.
         let int32Defn =
-            DumpedAssembly.typeInfoToTypeDefn'
+            LoadedTypeInfo.typeInfoToTypeDefn'
                 fixture.BaseClassTypes
                 state._LoadedAssemblies
                 fixture.BaseClassTypes.Int32

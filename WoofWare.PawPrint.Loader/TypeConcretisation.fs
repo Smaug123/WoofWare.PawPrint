@@ -109,7 +109,7 @@ module AllConcreteTypes =
         : bool option
         =
         tryTypeInfo assemblies concreteTypes handle
-        |> Option.map (fun (_, typeInfo) -> DumpedAssembly.isValueType baseClassTypes assemblies typeInfo)
+        |> Option.map (fun (_, typeInfo) -> LoadedTypeInfo.isValueType baseClassTypes assemblies typeInfo)
 
     /// How deep `describe` recurses through *generic* nesting before truncating, and how far it
     /// walks a declaring-type chain. A stack overflow cannot be caught, so these bounds are what
@@ -885,7 +885,7 @@ module TypeConcretization =
             =
             let currentAssy = ctx.LoadedAssemblies.ByDefinitionName currentAssemblyFullName
 
-            match Assembly.resolveTypeRef ctx.LoadedAssemblies currentAssy ImmutableArray.Empty typeRef with
+            match LoadedTypeResolution.resolveTypeRef ctx.LoadedAssemblies currentAssy ImmutableArray.Empty typeRef with
             | TypeResolutionResult.Resolved (targetAssy, identity, typeInfo) -> (targetAssy, identity, typeInfo), ctx
             | TypeResolutionResult.NotFound miss ->
                 failwithf "Concretizing type reference %s from %s: %O" typeRef.Name currentAssemblyFullName miss
@@ -2203,7 +2203,7 @@ module Concretization =
         (typeRef : TypeRef)
         : LoadedAssemblies * Result<DumpedAssembly * TypeDefinitionHandle, BaseChainFailure>
         =
-        match Assembly.resolveTypeRef assemblies sourceAssembly ImmutableArray.Empty typeRef with
+        match LoadedTypeResolution.resolveTypeRef assemblies sourceAssembly ImmutableArray.Empty typeRef with
         | TypeResolutionResult.Resolved (resolvedAssembly, _, resolvedType) ->
             assemblies, Ok (resolvedAssembly, resolvedType.TypeDefHandle)
         | TypeResolutionResult.NotFound miss -> assemblies, Error (BaseChainFailure.BaseTypeAbsent miss)
@@ -2317,7 +2317,7 @@ module Concretization =
         | _, Some failure -> failwith (string<BaseChainFailure> failure)
 
     /// Force-load every assembly needed for CliType.zeroOf to zero-initialise the
-    /// given concrete handle. zeroOf calls DumpedAssembly.isValueType on the top
+    /// given concrete handle. zeroOf calls LoadedTypeInfo.isValueType on the top
     /// type to decide between a zeroed value-type layout and a null reference; if
     /// the type turns out to be a value type, zeroOf recursively zeros each
     /// non-static field, which repeats the same isValueType decision on the field
@@ -2387,7 +2387,7 @@ module Concretization =
                     // reference type's generics or fields can loop forever on
                     // legal shapes such as `class Box<T> {}` used inside
                     // `struct S<T> { Box<S<S<T>>> F; }`.
-                    if not (DumpedAssembly.isValueType baseTypes assemblies outerTypeDef) then
+                    if not (LoadedTypeInfo.isValueType baseTypes assemblies outerTypeDef) then
                         assemblies, concreteTypes
                     else
                         // Value type: zeroOf recurses into every non-static
@@ -2486,7 +2486,7 @@ module Concretization =
                 let arg = assy.TypeDefs.[declaringType.Definition.Get]
 
                 let signatureTypeKind =
-                    DumpedAssembly.signatureTypeKind baseTypes concCtx.LoadedAssemblies arg
+                    LoadedTypeInfo.signatureTypeKind baseTypes concCtx.LoadedAssemblies arg
 
                 TypeDefn.FromDefinition (declaringType.Identity, signatureTypeKind)
             else
@@ -2495,7 +2495,7 @@ module Concretization =
                 let arg = assy.TypeDefs.[declaringType.Definition.Get]
 
                 let signatureTypeKind =
-                    DumpedAssembly.signatureTypeKind baseTypes concCtx.LoadedAssemblies arg
+                    LoadedTypeInfo.signatureTypeKind baseTypes concCtx.LoadedAssemblies arg
 
                 let baseType = TypeDefn.FromDefinition (declaringType.Identity, signatureTypeKind)
 
@@ -2676,7 +2676,7 @@ module Concretization =
 
             // Determine SignatureTypeKind
             let signatureTypeKind =
-                DumpedAssembly.signatureTypeKind baseClassTypes assemblies typeDef
+                LoadedTypeInfo.signatureTypeKind baseClassTypes assemblies typeDef
 
             if concreteType.Generics.IsEmpty then
                 TypeDefn.FromDefinition (concreteType.Identity, signatureTypeKind)

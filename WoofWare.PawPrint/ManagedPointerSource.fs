@@ -290,7 +290,7 @@ module RuntimeTypeHandleTarget =
     /// CoreCLR's `TypeHandle::IsByRefLike` (typehandle.cpp:1061): true iff the target is a
     /// MethodTable whose definition is a byref-like value type (a C# `ref struct`).
     ///
-    /// `DumpedAssembly.isByRefLike` is the classification of a *definition*; this is that
+    /// `LoadedTypeInfo.isByRefLike` is the classification of a *definition*; this is that
     /// classification applied to whichever definition the target has. An instantiation, open or
     /// closed, is byref-like exactly when its definition is (`typeof(R&lt;&gt;).IsByRefLike` is true for
     /// a `ref struct R&lt;T&gt;`, measured against .NET 10). Every TypeDesc answers false: a type
@@ -321,7 +321,7 @@ module RuntimeTypeHandleTarget =
         | None -> false
         | Some identity ->
             loadedAssemblies.ByDefinitionName(identity.AssemblyFullName).TypeDefs.[identity.TypeDefinition.Get]
-            |> DumpedAssembly.isByRefLike baseClassTypes loadedAssemblies
+            |> LoadedTypeInfo.isByRefLike baseClassTypes loadedAssemblies
 
     /// Is this target the definition <paramref name="definition"/> applied to exactly its own
     /// formal parameters, in declaration order? CoreCLR calls that the *typical instantiation*,

@@ -379,7 +379,7 @@ public static class Entry
                 | methods -> failwith $"System.Array::Empty<T> was ambiguous: %d{methods.Length} matches"
 
         let int32Defn =
-            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Int32
+            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Int32
 
         let state, method, _ =
             ExecutionConcretization.concretizeMethodWithTypeGenerics

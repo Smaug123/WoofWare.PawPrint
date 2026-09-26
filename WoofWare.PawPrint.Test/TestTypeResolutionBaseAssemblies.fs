@@ -14,7 +14,7 @@ open WoofWare.PawPrint
 /// </summary>
 /// <remarks>
 /// <para>
-/// The pure walks over a type's base chain — <c>DumpedAssembly.isValueType</c>,
+/// The pure walks over a type's base chain — <c>LoadedTypeInfo.isValueType</c>,
 /// <c>signatureTypeKind</c>, <c>typeInfoToTypeDefn</c> — take a <c>LoadedAssemblies</c> and have
 /// no way to load one; they fail hard if a base-type TypeRef along the chain names an assembly
 /// nobody has loaded. <c>TypeResolution</c> is where the load capability lives, so it is where
@@ -64,7 +64,7 @@ module TestTypeResolutionBaseAssemblies =
 
         let walkBeforeResolution =
             try
-                DumpedAssembly.isValueType baseTypes loaded (topLevelTypeDef fsharpCore "Microsoft.FSharp.Core" "Unit")
+                LoadedTypeInfo.isValueType baseTypes loaded (topLevelTypeDef fsharpCore "Microsoft.FSharp.Core" "Unit")
                 |> Ok
             with e ->
                 Error e.Message
@@ -112,7 +112,7 @@ module TestTypeResolutionBaseAssemblies =
 
         // The point of the invariant: a caller may now run the pure walk on what it was handed.
         resolved.Name |> shouldEqual "Unit"
-        DumpedAssembly.isValueType baseTypes loadedAfter resolved |> shouldEqual false
+        LoadedTypeInfo.isValueType baseTypes loadedAfter resolved |> shouldEqual false
 
     [<Test>]
     let ``resolveTypeFromDefn handles a generic instantiation whose argument needs a facade`` () : unit =
@@ -154,7 +154,7 @@ module TestTypeResolutionBaseAssemblies =
         Netstandard21FSharpCore.isLoaded loadedAfter.DefinitionNames |> shouldEqual true
 
         resolved.Name |> shouldEqual "PrintfFormat`4"
-        DumpedAssembly.isValueType baseTypes loadedAfter resolved |> shouldEqual false
+        LoadedTypeInfo.isValueType baseTypes loadedAfter resolved |> shouldEqual false
 
     [<Test>]
     let ``resolveTypeFromRef primes the base chain of the TypeInfo it returns`` () : unit =
@@ -210,7 +210,7 @@ public class Holder
         Netstandard21FSharpCore.isLoaded loadedAfter.DefinitionNames |> shouldEqual true
 
         resolved.Name |> shouldEqual "FSharpFunc`2"
-        DumpedAssembly.isValueType baseTypes loadedAfter resolved |> shouldEqual false
+        LoadedTypeInfo.isValueType baseTypes loadedAfter resolved |> shouldEqual false
 
     /// FSharp.Core loaded as the entry assembly beside corelib, with the `netstandard` facade its
     /// base-type TypeRefs point at still unloaded -- `setUp`'s state, as an `IlMachineState`.

@@ -74,7 +74,7 @@ module TestArrayInterfaceMap =
             | None -> failwith $"%s{``namespace``}.%s{name} not found in corelib"
             | Some typeInfo -> typeInfo
 
-        DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
+        LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
         |> IlMachineState.concretizeType
             loggerFactory
             bct

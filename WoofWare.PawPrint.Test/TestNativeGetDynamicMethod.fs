@@ -2624,7 +2624,7 @@ public static class Entry
             |> Option.defaultWith (fun () -> failwith "entry assembly has no <Module> type")
 
         let stk =
-            DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies moduleTypeInfo
+            LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies moduleTypeInfo
 
         let state, handle =
             IlMachineState.concretizeType

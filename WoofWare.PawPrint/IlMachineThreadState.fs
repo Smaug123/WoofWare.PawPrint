@@ -289,7 +289,7 @@ module IlMachineThreadState =
                 AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes constructed.ConcreteType
                 |> Option.get
 
-            if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ty' then
+            if LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies ty' then
                 state
                 // TODO: ordering of fields probably important
                 |> pushToEvalStack (CliType.ValueType constructed.Contents) currentThread

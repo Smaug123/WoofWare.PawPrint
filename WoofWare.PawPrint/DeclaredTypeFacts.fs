@@ -94,7 +94,7 @@ module DeclaredTypeFacts =
 
     /// Derive every fact from one `TypeInfo`, given a load context that can resolve its base chain.
     ///
-    /// The base walk is the same one `DumpedAssembly.isValueType` performs, and every call site
+    /// The base walk is the same one `LoadedTypeInfo.isValueType` performs, and every call site
     /// that reaches here was already performing it, so this adds no new failure mode: a base type
     /// naming an assembly that is not loaded fails here exactly as it already failed there.
     let ofTypeInfo
@@ -103,11 +103,11 @@ module DeclaredTypeFacts =
         (ti : TypeInfo<'generic, 'field>)
         : DeclaredTypeFacts
         =
-        let isValueType = DumpedAssembly.isValueType bct assemblies ti
+        let isValueType = LoadedTypeInfo.isValueType bct assemblies ti
 
         {
             IsValueType = isValueType
-            IsEnum = DumpedAssembly.isEnum bct assemblies ti
+            IsEnum = LoadedTypeInfo.isEnum bct assemblies ti
             NominalAlignment = nominalAlignment bct ti
             LayoutKind = TypeLayoutKind.ofTypeAttributes ti.TypeAttributes
             Layout = ti.Layout

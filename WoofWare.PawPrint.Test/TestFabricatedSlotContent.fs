@@ -443,7 +443,7 @@ public static class Driver
             | None -> failwith "fabricated assembly has no type C"
 
         let state, closedC =
-            DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies cTypeInfo
+            LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies cTypeInfo
             |> IlMachineState.concretizeType
                 loggerFactory
                 bct

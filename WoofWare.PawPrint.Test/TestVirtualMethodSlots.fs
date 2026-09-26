@@ -57,7 +57,7 @@ module TestVirtualMethodSlots =
             | None -> failwith $"%s{``namespace``}.%s{name} not found in corelib"
             | Some typeInfo -> typeInfo
 
-        DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
+        LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
         |> IlMachineState.concretizeType
             loggerFactory
             bct
@@ -83,7 +83,7 @@ module TestVirtualMethodSlots =
             | Some typeInfo -> typeInfo
 
         let openDefn =
-            DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
+            LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
 
         let state, argHandles =
             ((state, []), args)
@@ -349,7 +349,7 @@ module TestVirtualMethodSlots =
             | Some typeInfo -> typeInfo
 
         let openDefn =
-            DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
+            LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
 
         // `typeInfoToTypeDefn'` already yields the instantiation shape `INumberBase`1<!0>`, so close
         // it by supplying Int32 as the type-generic context rather than by wrapping it again.

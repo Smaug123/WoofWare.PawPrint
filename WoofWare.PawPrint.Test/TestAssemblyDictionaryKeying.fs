@@ -53,7 +53,14 @@ module TestAssemblyDictionaryKeying =
         : LoadedAssemblies * DumpedAssembly * ResolvedTypeIdentity
         =
         let rec go (assemblies : LoadedAssemblies) : LoadedAssemblies * DumpedAssembly * ResolvedTypeIdentity =
-            match Assembly.resolveTopLevelTypeFromName fromAssembly assemblies (Some ns) name ImmutableArray.Empty with
+            match
+                LoadedTypeResolution.resolveTopLevelTypeFromName
+                    fromAssembly
+                    assemblies
+                    (Some ns)
+                    name
+                    ImmutableArray.Empty
+            with
             | TypeResolutionResult.Resolved (assy, identity, _) -> assemblies, assy, identity
             | TypeResolutionResult.NotFound miss -> failwithf "%O" miss
             | TypeResolutionResult.FirstLoadAssy assyRef ->

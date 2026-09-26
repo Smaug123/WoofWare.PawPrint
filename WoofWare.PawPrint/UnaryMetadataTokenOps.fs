@@ -568,7 +568,7 @@ module internal UnaryMetadataTokenOps =
                 IlMachineState.getOrAllocateType loggerFactory baseClassTypes target state
 
             let state, runtimeTypeHandleHandle =
-                DumpedAssembly.typeInfoToTypeDefn'
+                LoadedTypeInfo.typeInfoToTypeDefn'
                     baseClassTypes
                     state._LoadedAssemblies
                     baseClassTypes.RuntimeTypeHandle

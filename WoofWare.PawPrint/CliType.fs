@@ -3597,7 +3597,7 @@ and CliValueType =
                 let typeDef =
                     (assemblies.ByDefinitionName concreteType.AssemblyFullName).TypeDefs.[concreteType.Definition.Get]
 
-                DumpedAssembly.isEnum corelib assemblies typeDef
+                LoadedTypeInfo.isEnum corelib assemblies typeDef
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _
         | ConcreteTypeHandle.Byref _
@@ -5019,7 +5019,7 @@ module CliType =
                 (assemblies.ByDefinitionName concreteType.AssemblyFullName)
                 concreteType.Definition.Get
 
-        let isValueType = DumpedAssembly.isValueType corelib assemblies typeDef
+        let isValueType = LoadedTypeInfo.isValueType corelib assemblies typeDef
 
         if isValueType then
             // It's a value type - need to create zero values for all non-static fields

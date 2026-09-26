@@ -93,7 +93,7 @@ public sealed class GenericHolder<T>
         : IlMachineState * ConcreteTypeHandle
         =
         let typeDefn =
-            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies typeInfo
+            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies typeInfo
 
         IlMachineState.concretizeType
             loggerFactory

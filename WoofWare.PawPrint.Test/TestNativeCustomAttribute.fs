@@ -82,7 +82,7 @@ public sealed class TypeAttribute : System.Attribute
         : IlMachineState * ConcreteTypeHandle
         =
         let typeDefn =
-            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies typeInfo
+            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies typeInfo
 
         IlMachineState.concretizeType
             loggerFactory

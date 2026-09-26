@@ -552,7 +552,7 @@ module NativeRuntimeMethodHandle =
             =
             StubDeclaringType.MethodTable
                 {
-                    IsValueType = DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo
+                    IsValueType = LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo
                     HasInstantiation = hasInstantiation
                     IsGenericTypeDefinition = isGenericTypeDefinition
                     IsInterface = typeInfo.TypeAttributes.HasFlag TypeAttributes.Interface
@@ -1026,7 +1026,7 @@ module NativeRuntimeMethodHandle =
                 | Some (MethodInfo.Metadata (_, facts)) -> facts.MethodAttributes
                 | None ->
                     // No constructor was supplied or found.
-                    if DumpedAssembly.isValueType ctx.BaseClassTypes state._LoadedAssemblies attrTypeInfo then
+                    if LoadedTypeInfo.isValueType ctx.BaseClassTypes state._LoadedAssemblies attrTypeInfo then
                         // CoreCLR: value types fall through with dwAttr = mdPublic, so
                         // canAccessMethod only checks class visibility.
                         MethodAttributes.Public
@@ -1178,7 +1178,7 @@ module NativeRuntimeMethodHandle =
 
                     FunctionPointerDeclaringType.Closed
                         {
-                            IsValueType = DumpedAssembly.isValueType ctx.BaseClassTypes state._LoadedAssemblies typeInfo
+                            IsValueType = LoadedTypeInfo.isValueType ctx.BaseClassTypes state._LoadedAssemblies typeInfo
                             IsInterface = typeInfo.TypeAttributes.HasFlag TypeAttributes.Interface
                             IsSharedByGenericInstantiations =
                                 concreteType.Generics

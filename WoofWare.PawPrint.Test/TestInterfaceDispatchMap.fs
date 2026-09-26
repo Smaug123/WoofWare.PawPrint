@@ -82,7 +82,7 @@ module TestInterfaceDispatchMap =
         (arguments : ConcreteTypeHandle list)
         : IlMachineState * ConcreteTypeHandle
         =
-        DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
+        LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
         |> IlMachineState.concretizeType
             loggerFactory
             bct

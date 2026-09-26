@@ -356,7 +356,7 @@ module internal UnaryMetadataObjectOps =
             IlMachineState.allocateManagedObject ty fields state
 
         let state =
-            if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ctorType then
+            if LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies ctorType then
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer (heapValueByref allocatedAddr)) thread
             else
@@ -517,7 +517,7 @@ module internal UnaryMetadataObjectOps =
         // (legal, answers 16). Universe-independent, because the same IL is illegal either way; it
         // is only *reachable* from a `DynamicScope` operand, because no compiler emits it.
         match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes typeHandle with
-        | Some (_, boxedDefn) when DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies boxedDefn ->
+        | Some (_, boxedDefn) when LoadedTypeInfo.isByRefLike baseClassTypes state._LoadedAssemblies boxedDefn ->
             // Don't advance the PC: exception dispatch needs the faulting instruction's offset.
             IlMachineStateExecution.raiseRuntimeExceptionWithMessage
                 loggerFactory
@@ -536,7 +536,7 @@ module internal UnaryMetadataObjectOps =
             (state._LoadedAssemblies.ByDefinitionName targetType.AssemblyFullName).TypeDefs.[targetType.Definition.Get]
 
         let toPush, state =
-            if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies defn then
+            if LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies defn then
                 // Boxing a value type: wrap it in a heap object and push an ObjectRef. A
                 // `Nullable<T>` boxes to null or to a boxed `T`; `boxValue` owns that rule.
                 Boxing.boxValue loggerFactory baseClassTypes typeHandle toBox state
@@ -672,7 +672,7 @@ module internal UnaryMetadataObjectOps =
             InternalTypeKind.kind baseClassTypes targetConcreteType = InternalTypeKind.Nullable
 
         let isValueType =
-            DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies targetDefn
+            LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies targetDefn
 
         if isNullable then
             // ECMA-335 III.4.33 / CoreCLR `Nullable::UnBox` (src/coreclr/vm/object.cpp). `box` of a

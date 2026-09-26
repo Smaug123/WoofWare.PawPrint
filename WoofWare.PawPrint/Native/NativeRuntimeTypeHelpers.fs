@@ -232,7 +232,7 @@ module NativeRuntimeTypeHelpers =
         (typeInfo : TypeInfo<_, _>)
         : int32
         =
-        if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+        if LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
             0x11
         else
             0x12
@@ -494,7 +494,7 @@ module NativeRuntimeTypeHelpers =
                     failwith
                         $"MethodTable_CanCompareBitsOrUseFastGetHashCode: concrete type handle was not registered: %O{methodTableFor}"
 
-            if not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo) then
+            if not (LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo) then
                 failwith
                     $"MethodTable_CanCompareBitsOrUseFastGetHashCode: expected value-type MethodTable, got %s{typeInfo.Namespace}.%s{typeInfo.Name}"
 
@@ -692,7 +692,7 @@ module NativeRuntimeTypeHelpers =
                 $"getOrAllocateNonGenericRuntimeType: expected non-generic runtime type for %s{typeInfo.Name}, but metadata has %i{typeInfo.Generics.Length} generic parameters"
 
         let stk =
-            DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies typeInfo
+            LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies typeInfo
 
         let state, typeHandle =
             IlMachineState.concretizeType
@@ -741,7 +741,7 @@ module NativeRuntimeTypeHelpers =
         | None -> None, state
         | Some declaringTypeInfo when declaringTypeInfo.Generics.IsEmpty ->
             let stk =
-                DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies declaringTypeInfo
+                LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies declaringTypeInfo
 
             let state, typeHandle =
                 IlMachineState.concretizeType
@@ -1034,7 +1034,7 @@ module NativeRuntimeTypeHelpers =
         let typeInfo = findCorelibType baseClassTypes ``namespace`` name
 
         let stk =
-            DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies typeInfo
+            LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies typeInfo
 
         let state, typeHandle =
             IlMachineState.concretizeType
@@ -1296,7 +1296,7 @@ module NativeRuntimeTypeHelpers =
         =
         match nominalTypeInfoOfArgument state arg with
         | None -> false // arrays / byref / pointer are not value types
-        | Some typeInfo -> DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo
+        | Some typeInfo -> LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo
 
     /// True iff `arg` is the corelib's `System.Nullable\`1` definition. Roslyn emits
     /// the value-type constraint for `where T : struct` as the
@@ -1326,7 +1326,7 @@ module NativeRuntimeTypeHelpers =
         match nominalTypeInfoOfArgument state arg with
         | None -> false
         | Some typeInfo ->
-            if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+            if LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
                 true
             elif typeInfo.IsInterface then
                 false
@@ -1380,7 +1380,7 @@ module NativeRuntimeTypeHelpers =
         | (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity | RuntimeTypeHandleTarget.OpenConstructed (identity,
                                                                                                                  _)) when
             state._LoadedAssemblies.ByDefinitionName(identity.AssemblyFullName).TypeDefs.[identity.TypeDefinition.Get]
-            |> DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies
+            |> LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies
             ->
             // Real .NET applies the size limit to an open value type too, sizing its canonical
             // form: measured on .NET 10, `BigWrapper<>[]` and `BigWrapper<T>[]` throw where
@@ -1709,7 +1709,7 @@ module NativeRuntimeTypeHelpers =
             )
 
         let stk =
-            DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies moduleTypeInfo
+            LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies moduleTypeInfo
 
         let state, moduleTypeHandle =
             IlMachineState.concretizeType
@@ -2508,7 +2508,7 @@ module ActivationInfo =
         | InternalTypeKind.NativeUInt ->
 
         let isValueType =
-            DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo
+            LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo
 
         // Visibility-blind, matching CoreCLR's `HasDefaultConstructor` / `GetDefaultConstructor`:
         // a private parameterless ctor *is* found, and its publicness is reported separately so
@@ -2640,10 +2640,10 @@ module BoxInfo =
         // wave it through.
         if TypeInfo.NominallyEqual typeInfo baseClassTypes.Void then
             state, BoxInfo.Rejected BoxRejection.Void
-        elif not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo) then
+        elif not (LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo) then
             failwith
                 $"%s{operation}: reached for the reference type %s{typeInfo.Namespace}.%s{typeInfo.Name}; RuntimeType.BoxCache calls this QCall only when MethodTable::IsValueType"
-        elif DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies typeInfo then
+        elif LoadedTypeInfo.isByRefLike baseClassTypes state._LoadedAssemblies typeInfo then
             state, BoxInfo.Rejected BoxRejection.ByRefLike
         else
 
@@ -2883,7 +2883,7 @@ module UninitializedObjectInfo =
             state, UninitializedObjectInfo.Rejected UninitializedObjectRejection.VariableLength
         elif typeInfo.TypeAttributes.HasFlag TypeAttributes.Abstract then
             state, UninitializedObjectInfo.Rejected UninitializedObjectRejection.Abstract
-        elif DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies typeInfo then
+        elif LoadedTypeInfo.isByRefLike baseClassTypes state._LoadedAssemblies typeInfo then
             state, UninitializedObjectInfo.Rejected UninitializedObjectRejection.ByRefLike
         else
 

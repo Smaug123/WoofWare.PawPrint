@@ -134,7 +134,7 @@ module TypeResolution =
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <c>DumpedAssembly.isValueType</c>, <c>signatureTypeKind</c> and <c>typeInfoToTypeDefn</c>
+    /// <c>LoadedTypeInfo.isValueType</c>, <c>signatureTypeKind</c> and <c>typeInfoToTypeDefn</c>
     /// walk a type's base-type chain given only a <c>LoadedAssemblies</c>. They cannot load, so
     /// they fail hard ("seems pretty unlikely that we could have constructed this object without
     /// loading its base type") whenever a link in that chain is a TypeRef scoped to an assembly
@@ -183,7 +183,7 @@ module TypeResolution =
         (assemblies : LoadedAssemblies)
         : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
-        match Assembly.resolveTopLevelTypeFromName assy assemblies ns name genericArgs with
+        match LoadedTypeResolution.resolveTopLevelTypeFromName assy assemblies ns name genericArgs with
         | TypeResolutionResult.Resolved (assy, _, typeDef) ->
             primeBaseChain loggerFactory dotnetRuntimeDirs assemblies assy typeDef, assy, typeDef
         | TypeResolutionResult.NotFound miss -> failwithf "Top-level type resolution failed: %O" miss
@@ -223,7 +223,7 @@ module TypeResolution =
         (assemblies : LoadedAssemblies)
         : LoadedAssemblies * ExportChainArrival
         =
-        match Assembly.resolveTypeFromExport fromAssembly assemblies genericArgs ty with
+        match LoadedTypeResolution.resolveTypeFromExport fromAssembly assemblies genericArgs ty with
         | TypeResolutionResult.Resolved (assy, _, typeDef) -> assemblies, ExportChainArrival.Arrived (assy, typeDef)
         | TypeResolutionResult.NotFound miss -> assemblies, ExportChainArrival.TypeAbsent miss
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
@@ -334,7 +334,7 @@ module TypeResolution =
         (assemblies : LoadedAssemblies)
         : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
-        match Assembly.resolveTypeRef assemblies referencedInAssembly typeGenericArgs target with
+        match LoadedTypeResolution.resolveTypeRef assemblies referencedInAssembly typeGenericArgs target with
         | TypeResolutionResult.Resolved (assy, _, typeDef) ->
             primeBaseChain loggerFactory dotnetRuntimeDirs assemblies assy typeDef, assy, typeDef
         | TypeResolutionResult.NotFound miss ->
@@ -383,7 +383,7 @@ module TypeResolution =
         (assemblies : LoadedAssemblies)
         : LoadedAssemblies * Result<ResolvedTypeIdentity, TypeResolutionMiss>
         =
-        match Assembly.resolveTypeRef assemblies referencedInAssembly ImmutableArray.Empty target with
+        match LoadedTypeResolution.resolveTypeRef assemblies referencedInAssembly ImmutableArray.Empty target with
         | TypeResolutionResult.Resolved (_, identity, _) -> assemblies, Ok identity
         | TypeResolutionResult.NotFound miss -> assemblies, Error miss
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
@@ -765,7 +765,7 @@ module TypeResolution =
                     assemblies
 
             let preserved =
-                DumpedAssembly.typeInfoToTypeDefn baseClassTypes assemblies resolvedInfo
+                LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes assemblies resolvedInfo
 
             assemblies, preserved
         | TypeDefn.FromReference _
@@ -788,7 +788,7 @@ module TypeResolution =
                     assemblies
 
             let preserved =
-                DumpedAssembly.typeInfoToTypeDefn baseClassTypes assemblies resolvedInfo
+                LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes assemblies resolvedInfo
 
             match preserved with
             | TypeDefn.GenericInstantiation (head, injected) ->
@@ -850,7 +850,7 @@ module TypeResolution =
                     assemblies
 
             let preserved =
-                DumpedAssembly.typeInfoToTypeDefn baseClassTypes assemblies resolvedInfo
+                LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes assemblies resolvedInfo
 
             assemblies, preserved
 

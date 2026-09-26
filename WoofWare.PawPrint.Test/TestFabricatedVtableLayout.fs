@@ -661,7 +661,7 @@ module TestFabricatedVtableLayout =
                     | Some typeInfo -> typeInfo
 
                 let state, handle =
-                    DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies argumentTypeInfo
+                    LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies argumentTypeInfo
                     |> IlMachineState.concretizeType
                         loggerFactory
                         bct
@@ -676,7 +676,7 @@ module TestFabricatedVtableLayout =
         // As in TestVirtualMethodSlots: `typeInfoToTypeDefn'` already yields the instantiation shape
         // `T`n<!0, ..>`, so close it by supplying the arguments as the type-generic context rather
         // than by wrapping it again.
-        DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
+        LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
         |> IlMachineState.concretizeType
             loggerFactory
             bct

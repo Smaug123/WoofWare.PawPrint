@@ -289,7 +289,7 @@ module TestDelegateLayout =
             (ty : TypeInfo<GenericParamFromMetadata, TypeDefn>)
             : IlMachineState * ConcreteTypeHandle
             =
-            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies ty
+            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies ty
             |> IlMachineState.concretizeType
                 loggerFactory
                 baseClassTypes

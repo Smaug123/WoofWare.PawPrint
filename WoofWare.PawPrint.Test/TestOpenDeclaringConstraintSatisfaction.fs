@@ -180,7 +180,7 @@ public class D_Self<T> where T : class { public void M_Self<U>() where U : D_Sel
             Defn =
                 TypeDefn.FromDefinition (
                     typeInfo.Identity,
-                    DumpedAssembly.signatureTypeKind bct initialState._LoadedAssemblies typeInfo
+                    LoadedTypeInfo.signatureTypeKind bct initialState._LoadedAssemblies typeInfo
                 )
             Host = hostType name
         }
@@ -207,7 +207,7 @@ public class D_Self<T> where T : class { public void M_Self<U>() where U : D_Sel
                 TypeDefn.GenericInstantiation (
                     TypeDefn.FromDefinition (
                         definition.Identity,
-                        DumpedAssembly.signatureTypeKind bct initialState._LoadedAssemblies definition
+                        LoadedTypeInfo.signatureTypeKind bct initialState._LoadedAssemblies definition
                     ),
                     args |> List.map (fun a -> a.Defn) |> ImmutableArray.CreateRange
                 )

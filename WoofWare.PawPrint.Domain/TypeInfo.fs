@@ -182,7 +182,7 @@ type TypeInfo<'generic, 'fieldGeneric> =
         /// classification: CoreCLR reads the attribute inside the <c>fIsValueClass = true</c> branch
         /// of <c>MethodTableBuilder::BuildMethodTableThrowing</c> (methodtablebuilder.cpp:1449), so a
         /// *class* carrying it — which C# cannot emit but IL can, <c>AttributeUsage</c> binding only
-        /// the compiler — is not byref-like. Ask <c>DumpedAssembly.isByRefLike</c>, which applies
+        /// the compiler — is not byref-like. Ask <c>LoadedTypeInfo.isByRefLike</c>, which applies
         /// that gate, rather than reading this field directly.
         ///
         /// Matched by namespace and name, with no requirement that the attribute be corelib's, as
@@ -902,7 +902,7 @@ module TypeInfo =
 
         let defn =
             // The only allowed construction of FromDefinition!
-            // All other constructions should use DumpedAssembly.typeInfoToTypeDefn.
+            // All other constructions should use LoadedTypeInfo.typeInfoToTypeDefn.
             TypeDefn.FromDefinition (ty.Identity, stk)
 
         if ty.Generics.IsEmpty then

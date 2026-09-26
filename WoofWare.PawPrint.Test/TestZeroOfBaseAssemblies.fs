@@ -85,7 +85,7 @@ module TestZeroOfBaseAssemblies =
             }
 
         // FSharpValueOption`1 is [<Struct>], so its signature-kind is ValueType.
-        // We hardcode this rather than calling DumpedAssembly.signatureTypeKind,
+        // We hardcode this rather than calling LoadedTypeInfo.signatureTypeKind,
         // which itself would trigger the same base-chain walk we're trying to
         // exercise the fix for.
         let valueOptionInt : TypeDefn =
@@ -117,7 +117,7 @@ module TestZeroOfBaseAssemblies =
         // TypeRef points at System.ValueType in netstandard (not yet loaded).
         let isValueTypeBeforeHelper =
             try
-                DumpedAssembly.isValueType baseTypes concretizeCtx.LoadedAssemblies valueOptionTypeDef
+                LoadedTypeInfo.isValueType baseTypes concretizeCtx.LoadedAssemblies valueOptionTypeDef
                 |> Ok
             with e ->
                 Error e.Message
@@ -147,7 +147,7 @@ module TestZeroOfBaseAssemblies =
         |> shouldEqual true
 
         // isValueType now succeeds — FSharpValueOption is a struct.
-        DumpedAssembly.isValueType baseTypes loadedAfterHelper valueOptionTypeDef
+        LoadedTypeInfo.isValueType baseTypes loadedAfterHelper valueOptionTypeDef
         |> shouldEqual true
 
     [<Test>]
@@ -312,7 +312,7 @@ public struct Outer
         // And isValueType on the nested field type succeeds too.
         let valueOptionTypeDef = getValueOptionTypeDef fsharpCore
 
-        DumpedAssembly.isValueType baseTypes loadedAfterHelper valueOptionTypeDef
+        LoadedTypeInfo.isValueType baseTypes loadedAfterHelper valueOptionTypeDef
         |> shouldEqual true
 
     /// Shared setup for the recursively-constructed-type regressions: compile
