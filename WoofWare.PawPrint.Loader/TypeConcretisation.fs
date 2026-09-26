@@ -914,26 +914,7 @@ module TypeConcretization =
         : ConcreteTypeHandle * ConcretizationContext<'corelib>
         =
 
-        // Get the TypeInfo for this primitive from BaseClassTypes
-        let typeInfo =
-            match prim with
-            | PrimitiveType.Boolean -> ctx.BaseTypes.Boolean
-            | PrimitiveType.Char -> ctx.BaseTypes.Char
-            | PrimitiveType.SByte -> ctx.BaseTypes.SByte
-            | PrimitiveType.Byte -> ctx.BaseTypes.Byte
-            | PrimitiveType.Int16 -> ctx.BaseTypes.Int16
-            | PrimitiveType.UInt16 -> ctx.BaseTypes.UInt16
-            | PrimitiveType.Int32 -> ctx.BaseTypes.Int32
-            | PrimitiveType.UInt32 -> ctx.BaseTypes.UInt32
-            | PrimitiveType.Int64 -> ctx.BaseTypes.Int64
-            | PrimitiveType.UInt64 -> ctx.BaseTypes.UInt64
-            | PrimitiveType.Single -> ctx.BaseTypes.Single
-            | PrimitiveType.Double -> ctx.BaseTypes.Double
-            | PrimitiveType.String -> ctx.BaseTypes.String
-            | PrimitiveType.Object -> ctx.BaseTypes.Object
-            | PrimitiveType.TypedReference -> ctx.BaseTypes.TypedReference
-            | PrimitiveType.IntPtr -> ctx.BaseTypes.IntPtr
-            | PrimitiveType.UIntPtr -> ctx.BaseTypes.UIntPtr
+        let typeInfo = BaseClassTypes.ofPrimitive ctx.BaseTypes prim
 
         // Check if we've already concretized this primitive type
         let identity =

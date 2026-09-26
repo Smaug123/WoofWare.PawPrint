@@ -88,26 +88,13 @@ module FLockRefusal =
         | FLockRefusal.DarwinConversion ->
             "the descriptor is converting a lock it already holds. Should that conversion fail, Linux leaves the description holding *nothing* (`flock` removes the old lock before establishing the new one, and the two steps are not atomic) while Darwin leaves the old lock in place -- measured on both, and indistinguishable from the return code, which is EWOULDBLOCK either way."
 
-/// How a caller says it will read a region, in `posix_fadvise(2)`'s own
-/// vocabulary.
-///
-/// Closed, and deliberately not an integer: the six are the whole of what the
-/// call accepts, and a value outside them is a malformed request rather than an
-/// advice this kernel does not implement.
+/// Why this kernel will not answer a `posix_fadvise(2)`.
 [<RequireQualifiedAccess>]
-type FileAccessAdvice =
-    /// No special advice; the default a file is opened with.
-    | Normal
-    /// The region will be read in random order.
-    | Random
-    /// The region will be read in order.
-    | Sequential
-    /// The region will be read soon.
-    | WillNeed
-    /// The region will not be read soon.
-    | DontNeed
-    /// The region will be read exactly once.
-    | NoReuse
+type PosixFadviseRefusal =
+    /// The simulated platform's libc has no `posix_fadvise`
+    /// (`SimulatedUnixPlatform.providesPosixFadvise` is `false`), so no program
+    /// could have made the call and there is no answer to give.
+    | NotProvided
 
 /// What `posix_fadvise(2)` answered.
 ///
@@ -659,58 +646,63 @@ module UnixDescriptor =
 
     /// `posix_fadvise(2)`: tell the kernel how a region of `fd` will be read.
     ///
-    /// Only meaningful where the platform has the call:
-    /// `SimulatedUnixPlatform.providesPosixFadvise` is the guard, and must be
-    /// consulted first. A platform that answers `false` there provides no such
-    /// libc function, so a program could not have called it and there is nothing
-    /// for this to model; what a client's own shim reports for a call it could
-    /// not have made is the client's to say.
+    /// `advice` is the platform's raw `POSIX_FADV_*` number. Linux accepts 0
+    /// (`NORMAL`) to 5 (`NOREUSE`) on x86-64 and aarch64 alike, and answers any
+    /// other value EINVAL, but only once the descriptor has been screened: a
+    /// closed descriptor is EBADF and a pipe ESPIPE whatever the advice.
+    ///
+    /// Refused where the platform's libc has no such call (Darwin): no program
+    /// could have made it.
     ///
     /// A pure hint: this kernel models no readahead, so a `Completed` answer
     /// leaves the system exactly as it arrived. That is why no system comes
     /// back.
     ///
-    /// The rows this implements are measured on Linux 6.18.5 by
-    /// `docs/probes/fadvise/fadvise.py`. Two of them contradict what "not
-    /// seekable" would predict: a socket and a socket event port both succeed,
-    /// and only a pipe answers ESPIPE.
+    /// The rows this implements are measured on Linux 6.18.5, on x86-64 and
+    /// aarch64, by `docs/probes/fadvise/fadvise.py`; the two architectures agree
+    /// row for row. Two rows contradict what "not seekable" would predict: a
+    /// socket and an epoll instance both succeed, and only a pipe answers
+    /// ESPIPE.
     let posixFadvise<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (offset : int64)
         (length : int64)
-        (advice : FileAccessAdvice)
+        (advice : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : FileAdviceAnswer
+        : Result<FileAdviceAnswer, PosixFadviseRefusal>
         =
-        // Neither the offset nor the advice reaches a screen. Measured, the
-        // offset is never validated at all — a negative one, and one whose sum
-        // with the length overflows, both succeed — and all six advices behave
-        // identically, this kernel modelling no readahead for them to steer.
+        // Measured, the offset is never validated at all: a negative one, and
+        // one whose sum with the length overflows, both succeed.
         ignore<int64> offset
-        ignore<FileAccessAdvice> advice
+
+        if not (SimulatedUnixPlatform.providesPosixFadvise system.Machine.UnixPlatform) then
+            Error PosixFadviseRefusal.NotProvided
+        else
 
         match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
-        | None -> FileAdviceAnswer.Failed UnixError.EBADF
+        | None -> Ok (FileAdviceAnswer.Failed UnixError.EBADF)
         | Some description ->
 
         match description.Target with
         | OpenFileTarget.StandardStream _ ->
             // A pipe, which is what this kernel models the standard streams as.
-            // Measured on both ends of a real pipe, and ahead of the length
-            // screen below: the pipe test sits in the syscall entry, where the
-            // range check belongs to the generic path it dispatches to.
-            FileAdviceAnswer.Failed UnixError.ESPIPE
+            // Measured on both ends of a real pipe, and ahead of the length and
+            // advice screens below: the pipe test sits in the syscall entry,
+            // where the range and advice checks belong to the generic path it
+            // dispatches to.
+            Ok (FileAdviceAnswer.Failed UnixError.ESPIPE)
         | OpenFileTarget.File _
         | OpenFileTarget.SocketEventPort _
         | OpenFileTarget.Socket _ ->
 
-        // Measured on a regular file. The length is the only screened argument,
-        // and this kernel has no descriptor kind that would screen it
-        // differently: it belongs to the generic path every non-pipe reaches.
-        if length < 0L then
-            FileAdviceAnswer.Failed UnixError.EINVAL
+        // The generic path every non-pipe reaches screens the length and the
+        // advice, and both answer EINVAL, so their relative order is invisible.
+        // All six advices then behave identically, this kernel modelling no
+        // readahead for them to steer.
+        if length < 0L || advice < 0 || advice > 5 then
+            Ok (FileAdviceAnswer.Failed UnixError.EINVAL)
         else
-            FileAdviceAnswer.Completed
+            Ok FileAdviceAnswer.Completed
 
     /// `flock(2)`, made by `task`: take, convert or release an advisory lock on
     /// `fd`'s open file description.

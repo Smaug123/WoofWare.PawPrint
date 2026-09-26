@@ -352,10 +352,8 @@ module SimulatedUnixPlatform =
     ///
     /// Measured, not read from a feature test: macOS 26.6's libc exports no such
     /// symbol, so a program that called it would not link, and there is no
-    /// answer for a caller to compare against. Linux 6.18.5 provides it. A
-    /// caller that has no answer of its own to give for the absent case wants
-    /// <c>UnixDescriptor.posixFadvise</c>, which reports the absence rather than
-    /// leaving it to be guessed.
+    /// answer for a caller to compare against. Linux 6.18.5 provides it.
+    /// <c>UnixDescriptor.posixFadvise</c> refuses on a platform without it.
     ///
     /// Darwin's nearest equivalent is the <c>F_RDADVISE</c> fcntl, which takes a
     /// different argument shape and is not modelled: the two are not

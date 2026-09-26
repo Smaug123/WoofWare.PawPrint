@@ -3064,8 +3064,11 @@ module NativeSystemNative =
                 let length = NativeCall.int64Argument operation instruction.Arguments.[2]
 
                 match UnixDescriptor.posixFadvise fd offset length advice (EmulatedKernel.unix state.Kernel) with
-                | FileAdviceAnswer.Completed -> 0
-                | FileAdviceAnswer.Failed error -> UnixError.toRawErrnoUnder numbering error
+                | Ok FileAdviceAnswer.Completed -> 0
+                | Ok (FileAdviceAnswer.Failed error) -> UnixError.toRawErrnoUnder numbering error
+                | Error PosixFadviseRefusal.NotProvided ->
+                    failwith
+                        $"%s{operation}: the library refused posix_fadvise as not provided on %O{state.Kernel.UnixPlatform}, but this handler answered that platform's missing call itself (ENOTSUP) before asking. The two disagree about which platforms provide it; this is a bug in PawPrint."
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim returned)) ctx.Thread
