@@ -42,6 +42,7 @@ cat > "$tmp/lib/Nested/B.fs" <<'EOF'
 module B
 /// `NativeEnvironment` asserts it; `HostConfig` launches it.
 // A `DIR*` is keyed through DirectoryStreamBlocks.
+// NextLowLevelMonitorId numbers the LowLevelMonitor table.
 let nested = 1
 EOF
 
@@ -71,6 +72,8 @@ expected_hits=(
   "Nested/B.fs:2: NativeEnvironment:"
   "Nested/B.fs:2: HostConfig:"
   "Nested/B.fs:3: DirectoryStreamBlocks:"
+  "Nested/B.fs:4: NextLowLevelMonitorId:"
+  "Nested/B.fs:4: LowLevelMonitor:"
 )
 
 fail=0

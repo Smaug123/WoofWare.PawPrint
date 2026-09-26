@@ -1517,10 +1517,9 @@ module VirtualFileSystem =
             //
             // `Map.tryPick` walks the tree; a search over `Map.toList` copies it
             // first. That matters because this runs on every `getcwd`, which a
-            // guest reaches through `Environment.CurrentDirectory` and every
-            // relative `Path.GetFullPath` — and the copy made the cost scale
-            // with how many *siblings* the directory has, not with the depth of
-            // its path. Measured over one directory of 100,000 entries:
+            // client may call for every relative path it resolves, and the copy
+            // made the cost scale with how many *siblings* the directory has,
+            // not with the depth of its path. Measured over one directory of 100,000 entries:
             // `Map.toList` 2.3 ms and 6.4 MB per call, `Map.tryPick` 0.39 ms and
             // 24 bytes. (`Map.tryFindKey`, which reads like the natural answer,
             // measures *worse* than `Map.toList` on both counts.)

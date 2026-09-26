@@ -31,9 +31,8 @@ type SignalInitState<'Task> =
     /// Signal handling has not yet been set up; no dispatcher thread
     /// exists. `SignalState.initial` starts here.
     | NotInitialized
-    /// The client has initialised signal handling at least
-    /// `SystemNative_InitializeTerminalAndSignalHandling` at least
-    /// once; `dispatcher` identifies the client's signal-dispatch task,
+    /// The client has initialised signal handling at least once;
+    /// `dispatcher` identifies the client's signal-dispatch task,
     /// allocated at that moment. What that task *is* is the client's
     /// business — this type only records which one it was, so that the
     /// "exists iff initialised" invariant has somewhere to live.
@@ -43,7 +42,7 @@ type SignalInitState<'Task> =
 /// by `SignalState.nextDelivery`: hand it to the client's installed handler
 /// on a chosen receiver thread, or apply the signal's kernel default. The
 /// client interprets it — runs the handler, terminates the simulated
-/// process with `128 + signo`, or refuses what it does not model.
+/// process by the signal, or refuses what it does not model.
 [<RequireQualifiedAccess>]
 type SignalDelivery<'Task, 'Handler> =
     /// Deliver `entry` to the client's dispatch callback. `receiver` is the
@@ -53,7 +52,9 @@ type SignalDelivery<'Task, 'Handler> =
     /// interrupt.
     | RunHandler of entry : PendingSignal<'Task> * receiver : 'Task * handler : 'Handler
     /// No handler claims the signal and its kernel default is to terminate
-    /// the process (POSIX exit status `128 + signo`).
+    /// the process. A parent's `wait` then reports the process as killed by
+    /// the signal (`WIFSIGNALED`, `WTERMSIG`); `128 + signo` is only how a
+    /// shell renders that as an exit status.
     | DefaultTerminate of Signal
     /// No handler claims the signal and its kernel default is to suspend
     /// the whole process.
@@ -83,8 +84,7 @@ type SignalGeneration =
 /// Pure, deterministic model of the simulator's signal-handling state.
 ///
 /// The shape is deliberately small:
-///   * `Init` — has the client initialised signal handling, and
-///     `SystemNative_InitializeTerminalAndSignalHandling` yet, and
+///   * `Init` — has the client initialised signal handling yet, and
 ///     which task is the dispatcher? Several console paths gate
 ///     work behind initialisation, and read the dispatcher off this
 ///     field.
