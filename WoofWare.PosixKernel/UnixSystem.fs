@@ -167,6 +167,9 @@ type UnixSystemDefect<'Task> =
     /// machine of the platform's architecture has been observed to have. See
     /// `UnixMachineState.isUserBufferCheckOf`.
     | UserBufferCheckNotOfPlatform of platform : SimulatedUnixPlatform * check : UserBufferCheck
+    /// The process holds more supplementary groups than its machine's
+    /// platform lets any process hold (`SimulatedUnixPlatform.supplementaryGroupLimit`).
+    | TooManySupplementaryGroups of count : int * limit : int
 
 /// Why the directory a host named cannot be the one a simulated process starts
 /// in. `UnixSystem.withFileSystemAndCurrentDirectory` returns one instead of
@@ -271,7 +274,9 @@ module UnixSystem =
         match call with
         | Syscall.GetEffectiveUserId ->
             Ok (
-                SyscallOutcome.Answered (SyscallAnswer.Completed (int64 (UnixDescriptor.effectiveUserId system))),
+                SyscallOutcome.Answered (
+                    SyscallAnswer.Completed (int64 (UserId.toUInt32 (UnixDescriptor.effectiveUserId system)))
+                ),
                 system
             )
         | Syscall.GetProcessId ->
@@ -644,6 +649,17 @@ module UnixSystem =
                     )
                 ]
 
+        let supplementaryGroups =
+            let count = List.length system.Process.Credentials.SupplementaryGroups
+
+            let limit =
+                SimulatedUnixPlatform.supplementaryGroupLimit system.Machine.UnixPlatform
+
+            if count > limit then
+                [ UnixSystemDefect.TooManySupplementaryGroups (count, limit) ]
+            else
+                []
+
         dangling
         @ unreferenced
         @ freshness
@@ -663,6 +679,7 @@ module UnixSystem =
         @ signals
         @ fileSystemType
         @ userBufferCheck
+        @ supplementaryGroups
 
     /// Logical-processor count a freshly-minted simulated process reports.
     /// One, because only single-processor behaviour has been exercised
@@ -755,19 +772,25 @@ module UnixSystem =
     /// Instead the first interactive user each flavour creates: 1000 on the
     /// Ubuntu-shaped Linux, and 501 on macOS (measured, `id -u` of the first
     /// account on a macOS 26 machine, 2026-09-08). A client that wants root says
-    /// so with `UnixProcessState.withUserAndGroupId`.
-    let defaultUserId (flavour : SimulatedUnixFlavour) : uint32 =
+    /// so with `UnixSystem.withCredentials`.
+    let defaultUserId (flavour : SimulatedUnixFlavour) : UserId =
         match flavour with
-        | SimulatedUnixFlavour.Linux -> 1000u
-        | SimulatedUnixFlavour.Darwin -> 501u
+        | SimulatedUnixFlavour.Linux -> UserId.parseOrFail "UnixSystem.defaultUserId" 1000u
+        | SimulatedUnixFlavour.Darwin -> UserId.parseOrFail "UnixSystem.defaultUserId" 501u
 
     /// Effective group ID a freshly-minted simulated process runs as: the
     /// first user's primary group, which is a user-private group numbered as
     /// the user on Linux and `staff` (20) on macOS (measured with the uid).
-    let defaultGroupId (flavour : SimulatedUnixFlavour) : uint32 =
+    let defaultGroupId (flavour : SimulatedUnixFlavour) : GroupId =
         match flavour with
-        | SimulatedUnixFlavour.Linux -> 1000u
-        | SimulatedUnixFlavour.Darwin -> 20u
+        | SimulatedUnixFlavour.Linux -> GroupId.parseOrFail "UnixSystem.defaultGroupId" 1000u
+        | SimulatedUnixFlavour.Darwin -> GroupId.parseOrFail "UnixSystem.defaultGroupId" 20u
+
+    /// Credentials a freshly-minted simulated process runs with: real,
+    /// effective and saved IDs all `defaultUserId` and `defaultGroupId`, and no
+    /// supplementary groups.
+    let defaultCredentials (flavour : SimulatedUnixFlavour) : Credentials =
+        Credentials.ofIds (defaultUserId flavour) (defaultGroupId flavour) []
 
     /// File-mode creation mask a freshly-minted simulated process reports.
     /// 0o022 because that is what essentially every Unix login shell and service
@@ -871,13 +894,62 @@ module UnixSystem =
                     // whatever else a host goes on to set.
                     CurrentDirectoryInode = VirtualFileSystem.root filesystem
                     ProcessPath = defaultProcessPath
-                    UserId = defaultUserId flavour
-                    GroupId = defaultGroupId flavour
+                    Credentials = defaultCredentials flavour
                     Umask = defaultUmask
                     ProcessId = defaultProcessId
                     Signals = SignalState.initial (SimulatedUnixPlatform.signalNumbering platform)
                 }
             Tasks = Map.empty
+        }
+
+    /// Set who the simulated process is.
+    ///
+    /// `context` prefixes the rejection a configuration earns, and is the
+    /// client's to choose, so a host that has to fix one is told the name its
+    /// own configuration gives it.
+    ///
+    /// Refuses more supplementary groups than the platform's
+    /// `SimulatedUnixPlatform.supplementaryGroupLimit`, which no process on it
+    /// could hold. On Darwin it also refuses credentials whose real, effective
+    /// and saved IDs are not all the same: which of them a Darwin kernel
+    /// consults has not been measured, so this library does not model such a
+    /// process there.
+    let withCredentials<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (context : string)
+        (credentials : Credentials)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        let platform = system.Machine.UnixPlatform
+        let count = List.length credentials.SupplementaryGroups
+        let limit = SimulatedUnixPlatform.supplementaryGroupLimit platform
+
+        if count > limit then
+            failwith
+                $"%s{context}: %d{count} supplementary groups is more than the %d{limit} a process can hold on %O{SimulatedUnixPlatform.flavour platform} (setgroups(2) answers EINVAL above NGROUPS_MAX)."
+
+        match SimulatedUnixPlatform.flavour platform with
+        | SimulatedUnixFlavour.Linux -> ()
+        | SimulatedUnixFlavour.Darwin ->
+            // Measuring it needs a process that can change its user ID, which is
+            // root, and none has been available on Darwin.
+            let usersAgree =
+                credentials.RealUser = credentials.EffectiveUser
+                && credentials.SavedUser = credentials.EffectiveUser
+
+            let groupsAgree =
+                credentials.RealGroup = credentials.EffectiveGroup
+                && credentials.SavedGroup = credentials.EffectiveGroup
+
+            if not (usersAgree && groupsAgree) then
+                failwith
+                    $"%s{context}: the credentials %O{credentials} have real, effective and saved IDs that differ, which this library does not model on Darwin: which of them a Darwin kernel consults has not been measured. Give all three the same user ID and the same group ID."
+
+        { system with
+            Process =
+                { system.Process with
+                    Credentials = credentials
+                }
         }
 
     /// Realise `seed` as this system's filesystem and start the simulated

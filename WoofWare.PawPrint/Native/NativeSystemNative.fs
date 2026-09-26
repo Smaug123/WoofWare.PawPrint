@@ -897,8 +897,8 @@ module NativeSystemNative =
         putInt32 0 (if status.BirthTime.IsSome then 1 else 0)
 
         putInt32 4 status.Mode
-        putUInt32 8 status.UserId
-        putUInt32 12 status.GroupId
+        putUInt32 8 (UserId.toUInt32 status.UserId)
+        putUInt32 12 (GroupId.toUInt32 status.GroupId)
         putInt64 16 status.Size
         putTime 24 status.AccessTime
         putTime 40 status.ModificationTime
@@ -2447,9 +2447,9 @@ module NativeSystemNative =
             // `uint32_t SystemNative_GetEUid(void)` (pal_uid.c:91) is
             // `return geteuid();` — infallible, as `geteuid(2)` is.
             //
-            // The same `UserId` `Stat`/`LStat` below report as every inode's
-            // `st_uid`, because the emulated process has one identity: no
-            // reachable syscall can give an inode an owner of its own
+            // The same effective user ID `Stat`/`LStat` below report as every
+            // inode's `st_uid`: the kernel stores no per-inode owner yet, and no
+            // reachable syscall could give an inode one of its own
             // (`SystemNative_ChOwn` is not in the interop surface at all), so
             // there is nothing for a second source of truth to disagree with.
             //
@@ -2458,18 +2458,20 @@ module NativeSystemNative =
             // `Interop.Sys.IsMemberOfGroup` — managed code, not an entry point —
             // whose sole caller is `FileStatus.IsModeReadOnlyCore` behind
             // `if (_fileCache.Uid == Interop.Sys.GetEUid())`
-            // (FileStatus.Unix.cs:106). With one identity that guard always
-            // holds, so the group path is dead by construction and a
-            // supplementary-group list would be state no syscall could vary.
+            // (FileStatus.Unix.cs:106). While every inode reports the effective
+            // uid that guard always holds, so the group path is dead by
+            // construction, and `KernelConfig.SupplementaryGroups` is state no
+            // guest can observe until inodes can have owners of their own.
             // Implementing `GetEGid` alone would be worse than either: it
             // short-circuits `IsMemberOfGroup` on `gid == GetEGid()`
-            // (Interop.IsMemberOfGroup.cs:13), which under one identity is also
-            // always true — so the branch would start *succeeding*, on the
+            // (Interop.IsMemberOfGroup.cs:13), which while every inode reports
+            // the effective IDs is also always true — so the branch would start *succeeding*, on the
             // strength of the very invariant that must have broken for it to be
             // reachable. Leaving them unimplemented means a guest that gets
             // there stops loudly instead, naming the entry point.
             // `sourcesImpure/EffectiveUserIdConfigured.cs` pins the premise.
-            let uid = UnixDescriptor.effectiveUserId (EmulatedKernel.unix state.Kernel)
+            let uid =
+                UserId.toUInt32 (UnixDescriptor.effectiveUserId (EmulatedKernel.unix state.Kernel))
 
             state
             |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 uid) ctx.Thread

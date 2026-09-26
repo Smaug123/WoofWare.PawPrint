@@ -306,13 +306,12 @@ module UnixDescriptor =
 
     /// The effective user ID, as `geteuid(2)` reports it.
     ///
-    /// Total, and changes nothing: `geteuid` cannot fail, and this library
-    /// models one identity for the whole process.
+    /// Total, and changes nothing: `geteuid` cannot fail.
     let effectiveUserId<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
-        : uint32
+        : UserId
         =
-        system.Process.UserId
+        system.Process.Credentials.EffectiveUser
 
     /// `dup(2)`: the lowest non-negative descriptor not in use, sharing `fd`'s
     /// open file description. EBADF is its only failure.

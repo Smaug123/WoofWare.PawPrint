@@ -69,5 +69,8 @@ module TestProcessId =
         // So that a caller reading the uid or gid where it meant the pid cannot
         // pass a test that uses the defaults.
         for flavour in [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ] do
-            int64 pid |> shouldNotEqual (int64 (UnixSystem.defaultUserId flavour))
-            int64 pid |> shouldNotEqual (int64 (UnixSystem.defaultGroupId flavour))
+            int64 pid
+            |> shouldNotEqual (int64 (UserId.toUInt32 (UnixSystem.defaultUserId flavour)))
+
+            int64 pid
+            |> shouldNotEqual (int64 (GroupId.toUInt32 (UnixSystem.defaultGroupId flavour)))
