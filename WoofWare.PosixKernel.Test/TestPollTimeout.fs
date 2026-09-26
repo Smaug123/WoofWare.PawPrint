@@ -175,12 +175,20 @@ module TestPollTimeout =
 
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 300
 
+    /// Positive timeouts, often small, where an off-by-one in the conversion to
+    /// a deadline would show most.
+    let private timeoutGen : Gen<int> =
+        Gen.oneof
+            [
+                Gen.choose (1, 10)
+                Gen.choose (1, 100_000)
+                Gen.constant System.Int32.MaxValue
+            ]
+
     [<Test>]
     let ``a poll that times out fires exactly at its deadline, and answers 0`` () : unit =
         let property =
-            Prop.forAll (
-                Arb.fromGen (Gen.zip3 (Gen.choose (1, 100_000)) (Gen.choose64 (0L, 1_000_000_000_000L)) readableRequest)
-            )
+            Prop.forAll (Arb.fromGen (Gen.zip3 timeoutGen (Gen.choose64 (0L, 1_000_000_000_000L)) readableRequest))
             <| fun (milliseconds, start, events) ->
                 let started = after start idle
                 let _, parked = parks [ entry listener events ] milliseconds started
@@ -211,9 +219,7 @@ module TestPollTimeout =
     [<Test>]
     let ``readiness before the deadline wins, and answers what is ready`` () : unit =
         let property =
-            Prop.forAll (
-                Arb.fromGen (Gen.zip3 (Gen.choose (1, 100_000)) readableRequest (Gen.choose64 (0L, 99_999_999_999L)))
-            )
+            Prop.forAll (Arb.fromGen (Gen.zip3 timeoutGen readableRequest (Gen.choose64 (0L, 99_999_999_999L))))
             <| fun (milliseconds, events, lateness) ->
                 let _, parked = parks [ entry 1 pollIn ; entry listener events ] milliseconds idle
                 let deadline = int64 milliseconds * nanosecondsPerMillisecond
@@ -249,6 +255,38 @@ module TestPollTimeout =
             parked |> after (5L * nanosecondsPerMillisecond) |> ready |> finishes
 
         reported |> shouldEqual [ pollIn ]
+        count |> shouldEqual 1
+
+    [<Test>]
+    let ``an unrequested ERR or HUP ends the wait`` () : unit =
+        // Asked for nothing at all, the entry still waits for the two conditions
+        // poll reports unasked: here, a connection refusal arriving.
+        let _, parked = parks [ entry listener 0s ] 10 idle
+
+        let refused =
+            let socketId =
+                match FileDescriptorRegistry.tryFindTarget listener parked.Process.FileDescriptors with
+                | Some (OpenFileTarget.Socket socketId) -> socketId
+                | other -> failwith $"expected the listener, got %O{other}"
+
+            let socket = UnixMachineState.socket socketId parked.Machine
+
+            { parked with
+                Machine =
+                    { parked.Machine with
+                        Sockets =
+                            Map.add
+                                socketId
+                                { socket with
+                                    Phase = SocketPhase.RefusedPendingDelivery
+                                }
+                                parked.Machine.Sockets
+                    }
+            }
+
+        woken refused |> Option.isSome |> shouldEqual true
+        let reported, count, _ = finishes refused
+        reported |> shouldEqual [ 0x0008s ||| 0x0010s ]
         count |> shouldEqual 1
 
     [<Test>]
