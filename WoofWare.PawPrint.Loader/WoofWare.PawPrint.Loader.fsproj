@@ -29,6 +29,7 @@
         <Compile Include="AssemblyProbe.fs" />
         <Compile Include="TypeResolution.fs" />
         <Compile Include="SignatureComparison.fs" />
+        <Compile Include="MethodTableLayout.fs" />
         <EmbeddedResource Include="version.json" />
     </ItemGroup>
 
