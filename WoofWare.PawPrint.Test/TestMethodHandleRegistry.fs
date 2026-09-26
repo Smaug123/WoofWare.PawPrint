@@ -546,7 +546,7 @@ public static class GenericMethodHolder
             assembly.TypeDefs.[targetMethod.RequiredDeclaringType.Definition.Get]
 
         let stk =
-            DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies declaringTypeInfo
+            LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies declaringTypeInfo
 
         let state, declaringHandle =
             IlMachineState.concretizeType
@@ -718,7 +718,7 @@ public static class GenericMethodHolder
             assembly.TypeDefs.[method.RequiredDeclaringType.Definition.Get]
 
         let stk =
-            DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies declaringTypeInfo
+            LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies declaringTypeInfo
 
         let state, handle =
             IlMachineState.concretizeType
@@ -890,7 +890,7 @@ public class GenericHolder<T>
             assembly.TypeDefs.[targetMethod.RequiredDeclaringType.Definition.Get]
 
         let stk =
-            DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies declaringTypeInfo
+            LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies declaringTypeInfo
 
         let closedDefn =
             TypeDefn.GenericInstantiation (

@@ -1249,7 +1249,7 @@ module internal UnaryMetadataCallOps =
                     |> Option.get
 
                 let tIsValueType =
-                    DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies tDefn
+                    LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies tDefn
 
                 if not tIsValueType then
                     // Reference-type T: dereference the byref to the underlying ObjectRef.
@@ -1670,7 +1670,7 @@ module internal UnaryMetadataCallOps =
                 .ByDefinitionName(declaringType.AssemblyFullName)
                 .TypeDefs.[declaringType.Definition.Get]
 
-        if not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies declaringTypeDefn) then
+        if not (LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies declaringTypeDefn) then
             failwith
                 $"%s{operation}: %s{describe} is declared on a reference type, whose methods take an object receiver already and so have no unboxing stub"
 

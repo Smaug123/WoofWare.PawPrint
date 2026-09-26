@@ -19,7 +19,7 @@ module NativeStackTrace =
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : IlMachineState * ConcreteTypeHandle
         =
-        DumpedAssembly.typeInfoToTypeDefn' ctx.BaseClassTypes state._LoadedAssemblies typeInfo
+        LoadedTypeInfo.typeInfoToTypeDefn' ctx.BaseClassTypes state._LoadedAssemblies typeInfo
         |> IlMachineState.concretizeType
             ctx.LoggerFactory
             ctx.BaseClassTypes

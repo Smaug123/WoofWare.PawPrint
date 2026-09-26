@@ -111,7 +111,7 @@ module TestEnumClassification =
             | None -> ()
             | Some hostType ->
                 if ti.Generics.IsEmpty then
-                    let ours = DumpedAssembly.isEnum bct loaded ti
+                    let ours = LoadedTypeInfo.isEnum bct loaded ti
                     compared <- compared + 1
 
                     if hostType.IsEnum then

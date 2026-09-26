@@ -132,7 +132,9 @@ module TestSharedFrameworkForwardSweep =
                         failwith "resolution did not converge"
                     else
 
-                    match Assembly.resolveTypeFromExport facade assemblies ImmutableArray.Empty exported with
+                    match
+                        LoadedTypeResolution.resolveTypeFromExport facade assemblies ImmutableArray.Empty exported
+                    with
                     | TypeResolutionResult.FirstLoadAssy assyRef ->
                         let handle, referencedIn = assyRef.Handle
                         let assemblies, _ = IAssemblyLoad.load loadAssembly assemblies referencedIn handle

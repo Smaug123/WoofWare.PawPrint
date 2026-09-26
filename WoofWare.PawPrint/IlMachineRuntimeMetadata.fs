@@ -159,7 +159,7 @@ module IlMachineRuntimeMetadata =
         : IlMachineState * TypeDefn
         =
         let defn = activeAssy.TypeDefs.[typeDef]
-        state, DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies defn
+        state, LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies defn
 
     /// Resolve a `TypeReference` token to the type it names.
     ///
@@ -186,7 +186,7 @@ module IlMachineRuntimeMetadata =
         let state, assy, resolved =
             IlMachineTypeResolution.resolveTypeFromRef loggerFactory activeAssy ref ImmutableArray.Empty state
 
-        state, DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolved, assy
+        state, LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolved, assy
 
     /// Resolve a BaseTypeInfo to the assembly and TypeDefn of the base type.
     let resolveBaseTypeInfo
@@ -202,7 +202,7 @@ module IlMachineRuntimeMetadata =
             let typeInfo = currentAssembly.TypeDefs.[handle]
 
             let typeDefn =
-                DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies typeInfo
+                LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies typeInfo
 
             state, currentAssembly, typeDefn
         | BaseTypeInfo.TypeRef handle ->
@@ -215,7 +215,7 @@ module IlMachineRuntimeMetadata =
                     state
 
             let typeDefn =
-                DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolved
+                LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolved
 
             state, assy, typeDefn
         | BaseTypeInfo.TypeSpec handle ->
@@ -236,7 +236,7 @@ module IlMachineRuntimeMetadata =
         | ConcreteTypeHandle.Array _ ->
             // Structural array handles keep their own runtime identity; their base type is System.Array.
             let state, arrayHandle =
-                DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Array
+                LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Array
                 |> IlMachineTypeResolution.concretizeType
                     loggerFactory
                     baseClassTypes
@@ -340,7 +340,7 @@ module IlMachineRuntimeMetadata =
         | None ->
             failwith $"BUG: %s{describe} is instantiated with the handle %O{argument}, which names no registered type"
         | Some (concrete, typeInfo) ->
-            if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+            if LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
                 concrete.Generics
                 |> Seq.exists (isSharedTypeArgument baseClassTypes state describe)
             else
@@ -382,7 +382,7 @@ module IlMachineRuntimeMetadata =
         // `resolveBaseConcreteType` answers for a closed array.
         | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), _) ->
             let state, arrayHandle =
-                DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Array
+                LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Array
                 |> IlMachineTypeResolution.concretizeType
                     loggerFactory
                     baseClassTypes
@@ -518,7 +518,7 @@ module IlMachineRuntimeMetadata =
                 (fun () -> $"%s{typeInfo.Namespace}.%s{typeInfo.Name}")
                 typeInfo.Layout
                 (InlineArrayStorage.effectiveLength
-                    (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo)
+                    (LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo)
                     typeInfo.InlineArrayLength)
 
         // `hasNonTrivialParent` (methodtablebuilder.cpp:8132) treats a type deriving directly from
@@ -639,7 +639,7 @@ module IlMachineRuntimeMetadata =
         let state = IlMachineThreadState.setStringData dataAddr contents state
 
         let state, stringType =
-            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.String
+            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.String
             |> IlMachineTypeResolution.concretizeType
                 loggerFactory
                 baseClassTypes
@@ -719,7 +719,7 @@ module IlMachineRuntimeMetadata =
         : ManagedHeapAddress * IlMachineState
         =
         let state, int32Handle =
-            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Int32
+            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Int32
             |> IlMachineTypeResolution.concretizeType
                 loggerFactory
                 baseClassTypes
@@ -1168,7 +1168,7 @@ module IlMachineRuntimeMetadata =
         with
         | Some _, Some exceptionHandle ->
             let state, sbyteHandle =
-                DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.SByte
+                LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.SByte
                 |> IlMachineTypeResolution.concretizeType
                     loggerFactory
                     baseClassTypes
@@ -1233,7 +1233,7 @@ module IlMachineRuntimeMetadata =
             |> Seq.exactlyOne
 
         let state, threadTypeHandle =
-            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies threadTypeInfo
+            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies threadTypeInfo
             |> IlMachineTypeResolution.concretizeType
                 loggerFactory
                 baseClassTypes
@@ -1351,7 +1351,7 @@ module IlMachineRuntimeMetadata =
         let tieTypeInfo = baseClassTypes.TypeInitializationException
 
         let stk =
-            DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies tieTypeInfo
+            LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies tieTypeInfo
 
         let state, tieHandle =
             IlMachineTypeResolution.concretizeType
@@ -1424,7 +1424,7 @@ module IlMachineRuntimeMetadata =
         let tieTypeInfo = baseClassTypes.TargetInvocationException
 
         let stk =
-            DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies tieTypeInfo
+            LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies tieTypeInfo
 
         let state, tieHandle =
             IlMachineTypeResolution.concretizeType
@@ -1835,7 +1835,7 @@ module IlMachineRuntimeMetadata =
         | ConcreteTypeHandle.FunctionPointer _ -> false
         | ConcreteTypeHandle.Concrete _ ->
             match tryGetConcreteTypeInfo state handle with
-            | Some (_, typeInfo) -> DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
+            | Some (_, typeInfo) -> LoadedTypeInfo.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
             | None -> failwith $"%s{context}: concrete type handle %O{handle} has no TypeDef row"
 
     let requiredOwnInstanceFieldId
@@ -2367,7 +2367,7 @@ module IlMachineRuntimeMetadata =
         | RuntimeTypeHandleTarget.Closed handle -> isReferenceTypeHandle baseClassTypes "isObjRefTarget" state handle
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
         | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
-            DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies (typeInfoOfIdentity state identity)
+            LoadedTypeInfo.isReferenceType baseClassTypes state._LoadedAssemblies (typeInfoOfIdentity state identity)
         | RuntimeTypeHandleTarget.DynamicMethodsClass _ -> true
         | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), _) -> true
         | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)

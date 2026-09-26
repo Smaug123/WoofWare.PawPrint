@@ -118,7 +118,7 @@ module internal IntrinsicHelpers =
 
             let td = assy.TypeDefs.[concrete.Definition.Get]
 
-            if not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies td) then
+            if not (LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies td) then
                 // Short-circuit: if the type itself is a reference type, we're done.
                 state, seenSoFar.Add (handle, Completed true), true
             else

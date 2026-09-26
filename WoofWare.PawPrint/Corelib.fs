@@ -318,7 +318,7 @@ module Corelib =
 
         (ctx, tys)
         ||> List.fold (fun ctx ty ->
-            let stk = DumpedAssembly.signatureTypeKind ctx.BaseTypes ctx.LoadedAssemblies ty
+            let stk = LoadedTypeInfo.signatureTypeKind ctx.BaseTypes ctx.LoadedAssemblies ty
 
             let _handle, ctx =
                 TypeConcretization.concretizeType

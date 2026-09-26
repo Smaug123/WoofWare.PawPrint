@@ -378,7 +378,7 @@ namespace PawPrint.MethodAtSlot
         let state = baseState
 
         let state, stringHandle =
-            DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies bct.String
+            LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies bct.String
             |> IlMachineState.concretizeType
                 loggerFactory
                 bct
@@ -388,7 +388,7 @@ namespace PawPrint.MethodAtSlot
                 ImmutableArray.Empty
 
         let state, closed =
-            DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies twoStep
+            LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies twoStep
             |> IlMachineState.concretizeType
                 loggerFactory
                 bct

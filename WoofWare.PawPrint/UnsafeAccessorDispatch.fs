@@ -354,7 +354,7 @@ module internal UnsafeAccessorDispatch =
         | ConcreteTypeHandle.Array _ -> true
         | ConcreteTypeHandle.Concrete _ ->
             match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes argument with
-            | Some (_, typeInfo) -> not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo)
+            | Some (_, typeInfo) -> not (LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo)
             | None -> failwith $"BUG: %s{describe}: concrete type argument %O{argument} has no TypeDef row"
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
@@ -502,7 +502,7 @@ module internal UnsafeAccessorDispatch =
             // generic method (`mcInstantiated`) and an `RTSpecialName` one: measured, a struct's
             // generic interface implementation binds rather than being ambiguous.
             let hasUnboxingStub =
-                DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies targetTypeInfo
+                LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies targetTypeInfo
                 && not single.IsStatic
                 && single.IsVirtual
                 && single.Generics.IsEmpty
@@ -675,7 +675,7 @@ module internal UnsafeAccessorDispatch =
 
         let isByRefLike (argument : ConcreteTypeHandle) : bool =
             match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes argument with
-            | Some (_, typeInfo) -> DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies typeInfo
+            | Some (_, typeInfo) -> LoadedTypeInfo.isByRefLike baseClassTypes state._LoadedAssemblies typeInfo
             | None ->
                 // A structural handle: a byref, pointer, array or function pointer. None of those
                 // is a byref-like *type* -- `Span<T>` is nominal -- so the anti-constraint does not
@@ -736,7 +736,7 @@ module internal UnsafeAccessorDispatch =
             | ConcreteTypeHandle.Byref _ -> failwith $"BUG: %s{describe} bound a constructor of an array of byrefs"
             | ConcreteTypeHandle.Concrete _ ->
                 match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes element with
-                | Some (_, typeInfo) -> not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo)
+                | Some (_, typeInfo) -> not (LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo)
                 | None -> failwith $"BUG: %s{describe}: array element type %O{element} has no TypeDef row"
 
         if not sharesObjectArrayMethods then
@@ -1041,7 +1041,7 @@ module internal UnsafeAccessorDispatch =
         | Some (targetType, targetTypeInfo) ->
 
         let targetIsValueType =
-            DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies targetTypeInfo
+            LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies targetTypeInfo
 
         // An instance member of a value type must be reached through a byref, or the accessor
         // would be handed a copy (unsafeaccessors.cpp:1111 and :1134).

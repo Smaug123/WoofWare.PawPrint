@@ -350,7 +350,7 @@ module TestNominalAlignment =
                 hostType.IsByRefLike
                 || hostType.IsGenericType
                 || hostType = typeof<Void>
-                || not (DumpedAssembly.isValueType bct loaded ti)
+                || not (LoadedTypeInfo.isValueType bct loaded ti)
             then
                 ()
             else

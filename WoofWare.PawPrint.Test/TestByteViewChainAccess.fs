@@ -73,7 +73,7 @@ module TestByteViewChainAccess =
                 | None -> failwith $"%s{ns}.%s{name} not found in corelib"
 
             let state, handle =
-                DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
+                LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
                 |> IlMachineState.concretizeType
                     loggerFactory
                     bct

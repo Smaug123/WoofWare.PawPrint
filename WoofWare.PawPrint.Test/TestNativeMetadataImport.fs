@@ -377,7 +377,7 @@ public class MarshalShapes
         : IlMachineState
         =
         let typeDefn =
-            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies typeInfo
+            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies typeInfo
 
         let state, _ =
             IlMachineState.concretizeType

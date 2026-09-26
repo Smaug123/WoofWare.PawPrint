@@ -1158,7 +1158,11 @@ module Program =
                 let rec go state =
                     // Resolve the type reference to find which assembly it's in
                     match
-                        Assembly.resolveTypeRef state._LoadedAssemblies currentAssembly ImmutableArray.Empty typeRef
+                        LoadedTypeResolution.resolveTypeRef
+                            state._LoadedAssemblies
+                            currentAssembly
+                            ImmutableArray.Empty
+                            typeRef
                     with
                     | TypeResolutionResult.FirstLoadAssy assyRef ->
                         // Need to load this assembly first

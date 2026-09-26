@@ -18,7 +18,7 @@ module IlMachineStateExecution =
         =
         match esv with
         | EvalStackValue.Int32 _ ->
-            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Int32
+            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Int32
             |> IlMachineState.concretizeType
                 loggerFactory
                 baseClassTypes
@@ -27,7 +27,7 @@ module IlMachineStateExecution =
                 ImmutableArray.Empty
                 ImmutableArray.Empty
         | EvalStackValue.Int64 _ ->
-            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Int64
+            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Int64
             |> IlMachineState.concretizeType
                 loggerFactory
                 baseClassTypes
@@ -37,7 +37,7 @@ module IlMachineStateExecution =
                 ImmutableArray.Empty
         | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
         | EvalStackValue.Float (EvalStackFloat.Single _) ->
-            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Single
+            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Single
             |> IlMachineState.concretizeType
                 loggerFactory
                 baseClassTypes
@@ -46,7 +46,7 @@ module IlMachineStateExecution =
                 ImmutableArray.Empty
                 ImmutableArray.Empty
         | EvalStackValue.Float (EvalStackFloat.Double _) ->
-            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Double
+            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Double
             |> IlMachineState.concretizeType
                 loggerFactory
                 baseClassTypes
@@ -189,7 +189,7 @@ module IlMachineStateExecution =
             | ConcreteTypeHandle.FunctionPointer _ -> false
             | ConcreteTypeHandle.Concrete _ ->
                 match IlMachineState.tryGetConcreteTypeInfo state handle with
-                | Some (_, typeInfo) -> DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
+                | Some (_, typeInfo) -> LoadedTypeInfo.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
                 | None ->
                     failwith
                         $"SZ-array interface dispatch: type argument %O{handle} of %s{MethodOwner.describe methodToCall.Owner} has no TypeDef row"
@@ -201,7 +201,7 @@ module IlMachineStateExecution =
             if dispatchThroughEnumerable || not (isReferenceType theT) then
                 state, theT
             else
-                DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Object
+                LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Object
                 |> IlMachineState.concretizeType
                     loggerFactory
                     baseClassTypes
@@ -1988,7 +1988,7 @@ module IlMachineStateExecution =
                     | ConcreteTypeHandle.Concrete _ ->
                         match IlMachineState.tryGetConcreteTypeInfo state tHandle with
                         | Some (_, typeInfo) ->
-                            DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo, Some typeInfo
+                            LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo, Some typeInfo
                         | None ->
                             failwith
                                 $"Activator.CreateInstance<T>(): concrete type handle %O{tHandle} has no TypeDef row"
@@ -2321,7 +2321,7 @@ module IlMachineStateExecution =
             let declaringType =
                 declaringAssembly.TypeDefs.[methodToCall.RequiredDeclaringType.Definition.Get]
 
-            if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies declaringType then
+            if LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies declaringType then
                 CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
             else
                 CliType.ObjectRef None

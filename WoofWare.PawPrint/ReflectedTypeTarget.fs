@@ -30,7 +30,7 @@ module ReflectedTypeTarget =
                 $"%s{operation}: generic arity mismatch for %s{typeInfo.Namespace}.%s{typeInfo.Name}; definition has %i{typeInfo.Generics.Length} parameters, but call supplied %i{genericArguments.Length} arguments"
 
         let signatureTypeKind =
-            DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies typeInfo
+            LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies typeInfo
 
         let genericDefn = TypeDefn.FromDefinition (genericDefinition, signatureTypeKind)
 

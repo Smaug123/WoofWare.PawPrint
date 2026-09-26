@@ -150,7 +150,7 @@ public unsafe class FnPtrHolder<T>
     let private definitionDefn (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) : TypeDefn =
         TypeDefn.FromDefinition (
             typeInfo.Identity,
-            DumpedAssembly.signatureTypeKind bct initialState._LoadedAssemblies typeInfo
+            LoadedTypeInfo.signatureTypeKind bct initialState._LoadedAssemblies typeInfo
         )
 
     let private closedGeneric (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) (arg : TypeDefn) : TypeDefn =

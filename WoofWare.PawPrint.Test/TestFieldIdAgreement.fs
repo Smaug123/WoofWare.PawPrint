@@ -206,7 +206,7 @@ public class Outer<A>
         (args : TypeDefn list)
         : TypeDefn
         =
-        let kind = DumpedAssembly.signatureTypeKind bct state._LoadedAssemblies typeInfo
+        let kind = LoadedTypeInfo.signatureTypeKind bct state._LoadedAssemblies typeInfo
 
         let definition = TypeDefn.FromDefinition (typeInfo.Identity, kind)
 

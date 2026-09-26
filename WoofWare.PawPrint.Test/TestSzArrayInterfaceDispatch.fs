@@ -58,7 +58,7 @@ module TestSzArrayInterfaceDispatch =
         (state : IlMachineState)
         : IlMachineState * ConcreteTypeHandle
         =
-        DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies ti
+        LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies ti
         |> IlMachineState.concretizeType
             loggerFactory
             bct
@@ -185,7 +185,7 @@ module TestSzArrayInterfaceDispatch =
     /// it.
     let private expectedInstantiation (case : DispatchCase) (argumentHandle : ConcreteTypeHandle) =
         let argumentIsReferenceType =
-            DumpedAssembly.isReferenceType bct loaded case.ArgumentType
+            LoadedTypeInfo.isReferenceType bct loaded case.ArgumentType
 
         if case.InterfaceName = "IEnumerable`1" || not argumentIsReferenceType then
             argumentHandle

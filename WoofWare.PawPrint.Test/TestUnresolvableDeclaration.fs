@@ -169,7 +169,7 @@ module TestUnresolvableDeclaration =
                         | Some typeInfo -> typeInfo
 
                     let state, handle =
-                        DumpedAssembly.typeInfoToTypeDefn' bct loaded typeInfo
+                        LoadedTypeInfo.typeInfoToTypeDefn' bct loaded typeInfo
                         |> IlMachineState.concretizeType
                             loggerFactory
                             bct

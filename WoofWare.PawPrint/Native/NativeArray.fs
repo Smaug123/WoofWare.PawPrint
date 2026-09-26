@@ -78,7 +78,7 @@ module NativeArray =
             match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes element with
             | None -> None
             | Some (concreteType, typeInfo) ->
-                if DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies typeInfo then
+                if LoadedTypeInfo.isByRefLike baseClassTypes state._LoadedAssemblies typeInfo then
                     Some "Cannot create arrays of ByRef-like values."
                 elif concreteType.Identity = baseClassTypes.Void.Identity then
                     Some "Arrays of System.Void are not supported."

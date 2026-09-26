@@ -89,7 +89,7 @@ module TestSharedTypeGraphResolution =
                 fixture.Corelib
                 fixture.Loaded
 
-        DumpedAssembly.typeInfoToTypeDefn fixture.BaseTypes assemblies resolved
+        LoadedTypeInfo.typeInfoToTypeDefn fixture.BaseTypes assemblies resolved
 
     /// The number of distinct nodes in <paramref name="ty"/> counted <i>by reference</i>, i.e. its
     /// size as a DAG. A traversal that counted structurally would itself be the exponential this

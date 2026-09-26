@@ -39,7 +39,7 @@ module internal Boxing =
                 failwith $"boxValueType: ConcreteTypeHandle %O{typeHandle} is not registered in AllConcreteTypes"
             )
 
-        if not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies defn) then
+        if not (LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies defn) then
             failwith
                 $"boxValueType: %s{defn.Namespace}.%s{defn.Name} is not a value type; boxing a reference type is a no-op and must not reach here"
 
@@ -100,7 +100,7 @@ module internal Boxing =
                         (fun () -> $"%s{defn.Namespace}.%s{defn.Name}")
                         defn.Layout
                         (InlineArrayStorage.effectiveLength
-                            (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies defn)
+                            (LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies defn)
                             defn.InlineArrayLength)
                     |> CliValueType.OfFields
                         baseClassTypes

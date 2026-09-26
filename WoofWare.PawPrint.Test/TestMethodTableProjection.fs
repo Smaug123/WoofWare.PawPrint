@@ -556,7 +556,7 @@ public unsafe struct PointerWrapper
         =
         let state, handle =
             typeInfo
-            |> DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies
+            |> LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies
             |> IlMachineState.concretizeType
                 loggerFactory
                 bct
@@ -751,7 +751,7 @@ public unsafe struct PointerWrapper
         : IlMachineState * ConcreteTypeHandle
         =
         typeInfo
-        |> DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies
+        |> LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies
         |> IlMachineState.concretizeType
             loggerFactory
             bct
@@ -1335,7 +1335,7 @@ public unsafe struct PointerWrapper
         : IlMachineState * ConcreteTypeHandle
         =
         topLevelType "System" "Nullable`1"
-        |> DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies
+        |> LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies
         |> IlMachineState.concretizeType
             loggerFactory
             bct
@@ -1387,7 +1387,7 @@ public unsafe struct PointerWrapper
 
         let state, listIntHandle =
             topLevelType "System.Collections.Generic" "List`1"
-            |> DumpedAssembly.typeInfoToTypeDefn' bct (stateWithLogger loggerFactory)._LoadedAssemblies
+            |> LoadedTypeInfo.typeInfoToTypeDefn' bct (stateWithLogger loggerFactory)._LoadedAssemblies
             |> IlMachineState.concretizeType
                 loggerFactory
                 bct

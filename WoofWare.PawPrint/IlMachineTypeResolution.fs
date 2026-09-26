@@ -919,7 +919,7 @@ module IlMachineTypeResolution =
         : IlMachineState * ConcreteType<ConcreteTypeHandle>
         =
         let byteTypeDefn =
-            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Byte
+            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Byte
 
         let state, byteHandle =
             concretizeType
@@ -944,7 +944,7 @@ module IlMachineTypeResolution =
         : IlMachineState * ConcreteType<ConcreteTypeHandle>
         =
         let charTypeDefn =
-            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Char
+            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Char
 
         let state, charHandle =
             concretizeType

@@ -57,7 +57,7 @@ module TestNarrowByrefAccess =
             }
 
         let signatureTypeKind =
-            DumpedAssembly.signatureTypeKind baseClassTypes loadedAssemblies byReference
+            LoadedTypeInfo.signatureTypeKind baseClassTypes loadedAssemblies byReference
 
         let _handle, ctx =
             TypeConcretization.concretizeType

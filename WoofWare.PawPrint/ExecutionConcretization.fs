@@ -392,7 +392,7 @@ module ExecutionConcretization =
                 let typeDef = assy.TypeDefs.[field.DeclaringType.Definition.Get]
 
                 let signatureTypeKind =
-                    DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies typeDef
+                    LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies typeDef
 
                 TypeDefn.FromDefinition (field.DeclaringType.Identity, signatureTypeKind)
             else
@@ -403,7 +403,7 @@ module ExecutionConcretization =
                 let typeDef = assy.TypeDefs.[field.DeclaringType.Definition.Get]
 
                 let signatureTypeKind =
-                    DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies typeDef
+                    LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies typeDef
 
                 let baseType =
                     TypeDefn.FromDefinition (field.DeclaringType.Identity, signatureTypeKind)

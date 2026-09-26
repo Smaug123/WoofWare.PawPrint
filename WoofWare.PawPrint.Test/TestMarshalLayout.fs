@@ -66,7 +66,7 @@ module TestMarshalLayout =
             (ty : TypeInfo<GenericParamFromMetadata, TypeDefn>)
             : ConcreteTypeHandle * TypeConcretization.ConcretizationContext<DumpedAssembly>
             =
-            let stk = DumpedAssembly.signatureTypeKind ctx.BaseTypes ctx.LoadedAssemblies ty
+            let stk = LoadedTypeInfo.signatureTypeKind ctx.BaseTypes ctx.LoadedAssemblies ty
 
             TypeConcretization.concretizeType
                 ctx

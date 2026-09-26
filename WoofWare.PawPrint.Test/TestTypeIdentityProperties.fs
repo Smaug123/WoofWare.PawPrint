@@ -223,7 +223,11 @@ module TestTypeIdentityProperties =
                 consumer
 
         let resolvedAssembly, identity, typeInfo =
-            global.WoofWare.PawPrint.AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty targetRef
+            global.WoofWare.PawPrint.LoadedTypeResolution.resolveTypeRef
+                assemblies
+                consumer
+                ImmutableArray.Empty
+                targetRef
             |> getResolvedIdentity
 
         {
@@ -284,7 +288,11 @@ module TestTypeIdentityProperties =
                 consumer
 
         let resolvedAssembly, identity, typeInfo =
-            global.WoofWare.PawPrint.AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty targetRef
+            global.WoofWare.PawPrint.LoadedTypeResolution.resolveTypeRef
+                assemblies
+                consumer
+                ImmutableArray.Empty
+                targetRef
             |> getResolvedIdentity
 
         {
@@ -337,7 +345,7 @@ module TestTypeIdentityProperties =
         let assemblies = loadedAssemblies [ target ; forwarder ]
 
         let resolvedAssembly, identity, typeInfo =
-            global.WoofWare.PawPrint.AssemblyApi.resolveTypeFromExport
+            global.WoofWare.PawPrint.LoadedTypeResolution.resolveTypeFromExport
                 forwarder
                 assemblies
                 ImmutableArray.Empty
@@ -358,7 +366,7 @@ module TestTypeIdentityProperties =
             let compiled = compileTopLevelReferenceScenario topLevel
 
             let resolvedAssembly, identity, typeInfo =
-                global.WoofWare.PawPrint.AssemblyApi.resolveTypeRef
+                global.WoofWare.PawPrint.LoadedTypeResolution.resolveTypeRef
                     compiled.LoadedAssemblies
                     compiled.ConsumerAssembly
                     ImmutableArray.Empty
@@ -376,7 +384,7 @@ module TestTypeIdentityProperties =
             let compiled = compileNestedReferenceScenario nested
 
             let resolvedAssembly, identity, typeInfo =
-                global.WoofWare.PawPrint.AssemblyApi.resolveTypeRef
+                global.WoofWare.PawPrint.LoadedTypeResolution.resolveTypeRef
                     compiled.LoadedAssemblies
                     compiled.ConsumerAssembly
                     ImmutableArray.Empty
@@ -730,7 +738,7 @@ namespace {scenario.Namespace}
                     let compiled = compileTopLevelReferenceScenario scenario
 
                     let firstAssembly, firstIdentity, firstTypeInfo =
-                        global.WoofWare.PawPrint.AssemblyApi.resolveTypeRef
+                        global.WoofWare.PawPrint.LoadedTypeResolution.resolveTypeRef
                             compiled.LoadedAssemblies
                             compiled.ConsumerAssembly
                             ImmutableArray.Empty
@@ -738,7 +746,7 @@ namespace {scenario.Namespace}
                         |> getResolvedIdentity
 
                     let secondAssembly, secondIdentity, secondTypeInfo =
-                        global.WoofWare.PawPrint.AssemblyApi.resolveTypeRef
+                        global.WoofWare.PawPrint.LoadedTypeResolution.resolveTypeRef
                             compiled.LoadedAssemblies
                             compiled.ConsumerAssembly
                             ImmutableArray.Empty
@@ -770,7 +778,7 @@ namespace {scenario.Namespace}
                     let compiled = compileNestedReferenceScenario scenario
 
                     let resolvedAssembly, identity, typeInfo =
-                        global.WoofWare.PawPrint.AssemblyApi.resolveTypeRef
+                        global.WoofWare.PawPrint.LoadedTypeResolution.resolveTypeRef
                             compiled.LoadedAssemblies
                             compiled.ConsumerAssembly
                             ImmutableArray.Empty

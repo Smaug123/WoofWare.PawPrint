@@ -127,7 +127,7 @@ module TestUnaryMetadataIlOp =
         : IlMachineState * ConcreteTypeHandle * ConcreteType<ConcreteTypeHandle>
         =
         let typeDefn =
-            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies ty
+            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies ty
 
         let state, handle =
             IlMachineState.concretizeType

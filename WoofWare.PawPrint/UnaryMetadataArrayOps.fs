@@ -71,7 +71,7 @@ module internal UnaryMetadataArrayOps =
             match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes concreteTypeHandle with
             | None -> state, false
             | Some (_, elementDefn) ->
-                state, DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies elementDefn
+                state, LoadedTypeInfo.isByRefLike baseClassTypes state._LoadedAssemblies elementDefn
 
         if elementIsByRefLike then
             // The exception *type* is reproduced; its message and `TypeName` are not. CoreCLR's
@@ -366,7 +366,7 @@ module internal UnaryMetadataArrayOps =
         | ArrayElementOperands.InRange (arr, index) ->
 
         let elementType =
-            DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies elementType
+            LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies elementType
 
         let state, zeroOfType, concreteTypeHandle =
             IlMachineState.cliTypeZeroOf
