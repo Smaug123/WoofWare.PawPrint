@@ -1886,7 +1886,7 @@ module NativeRuntimeMethodHandle =
 
             let slot =
                 slotTable
-                |> VirtualSlotLayout.slotIndexInTable (identity.GetAssemblyFullName (), methodInfo.IdentityKey)
+                |> MethodTableLayout.slotIndexInTable (identity.GetAssemblyFullName (), methodInfo.IdentityKey)
                 |> Option.defaultWith (fun () ->
                     // Every method a type declares in metadata is placed in one half or the other,
                     // so reaching here means the method is not the declaring type's to place: a

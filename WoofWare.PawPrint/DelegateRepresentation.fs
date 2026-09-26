@@ -99,7 +99,7 @@ module DelegateRepresentation =
 
         let slot =
             slotTable
-            |> VirtualSlotLayout.slotIndexInTable (method.DeclaringAssemblyFullName, method.IdentityKey)
+            |> MethodTableLayout.slotIndexInTable (method.DeclaringAssemblyFullName, method.IdentityKey)
             |> Option.defaultWith (fun () ->
                 failwith
                     $"%s{operation}: %s{method.Name} occupies no slot in its declaring type %s{MethodOwner.describe method.Owner}"

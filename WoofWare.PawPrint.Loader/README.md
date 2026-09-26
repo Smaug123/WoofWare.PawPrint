@@ -28,7 +28,9 @@ What lives here:
   types, which is how a `MemberRef` is matched to the `MethodDef` it names.
 * `TypeConcretization` — instantiating a generic type definition over the whole set of loaded
   assemblies, to a handle that identifies one concrete type.
-* `VtableSlot` — virtual method slot layout, which follows the base chain too.
+* `VtableSlot`, `MethodTableLayout` — a type definition's method table as CoreCLR's
+  `MethodTableBuilder` lays it out: which slot each declaration owns, what each vtable slot holds
+  once MethodImpls are applied, and the slots beyond the vtable.
 
 The motivating consumer, besides PawPrint's interpreter, is an analyser that answers questions about
 a method without running it. Such a thing must resolve a call's target in another assembly exactly as
