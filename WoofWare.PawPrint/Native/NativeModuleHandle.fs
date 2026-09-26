@@ -311,32 +311,17 @@ module NativeModuleHandle =
 
             // Counted, not terminated: a method signature blob is arbitrary bytes and routinely
             // contains a zero (ELEMENT_TYPE_END, and every `void` return), so scanning for a
-            // terminator would truncate almost every signature at its first `void`.
+            // terminator would truncate almost every signature at its first `void`. Read as named
+            // bytes, because `SignatureHelper` copies a type handle's eight bytes into the blob for
+            // any type it has no module to spell as a token (`ELEMENT_TYPE_INTERNAL`).
             let signature =
                 NativeCall.managedPointerOfPointerArgument operation "sig" instruction.Arguments.[2]
                 |> fun ptr -> NativeCall.readCountedNamedBytes operation ctx.BaseClassTypes state ptr signatureLength
-                |> fun bytes ->
-                    match UInt8Source.tryValues bytes with
-                    | ValueSome plain -> plain
-                    | ValueNone ->
-                        // A blob byte naming a type handle rather than holding a number is
-                        // `SignatureHelper`'s `ELEMENT_TYPE_INTERNAL` encoding: with no module to
-                        // spell a type as a token it writes 0x21 followed by the eight bytes of
-                        // `type.TypeHandle.Value` (SignatureHelper.cs:541-559). PawPrint carries
-                        // those faithfully -- each byte names the handle and its position within
-                        // it -- but has nowhere to put the answer here: this result is a
-                        // `byte[]`, and `MethodSignatureDecoding` drives a `SignatureDecoder`
-                        // with no ELEMENT_TYPE_INTERNAL case anywhere in its type tree.
-                        let named =
-                            bytes
-                            |> Array.indexed
-                            |> Array.filter (fun (_, b) -> (UInt8Source.tryValue b).IsNone)
-                            |> Array.map (fun (i, b) -> $"[%d{i}] = %O{b}")
-                            |> String.concat ", "
-
-                        failwith
-                            $"%s{operation}: the signature blob names type handles at %s{named}, which is SignatureHelper's ELEMENT_TYPE_INTERNAL encoding for a type it had no module to spell as a token. PawPrint records those bytes faithfully but cannot yet decode them back into a type, so a DynamicMethod whose signature or locals mention anything other than a primitive, object or string is not yet supported."
                 |> ImmutableArray.CreateRange
+                |> DynamicSignatureDecoding.decodeMethod (
+                    InternalSignatureTypeResolution.ofHandle operation ctx.BaseClassTypes state
+                )
+                |> TypeMethodSignature.make
 
             let resolver =
                 NativeCall.objectHandleOnStackTarget operation state "resolver" instruction.Arguments.[4]
@@ -360,17 +345,13 @@ module NativeModuleHandle =
                         $"%s{operation}: the resolver is null, but DynamicMethod.GetMethodDescriptor constructs one immediately before reaching this QCall"
                 )
 
-            let scopeAssembly =
-                state.LoadedAssembly scopeAssemblyFullName
-                |> Option.defaultWith (fun () ->
-                    let available = state._LoadedAssemblies.DefinitionNames |> String.concat " ; "
+            if (state.LoadedAssembly scopeAssemblyFullName).IsNone then
+                let available = state._LoadedAssemblies.DefinitionNames |> String.concat " ; "
 
-                    failwith
-                        $"%s{operation}: the scope assembly %s{scopeAssemblyFullName} is not loaded; available assemblies: %s{available}"
-                )
+                failwith
+                    $"%s{operation}: the scope assembly %s{scopeAssemblyFullName} is not loaded; available assemblies: %s{available}"
 
-            let body =
-                DynamicMethodBody.read operation ctx.BaseClassTypes state scopeAssembly resolverAddress
+            let body = DynamicMethodBody.read operation ctx.BaseClassTypes state resolverAddress
 
             let runtimeMethodInfoStubType =
                 AllConcreteTypes.getRequiredNonGenericHandle

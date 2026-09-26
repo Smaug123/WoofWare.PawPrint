@@ -200,12 +200,7 @@ module StackShapeOfMethod =
                             $"%s{operation}: scope assembly %s{definition.GetScopeAssemblyFullName ()} is not loaded"
                     )
 
-                let signature =
-                    MethodSignatureDecoding.decode
-                        scopeAssembly.Name
-                        (scopeAssembly.PeReader.GetMetadataReader ())
-                        (definition.GetSignature () |> Seq.toArray)
-                    |> TypeMethodSignature.make
+                let signature = definition.GetSignature ()
 
                 Ok (
                     Some (
@@ -317,12 +312,7 @@ module StackShapeOfMethod =
                 failwith $"stack shape: scope assembly %s{definition.GetScopeAssemblyFullName ()} is not loaded"
             )
 
-        let signature =
-            MethodSignatureDecoding.decode
-                scopeAssembly.Name
-                (scopeAssembly.PeReader.GetMetadataReader ())
-                (definition.GetSignature () |> Seq.toArray)
-            |> TypeMethodSignature.make
+        let signature = definition.GetSignature ()
 
         // `localsInit` does not affect the stack; the analysis reads only instructions, locals
         // and regions.
