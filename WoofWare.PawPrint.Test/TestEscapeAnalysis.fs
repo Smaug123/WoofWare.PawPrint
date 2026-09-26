@@ -25,6 +25,12 @@ using System;
 
 namespace Fixture;
 
+public class Locking
+{
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.Synchronized)]
+    public void Instance() { }
+}
+
 public static class Cases
 {
     public static void ThrowsDirectly() { throw new InvalidOperationException("boom"); }
@@ -67,6 +73,15 @@ public static class Cases
     {
         try { Synchronised(); }
         catch (System.Threading.ThreadInterruptedException) { }
+    }
+
+    // Its body releases the monitor itself, so releasing it again on the way out throws, past
+    // the body's handlers.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.Synchronized)]
+    public static void ReleasesEarly()
+    {
+        try { System.Threading.Monitor.Exit(typeof(Cases)); }
+        catch (Exception) { }
     }
 
     public static void TwoSources(bool b)
@@ -251,10 +266,33 @@ public class NullReferenceException : Exception { }
                 Contains = [ ioe ]
             }
             { expect "Fixture.Cases" "Synchronised" with
-                Contains = [ "=System.Threading.ThreadInterruptedException" ]
+                Contains =
+                    [
+                        "=System.Threading.ThreadInterruptedException"
+                        "=System.Threading.SynchronizationLockException"
+                    ]
+                // Its monitor is its type's, never null.
+                Excludes = [ "=System.ArgumentNullException" ]
+            }
+            { expect "Fixture.Cases" "ReleasesEarly" with
+                Contains = [ "=System.Threading.SynchronizationLockException" ]
+            }
+            // Reached by `call` on a null receiver, it locks on null.
+            { expect "Fixture.Locking" "Instance" with
+                Contains =
+                    [
+                        "=System.ArgumentNullException"
+                        "=System.Threading.ThreadInterruptedException"
+                        "=System.Threading.SynchronizationLockException"
+                    ]
             }
             { expect "Fixture.Cases" "Unsynchronised" with
-                Excludes = [ "=System.Threading.ThreadInterruptedException" ]
+                Excludes =
+                    [
+                        "=System.Threading.ThreadInterruptedException"
+                        "=System.Threading.SynchronizationLockException"
+                        "=System.ArgumentNullException"
+                    ]
             }
             { expect "Fixture.Cases" "CatchesInterruption" with
                 Excludes = [ "=System.Threading.ThreadInterruptedException" ]

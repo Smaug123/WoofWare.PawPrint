@@ -44,12 +44,12 @@ type internal LocalFacts =
         Opaque : (int * Opacity) list
         Calls : (int * MethodKey) list
         Regions : ExceptionRegion list
-        /// What can be raised on entry, before the body runs, so that none of its own handlers
-        /// can catch it: what binding the tokens the body names and the types of its locals and
-        /// `catch` clauses throws (a member or type the assembly it is looked for in does not
-        /// have, or a module initializer that fails), and what taking a synchronized method's
-        /// monitor throws.
-        OnEntry : Set<ThrownType>
+        /// What can be raised outside the body, so that none of its own handlers can catch it:
+        /// what binding the tokens the body names and the types of its locals and `catch`
+        /// clauses throws before it runs (a member or type the assembly it is looked for in does
+        /// not have, or a module initializer that fails), and what taking and releasing a
+        /// synchronized method's monitor throws.
+        OutsideBody : Set<ThrownType>
     }
 
 /// What a call instruction's token names.
@@ -815,7 +815,7 @@ module EscapeAnalysis =
             Opaque = [ 0, reason ]
             Calls = []
             Regions = []
-            OnEntry = Set.empty
+            OutsideBody = Set.empty
         }
 
     /// What one body does by itself.
@@ -1092,8 +1092,9 @@ module EscapeAnalysis =
                 | _ -> state, failures
             )
 
-        // A synchronized method takes a monitor on entry, and a wait for it that is interrupted
-        // throws.
+        // A synchronized method takes a monitor around its body, outside its handlers: on its
+        // receiver, which `call` may pass as null, or on its type if static. Taking it may be
+        // interrupted, and releasing it fails if the body already has.
         let localFailures =
             let synchronized =
                 match method with
@@ -1101,9 +1102,15 @@ module EscapeAnalysis =
                 | MethodInfo.Synthesised _ -> false
 
             if synchronized then
-                Set.add
-                    (ThrownType.Exactly (corelibType state "System.Threading" "ThreadInterruptedException"))
-                    localFailures
+                [
+                    corelibType state "System.Threading" "ThreadInterruptedException"
+                    corelibType state "System.Threading" "SynchronizationLockException"
+                    if not method.IsStatic then
+                        corelibException state "ArgumentNullException"
+                ]
+                |> List.map ThrownType.Exactly
+                |> Set.ofList
+                |> Set.union localFailures
             else
                 localFailures
 
@@ -1117,7 +1124,7 @@ module EscapeAnalysis =
             Opaque = List.rev opaque
             Calls = List.rev calls
             Regions = List.ofSeq body.ExceptionRegions
-            OnEntry = bindingFailures
+            OutsideBody = bindingFailures
         }
 
     /// The full name of a type the analysis has loaded, for reporting.
@@ -1164,9 +1171,9 @@ module EscapeAnalysis =
         let seedOf (state : EscapeAnalysisState) (key : MethodKey) : EscapeAnalysisState * Escapes =
             let facts = state.Facts.[key]
 
-            // What is raised on entry happens before the body runs, so none of its handlers apply.
+            // What is raised outside the body is past all its handlers.
             let state, types =
-                ((state, facts.OnEntry), facts.Raises)
+                ((state, facts.OutsideBody), facts.Raises)
                 ||> List.fold (fun (state, types) (offset, thrown) ->
                     match escapesAt state key offset (Some thrown) with
                     | state, true -> state, Set.add thrown types

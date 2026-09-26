@@ -24,10 +24,12 @@ method, a `rethrow`) may add more:
   `TypeLoadException` the JIT would throw;
 * binding a token into another assembly that has a module initializer runs it, which may throw
   `TypeInitializationException`;
-* a synchronized method takes a monitor on entry, whose wait may throw
-  `ThreadInterruptedException`.
+* a synchronized method takes a monitor around its body, whose wait may throw
+  `ThreadInterruptedException`, whose release throws `SynchronizationLockException` if the body
+  has already released it, and which, for an instance method `call`ed on null, throws
+  `ArgumentNullException`.
 
-  All these happen before the body runs, so the body's own handlers do not catch them.
+  All these happen outside the body, so the body's own handlers do not catch them.
 
 The answer is an over-approximation: whatever a run can let escape is in it, named or covered by
 "unknown". Resource exhaustion is in it too, so almost every method can escape
