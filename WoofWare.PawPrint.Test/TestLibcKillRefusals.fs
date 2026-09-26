@@ -66,8 +66,42 @@ class Program
 }
 """
 
-    let private runSource (source : string) (platform : SimulatedUnixPlatform) (signo : int) : RunOutcome =
-        let description = $"kill(self, %d{signo})"
+    /// Holds System.Native's dispatcher in a SIGWINCH handler while a stop
+    /// signal (`args[0]`) and then SIGCONT (`args[1]`) are sent, both with
+    /// handlers registered: the stop signal is still waiting for the
+    /// dispatcher when SIGCONT is generated.
+    let private queuedStopThenContinueGuest : string =
+        """
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+class Program
+{
+    [DllImport("libc", EntryPoint = "kill", SetLastError = true)]
+    static extern int Kill(int pid, int sig);
+
+    static int Main(string[] args)
+    {
+        int pid = Environment.ProcessId;
+        using var release = new ManualResetEventSlim(false);
+        using var busy = PosixSignalRegistration.Create(PosixSignal.SIGWINCH, _ => release.Wait());
+        using var stop = PosixSignalRegistration.Create(PosixSignal.SIGTSTP, context => context.Cancel = true);
+        using var cont = PosixSignalRegistration.Create(PosixSignal.SIGCONT, context => context.Cancel = true);
+
+        if (Kill(pid, 28) != 0) return 1;
+        if (Kill(pid, int.Parse(args[0])) != 0) return 2;
+        if (Kill(pid, int.Parse(args[1])) != 0) return 3;
+
+        release.Set();
+        return 42;
+    }
+}
+"""
+
+    let private runSourceWith (source : string) (platform : SimulatedUnixPlatform) (argv : string list) : RunOutcome =
+        let arguments = String.concat " " argv
+        let description = $"kill(self, %s{arguments})"
 
         let _messages, loggerFactory =
             LoggerFactory.makeTestWithProperties [ "case", description ]
@@ -88,9 +122,12 @@ class Program
                             { KernelConfig.Default with
                                 UnixPlatform = platform
                             }
-                        Argv = [ string<int> signo ]
+                        Argv = argv
                     }
             }
+
+    let private runSource (source : string) (platform : SimulatedUnixPlatform) (signo : int) : RunOutcome =
+        runSourceWith source platform [ string<int> signo ]
 
     let private run (platform : SimulatedUnixPlatform) (signo : int) : RunOutcome = runSource guest platform signo
 
@@ -142,3 +179,16 @@ class Program
 
         exn.Message |> shouldContainText "SystemNative_HandleNonCanceledPosixSignal"
         exn.Message |> shouldContainText "still queued"
+
+    [<Test>]
+    let ``SIGCONT discarding a stop signal queued for the dispatcher is refused`` () : unit =
+        // On the real runtime both handlers run: the native handler took the
+        // stop signal before SIGCONT was sent. SIGTSTP and SIGCONT are 20 and
+        // 18 under Linux's numbering.
+        let exn =
+            Assert.Catch<exn> (fun () ->
+                runSourceWith queuedStopThenContinueGuest SimulatedUnixPlatform.linuxX64 [ "20" ; "18" ]
+                |> ignore<RunOutcome>
+            )
+
+        exn.Message |> shouldContainText "would discard the pending SIGTSTP"

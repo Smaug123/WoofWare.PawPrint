@@ -294,3 +294,46 @@ module TestNativeLibc =
             |> ignore<EmulatedKernel>
         )
         |> ignore<exn>
+
+    [<Test>]
+    let ``a send that would discard a signal queued for System.Native's dispatcher is refused`` () : unit =
+        for numbering in everyNumbering do
+            let registered =
+                fresh numbering
+                |> register numbering Signal.SIGTSTP
+                |> register numbering Signal.SIGCONT
+                |> fst
+
+            let generate (sent : Signal) (before : SignalState<int, NativeSignalHandler>) =
+                SignalState.generate
+                    CoreDumps.Suppressed
+                    (System.Collections.Immutable.ImmutableArray.Create 0)
+                    (processDirected sent)
+                    before
+                |> snd
+
+            let stopPending = SignalState.enqueue (processDirected Signal.SIGTSTP) registered
+
+            NativeLibc.screenGeneration Signal.SIGCONT stopPending (generate Signal.SIGCONT stopPending)
+            |> shouldEqual (Some (UnmodelledSelfSignal.WouldDiscardQueued (Signal.SIGCONT, Signal.SIGTSTP)))
+
+            let contPending = SignalState.enqueue (processDirected Signal.SIGCONT) registered
+
+            NativeLibc.screenGeneration Signal.SIGTSTP contPending (generate Signal.SIGTSTP contPending)
+            |> shouldEqual (Some (UnmodelledSelfSignal.WouldDiscardQueued (Signal.SIGTSTP, Signal.SIGCONT)))
+
+            // A pending stop signal nothing is registered for sits in the
+            // kernel's own pending set, which SIGCONT does discard.
+            let kernelPending =
+                initial numbering
+                |> SignalState.block 0 Signal.SIGTSTP
+                |> SignalState.enqueue (processDirected Signal.SIGTSTP)
+
+            NativeLibc.screenGeneration Signal.SIGCONT kernelPending (generate Signal.SIGCONT kernelPending)
+            |> shouldEqual None
+
+            // And a send that discards nothing is no reason.
+            let usr2Pending = SignalState.block 0 Signal.SIGUSR2 stopPending
+
+            NativeLibc.screenGeneration Signal.SIGUSR2 usr2Pending (generate Signal.SIGUSR2 usr2Pending)
+            |> shouldEqual None

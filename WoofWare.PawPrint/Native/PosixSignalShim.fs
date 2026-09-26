@@ -180,6 +180,39 @@ module PosixSignalShim =
             SignalState.setDisposition signal (SignalDisposition.Catch NativeSignalHandler.SystemNative) signals,
             save current
 
+    /// What `InitializeSignalHandlingCore` does to the shim's saved
+    /// dispositions: it installs System.Native's handler for SIGINT, SIGQUIT
+    /// and SIGCONT, for the console, saving each one's disposition as
+    /// `installHandler` does, so that a later `restoreHandler` or non-cancelled
+    /// handling of one of them finds it. An ignored one stays ignored.
+    ///
+    /// Only the saving is modelled: the kernel's dispositions for the three
+    /// are left as they were rather than becoming System.Native's handler, so
+    /// that a signal sent to the process before the guest registers one
+    /// still takes its disposition directly. Signals the shim initialises
+    /// only once; call this on its first initialisation.
+    let saveConsoleSignals<'Task when 'Task : comparison>
+        (numbering : SignalNumbering)
+        (signals : SignalState<'Task, NativeSignalHandler>)
+        (state : PosixSignalShim)
+        : PosixSignalShim
+        =
+        (state, [ Signal.SIGINT ; Signal.SIGQUIT ; Signal.SIGCONT ])
+        ||> List.fold (fun state signal ->
+            match SignalState.disposition signal signals with
+            | SignalDisposition.Default ->
+                { state with
+                    Originals = Map.remove (Signal.canonicalUnder numbering signal) state.Originals
+                }
+            | SignalDisposition.Catch NativeSignalHandler.SystemNative ->
+                failwith
+                    $"PosixSignalShim.saveConsoleSignals: %O{signal} is already caught by System.Native's handler before the shim is initialised."
+            | disposition ->
+                { state with
+                    Originals = Map.add (Signal.canonicalUnder numbering signal) disposition state.Originals
+                }
+        )
+
     /// `RestoreSignalHandler`: put back the disposition the shim saved for
     /// `signal`, which is the default if it never installed a handler for it.
     let restoreHandler<'Task when 'Task : comparison>

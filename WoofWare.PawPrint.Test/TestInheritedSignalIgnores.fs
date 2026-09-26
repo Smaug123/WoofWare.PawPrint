@@ -59,6 +59,30 @@ class Program
 }
 """
 
+    /// Initialises System.Native's signal handling, then hands SIGINT to its
+    /// handling of a signal no managed handler cancelled.
+    let private nonCanceledInterruptGuest : string =
+        """
+using System;
+using System.Runtime.InteropServices;
+
+class Program
+{
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_HandleNonCanceledPosixSignal")]
+    static extern void HandleNonCanceled(int signalCode);
+
+    static int Main(string[] args)
+    {
+        // Registering anything initialises the shim, which installs its
+        // handler for SIGINT then, saving the disposition it replaces.
+        using (PosixSignalRegistration.Create(PosixSignal.SIGCONT, _ => { })) { }
+
+        HandleNonCanceled(2);
+        return 0;
+    }
+}
+"""
+
     let private runUnderPawPrint
         (platform : SimulatedUnixPlatform)
         (ignored : Set<Signal>)
@@ -124,4 +148,28 @@ class Program
 
             RealRuntime.executeWithRealRuntime [| string<int> usr2 |] image
             |> shouldEqual (RealRuntimeResult.NormalExit (128 + usr2))
+        )
+
+    [<Test>]
+    let ``the shim's handling of an inherited-ignored SIGINT leaves it ignored on both runtimes`` () : unit =
+        // SIGINT is 2 on both flavours. Initialising the shim saves the
+        // inherited ignore, and its non-cancelled handling then does nothing.
+        // Without the ignore, both die of SIGINT.
+        HostPlatform.onUnixHost (fun flavour ->
+            let platform = HostPlatform.platformOf flavour
+            let image = Roslyn.compile [ nonCanceledInterruptGuest ]
+
+            match runUnderPawPrint platform (Set.singleton Signal.SIGINT) 0 image with
+            | RunOutcome.NormalExit (state, _) -> state.LatchedExitCode |> shouldEqual 0
+            | other -> failwith $"PawPrint: expected a clean exit, got %O{other}"
+
+            RealRuntime.executeWithInheritedIgnores [ 2 ] [||] image
+            |> shouldEqual (RealRuntimeResult.NormalExit 0)
+
+            match runUnderPawPrint platform Set.empty 0 image with
+            | RunOutcome.SignalTerminated (_, signal, _) -> signal |> shouldEqual Signal.SIGINT
+            | other -> failwith $"PawPrint: expected death by SIGINT, got %O{other}"
+
+            RealRuntime.executeWithRealRuntime [||] image
+            |> shouldEqual (RealRuntimeResult.NormalExit (128 + 2))
         )

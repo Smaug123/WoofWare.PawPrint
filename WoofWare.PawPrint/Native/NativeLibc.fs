@@ -22,6 +22,12 @@ type UnmodelledSelfSignal =
     /// on to its dispatcher, so both would reach managed code; the model would
     /// merge the two into one pending instance.
     | WouldCoalesce of Signal
+    /// Sending `sent` would discard `queued`, a pending signal a handler is
+    /// registered for: generating a stop signal discards a pending SIGCONT,
+    /// and SIGCONT pending stop signals. The runtime's native handler has
+    /// already taken that instance and passed it on to its dispatcher, so a
+    /// real process still runs its managed handler; the model would drop it.
+    | WouldDiscardQueued of sent : Signal * queued : Signal
 
 [<RequireQualifiedAccess>]
 module UnmodelledSelfSignal =
@@ -40,6 +46,8 @@ module UnmodelledSelfSignal =
             $"%O{signal} with no handler registered continues a stopped process, and a running one carries on regardless; PawPrint has no stopped state, and would leave the signal pending for a dispatcher that refuses it."
         | UnmodelledSelfSignal.WouldCoalesce signal ->
             $"%O{signal} has a handler registered and is already pending. The runtime's native handler would pass both instances to its dispatcher, where PawPrint's pending set would merge them into one."
+        | UnmodelledSelfSignal.WouldDiscardQueued (sent, queued) ->
+            $"%O{sent} would discard the pending %O{queued}, which has a handler registered. The runtime's native handler has already passed that instance to its dispatcher, which still runs the managed handler for it; PawPrint's pending set does not hold the dispatcher's queue apart from the kernel's, and would drop it."
 
 /// Entry points of the C library itself, which a guest reaches only through a
 /// P/Invoke of its own naming the library `libc`: the BCL calls none of them
@@ -88,13 +96,40 @@ module NativeLibc =
         | SignalDisposition.Default
         | SignalDisposition.Ignore -> None
 
+    /// Whether generating a signal, which took the signal state from `before`
+    /// to `after`, discarded a pending instance of a signal System.Native's
+    /// handler catches. `None` if it did not.
+    ///
+    /// Such an instance is one the dispatcher has not yet run the managed
+    /// handler for, which on a real process the native handler has already
+    /// taken; see `UnmodelledSelfSignal.WouldDiscardQueued`.
+    let screenGeneration<'Task when 'Task : comparison>
+        (sent : Signal)
+        (before : SignalState<'Task, NativeSignalHandler>)
+        (after : SignalState<'Task, NativeSignalHandler>)
+        : UnmodelledSelfSignal option
+        =
+        let remaining = SignalState.pending after
+
+        SignalState.pending before
+        |> List.tryFind (fun entry ->
+            SignalState.disposition entry.Signal before = SignalDisposition.Catch NativeSignalHandler.SystemNative
+            && not (List.contains entry remaining)
+        )
+        |> Option.map (fun entry ->
+            UnmodelledSelfSignal.WouldDiscardQueued (
+                Signal.canonicalUnder (SignalState.numbering before) sent,
+                entry.Signal
+            )
+        )
+
     /// `kill(2)`, issued by the thread `ctx` is executing, pushing its `int`
     /// result: 0, or -1 with errno set.
     ///
     /// A signal whose kernel default ends the process ends the run here, with
     /// the call never returning. A target other than the calling process, and
-    /// anything `screenSelfSignal` refuses, fail the run: the model has no
-    /// answer to give.
+    /// anything `screenSelfSignal` or `screenGeneration` refuses, fail the
+    /// run: the model has no answer to give.
     let kill (operation : string) (ctx : NativeCallContext) (pid : int) (signo : int) : NativeHandlerResult =
         let state = ctx.State
         let system = EmulatedKernel.unix state.Kernel
@@ -130,9 +165,12 @@ module NativeLibc =
 
         match
             sent
-            |> ValueOption.bind (
-                screenSelfSignal state.Kernel.PosixSignalShim system.Process.Signals
-                >> ValueOption.ofOption
+            |> ValueOption.bind (fun sent ->
+                match screenSelfSignal state.Kernel.PosixSignalShim system.Process.Signals sent with
+                | Some refusal -> ValueSome refusal
+                | None ->
+                    screenGeneration sent system.Process.Signals after.Process.Signals
+                    |> ValueOption.ofOption
             )
         with
         | ValueSome refusal ->

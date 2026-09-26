@@ -5743,8 +5743,13 @@ module NativeSystemNative =
                     let state, dispatcher = IlMachineState.allocateParkedThread state
 
                     state.MapKernel (fun kernel ->
+                        let numbering = SimulatedUnixPlatform.signalNumbering kernel.UnixPlatform
+
                         { kernel with
-                            PosixSignalShim = PosixSignalShim.markInitialized dispatcher kernel.PosixSignalShim
+                            PosixSignalShim =
+                                kernel.PosixSignalShim
+                                |> PosixSignalShim.saveConsoleSignals numbering kernel.Signals
+                                |> PosixSignalShim.markInitialized dispatcher
                         }
                     )
 
