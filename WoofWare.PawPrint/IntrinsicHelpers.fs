@@ -937,67 +937,82 @@ module internal IntrinsicHelpers =
             && isCorelibConcreteType state "System" "Char" ty.Generics.[0]
         | None -> false
 
+    /// The span a span intrinsic's receiver names. Only moved: each caller uses a field of it
+    /// (`spanLength`, `spanReference`) only where the BCL body would.
     let spanReceiverValue
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
         (state : IlMachineState)
         (receiver : EvalStackValue)
-        : Result<CliValueType, UndefinedValue>
+        : CliValueType
         =
-        // The span's reference and length are what the caller reads it for, so a span with an
-        // undefined field is a use of it.
-        let ofValue (vt : CliValueType) : Result<CliValueType, UndefinedValue> =
-            match CliType.tryFindUndefined (CliType.ValueType vt) with
-            | Some u -> Error u
-            | None -> Ok vt
-
         match receiver with
         | EvalStackValue.ManagedPointer src ->
             match IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed src) with
-            | CliType.ValueType vt -> ofValue vt
+            | CliType.ValueType vt -> vt
             | other -> failwith $"%s{operation}: receiver byref read produced non-value-type %O{other}"
-        | EvalStackValue.UserDefinedValueType vt -> ofValue vt
+        | EvalStackValue.UserDefinedValueType vt -> vt
         | other -> failwith $"%s{operation}: expected span receiver byref, got %O{other}"
 
-    let spanReferenceAndLength
+    /// A span's `_length`, which the caller uses: `Error` if it is undefined.
+    let spanLength (operation : string) (state : IlMachineState) (span : CliValueType) : Result<int, UndefinedValue> =
+        let lengthField =
+            IlMachineState.requiredOwnInstanceFieldId state span.Declared "_length"
+
+        match
+            CliValueType.DereferenceFieldById lengthField span
+            |> CliType.unwrapPrimitiveLike
+        with
+        | CliType.Numeric (CliNumericType.Int32 i) ->
+            if i < 0 then
+                failwith $"%s{operation}: span length was negative: %d{i}"
+
+            Ok i
+        | CliType.Undefined u -> Error u
+        | other -> failwith $"%s{operation}: expected _length to be int32, got %O{other}"
+
+    /// A span's `_reference`, which the caller uses to reach an element: `Error` if it is
+    /// undefined.
+    let spanReference
         (operation : string)
         (state : IlMachineState)
         (span : CliValueType)
-        : EvalStackValue * int
+        : Result<EvalStackValue, UndefinedValue>
         =
         let referenceField =
             IlMachineState.requiredOwnInstanceFieldId state span.Declared "_reference"
 
-        let reference =
-            match
-                CliValueType.DereferenceFieldById referenceField span
-                |> CliType.unwrapPrimitiveLikeDeep
-            with
-            | CliType.RuntimePointer (CliRuntimePointer.Managed src) -> EvalStackValue.ManagedPointer src
-            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer src)) ->
-                EvalStackValue.ManagedPointer src
-            | other -> failwith $"%s{operation}: expected _reference to be a managed byref, got %O{other}"
+        match
+            CliValueType.DereferenceFieldById referenceField span
+            |> CliType.unwrapPrimitiveLikeDeep
+        with
+        | CliType.RuntimePointer (CliRuntimePointer.Managed src) -> Ok (EvalStackValue.ManagedPointer src)
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer src)) ->
+            Ok (EvalStackValue.ManagedPointer src)
+        | CliType.Undefined u -> Error u
+        | other -> failwith $"%s{operation}: expected _reference to be a managed byref, got %O{other}"
 
-        let lengthField =
-            IlMachineState.requiredOwnInstanceFieldId state span.Declared "_length"
-
-        let length =
-            match
-                CliValueType.DereferenceFieldById lengthField span
-                |> CliType.unwrapPrimitiveLike
-            with
-            | CliType.Numeric (CliNumericType.Int32 i) -> i
-            | other -> failwith $"%s{operation}: expected _length to be int32, got %O{other}"
-
-        reference, length
-
-    let readCharSpanContents
-        (baseClassTypes : BaseClassTypes<_>)
+    /// Element `index` of a `char` span whose reference is `reference`, which the caller uses.
+    let private readSpanChar
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
         (state : IlMachineState)
-        (span : CliValueType)
-        : Result<string * IlMachineState, UndefinedValue>
+        (charType : ConcreteTypeHandle)
+        (reference : EvalStackValue)
+        (index : int)
+        : Result<char * IlMachineState, UndefinedValue>
         =
+        let ptr, state =
+            offsetManagedPointerByElements baseClassTypes state charType (int64<int> index) reference
+
+        match ptr with
+        | EvalStackValue.ManagedPointer src ->
+            IlMachineState.readManagedByrefForUse baseClassTypes state (ManagedPointerSource.requireAddressed src)
+            |> Result.map (fun value -> charOfCliType operation value, state)
+        | other -> failwith $"%s{operation}: element pointer was not a managed pointer: %O{other}"
+
+    /// The `char` span `span`'s element type, refusing any other span.
+    let private charSpanElementType (operation : string) (state : IlMachineState) (span : CliValueType) =
         let spanType =
             AllConcreteTypes.lookup span.Declared state.ConcreteTypes
             |> Option.defaultWith (fun () -> failwith $"%s{operation}: span type %O{span.Declared} was not registered")
@@ -1011,37 +1026,41 @@ module internal IntrinsicHelpers =
         then
             failwith $"%s{operation}: expected ReadOnlySpan<char> or Span<char>, got %O{spanType}"
 
-        let reference, length = spanReferenceAndLength operation state span
+        spanType.Generics.[0]
 
-        if length < 0 then
-            failwith $"%s{operation}: span length was negative: %d{length}"
+    /// Every `char` of `span`, each of which the caller uses. An empty span's reference is never
+    /// used.
+    let readCharSpanContents
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (span : CliValueType)
+        : Result<string * IlMachineState, UndefinedValue>
+        =
+        let charType = charSpanElementType operation state span
+
+        match spanLength operation state span with
+        | Error u -> Error u
+        | Ok 0 -> Ok ("", state)
+        | Ok length ->
+
+        match spanReference operation state span with
+        | Error u -> Error u
+        | Ok reference ->
 
         let rec readFrom (index : int) (chars : char list) (state : IlMachineState) =
             if index >= length then
                 Ok (System.String (chars |> List.rev |> List.toArray), state)
             else
-
-            let ptr, state =
-                offsetManagedPointerByElements baseClassTypes state spanType.Generics.[0] (int64<int> index) reference
-
-            let value =
-                match ptr with
-                | EvalStackValue.ManagedPointer src ->
-                    IlMachineState.readManagedByrefForUse
-                        baseClassTypes
-                        state
-                        (ManagedPointerSource.requireAddressed src)
-                | other -> failwith $"%s{operation}: element pointer was not a managed pointer: %O{other}"
-
-            match value with
-            | Error u -> Error u
-            | Ok value -> readFrom (index + 1) (charOfCliType operation value :: chars) state
+                match readSpanChar baseClassTypes operation state charType reference index with
+                | Error u -> Error u
+                | Ok (c, state) -> readFrom (index + 1) (c :: chars) state
 
         readFrom 0 [] state
 
     let spanToString
         (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<_>)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (currentThread : ThreadId)
         (advanceCaller : IlMachineState -> IlMachineState)
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
@@ -1057,15 +1076,7 @@ module internal IntrinsicHelpers =
         let operation = $"{MethodOwner.describe methodToCall.Owner}.ToString"
         let elementType = methodToCall.DeclaringTypeGenerics |> Seq.exactlyOne
         let receiver, state = IlMachineState.popEvalStack currentThread state
-
-        match spanReceiverValue baseClassTypes operation state receiver with
-        | Error u -> Error u
-        | Ok span ->
-
-        let reference, length = spanReferenceAndLength operation state span
-
-        if length < 0 then
-            failwith $"%s{operation}: span length was negative: %d{length}"
+        let span = spanReceiverValue baseClassTypes operation state receiver
 
         let elementTypeInfo =
             AllConcreteTypes.lookup elementType state.ConcreteTypes
@@ -1077,36 +1088,17 @@ module internal IntrinsicHelpers =
                 && elementTypeInfo.Namespace = "System"
                 && elementTypeInfo.Name = "Char"
             then
-                let rec readFrom (index : int) (chars : char list) (state : IlMachineState) =
-                    if index >= length then
-                        Ok (System.String (chars |> List.rev |> List.toArray), state)
-                    else
-
-                    let ptr, state =
-                        offsetManagedPointerByElements baseClassTypes state elementType (int64<int> index) reference
-
-                    let value =
-                        match ptr with
-                        | EvalStackValue.ManagedPointer src ->
-                            IlMachineState.readManagedByrefForUse
-                                baseClassTypes
-                                state
-                                (ManagedPointerSource.requireAddressed src)
-                        | other -> failwith $"%s{operation}: element pointer was not a managed pointer: %O{other}"
-
-                    match value with
-                    | Error u -> Error u
-                    | Ok value -> readFrom (index + 1) (charOfCliType operation value :: chars) state
-
-                readFrom 0 [] state
+                readCharSpanContents baseClassTypes operation state span
             else
+                // Only the length is used: the BCL names the span's type and length.
                 let typeKind =
                     if methodToCall.RequiredDeclaringType.Name = "ReadOnlySpan`1" then
                         "ReadOnlySpan"
                     else
                         "Span"
 
-                Ok ($"System.%s{typeKind}<%s{elementTypeInfo.Name}>[%d{length}]", state)
+                spanLength operation state span
+                |> Result.map (fun length -> $"System.%s{typeKind}<%s{elementTypeInfo.Name}>[%d{length}]", state)
 
         match contents with
         | Error u -> Error u
@@ -1121,7 +1113,7 @@ module internal IntrinsicHelpers =
         |> Ok
 
     let memoryExtensionsEquals
-        (baseClassTypes : BaseClassTypes<_>)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (currentThread : ThreadId)
         (advanceCaller : IlMachineState -> IlMachineState)
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
@@ -1148,20 +1140,7 @@ module internal IntrinsicHelpers =
 
         let comparisonType = int32OfEvalStackValue operation comparisonType
 
-        let contents =
-            spanReceiverValue baseClassTypes operation state left
-            |> Result.bind (fun left -> readCharSpanContents baseClassTypes operation state left)
-            |> Result.bind (fun (left, state) ->
-                spanReceiverValue baseClassTypes operation state right
-                |> Result.bind (fun right -> readCharSpanContents baseClassTypes operation state right)
-                |> Result.map (fun (right, state) -> left, right, state)
-            )
-
-        match contents with
-        | Error u -> Error u
-        | Ok (left, right, state) ->
-
-        let result =
+        let ignoreCase =
             match comparisonType with
             | 0
             | 1
@@ -1169,16 +1148,76 @@ module internal IntrinsicHelpers =
             | 3 ->
                 failwith
                     $"TODO: %s{operation} with culture-sensitive StringComparison %d{comparisonType} requires deterministic culture modelling"
-            | 4 -> String.Equals (left, right, StringComparison.Ordinal)
-            | 5 -> String.Equals (left, right, StringComparison.OrdinalIgnoreCase)
+            | 4 -> false
+            | 5 -> true
             | _ ->
                 failwith
                     $"TODO: %s{operation} with invalid StringComparison %d{comparisonType} should throw ArgumentException"
 
-        state
-        |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
-        |> advanceCaller
-        |> Ok
+        let left = spanReceiverValue baseClassTypes operation state left
+        let right = spanReceiverValue baseClassTypes operation state right
+
+        // Uses only what decides the answer, as the BCL does: spans of different lengths are
+        // unequal without a character being read, and an ordinal comparison stops at the first
+        // difference. A case-insensitive one reads every character, which is stricter than it
+        // needs to be after a difference.
+        let result : Result<bool * IlMachineState, UndefinedValue> =
+            match spanLength operation state left with
+            | Error u -> Error u
+            | Ok leftLength ->
+
+            match spanLength operation state right with
+            | Error u -> Error u
+            | Ok rightLength ->
+
+            if leftLength <> rightLength then
+                Ok (false, state)
+            elif leftLength = 0 then
+                Ok (true, state)
+            elif ignoreCase then
+                readCharSpanContents baseClassTypes operation state left
+                |> Result.bind (fun (leftChars, state) ->
+                    readCharSpanContents baseClassTypes operation state right
+                    |> Result.map (fun (rightChars, state) ->
+                        String.Equals (leftChars, rightChars, StringComparison.OrdinalIgnoreCase), state
+                    )
+                )
+            else
+
+            let charType = charSpanElementType operation state left
+
+            match spanReference operation state left with
+            | Error u -> Error u
+            | Ok leftReference ->
+
+            match spanReference operation state right with
+            | Error u -> Error u
+            | Ok rightReference ->
+
+            let rec compareFrom (index : int) (state : IlMachineState) =
+                if index >= leftLength then
+                    Ok (true, state)
+                else
+                    match readSpanChar baseClassTypes operation state charType leftReference index with
+                    | Error u -> Error u
+                    | Ok (l, state) ->
+
+                    match readSpanChar baseClassTypes operation state charType rightReference index with
+                    | Error u -> Error u
+                    | Ok (r, state) ->
+                        if l = r then
+                            compareFrom (index + 1) state
+                        else
+                            Ok (false, state)
+
+            compareFrom 0 state
+
+        result
+        |> Result.map (fun (result, state) ->
+            state
+            |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
+            |> advanceCaller
+        )
 
     /// The size operand of `initblk` (ECMA-335 III.3.36) and of `cpblk` (III.3.30) is an
     /// *unsigned* int32, so the int32 evaluation-stack slot is reinterpreted rather than

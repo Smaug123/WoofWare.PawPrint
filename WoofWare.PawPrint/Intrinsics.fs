@@ -3402,29 +3402,21 @@ module Intrinsics =
                 | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
                 | other -> failwith $"%s{spanTypeName}.get_Item expected Int32 index, got %O{other}"
 
-            let span : Result<CliValueType, UndefinedValue> =
+            // Each field is used only where the BCL body uses it: the length by the bounds check,
+            // and the reference only once the index is in range.
+            let span : CliValueType =
                 match receiver with
                 | EvalStackValue.ManagedPointer src ->
                     match
-                        IlMachineState.readManagedByrefForUse
-                            baseClassTypes
-                            state
-                            (ManagedPointerSource.requireAddressed src)
+                        IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed src)
                     with
-                    | Error u -> Error u
-                    | Ok (CliType.ValueType vt) -> Ok vt
-                    | Ok other ->
+                    | CliType.ValueType vt -> vt
+                    | other ->
                         failwith $"%s{spanTypeName}.get_Item receiver byref read produced non-value-type %O{other}"
-                | EvalStackValue.UserDefinedValueType vt -> Ok vt
+                | EvalStackValue.UserDefinedValueType vt -> vt
                 | other -> failwith $"%s{spanTypeName}.get_Item expected span receiver byref, got %O{other}"
 
-            match span with
-            | Error u ->
-                UndefinedValueObservation.ReadByRuntime methodToCall "the span it indexes" u
-                |> IntrinsicResult.UndefinedValueObserved
-            | Ok span ->
-
-            let length : int =
+            let length : Result<int, UndefinedValue> =
                 let lengthField =
                     IlMachineState.requiredOwnInstanceFieldId state span.Declared "_length"
 
@@ -3432,8 +3424,15 @@ module Intrinsics =
                     CliValueType.DereferenceFieldById lengthField span
                     |> CliType.unwrapPrimitiveLike
                 with
-                | CliType.Numeric (CliNumericType.Int32 i) -> i
+                | CliType.Numeric (CliNumericType.Int32 i) -> Ok i
+                | CliType.Undefined u -> Error u
                 | other -> failwith $"%s{spanTypeName}.get_Item expected _length to be int32, got %O{other}"
+
+            match length with
+            | Error u ->
+                UndefinedValueObservation.ReadByRuntime methodToCall "the length of the span it indexes" u
+                |> IntrinsicResult.UndefinedValueObserved
+            | Ok length ->
 
             if uint32<int32> index >= uint32<int32> length then
                 // `ThrowHelper.ThrowIndexOutOfRangeException()`, i.e. the parameterless ctor, so
@@ -3445,7 +3444,7 @@ module Intrinsics =
                 IntrinsicResult.RaiseException (state, baseClassTypes.IndexOutOfRangeException, None)
             else
 
-            let reference : EvalStackValue =
+            let reference : Result<EvalStackValue, UndefinedValue> =
                 let referenceField =
                     IlMachineState.requiredOwnInstanceFieldId state span.Declared "_reference"
 
@@ -3453,11 +3452,18 @@ module Intrinsics =
                     CliValueType.DereferenceFieldById referenceField span
                     |> CliType.unwrapPrimitiveLikeDeep
                 with
-                | CliType.RuntimePointer (CliRuntimePointer.Managed src) -> EvalStackValue.ManagedPointer src
+                | CliType.RuntimePointer (CliRuntimePointer.Managed src) -> Ok (EvalStackValue.ManagedPointer src)
                 | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer src)) ->
-                    EvalStackValue.ManagedPointer src
+                    Ok (EvalStackValue.ManagedPointer src)
+                | CliType.Undefined u -> Error u
                 | other ->
                     failwith $"%s{spanTypeName}.get_Item expected _reference to be a managed byref, got %O{other}"
+
+            match reference with
+            | Error u ->
+                UndefinedValueObservation.ReadByRuntime methodToCall "the reference of the span it indexes" u
+                |> IntrinsicResult.UndefinedValueObserved
+            | Ok reference ->
 
             let ptr, state =
                 offsetManagedPointerByElements baseClassTypes state elementType (int64<int> index) reference
@@ -3487,28 +3493,20 @@ module Intrinsics =
 
             let receiver, state = IlMachineState.popEvalStack currentThread state
 
-            let span : Result<CliValueType, UndefinedValue> =
+            // Each field is used only where the BCL body uses it: the length always, and the
+            // reference only when there is something to clear.
+            let span : CliValueType =
                 match receiver with
                 | EvalStackValue.ManagedPointer src ->
                     match
-                        IlMachineState.readManagedByrefForUse
-                            baseClassTypes
-                            state
-                            (ManagedPointerSource.requireAddressed src)
+                        IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed src)
                     with
-                    | Error u -> Error u
-                    | Ok (CliType.ValueType vt) -> Ok vt
-                    | Ok other -> failwith $"Span`1.Clear receiver byref read produced non-value-type %O{other}"
-                | EvalStackValue.UserDefinedValueType vt -> Ok vt
+                    | CliType.ValueType vt -> vt
+                    | other -> failwith $"Span`1.Clear receiver byref read produced non-value-type %O{other}"
+                | EvalStackValue.UserDefinedValueType vt -> vt
                 | other -> failwith $"Span`1.Clear expected span receiver byref, got %O{other}"
 
-            match span with
-            | Error u ->
-                UndefinedValueObservation.ReadByRuntime methodToCall "the span it clears" u
-                |> IntrinsicResult.UndefinedValueObserved
-            | Ok span ->
-
-            let length : int =
+            let length : Result<int, UndefinedValue> =
                 let lengthField =
                     IlMachineState.requiredOwnInstanceFieldId state span.Declared "_length"
 
@@ -3516,10 +3514,22 @@ module Intrinsics =
                     CliValueType.DereferenceFieldById lengthField span
                     |> CliType.unwrapPrimitiveLike
                 with
-                | CliType.Numeric (CliNumericType.Int32 i) -> i
+                | CliType.Numeric (CliNumericType.Int32 i) -> Ok i
+                | CliType.Undefined u -> Error u
                 | other -> failwith $"Span`1.Clear expected _length to be int32, got %O{other}"
 
-            let reference : EvalStackValue =
+            match length with
+            | Error u ->
+                UndefinedValueObservation.ReadByRuntime methodToCall "the length of the span it clears" u
+                |> IntrinsicResult.UndefinedValueObserved
+            | Ok length ->
+
+            let reference : Result<EvalStackValue, UndefinedValue> =
+                if length = 0 then
+                    // Never used: nothing is cleared.
+                    Ok (EvalStackValue.ManagedPointer ManagedPointerSource.Null)
+                else
+
                 let referenceField =
                     IlMachineState.requiredOwnInstanceFieldId state span.Declared "_reference"
 
@@ -3527,10 +3537,17 @@ module Intrinsics =
                     CliValueType.DereferenceFieldById referenceField span
                     |> CliType.unwrapPrimitiveLikeDeep
                 with
-                | CliType.RuntimePointer (CliRuntimePointer.Managed src) -> EvalStackValue.ManagedPointer src
+                | CliType.RuntimePointer (CliRuntimePointer.Managed src) -> Ok (EvalStackValue.ManagedPointer src)
                 | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer src)) ->
-                    EvalStackValue.ManagedPointer src
+                    Ok (EvalStackValue.ManagedPointer src)
+                | CliType.Undefined u -> Error u
                 | other -> failwith $"Span`1.Clear expected _reference to be a managed byref, got %O{other}"
+
+            match reference with
+            | Error u ->
+                UndefinedValueObservation.ReadByRuntime methodToCall "the reference of the span it clears" u
+                |> IntrinsicResult.UndefinedValueObserved
+            | Ok reference ->
 
             let zero, state =
                 IlMachineState.cliTypeZeroOfHandle state baseClassTypes elementType
