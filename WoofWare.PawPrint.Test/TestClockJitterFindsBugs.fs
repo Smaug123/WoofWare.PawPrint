@@ -77,6 +77,8 @@ module TestClockJitterFindsBugs =
 
     let private endingOfOutcome (outcome : RunOutcome) : Ending =
         match outcome with
+        | RunOutcome.UndefinedValueObserved (_, _, observation) ->
+            Ending.Other $"undefined value observed: %O{observation}"
         | RunOutcome.NormalExit (state, _)
         | RunOutcome.ProcessExit (state, _) -> Ending.ExitCode state.LatchedExitCode
         | RunOutcome.GuestUnhandledException _ -> Ending.Other "unhandled guest exception"

@@ -454,7 +454,9 @@ module NativeRuntimeTypeHelpers =
         // integers, `bool`, `char`, `ELEMENT_TYPE_I`/`U` and `ELEMENT_TYPE_PTR` — is accepted.
         // Object references need no arm of their own: `ContainsGCPointers` has already rejected
         // the whole type before the loop begins.
-        match CliType.unwrapPrimitiveLikeDeep field.Contents with
+        // A question about the field's type, which an undefined value answers by its shape.
+        match CliType.Shape (CliType.unwrapPrimitiveLikeDeep field.Contents) with
+        | CliType.Undefined _ -> failwith "unreachable: CliType.Shape never returns an undefined value"
         | CliType.Numeric numeric ->
             match numeric with
             | CliNumericType.Float32 _
@@ -535,6 +537,8 @@ module NativeRuntimeTypeHelpers =
                 | CliType.Bool _
                 | CliType.Char _ -> true
                 | CliType.ValueType vt -> CliValueType.IsTightlyPacked vt
+                | CliType.Undefined u ->
+                    failwith $"unreachable: the zero value of %O{methodTableFor} is the undefined %O{u}"
 
             if not fieldLayoutIsTightlyPacked || CliType.containsObjectReferences zero then
                 state, false

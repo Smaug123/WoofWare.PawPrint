@@ -40,6 +40,7 @@ module internal UnaryMetadataMemoryOps =
             IlMachineState.cliTypeZeroOfHandle state baseClassTypes concreteTypeHandle
 
         match popped with
+        | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "initobj's address" u
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ManagedPointer ManagedPointerSource.Null
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
@@ -105,6 +106,7 @@ module internal UnaryMetadataMemoryOps =
                     $"Stobj: cannot write through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
 
         match addr with
+        | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "stobj's address" u
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ManagedPointer ManagedPointerSource.Null
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
@@ -152,6 +154,7 @@ module internal UnaryMetadataMemoryOps =
         let addr, state = state |> IlMachineState.popEvalStack thread
 
         match addr with
+        | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "ldobj's address" u
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ManagedPointer ManagedPointerSource.Null
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
@@ -229,6 +232,7 @@ module internal UnaryMetadataMemoryOps =
 
         let toPush, state =
             match addr with
+            | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "ldobj's address" u
             | EvalStackValue.ObjectRef _ ->
                 failwith "Ldobj on an object reference is invalid; expected a managed pointer"
             | EvalStackValue.ManagedPointer ptr

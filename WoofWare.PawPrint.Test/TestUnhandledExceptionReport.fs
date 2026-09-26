@@ -20,6 +20,8 @@ module TestUnhandledExceptionReport =
 
     let private reportOf (outcome : RunOutcome) : string list =
         match outcome with
+        | RunOutcome.UndefinedValueObserved (_, _, observation) ->
+            failwith $"guest used an undefined value: %O{observation}"
         | RunOutcome.GuestUnhandledException (state, _, exn) ->
             UnhandledExceptionReport.describe state exn
             |> fun s -> s.Split Environment.NewLine

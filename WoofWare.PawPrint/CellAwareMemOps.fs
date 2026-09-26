@@ -47,12 +47,14 @@ module internal CellAwareMemOps =
         AllConcreteTypes.lookup handle state.ConcreteTypes
         |> Option.defaultWith (fun () -> failwith $"%s{operation}: concrete System.Byte handle %O{handle} not found")
 
+    /// The byte at `ptr`, as a byte-typed value to store elsewhere: a number, or undefined if the
+    /// byte is. An undefined byte is moved rather than observed, so a copy carries it across.
     let private readByte
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (ptr : ManagedPointerSource)
-        : byte
+        : CliType
         =
         match
             IlMachineState.readManagedByrefBytesAs
@@ -67,21 +69,27 @@ module internal CellAwareMemOps =
         // exact rather than a crash -- but that is a widening of what these primitives can do,
         // wanted on its own terms and with its own coverage, not a side effect of a byte
         // acquiring provenance.
-        | CliType.Numeric (CliNumericType.UInt8 b) -> UInt8Source.value $"%s{operation}: byte-view read" b
+        | CliType.Numeric (CliNumericType.UInt8 b) ->
+            UInt8Source.value $"%s{operation}: byte-view read" b
+            |> UInt8Source.Verbatim
+            |> CliNumericType.UInt8
+            |> CliType.Numeric
+        | CliType.Undefined u when u.Kind = UndefinedPrimitive.UInt8 -> CliType.Undefined u
         | other -> failwith $"%s{operation}: byte-view read returned non-byte value %O{other}"
 
+    /// Store a byte-typed value that `readByte` produced, or a number, at `ptr`.
     let private writeByte
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (ptr : ManagedPointerSource)
-        (value : byte)
+        (value : CliType)
         : IlMachineState
         =
         IlMachineState.writeManagedByrefBytesOrTypedCell
             baseClassTypes
             state
             (ManagedPointerSource.requireAddressed ptr)
-            (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim value)))
+            value
 
     let private shouldCopyBackwards
         (operation : string)
@@ -188,8 +196,11 @@ module internal CellAwareMemOps =
     /// differentially at all — the same position `isCellIdentityCompatible`
     /// records one layer up. Do not remove it on the strength of a surviving
     /// mutant: it chooses the safe direction.
+    ///
+    /// An undefined cell has the shape it stands in for, so a whole-cell move carries it across
+    /// intact.
     let private cellsHaveCompatibleShape (a : CliType) (b : CliType) : bool =
-        match a, b with
+        match CliType.Shape a, CliType.Shape b with
         | CliType.Bool _, CliType.Bool _
         | CliType.Char _, CliType.Char _
         | CliType.ObjectRef _, CliType.ObjectRef _
@@ -658,7 +669,13 @@ module internal CellAwareMemOps =
                 state <- newState
                 i <- i + cellSize
             | None ->
-                state <- writeByte baseClassTypes state destAtI value
+                state <-
+                    writeByte
+                        baseClassTypes
+                        state
+                        destAtI
+                        (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim value)))
+
                 i <- i + 1
 
         state

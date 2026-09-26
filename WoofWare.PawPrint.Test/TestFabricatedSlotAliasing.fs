@@ -161,6 +161,8 @@ public static class Driver
                     match
                         Program.run loggerFactory (Some driverPath) peImage (HostConfig.Default dotnetRuntimeDirs)
                     with
+                    | RunOutcome.UndefinedValueObserved (_, _, observation) ->
+                        failwith $"guest used an undefined value: %O{observation}"
                     | RunOutcome.NormalExit (state, _)
                     | RunOutcome.ProcessExit (state, _) -> state.LatchedExitCode
                     | RunOutcome.GuestUnhandledException (finalState, _, exn) ->

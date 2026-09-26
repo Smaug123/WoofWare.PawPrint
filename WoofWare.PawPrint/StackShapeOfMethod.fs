@@ -378,6 +378,7 @@ module StackShapeOfMethod =
             |> List.tryFindIndex (fun value ->
                 match value with
                 | EvalStackValue.Float (EvalStackFloat.Single _) -> true
+                | EvalStackValue.Undefined u -> u.Kind = UndefinedPrimitive.Float32
                 | _ -> false
             )
 
@@ -479,6 +480,19 @@ module StackShapeOfMethod =
                                 match value with
                                 | EvalStackValue.Float (EvalStackFloat.Single f) when List.contains slot slots ->
                                     EvalStackValue.Float (EvalStackFloat.Double (float<float32> f))
+                                // The widening is a conversion, so it is as undefined as its input.
+                                | EvalStackValue.Undefined u when
+                                    u.Kind = UndefinedPrimitive.Float32 && List.contains slot slots
+                                    ->
+                                    match
+                                        UndefinedValue.tryOfBytes
+                                            UndefinedPrimitive.Float64
+                                            (UndefinedValue.moveInto UndefinedPrimitive.Float64 u)
+                                    with
+                                    | ValueSome widened -> EvalStackValue.Undefined widened
+                                    | ValueNone ->
+                                        failwith
+                                            "unreachable: converting an undefined float leaves every byte undefined"
                                 | other -> other
                             )
 
@@ -501,8 +515,19 @@ module StackShapeOfMethod =
             // A float of the analysis's width where it says a float, and no float anywhere else.
             List.zip actual expected
             |> List.iteri (fun slot (value, shape) ->
+                // An undefined value occupies the slot its kind would.
+                let occupant =
+                    match value with
+                    | EvalStackValue.Undefined u ->
+                        match u.Kind with
+                        | UndefinedPrimitive.Float32 -> EvalStackValue.Float (EvalStackFloat.Single 0.0f)
+                        | UndefinedPrimitive.Float64
+                        | UndefinedPrimitive.NativeFloat -> EvalStackValue.Float (EvalStackFloat.Double 0.0)
+                        | _ -> value
+                    | _ -> value
+
                 let agrees =
-                    match value, shape with
+                    match occupant, shape with
                     | EvalStackValue.Float (EvalStackFloat.Single _), SlotShape.Float FloatWidth.Single
                     | EvalStackValue.Float (EvalStackFloat.Double _), SlotShape.Float FloatWidth.Double -> true
                     | EvalStackValue.Float _, _

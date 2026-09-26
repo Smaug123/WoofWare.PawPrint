@@ -9,7 +9,8 @@ module IlMachineManagedByref =
     /// The (family, width) classification of a primitive value's shape, for
     /// `isSafeReinterpretPassthrough`; `ValueNone` for anything non-primitive.
     let private classifyValueForReinterpret (value : CliType) : (string * int) voption =
-        match value with
+        // An undefined value is classified by its shape: a passthrough moves it unchanged.
+        match CliType.Shape value with
         | CliType.Bool _ -> ValueSome ("int", 1)
         | CliType.Char _ -> ValueSome ("int", 2)
         | CliType.Numeric (CliNumericType.Int8 _) -> ValueSome ("int", 1)
@@ -75,8 +76,10 @@ module IlMachineManagedByref =
     /// wholly unrelated structures, so this returns `false` for the
     /// `ValueType, ValueType` pair and lets the byte-walk path reconstruct
     /// through the requested template.
+    ///
+    /// An undefined value has the constructor of the shape it stands in for.
     let private sameCliConstructor (a : CliType) (b : CliType) : bool =
-        match a, b with
+        match CliType.Shape a, CliType.Shape b with
         | CliType.Bool _, CliType.Bool _
         | CliType.Char _, CliType.Char _
         | CliType.ObjectRef _, CliType.ObjectRef _
@@ -150,8 +153,11 @@ module IlMachineManagedByref =
     /// reference-containing storage, which the real runtime performs and PawPrint refuses, and
     /// that divergence cannot be asserted differentially. Mutating it does not fail the suite;
     /// keep the strictness anyway — it is the safe direction.
+    ///
+    /// An undefined cell is identified by the shape it stands in for, so reading it as that shape
+    /// yields it unchanged, undefined, and writing that shape over it replaces it.
     let private isCellIdentityCompatible (cell : CliType) (target : CliType) : bool =
-        match cell, target with
+        match CliType.Shape cell, CliType.Shape target with
         | CliType.ObjectRef _, CliType.ObjectRef _ -> true
         // A pointer cell records no pointee type, so its identity is its constructor, as an
         // object reference's is.
@@ -925,7 +931,12 @@ module IlMachineManagedByref =
         (value : CliType)
         : CliType option
         =
-        validateByteAddressableCell context value
+        match value with
+        // Defined bytes written over an undefined cell are exact: the cell keeps its shape, and
+        // the bytes not written stay as undefined as they were.
+        | CliType.Undefined _ -> ()
+        | _ -> validateByteAddressableCell context value
+
         CliType.WithBytesAtIfChanged offset bytes value
 
     let private splitTrailingByteView (src : AddressedByref) : (ByrefRoot * ByrefProjection list * int) voption =
@@ -1379,8 +1390,11 @@ module IlMachineManagedByref =
         | Some cell -> cell
         | None ->
 
-        let buf = StackMemoryPool.readNamedBytes block byteOffset targetSize pool
-        CliType.ofSymbolicBytesLike targetTemplate buf
+        match
+            StackMemoryPool.readValueBytes (UninitialisedMemory.Stack (thread, frame, block)) byteOffset targetSize pool
+        with
+        | BlockBytes.Defined buf -> CliType.ofSymbolicBytesLike targetTemplate buf
+        | BlockBytes.SomeUndefined bytes -> CliType.OfValueBytesLike targetTemplate bytes
 
     /// Mirror of `readStackMemoryBytesAs` for native-heap blocks. Use-after-free is
     /// reported if the block was freed.
@@ -1426,8 +1440,9 @@ module IlMachineManagedByref =
         | Some cell -> cell
         | None ->
 
-        let buf = NativeMemoryPool.readNamedBytes block byteOffset targetSize pool
-        CliType.ofSymbolicBytesLike targetTemplate buf
+        match NativeMemoryPool.readValueBytes block byteOffset targetSize pool with
+        | BlockBytes.Defined buf -> CliType.ofSymbolicBytesLike targetTemplate buf
+        | BlockBytes.SomeUndefined bytes -> CliType.OfValueBytesLike targetTemplate bytes
 
     let internal zeroForConcreteType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -2228,6 +2243,9 @@ module IlMachineManagedByref =
         | CliType.RuntimePointer _ ->
             failwith
                 $"TODO: runtime-pointer field %O{field} of a byte view; pointer byte views are not modelled: %O{src}"
+        | CliType.Undefined u ->
+            failwith
+                $"unreachable: field %O{field}'s template in the byte view of %O{src} is the undefined %O{u}, but a view template is a zero value"
         | CliType.Numeric _
         | CliType.Bool _
         | CliType.Char _
@@ -2423,6 +2441,14 @@ module IlMachineManagedByref =
             IlMachineThreadState.setStackMemoryPool thread frame pool state
         | None ->
 
+        match CliType.tryFindUndefined newValue with
+        | Some _ ->
+            // A value with an undefined byte has no byte image to scatter; the pool stores it as
+            // its bytes, defined and undefined alike.
+            let pool = StackMemoryPool.writeCell block byteOffset newValue pool
+            IlMachineThreadState.setStackMemoryPool thread frame pool state
+        | None ->
+
         let bytes = CliType.ToBytes newValue
 
         if bytes.Length = 0 then
@@ -2452,6 +2478,12 @@ module IlMachineManagedByref =
         | Some (_, None) -> state
         | Some (cellOffset, Some updated) ->
             IlMachineThreadState.setNativeMemoryPool (NativeMemoryPool.writeCell block cellOffset updated pool) state
+        | None ->
+
+        match CliType.tryFindUndefined newValue with
+        | Some _ ->
+            // As for the stack pool: stored as its bytes.
+            IlMachineThreadState.setNativeMemoryPool (NativeMemoryPool.writeCell block byteOffset newValue pool) state
         | None ->
 
         let bytes = CliType.ToBytes newValue
@@ -3814,7 +3846,10 @@ module IlMachineManagedByref =
         | CliByteAddressabilityRejection.Int64SourceNotByteAddressable _
         // A byte naming a native int is provenance of exactly this kind: flattening it would
         // need the number it does not have.
-        | CliByteAddressabilityRejection.UInt8SourceNotByteAddressable _ -> true
+        | CliByteAddressabilityRejection.UInt8SourceNotByteAddressable _
+        // So is an undefined byte: a store moves it, and a byte scatter would need a number for
+        // it. Whole-cell replacement at the payload's own width is the move.
+        | CliByteAddressabilityRejection.UndefinedByte _ -> true
         | CliByteAddressabilityRejection.ObjectReference
         | CliByteAddressabilityRejection.RuntimePointer
         | CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _
@@ -3872,7 +3907,11 @@ module IlMachineManagedByref =
         | CliByteAddressabilityRejection.ObjectReference
         | CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _
         | CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers _
-        | CliByteAddressabilityRejection.ValueTypeContainsNonByteAddressableField _ -> false
+        | CliByteAddressabilityRejection.ValueTypeContainsNonByteAddressableField _
+        // An undefined destination cell takes a defined payload's bytes in place, keeping its own
+        // shape (`CliType.WithBytesAtIfChanged`), so it needs no whole-cell replacement; replacing
+        // it would restamp the slot with the payload's shape.
+        | CliByteAddressabilityRejection.UndefinedByte _ -> false
 
     let private byteAddressabilityRejection (value : CliType) : CliByteAddressabilityRejection option =
         match CliType.ByteAddressability value with

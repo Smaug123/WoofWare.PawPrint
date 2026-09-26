@@ -173,6 +173,12 @@ module internal UnaryMetadataCallOps =
                 baseClassTypes.ArrayTypeMismatchException
                 thread
                 state
+        | IlMachineStateExecution.ArrayStoreVarianceCheck.ValueUndefined u ->
+            IlMachineStateExecution.observeUndefinedInInstruction
+                "the type check a store into an array of references makes of the reference stored"
+                u
+                thread
+                state
         | IlMachineStateExecution.ArrayStoreVarianceCheck.Allowed state ->
 
         let coerced = EvalStackValue.toCliTypeCoerced zeroOfType value
@@ -695,6 +701,8 @@ module internal UnaryMetadataCallOps =
 
         match commitment with
         | IlMachineStateExecution.CallCommitment.Aborted fatal -> state, WhatWeDid.Aborted fatal
+        | IlMachineStateExecution.CallCommitment.UndefinedValueObserved observation ->
+            state, WhatWeDid.UndefinedValueObserved observation
         | IlMachineStateExecution.CallCommitment.Committed
         | IlMachineStateExecution.CallCommitment.Raised -> state, WhatWeDid.Executed
 
@@ -1403,6 +1411,14 @@ module internal UnaryMetadataCallOps =
 
         // Callvirt always performs a null check on the receiver, even for non-virtual methods.
         match receiver with
+        | Some (EvalStackValue.Undefined u) ->
+            // `OperandUse` marks the receiver observed, but only the call can count the arguments
+            // above it.
+            IlMachineStateExecution.observeUndefinedInInstruction
+                "the receiver a callvirt null-checks and dispatches on"
+                u
+                thread
+                state
         | Some EvalStackValue.NullObjectRef ->
             IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
         | _ ->
@@ -1439,6 +1455,8 @@ module internal UnaryMetadataCallOps =
 
         match commitment with
         | IlMachineStateExecution.CallCommitment.Aborted fatal -> state, WhatWeDid.Aborted fatal
+        | IlMachineStateExecution.CallCommitment.UndefinedValueObserved observation ->
+            state, WhatWeDid.UndefinedValueObserved observation
         | IlMachineStateExecution.CallCommitment.Committed
         | IlMachineStateExecution.CallCommitment.Raised -> state, WhatWeDid.Executed
 
@@ -1978,6 +1996,8 @@ module internal UnaryMetadataCallOps =
         // after this instruction is finished with, so there is no retry to prepare for.
         match commitment with
         | IlMachineStateExecution.CallCommitment.Aborted fatal -> state, WhatWeDid.Aborted fatal
+        | IlMachineStateExecution.CallCommitment.UndefinedValueObserved observation ->
+            state, WhatWeDid.UndefinedValueObserved observation
         | IlMachineStateExecution.CallCommitment.Committed
         | IlMachineStateExecution.CallCommitment.Raised -> state, WhatWeDid.Executed
 

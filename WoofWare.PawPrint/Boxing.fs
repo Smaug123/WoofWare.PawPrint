@@ -121,6 +121,28 @@ module internal Boxing =
     /// `Nullable<T>` arrives as `UserDefinedValueType`.
     ///
     /// Reference types are not accepted: boxing one is a no-op the caller can perform by itself.
+    /// The undefined `hasValue` of `toBox`, when boxing it as `typeHandle` would read one: a
+    /// `Nullable<T>` boxes to null or to its `T` according to `hasValue`, so an undefined one is a
+    /// use of undefined content. `None` for any other type, and for a defined `hasValue`.
+    let tryUndefinedHasValue
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (typeHandle : ConcreteTypeHandle)
+        (toBox : EvalStackValue)
+        (state : IlMachineState)
+        : UndefinedValue option
+        =
+        match AllConcreteTypes.lookup typeHandle state.ConcreteTypes, toBox with
+        | Some targetType, EvalStackValue.UserDefinedValueType cvt when
+            InternalTypeKind.kind baseClassTypes targetType = InternalTypeKind.Nullable
+            ->
+            let hasValueField =
+                IlMachineState.requiredOwnInstanceFieldId state cvt.Declared "hasValue"
+
+            match CliValueType.DereferenceFieldById hasValueField cvt with
+            | CliType.Undefined u -> Some u
+            | _ -> None
+        | _ -> None
+
     let boxValue
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -167,6 +189,8 @@ module internal Boxing =
                                 state
 
                     EvalStackValue.ObjectRef addr, state
+                | CliType.Undefined u ->
+                    UndefinedValue.failUnobserved "boxing a Nullable`1, which reads its hasValue field" u
                 | other -> failwith $"boxValue: expected Bool for Nullable`1's hasValue field, got %O{other}"
             | other -> failwith $"boxValue: expected a Nullable`1 to arrive as UserDefinedValueType, got %O{other}"
         else

@@ -66,6 +66,8 @@ module NativeRuntimeHelpers =
                     match typeInit with
                     | WhatWeDid.Executed -> NativeHandlerResult.completed state |> Some
                     | WhatWeDid.Aborted fatal -> NativeHandlerResult.aborted ctx.Thread fatal state |> Some
+                    | WhatWeDid.UndefinedValueObserved observation ->
+                        NativeHandlerResult.undefinedValueObserved ctx.Thread observation state |> Some
                     | WhatWeDid.UnhandledException exn ->
                         NativeHandlerResult.unhandledException ctx.Thread exn state |> Some
                     | WhatWeDid.SuspendedForClassInit ->

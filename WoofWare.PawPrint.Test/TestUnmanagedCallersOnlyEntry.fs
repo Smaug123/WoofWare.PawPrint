@@ -109,6 +109,8 @@ module TestUnmanagedCallersOnlyEntry =
                 $"%s{sourceName}: the real runtime terminated with an unhandled exception, so the refusal has become catchable:\n%s{report}"
 
         match runUnderPawPrint sourceName [] image with
+        | RunOutcome.UndefinedValueObserved (_, _, observation) ->
+            failwith $"guest used an undefined value: %O{observation}"
         | RunOutcome.Aborted (_, _, fatal) ->
             fatal.Code |> shouldEqual FatalErrorCode.ExecutionEngine
 

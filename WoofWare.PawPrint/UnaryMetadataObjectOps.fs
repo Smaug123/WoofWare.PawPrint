@@ -539,6 +539,15 @@ module internal UnaryMetadataObjectOps =
         let defn =
             (state._LoadedAssemblies.ByDefinitionName targetType.AssemblyFullName).TypeDefs.[targetType.Definition.Get]
 
+        match Boxing.tryUndefinedHasValue baseClassTypes typeHandle toBox state with
+        | Some u ->
+            IlMachineStateExecution.observeUndefinedInInstruction
+                "the hasValue field boxing a Nullable`1 decides by"
+                u
+                thread
+                state
+        | None ->
+
         let toPush, state =
             if LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies defn then
                 // Boxing a value type: wrap it in a heap object and push an ObjectRef. A

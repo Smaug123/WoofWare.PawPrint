@@ -359,6 +359,7 @@ module TestSchedulerPct =
     /// promises — terminal observable state is determined by seed + program.
     let private outcomeSignature (outcome : RunOutcome) : string =
         match outcome with
+        | RunOutcome.UndefinedValueObserved (_, _, observation) -> $"undefined value observed: %O{observation}"
         | RunOutcome.NormalExit (state, _)
         | RunOutcome.ProcessExit (state, _) -> $"exit %d{state.LatchedExitCode}"
         | RunOutcome.Aborted (_, _, fatal) ->
@@ -384,6 +385,7 @@ module TestSchedulerPct =
 
     let private finalScheduling (outcome : RunOutcome) : SchedulerState =
         match outcome with
+        | RunOutcome.UndefinedValueObserved (state, _, _)
         | RunOutcome.NormalExit (state, _)
         | RunOutcome.ProcessExit (state, _)
         | RunOutcome.Aborted (state, _, _)

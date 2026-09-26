@@ -160,6 +160,8 @@ module TestConcurrencyBugs =
 
     let private classifyRunOutcome (outcome : RunOutcome) : RunSummary =
         match outcome with
+        | RunOutcome.UndefinedValueObserved (_, _, observation) ->
+            failwith $"guest used an undefined value: %O{observation}"
         | RunOutcome.NormalExit (state, _)
         | RunOutcome.ProcessExit (state, _) -> RunSummary.ExitCode state.LatchedExitCode
         | RunOutcome.GuestUnhandledException (state, _, exn) ->

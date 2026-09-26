@@ -540,6 +540,8 @@ module Program =
                 "Step ended the thread with an unhandled exception at {ExceptionObject}",
                 exn.ExceptionObject
             )
+        | WhatWeDid.UndefinedValueObserved observation ->
+            logger.LogTrace ("Step used an undefined value: {Observation}", observation)
         | WhatWeDid.SuspendedForClassInit ->
             logger.LogTrace "Suspended execution of current method for class initialisation."
         | WhatWeDid.SuspendedForManagedCall ->
@@ -736,18 +738,28 @@ module Program =
     /// The eval stack is exactly what the signature says by the time this runs:
     /// `returnStackFrame` has already refused, as invalid CIL, a `Main` that returned with any
     /// other number of values on it.
+    ///
+    /// An undefined return value is an `Error`: the exit code is the host's observation of it,
+    /// and there is no exit code to report without inventing one.
     let private latchMainReturnValue
         (returns : MainReturn)
         (entry : ThreadId)
         (state : IlMachineState)
-        : IlMachineState
+        : Result<IlMachineState, UndefinedValueObservation>
         =
         match returns, state.ThreadState.[entry].MethodState.EvaluationStack.Values with
-        | MainReturn.Void, [] -> state
+        | MainReturn.Void, [] -> Ok state
         | MainReturn.Int32, [ EvalStackValue.Int32 (Int32Source.Verbatim code) ] ->
             { state with
                 LatchedExitCode = code
             }
+            |> Ok
+        | MainReturn.Int32, [ EvalStackValue.Undefined value ] ->
+            Error
+                {
+                    Value = value
+                    Use = UndefinedValueUse.ExitCode
+                }
         | MainReturn.Int32, [ other ] ->
             failwith
                 $"an int Main returned %O{other}, which is not a verbatim int32; PawPrint cannot report it as an exit code"
@@ -860,10 +872,14 @@ module Program =
                             prepared.EntryThread
                         )
 
-                        let state =
-                            state
-                            |> latchMainReturnValue returns prepared.EntryThread
-                            |> Scheduler.onMainReturned prepared.EntryThread
+                        match latchMainReturnValue returns prepared.EntryThread state with
+                        | Error observation ->
+                            ProgramStepOutcome.Completed (
+                                RunOutcome.UndefinedValueObserved (state, prepared.EntryThread, observation)
+                            )
+                        | Ok state ->
+
+                        let state = state |> Scheduler.onMainReturned prepared.EntryThread
 
                         // The `ret` retired a step, reported here as `WhatWeDid.Executed`, so it
                         // gets that outcome's consequences — as the dispatcher's final `ret`
@@ -944,6 +960,8 @@ module Program =
                 ProgramStepOutcome.Completed (RunOutcome.SignalTerminated (state, signal))
             | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
                 ProgramStepOutcome.Completed (RunOutcome.GuestUnhandledException (state, terminatingThread, exn))
+            | ExecutionResult.UndefinedValueObserved (state, observingThread, observation) ->
+                ProgramStepOutcome.Completed (RunOutcome.UndefinedValueObserved (state, observingThread, observation))
             | ExecutionResult.Stepped (state, whatWeDid, effect) ->
                 logStepOutcome logger state nextThread whatWeDid
 
@@ -1439,6 +1457,9 @@ module Program =
 
                 failwith
                     $"TODO: initialising the entry point's declaring type aborted the process (%O{fatal.Code}): %s{message}"
+            | WhatWeDid.UndefinedValueObserved observation ->
+                // As for an abort: startup has no `RunOutcome` to report it as.
+                failwith $"TODO: initialising the entry point's declaring type used an undefined value: %O{observation}"
             | WhatWeDid.SuspendedForClassInit -> failwith "TODO: suspended for class init"
             | WhatWeDid.SuspendedForManagedCall ->
                 failwith "logic error: ensureTypeInitialised cannot suspend for an arbitrary managed call"
@@ -1576,6 +1597,8 @@ module Program =
         | RunOutcome.SignalTerminated (_, signal) -> $"was terminated by signal %O{signal}"
         | RunOutcome.GuestUnhandledException (finalState, thread, exn) ->
             $"threw an unhandled exception on %O{thread}:\n%s{UnhandledExceptionReport.describe finalState exn}"
+        | RunOutcome.UndefinedValueObserved (_, thread, observation) ->
+            $"used an undefined value on %O{thread}: %O{observation}"
 
     /// Advance startup by one guest instruction, crossing a phase boundary when the entry
     /// thread's current frame returns.
@@ -1639,7 +1662,8 @@ module Program =
         | StartupPhase.InitialisingClasses _, RunOutcome.GuestUnhandledException _
         | StartupPhase.InitialisingClasses _, RunOutcome.ProcessExit _
         | StartupPhase.InitialisingClasses _, RunOutcome.Aborted _
-        | StartupPhase.InitialisingClasses _, RunOutcome.SignalTerminated _ ->
+        | StartupPhase.InitialisingClasses _, RunOutcome.SignalTerminated _
+        | StartupPhase.InitialisingClasses _, RunOutcome.UndefinedValueObserved _ ->
             // The entry thread's `.cctor` raised, or a worker spawned during cctor pumping
             // exited, failed fast, or took a terminating signal. In every case the CLR would
             // tear the process down; propagate rather than collapsing to a host `failwith`
@@ -1794,6 +1818,7 @@ module Program =
         | WhatWeDid.Executed
         | WhatWeDid.Aborted _
         | WhatWeDid.UnhandledException _
+        | WhatWeDid.UndefinedValueObserved _
         | WhatWeDid.SuspendedForClassInit
         | WhatWeDid.SuspendedForManagedCall
         | WhatWeDid.BlockedOnClassInit _

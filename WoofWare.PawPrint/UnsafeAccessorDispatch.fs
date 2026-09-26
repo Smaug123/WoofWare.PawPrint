@@ -1441,6 +1441,8 @@ module internal UnsafeAccessorDispatch =
             match commitment with
             | IlMachineStateExecution.CallCommitment.Aborted fatal ->
                 ExecutionResult.stepped (state, WhatWeDid.Aborted fatal)
+            | IlMachineStateExecution.CallCommitment.UndefinedValueObserved observation ->
+                ExecutionResult.stepped (state, WhatWeDid.UndefinedValueObserved observation)
             | IlMachineStateExecution.CallCommitment.Committed
             | IlMachineStateExecution.CallCommitment.Raised ->
                 ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall)

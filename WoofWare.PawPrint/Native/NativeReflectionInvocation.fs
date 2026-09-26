@@ -551,6 +551,8 @@ module internal NativeReflectionInvocation =
                 | WhatWeDid.ThrowingTypeInitializationException ->
                     NativeHandlerResult.throwingTypeInitializationException state |> Some
                 | WhatWeDid.Aborted fatal -> NativeHandlerResult.aborted ctx.Thread fatal state |> Some
+                | WhatWeDid.UndefinedValueObserved observation ->
+                    NativeHandlerResult.undefinedValueObserved ctx.Thread observation state |> Some
                 | WhatWeDid.UnhandledException exn ->
                     NativeHandlerResult.unhandledException ctx.Thread exn state |> Some
                 | WhatWeDid.SuspendedForManagedCall ->
@@ -741,6 +743,8 @@ module internal NativeReflectionInvocation =
                 match commitment with
                 | IlMachineStateExecution.CallCommitment.Aborted fatal ->
                     NativeHandlerResult.aborted ctx.Thread fatal state |> Some
+                | IlMachineStateExecution.CallCommitment.UndefinedValueObserved observation ->
+                    NativeHandlerResult.undefinedValueObserved ctx.Thread observation state |> Some
                 | IlMachineStateExecution.CallCommitment.Committed ->
                     NativeHandlerResult.pushedManagedCallee state |> Some
                 | IlMachineStateExecution.CallCommitment.Raised ->

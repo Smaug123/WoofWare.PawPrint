@@ -71,6 +71,10 @@ type EvalStackValue =
     | ObjectRef of ManagedHeapAddress
     /// This doesn't match what the CLR does in reality, but we can work out whatever we need from it.
     | UserDefinedValueType of CliValueType
+    /// A primitive at least one of whose bytes nothing ever wrote; its stack type is the one its
+    /// `Kind` widens to. It may be moved — stored, passed, returned, duplicated, popped — but any
+    /// other use observes it, and `OperandUse` says which uses those are. See `UndefinedValue`.
+    | Undefined of UndefinedValue
 
     override this.ToString () =
         match this with
@@ -82,9 +86,24 @@ type EvalStackValue =
         | EvalStackValue.NullObjectRef -> "NullObjectRef"
         | EvalStackValue.ObjectRef managedHeapAddress -> $"ObjectRef(%O{managedHeapAddress})"
         | EvalStackValue.UserDefinedValueType evalStackValues -> $"Struct(%O{evalStackValues})"
+        | EvalStackValue.Undefined u -> $"%O{u}"
 
 [<RequireQualifiedAccess>]
 module EvalStackValue =
+    /// An undefined value in `value`: itself, or a leaf of the value type it is. See
+    /// `CliType.tryFindUndefined`.
+    let tryFindUndefined (value : EvalStackValue) : UndefinedValue option =
+        match value with
+        | EvalStackValue.Undefined u -> Some u
+        | EvalStackValue.UserDefinedValueType vt -> CliType.tryFindUndefined (CliType.ValueType vt)
+        | EvalStackValue.Int32 _
+        | EvalStackValue.Int64 _
+        | EvalStackValue.NativeInt _
+        | EvalStackValue.Float _
+        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ObjectRef _ -> None
+
     /// Decode a `MethodTable*` argument to the closed type it describes, or fail loudly.
     /// Shared by every consumer of a MethodTable-shaped native argument — the QCall/InternalCall
     /// boundary (`NativeCall.methodTableOfEvalStackValue`) and `calli` through the runtime's
@@ -252,6 +271,7 @@ module EvalStackValue =
         // for Int32, same bits for Int64/NativeInt); the F# `uint32`/`uint64`
         // conversions from signed already do this.
         match value with
+        | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "conv.u" u
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_U" int32Source
             uint64 (uint32 i) |> UnsignedNativeIntSource.Verbatim
@@ -335,6 +355,7 @@ module EvalStackValue =
     /// The conversion performed by Conv_i.
     let toNativeInt (value : EvalStackValue) : NativeIntSource =
         match value with
+        | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "conv.i" u
         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> i |> convIFromInt64 |> NativeIntSource.Verbatim
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset i) -> NativeIntSource.SyntheticCrossArrayOffset i
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
@@ -371,6 +392,7 @@ module EvalStackValue =
     /// difference of two such addresses.
     let convToInt8 (value : EvalStackValue) (counters : PointerHashState) : int32 * PointerHashState =
         match value with
+        | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "conv.i1" u
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_I1" int32Source
             convI1FromInt32 i, counters
@@ -394,6 +416,7 @@ module EvalStackValue =
     /// `conv.i2`. See `convToInt8` for why this takes `PointerHashState`.
     let convToInt16 (value : EvalStackValue) (counters : PointerHashState) : int32 * PointerHashState =
         match value with
+        | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "conv.i2" u
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_I2" int32Source
             convI2FromInt32 i, counters
@@ -418,6 +441,7 @@ module EvalStackValue =
     /// `conv.i4`. See `convToInt8` for why this takes `PointerHashState`.
     let convToInt32 (value : EvalStackValue) (counters : PointerHashState) : EvalStackValue * PointerHashState =
         match value with
+        | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "conv.i4" u
         // Identity, narrowed byrefs included: re-truncating a value that is
         // already 32 bits wide changes nothing.
         | EvalStackValue.Int32 i -> EvalStackValue.Int32 i, counters
@@ -453,6 +477,7 @@ module EvalStackValue =
 
     let convToInt64 (value : EvalStackValue) : Int64Source =
         match value with
+        | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "conv.i8" u
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_I8" int32Source
             int64<int> i |> Int64Source.Verbatim
@@ -478,6 +503,7 @@ module EvalStackValue =
     /// `conv.u8`, then truncates to int64.
     let convToUInt64 (value : EvalStackValue) : Int64Source =
         match value with
+        | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "conv.u8" u
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_U8" int32Source
             int64 (uint32 i) |> Int64Source.Verbatim
@@ -496,6 +522,7 @@ module EvalStackValue =
     /// `PointerHashState`.
     let convToUInt8 (value : EvalStackValue) (counters : PointerHashState) : int32 * PointerHashState =
         match value with
+        | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "conv.u1" u
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_U1" int32Source
             convU1FromInt32 i, counters
@@ -516,6 +543,7 @@ module EvalStackValue =
     /// `PointerHashState`.
     let convToUInt16 (value : EvalStackValue) (counters : PointerHashState) : int32 * PointerHashState =
         match value with
+        | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "conv.u2" u
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_U2" int32Source
             convU2FromInt32 i, counters
@@ -536,6 +564,7 @@ module EvalStackValue =
     /// `PointerHashState`.
     let convToUInt32 (value : EvalStackValue) (counters : PointerHashState) : EvalStackValue * PointerHashState =
         match value with
+        | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "conv.u4" u
         // A narrowed byref is already 32 bits wide, and `conv.u4` only reinterprets
         // those bits; it neither discards any nor makes the value knowable. A byte of an
         // unmodelled native int is the same: it arrived zero-extended, so reinterpreting the
@@ -570,6 +599,7 @@ module EvalStackValue =
     /// `conv.r4`: the value as a float32, rounding a wider source to nearest.
     let convToFloat32 (value : EvalStackValue) : float32 =
         match value with
+        | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "conv.r4" u
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_R4" int32Source
             convR4FromInt32 i
@@ -595,6 +625,7 @@ module EvalStackValue =
     /// `conv.r8`: the value as a double; a `Single` widens exactly.
     let convToFloat64 (value : EvalStackValue) : float =
         match value with
+        | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "conv.r8" u
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_R8" int32Source
             convR8FromInt32 i
@@ -643,6 +674,7 @@ module EvalStackValue =
     /// The unsigned integer `conv.r.un` converts, refusing a value that is not a plain integer.
     let private unsignedSourceOfConvRUn (value : EvalStackValue) : UnsignedSource =
         match value with
+        | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "conv.r.un" u
         | EvalStackValue.Int32 int32Source ->
             Int32Source.value "Conv_R_Un" int32Source
             |> uint32<int32>
@@ -714,6 +746,8 @@ module EvalStackValue =
         | EvalStackValue.Float _
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> ValueNone
+        // No bits at all, so the caller refuses as it does for any value whose bits are unknown.
+        | EvalStackValue.Undefined _ -> ValueNone
 
     let rec ofCliType (v : CliType) : EvalStackValue =
         match v with
@@ -766,6 +800,7 @@ module EvalStackValue =
             | CliRuntimePointer.Managed ptr -> ptr |> EvalStackValue.ManagedPointer
             | CliRuntimePointer.GcHandlePtr (addr, tag) ->
                 NativeIntSource.GcHandlePtr (addr, tag) |> EvalStackValue.NativeInt
+        | CliType.Undefined u -> EvalStackValue.Undefined u
         | CliType.ValueType vt ->
             // Primitive-like single-field wrappers (IntPtr, RuntimeTypeHandle, enums, ...) all get
             // flattened to their underlying primitive on the stack. ECMA III.1.8 treats enums as
@@ -778,7 +813,16 @@ module EvalStackValue =
                 EvalStackValue.UserDefinedValueType vt
 
     let rec toCliTypeCoerced (target : CliType) (popped : EvalStackValue) : CliType =
+        match popped with
+        | EvalStackValue.Undefined u -> moveUndefinedInto target u
+        | _ ->
+
+        // The slot's current contents give only its shape, and an undefined slot is shaped like
+        // its kind.
+        let target = CliType.Shape target
+
         match target with
+        | CliType.Undefined _ -> failwith "unreachable: CliType.Shape never returns an undefined value"
         | CliType.Numeric numeric ->
             match numeric with
             | CliNumericType.Int32 _ ->
@@ -1108,6 +1152,38 @@ module EvalStackValue =
                     [ newField ] |> CliValueType.OfFieldsLike vt vt.Layout |> CliType.ValueType
                 else
                     failwith $"TODO: {popped} into value type {target}"
+
+    /// An undefined value moved into a slot whose current contents are `target`: a store, a
+    /// call argument or a return, each of which propagates it rather than observing it. The
+    /// result is undefined unless the move drops every undefined byte (see
+    /// `UndefinedValue.moveInto`). A primitive-like wrapper slot takes it in its single field; any
+    /// other value-type slot cannot take a primitive at all.
+    and private moveUndefinedInto (target : CliType) (u : UndefinedValue) : CliType =
+        match target with
+        | CliType.ValueType vt when vt.PrimitiveLikeKind.IsSome ->
+            let field = CliValueType.PrimitiveLikeField vt
+
+            let newField =
+                { field with
+                    Contents = moveUndefinedInto field.Contents u
+                }
+
+            [ newField ] |> CliValueType.OfFieldsLike vt vt.Layout |> CliType.ValueType
+        | CliType.ValueType _ -> failwith $"refusing to store the undefined primitive %O{u} into value type {target}"
+        | CliType.Numeric _
+        | CliType.Bool _
+        | CliType.Char _
+        | CliType.ObjectRef _
+        | CliType.RuntimePointer _
+        | CliType.Undefined _ ->
+            let kind =
+                match CliType.TryPrimitiveShape target with
+                | Some kind -> kind
+                | None -> failwith $"unreachable: %O{target} is a primitive leaf but has no primitive shape"
+
+            UndefinedValue.moveInto kind u
+            |> Array.ofList
+            |> CliType.OfValueBytesLike target
 
     /// A value type popped into a primitive slot.
     ///

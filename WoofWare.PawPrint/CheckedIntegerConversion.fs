@@ -120,3 +120,4 @@ module CheckedIntegerConversion =
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> None
+        | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved operation u

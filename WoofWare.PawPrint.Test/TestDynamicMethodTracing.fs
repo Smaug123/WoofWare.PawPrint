@@ -80,6 +80,8 @@ module TestDynamicMethodTracing =
 
         let terminalState =
             match BoundedRun.run traceEnabledFactory "DynamicMethodInvoke.cs (traced)" None peImage hostConfig with
+            | RunOutcome.UndefinedValueObserved (_, _, observation) ->
+                failwith $"guest used an undefined value: %O{observation}"
             | RunOutcome.NormalExit (state, _) -> state
             | RunOutcome.ProcessExit (state, _) -> state
             | RunOutcome.GuestUnhandledException (finalState, _, exn) ->

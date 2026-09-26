@@ -270,6 +270,8 @@ module MulticastDelegateStub =
             match commitment with
             | IlMachineStateExecution.CallCommitment.Aborted fatal ->
                 ExecutionResult.stepped (state, WhatWeDid.Aborted fatal)
+            | IlMachineStateExecution.CallCommitment.UndefinedValueObserved observation ->
+                ExecutionResult.stepped (state, WhatWeDid.UndefinedValueObserved observation)
             | IlMachineStateExecution.CallCommitment.Committed
             | IlMachineStateExecution.CallCommitment.Raised ->
                 // Either the element's `Invoke` frame or an exception constructor is now on top of

@@ -120,6 +120,7 @@
     <Compile Include="TestByrefAlignmentAgainstHost.fs" />
     <Compile Include="TestIlDecoding.fs" />
     <Compile Include="TestStackMemoryPool.fs" />
+    <Compile Include="TestUndefinedMemory.fs" />
     <Compile Include="TestNativeMemoryPool.fs" />
     <Compile Include="TestSeedForOracle.fs" />
     <Compile Include="TestRealRuntimeCleanup.fs" />
@@ -339,6 +340,7 @@
     <Compile Include="TestBulkMoveCellAccess.fs" />
     <Compile Include="TestTraceSourceLocations.fs" />
     <Compile Include="TestPureCases.fs" />
+    <Compile Include="TestUndefinedValueObserved.fs" />
     <Compile Include="TestFSharpPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
     <Compile Include="TestSignalTerminatedCases.fs" />

@@ -356,7 +356,8 @@ module DebuggerServer =
         | EvalStackValue.NativeInt _
         | EvalStackValue.Float _
         | EvalStackValue.ManagedPointer _
-        | EvalStackValue.UserDefinedValueType _ -> ()
+        | EvalStackValue.UserDefinedValueType _
+        | EvalStackValue.Undefined _ -> ()
 
         writer.WriteEndObject ()
 
@@ -372,7 +373,8 @@ module DebuggerServer =
         | CliType.Bool _
         | CliType.Char _
         | CliType.RuntimePointer _
-        | CliType.ValueType _ -> ()
+        | CliType.ValueType _
+        | CliType.Undefined _ -> ()
 
         writer.WriteEndObject ()
 
@@ -436,6 +438,10 @@ module DebuggerServer =
             writer.WriteNumber ("thread", threadIdValue thread)
             writer.WriteString ("exceptionObject", string exn.ExceptionObject)
             writer.WriteNumber ("exceptionObjectAddress", heapAddressValue exn.ExceptionObject)
+        | RunOutcome.UndefinedValueObserved (_, thread, observation) ->
+            writer.WriteString ("kind", "undefinedValueObserved")
+            writer.WriteNumber ("thread", threadIdValue thread)
+            writer.WriteString ("observation", string observation)
 
         writer.WriteEndObject ()
 
@@ -461,7 +467,8 @@ module DebuggerServer =
         | SessionState.Finished (RunOutcome.ProcessExit (state, _), _)
         | SessionState.Finished (RunOutcome.Aborted (state, _, _), _)
         | SessionState.Finished (RunOutcome.SignalTerminated (state, _), _)
-        | SessionState.Finished (RunOutcome.GuestUnhandledException (state, _, _), _) -> state
+        | SessionState.Finished (RunOutcome.GuestUnhandledException (state, _, _), _)
+        | SessionState.Finished (RunOutcome.UndefinedValueObserved (state, _, _), _) -> state
         | SessionState.Deadlocked (prepared, _, _) -> prepared.State
 
     let private prepareSession
@@ -503,6 +510,7 @@ module DebuggerServer =
                 | WhatWeDid.Executed
                 | WhatWeDid.Aborted _
                 | WhatWeDid.UnhandledException _
+                | WhatWeDid.UndefinedValueObserved _
                 | WhatWeDid.VoluntaryYield _
                 | WhatWeDid.SuspendedForClassInit
                 | WhatWeDid.SuspendedForManagedCall
@@ -533,6 +541,7 @@ module DebuggerServer =
                 | RunOutcome.Aborted (_, _, fatal) -> sprintf "aborted (%O)" fatal.Code
                 | RunOutcome.SignalTerminated _ -> "signal terminated"
                 | RunOutcome.GuestUnhandledException _ -> "guest unhandled exception"
+                | RunOutcome.UndefinedValueObserved _ -> "undefined value observed"
 
             {
                 StepNumber = stepNumber

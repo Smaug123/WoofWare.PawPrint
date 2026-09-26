@@ -197,6 +197,8 @@ module TestFSharpPureCases =
             FrameworkUnderTest.assertOutcomeServes pawPrintResult
 
             match realResult, pawPrintResult with
+            | _, RunOutcome.UndefinedValueObserved (_, _, observation) ->
+                failwith $"PawPrint: guest used an undefined value: %O{observation}"
             | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, _) ->
                 exitCode |> shouldEqual expectedExitCode
                 terminalState.LatchedExitCode |> shouldEqual exitCode

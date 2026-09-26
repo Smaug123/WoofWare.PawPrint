@@ -75,6 +75,8 @@ module FabricatedGuest =
             FrameworkUnderTest.assertOutcomeServes outcome
 
             match outcome with
+            | RunOutcome.UndefinedValueObserved (_, _, observation) ->
+                failwith $"guest used an undefined value: %O{observation}"
             | RunOutcome.NormalExit (state, _)
             | RunOutcome.ProcessExit (state, _) -> FabricatedOutcome.Exited state.LatchedExitCode
             | RunOutcome.GuestUnhandledException (finalState, _, exn) ->

@@ -809,6 +809,9 @@ module Scheduler =
         | WhatWeDid.UnhandledException exn ->
             failwith
                 $"logic error: spawning worker %O{worker} raised an exception nothing handles (%O{exn.ExceptionObject}); the caller must surface a terminating outcome rather than applying it to the worker's status"
+        | WhatWeDid.UndefinedValueObserved observation ->
+            failwith
+                $"logic error: spawning worker %O{worker} used an undefined value (%O{observation}); the caller must surface a terminating outcome rather than applying it to the worker's status"
         | WhatWeDid.Executed
         | WhatWeDid.VoluntaryYield _
         | WhatWeDid.SuspendedForClassInit
@@ -977,6 +980,11 @@ module Scheduler =
             // reason: a thread that has unwound to nothing did not retire a step.
             failwith
                 $"logic error: thread %O{ran} reported an unhandled exception (%O{exn.ExceptionObject}) to the scheduler; such a step should have become ExecutionResult.UnhandledException before reaching here"
+        | WhatWeDid.UndefinedValueObserved observation ->
+            // Converted upstream at the same point as an abort, and refused here for the same
+            // reason.
+            failwith
+                $"logic error: thread %O{ran} reported using an undefined value (%O{observation}) to the scheduler; such a step should have become ExecutionResult.UndefinedValueObserved before reaching here"
         | WhatWeDid.Executed -> wakeClassInitWaiters state
         | WhatWeDid.VoluntaryYield reportsSwitch ->
             // Wake first, then charge: the run queue the yielder goes to the back of is the

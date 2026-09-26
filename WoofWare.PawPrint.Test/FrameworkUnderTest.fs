@@ -219,6 +219,7 @@ module FrameworkUnderTest =
     /// `assertServes` on the final state of `outcome`.
     let assertOutcomeServes (outcome : RunOutcome) : unit =
         match outcome with
+        | RunOutcome.UndefinedValueObserved (state, _, _)
         | RunOutcome.NormalExit (state, _)
         | RunOutcome.ProcessExit (state, _)
         | RunOutcome.Aborted (state, _, _)
