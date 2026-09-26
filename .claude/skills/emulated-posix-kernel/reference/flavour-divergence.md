@@ -85,6 +85,17 @@ privilege the suite happens to run at, which is why the truncation table is
   *shared* lock under write access on nfs/smb/smb2/cifs — the combination
   `File.WriteAllBytes` asks for. `File.Create` is `FileShare.None` → `LOCK_EX`,
   and never reaches it.
+- **`struct statfs` beyond the type-naming fields is measured but not
+  modelled.** Every field, for a file, a directory, each end of a pipe, the
+  sockets and the anonymous-inode objects, is in the header of
+  `docs/plans/2026-08-23-posix-kernel-extraction/statfs-fields.c`, classed as
+  a fact of the filesystem type, of the mount or machine, or of the model's
+  own state; how the counts move is in `statfs-accounting.c` beside it. The
+  facts most likely to mislead: Linux's pseudo-filesystem `f_fsid` is a
+  boot-time device number that differs between kernel images (pipefs 0xc on
+  6.18.5 aarch64, 0xf on 6.12.107 x86-64); tmpfs's is random per mount;
+  APFS's `f_iosize` differs between containers, and its free counts are
+  container-wide and not deterministic even on a private container.
 - **`Ext4` cannot be a case.** CoreLib's `UnixFileSystemTypes` has no `ext4`
   member — it is `ext2 = 0xEF53`, with `ext4` commented out as an alias — so the
   managed layer cannot distinguish it.
