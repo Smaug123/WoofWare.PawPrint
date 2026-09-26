@@ -3949,6 +3949,24 @@ module IlMachineManagedByref =
             match CliType.unwrapPrimitiveLike newValue with
             | CliType.RuntimePointer _
             | CliType.Numeric (CliNumericType.NativeInt _) -> true
+            // An unwritten pointer-sized value: it has no number for the slot's pointer to
+            // take byte by byte, and is pointer-shaped exactly as its defined counterparts are.
+            | CliType.Undefined u ->
+                match u.Kind with
+                | UndefinedPrimitive.NativeInt
+                | UndefinedPrimitive.RuntimePointer -> true
+                | UndefinedPrimitive.Int8
+                | UndefinedPrimitive.UInt8
+                | UndefinedPrimitive.Int16
+                | UndefinedPrimitive.UInt16
+                | UndefinedPrimitive.Int32
+                | UndefinedPrimitive.Int64
+                | UndefinedPrimitive.Float32
+                | UndefinedPrimitive.Float64
+                | UndefinedPrimitive.NativeFloat
+                | UndefinedPrimitive.Bool
+                | UndefinedPrimitive.Char
+                | UndefinedPrimitive.ObjectRef -> false
             | _ -> false
         | CliByteAddressabilityRejection.ObjectReference
         | CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _

@@ -90,6 +90,15 @@ unsafe class Program
         Unsafe.CopyBlock(&copy, &local, 4);
         if (*(byte*)&copy != 42) return 8;
 
+        // An unwritten pointer stored whole through a pointer to a pointer local, then
+        // overwritten before it is used.
+        byte* pointerSource = stackalloc byte[sizeof(void*)];
+        void* p = null;
+        void** pp = &p;
+        *pp = *(void**)pointerSource;
+        p = source;
+        if (*(byte*)p != 42) return 11;
+
         return 0;
     }
 }
