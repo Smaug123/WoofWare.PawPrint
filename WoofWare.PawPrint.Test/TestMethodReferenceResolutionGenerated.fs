@@ -97,6 +97,9 @@ module TestMethodReferenceResolutionGenerated =
         /// which CoreCLR reads as the CoreLib type), a vector, a type variable, or any of those under
         /// a custom modifier.
         | OnTypeSpec of parent : Ty * name : string * parameters : Ty list * ret : Ty option
+        /// As `OnTypeSpec`, an instance method with the vararg calling convention and no extra
+        /// arguments.
+        | OnTypeSpecVarArg of parent : Ty * name : string * parameters : Ty list
 
     type World =
         {
@@ -628,6 +631,12 @@ module TestMethodReferenceResolutionGenerated =
                         metadata.GetOrAddString name,
                         signature SignatureCallingConvention.Default false parameters [] ret
                     )
+                | GeneratedReference.OnTypeSpecVarArg (parent, name, parameters) ->
+                    metadata.AddMemberReference (
+                        typeSpec parent,
+                        metadata.GetOrAddString name,
+                        signature SignatureCallingConvention.VarArgs false parameters [] None
+                    )
                 | GeneratedReference.OnArray (name, parameters, ret, returnsByref) ->
                     let blob = BlobBuilder ()
 
@@ -1030,6 +1039,24 @@ module TestMethodReferenceResolutionGenerated =
                 typeof<int>,
                 typeof<int[]>,
                 false
+                // No array has a constructor taking nothing, or one with the vararg convention.
+                GeneratedReference.OnTypeSpec (Ty.ArrayOf (Ty.MethodVar 0), ".ctor", [], None),
+                typeof<int>,
+                typeof<int[]>,
+                false
+                GeneratedReference.OnTypeSpecVarArg (Ty.ArrayOf (Ty.MethodVar 0), ".ctor", [ Ty.Int32 ; Ty.Int32 ]),
+                typeof<int>,
+                typeof<int[]>,
+                false
+                GeneratedReference.OnTypeSpec (
+                    Ty.ArrayOf (Ty.MethodVar 0),
+                    ".ctor",
+                    [ Ty.Int32 ; Ty.Int32 ; Ty.Int32 ],
+                    None
+                ),
+                typeof<int>,
+                typeof<int[][]>,
+                true
                 GeneratedReference.OnTypeSpec (Ty.MethodVar 0, "ToString", [], Some Ty.String),
                 typeof<int>,
                 typeof<string>,

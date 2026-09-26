@@ -109,6 +109,13 @@ module MethodReferenceResolution =
             failwith
                 $"Expected a type with a method table in %s{spellingAssembly.DefinitionFullName}, but got %O{other}"
 
+    /// The header of every method the runtime synthesises on an array type: an instance method with
+    /// the default calling convention.
+    let private arrayMethodHeader : ComparableSignatureHeader =
+        ComparableSignatureHeader.Make (
+            SignatureHeader (SignatureKind.Method, SignatureCallingConvention.Default, SignatureAttributes.Instance)
+        )
+
     /// The methods the runtime synthesises on an array type (array.cpp, <c>ArrayClass::
     /// GenerateArrayAccessorCallSig</c>), each signature spelled with the array's element type where
     /// the runtime's has its formal <c>!0</c>: <c>Get</c>, <c>Set</c> and <c>Address</c> of the
@@ -141,14 +148,7 @@ module MethodReferenceResolution =
 
         let instance (ret : MethodReturnType<TypeDefn>) (parameters : TypeDefn list) : TypeMethodSignature<TypeDefn> =
             {
-                Header =
-                    ComparableSignatureHeader.Make (
-                        SignatureHeader (
-                            SignatureKind.Method,
-                            SignatureCallingConvention.Default,
-                            SignatureAttributes.Instance
-                        )
-                    )
+                Header = arrayMethodHeader
                 ParameterTypes = parameters
                 GenericParameterCount = 0
                 RequiredParameterCount = parameters.Length
@@ -414,13 +414,27 @@ module MethodReferenceResolution =
                     (ctx, None)
 
             // A constructor for more levels of nesting than the spelling shows, which only an
-            // instantiation making the innermost element a vector would supply.
+            // instantiation making the innermost element a vector would supply: exactly the shape
+            // of the runtime's constructors, with more lengths than the deepest the spelling
+            // already guarantees.
+            let deepestKnownConstructor =
+                accessors
+                |> List.choose (fun (accessor, _) ->
+                    match accessor with
+                    | ArrayAccessor.Constructor arity -> Some arity
+                    | ArrayAccessor.Get
+                    | ArrayAccessor.Set
+                    | ArrayAccessor.Address -> None
+                )
+                |> List.max
+
             let couldBeDeeperConstructor =
                 openEnded
                 && name = ".ctor"
-                && signature.Header.Get.IsInstance
+                && signature.Header.Get.RawValue = arrayMethodHeader.Get.RawValue
                 && signature.GenericParameterCount = 0
                 && signature.ReturnType = MethodReturnType.Void
+                && signature.ParameterTypes.Length > deepestKnownConstructor
                 && signature.ParameterTypes
                    |> List.forall (fun ty -> ty = TypeDefn.PrimitiveType PrimitiveType.Int32)
 
