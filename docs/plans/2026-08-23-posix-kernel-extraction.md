@@ -863,6 +863,11 @@ both answered the reversible way:
   `Initialized of dispatcher : 'Task` preserves the machine-checked invariant
   and is honest at the library's altitude: the type records *which* task
   dispatches without claiming to know what a task is.
+  *Superseded, 2026-09-26:* the signals redesign's stage 2 moved `SignalInitState`
+  and the dispatcher out of the library into PawPrint's `PosixSignalShim`, since no
+  kernel has a managed-handler dispatch thread. The "dispatcher exists iff
+  initialised" invariant keeps its DU shape there, and `EmulatedKernel.checkInvariants`
+  checks it.
 
 `SignalHandler` (which wraps a CLR `MethodInfo`) split out into its own PawPrint
 file and stayed. `TestSignalState.fs` moved and instantiates both parameters
