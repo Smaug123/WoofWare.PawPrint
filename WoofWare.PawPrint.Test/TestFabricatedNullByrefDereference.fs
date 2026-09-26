@@ -224,6 +224,36 @@ module TestFabricatedNullByrefDereference =
                 il.Emit (OpCodes.Ldfld, y)
             )
 
+        define
+            "LdnullInitobj"
+            typeof<Void>
+            [||]
+            (fun il ->
+                il.Emit OpCodes.Ldnull
+                il.Emit (OpCodes.Initobj, sType)
+            )
+
+        // `initobj` also takes an unmanaged address; these are the two ways a null one arrives.
+        define
+            "ConvUInitobj"
+            typeof<Void>
+            [| refS |]
+            (fun il ->
+                il.Emit OpCodes.Ldarg_0
+                il.Emit OpCodes.Conv_U
+                il.Emit (OpCodes.Initobj, sType)
+            )
+
+        define
+            "ZeroInitobj"
+            typeof<Void>
+            [||]
+            (fun il ->
+                il.Emit OpCodes.Ldc_I4_0
+                il.Emit OpCodes.Conv_U
+                il.Emit (OpCodes.Initobj, sType)
+            )
+
         n.CreateType () |> ignore<Type>
 
         use image = new MemoryStream ()
@@ -254,6 +284,9 @@ module TestFabricatedNullByrefDereference =
             "LdnullLdindI4", ""
             "LdnullVolatileRead", ""
             "LdnullLdfld", ""
+            "LdnullInitobj", ""
+            "ConvUInitobj", nullS
+            "ZeroInitobj", ""
         ]
         |> Map.ofList
 

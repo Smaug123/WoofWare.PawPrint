@@ -40,30 +40,26 @@ module internal UnaryMetadataMemoryOps =
             IlMachineState.cliTypeZeroOfHandle state baseClassTypes concreteTypeHandle
 
         match popped with
-        | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ManagedPointer ManagedPointerSource.Null
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
+        | EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L) ->
+            // The same four spellings of a null address that `executeStobj` and `executeLdobj` guard.
             IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
-        | _ ->
-
-        let state =
-            match popped with
-            | EvalStackValue.Int32 _
-            | EvalStackValue.Int64 _
-            | EvalStackValue.NativeInt _
-            | EvalStackValue.Float _ -> failwith "unexpectedly not an address"
-            | EvalStackValue.NullObjectRef
-            | EvalStackValue.ObjectRef _ -> failwith "TODO: Initobj requires a managed pointer"
-            | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
-                failwith "unreachable: null managed pointer handled above"
-            | EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
-                failwith
-                    $"initobj: cannot write through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
-            | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref addressed) ->
-                IlMachineState.writeManagedByrefWithBase baseClassTypes state addressed zeroOfType
-            | EvalStackValue.UserDefinedValueType evalStackValueUserType -> failwith "todo"
-
-        state
-        |> IlMachineState.advanceProgramCounter thread
-        |> Tuple.withRight WhatWeDid.Executed
+        | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref addressed) ->
+            IlMachineState.writeManagedByrefWithBase baseClassTypes state addressed zeroOfType
+            |> IlMachineState.advanceProgramCounter thread
+            |> Tuple.withRight WhatWeDid.Executed
+        | EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
+            failwith
+                $"initobj: cannot write through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
+        | EvalStackValue.NativeInt nativeIntSource ->
+            failwith $"TODO: Initobj through native pointer %O{nativeIntSource} is not implemented"
+        | EvalStackValue.ObjectRef _ -> failwith "Initobj on an object reference is invalid; expected a managed pointer"
+        | EvalStackValue.Int32 _
+        | EvalStackValue.Int64 _
+        | EvalStackValue.Float _
+        | EvalStackValue.UserDefinedValueType _ -> failwith $"Initobj target was not an address: %O{popped}"
 
     let executeStobj (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
