@@ -43,34 +43,28 @@ type MethodReferenceTarget =
 [<RequireQualifiedAccess>]
 module MethodReferenceResolution =
 
-    /// A type whose methods are being searched, and the reading of its signatures' `!i` that makes
-    /// them comparable with the reference's.
+    /// A type definition whose method table is being searched, with its own `!i` read as the
+    /// reference's parent sees them: the parent definition's own variables at the start of the
+    /// search, and each ancestor's through the extends clauses between (<c>GetSubstitutionForParent</c>).
     type private SearchedType =
         {
-            Assembly : DumpedAssembly
-            Type : TypeInfo<GenericParamFromMetadata, TypeDefn>
+            Identity : ResolvedTypeIdentity
             Context : TypeConcretization.SubstitutionContext
         }
 
-    let private definitionOf
-        (assemblies : LoadedAssemblies)
-        (identity : ResolvedTypeIdentity)
-        : DumpedAssembly * TypeInfo<GenericParamFromMetadata, TypeDefn>
-        =
-        let assembly = assemblies.ByDefinitionName identity.AssemblyFullName
-        assembly, assembly.TypeDefs.[identity.TypeDefinition.Get]
-
-    /// The definition a type spelling in `spellingAssembly` names, with the type arguments the
-    /// spelling applies to it (empty for a non-generic spelling).
-    let private resolveNominal
+    /// The definition a type spelling in `spellingAssembly` names, whether nominally or as one of
+    /// the primitive element types a TypeSpec may carry.
+    let private identityOfSpelling
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (spellingAssembly : DumpedAssembly)
         (spelling : TypeDefn)
         (assemblies : LoadedAssemblies)
-        : LoadedAssemblies * ResolvedTypeIdentity * ImmutableArray<TypeDefn>
+        : LoadedAssemblies * ResolvedTypeIdentity
         =
-        let identityOf (root : TypeDefn) : LoadedAssemblies * ResolvedTypeIdentity =
+        match spelling with
+        | TypeDefn.GenericInstantiation (root, _) ->
             match root with
             | TypeDefn.FromDefinition (identity, _) -> assemblies, identity
             | TypeDefn.FromReference (typeRef, _) ->
@@ -88,69 +82,25 @@ module MethodReferenceResolution =
                         $"Type reference %s{typeRef.Namespace}.%s{typeRef.Name} from %s{spellingAssembly.DefinitionFullName} does not resolve: %O{miss}"
             | other ->
                 failwith
-                    $"Expected a named type or an instantiation of one, in %s{spellingAssembly.DefinitionFullName}, but got %O{other}"
-
-        match spelling with
-        | TypeDefn.GenericInstantiation (root, arguments) ->
-            let assemblies, identity = identityOf root
-            assemblies, identity, arguments
-        | root ->
-            let assemblies, identity = identityOf root
-            assemblies, identity, ImmutableArray.Empty
-
-    /// `searched`'s base class, with the base's `!i` read through `searched`'s extends clause
-    /// (<c>GetSubstitutionForParent</c>), or `None` at the root of the hierarchy.
-    let private parentOf
-        (loggerFactory : ILoggerFactory)
-        (dotnetRuntimeDirs : string seq)
-        (searched : SearchedType)
-        (assemblies : LoadedAssemblies)
-        : LoadedAssemblies * SearchedType option
-        =
-        let spelling =
-            match searched.Type.BaseType with
-            | None -> None
-            | Some (BaseTypeInfo.TypeDef handle) ->
-                Some (TypeDefn.FromDefinition (searched.Assembly.TypeDefs.[handle].Identity, SignatureTypeKind.Class))
-            | Some (BaseTypeInfo.TypeRef handle) ->
-                Some (TypeDefn.FromReference (searched.Assembly.TypeRefs.[handle], SignatureTypeKind.Class))
-            | Some (BaseTypeInfo.TypeSpec handle) -> Some searched.Assembly.TypeSpecs.[handle].Signature
-
-        match spelling with
-        | None -> assemblies, None
-        | Some spelling ->
-            let assemblies, identity, arguments =
-                resolveNominal loggerFactory dotnetRuntimeDirs searched.Assembly spelling assemblies
-
-            let assembly, ty = definitionOf assemblies identity
-
-            let parent =
-                {
-                    Assembly = assembly
-                    Type = ty
-                    Context =
-                        TypeConcretization.SubstitutionContext.forBase
-                            searched.Assembly.DefinitionFullName
-                            arguments
-                            searched.Context
-                }
-
-            assemblies, Some parent
-
-    /// Every strict ancestor of `searched`, nearest first.
-    let private ancestorsOf
-        (loggerFactory : ILoggerFactory)
-        (dotnetRuntimeDirs : string seq)
-        (searched : SearchedType)
-        (assemblies : LoadedAssemblies)
-        : LoadedAssemblies * SearchedType list
-        =
-        let rec go (assemblies : LoadedAssemblies) (current : SearchedType) (acc : SearchedType list) =
-            match parentOf loggerFactory dotnetRuntimeDirs current assemblies with
-            | assemblies, None -> assemblies, List.rev acc
-            | assemblies, Some parent -> go assemblies parent (parent :: acc)
-
-        go assemblies searched []
+                    $"An instantiation in %s{spellingAssembly.DefinitionFullName} applies arguments to %O{other}, which names no generic definition"
+        | TypeDefn.FromDefinition (identity, _) -> assemblies, identity
+        | TypeDefn.FromReference (typeRef, _) ->
+            match
+                TypeResolution.resolveTypeRefIdentity
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    spellingAssembly
+                    typeRef
+                    assemblies
+            with
+            | assemblies, Ok identity -> assemblies, identity
+            | _, Error miss ->
+                failwith
+                    $"Type reference %s{typeRef.Namespace}.%s{typeRef.Name} from %s{spellingAssembly.DefinitionFullName} does not resolve: %O{miss}"
+        | TypeDefn.PrimitiveType primitive -> assemblies, (BaseClassTypes.ofPrimitive baseClassTypes primitive).Identity
+        | other ->
+            failwith
+                $"Expected a type with a method table in %s{spellingAssembly.DefinitionFullName}, but got %O{other}"
 
     /// The methods the runtime synthesises on an array type (array.cpp, <c>ArrayClass::
     /// GenerateArrayAccessorCallSig</c>), each signature spelled with the array's element type where
@@ -204,14 +154,14 @@ module MethodReferenceResolution =
     /// left standing.
     /// </summary>
     /// <remarks>
-    /// <c>MemberLoader::FindMethod</c> walks the parent's whole method table from the end, and then,
-    /// for a class, recurses into the base class. A method table holds the type's own non-virtual
-    /// methods and *every* vtable slot, inherited ones included, so the order that makes is:
-    /// the parent's own non-virtual methods; then every virtual method visible from the parent, the
-    /// most derived first; then, for a class only, each ancestor's non-virtual methods in turn. A
-    /// struct therefore finds <c>ToString</c> but not <c>GetType</c>, an interface finds only its
-    /// own methods, and a constructor is never found on an ancestor. A reference to an array type
-    /// finds the runtime's accessors, and then carries on at <c>System.Array</c>.
+    /// <c>MemberLoader::FindMethod</c> walks the parent's method table from the end, and then, for a
+    /// class, recurses into the base class. A method table holds the type's own slots beyond the
+    /// vtable and then *every* vtable slot, inherited ones included, each slot holding the most
+    /// derived declaration placed there; <c>MethodTableLayout</c> lays out exactly that. So a struct
+    /// finds <c>ToString</c> but not <c>GetType</c>, an interface finds only its own methods, two
+    /// methods whose signatures coincide once an extends clause is substituted are told apart by
+    /// their order in the table, and a constructor is never found on an ancestor. A reference to an
+    /// array type finds the runtime's accessors, then carries on into <c>System.Array</c>.
     ///
     /// Loads whatever assemblies the parent, its base chain and the signatures name.
     /// </remarks>
@@ -232,6 +182,9 @@ module MethodReferenceResolution =
             | MemberSignature.Field _ ->
                 failwith $"MemberRef %s{name} in %s{referencingAssembly.DefinitionFullName} names a field, not a method"
 
+        let operation =
+            $"resolving the reference to %s{name} from %s{referencingAssembly.DefinitionFullName}"
+
         let loader = TypeResolution.directoryLoader loggerFactory dotnetRuntimeDirs
 
         let withAssemblies
@@ -248,14 +201,19 @@ module MethodReferenceResolution =
                 AssemblyFullName = referencingAssembly.DefinitionFullName
             }
 
-        /// Search `levels` in order for a method passing `keep` whose signature is the reference's,
-        /// the reference's `!i` being read as `referenceContext` says.
+        let searchedDefinition (identity : ResolvedTypeIdentity) (arity : int) : SearchedType =
+            {
+                Identity = identity
+                Context = TypeConcretization.SubstitutionContext.forDefinition identity arity
+            }
+
+        /// The first of `entries`, all from `searched`'s method table, that the reference names.
         let firstMatch
             (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
             (referenceContext : TypeConcretization.SubstitutionContext)
-            (keep : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> -> bool)
-            (levels : SearchedType list)
-            : TypeConcretization.ConcretizationContext<DumpedAssembly> * MethodReferenceTarget option
+            (searched : SearchedType)
+            (entries : VtableSlot list)
+            : TypeConcretization.ConcretizationContext<DumpedAssembly> * VtableSlot option
             =
             let referenceComparand : TypeConcretization.SignatureComparand =
                 {
@@ -264,130 +222,144 @@ module MethodReferenceResolution =
                     DeclaringTypeGenerics = referenceContext
                 }
 
-            let rec go (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>) (levels : SearchedType list) =
-                match levels with
+            let rec go (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>) (entries : VtableSlot list) =
+                match entries with
                 | [] -> ctx, None
-                | searched :: rest ->
-                    let ctx, matches =
-                        ((ctx, []), searched.Type.Methods)
-                        ||> List.fold (fun (ctx, acc) candidate ->
-                            if candidate.Name <> name || not (keep candidate) then
-                                ctx, acc
-                            else
-                                let candidateComparand : TypeConcretization.SignatureComparand =
-                                    {
-                                        Signature = candidate.Signature
-                                        AssemblyFullName = searched.Assembly.DefinitionFullName
-                                        DeclaringTypeGenerics = searched.Context
-                                    }
+                | entry :: rest when entry.Method.Name <> name -> go ctx rest
+                | entry :: rest ->
+                    let candidateComparand : TypeConcretization.SignatureComparand =
+                        {
+                            Signature = entry.Method.Signature
+                            AssemblyFullName = entry.DeclaredBy.AssemblyFullName
+                            // The table is laid out in `searched`'s own vocabulary; read it in the
+                            // reference parent's.
+                            DeclaringTypeGenerics =
+                                TypeConcretization.SubstitutionContext.rebase
+                                    searched.Identity
+                                    searched.Context.Arguments
+                                    entry.DeclaredBy.Substitution
+                        }
 
-                                let equivalent, ctx =
-                                    TypeConcretization.signaturesEquivalent
-                                        ctx
-                                        loader
-                                        false
-                                        referenceComparand
-                                        candidateComparand
+                    match
+                        TypeConcretization.signaturesEquivalent ctx loader false referenceComparand candidateComparand
+                    with
+                    | true, ctx -> ctx, Some entry
+                    | false, ctx -> go ctx rest
 
-                                if equivalent then ctx, candidate :: acc else ctx, acc
-                        )
+            go ctx entries
 
-                    match matches with
-                    | [] -> go ctx rest
-                    | [ found ] ->
-                        match found.TryMetadata with
-                        | Some facts -> ctx, Some (MethodReferenceTarget.Defined (searched.Assembly, facts.Handle))
-                        | None ->
-                            failwith
-                                $"%s{searched.Type.Namespace}.%s{searched.Type.Name}::%s{name} in %s{searched.Assembly.DefinitionFullName} is a TypeDef's method with no metadata row"
-                    | _ ->
-                        // CoreCLR takes whichever it meets first searching the method table from
-                        // the end, an order this does not model. Two methods of one type with one
-                        // name and one signature, custom modifiers included, is not something a
-                        // compiler emits.
-                        failwith
-                            $"%d{matches.Length} methods of %s{searched.Type.Namespace}.%s{searched.Type.Name} in %s{searched.Assembly.DefinitionFullName} match the reference to %s{name} from %s{referencingAssembly.DefinitionFullName}"
-
-            go ctx levels
-
-        let orElse
-            (next :
-                TypeConcretization.ConcretizationContext<DumpedAssembly>
-                    -> TypeConcretization.ConcretizationContext<DumpedAssembly> * MethodReferenceTarget option)
-            (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>, found : MethodReferenceTarget option)
+        /// `searched`'s method table in the order `MethodTable::MethodIterator` visits it from the
+        /// end: the slots beyond the vtable, then the vtable's, each half last slot first.
+        let methodTableFromTheEnd
+            (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
+            (searched : SearchedType)
+            : TypeConcretization.ConcretizationContext<DumpedAssembly> * VtableSlot list * VtableSlot list
             =
-            match found with
-            | Some _ -> ctx, found
-            | None -> next ctx
+            let ctx, table =
+                MethodTableLayout.slotTableOfDefinition loggerFactory dotnetRuntimeDirs operation ctx searched.Identity
 
-        let isVirtual (m : MethodInfo<_, _, _>) : bool = m.IsVirtual
+            ctx, List.rev table.BeyondVtable, List.rev table.Vtable
 
-        /// Steps two and three of the search, for the ancestors of a parent whose own non-virtual
-        /// methods did not match. `ownVirtuals` is the parent itself, when it is a type with
-        /// virtual methods of its own; `searchNonVirtualAncestors` is whether the parent is a class.
-        let searchAncestors
+        let definedBy
+            (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
+            (entry : VtableSlot)
+            : MethodReferenceTarget
+            =
+            match entry.Method.TryMetadata with
+            | Some facts ->
+                MethodReferenceTarget.Defined (
+                    ctx.LoadedAssemblies.ByDefinitionName entry.DeclaredBy.AssemblyFullName,
+                    facts.Handle
+                )
+            | None ->
+                failwith
+                    $"%s{operation}: method %s{entry.Method.Name} of %s{entry.DeclaredBy.Description} occupies a slot but has no metadata row"
+
+        /// `IsMdInstanceInitializer`, which `FindMethod` refuses to return from a base class.
+        let isInstanceInitializer (entry : VtableSlot) : bool =
+            match entry.Method.TryMetadata with
+            | Some facts ->
+                entry.Method.Name = ".ctor"
+                && facts.MethodAttributes.HasFlag System.Reflection.MethodAttributes.RTSpecialName
+            | None -> false
+
+        /// `MemberLoader::FindMethod` on `searched`. `inherited` is whether this is a recursion into
+        /// a base class, whose constructors the caller may not have.
+        let rec findMethod
             (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
             (referenceContext : TypeConcretization.SubstitutionContext)
-            (ownVirtuals : SearchedType list)
-            (ancestors : SearchedType list)
-            (searchNonVirtualAncestors : bool)
+            (searched : SearchedType)
+            (inherited : bool)
             : TypeConcretization.ConcretizationContext<DumpedAssembly> * MethodReferenceTarget
             =
-            let ctx, found =
-                firstMatch ctx referenceContext isVirtual (ownVirtuals @ ancestors)
-                |> orElse (fun ctx ->
-                    // `IsMdInstanceInitializer`: constructors are not inherited.
-                    if searchNonVirtualAncestors && name <> ".ctor" then
-                        firstMatch ctx referenceContext (isVirtual >> not) ancestors
-                    else
-                        ctx, None
-                )
+            let ctx, beyondVtable, vtable = methodTableFromTheEnd ctx searched
 
-            ctx, Option.defaultValue MethodReferenceTarget.Missing found
+            match firstMatch ctx referenceContext searched (beyondVtable @ vtable) with
+            | ctx, Some entry ->
+                if inherited && isInstanceInitializer entry then
+                    ctx, MethodReferenceTarget.Missing
+                else
+                    ctx, definedBy ctx entry
+            | ctx, None ->
+                let assembly, typeInfo =
+                    MethodTableLayout.definitionMetadata operation ctx.LoadedAssemblies searched.Identity
+
+                // "No inheritance on value types or interfaces": their inherited virtuals were in
+                // the table already.
+                if
+                    typeInfo.IsInterface
+                    || LoadedTypeInfo.isValueType ctx.BaseTypes ctx.LoadedAssemblies typeInfo
+                then
+                    ctx, MethodReferenceTarget.Missing
+                else
+
+                let owner : SlotOwner =
+                    {
+                        AssemblyFullName = searched.Identity.AssemblyFullName
+                        Identity = searched.Identity
+                        Substitution = searched.Context
+                        Description = TypeInfo.fullName (fun handle -> assembly.TypeDefs.[handle]) typeInfo
+                    }
+
+                match
+                    MethodTableLayout.baseOfDefinition loggerFactory dotnetRuntimeDirs operation ctx owner typeInfo
+                with
+                | ctx, None -> ctx, MethodReferenceTarget.Missing
+                | ctx, Some (baseIdentity, arguments) ->
+                    let parent =
+                        {
+                            Identity = baseIdentity
+                            Context =
+                                {
+                                    TypeConcretization.SubstitutionContext.Arguments = arguments
+                                }
+                        }
+
+                    findMethod ctx referenceContext parent true
 
         /// Search the definition `identity`, whose own type variables the reference's `!i` name.
         let searchFrom
             (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
             (identity : ResolvedTypeIdentity)
             =
-            let assembly, ty = definitionOf ctx.LoadedAssemblies identity
+            let assembly, ty =
+                MethodTableLayout.definitionMetadata operation ctx.LoadedAssemblies identity
 
-            // Classifying the parent walks its base types, so they must all be loaded.
+            // Classifying each type on the way walks its base types, so they must all be loaded.
             let assemblies =
                 match
                     TypeResolution.tryPrimeBaseChain loggerFactory dotnetRuntimeDirs ctx.LoadedAssemblies assembly ty
                 with
                 | assemblies, None -> assemblies
-                | _, Some failure ->
-                    failwith
-                        $"The base chain of %s{ty.Namespace}.%s{ty.Name}, parent of a reference to %s{name} from %s{referencingAssembly.DefinitionFullName}, does not load: %O{failure}"
+                | _, Some failure -> failwith $"%s{operation}: the base chain of the parent does not load: %O{failure}"
 
-            let root =
-                {
-                    Assembly = assembly
-                    Type = ty
-                    Context = TypeConcretization.SubstitutionContext.forDefinition identity ty.Generics.Length
-                }
+            let root = searchedDefinition identity ty.Generics.Length
+            findMethod (withAssemblies ctx assemblies) root.Context root false
 
-            let isClass =
-                not ty.IsInterface
-                && not (LoadedTypeInfo.isValueType ctx.BaseTypes assemblies ty)
-
-            // An interface's method table holds its own methods and nothing inherited.
-            let assemblies, ancestors =
-                if ty.IsInterface then
-                    assemblies, []
-                else
-                    ancestorsOf loggerFactory dotnetRuntimeDirs root assemblies
-
-            let ctx = withAssemblies ctx assemblies
-
-            firstMatch ctx root.Context (isVirtual >> not) [ root ]
-            |> function
-                | ctx, Some found -> ctx, found
-                | ctx, None -> searchAncestors ctx root.Context [ root ] ancestors isClass
-
-        /// Search an array type: the runtime's accessors, then `System.Array` and what it inherits.
+        /// Search an array type: the runtime's accessors, then `System.Array`. The array's own
+        /// method table also holds every vtable slot of `System.Array`, but those are exactly what
+        /// the search of `System.Array` meets next, and no type holds two methods of one name and
+        /// signature for the order between them to decide anything.
         let searchArray (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>) (arrayType : TypeDefn) =
             let accessorName (accessor : ArrayAccessor) : string =
                 match accessor with
@@ -423,31 +395,8 @@ module MethodReferenceResolution =
             match accessor with
             | ctx, Some found -> ctx, found
             | ctx, None ->
-                let systemArray =
-                    {
-                        Assembly = ctx.BaseTypes.Corelib
-                        Type = ctx.BaseTypes.Array
-                        Context = TypeConcretization.SubstitutionContext.forDefinition ctx.BaseTypes.Array.Identity 0
-                    }
-
-                let assemblies, ancestors =
-                    ancestorsOf loggerFactory dotnetRuntimeDirs systemArray ctx.LoadedAssemblies
-
-                let ctx = withAssemblies ctx assemblies
-                // The array's own method table holds no virtual methods of its own, but every one
-                // `System.Array` has; the non-virtual ones are found by recursing into it.
-                let levels = systemArray :: ancestors
-
-                let ctx, found =
-                    firstMatch ctx systemArray.Context isVirtual levels
-                    |> orElse (fun ctx ->
-                        if name <> ".ctor" then
-                            firstMatch ctx systemArray.Context (isVirtual >> not) levels
-                        else
-                            ctx, None
-                    )
-
-                ctx, Option.defaultValue MethodReferenceTarget.Missing found
+                let systemArray = searchedDefinition ctx.BaseTypes.Array.Identity 0
+                findMethod ctx systemArray.Context systemArray true
 
         match row.Parent with
         | MetadataToken.MethodDef handle ->
@@ -471,10 +420,11 @@ module MethodReferenceResolution =
                 ctx, MethodReferenceTarget.Missing
         | MetadataToken.TypeDefinition handle -> searchFrom ctx referencingAssembly.TypeDefs.[handle].Identity
         | MetadataToken.TypeReference handle ->
-            let assemblies, identity, _ =
-                resolveNominal
+            let assemblies, identity =
+                identityOfSpelling
                     loggerFactory
                     dotnetRuntimeDirs
+                    ctx.BaseTypes
                     referencingAssembly
                     (TypeDefn.FromReference (referencingAssembly.TypeRefs.[handle], SignatureTypeKind.Class))
                     ctx.LoadedAssemblies
@@ -485,8 +435,14 @@ module MethodReferenceResolution =
             | TypeDefn.OneDimensionalArrayLowerBoundZero _
             | TypeDefn.Array _ as arrayType -> searchArray ctx arrayType
             | spelling ->
-                let assemblies, identity, _ =
-                    resolveNominal loggerFactory dotnetRuntimeDirs referencingAssembly spelling ctx.LoadedAssemblies
+                let assemblies, identity =
+                    identityOfSpelling
+                        loggerFactory
+                        dotnetRuntimeDirs
+                        ctx.BaseTypes
+                        referencingAssembly
+                        spelling
+                        ctx.LoadedAssemblies
 
                 searchFrom (withAssemblies ctx assemblies) identity
         | MetadataToken.ModuleReference _ ->

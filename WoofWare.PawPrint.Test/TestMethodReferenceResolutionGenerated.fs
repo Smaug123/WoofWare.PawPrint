@@ -31,6 +31,8 @@ module TestMethodReferenceResolutionGenerated =
     type Ty =
         | Int32
         | String
+        /// Only as a primitive parent: the generator never puts it in a signature.
+        | Object
         /// `!i` of the type the signature belongs to.
         | Var of int
         | ArrayOf of Ty
@@ -87,6 +89,9 @@ module TestMethodReferenceResolutionGenerated =
         /// A method named on `int32[,]`: one the runtime supplies, one `System.Array` or `Object`
         /// declares, or neither.
         | OnArray of name : string * parameters : Ty list * ret : Ty option * returnsByref : bool
+        /// A MemberRef whose parent is a TypeSpec spelling a primitive (`ELEMENT_TYPE_I4`,
+        /// `ELEMENT_TYPE_STRING`, `ELEMENT_TYPE_OBJECT`), which CoreCLR reads as the CoreLib type.
+        | OnPrimitive of parent : Ty * name : string * parameters : Ty list * ret : Ty option
 
     type World =
         {
@@ -236,6 +241,17 @@ module TestMethodReferenceResolutionGenerated =
                                 pick random [ None ; Some Ty.Int32 ; Some Ty.String ]
 
                         GeneratedReference.OnArray (name, parameters, ret, name = "Address" && random.Next 2 = 0)
+                    | 2 ->
+                        let parent = pick random [ Ty.Int32 ; Ty.String ; Ty.Object ]
+
+                        let name =
+                            pick random [ "ToString" ; "GetHashCode" ; "CompareTo" ; "get_Length" ; "MemberwiseClone" ]
+
+                        let parameters =
+                            List.init (random.Next 2) (fun _ -> pick random [ Ty.Int32 ; Ty.String ])
+
+                        let ret = pick random [ None ; Some Ty.Int32 ; Some Ty.String ; Some Ty.Object ]
+                        GeneratedReference.OnPrimitive (parent, name, parameters, ret)
                     | 1 ->
                         let varargs =
                             types
@@ -399,6 +415,7 @@ module TestMethodReferenceResolutionGenerated =
             match ty with
             | Ty.Int32 -> encoder.Int32 ()
             | Ty.String -> encoder.String ()
+            | Ty.Object -> encoder.Object ()
             | Ty.Var i -> encoder.GenericTypeParameter i
             | Ty.ArrayOf element -> encode (encoder.SZArray ()) element
             | Ty.World (index, []) -> encoder.Type (typeHandle index, isValueType index)
@@ -586,6 +603,12 @@ module TestMethodReferenceResolutionGenerated =
                         metadata.GetOrAddString "V",
                         signature SignatureCallingConvention.VarArgs true fixedParameters extra None
                     )
+                | GeneratedReference.OnPrimitive (parent, name, parameters, ret) ->
+                    metadata.AddMemberReference (
+                        typeSpec parent,
+                        metadata.GetOrAddString name,
+                        signature SignatureCallingConvention.Default false parameters [] ret
+                    )
                 | GeneratedReference.OnArray (name, parameters, ret, returnsByref) ->
                     let blob = BlobBuilder ()
 
@@ -617,6 +640,157 @@ module TestMethodReferenceResolutionGenerated =
         let image = BlobBuilder ()
         peBuilder.Serialize image |> ignore<BlobContentId>
         image.ToArray (), references
+
+    let private newSlot (name : string) (parameters : Ty list) : GeneratedMethod =
+        {
+            Name = name
+            IsStatic = false
+            Virtualness = Virtualness.NewSlot
+            Parameters = parameters
+            Return = None
+            IsVarArg = false
+        }
+
+    /// Shapes the generator is unlikely to reach by chance, each of which an earlier version of the
+    /// resolver got wrong.
+    let handWritten : (string * World) list =
+        [
+            // `FindMethod` walks the vtable slots from the end, not the ancestry. With `A<T>.M(T)`,
+            // `B<T> : A<T>` adding a new slot `M(int)`, `C<T> : B<T>` overriding `M(T)`, and
+            // `D : C<int>`, both of D's `M` slots read as `M(int)`, and the later one is `B.M`'s,
+            // although `C.M` is the more derived declaration.
+            "slot order under substitution",
+            {
+                Types =
+                    [
+                        {
+                            Kind = Kind.Class
+                            Arity = 1
+                            Base = None
+                            Methods = [ newSlot "M" [ Ty.Var 0 ] ]
+                        }
+                        {
+                            Kind = Kind.Class
+                            Arity = 1
+                            Base = Some (0, [ Ty.Var 0 ])
+                            Methods = [ newSlot "M" [ Ty.Int32 ] ]
+                        }
+                        {
+                            Kind = Kind.Class
+                            Arity = 1
+                            Base = Some (1, [ Ty.Var 0 ])
+                            Methods =
+                                [
+                                    { newSlot "M" [ Ty.Var 0 ] with
+                                        Virtualness = Virtualness.ReuseSlot
+                                    }
+                                ]
+                        }
+                        {
+                            Kind = Kind.Class
+                            Arity = 0
+                            Base = Some (2, [ Ty.Int32 ])
+                            Methods = []
+                        }
+                    ]
+                References = [ GeneratedReference.OnType (3, [], "M", false, [ Ty.Int32 ], None) ]
+            }
+            // Two overloads of a generic base that coincide once a derived type's extends clause
+            // closes it: CoreCLR takes whichever it meets first searching from the end.
+            "non-virtual overloads coinciding under substitution",
+            {
+                Types =
+                    [
+                        {
+                            Kind = Kind.Class
+                            Arity = 1
+                            Base = None
+                            Methods =
+                                [
+                                    { newSlot "M" [ Ty.Var 0 ] with
+                                        Virtualness = Virtualness.NonVirtual
+                                    }
+                                    { newSlot "M" [ Ty.Int32 ] with
+                                        Virtualness = Virtualness.NonVirtual
+                                    }
+                                ]
+                        }
+                        {
+                            Kind = Kind.Class
+                            Arity = 0
+                            Base = Some (0, [ Ty.Int32 ])
+                            Methods = []
+                        }
+                    ]
+                References = [ GeneratedReference.OnType (1, [], "M", false, [ Ty.Int32 ], None) ]
+            }
+            "virtual overloads coinciding under substitution",
+            {
+                Types =
+                    [
+                        {
+                            Kind = Kind.Class
+                            Arity = 1
+                            Base = None
+                            Methods = [ newSlot "M" [ Ty.Var 0 ] ; newSlot "M" [ Ty.Int32 ] ]
+                        }
+                        {
+                            Kind = Kind.Class
+                            Arity = 0
+                            Base = Some (0, [ Ty.Int32 ])
+                            Methods = []
+                        }
+                    ]
+                References = [ GeneratedReference.OnType (1, [], "M", false, [ Ty.Int32 ], None) ]
+            }
+            "primitive parents",
+            {
+                Types = []
+                References =
+                    [
+                        GeneratedReference.OnPrimitive (Ty.Int32, "ToString", [], Some Ty.String)
+                        GeneratedReference.OnPrimitive (Ty.Int32, "CompareTo", [ Ty.Int32 ], Some Ty.Int32)
+                        GeneratedReference.OnPrimitive (Ty.Object, "ToString", [], Some Ty.String)
+                        GeneratedReference.OnPrimitive (Ty.Object, "GetHashCode", [], Some Ty.Int32)
+                        GeneratedReference.OnPrimitive (Ty.String, "get_Length", [], Some Ty.Int32)
+                        // Object's non-virtual methods are found from a class and not from a
+                        // struct, whose search stops at its own method table.
+                        GeneratedReference.OnPrimitive (Ty.Int32, "MemberwiseClone", [], Some Ty.Object)
+                        GeneratedReference.OnPrimitive (Ty.String, "MemberwiseClone", [], Some Ty.Object)
+                    ]
+            }
+            "what structs and interfaces inherit",
+            {
+                Types =
+                    [
+                        {
+                            Kind = Kind.Struct
+                            Arity = 0
+                            Base = None
+                            Methods = []
+                        }
+                        {
+                            Kind = Kind.Interface
+                            Arity = 0
+                            Base = None
+                            Methods = []
+                        }
+                        {
+                            Kind = Kind.Class
+                            Arity = 0
+                            Base = None
+                            Methods = []
+                        }
+                    ]
+                References =
+                    [
+                        GeneratedReference.OnType (0, [], "ToString", false, [], Some Ty.String)
+                        GeneratedReference.OnType (0, [], "MemberwiseClone", false, [], Some Ty.Object)
+                        GeneratedReference.OnType (1, [], "ToString", false, [], Some Ty.String)
+                        GeneratedReference.OnType (2, [], "MemberwiseClone", false, [], Some Ty.Object)
+                    ]
+            }
+        ]
 
     [<RequireQualifiedAccess>]
     type private Oracle =
@@ -653,10 +827,12 @@ module TestMethodReferenceResolutionGenerated =
                 | true, n -> n + 1
                 | false, _ -> 1
 
-        for seed in 0..599 do
-            let world = genWorld (Random seed)
-            let assemblyName = $"GeneratedWorld%d{seed}"
-            let image, references = emit seed assemblyName world
+        let worlds =
+            [ for seed in 0..599 -> $"seed %d{seed}", genWorld (Random seed) ] @ handWritten
+
+        for index, (label, world) in List.indexed worlds do
+            let assemblyName = $"GeneratedWorld%d{index}"
+            let image, references = emit index assemblyName world
 
             let context = AssemblyLoadContext (assemblyName, isCollectible = true)
 
@@ -682,8 +858,11 @@ module TestMethodReferenceResolutionGenerated =
                     match askReflection reflected.ManifestModule token with
                     | Oracle.Refused _ -> count "world refused by CoreCLR"
                     | oracle ->
+                        if index >= 600 then
+                            count "hand-written reference compared"
+
                         let describe () =
-                            $"seed %d{seed}, reference %A{reference}%s{Environment.NewLine}world %A{world.Types}"
+                            $"%s{label}, reference %A{reference}%s{Environment.NewLine}world %A{world.Types}"
 
                         let ours =
                             try
@@ -740,6 +919,14 @@ module TestMethodReferenceResolutionGenerated =
                    |> Seq.truncate 5
                    |> String.concat (Environment.NewLine + Environment.NewLine))
             )
+
+        // Every hand-written reference is a case an earlier resolver got wrong, so each must have
+        // been put to the runtime rather than refused.
+        match outcomes.TryGetValue "hand-written reference compared" with
+        | true, n ->
+            n
+            |> shouldEqual (handWritten |> List.sumBy (fun (_, world) -> world.References.Length))
+        | false, _ -> failwith "no hand-written reference was compared"
 
         // Vacuity guards: each kind of answer must actually have been compared.
         for outcome in
