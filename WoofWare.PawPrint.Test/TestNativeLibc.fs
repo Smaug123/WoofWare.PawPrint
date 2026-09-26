@@ -270,3 +270,27 @@ module TestNativeLibc =
 
         screen (SignalState.enqueue (processDirected realTime) signals, shim) realTime
         |> shouldEqual None
+
+    [<Test>]
+    let ``inherited ignores are set only on a fresh process`` () : unit =
+        let kernel = EmulatedKernel.initial
+
+        kernel
+        |> EmulatedKernel.withInheritedSignalIgnores "test" (Set.singleton Signal.SIGHUP)
+        |> fun k -> SignalState.disposition Signal.SIGHUP k.Signals
+        |> shouldEqual SignalDisposition.Ignore
+
+        let touched =
+            EmulatedKernel.mapProcess
+                (fun proc ->
+                    { proc with
+                        Signals = SignalState.setDisposition Signal.SIGUSR2 SignalDisposition.Ignore proc.Signals
+                    }
+                )
+                kernel
+
+        Assert.Throws (fun () ->
+            EmulatedKernel.withInheritedSignalIgnores "test" (Set.singleton Signal.SIGHUP) touched
+            |> ignore<EmulatedKernel>
+        )
+        |> ignore<exn>
