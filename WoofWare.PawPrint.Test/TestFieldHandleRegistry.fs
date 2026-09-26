@@ -75,7 +75,7 @@ public class GenericHolder<T>
         let corelib =
             global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory corelibPath
 
-        let baseClassTypes = Corelib.getBaseTypes corelib
+        let baseClassTypes = BaseClassTypes.ofCorelib corelib
 
         use assemblyStream = new MemoryStream (image)
 
@@ -1163,7 +1163,7 @@ public static class HasRvaData
         let corelib =
             global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory corelibPath
 
-        let baseClassTypes = Corelib.getBaseTypes corelib
+        let baseClassTypes = BaseClassTypes.ofCorelib corelib
 
         use assemblyStream = new MemoryStream (image)
 
@@ -1376,7 +1376,7 @@ public static class HasRvaData
         let corelib =
             global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory corelibPath
 
-        let baseClassTypes = Corelib.getBaseTypes corelib
+        let baseClassTypes = BaseClassTypes.ofCorelib corelib
 
         use assemblyStream = new MemoryStream (genericPointerRvaImage ())
 

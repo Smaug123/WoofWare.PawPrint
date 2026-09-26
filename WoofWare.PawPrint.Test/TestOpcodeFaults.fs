@@ -411,7 +411,7 @@ module TestOpcodeFaults =
             let _, loggerFactory = LoggerFactory.makeTest ()
             Assembly.readFile loggerFactory typeof<obj>.Assembly.Location
 
-        let bct = Corelib.getBaseTypes corelib
+        let bct = BaseClassTypes.ofCorelib corelib
 
         for fault in allCasesOf<OpcodeFault> () do
             let resolved = OpcodeFault.resolve bct fault

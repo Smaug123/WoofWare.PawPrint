@@ -45,7 +45,7 @@ module TestFieldIdAgreement =
 
     let private corelib : DumpedAssembly = Assembly.readFile loggerFactory corelibPath
 
-    let private bct : BaseClassTypes<DumpedAssembly> = Corelib.getBaseTypes corelib
+    let private bct : BaseClassTypes<DumpedAssembly> = BaseClassTypes.ofCorelib corelib
 
     /// A hierarchy chosen to stress every way a derived type's generic arguments can be
     /// rearranged on the way to its base's field declarations. `DerivedAddsParam` is the

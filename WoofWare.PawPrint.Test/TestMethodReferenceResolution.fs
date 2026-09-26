@@ -145,7 +145,7 @@ module TestMethodReferenceResolution =
             Assembly.readFile loggerFactory (Path.Combine (frameworkDir, "System.Private.CoreLib.dll"))
 
         let analysed = Assembly.readFile loggerFactory reflected.Location
-        let baseClassTypes = Corelib.getBaseTypes corelib
+        let baseClassTypes = BaseClassTypes.ofCorelib corelib
         let loaded = LoadedAssemblies.ofAssemblies [ corelib ; analysed ]
 
         let mutable ctx : TypeConcretization.ConcretizationContext<DumpedAssembly> =

@@ -25,7 +25,7 @@ module TestMethodReturnType =
         let corelib =
             global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory corelibPath
 
-        let baseClassTypes = Corelib.getBaseTypes corelib
+        let baseClassTypes = BaseClassTypes.ofCorelib corelib
 
         use assemblyStream = new MemoryStream (image)
 

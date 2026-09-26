@@ -26,7 +26,7 @@ module TestMethodHandleRegistry =
         let corelib =
             global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory corelibPath
 
-        let baseClassTypes = Corelib.getBaseTypes corelib
+        let baseClassTypes = BaseClassTypes.ofCorelib corelib
 
         use assemblyStream = new MemoryStream (image)
 
@@ -1592,7 +1592,7 @@ public class HasNestedGeneric<TKey, TValue>
         let corelib =
             global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory typeof<obj>.Assembly.Location
 
-        let baseClassTypes = Corelib.getBaseTypes corelib
+        let baseClassTypes = BaseClassTypes.ofCorelib corelib
 
         let state =
             let initial = IlMachineState.initial loggerFactory ImmutableArray.Empty assembly

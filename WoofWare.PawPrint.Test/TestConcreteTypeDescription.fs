@@ -22,7 +22,7 @@ module TestConcreteTypeDescription =
     let private assemblies : LoadedAssemblies =
         LoadedAssemblies.ofAssemblies [ corelib ]
 
-    let private bct : BaseClassTypes<DumpedAssembly> = Corelib.getBaseTypes corelib
+    let private bct : BaseClassTypes<DumpedAssembly> = BaseClassTypes.ofCorelib corelib
 
     let private baseConcreteTypes : AllConcreteTypes =
         Corelib.concretizeAll assemblies bct AllConcreteTypes.Empty

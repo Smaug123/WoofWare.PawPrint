@@ -107,7 +107,7 @@ static class Program
         state._LoadedAssemblies.DefinitionNames
         |> Seq.find (fun name -> name.StartsWith ("System.Private.CoreLib,", System.StringComparison.Ordinal))
         |> state._LoadedAssemblies.ByDefinitionName
-        |> Corelib.getBaseTypes
+        |> BaseClassTypes.ofCorelib
 
     [<Test>]
     let ``Every memoised method concretisation agrees with concretising the definition afresh`` () =

@@ -20,7 +20,7 @@ module TestFunctionPointerTargetIdentity =
         Assembly.readFile loggerFactory corelibPath
 
     let private baseClassTypes : BaseClassTypes<DumpedAssembly> =
-        Corelib.getBaseTypes corelib
+        BaseClassTypes.ofCorelib corelib
 
     let private baseState () : IlMachineState =
         let _, loggerFactory = LoggerFactory.makeTest ()

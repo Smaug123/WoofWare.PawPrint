@@ -159,7 +159,7 @@ module TestRuntimeFieldInfoStubLayout =
         use _loggerFactoryResource = loggerFactory
         use stream = File.OpenRead corelibPath
         let corelib = Assembly.read loggerFactory (Some corelibPath) stream
-        let baseClassTypes = Corelib.getBaseTypes corelib
+        let baseClassTypes = BaseClassTypes.ofCorelib corelib
 
         match
             RuntimeFieldInfoStubLayout.classify

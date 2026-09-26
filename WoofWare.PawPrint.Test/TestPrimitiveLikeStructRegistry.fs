@@ -16,7 +16,7 @@ module TestPrimitiveLikeStructRegistry =
         let _, loggerFactory = LoggerFactory.makeTest ()
         Assembly.readFile loggerFactory corelibPath
 
-    let private bct : BaseClassTypes<DumpedAssembly> = Corelib.getBaseTypes corelib
+    let private bct : BaseClassTypes<DumpedAssembly> = BaseClassTypes.ofCorelib corelib
 
     let private mkCt (ti : TypeInfo<GenericParamFromMetadata, TypeDefn>) : ConcreteType<int> =
         ConcreteType.makeFromIdentity ti.Identity ti.Namespace ti.Name ImmutableArray<int>.Empty

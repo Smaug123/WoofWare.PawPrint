@@ -142,7 +142,7 @@ module TestAssemblyDictionaryKeying =
     let ``concretizeTypeDefinition succeeds for a type reached through a forwarding facade`` () : unit =
         let loaded, corelib, _, _, identity = loadForwardedAccessControlType ()
 
-        let baseTypes = Corelib.getBaseTypes corelib
+        let baseTypes = BaseClassTypes.ofCorelib corelib
 
         let ctx : TypeConcretization.ConcretizationContext<DumpedAssembly> =
             {
