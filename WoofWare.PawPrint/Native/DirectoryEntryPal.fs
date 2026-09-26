@@ -22,7 +22,7 @@ type DirectoryEntryNameLength =
     | WalkToTerminator
 
 /// The PAL's `DirectoryEntry` encoding of a directory entry, as
-/// `SystemNative_ReadDirR` writes it.
+/// `SystemNative_ReadDir` writes it.
 [<RequireQualifiedAccess>]
 module DirectoryEntryPal =
 

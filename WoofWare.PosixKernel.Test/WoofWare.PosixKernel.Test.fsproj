@@ -17,6 +17,8 @@
     <Compile Include="PathText.fs" />
     <Compile Include="BindingProbes.fs" />
     <Compile Include="TestUnixTaskTable.fs" />
+    <Compile Include="CredentialsGen.fs" />
+    <Compile Include="TestCredentials.fs" />
     <Compile Include="TestUnixProcessState.fs" />
     <Compile Include="TestClock.fs" />
     <Compile Include="TestClockAgainstHost.fs" />
@@ -52,6 +54,8 @@
     <Compile Include="TestSignalState.fs" />
     <Compile Include="TestUnixSignal.fs" />
     <Compile Include="TestDirectoryEnumeration.fs" />
+    <Compile Include="TestDirectoryDescription.fs" />
+    <Compile Include="TestDirectoryReadAgainstHost.fs" />
     <Compile Include="TestPathCursor.fs" />
     <Compile Include="TestVirtualFileSystem.fs" />
     <Compile Include="TestOpenDirRules.fs" />

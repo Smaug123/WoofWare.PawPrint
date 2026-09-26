@@ -23,6 +23,7 @@
         <Compile Include="AbsoluteUnixPath.fs" />
         <Compile Include="UnixPath.fs" />
         <Compile Include="PermissionBits.fs" />
+        <Compile Include="Credentials.fs" />
         <Compile Include="UnixTimestamp.fs" />
         <Compile Include="SymlinkTarget.fs" />
         <Compile Include="PathLimits.fs" />

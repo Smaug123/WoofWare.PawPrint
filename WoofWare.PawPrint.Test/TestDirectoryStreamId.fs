@@ -78,6 +78,15 @@ module TestDirectoryStreamId =
         | Ok kernel -> kernel
         | Error error -> failwith $"could not close the stream's descriptor: %O{error}"
 
+    /// Where the stream `block` names is positioned, which is its descriptor's
+    /// open file description's position.
+    let private positionOf (block : NativeMemoryBlockId) (kernel : EmulatedKernel) : DirectoryPosition =
+        let stream = EmulatedKernel.directoryStream block kernel
+
+        match FileDescriptorRegistry.tryFindTarget stream.Fd kernel.FileDescriptors with
+        | Some (OpenFileTarget.Directory (_, position)) -> position
+        | other -> failwith $"the stream's fd %d{stream.Fd} names %O{other}, not a directory"
+
     [<Test>]
     let ``a fresh kernel holds no streams`` () : unit =
         let kernel = kernel ()
@@ -95,8 +104,8 @@ module TestDirectoryStreamId =
 
         kernel.NextDirectoryStreamId |> shouldEqual (DirectoryStreamId 1L)
 
-        (EmulatedKernel.directoryStream block kernel).Cursor
-        |> shouldEqual DirectoryCursor.Start
+        positionOf block kernel
+        |> shouldEqual (DirectoryPosition.Cursor DirectoryCursor.Start)
 
     [<Test>]
     let ``two streams of one directory get distinct ids`` () : unit =
@@ -131,8 +140,8 @@ module TestDirectoryStreamId =
         // `dir` binds no names, so the first entry is `..` and the cursor lands
         // there. Asserted as a value rather than as "it moved": a cursor that
         // advanced to the wrong state would pass the weaker check.
-        (EmulatedKernel.directoryStream block kernel).Cursor
-        |> shouldEqual DirectoryCursor.ReturnedDotDot
+        positionOf block kernel
+        |> shouldEqual (DirectoryPosition.Cursor DirectoryCursor.ReturnedDotDot)
 
     [<Test>]
     let ``closing clears both maps`` () : unit =

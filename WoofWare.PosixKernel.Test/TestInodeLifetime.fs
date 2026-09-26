@@ -84,9 +84,13 @@ module TestInodeLifetime =
         | Error error -> failwith $"could not resolve %s{path} in the test seed: %O{error}"
 
     /// Open `inode` read-only, answering the descriptor and the kernel holding it.
+    /// A directory gets a directory description, as `open(2)` gives it one.
     let private opened (inode : InodeNumber) (kernel : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         let fd, registry =
-            FileDescriptorRegistry.openFile inode FileAccessMode.ReadOnly kernel.Process.FileDescriptors
+            match VirtualFileSystem.tryGetContent inode kernel.Machine.FileSystem with
+            | Some (InodeContent.Directory _) ->
+                FileDescriptorRegistry.openDirectory inode kernel.Process.FileDescriptors
+            | _ -> FileDescriptorRegistry.openFile inode FileAccessMode.ReadOnly kernel.Process.FileDescriptors
 
         fd,
         { kernel with

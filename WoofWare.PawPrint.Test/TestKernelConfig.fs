@@ -131,8 +131,10 @@ module TestKernelConfig =
         kernel.FileSystemType |> shouldEqual EmulatedFileSystemType.Apfs
         kernel.SoMaxConn |> shouldEqual 128
         kernel.EphemeralPortRange |> shouldEqual (49152us, 65535us)
-        kernel.UserId |> shouldEqual 501u
-        kernel.GroupId |> shouldEqual 20u
+
+        kernel.Credentials
+        |> shouldEqual (Credentials.ofIds (UserId.parseOrFail "test" 501u) (GroupId.parseOrFail "test" 20u) [])
+
         EmulatedKernel.checkInvariants kernel |> shouldEqual []
 
         // ...and a configured value is carried as given, on either flavour.
@@ -146,15 +148,81 @@ module TestKernelConfig =
                 }
 
         configured.EphemeralPortRange |> shouldEqual (40000us, 40010us)
-        configured.UserId |> shouldEqual 1000u
-        configured.GroupId |> shouldEqual 1000u
+
+        configured.Credentials
+        |> shouldEqual (Credentials.ofIds (UserId.parseOrFail "test" 1000u) (GroupId.parseOrFail "test" 1000u) [])
 
         // The default configuration is Linux's, in every one of those fields.
         let linux = KernelConfig.toKernel KernelConfig.Default
         linux.UnixPlatform |> shouldEqual SimulatedUnixPlatform.linuxX64
         linux.EphemeralPortRange |> shouldEqual (32768us, 60999us)
-        linux.UserId |> shouldEqual 1000u
-        linux.GroupId |> shouldEqual 1000u
+
+        linux.Credentials
+        |> shouldEqual (Credentials.ofIds (UserId.parseOrFail "test" 1000u) (GroupId.parseOrFail "test" 1000u) [])
+
+    [<Test>]
+    let ``KernelConfig's ids are the process's real, effective and saved ids, and its groups are carried as given``
+        ()
+        : unit
+        =
+        let groups = [ 3000u ; 1000u ; 2000u ; 1000u ]
+
+        let kernel =
+            KernelConfig.toKernel
+                { KernelConfig.Default with
+                    UserId = Some 37u
+                    GroupId = Some 38u
+                    SupplementaryGroups = groups
+                }
+
+        kernel.Credentials
+        |> shouldEqual (
+            Credentials.ofIds
+                (UserId.parseOrFail "test" 37u)
+                (GroupId.parseOrFail "test" 38u)
+                (groups |> List.map (GroupId.parseOrFail "test"))
+        )
+
+        KernelConfig.Default.SupplementaryGroups |> shouldEqual []
+
+    [<Test>]
+    let ``KernelConfig refuses credentials no process could hold, naming the knob`` () : unit =
+        let refusal (config : KernelConfig) : string =
+            (Assert.Throws<System.Exception> (fun () -> KernelConfig.toKernel config |> ignore<EmulatedKernel>)).Message
+
+        refusal
+            { KernelConfig.Default with
+                UserId = Some System.UInt32.MaxValue
+            }
+        |> fun message ->
+            message.StartsWith ("KernelConfig.UserId: ", System.StringComparison.Ordinal)
+            |> shouldEqual true
+
+        refusal
+            { KernelConfig.Default with
+                GroupId = Some System.UInt32.MaxValue
+            }
+        |> fun message ->
+            message.StartsWith ("KernelConfig.GroupId: ", System.StringComparison.Ordinal)
+            |> shouldEqual true
+
+        refusal
+            { KernelConfig.Default with
+                SupplementaryGroups = [ 5u ; System.UInt32.MaxValue ]
+            }
+        |> fun message ->
+            message.StartsWith ("KernelConfig.SupplementaryGroups: ", System.StringComparison.Ordinal)
+            |> shouldEqual true
+
+        // Darwin's NGROUPS_MAX is 16.
+        refusal
+            { KernelConfig.Default with
+                UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                SupplementaryGroups = List.init 17 (fun i -> uint32 (100 + i))
+            }
+        |> fun message ->
+            message.StartsWith ("KernelConfig: ", System.StringComparison.Ordinal)
+            |> shouldEqual true
 
     [<Test>]
     let ``KernelConfig applies the current directory whatever else it sets`` () : unit =

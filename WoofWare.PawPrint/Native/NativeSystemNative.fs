@@ -897,8 +897,8 @@ module NativeSystemNative =
         putInt32 0 (if status.BirthTime.IsSome then 1 else 0)
 
         putInt32 4 status.Mode
-        putUInt32 8 status.UserId
-        putUInt32 12 status.GroupId
+        putUInt32 8 (UserId.toUInt32 status.UserId)
+        putUInt32 12 (GroupId.toUInt32 status.GroupId)
         putInt64 16 status.Size
         putTime 24 status.AccessTime
         putTime 40 status.ModificationTime
@@ -2447,9 +2447,9 @@ module NativeSystemNative =
             // `uint32_t SystemNative_GetEUid(void)` (pal_uid.c:91) is
             // `return geteuid();` — infallible, as `geteuid(2)` is.
             //
-            // The same `UserId` `Stat`/`LStat` below report as every inode's
-            // `st_uid`, because the emulated process has one identity: no
-            // reachable syscall can give an inode an owner of its own
+            // The same effective user ID `Stat`/`LStat` below report as every
+            // inode's `st_uid`: the kernel stores no per-inode owner yet, and no
+            // reachable syscall could give an inode one of its own
             // (`SystemNative_ChOwn` is not in the interop surface at all), so
             // there is nothing for a second source of truth to disagree with.
             //
@@ -2458,18 +2458,20 @@ module NativeSystemNative =
             // `Interop.Sys.IsMemberOfGroup` — managed code, not an entry point —
             // whose sole caller is `FileStatus.IsModeReadOnlyCore` behind
             // `if (_fileCache.Uid == Interop.Sys.GetEUid())`
-            // (FileStatus.Unix.cs:106). With one identity that guard always
-            // holds, so the group path is dead by construction and a
-            // supplementary-group list would be state no syscall could vary.
+            // (FileStatus.Unix.cs:106). While every inode reports the effective
+            // uid that guard always holds, so the group path is dead by
+            // construction, and `KernelConfig.SupplementaryGroups` is state no
+            // guest can observe until inodes can have owners of their own.
             // Implementing `GetEGid` alone would be worse than either: it
             // short-circuits `IsMemberOfGroup` on `gid == GetEGid()`
-            // (Interop.IsMemberOfGroup.cs:13), which under one identity is also
-            // always true — so the branch would start *succeeding*, on the
+            // (Interop.IsMemberOfGroup.cs:13), which while every inode reports
+            // the effective IDs is also always true — so the branch would start *succeeding*, on the
             // strength of the very invariant that must have broken for it to be
             // reachable. Leaving them unimplemented means a guest that gets
             // there stops loudly instead, naming the entry point.
             // `sourcesImpure/EffectiveUserIdConfigured.cs` pins the premise.
-            let uid = UnixDescriptor.effectiveUserId (EmulatedKernel.unix state.Kernel)
+            let uid =
+                UserId.toUInt32 (UnixDescriptor.effectiveUserId (EmulatedKernel.unix state.Kernel))
 
             state
             |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 uid) ctx.Thread
@@ -2574,6 +2576,8 @@ module NativeSystemNative =
                     NoFollow = flags &&& palNoFollow <> 0
                     CloseOnExec = flags &&& palCloExec <> 0
                     Synchronous = flags &&& palSync <> 0
+                    // The PAL has no `O_DIRECTORY` bit to translate.
+                    Directory = false
                 }
 
             match
@@ -2762,9 +2766,10 @@ module NativeSystemNative =
         // and a **raw** errno otherwise — this entry point does not use
         // `SetLastError`, and `FileSystemEnumerator.FindNextEntry` feeds the
         // return value straight to `new Interop.ErrorInfo(result)`, which
-        // converts it with `ConvertErrorPlatformToPal`. No failure arm exists
-        // here: the cursor walk is total, and a `DIR*` this kernel never issued
-        // is undefined behaviour on a real libc rather than an errno, so
+        // converts it with `ConvertErrorPlatformToPal`. The one failure is a
+        // read through a descriptor the guest closed or replaced behind the
+        // stream's back; a `DIR*` this kernel never issued is undefined
+        // behaviour on a real libc rather than an errno, so
         // `EmulatedKernel.directoryStreamId` refuses instead of inventing EBADF.
         //
         // The output parameter is matched loosely, as `SystemNative_Stat`'s is
@@ -2797,14 +2802,6 @@ module NativeSystemNative =
             // around the call and `Marshal.GetLastSystemError` reads what the C
             // left — zero. Without this, a guest that failed a syscall and then
             // enumerated a directory would still see the old errno.
-            // Note what this does *not* touch: the offset on the descriptor
-            // `opendir` opened. A real `readdir` moves it, but to a cookie
-            // PawPrint cannot produce — measured, it jumps once when libc's
-            // `getdents` buffer fills and then stays put as entries are consumed
-            // out of it, and its value is the filesystem's own (a block boundary
-            // on ext4, `2147483647` on APFS for a three-entry directory). An
-            // entry index would be wrong in shape as well as in value. See
-            // `docs/divergences.md`.
             let state = state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread 0)
 
             match UnixNamespace.readdir id (EmulatedKernel.unix state.Kernel) with
@@ -2823,6 +2820,19 @@ module NativeSystemNative =
                     0
                     (withAnswered system state)
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | ReadDirAnswer.Failed error, system ->
+                // "kernel set errno -> failure": the same zeroed entry, and the
+                // raw errno as the return value. Reachable only by a guest that
+                // closed or replaced the stream's descriptor behind its back.
+                // `readdir` left the errno behind, and nothing restores it.
+                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+                let raw = UnixError.toRawErrnoUnder numbering error
+
+                (withAnswered system state).MapKernel (EmulatedKernel.withLastSystemError ctx.Thread raw)
+                |> writeDirectoryEntry ctx operation directoryEntryHandle output ManagedPointerSource.Null 0 0
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim raw)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
             | ReadDirAnswer.Entry (name, kind), system ->
@@ -3501,8 +3511,9 @@ module NativeSystemNative =
                     match refusal with
                     | LSeekRefusal.Sparseness _ ->
                         "CoreLib never sends these -- Interop.Sys.SeekWhence is 0, 1, 2 -- so this is a hand-rolled P/Invoke."
-                    | LSeekRefusal.DirectoryEnd _ ->
-                        "No BCL caller reaches it: SafeFileHandle.Init raises UnauthorizedAccessException on opening a directory for reading (SafeFileHandle.Unix.cs:320-327), and directory enumeration goes through opendir/readdir."
+                    | LSeekRefusal.DirectoryEnd _
+                    | LSeekRefusal.DirectoryPosition _ ->
+                        "No BCL caller reaches it: SafeFileHandle.Init raises UnauthorizedAccessException on opening a directory for reading (SafeFileHandle.Unix.cs:320-327), and directory enumeration goes through opendir/readdir, whose descriptor no CoreLib code asks for."
 
                 failwith $"%s{operation}: fd %d{fd}: %s{LSeekRefusal.describe refusal} %s{reachability}"
             | Ok (SyscallAnswer.Failed error, system) ->
@@ -5625,6 +5636,7 @@ module NativeSystemNative =
                         match description.Target with
                         | OpenFileTarget.StandardStream role -> StepEffect.WroteToFd (role, bytes)
                         | OpenFileTarget.File _
+                        | OpenFileTarget.Directory _
                         | OpenFileTarget.Socket _
                         | OpenFileTarget.SocketEventPort _ -> StepEffect.NoEffect
                     | None -> StepEffect.NoEffect

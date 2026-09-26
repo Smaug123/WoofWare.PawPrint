@@ -141,6 +141,8 @@ type private ReadTarget =
     | File of inode : InodeNumber * offset : int64
     /// A socket, which is refused rather than answered.
     | Socket of socket : SocketId
+    /// A directory, which has no byte contents to read.
+    | Directory
 
 /// What a `write` will operate on, once the descriptor's access mode has been
 /// checked and before its buffer is screened.
@@ -284,6 +286,7 @@ module UnixReadWrite =
                 | SimulatedUnixFlavour.Darwin -> Error UnixError.ENXIO
             | OpenFileTarget.Socket socketId -> Ok (ReadTarget.Socket socketId)
             | OpenFileTarget.File (inode, offset) -> Ok (ReadTarget.File (inode, offset))
+            | OpenFileTarget.Directory _ -> Ok ReadTarget.Directory
 
         match target with
         | Error error -> Ok (ReadAnswer.Failed error, system)
@@ -342,6 +345,12 @@ module UnixReadWrite =
             | SimulatedUnixFlavour.Darwin, _ ->
                 let socket = UnixMachineState.socket socketId system.Machine
                 Error (ReadRefusal.SocketConnectionState (socketId, socket.Domain, socket.Kind))
+        | ReadTarget.Directory ->
+            // EISDIR on both, and behind the buffer screen rather than ahead of
+            // it: measured, `read(dir, NULL, 5)` is EISDIR while
+            // `read(dir, (void*)-1, 5)` is EFAULT under a screening flavour.
+            // The same answer `pread` reaches through the directory's content.
+            Ok (ReadAnswer.Failed UnixError.EISDIR, system)
         | ReadTarget.Stdin ->
             // **Immediate end-of-file**, and this is a claim about how the
             // process was launched rather than a fallback: this kernel models
@@ -512,7 +521,8 @@ module UnixReadWrite =
                 // whatever it is connected to, so `pread` never reaches the
                 // socket's own read operation.
                 Error UnixError.ESPIPE
-            | OpenFileTarget.File (inode, _) ->
+            | OpenFileTarget.File (inode, _)
+            | OpenFileTarget.Directory (inode, _) ->
                 if not readable then
                     // A descriptor not open for reading: EBADF on both, which is
                     // `vfs_read`'s answer for a file whose `FMODE_READ` is
@@ -593,6 +603,9 @@ module UnixReadWrite =
         | OpenFileTarget.Socket socketId -> Ok (WriteTarget.Socket socketId)
         | OpenFileTarget.File (inode, offset) -> Ok (WriteTarget.File (inode, offset))
         | OpenFileTarget.StandardStream role -> Ok (WriteTarget.StandardStream role)
+        | OpenFileTarget.Directory (inode, _) ->
+            failwith
+                $"UnixReadWrite.write: fd %d{fd} names directory %O{inode} with an access mode that permits writing. A directory can only be opened for reading (open answers EISDIR otherwise), so FileDescriptorRegistry.checkInvariants reports this as WritableDirectory (this is a bug in this library)."
 
     /// Every answer `write(2)` gives *without* reading the caller's buffer, and
     /// otherwise how many bytes to extract.
@@ -849,7 +862,8 @@ module UnixReadWrite =
             // connected to, so `pwrite` never reaches the socket's own write
             // operation. That is why `PWriteRefusal` has no socket case.
             Error UnixError.ESPIPE
-        | OpenFileTarget.File (inode, _) ->
+        | OpenFileTarget.File (inode, _)
+        | OpenFileTarget.Directory (inode, _) ->
 
         if not writable then
             // `vfs_write`'s EBADF for a descriptor whose `FMODE_WRITE` is clear,

@@ -2831,8 +2831,13 @@ module TestVirtualFileSystemAgainstHost =
                 { system.Process with
                     CurrentDirectoryInode = VirtualFileSystem.root vfs
                 }
-                |> UnixProcessState.withUserAndGroupId userId userId
         }
+        |> UnixSystem.withCredentials
+            "renameModelSystem"
+            (Credentials.ofIds
+                (UserId.parseOrFail "renameModelSystem" userId)
+                (GroupId.parseOrFail "renameModelSystem" userId)
+                [])
 
     let private compareRenameRefusal (source : string) (destination : string) : RenameRefusal * RenameRefusal =
         let unique = Guid.NewGuid().ToString "N"
@@ -3143,8 +3148,13 @@ module TestVirtualFileSystemAgainstHost =
                     { system.Process with
                         CurrentDirectoryInode = VirtualFileSystem.root vfs
                     }
-                    |> UnixProcessState.withUserAndGroupId userId userId
             }
+            |> UnixSystem.withCredentials
+                "chdir model"
+                (Credentials.ofIds
+                    (UserId.parseOrFail "chdir model" userId)
+                    (GroupId.parseOrFail "chdir model" userId)
+                    [])
 
         match UnixPathResolution.chdir (UnixPath.parseOrFail "test" relative) system with
         | SyscallAnswer.Completed 0L, moved ->

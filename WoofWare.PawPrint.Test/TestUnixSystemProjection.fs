@@ -25,7 +25,11 @@ module TestUnixSystemProjection =
     let private distinctive : EmulatedKernel =
         EmulatedKernel.initial
         |> EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount 4)
-        |> EmulatedKernel.mapProcess (UnixProcessState.withUserAndGroupId 7u 9u)
+        |> EmulatedKernel.mapUnix (
+            UnixSystem.withCredentials
+                "test"
+                (Credentials.ofIds (UserId.parseOrFail "test" 7u) (GroupId.parseOrFail "test" 9u) [])
+        )
         |> EmulatedKernel.mapTasks (UnixTaskTable.register (ThreadId 3) (CpuId 2) (OsThreadId 11u))
 
     [<Test>]
@@ -76,13 +80,17 @@ module TestUnixSystemProjection =
             |> EmulatedKernel.mapUnix (fun system ->
                 {
                     Machine = UnixMachineState.withProcessorCount 5 system.Machine
-                    Process = UnixProcessState.withUserAndGroupId 11u 13u system.Process
+                    Process =
+                        { system.Process with
+                            Credentials =
+                                Credentials.ofIds (UserId.parseOrFail "test" 11u) (GroupId.parseOrFail "test" 13u) []
+                        }
                     Tasks = UnixTaskTable.register (ThreadId 4) (CpuId 1) (OsThreadId 12u) system.Tasks
                 }
             )
 
         changed.Machine.ProcessorCount |> shouldEqual 5
-        changed.UserId |> shouldEqual 11u
+        changed.Credentials.EffectiveUser |> shouldEqual (UserId.parseOrFail "test" 11u)
         changed.Tasks.ContainsKey (ThreadId 4) |> shouldEqual true
 
         // And the part the operation left alone is still the one it was handed,

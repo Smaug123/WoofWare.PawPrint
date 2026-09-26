@@ -357,8 +357,8 @@ module PathWalk =
         // searchable one.
         //
         // Only the *owner* triple can ever apply, which is
-        // `PermissionBits.deniedTo`'s contract: `stat` reports `Kernel.UserId`
-        // as every inode's `st_uid`, so the emulated process owns everything it
+        // `PermissionBits.deniedTo`'s contract: `stat` reports the caller's
+        // effective user ID as every inode's `st_uid`, so the emulated process owns everything it
         // can see. Measured, and a corpus of ordinary modes cannot show it: a
         // 0o677 directory is EACCES to its owner though group and other may
         // search it, while 0o100 is searchable though nobody else may.
