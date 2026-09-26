@@ -584,7 +584,7 @@ module InterfaceDispatch =
         // The candidates `PlaceInterfaceMethods` collects from `DeclaredMethodIterator`: "non-publics
         // and statics can legally be exposed via an interface, but only through methodImpls".
         let ownCandidates =
-            VirtualSlotLayout.declaredMethodsOf operation owner typeInfo
+            MethodTableLayout.declaredMethodsOf operation owner typeInfo
             |> List.map fst
             |> List.filter (fun method -> method.IsVirtual && method.IsPublic)
 

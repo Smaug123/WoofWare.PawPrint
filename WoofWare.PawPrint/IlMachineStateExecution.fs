@@ -329,7 +329,7 @@ module IlMachineStateExecution =
             // The return column is compared separately, because PawPrint's *dispatch* rule is
             // deliberately looser than CoreCLR's *layout* rule: it accepts an assignable return so
             // that a covariant-return override can be found, where
-            // `VirtualSlotLayout.candidateFillsSlot` requires the exact signature CoreCLR
+            // `MethodTableLayout.candidateFillsSlot` requires the exact signature CoreCLR
             // requires. `skipReturnType` is how `MethodSignature::SignaturesEquivalent` expresses
             // the same latitude.
             let state, signatureMatches =

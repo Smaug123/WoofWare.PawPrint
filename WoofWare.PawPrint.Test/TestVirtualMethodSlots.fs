@@ -321,14 +321,14 @@ module TestVirtualMethodSlots =
         // A base method from corelib and a derived method from the guest, sharing row 6.
         let slots = [ "CoreLib", row 6 ; "Guest", row 6 ]
 
-        VirtualSlotLayout.slotIndexOfIdentity ("Guest", row 6) slots
+        MethodTableLayout.slotIndexOfIdentity ("Guest", row 6) slots
         |> shouldEqual (Some 1)
 
-        VirtualSlotLayout.slotIndexOfIdentity ("CoreLib", row 6) slots
+        MethodTableLayout.slotIndexOfIdentity ("CoreLib", row 6) slots
         |> shouldEqual (Some 0)
 
         // A row present in one assembly must not be found via another.
-        VirtualSlotLayout.slotIndexOfIdentity ("Other", row 6) slots |> shouldEqual None
+        MethodTableLayout.slotIndexOfIdentity ("Other", row 6) slots |> shouldEqual None
 
     /// An interface has no base class, so `MethodTableBuilder::PlaceVirtualMethods` adds every
     /// instance virtual it declares without consulting NewSlot. Corelib contains exactly one method
@@ -486,7 +486,7 @@ module TestVirtualMethodSlots =
 
             for method in hostDeclaredMethods host do
                 let expected = hostSlotOf method
-                let actual = VirtualSlotLayout.slotIndexInTable (identityOf method) table
+                let actual = MethodTableLayout.slotIndexInTable (identityOf method) table
 
                 match actual with
                 | None ->
@@ -696,7 +696,7 @@ module TestVirtualMethodSlots =
         for method in hostDeclaredMethods host do
             let expected = hostSlotOf method
 
-            match VirtualSlotLayout.slotIndexInTable (identityOf method) table with
+            match MethodTableLayout.slotIndexInTable (identityOf method) table with
             | None ->
                 failures <-
                     $"%s{method.Name} (row %i{method.MetadataToken &&& 0xFFFFFF}) has no slot in PawPrint's table, host says %i{expected}"
