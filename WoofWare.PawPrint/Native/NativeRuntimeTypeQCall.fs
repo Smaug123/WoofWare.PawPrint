@@ -2290,7 +2290,10 @@ module NativeRuntimeTypeQCall =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef
                     operation
                     state
-                    (IlMachineState.readManagedByref ctx.BaseClassTypes state runtimeTypePtr
+                    (IlMachineState.readManagedByref
+                        ctx.BaseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed runtimeTypePtr)
                      |> EvalStackValue.ofCliType)
 
             let state, activation =

@@ -1212,7 +1212,11 @@ module NullaryIlOp =
                 || isNativeMemoryPointer src
                 || isTrailingByteViewPointer src
                 ->
-                IlMachineState.readManagedByrefBytesAs corelib state src targetCliType
+                IlMachineState.readManagedByrefBytesAs
+                    corelib
+                    state
+                    (ManagedPointerSource.requireAddressed src)
+                    targetCliType
             // Must stay *after* the guarded arm above, for two reasons. A byte-only root has no
             // typed cell for `readManagedByref` to return, so reading one to ask the routing
             // question would throw before the question could be answered. And
@@ -1231,14 +1235,23 @@ module NullaryIlOp =
                 // The cell has to be read before the routing question can be asked, and is
                 // discarded when the answer is "bytes". Reads are pure, so this costs a walk
                 // and nothing else.
-                let cell = IlMachineState.readManagedByref corelib state src
+                let cell =
+                    IlMachineState.readManagedByref corelib state (ManagedPointerSource.requireAddressed src)
 
                 if ldindNeedsByteView target cell then
-                    IlMachineState.readManagedByrefBytesAs corelib state src targetCliType
+                    IlMachineState.readManagedByrefBytesAs
+                        corelib
+                        state
+                        (ManagedPointerSource.requireAddressed src)
+                        targetCliType
                 else
                     cell
             | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
-                IlMachineState.readManagedByrefBytesAs corelib state src targetCliType
+                IlMachineState.readManagedByrefBytesAs
+                    corelib
+                    state
+                    (ManagedPointerSource.requireAddressed src)
+                    targetCliType
             | EvalStackValue.NativeInt nativeIntSource ->
                 failwith $"TODO: Native int pointer dereferencing not implemented for {targetType}"
             | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
@@ -3012,7 +3025,7 @@ module NullaryIlOp =
                     // here; needs a byte-view byref shape") rather than
                     // routing through a byte reconstruction that would
                     // silently do the wrong thing.
-                    IlMachineState.readManagedByref corelib state src
+                    IlMachineState.readManagedByref corelib state (ManagedPointerSource.requireAddressed src)
                 // Release CoreLib's `GCHandle.InternalGet` is literally
                 // `*(object*)handle` (GCHandle.CoreCLR.cs), so this is the
                 // dereference of the handle table slot.

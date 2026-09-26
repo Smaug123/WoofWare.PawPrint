@@ -444,7 +444,7 @@ module NativeWaitHandle =
                 IlMachineState.readManagedByrefBytesAs
                     baseClassTypes
                     state
-                    elementPtr
+                    (ManagedPointerSource.requireAddressed elementPtr)
                     (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
 
             waitHandleOfArgument $"%s{operation} (handle #%d{index})" element

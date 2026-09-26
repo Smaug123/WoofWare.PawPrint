@@ -308,7 +308,7 @@ public static class Program
         (target : ManagedPointerSource)
         : ManagedHeapAddress
         =
-        match IlMachineState.readManagedByref baseClassTypes state target with
+        match IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed target) with
         | CliType.ObjectRef (Some addr) -> addr
         | CliType.ObjectRef None -> failwith "handler wrote a null reference through the ObjectHandleOnStack"
         | other -> failwith $"expected an ObjectRef behind the ObjectHandleOnStack, got %O{other}"

@@ -323,7 +323,12 @@ module NativeRuntimeFieldHandle =
         (state : IlMachineState)
         : bool
         =
-        match IlMachineState.readManagedByref ctx.BaseClassTypes state isClassInitializedPtr with
+        match
+            IlMachineState.readManagedByref
+                ctx.BaseClassTypes
+                state
+                (ManagedPointerSource.requireAddressed isClassInitializedPtr)
+        with
         | CliType.Numeric (CliNumericType.Int32 i) -> i <> 0
         | other -> failwith $"%s{operation}: expected Int32 in pIsClassInitialized, got %O{other}"
 
@@ -340,7 +345,7 @@ module NativeRuntimeFieldHandle =
 
         // An `ObjectHandleOnStack` names a slot holding an object reference, so this wants the
         // object-aware reader rather than the byte-view one.
-        match IlMachineState.readManagedByref ctx.BaseClassTypes state ptr with
+        match IlMachineState.readManagedByref ctx.BaseClassTypes state (ManagedPointerSource.requireAddressed ptr) with
         | CliType.ObjectRef addr -> addr
         | other -> failwith $"%s{operation}: expected ObjectRef in %s{argName} ObjectHandleOnStack, got %O{other}"
 

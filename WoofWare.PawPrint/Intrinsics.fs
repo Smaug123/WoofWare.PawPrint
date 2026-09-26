@@ -187,7 +187,10 @@ module Intrinsics =
         | ManagedPointerSource.Null -> nullLocation site state
         | byrefSrc ->
             let currentValue =
-                IlMachineState.readManagedByref site.BaseClassTypes state byrefSrc
+                IlMachineState.readManagedByref
+                    site.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed byrefSrc)
 
             let currentEval = EvalStackValue.ofCliType currentValue
             let valueCli = EvalStackValue.toCliTypeCoerced currentValue value
@@ -222,7 +225,10 @@ module Intrinsics =
         | ManagedPointerSource.Null -> nullLocation site state
         | byrefSrc ->
             let currentValue =
-                IlMachineState.readManagedByref site.BaseClassTypes state byrefSrc
+                IlMachineState.readManagedByref
+                    site.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed byrefSrc)
 
             let valueCli = EvalStackValue.toCliTypeCoerced currentValue value
 
@@ -256,7 +262,10 @@ module Intrinsics =
         | ManagedPointerSource.Null -> nullLocation site state
         | byrefSrc ->
             let currentValue =
-                IlMachineState.readManagedByref site.BaseClassTypes state byrefSrc
+                IlMachineState.readManagedByref
+                    site.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed byrefSrc)
 
             let current =
                 match EvalStackValue.ofCliType currentValue with
@@ -301,7 +310,10 @@ module Intrinsics =
         | ManagedPointerSource.Null -> nullLocation site state
         | byrefSrc ->
             let currentValue =
-                IlMachineState.readManagedByref site.BaseClassTypes state byrefSrc
+                IlMachineState.readManagedByref
+                    site.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed byrefSrc)
 
             let current =
                 match EvalStackValue.ofCliType currentValue with
@@ -813,7 +825,9 @@ module Intrinsics =
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null
                 | EvalStackValue.NullObjectRef -> None
                 | EvalStackValue.ManagedPointer ptr ->
-                    match IlMachineState.readManagedByref baseClassTypes state ptr with
+                    match
+                        IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed ptr)
+                    with
                     | CliType.ObjectRef (Some addr) ->
                         Some (ManagedHeap.getObjectConcreteType addr state.ManagedHeap, state)
                     | CliType.ObjectRef None -> None
@@ -1056,7 +1070,11 @@ module Intrinsics =
                 match popManagedByrefArgument operation byrefArg with
                 | ManagedPointerSource.Null -> nullLocation site state
                 | byrefSrc ->
-                    let currentValue = IlMachineState.readManagedByref baseClassTypes state byrefSrc
+                    let currentValue =
+                        IlMachineState.readManagedByref
+                            baseClassTypes
+                            state
+                            (ManagedPointerSource.requireAddressed byrefSrc)
 
                     let current =
                         match EvalStackValue.ofCliType currentValue with
@@ -1090,7 +1108,11 @@ module Intrinsics =
                 match popManagedByrefArgument operation byrefArg with
                 | ManagedPointerSource.Null -> nullLocation site state
                 | byrefSrc ->
-                    let currentValue = IlMachineState.readManagedByref baseClassTypes state byrefSrc
+                    let currentValue =
+                        IlMachineState.readManagedByref
+                            baseClassTypes
+                            state
+                            (ManagedPointerSource.requireAddressed byrefSrc)
 
                     let current =
                         match EvalStackValue.ofCliType currentValue with
@@ -1172,7 +1194,11 @@ module Intrinsics =
                     let comparandSrc = toNativeIntSource comparand
                     let valueSrc = toNativeIntSource value
 
-                    let currentValue = IlMachineState.readManagedByref baseClassTypes state byrefSrc
+                    let currentValue =
+                        IlMachineState.readManagedByref
+                            baseClassTypes
+                            state
+                            (ManagedPointerSource.requireAddressed byrefSrc)
 
                     // `ref IntPtr` / `ref UIntPtr` derefs to a wrapper struct. Route the read/write through
                     // the eval-stack flatten/rewrap boundary: `ofCliType` peels the primitive-like
@@ -1233,7 +1259,11 @@ module Intrinsics =
                 match popManagedByrefArgument "Interlocked.CompareExchange<T>" byrefArg with
                 | ManagedPointerSource.Null -> nullLocation site state
                 | byrefSrc ->
-                    let currentValue = IlMachineState.readManagedByref baseClassTypes state byrefSrc
+                    let currentValue =
+                        IlMachineState.readManagedByref
+                            baseClassTypes
+                            state
+                            (ManagedPointerSource.requireAddressed byrefSrc)
 
                     let objectTarget (argName : string) (value : CliType) : ManagedHeapAddress option =
                         match value with
@@ -1339,7 +1369,11 @@ module Intrinsics =
 
                     let valueSrc = toNativeIntSource value
 
-                    let currentValue = IlMachineState.readManagedByref baseClassTypes state byrefSrc
+                    let currentValue =
+                        IlMachineState.readManagedByref
+                            baseClassTypes
+                            state
+                            (ManagedPointerSource.requireAddressed byrefSrc)
 
                     // `ref IntPtr` / `ref UIntPtr` derefs to a wrapper struct. Route the read/write through
                     // the eval-stack flatten/rewrap boundary: `ofCliType` peels the primitive-like
@@ -1386,7 +1420,11 @@ module Intrinsics =
                 match popManagedByrefArgument "Interlocked.Exchange<T>" byrefArg with
                 | ManagedPointerSource.Null -> nullLocation site state
                 | byrefSrc ->
-                    let currentValue = IlMachineState.readManagedByref baseClassTypes state byrefSrc
+                    let currentValue =
+                        IlMachineState.readManagedByref
+                            baseClassTypes
+                            state
+                            (ManagedPointerSource.requireAddressed byrefSrc)
 
                     let valueCli = EvalStackValue.toCliTypeCoerced currentValue value
 
@@ -2059,7 +2097,12 @@ module Intrinsics =
                 | EvalStackValue.NullObjectRef ->
                     IntrinsicResult.RaiseException (state, baseClassTypes.NullReferenceException, None)
                 | EvalStackValue.ManagedPointer src ->
-                    let v = IlMachineState.readManagedByrefBytesAs baseClassTypes state src tZero
+                    let v =
+                        IlMachineState.readManagedByrefBytesAs
+                            baseClassTypes
+                            state
+                            (ManagedPointerSource.requireAddressed src)
+                            tZero
 
                     state
                     |> IlMachineState.pushToEvalStack v currentThread
@@ -2079,7 +2122,12 @@ module Intrinsics =
 
                 let src = managedPointerOfPointerArgument "Unsafe.ReadUnaligned(void*)" ptr
 
-                let v = IlMachineState.readManagedByrefBytesAs baseClassTypes state src tZero
+                let v =
+                    IlMachineState.readManagedByrefBytesAs
+                        baseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed src)
+                        tZero
 
                 let state = state |> IlMachineState.pushToEvalStack v currentThread |> advanceCaller
 
@@ -3254,7 +3302,9 @@ module Intrinsics =
             let span : CliValueType =
                 match receiver with
                 | EvalStackValue.ManagedPointer src ->
-                    match IlMachineState.readManagedByref baseClassTypes state src with
+                    match
+                        IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed src)
+                    with
                     | CliType.ValueType vt -> vt
                     | other ->
                         failwith $"%s{spanTypeName}.get_Item receiver byref read produced non-value-type %O{other}"
@@ -3327,7 +3377,9 @@ module Intrinsics =
             let span : CliValueType =
                 match receiver with
                 | EvalStackValue.ManagedPointer src ->
-                    match IlMachineState.readManagedByref baseClassTypes state src with
+                    match
+                        IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed src)
+                    with
                     | CliType.ValueType vt -> vt
                     | other -> failwith $"Span`1.Clear receiver byref read produced non-value-type %O{other}"
                 | EvalStackValue.UserDefinedValueType vt -> vt

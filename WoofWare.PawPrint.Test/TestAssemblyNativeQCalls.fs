@@ -686,7 +686,7 @@ public static class StreamVersionLibrary
         : int
         =
         match
-            IlMachineState.readManagedByref baseClassTypes state ptr
+            IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed ptr)
             |> CliType.unwrapPrimitiveLikeDeep
         with
         | CliType.Numeric (CliNumericType.Int32 value) -> value
@@ -870,7 +870,9 @@ public static class StreamVersionLibrary
             invokeQCall loggerFactory prepared runtimeAssembly entryPoint [ qCallAssembly ; stringHandle ] state
 
         let written =
-            match IlMachineState.readManagedByref baseClassTypes state target with
+            match
+                IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed target)
+            with
             | CliType.ObjectRef maybeAddr -> maybeAddr
             | other -> failwith $"expected StringHandleOnStack target to contain an object ref, got %O{other}"
 
@@ -920,7 +922,9 @@ public static class StreamVersionLibrary
                 state
 
         let written =
-            match IlMachineState.readManagedByref baseClassTypes state target with
+            match
+                IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed target)
+            with
             | CliType.ObjectRef maybeAddr -> maybeAddr
             | other -> failwith $"expected ObjectHandleOnStack target to contain an object ref, got %O{other}"
 
@@ -972,7 +976,9 @@ public static class StreamVersionLibrary
                 state
 
         let written =
-            match IlMachineState.readManagedByref baseClassTypes state target with
+            match
+                IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed target)
+            with
             | CliType.ObjectRef maybeAddr -> maybeAddr
             | other -> failwith $"expected ObjectHandleOnStack target to contain an object ref, got %O{other}"
 
@@ -1014,7 +1020,9 @@ public static class StreamVersionLibrary
             | other -> failwith $"expected a verbatim Int32 return from AssemblyNative_GetCodeBase, got %O{other}"
 
         let written =
-            match IlMachineState.readManagedByref baseClassTypes state target with
+            match
+                IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed target)
+            with
             | CliType.ObjectRef maybeAddr -> maybeAddr
             | other -> failwith $"expected StringHandleOnStack target to contain an object ref, got %O{other}"
 
@@ -2886,7 +2894,9 @@ public static class StreamVersionLibrary
                 state
 
         let arrayAddr =
-            match IlMachineState.readManagedByref baseClassTypes state target with
+            match
+                IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed target)
+            with
             | CliType.ObjectRef (Some addr) -> addr
             | CliType.ObjectRef None -> failwith "handler left the ObjectHandleOnStack at null"
             | other -> failwith $"expected ObjectHandleOnStack target to contain an object ref, got %O{other}"
@@ -3043,7 +3053,12 @@ public static class StreamVersionLibrary
                 state
 
         let entryAssembly =
-            match IlMachineState.readManagedByref prepared.BaseClassTypes state target with
+            match
+                IlMachineState.readManagedByref
+                    prepared.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed target)
+            with
             | CliType.ObjectRef (Some addr) -> addr
             | other -> failwith $"expected GetEntryAssembly to write an assembly reference, got %O{other}"
 

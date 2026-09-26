@@ -766,9 +766,26 @@ public unsafe struct Nest
             // the last follows the chain structurally.
             let actuals =
                 [
-                    false, tryRun (fun () -> IlMachineState.readManagedByrefAs bct state (template access) ptr)
-                    false, tryRun (fun () -> IlMachineState.readManagedByrefBytesAs bct state ptr (template access))
-                    true, tryRun (fun () -> IlMachineState.readManagedByref bct state ptr)
+                    false,
+                    tryRun (fun () ->
+                        IlMachineState.readManagedByrefAs
+                            bct
+                            state
+                            (template access)
+                            (ManagedPointerSource.requireAddressed ptr)
+                    )
+                    false,
+                    tryRun (fun () ->
+                        IlMachineState.readManagedByrefBytesAs
+                            bct
+                            state
+                            (ManagedPointerSource.requireAddressed ptr)
+                            (template access)
+                    )
+                    true,
+                    tryRun (fun () ->
+                        IlMachineState.readManagedByref bct state (ManagedPointerSource.requireAddressed ptr)
+                    )
                 ]
 
             // `ldfld` spells a load of a field's own type differently: through the byref to its
@@ -794,7 +811,13 @@ public unsafe struct Nest
 
                     Some (
                         true,
-                        tryRun (fun () -> IlMachineState.readManagedByrefField bct state parent (List.last fields))
+                        tryRun (fun () ->
+                            IlMachineState.readManagedByrefField
+                                bct
+                                state
+                                (ManagedPointerSource.requireAddressed parent)
+                                (List.last fields)
+                        )
                     )
                 | _ -> None
 
@@ -950,7 +973,11 @@ public unsafe struct Nest
     /// field and so depend on nothing the byref under test decided.
     let private checkBlock (atByte : int -> ManagedPointerSource) (state : IlMachineState) (model : Model) : unit =
         let read (offset : int) (access : Access) : CliType =
-            IlMachineState.readManagedByrefBytesAs bct state (atByte offset) (template access)
+            IlMachineState.readManagedByrefBytesAs
+                bct
+                state
+                (ManagedPointerSource.requireAddressed (atByte offset))
+                (template access)
 
         let inPointerCell (offset : int) =
             intersecting offset 1 model |> List.exists (snd >> hasNoByteImage)
@@ -1131,7 +1158,7 @@ public unsafe struct Nest
 
         let state = IlMachineState.writeIndirectPrimitiveStore bct state viaField tagged
 
-        IlMachineState.readManagedByrefBytesAs bct state (atByte 16) tagged
+        IlMachineState.readManagedByrefBytesAs bct state (ManagedPointerSource.requireAddressed (atByte 16)) tagged
         |> shouldEqual tagged
 
     /// Every field chain an address-only property walks, with the byte offset of its end, as the

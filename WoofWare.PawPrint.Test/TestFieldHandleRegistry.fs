@@ -682,7 +682,13 @@ public class GenericHolder<T>
         (ptr : ManagedPointerSource)
         : int
         =
-        match IlMachineState.readManagedByrefBytesAs bct state ptr (CliType.Numeric (CliNumericType.Int32 0)) with
+        match
+            IlMachineState.readManagedByrefBytesAs
+                bct
+                state
+                (ManagedPointerSource.requireAddressed ptr)
+                (CliType.Numeric (CliNumericType.Int32 0))
+        with
         | CliType.Numeric (CliNumericType.Int32 i) -> i
         | other -> failwith $"Expected Int32 pointer read, got %O{other}"
 
@@ -767,7 +773,7 @@ public class GenericHolder<T>
             | _ when index = 0 -> ptr
             | _ -> failwith $"Expected native int buffer pointer, got %O{ptr}"
 
-        IlMachineState.readManagedByref baseClassTypes state ptr
+        IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed ptr)
 
     let private invokeRuntimeTypeHandleGetFields
         (fixture : FieldHandleFixture)
@@ -1199,7 +1205,11 @@ public static class HasRvaData
         ManagedPointerSource.tryStableAddressBits ptr
         |> shouldEqual (Some (int64 peByteRange.RelativeVirtualAddress))
 
-        IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr byteTemplate
+        IlMachineState.readManagedByrefBytesAs
+            baseClassTypes
+            state
+            (ManagedPointerSource.requireAddressed ptr)
+            byteTemplate
         |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0x11uy)))
 
         let offsetPtr =
@@ -1209,7 +1219,12 @@ public static class HasRvaData
         |> shouldEqual (Some (int64 peByteRange.RelativeVirtualAddress + 4L))
 
         offsetPtr
-        |> fun ptr -> IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr byteTemplate
+        |> fun ptr ->
+            IlMachineState.readManagedByrefBytesAs
+                baseClassTypes
+                state
+                (ManagedPointerSource.requireAddressed ptr)
+                byteTemplate
         |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0x55uy)))
 
         let outOfBoundsPtr =
@@ -1218,7 +1233,11 @@ public static class HasRvaData
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                IlMachineState.readManagedByrefBytesAs baseClassTypes state outOfBoundsPtr byteTemplate
+                IlMachineState.readManagedByrefBytesAs
+                    baseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed outOfBoundsPtr)
+                    byteTemplate
                 |> ignore
             )
 

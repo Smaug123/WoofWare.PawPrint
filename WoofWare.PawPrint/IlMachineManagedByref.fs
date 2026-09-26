@@ -813,31 +813,25 @@ module IlMachineManagedByref =
     /// reaches that case.
     let internal tryAnchorRawRootFieldPrefixToLayout
         (state : IlMachineState)
-        (src : ManagedPointerSource)
-        : ManagedPointerSource voption
+        (src : AddressedByref)
+        : AddressedByref voption
         =
-        match src with
-        | ManagedPointerSource.Byref {
-                                         Root = root
-                                         Projections = (ByrefProjection.Field field :: _ as projs)
-                                     } when isRawByteRoot root ->
+        match src.Projections with
+        | ByrefProjection.Field field :: _ when isRawByteRoot src.Root ->
             match FieldId.tryDeclaringType field with
             | None -> ValueNone
             | Some declaringHandle ->
                 match AllConcreteTypes.lookup declaringHandle state.ConcreteTypes with
                 | Some declaringType ->
-                    ManagedPointerSource.Byref
-                        {
-                            Root = root
-                            Projections = ByrefProjection.ReinterpretAs declaringType :: projs
-                        }
+                    {
+                        Root = src.Root
+                        Projections = ByrefProjection.ReinterpretAs declaringType :: src.Projections
+                    }
                     |> ValueSome
                 | None ->
                     failwith
                         $"field %O{field} names declaring type %O{declaringHandle}, which is not in the concrete-type registry, so the field's offset through the raw-memory byref %O{src} cannot be read from its layout"
-        | ManagedPointerSource.Byref _
-        | ManagedPointerSource.Null
-        | ManagedPointerSource.NativeIntPlaceholder _ -> ValueNone
+        | _ -> ValueNone
 
     /// `tryAnchorRawRootFieldPrefixToLayout`, for a caller about to dereference `src`: the
     /// byte-view readers and writers then serve the access at the field's address as they serve
@@ -849,20 +843,12 @@ module IlMachineManagedByref =
     /// identity. That is the same address, since the cell has `D`'s layout, and it also tells
     /// apart two fields that explicit layout places at one offset, which naming a cell by its
     /// extent cannot do when the struct has no byte image.
-    let internal tryAnchorRawRootFieldPrefix
-        (state : IlMachineState)
-        (src : ManagedPointerSource)
-        : ManagedPointerSource voption
-        =
-        match tryAnchorRawRootFieldPrefixToLayout state src, src with
+    let internal tryAnchorRawRootFieldPrefix (state : IlMachineState) (src : AddressedByref) : AddressedByref voption =
+        match tryAnchorRawRootFieldPrefixToLayout state src, src.Projections with
         | ValueNone, _ -> ValueNone
-        | ValueSome anchored,
-          ManagedPointerSource.Byref {
-                                         Root = root
-                                         Projections = ByrefProjection.Field field :: _
-                                     } ->
+        | ValueSome anchored, ByrefProjection.Field field :: _ ->
             let cellAtRoot =
-                match root with
+                match src.Root with
                 | ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset) ->
                     IlMachineThreadState.getStackMemoryPool thread frame state
                     |> StackMemoryPool.tryReadCell block byteOffset
@@ -877,8 +863,19 @@ module IlMachineManagedByref =
             failwith $"interpreter bug: %O{src} was anchored as %O{anchored} without a leading `Field` step"
 
     /// `tryAnchorRawRootFieldPrefix`, with `src` itself when there is nothing to anchor.
-    let internal anchorRawRootFieldPrefix (state : IlMachineState) (src : ManagedPointerSource) : ManagedPointerSource =
+    let internal anchorRawRootFieldPrefix (state : IlMachineState) (src : AddressedByref) : AddressedByref =
         tryAnchorRawRootFieldPrefix state src |> ValueOption.defaultValue src
+
+    /// `anchorRawRootFieldPrefix` over a pointer that may not address storage, which is left as it is.
+    let private anchorRawRootFieldPrefixOfSource
+        (state : IlMachineState)
+        (src : ManagedPointerSource)
+        : ManagedPointerSource
+        =
+        match src with
+        | ManagedPointerSource.Byref addressed -> ManagedPointerSource.Byref (anchorRawRootFieldPrefix state addressed)
+        | ManagedPointerSource.Null
+        | ManagedPointerSource.NativeIntPlaceholder _ -> src
 
     /// `readRootValue` for a caller about to resolve `projs` against the value it returns.
     ///
@@ -887,22 +884,16 @@ module IlMachineManagedByref =
     /// the memory holds, and every entry point anchors its byref first precisely so that it does
     /// not.
     let private readRootValueFor (state : IlMachineState) (root : ByrefRoot) (projs : ByrefProjection list) : CliType =
-        match
-            tryAnchorRawRootFieldPrefix
-                state
-                (ManagedPointerSource.Byref
-                    {
-                        Root = root
-                        Projections = projs
-                    })
-        with
+        let src =
+            {
+                Root = root
+                Projections = projs
+            }
+
+        match tryAnchorRawRootFieldPrefix state src with
         | ValueSome anchored ->
             failwith
-                $"interpreter bug: the byref %O{ManagedPointerSource.Byref
-                                                    {
-                                                        Root = root
-                                                        Projections = projs
-                                                    }} reached a read of the value stored at its raw byte root without being anchored to its declaring type's layout as %O{anchored}"
+                $"interpreter bug: the byref %O{src} reached a read of the value stored at its raw byte root without being anchored to its declaring type's layout as %O{anchored}"
         | ValueNone -> readRootValue state root
 
     let private validateByteAddressableCell (context : string) (value : CliType) : unit =
@@ -1730,7 +1721,7 @@ module IlMachineManagedByref =
     /// Raise for a chain `peelByteView` classified as structural that nonetheless carries a
     /// `ByteOffset`: with no `ReinterpretAs` anywhere there is no type the raw bytes are being
     /// viewed as, and `ManagedPointerSource.appendProjection` refuses to build such a chain.
-    let private requireNoUnanchoredByteOffset (src : ManagedPointerSource) (projs : ByrefProjection list) : unit =
+    let private requireNoUnanchoredByteOffset (src : AddressedByref) (projs : ByrefProjection list) : unit =
         match
             projs
             |> List.tryPick (fun proj ->
@@ -1819,45 +1810,41 @@ module IlMachineManagedByref =
     let readManagedByrefBytesAs
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (src : ManagedPointerSource)
+        (src : AddressedByref)
         (targetTemplate : CliType)
         : CliType
         =
         let src = anchorRawRootFieldPrefix state src
 
         match src with
-        | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
-        | ManagedPointerSource.NativeIntPlaceholder bits ->
-            failwith
-                $"readManagedByrefBytesAs: cannot dereference fake non-null byref @ 0x%x{bits}; the placeholder must never be read"
-        | ManagedPointerSource.Byref {
-                                         Root = ByrefRoot.HeapValue addr
-                                         Projections = []
-                                     } -> readHeapValueBytesAs state addr 0 targetTemplate
-        | ManagedPointerSource.Byref {
-                                         Root = ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset)
-                                         Projections = []
-                                     } -> readStackMemoryBytesAs state thread frame block byteOffset targetTemplate
-        | ManagedPointerSource.Byref {
-                                         Root = ByrefRoot.NativeMemoryByte (block, byteOffset)
-                                         Projections = []
-                                     } -> readNativeMemoryBytesAs state block byteOffset targetTemplate
-        | ManagedPointerSource.Byref {
-                                         Root = ByrefRoot.ArrayElement (arr, index)
-                                         Projections = []
-                                     } -> readArrayBytesAs state arr index 0 targetTemplate
-        | ManagedPointerSource.Byref {
-                                         Root = ByrefRoot.PeByteRange peByteRange
-                                         Projections = []
-                                     } -> readPeByteRangeBytesAs state peByteRange 0 targetTemplate
-        | ManagedPointerSource.Byref {
-                                         Root = ByrefRoot.StringCharAt (str, charIndex)
-                                         Projections = []
-                                     } -> readStringBytesAs state str charIndex 0 targetTemplate
-        | ManagedPointerSource.Byref {
-                                         Root = outerRoot
-                                         Projections = outerProjs
-                                     } ->
+        | {
+              Root = ByrefRoot.HeapValue addr
+              Projections = []
+          } -> readHeapValueBytesAs state addr 0 targetTemplate
+        | {
+              Root = ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset)
+              Projections = []
+          } -> readStackMemoryBytesAs state thread frame block byteOffset targetTemplate
+        | {
+              Root = ByrefRoot.NativeMemoryByte (block, byteOffset)
+              Projections = []
+          } -> readNativeMemoryBytesAs state block byteOffset targetTemplate
+        | {
+              Root = ByrefRoot.ArrayElement (arr, index)
+              Projections = []
+          } -> readArrayBytesAs state arr index 0 targetTemplate
+        | {
+              Root = ByrefRoot.PeByteRange peByteRange
+              Projections = []
+          } -> readPeByteRangeBytesAs state peByteRange 0 targetTemplate
+        | {
+              Root = ByrefRoot.StringCharAt (str, charIndex)
+              Projections = []
+          } -> readStringBytesAs state str charIndex 0 targetTemplate
+        | {
+              Root = outerRoot
+              Projections = outerProjs
+          } ->
             // Collapse any trailing byte-view segment of the projection
             // chain into an accumulated byte offset. Once a `ReinterpretAs`
             // appears the underlying storage is being treated as raw bytes,
@@ -2060,33 +2047,30 @@ module IlMachineManagedByref =
     let readManagedByref
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (src : ManagedPointerSource)
+        (src : AddressedByref)
         : CliType
         =
         let src = anchorRawRootFieldPrefix state src
 
-        match src with
-        | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
-        | ManagedPointerSource.NativeIntPlaceholder bits ->
-            failwith
-                $"readManagedByref: cannot dereference fake non-null byref @ 0x%x{bits}; the placeholder must never be read"
-        | ManagedPointerSource.Byref {
-                                         Root = root
-                                         Projections = projs
-                                     } ->
-            match peelByteView (Some baseClassTypes) state projs with
-            | ValueSome view ->
-                // The pointer's own type view is the only shape a caller of this function has to
-                // go on; that is the type the chain's end is viewed as, whatever follows its
-                // `ReinterpretAs`.
-                let targetTemplate = view.ViewTemplate ()
+        let {
+                Root = root
+                Projections = projs
+            } =
+            src
 
-                match tryReadNamedCellThrough baseClassTypes state root projs targetTemplate with
-                | Some cell -> cell
-                | None -> readManagedByrefBytesAs baseClassTypes state src targetTemplate
-            | ValueNone ->
-                requireNoUnanchoredByteOffset src projs
-                readProjectedValue (readRootValueFor state root projs) projs
+        match peelByteView (Some baseClassTypes) state projs with
+        | ValueSome view ->
+            // The pointer's own type view is the only shape a caller of this function has to
+            // go on; that is the type the chain's end is viewed as, whatever follows its
+            // `ReinterpretAs`.
+            let targetTemplate = view.ViewTemplate ()
+
+            match tryReadNamedCellThrough baseClassTypes state root projs targetTemplate with
+            | Some cell -> cell
+            | None -> readManagedByrefBytesAs baseClassTypes state src targetTemplate
+        | ValueNone ->
+            requireNoUnanchoredByteOffset src projs
+            readProjectedValue (readRootValueFor state root projs) projs
 
     /// Read a `template`-shaped value from the byte address `src` denotes.
     ///
@@ -2104,20 +2088,16 @@ module IlMachineManagedByref =
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (template : CliType)
-        (src : ManagedPointerSource)
+        (src : AddressedByref)
         : CliType
         =
         // A raw root is anchored by `readManagedByrefBytesAs`: `tryReadNamedCellThrough` declines
         // raw roots without reading them.
-        match src with
-        | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
-        | ManagedPointerSource.NativeIntPlaceholder bits ->
-            failwith
-                $"readManagedByrefAs: cannot dereference fake non-null byref @ 0x%x{bits}; the placeholder must never be read"
-        | ManagedPointerSource.Byref {
-                                         Root = root
-                                         Projections = projs
-                                     } ->
+        let {
+                Root = root
+                Projections = projs
+            } =
+            src
 
         match tryReadNamedCellThrough baseClassTypes state root projs template with
         | Some cell -> cell
@@ -2215,7 +2195,7 @@ module IlMachineManagedByref =
     let private readByteViewField
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (src : ManagedPointerSource)
+        (src : AddressedByref)
         (root : ByrefRoot)
         (view : ByteView)
         (field : FieldId)
@@ -2273,43 +2253,36 @@ module IlMachineManagedByref =
             readManagedByrefBytesAs
                 baseClassTypes
                 state
-                (ManagedPointerSource.appendProjection (ByrefProjection.Field field) src)
+                (AddressedByref.appendProjection (ByrefProjection.Field field) src)
                 fieldTemplate
 
     let readManagedByrefField
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (src : ManagedPointerSource)
+        (src : AddressedByref)
         (field : FieldId)
         : CliType
         =
-        match src with
-        | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
-        | ManagedPointerSource.NativeIntPlaceholder bits ->
-            failwith
-                $"readManagedByrefField: cannot read field %O{field} through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
-        | ManagedPointerSource.Byref {
-                                         Root = root
-                                         Projections = projs
-                                     } ->
-            match
-                tryAnchorRawRootFieldPrefix
-                    state
-                    (ManagedPointerSource.appendProjection (ByrefProjection.Field field) src)
-            with
-            | ValueSome anchored ->
-                // `field` of a raw byte root, directly or after further `Field` steps, is an
-                // address like any other `Field` step off that root, and is read at it.
-                readManagedByref baseClassTypes state anchored
-            | ValueNone ->
+        let {
+                Root = root
+                Projections = projs
+            } =
+            src
 
-            match peelByteView (Some baseClassTypes) state projs with
-            | ValueSome view -> readByteViewField baseClassTypes state src root view field
-            | ValueNone ->
-                requireNoUnanchoredByteOffset src projs
+        match tryAnchorRawRootFieldPrefix state (AddressedByref.appendProjection (ByrefProjection.Field field) src) with
+        | ValueSome anchored ->
+            // `field` of a raw byte root, directly or after further `Field` steps, is an
+            // address like any other `Field` step off that root, and is read at it.
+            readManagedByref baseClassTypes state anchored
+        | ValueNone ->
 
-                readProjectedValue (readRootValueFor state root projs) projs
-                |> CliType.getFieldById field
+        match peelByteView (Some baseClassTypes) state projs with
+        | ValueSome view -> readByteViewField baseClassTypes state src root view field
+        | ValueNone ->
+            requireNoUnanchoredByteOffset src projs
+
+            readProjectedValue (readRootValueFor state root projs) projs
+            |> CliType.getFieldById field
 
     let private applyProjectionsForWriteIfChanged
         (rootValue : CliType)
@@ -2849,7 +2822,7 @@ module IlMachineManagedByref =
         (newValue : CliType)
         : IlMachineState
         =
-        let src = anchorRawRootFieldPrefix state src
+        let src = anchorRawRootFieldPrefixOfSource state src
 
         // Fast path: a bare `StackMemoryByte` byref whose destination range
         // matches the layout of an existing cell (or covers no existing
@@ -3676,7 +3649,7 @@ module IlMachineManagedByref =
         (newValue : CliType)
         : IlMachineState
         =
-        let src = anchorRawRootFieldPrefix state src
+        let src = anchorRawRootFieldPrefixOfSource state src
 
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
@@ -3957,7 +3930,7 @@ module IlMachineManagedByref =
                                          Projections = _
                                      } ->
             failwith "unreachable: NativeMemoryByte primitive stores are dispatched before exact-width typed store"
-        | ManagedPointerSource.Byref _ ->
+        | ManagedPointerSource.Byref addressed ->
             match splitTrailingByteView src with
             | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
                 // Byte-view-anchored array byref (set up by Conv_U/Conv_I on a
@@ -4016,7 +3989,7 @@ module IlMachineManagedByref =
             | ValueNone ->
                 let existing =
                     knownExisting
-                    |> Option.defaultWith (fun () -> readManagedByref baseClassTypes state src)
+                    |> Option.defaultWith (fun () -> readManagedByref baseClassTypes state addressed)
 
                 let existingSize = CliType.sizeOf existing
                 let newSize = CliType.sizeOf newValue
@@ -4088,7 +4061,7 @@ module IlMachineManagedByref =
         (newValue : CliType)
         : IlMachineState
         =
-        let src = anchorRawRootFieldPrefix state src
+        let src = anchorRawRootFieldPrefixOfSource state src
 
         match src with
         | ManagedPointerSource.NativeIntPlaceholder bits ->
@@ -4138,7 +4111,7 @@ module IlMachineManagedByref =
                         $"TODO: primitive indirect store of %O{newValue} through byte-view byref %O{src} cannot preserve new value's %s{rejection.Description}"
             | _ -> writeManagedByrefBytesOrTypedCell baseClassTypes state src newValue
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
-        | ManagedPointerSource.Byref _ ->
+        | ManagedPointerSource.Byref addressed ->
             let sourceRejection = byteAddressabilityRejection newValue
 
             match sourceRejection with
@@ -4225,7 +4198,7 @@ module IlMachineManagedByref =
                     // slot (`void*`, `delegate*<...>`), which has no byte image at all. The
                     // pointer case additionally requires a pointer-shaped payload; see
                     // `destinationNeedsWholeCellStore`.
-                    let existing = readManagedByref baseClassTypes state src
+                    let existing = readManagedByref baseClassTypes state addressed
 
                     match byteAddressabilityRejection existing with
                     | Some rejection when destinationNeedsWholeCellStore newValue rejection ->

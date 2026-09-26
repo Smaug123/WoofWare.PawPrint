@@ -1229,7 +1229,9 @@ module internal UnaryMetadataCallOps =
 
                 match ptr with
                 | EvalStackValue.ManagedPointer src ->
-                    let deref = IlMachineState.readManagedByref baseClassTypes state src
+                    let deref =
+                        IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed src)
+
                     IlMachineState.pushToEvalStack deref thread state
                 | other ->
                     failwith $"constrained.callvirt: expected ManagedPointer receiver on the eval stack, got %O{other}"
@@ -1303,7 +1305,12 @@ module internal UnaryMetadataCallOps =
                                 failwith
                                     $"constrained.callvirt (box case): expected ManagedPointer receiver on the eval stack, got %O{other}"
 
-                        let derefCli = IlMachineState.readManagedByref baseClassTypes state src
+                        let derefCli =
+                            IlMachineState.readManagedByref
+                                baseClassTypes
+                                state
+                                (ManagedPointerSource.requireAddressed src)
+
                         let derefEval = EvalStackValue.ofCliType derefCli
 
                         // Box `*ptr` exactly as `box T` would (ECMA III.4.1), Nullable rule

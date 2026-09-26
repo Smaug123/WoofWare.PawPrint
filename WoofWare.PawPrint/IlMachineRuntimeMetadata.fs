@@ -146,7 +146,9 @@ module IlMachineRuntimeMetadata =
         | EvalStackValue.NullObjectRef -> None
         | EvalStackValue.ObjectRef addr -> Some addr
         | EvalStackValue.ManagedPointer src ->
-            match IlMachineManagedByref.readManagedByref baseClassTypes state src with
+            match
+                IlMachineManagedByref.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed src)
+            with
             | CliType.ObjectRef addr -> addr
             | other -> failwith $"expected object reference, got {other}"
         | other -> failwith $"expected object reference, got {other}"

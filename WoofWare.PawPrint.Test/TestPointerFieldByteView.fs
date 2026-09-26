@@ -269,10 +269,10 @@ module TestPointerFieldByteView =
                 |> EvalStackValue.ofCliType
                 |> EvalStackValue.toCliTypeCoerced template
 
-            IlMachineState.readManagedByrefBytesAs bct state cursor template
+            IlMachineState.readManagedByrefBytesAs bct state (ManagedPointerSource.requireAddressed cursor) template
             |> shouldEqual expected
 
-            IlMachineState.readManagedByrefAs bct state template cursor
+            IlMachineState.readManagedByrefAs bct state template (ManagedPointerSource.requireAddressed cursor)
             |> shouldEqual expected
 
         Check.One (config, Prop.forAll (Arb.fromGen caseGen) property)
@@ -291,7 +291,13 @@ module TestPointerFieldByteView =
         let property (case : Case, residue : int) : unit =
             let state, cursor = case.CursorAt (case.TargetOffset + residue)
 
-            messageOf (fun () -> IlMachineState.readManagedByrefBytesAs bct state cursor nativeIntTemplate)
+            messageOf (fun () ->
+                IlMachineState.readManagedByrefBytesAs
+                    bct
+                    state
+                    (ManagedPointerSource.requireAddressed cursor)
+                    nativeIntTemplate
+            )
             |> shouldContainText "refusing byte view"
 
         Check.One (config, Prop.forAll (Arb.fromGen gen) property)
@@ -318,7 +324,13 @@ module TestPointerFieldByteView =
         let property (case : Case, template : CliType) : unit =
             let state, cursor = case.CursorAt case.TargetOffset
 
-            messageOf (fun () -> IlMachineState.readManagedByrefBytesAs bct state cursor template)
+            messageOf (fun () ->
+                IlMachineState.readManagedByrefBytesAs
+                    bct
+                    state
+                    (ManagedPointerSource.requireAddressed cursor)
+                    template
+            )
             |> shouldContainText "refusing byte view"
 
         Check.One (config, Prop.forAll (Arb.fromGen gen) property)
@@ -334,7 +346,7 @@ module TestPointerFieldByteView =
                 IlMachineState.readManagedByrefBytesAs
                     bct
                     state
-                    cursor
+                    (ManagedPointerSource.requireAddressed cursor)
                     (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L)))
             )
             |> shouldContainText "refusing byte view"
@@ -405,7 +417,7 @@ module TestPointerFieldByteView =
             let offset = fst (CliValueType.GetFieldLayoutById (pointerId 0) storage)
             let state, cursor = cursorAt case.Root case.Nested storage offset
 
-            IlMachineState.readManagedByrefBytesAs bct state cursor template
+            IlMachineState.readManagedByrefBytesAs bct state (ManagedPointerSource.requireAddressed cursor) template
             |> EvalStackValue.ofCliType
             |> shouldEqual (EvalStackValue.ofCliType handleCell)
 
@@ -413,7 +425,7 @@ module TestPointerFieldByteView =
                 IlMachineState.readManagedByrefBytesAs
                     bct
                     state
-                    cursor
+                    (ManagedPointerSource.requireAddressed cursor)
                     (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L)))
             )
             |> ignore<string>

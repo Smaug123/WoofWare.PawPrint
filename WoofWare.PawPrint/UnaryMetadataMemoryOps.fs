@@ -212,13 +212,18 @@ module internal UnaryMetadataMemoryOps =
             if isValueType then
                 let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes typeHandle
 
-                let loaded = IlMachineState.readManagedByrefAs baseClassTypes state zero ptr
+                let loaded =
+                    IlMachineState.readManagedByrefAs
+                        baseClassTypes
+                        state
+                        zero
+                        (ManagedPointerSource.requireAddressed ptr)
 
                 EvalStackValue.ofCliType loaded |> EvalStackValue.toCliTypeCoerced zero, state
             else
                 // III.4.13: reference types are just copied as pointers.
                 // We should have received a pointer, so let's just pass it back.
-                IlMachineState.readManagedByref baseClassTypes state ptr, state
+                IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed ptr), state
 
         let toPush, state =
             match addr with

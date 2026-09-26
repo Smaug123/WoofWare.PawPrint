@@ -1076,7 +1076,10 @@ module NativeSignature =
             // reference; use the object-aware reader rather than the byte-view variant
             // (which rejects object references as not byte-addressable).
             let signatureValue =
-                IlMachineState.readManagedByref ctx.BaseClassTypes state signaturePtr
+                IlMachineState.readManagedByref
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed signaturePtr)
 
             let signatureAddr =
                 match signatureValue with
@@ -1207,7 +1210,10 @@ module NativeSignature =
                 NativeCall.objectHandleOnStackTarget operation state "result" instruction.Arguments.[3]
 
             let signatureValue =
-                IlMachineState.readManagedByref ctx.BaseClassTypes state sigObjPtr
+                IlMachineState.readManagedByref
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed sigObjPtr)
 
             let signatureAddr =
                 match signatureValue with

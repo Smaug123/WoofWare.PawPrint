@@ -583,6 +583,33 @@ type AddressedByref =
         Projections : ByrefProjection list
     }
 
+    override this.ToString () =
+        let formatProj acc proj =
+            match proj with
+            | ByrefProjection.Field field -> $"<field %O{field} of {acc}>"
+            | ByrefProjection.ReinterpretAs ty -> $"<{acc} as %s{ty.Namespace}.%s{ty.Name}>"
+            | ByrefProjection.ByteOffset n -> $"<{acc} + %d{n} bytes>"
+
+        let rootStr =
+            match this.Root with
+            | ByrefRoot.LocalVariable (source, method, var) ->
+                $"<variable %i{var} in method frame %O{method} of thread %O{source}>"
+            | ByrefRoot.Argument (source, method, var) ->
+                $"<argument %i{var} in method frame %O{method} of thread %O{source}>"
+            | ByrefRoot.StackMemoryByte (source, method, block, byteOffset) ->
+                $"<byte %d{byteOffset} of %O{block} in method frame %O{method} of thread %O{source}>"
+            | ByrefRoot.NativeMemoryByte (block, byteOffset) -> $"<byte %d{byteOffset} of %O{block}>"
+            | ByrefRoot.HeapValue addr -> $"<heap value %O{addr}>"
+            | ByrefRoot.HeapObjectField (addr, field) -> $"<field %O{field} of heap object %O{addr}>"
+            | ByrefRoot.ArrayElement (arr, index) -> $"<element %i{index} of array %O{arr}>"
+            | ByrefRoot.PeByteRange peByteRange -> $"%O{peByteRange}"
+            | ByrefRoot.StaticField (declaringType, field, owner) ->
+                $"<static field %O{field.Get} of type %O{declaringType} in %O{owner}>"
+            | ByrefRoot.StringCharAt (str, charIndex) -> $"<char %i{charIndex} of string %O{str}>"
+            | ByrefRoot.ExposedClassObject declaringType -> $"<cached RuntimeType cell for type %O{declaringType}>"
+
+        this.Projections |> List.fold formatProj rootStr
+
 /// A managed pointer (byref / CLI `&` type).
 /// Points at a storage location, not at an object.
 [<NoComparison>]
@@ -604,38 +631,10 @@ type ManagedPointerSource =
     | NativeIntPlaceholder of bits : int64
 
     override this.ToString () =
-        let formatProj acc proj =
-            match proj with
-            | ByrefProjection.Field field -> $"<field %O{field} of {acc}>"
-            | ByrefProjection.ReinterpretAs ty -> $"<{acc} as %s{ty.Namespace}.%s{ty.Name}>"
-            | ByrefProjection.ByteOffset n -> $"<{acc} + %d{n} bytes>"
-
         match this with
         | ManagedPointerSource.Null -> "<null managed pointer>"
         | ManagedPointerSource.NativeIntPlaceholder bits -> $"<fake non-null byref @ 0x%x{bits}>"
-        | ManagedPointerSource.Byref {
-                                         Root = root
-                                         Projections = projs
-                                     } ->
-            let rootStr =
-                match root with
-                | ByrefRoot.LocalVariable (source, method, var) ->
-                    $"<variable %i{var} in method frame %O{method} of thread %O{source}>"
-                | ByrefRoot.Argument (source, method, var) ->
-                    $"<argument %i{var} in method frame %O{method} of thread %O{source}>"
-                | ByrefRoot.StackMemoryByte (source, method, block, byteOffset) ->
-                    $"<byte %d{byteOffset} of %O{block} in method frame %O{method} of thread %O{source}>"
-                | ByrefRoot.NativeMemoryByte (block, byteOffset) -> $"<byte %d{byteOffset} of %O{block}>"
-                | ByrefRoot.HeapValue addr -> $"<heap value %O{addr}>"
-                | ByrefRoot.HeapObjectField (addr, field) -> $"<field %O{field} of heap object %O{addr}>"
-                | ByrefRoot.ArrayElement (arr, index) -> $"<element %i{index} of array %O{arr}>"
-                | ByrefRoot.PeByteRange peByteRange -> $"%O{peByteRange}"
-                | ByrefRoot.StaticField (declaringType, field, owner) ->
-                    $"<static field %O{field.Get} of type %O{declaringType} in %O{owner}>"
-                | ByrefRoot.StringCharAt (str, charIndex) -> $"<char %i{charIndex} of string %O{str}>"
-                | ByrefRoot.ExposedClassObject declaringType -> $"<cached RuntimeType cell for type %O{declaringType}>"
-
-            projs |> List.fold formatProj rootStr
+        | ManagedPointerSource.Byref addressed -> addressed.ToString ()
 
 /// State-dependent information needed to canonicalise byte cursors.
 ///
@@ -741,6 +740,60 @@ type ByrefContainerBase =
         /// about.
         HeaderBytes : int64
     }
+
+/// Operations on a managed pointer known to address storage.
+[<RequireQualifiedAccess>]
+module AddressedByref =
+    let appendProjection (projection : ByrefProjection) (src : AddressedByref) : AddressedByref =
+        let projs = src.Projections
+        // ReinterpretAs is address-preserving: it changes only the type view, not the byte offset.
+        // So consecutive ReinterpretAs projections collapse to the most recent one; any trailing
+        // ByteOffset (an accumulated cursor under a prior reinterpret) is reset along with the
+        // reinterpret it qualified.
+        let newProjs =
+            match projection, List.rev projs with
+            | ByrefProjection.ReinterpretAs _,
+              ByrefProjection.ByteOffset n :: (ByrefProjection.ReinterpretAs _) :: revRest ->
+                // Replacing the type view leaves the byte cursor alone: the
+                // reinterpret is address-preserving, so the caller is still
+                // at the same byte. Preserve the `ByteOffset` under the new
+                // reinterpret.
+                List.rev revRest @ [ projection ; ByrefProjection.ByteOffset n ]
+            | ByrefProjection.ReinterpretAs _, (ByrefProjection.ReinterpretAs _) :: revRest ->
+                List.rev revRest @ [ projection ]
+            | ByrefProjection.ByteOffset n, ByrefProjection.ByteOffset m :: revRest ->
+                // Test the sum for zero rather than `n = -m`: negating `Int32.MinValue`
+                // overflows even when the sum is perfectly representable
+                // (`Int32.MinValue + 1`). The two conditions are equivalent — offsets cancel
+                // exactly when their sum is zero — so the sum is the total one.
+                //
+                // Summed in `int64` and then checked for representability, rather than left
+                // to this file's `open Checked`. Both spellings refuse, but a bare
+                // `OverflowException` names neither the byref nor the offsets, and it
+                // misdescribes the failure: this is a representational limit of `ByteOffset`
+                // — PawPrint cannot store a cursor wider than `int32` — not an overflow in
+                // the guest's arithmetic, which real .NET's 64-bit `add.ovf` would not raise
+                // here. A `failwith` is the honest refusal.
+                let total = int64<int> m + int64<int> n
+
+                if total = 0L then
+                    List.rev revRest
+                elif total < int64<int> Int32.MinValue || total > int64<int> Int32.MaxValue then
+                    failwith
+                        $"cannot append ByteOffset %d{n} to a byref already carrying ByteOffset %d{m}: the total %d{total} does not fit in the int32 PawPrint stores for a byte cursor, so a byref this far from its root is not modelled. Byref: %O{src}"
+                else
+                    List.rev revRest @ [ ByrefProjection.ByteOffset (int32<int64> total) ]
+            | ByrefProjection.ByteOffset 0, _ -> projs
+            | ByrefProjection.ByteOffset _, ByrefProjection.ReinterpretAs _ :: _ -> projs @ [ projection ]
+            | ByrefProjection.ByteOffset n, _ ->
+                failwith $"cannot append ByteOffset %d{n} to projection list without a trailing ReinterpretAs: %O{src}"
+            | _ -> projs @ [ projection ]
+
+
+        {
+            Root = src.Root
+            Projections = newProjs
+        }
 
 [<RequireQualifiedAccess>]
 module ManagedPointerSource =
@@ -1130,64 +1183,25 @@ module ManagedPointerSource =
         // a base claim with.
         | ManagedPointerSource.Byref _ -> None
 
+    /// The storage `src` addresses, for a caller that dereferences it but cannot raise the
+    /// `NullReferenceException` a null pointer calls for. Fails for a null pointer, and for a
+    /// bit-pattern placeholder, which must never be dereferenced.
+    let requireAddressed (src : ManagedPointerSource) : AddressedByref =
+        match src with
+        | ManagedPointerSource.Byref addressed -> addressed
+        | ManagedPointerSource.Null ->
+            failwith "TODO: throw NullReferenceException for a dereference of a null managed pointer"
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            failwith $"cannot dereference fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
+
     let appendProjection (projection : ByrefProjection) (src : ManagedPointerSource) : ManagedPointerSource =
         match src with
         | ManagedPointerSource.Null -> failwith "cannot project from null managed pointer"
         | ManagedPointerSource.NativeIntPlaceholder bits ->
             failwith $"cannot project from fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
-        | ManagedPointerSource.Byref {
-                                         Root = root
-                                         Projections = projs
-                                     } ->
-            // ReinterpretAs is address-preserving: it changes only the type view, not the byte offset.
-            // So consecutive ReinterpretAs projections collapse to the most recent one; any trailing
-            // ByteOffset (an accumulated cursor under a prior reinterpret) is reset along with the
-            // reinterpret it qualified.
-            let newProjs =
-                match projection, List.rev projs with
-                | ByrefProjection.ReinterpretAs _,
-                  ByrefProjection.ByteOffset n :: (ByrefProjection.ReinterpretAs _) :: revRest ->
-                    // Replacing the type view leaves the byte cursor alone: the
-                    // reinterpret is address-preserving, so the caller is still
-                    // at the same byte. Preserve the `ByteOffset` under the new
-                    // reinterpret.
-                    List.rev revRest @ [ projection ; ByrefProjection.ByteOffset n ]
-                | ByrefProjection.ReinterpretAs _, (ByrefProjection.ReinterpretAs _) :: revRest ->
-                    List.rev revRest @ [ projection ]
-                | ByrefProjection.ByteOffset n, ByrefProjection.ByteOffset m :: revRest ->
-                    // Test the sum for zero rather than `n = -m`: negating `Int32.MinValue`
-                    // overflows even when the sum is perfectly representable
-                    // (`Int32.MinValue + 1`). The two conditions are equivalent — offsets cancel
-                    // exactly when their sum is zero — so the sum is the total one.
-                    //
-                    // Summed in `int64` and then checked for representability, rather than left
-                    // to this file's `open Checked`. Both spellings refuse, but a bare
-                    // `OverflowException` names neither the byref nor the offsets, and it
-                    // misdescribes the failure: this is a representational limit of `ByteOffset`
-                    // — PawPrint cannot store a cursor wider than `int32` — not an overflow in
-                    // the guest's arithmetic, which real .NET's 64-bit `add.ovf` would not raise
-                    // here. A `failwith` is the honest refusal.
-                    let total = int64<int> m + int64<int> n
-
-                    if total = 0L then
-                        List.rev revRest
-                    elif total < int64<int> Int32.MinValue || total > int64<int> Int32.MaxValue then
-                        failwith
-                            $"cannot append ByteOffset %d{n} to a byref already carrying ByteOffset %d{m}: the total %d{total} does not fit in the int32 PawPrint stores for a byte cursor, so a byref this far from its root is not modelled. Byref: %O{src}"
-                    else
-                        List.rev revRest @ [ ByrefProjection.ByteOffset (int32<int64> total) ]
-                | ByrefProjection.ByteOffset 0, _ -> projs
-                | ByrefProjection.ByteOffset _, ByrefProjection.ReinterpretAs _ :: _ -> projs @ [ projection ]
-                | ByrefProjection.ByteOffset n, _ ->
-                    failwith
-                        $"cannot append ByteOffset %d{n} to projection list without a trailing ReinterpretAs: %O{src}"
-                | _ -> projs @ [ projection ]
-
-            ManagedPointerSource.Byref
-                {
-                    Root = root
-                    Projections = newProjs
-                }
+        | ManagedPointerSource.Byref addressed ->
+            AddressedByref.appendProjection projection addressed
+            |> ManagedPointerSource.Byref
 
     /// Apply an address-preserving change of type view to a managed pointer.
     /// `Unsafe.As<TFrom, TTo>` never dereferences its argument, so unlike the

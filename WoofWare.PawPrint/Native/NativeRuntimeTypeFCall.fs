@@ -1026,7 +1026,10 @@ module NativeRuntimeTypeFCall =
                 NativeCall.managedPointerOfPointerArgument operation "method" instruction.Arguments.[0]
 
             let currentValue =
-                IlMachineState.readManagedByref ctx.BaseClassTypes state methodPtr
+                IlMachineState.readManagedByref
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed methodPtr)
 
             // RuntimeMethodHandleInternal wraps a single IntPtr-shaped m_handle. The byref came
             // from a managed local of struct type, so primitive-like rewrapping during the

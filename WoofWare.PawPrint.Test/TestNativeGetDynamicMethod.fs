@@ -1099,7 +1099,10 @@ public static class Entry
 
         let stubAddress =
             match
-                IlMachineState.readManagedByref prepared.BaseClassTypes state resultSlot
+                IlMachineState.readManagedByref
+                    prepared.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed resultSlot)
                 |> CliType.unwrapPrimitiveLikeDeep
             with
             | CliType.ObjectRef (Some address) -> address

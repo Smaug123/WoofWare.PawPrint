@@ -570,7 +570,13 @@ module internal IntrinsicHelpers =
         : byte
         =
         let readPrimitiveByteView () : byte =
-            match IlMachineState.readManagedByrefBytesAs baseClassTypes state src byteTemplate with
+            match
+                IlMachineState.readManagedByrefBytesAs
+                    baseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed src)
+                    byteTemplate
+            with
             | CliType.Numeric (CliNumericType.UInt8 b) -> UInt8Source.value $"%s{operation}: byte-view read" b
             | other -> failwith $"%s{operation}: byte-view read returned non-byte value %O{other}"
 
@@ -599,7 +605,11 @@ module internal IntrinsicHelpers =
                                 Projections = prefixProjs
                             }
 
-                    let value = IlMachineState.readManagedByref baseClassTypes state basePtr
+                    let value =
+                        IlMachineState.readManagedByref
+                            baseClassTypes
+                            state
+                            (ManagedPointerSource.requireAddressed basePtr)
 
                     match value with
                     | CliType.ValueType _ -> byteAtOffset operation src byteOffset value
@@ -609,11 +619,11 @@ module internal IntrinsicHelpers =
                     IlMachineState.readManagedByref
                         baseClassTypes
                         state
-                        (ManagedPointerSource.Byref
-                            {
-                                Root = root
-                                Projections = projs
-                            })
+                        ({
+                            Root = root
+                            Projections = projs
+                        }
+                        : AddressedByref)
 
                 byteAtOffset operation src 0 value
 
@@ -813,7 +823,9 @@ module internal IntrinsicHelpers =
         let declaringTypeHandle = intrinsicDeclaringTypeHandle state methodToCall
 
         let span =
-            match IlMachineState.readManagedByref baseClassTypes state thisPtr with
+            match
+                IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed thisPtr)
+            with
             | CliType.ValueType vt when vt.Declared = declaringTypeHandle -> vt
             | CliType.ValueType vt ->
                 failwith
@@ -904,7 +916,7 @@ module internal IntrinsicHelpers =
         =
         match receiver with
         | EvalStackValue.ManagedPointer src ->
-            match IlMachineState.readManagedByref baseClassTypes state src with
+            match IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed src) with
             | CliType.ValueType vt -> vt
             | other -> failwith $"%s{operation}: receiver byref read produced non-value-type %O{other}"
         | EvalStackValue.UserDefinedValueType vt -> vt
@@ -980,7 +992,11 @@ module internal IntrinsicHelpers =
 
                 let value =
                     match ptr with
-                    | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref baseClassTypes state src
+                    | EvalStackValue.ManagedPointer src ->
+                        IlMachineState.readManagedByref
+                            baseClassTypes
+                            state
+                            (ManagedPointerSource.requireAddressed src)
                     | other -> failwith $"%s{operation}: element pointer was not a managed pointer: %O{other}"
 
                 charOfCliType operation value :: chars, state
@@ -1029,7 +1045,11 @@ module internal IntrinsicHelpers =
 
                     let value =
                         match ptr with
-                        | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref baseClassTypes state src
+                        | EvalStackValue.ManagedPointer src ->
+                            IlMachineState.readManagedByref
+                                baseClassTypes
+                                state
+                                (ManagedPointerSource.requireAddressed src)
                         | other -> failwith $"%s{operation}: element pointer was not a managed pointer: %O{other}"
 
                     charOfCliType operation value :: chars, state

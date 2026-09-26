@@ -264,7 +264,9 @@ module TestSameWidthStoreIntoNamedCell =
         let property (case : Case) : bool =
             let state, _, src, _ = rooted case
             let state = IlMachineState.writeIndirectPrimitiveStore bct state src case.Payload
-            let read = IlMachineState.readManagedByref bct state src
+
+            let read =
+                IlMachineState.readManagedByref bct state (ManagedPointerSource.requireAddressed src)
 
             sameStorage read (CliType.OfBytesLike case.Kind.Zero (CliType.ToBytes case.Payload))
 

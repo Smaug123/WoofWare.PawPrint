@@ -247,7 +247,7 @@ public static class Entry
         : uint32
         =
         match
-            IlMachineState.readManagedByref baseClassTypes state ptr
+            IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed ptr)
             |> CliType.unwrapPrimitiveLikeDeep
         with
         | CliType.Numeric (CliNumericType.Int32 value) -> uint32 value
@@ -268,7 +268,7 @@ public static class Entry
             IlMachineState.readManagedByrefBytesAs
                 baseClassTypes
                 state
-                ptr
+                (ManagedPointerSource.requireAddressed ptr)
                 (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
         with
         | CliType.Numeric (CliNumericType.UInt8 value) -> UInt8Source.value "manifest resource byte" value
@@ -294,7 +294,7 @@ public static class Entry
                 IlMachineState.readManagedByrefBytesAs
                     baseClassTypes
                     state
-                    ptr
+                    (ManagedPointerSource.requireAddressed ptr)
                     (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
                 |> ignore
             )
@@ -805,7 +805,11 @@ public static class Entry
 
         let byteTemplate = CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))
 
-        IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr byteTemplate
+        IlMachineState.readManagedByrefBytesAs
+            baseClassTypes
+            state
+            (ManagedPointerSource.requireAddressed ptr)
+            byteTemplate
         |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim resourceBytes.[0])))
 
         let offsetPtr =
@@ -814,7 +818,11 @@ public static class Entry
         ManagedPointerSource.tryStableAddressBits offsetPtr
         |> shouldEqual (Some (int64 peByteRange.RelativeVirtualAddress + 3L))
 
-        IlMachineState.readManagedByrefBytesAs baseClassTypes state offsetPtr byteTemplate
+        IlMachineState.readManagedByrefBytesAs
+            baseClassTypes
+            state
+            (ManagedPointerSource.requireAddressed offsetPtr)
+            byteTemplate
         |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim resourceBytes.[3])))
 
         let emptyPeByteRange =

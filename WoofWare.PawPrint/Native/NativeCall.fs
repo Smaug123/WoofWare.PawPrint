@@ -276,7 +276,13 @@ module NativeCall =
         let ptr =
             ManagedPointerByteView.addByteOffset state charConcreteType (charIndex * 2) ptr
 
-        match IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr (CliType.ofChar (char 0)) with
+        match
+            IlMachineState.readManagedByrefBytesAs
+                baseClassTypes
+                state
+                (ManagedPointerSource.requireAddressed ptr)
+                (CliType.ofChar (char 0))
+        with
         | CliType.Char (high, low) -> char (int high * 256 + int low)
         | other -> failwith $"%s{operation}: UTF-16 char read returned non-char value %O{other}"
 
@@ -382,7 +388,7 @@ module NativeCall =
             IlMachineState.readManagedByrefBytesAs
                 baseClassTypes
                 state
-                ptr
+                (ManagedPointerSource.requireAddressed ptr)
                 (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
         with
         | CliType.Numeric (CliNumericType.UInt8 b) -> b
@@ -801,7 +807,7 @@ module NativeCall =
                 CliValueType.DereferenceFieldById ptrField vt
                 |> managedPointerOfPointerArgument operation "QCallModule._ptr"
 
-            match IlMachineState.readManagedByref baseClassTypes state ptr with
+            match IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed ptr) with
             | CliType.ObjectRef (Some addr) -> addr
             | CliType.ObjectRef None -> failwith $"%s{operation}: QCallModule._ptr pointed at a null RuntimeModule"
             | other -> failwith $"%s{operation}: expected an object reference behind QCallModule._ptr, got %O{other}"

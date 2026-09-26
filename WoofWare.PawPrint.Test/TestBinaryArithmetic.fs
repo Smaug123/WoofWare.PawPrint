@@ -1371,7 +1371,11 @@ module TestBinaryArithmetic =
                 (CliType.Numeric (CliNumericType.Int32 0x11223344))
 
         let roundTripped =
-            IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr (CliType.Numeric (CliNumericType.Int32 0))
+            IlMachineState.readManagedByrefBytesAs
+                baseClassTypes
+                state
+                (ManagedPointerSource.requireAddressed ptr)
+                (CliType.Numeric (CliNumericType.Int32 0))
 
         roundTripped |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0x11223344))
 
@@ -1399,7 +1403,11 @@ module TestBinaryArithmetic =
         let state = IlMachineState.setNativeMemoryPool pool state
 
         let readBack =
-            IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr (CliType.Numeric (CliNumericType.Int32 0))
+            IlMachineState.readManagedByrefBytesAs
+                baseClassTypes
+                state
+                (ManagedPointerSource.requireAddressed ptr)
+                (CliType.Numeric (CliNumericType.Int32 0))
 
         // Little-endian assembly of the four bytes above gives 0x11223344.
         readBack |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0x11223344))
@@ -2337,7 +2345,11 @@ module TestBinaryArithmetic =
             | EvalStackValue.ManagedPointer cursor -> cursor
             | other -> failwith $"expected a managed pointer, got %O{other}"
 
-        IlMachineState.readManagedByrefBytesAs baseClassTypes state cursor (CliType.Numeric (CliNumericType.Int32 0))
+        IlMachineState.readManagedByrefBytesAs
+            baseClassTypes
+            state
+            (ManagedPointerSource.requireAddressed cursor)
+            (CliType.Numeric (CliNumericType.Int32 0))
         |> shouldEqual (CliType.Numeric (CliNumericType.Int32 222))
 
         let state =
@@ -2351,7 +2363,7 @@ module TestBinaryArithmetic =
         // struct's storage, and that is not something a guest can observe. What it can observe
         // is that `B` changed and `A` did not.
         let readField (name : string) : CliType =
-            IlMachineState.readManagedByref baseClassTypes state ptr
+            IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed ptr)
             |> CliType.getFieldById (FieldId.named name)
 
         readField "B" |> shouldEqual (CliType.Numeric (CliNumericType.Int32 333))

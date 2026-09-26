@@ -146,7 +146,11 @@ module TestByteViewCrossesContainer =
         // 5 is element `index + 1`'s `X`. An implementation that dropped the root's own
         // position in the array would read element 1 for both cases and see 5 only when
         // `index` is 0, which is why both are run.
-        IlMachineManagedByref.readManagedByrefBytesAs baseClassTypes state ptr int32Template
+        IlMachineManagedByref.readManagedByrefBytesAs
+            baseClassTypes
+            state
+            (ManagedPointerSource.requireAddressed ptr)
+            int32Template
         |> shouldEqual (CliType.Numeric (CliNumericType.Int32 5))
 
     [<TestCase 0>]
@@ -177,7 +181,13 @@ module TestByteViewCrossesContainer =
         // 24-byte array: one past the end. Nothing in PawPrint's heap says what is stored
         // there, and a real runtime would read whatever the allocator put next. The two cases
         // above are the controls that make this about the boundary rather than about the shape.
-        messageOf (fun () -> IlMachineManagedByref.readManagedByrefBytesAs baseClassTypes state ptr int32Template)
+        messageOf (fun () ->
+            IlMachineManagedByref.readManagedByrefBytesAs
+                baseClassTypes
+                state
+                (ManagedPointerSource.requireAddressed ptr)
+                int32Template
+        )
         |> shouldContainText "past array bounds"
 
     [<Test>]
@@ -257,7 +267,13 @@ module TestByteViewCrossesContainer =
     let private crossesIntoReference (byteOffset : int) : string =
         let state, ptr = mixedObjectByref byteOffset
 
-        messageOf (fun () -> IlMachineManagedByref.readManagedByrefBytesAs baseClassTypes state ptr int32Template)
+        messageOf (fun () ->
+            IlMachineManagedByref.readManagedByrefBytesAs
+                baseClassTypes
+                state
+                (ManagedPointerSource.requireAddressed ptr)
+                int32Template
+        )
 
     [<Test>]
     let ``an access crossing into a reference cell is refused, not rendered as bytes`` () : unit =

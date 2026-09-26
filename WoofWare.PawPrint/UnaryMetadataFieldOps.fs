@@ -505,9 +505,17 @@ module internal UnaryMetadataFieldOps =
                 let currentValue =
                     match relationship with
                     | FieldThroughByref.Projected ->
-                        IlMachineState.readManagedByrefField baseClassTypes state src fieldId
+                        IlMachineState.readManagedByrefField
+                            baseClassTypes
+                            state
+                            (ManagedPointerSource.requireAddressed src)
+                            fieldId
                     | FieldThroughByref.IsContainer fieldZero ->
-                        IlMachineState.readManagedByrefAs baseClassTypes state fieldZero src
+                        IlMachineState.readManagedByrefAs
+                            baseClassTypes
+                            state
+                            fieldZero
+                            (ManagedPointerSource.requireAddressed src)
 
                 IlMachineState.pushToEvalStack currentValue thread state
             | EvalStackValue.UserDefinedValueType vt ->

@@ -536,7 +536,7 @@ module NativeRuntimeAssembly =
                             IlMachineState.readManagedByrefBytesAs
                                 ctx.BaseClassTypes
                                 state
-                                entryPtr
+                                (ManagedPointerSource.requireAddressed entryPtr)
                                 (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
 
                         let stringPtr =
@@ -1216,7 +1216,10 @@ module NativeRuntimeAssembly =
 
             let mark =
                 match
-                    IlMachineState.readManagedByref ctx.BaseClassTypes state markPtr
+                    IlMachineState.readManagedByref
+                        ctx.BaseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed markPtr)
                     |> CliType.unwrapPrimitiveLikeDeep
                 with
                 | CliType.Numeric (CliNumericType.Int32 value) -> StackCrawlMark.ofInt32 operation value

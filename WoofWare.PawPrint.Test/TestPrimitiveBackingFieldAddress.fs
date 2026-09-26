@@ -132,7 +132,8 @@ module TestPrimitiveBackingFieldAddress =
                     if pointer <> src then
                         failwithf "%s: expected the element's own address %O, got %O" name src pointer
 
-                    let read = IlMachineState.readManagedByref bct state pointer
+                    let read =
+                        IlMachineState.readManagedByref bct state (ManagedPointerSource.requireAddressed pointer)
 
                     if not (cliTypesBitEqual read stored) then
                         failwithf "%s: stored %O but read %O through the field's address" name stored read
@@ -174,7 +175,8 @@ module TestPrimitiveBackingFieldAddress =
                     if pointer <> expected then
                         failwithf "%s: expected the projection %O, got %O" name expected pointer
 
-                    let read = IlMachineState.readManagedByref bct state pointer
+                    let read =
+                        IlMachineState.readManagedByref bct state (ManagedPointerSource.requireAddressed pointer)
 
                     if not (cliTypesBitEqual read stored) then
                         failwithf "%s: boxed %O but read %O through the field's address" name stored read

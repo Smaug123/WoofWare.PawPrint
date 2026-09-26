@@ -187,7 +187,11 @@ module TestPointerArrayCellByteView =
                 |> EvalStackValue.ofCliType
                 |> EvalStackValue.toCliTypeCoerced template
 
-            IlMachineManagedByref.readManagedByrefBytesAs baseClassTypes state cursor template
+            IlMachineManagedByref.readManagedByrefBytesAs
+                baseClassTypes
+                state
+                (ManagedPointerSource.requireAddressed cursor)
+                template
             |> shouldEqual expected
 
         Check.One (config, Prop.forAll (Arb.fromGen caseGen) property)
@@ -210,7 +214,11 @@ module TestPointerArrayCellByteView =
                 byteCursor state arr case.Root ((case.Target - case.Root) * pointerStride + residue)
 
             messageOf (fun () ->
-                IlMachineManagedByref.readManagedByrefBytesAs baseClassTypes state cursor nativeIntTemplate
+                IlMachineManagedByref.readManagedByrefBytesAs
+                    baseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed cursor)
+                    nativeIntTemplate
             )
             |> shouldContainText "refusing byte view over runtime pointer"
 
@@ -241,7 +249,13 @@ module TestPointerArrayCellByteView =
             let cursor =
                 byteCursor state arr case.Root ((case.Target - case.Root) * pointerStride)
 
-            messageOf (fun () -> IlMachineManagedByref.readManagedByrefBytesAs baseClassTypes state cursor template)
+            messageOf (fun () ->
+                IlMachineManagedByref.readManagedByrefBytesAs
+                    baseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed cursor)
+                    template
+            )
             |> shouldContainText "refusing byte view over runtime pointer"
 
         Check.One (config, Prop.forAll (Arb.fromGen gen) property)
@@ -260,7 +274,7 @@ module TestPointerArrayCellByteView =
                 IlMachineManagedByref.readManagedByrefBytesAs
                     baseClassTypes
                     state
-                    cursor
+                    (ManagedPointerSource.requireAddressed cursor)
                     (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L)))
             )
             |> shouldContainText "refusing byte view over runtime pointer"
