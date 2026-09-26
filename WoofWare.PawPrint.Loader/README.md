@@ -25,7 +25,11 @@ What lives here:
 * `LoadedTypeInfo` — whether a type is a value type, an enum or byref-like, and how a signature
   encodes it, decided by walking its base chain across the loaded assemblies.
 * `SignatureComparison` — whether two method signatures from different assemblies denote the same
-  types, which is how a `MemberRef` is matched to the `MethodDef` it names.
+  types.
+* `MethodReferenceResolution` — which method a `MemberRef` names, as CoreCLR binds it: the
+  `MethodDef` of a generic definition, a method the runtime supplies on an array type, or nothing
+  (a `MissingMethodException`). It searches where CoreCLR does, including inherited virtual methods
+  and a class's ancestors, and is checked against the real runtime's own answer.
 * `TypeConcretization` — instantiating a generic type definition over the whole set of loaded
   assemblies, to a handle that identifies one concrete type.
 * `VtableSlot`, `MethodTableLayout` — a type definition's method table as CoreCLR's
