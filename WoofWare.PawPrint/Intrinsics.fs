@@ -206,7 +206,11 @@ module Intrinsics =
                         (EvalStackValue.ofCliType comparandCli)
                     |> StorageLocation.resolveCeq site.BaseClassTypes state
                 then
-                    IlMachineState.writeManagedByrefWithBase site.BaseClassTypes state byrefSrc valueCli
+                    IlMachineState.writeManagedByrefWithBase
+                        site.BaseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed byrefSrc)
+                        valueCli
                 else
                     state
 
@@ -235,7 +239,11 @@ module Intrinsics =
             // The intrinsic bypasses normal method-frame construction, so coerce the
             // eval-stack value to the signedness/width of the overload before writing.
             let state =
-                IlMachineState.writeManagedByrefWithBase site.BaseClassTypes state byrefSrc valueCli
+                IlMachineState.writeManagedByrefWithBase
+                    site.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed byrefSrc)
+                    valueCli
 
             state
             |> IlMachineState.pushToEvalStack currentValue site.Thread
@@ -283,7 +291,7 @@ module Intrinsics =
                 IlMachineState.writeManagedByrefWithBase
                     site.BaseClassTypes
                     state
-                    byrefSrc
+                    (ManagedPointerSource.requireAddressed byrefSrc)
                     (EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.Int32 (Int32Source.Verbatim updated)))
 
             let result = if returnsOriginalValue then current else updated
@@ -344,7 +352,7 @@ module Intrinsics =
                 IlMachineState.writeManagedByrefWithBase
                     site.BaseClassTypes
                     state
-                    byrefSrc
+                    (ManagedPointerSource.requireAddressed byrefSrc)
                     (EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.Int64 updated))
 
             let result = if returnsOriginalValue then current else updated
@@ -1087,7 +1095,7 @@ module Intrinsics =
                         IlMachineState.writeManagedByrefWithBase
                             baseClassTypes
                             state
-                            byrefSrc
+                            (ManagedPointerSource.requireAddressed byrefSrc)
                             (EvalStackValue.toCliTypeCoerced
                                 currentValue
                                 (EvalStackValue.Int32 (Int32Source.Verbatim updated)))
@@ -1135,7 +1143,7 @@ module Intrinsics =
                         IlMachineState.writeManagedByrefWithBase
                             baseClassTypes
                             state
-                            byrefSrc
+                            (ManagedPointerSource.requireAddressed byrefSrc)
                             (EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.Int64 updated))
 
                     state
@@ -1224,7 +1232,11 @@ module Intrinsics =
                             let newValue =
                                 EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.NativeInt valueSrc)
 
-                            IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc newValue
+                            IlMachineState.writeManagedByrefWithBase
+                                baseClassTypes
+                                state
+                                (ManagedPointerSource.requireAddressed byrefSrc)
+                                newValue
                         else
                             state
 
@@ -1282,7 +1294,11 @@ module Intrinsics =
 
                     let state =
                         if currentTarget = comparandTarget then
-                            IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc valueCli
+                            IlMachineState.writeManagedByrefWithBase
+                                baseClassTypes
+                                state
+                                (ManagedPointerSource.requireAddressed byrefSrc)
+                                valueCli
                         else
                             state
 
@@ -1392,7 +1408,11 @@ module Intrinsics =
                         EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.NativeInt valueSrc)
 
                     let state =
-                        IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc newValue
+                        IlMachineState.writeManagedByrefWithBase
+                            baseClassTypes
+                            state
+                            (ManagedPointerSource.requireAddressed byrefSrc)
+                            newValue
 
                     state
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt currentSrc) currentThread
@@ -1429,7 +1449,11 @@ module Intrinsics =
                     let valueCli = EvalStackValue.toCliTypeCoerced currentValue value
 
                     let state =
-                        IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc valueCli
+                        IlMachineState.writeManagedByrefWithBase
+                            baseClassTypes
+                            state
+                            (ManagedPointerSource.requireAddressed byrefSrc)
+                            valueCli
 
                     state
                     |> IlMachineState.pushToEvalStack currentValue currentThread
@@ -2177,7 +2201,11 @@ module Intrinsics =
                         failwith
                             $"Unsafe.WriteUnaligned: coerced value has size %d{valueSize}, expected %d{tSize} for %O{valueAsCli}"
 
-                    IlMachineState.writeManagedByrefBytesOrTypedCell baseClassTypes state src valueAsCli
+                    IlMachineState.writeManagedByrefBytesOrTypedCell
+                        baseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed src)
+                        valueAsCli
                     |> advanceCaller
                     |> IntrinsicResult.Completed
                 | _ -> failwith $"TODO: Unsafe.WriteUnaligned: expected ManagedPointer, got %O{ptr}"
@@ -2207,7 +2235,11 @@ module Intrinsics =
                         $"Unsafe.WriteUnaligned(void*): coerced value has size %d{valueSize}, expected %d{tSize} for %O{valueAsCli}"
 
                 let state =
-                    IlMachineState.writeManagedByrefBytesOrTypedCell baseClassTypes state src valueAsCli
+                    IlMachineState.writeManagedByrefBytesOrTypedCell
+                        baseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed src)
+                        valueAsCli
 
                 let state = state |> advanceCaller
                 IntrinsicResult.Completed state
@@ -3424,7 +3456,11 @@ module Intrinsics =
                         | other ->
                             failwith $"Span`1.Clear: offsetManagedPointerByElements returned non-byref %O{other}"
 
-                    IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc zero
+                    IlMachineState.writeManagedByrefWithBase
+                        baseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed byrefSrc)
+                        zero
                 )
 
             state |> advanceCaller |> IntrinsicResult.Completed

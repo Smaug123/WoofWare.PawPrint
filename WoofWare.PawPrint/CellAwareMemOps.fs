@@ -80,7 +80,7 @@ module internal CellAwareMemOps =
         IlMachineState.writeManagedByrefBytesOrTypedCell
             baseClassTypes
             state
-            ptr
+            (ManagedPointerSource.requireAddressed ptr)
             (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim value)))
 
     let private shouldCopyBackwards
@@ -420,7 +420,11 @@ module internal CellAwareMemOps =
                             $"tryWholeCellMoveAt: byte-view stripping returned a non-Byref pointer %O{other} (this is an interpreter bug)"
 
                 let newState =
-                    IlMachineState.writeManagedByrefWithBase baseClassTypes state destByref srcContents
+                    IlMachineState.writeManagedByrefWithBase
+                        baseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed destByref)
+                        srcContents
 
                 Some (newState, width)
         | _ -> None
@@ -516,7 +520,11 @@ module internal CellAwareMemOps =
                         // so the destination cell's CLI shape — and every cell named within it — is
                         // exactly what it was; there is no shape to check compatibility of, which is
                         // why this needs no analogue of `cellsHaveCompatibleShape`.
-                        IlMachineState.writeManagedByrefWithBase baseClassTypes state destPlain updated
+                        IlMachineState.writeManagedByrefWithBase
+                            baseClassTypes
+                            state
+                            (ManagedPointerSource.requireAddressed destPlain)
+                            updated
 
                 Some (state, width)
             | _ -> None
@@ -583,7 +591,11 @@ module internal CellAwareMemOps =
                 None
             else
                 let newState =
-                    IlMachineState.writeManagedByrefWithBase baseClassTypes state destPlain (CliType.ZeroLike cell)
+                    IlMachineState.writeManagedByrefWithBase
+                        baseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed destPlain)
+                        (CliType.ZeroLike cell)
 
                 Some (newState, cellSize)
         | Some _

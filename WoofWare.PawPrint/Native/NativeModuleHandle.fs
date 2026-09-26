@@ -242,7 +242,7 @@ module NativeModuleHandle =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    target
+                    (ManagedPointerSource.requireAddressed target)
                     (CliType.Numeric (CliNumericType.Int32 value))
 
             let state =
@@ -399,7 +399,7 @@ module NativeModuleHandle =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    result
+                    (ManagedPointerSource.requireAddressed result)
                     (CliType.ObjectRef (Some stubAddress))
 
             NativeHandlerResult.completed state |> Some

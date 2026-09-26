@@ -47,7 +47,11 @@ module NativeClrConfig =
             let int32Zero = CliType.Numeric (CliNumericType.Int32 0)
 
             let state =
-                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state existOutPtr int32Zero
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed existOutPtr)
+                    int32Zero
 
             state
             |> IlMachineState.pushToEvalStack int32Zero ctx.Thread

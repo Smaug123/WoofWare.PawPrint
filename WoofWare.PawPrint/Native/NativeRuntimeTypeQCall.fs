@@ -54,7 +54,7 @@ module NativeRuntimeTypeQCall =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    retString
+                    (ManagedPointerSource.requireAddressed retString)
                     (CliType.ObjectRef (Some nameAddr))
 
             NativeHandlerResult.completed state |> Some
@@ -319,7 +319,7 @@ module NativeRuntimeTypeQCall =
                     IlMachineState.writeManagedByrefWithBase
                         ctx.BaseClassTypes
                         state
-                        retType
+                        (ManagedPointerSource.requireAddressed retType)
                         (CliType.ObjectRef (Some byrefAddr))
 
                 NativeHandlerResult.completed state |> Some
@@ -411,7 +411,7 @@ module NativeRuntimeTypeQCall =
                     IlMachineState.writeManagedByrefWithBase
                         ctx.BaseClassTypes
                         state
-                        retType
+                        (ManagedPointerSource.requireAddressed retType)
                         (CliType.ObjectRef (Some arrayAddr))
 
                 NativeHandlerResult.completed state |> Some
@@ -497,7 +497,7 @@ module NativeRuntimeTypeQCall =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    retType
+                    (ManagedPointerSource.requireAddressed retType)
                     (CliType.ObjectRef (Some runtimeTypeAddr))
 
             NativeHandlerResult.completed state |> Some
@@ -683,7 +683,7 @@ module NativeRuntimeTypeQCall =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    retType
+                    (ManagedPointerSource.requireAddressed retType)
                     (CliType.ObjectRef (Some runtimeTypeAddr))
 
             NativeHandlerResult.completed state |> Some
@@ -783,7 +783,7 @@ module NativeRuntimeTypeQCall =
                     IlMachineState.writeManagedByrefWithBase
                         ctx.BaseClassTypes
                         state
-                        outHandle
+                        (ManagedPointerSource.requireAddressed outHandle)
                         (CliType.ObjectRef (Some addr))
 
                 NativeHandlerResult.completed state |> Some
@@ -1310,7 +1310,7 @@ module NativeRuntimeTypeQCall =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    retType
+                    (ManagedPointerSource.requireAddressed retType)
                     (CliType.ObjectRef (Some runtimeTypeAddr))
 
             NativeHandlerResult.completed state |> Some
@@ -2006,7 +2006,7 @@ module NativeRuntimeTypeQCall =
                     IlMachineState.writeManagedByrefWithBase
                         ctx.BaseClassTypes
                         state
-                        retArray
+                        (ManagedPointerSource.requireAddressed retArray)
                         (CliType.ObjectRef (Some arrayAddr))
 
                 NativeHandlerResult.completed state |> Some
@@ -2086,7 +2086,11 @@ module NativeRuntimeTypeQCall =
                 IlMachineState.allocateUninitialisedInstance ctx.LoggerFactory ctx.BaseClassTypes typeHandle state
 
             let state =
-                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state result (CliType.ObjectRef (Some addr))
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed result)
+                    (CliType.ObjectRef (Some addr))
 
             NativeHandlerResult.completed state |> Some
         | "RuntimeTypeHandle_InternalAlloc",
@@ -2238,7 +2242,11 @@ module NativeRuntimeTypeQCall =
                 IlMachineState.allocateUninitialisedInstance ctx.LoggerFactory ctx.BaseClassTypes typeHandle state
 
             let state =
-                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state result (CliType.ObjectRef (Some addr))
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed result)
+                    (CliType.ObjectRef (Some addr))
 
             NativeHandlerResult.completed state |> Some
         | "RuntimeTypeHandle_GetActivationInfo",
@@ -2326,7 +2334,11 @@ module NativeRuntimeTypeQCall =
                 : IlMachineState
                 =
                 let write ptr value state =
-                    IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state ptr value
+                    IlMachineState.writeManagedByrefWithBase
+                        ctx.BaseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed ptr)
+                        value
 
                 state
                 |> write outAllocator allocator

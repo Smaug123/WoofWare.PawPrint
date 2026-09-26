@@ -435,7 +435,8 @@ public class Detection
                         Projections = []
                     }
 
-            let after = IlMachineState.writeManagedByref before ptr (value written)
+            let after =
+                IlMachineState.writeManagedByref before (ManagedPointerSource.requireAddressed ptr) (value written)
 
             for i, owner in List.indexed owners do
                 let expected = if owner = target then written else i
@@ -480,7 +481,8 @@ public class Detection
         IlMachineState.readManagedByref bct state (ManagedPointerSource.requireAddressed capturedOnA)
         |> shouldEqual (value 12345)
 
-        let after = IlMachineState.writeManagedByref state capturedOnA (value 999)
+        let after =
+            IlMachineState.writeManagedByref state (ManagedPointerSource.requireAddressed capturedOnA) (value 999)
 
         IlMachineState.getStatic threadA ty field after
         |> shouldEqual (Some (value 999))

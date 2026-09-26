@@ -1255,7 +1255,7 @@ module NativeDelegate =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    result
+                    (ManagedPointerSource.requireAddressed result)
                     (CliType.ObjectRef (Some stubAddress))
 
             NativeHandlerResult.completed state |> Some

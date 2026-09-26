@@ -344,7 +344,11 @@ module internal UnaryMetadataFieldOps =
                         ManagedPointerSource.appendProjection (ByrefProjection.Field fieldId) src
                     | FieldThroughByref.IsContainer _ -> src
 
-                IlMachineState.writeManagedByrefWithBase baseClassTypes state dest valueToStore
+                IlMachineState.writeManagedByrefWithBase
+                    baseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed dest)
+                    valueToStore
             | EvalStackValue.UserDefinedValueType _ -> failwith "todo"
 
         state

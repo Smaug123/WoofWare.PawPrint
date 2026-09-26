@@ -299,7 +299,7 @@ module NativeCustomAttribute =
                     IlMachineState.writeManagedByrefWithBase
                         ctx.BaseClassTypes
                         state
-                        resultHandle
+                        (ManagedPointerSource.requireAddressed resultHandle)
                         (CliType.ObjectRef (Some addr))
 
                 NativeHandlerResult.completed state |> Some
@@ -681,14 +681,14 @@ module NativeCustomAttribute =
                     IlMachineState.writeManagedByrefWithBase
                         ctx.BaseClassTypes
                         state
-                        blobCursorSlot
+                        (ManagedPointerSource.requireAddressed blobCursorSlot)
                         (CliType.RuntimePointer (CliRuntimePointer.Managed updatedCursor))
 
                 let state =
                     IlMachineState.writeManagedByrefWithBase
                         ctx.BaseClassTypes
                         state
-                        namedArgsSlot
+                        (ManagedPointerSource.requireAddressed namedArgsSlot)
                         (CliType.Numeric (CliNumericType.Int32 namedArgCount))
 
                 let state, instanceFields =
@@ -875,7 +875,7 @@ module NativeCustomAttribute =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    isPropertySlot
+                    (ManagedPointerSource.requireAddressed isPropertySlot)
                     (CliType.Numeric (CliNumericType.Int32 isProperty))
 
             // CoreCLR passes a null name straight through (`pName.Set(NULL)`), and the managed
@@ -896,7 +896,11 @@ module NativeCustomAttribute =
                     state, CliType.ObjectRef (Some addr)
 
             let state =
-                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state nameHandle nameValue
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed nameHandle)
+                    nameValue
 
             // `pType` carries a real type only where CoreCLR writes one. For a non-null string or
             // a boxed primitive it is null, and the managed caller then infers the member's type
@@ -975,10 +979,18 @@ module NativeCustomAttribute =
                 state, CliType.ObjectRef (Some boxAddr), CliType.ObjectRef None
 
             let state =
-                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state valueSlot valueCli
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed valueSlot)
+                    valueCli
 
             let state =
-                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state typeSlot typeCli
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed typeSlot)
+                    typeCli
 
             // Written last, as CoreCLR does. The managed caller checks `blobStart != blobEnd` after
             // the whole named-arg loop, so an error here surfaces to the guest as a
@@ -987,7 +999,7 @@ module NativeCustomAttribute =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    blobCursorSlot
+                    (ManagedPointerSource.requireAddressed blobCursorSlot)
                     (CliType.RuntimePointer (
                         CliRuntimePointer.Managed (
                             ManagedPointerSource.Byref
@@ -1041,7 +1053,7 @@ module NativeCustomAttribute =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    target
+                    (ManagedPointerSource.requireAddressed target)
                     (CliType.Numeric (CliNumericType.Int32 value))
 
             // CoreCLR writes each out-param as soon as it has the value, not all three at the end,

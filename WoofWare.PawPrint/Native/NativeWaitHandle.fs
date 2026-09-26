@@ -536,7 +536,7 @@ module NativeWaitHandle =
                         IlMachineState.writeManagedByrefWithBase
                             ctx.BaseClassTypes
                             state
-                            ptr
+                            (ManagedPointerSource.requireAddressed ptr)
                             (CliType.Numeric (CliNumericType.Int32 previousCount))
 
                 state

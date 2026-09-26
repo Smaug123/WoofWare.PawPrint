@@ -68,7 +68,11 @@ module NativeRuntimeTypeHelpers =
         (value : int)
         : IlMachineState
         =
-        IlMachineState.writeManagedByrefWithBase baseClassTypes state ptr (CliType.Numeric (CliNumericType.Int32 value))
+        IlMachineState.writeManagedByrefWithBase
+            baseClassTypes
+            state
+            (ManagedPointerSource.requireAddressed ptr)
+            (CliType.Numeric (CliNumericType.Int32 value))
 
     /// The address of element `index` of an `IntPtr*` buffer a QCall was handed, whatever the
     /// guest built the buffer from: a `fixed` pointer over an `IntPtr[]`, a `Span<IntPtr>` over a
@@ -120,7 +124,7 @@ module NativeRuntimeTypeHelpers =
         IlMachineState.writeManagedByrefWithBase
             baseClassTypes
             state
-            ptr
+            (ManagedPointerSource.requireAddressed ptr)
             (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr value)))
 
     let runtimeFieldInfoStubAddress
@@ -2262,7 +2266,11 @@ module NativeRuntimeTypeHelpers =
             )
             |> fst
 
-        IlMachineState.writeManagedByrefWithBase baseClassTypes state destination (CliType.ObjectRef (Some arrayAddr))
+        IlMachineState.writeManagedByrefWithBase
+            baseClassTypes
+            state
+            (ManagedPointerSource.requireAddressed destination)
+            (CliType.ObjectRef (Some arrayAddr))
 
     /// The inverse of <see cref="copyRuntimeTypeHandles"/>: read a managed <c>RuntimeType[]</c>
     /// back *in* through an <c>ObjectHandleOnStack</c>, as CoreCLR does when a QCall receives an

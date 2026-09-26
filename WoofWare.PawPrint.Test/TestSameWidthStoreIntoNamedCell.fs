@@ -245,7 +245,12 @@ module TestSameWidthStoreIntoNamedCell =
         let property (case : Case) : bool =
             let state, addr, src, storage = rooted case
 
-            let state = IlMachineState.writeIndirectPrimitiveStore bct state src case.Payload
+            let state =
+                IlMachineState.writeIndirectPrimitiveStore
+                    bct
+                    state
+                    (ManagedPointerSource.requireAddressed src)
+                    case.Payload
 
             let expected =
                 CliType.withCellAtPathSet
@@ -263,7 +268,13 @@ module TestSameWidthStoreIntoNamedCell =
     let ``a same-width stind reads back through the cell's own type as the payload's bits`` () : unit =
         let property (case : Case) : bool =
             let state, _, src, _ = rooted case
-            let state = IlMachineState.writeIndirectPrimitiveStore bct state src case.Payload
+
+            let state =
+                IlMachineState.writeIndirectPrimitiveStore
+                    bct
+                    state
+                    (ManagedPointerSource.requireAddressed src)
+                    case.Payload
 
             let read =
                 IlMachineState.readManagedByref bct state (ManagedPointerSource.requireAddressed src)
@@ -299,7 +310,7 @@ module TestSameWidthStoreIntoNamedCell =
         let payload = CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0x1234L))
 
         Assert.Throws<System.Exception> (fun () ->
-            IlMachineState.writeIndirectPrimitiveStore bct state src payload
+            IlMachineState.writeIndirectPrimitiveStore bct state (ManagedPointerSource.requireAddressed src) payload
             |> ignore<IlMachineState>
         )
         |> ignore<System.Exception>

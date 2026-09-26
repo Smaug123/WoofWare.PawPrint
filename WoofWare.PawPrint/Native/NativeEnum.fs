@@ -312,7 +312,7 @@ module NativeEnum =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    valuesOut
+                    (ManagedPointerSource.requireAddressed valuesOut)
                     (CliType.ObjectRef (Some valuesArrayAddr))
 
             let state =
@@ -325,7 +325,7 @@ module NativeEnum =
                     IlMachineState.writeManagedByrefWithBase
                         ctx.BaseClassTypes
                         state
-                        namesOut
+                        (ManagedPointerSource.requireAddressed namesOut)
                         (CliType.ObjectRef (Some namesArrayAddr))
                 else
                     state

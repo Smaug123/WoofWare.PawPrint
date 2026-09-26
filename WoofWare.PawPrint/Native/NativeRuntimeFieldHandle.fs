@@ -472,7 +472,7 @@ module NativeRuntimeFieldHandle =
             IlMachineState.writeManagedByrefWithBase
                 ctx.BaseClassTypes
                 state
-                isClassInitializedPtr
+                (ManagedPointerSource.requireAddressed isClassInitializedPtr)
                 (CliType.Numeric (CliNumericType.Int32 (if classIsInitialised then 1 else 0)))
 
     /// The value to store in a field of the unmanaged pointer or function-pointer type
@@ -782,7 +782,11 @@ module NativeRuntimeFieldHandle =
                 NativeCall.objectHandleOnStackTarget operation state "result" instruction.Arguments.[5]
 
             let state =
-                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state resultPtr result
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed resultPtr)
+                    result
 
             let state =
                 writeBackIsClassInitialized
@@ -978,14 +982,14 @@ module NativeRuntimeFieldHandle =
                                 IlMachineState.writeManagedByrefWithBase
                                     ctx.BaseClassTypes
                                     state
-                                    addressOut
+                                    (ManagedPointerSource.requireAddressed addressOut)
                                     (CliType.RuntimePointer (CliRuntimePointer.Managed dataPtr))
 
                             let state =
                                 IlMachineState.writeManagedByrefWithBase
                                     ctx.BaseClassTypes
                                     state
-                                    sizeOut
+                                    (ManagedPointerSource.requireAddressed sizeOut)
                                     (NativeCall.cliUInt32 (uint32 peByteRange.Size))
 
                             state

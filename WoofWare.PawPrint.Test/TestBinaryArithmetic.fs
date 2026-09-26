@@ -1367,7 +1367,7 @@ module TestBinaryArithmetic =
             IlMachineState.writeManagedByrefBytesOrTypedCell
                 baseClassTypes
                 state
-                ptr
+                (ManagedPointerSource.requireAddressed ptr)
                 (CliType.Numeric (CliNumericType.Int32 0x11223344))
 
         let roundTripped =
@@ -2356,7 +2356,7 @@ module TestBinaryArithmetic =
             IlMachineState.writeManagedByrefWithBase
                 baseClassTypes
                 state
-                cursor
+                (ManagedPointerSource.requireAddressed cursor)
                 (CliType.Numeric (CliNumericType.Int32 333))
 
         // Assert values, not storage shape: writing through a byte cursor may re-back the
@@ -2508,7 +2508,11 @@ module TestBinaryArithmetic =
         | other -> failwith $"expected the identity at offset zero, got %O{other}"
 
         let throughSlot =
-            IlMachineState.writeManagedByrefWithBase baseClassTypes state ptr (CliType.ValueType imageless)
+            IlMachineState.writeManagedByrefWithBase
+                baseClassTypes
+                state
+                (ManagedPointerSource.requireAddressed ptr)
+                (CliType.ValueType imageless)
 
         // The same write through a zero-length byte cursor — the form a non-identity zero offset
         // would have produced. It names the same single cell, so it must land the same value.
@@ -2520,7 +2524,11 @@ module TestBinaryArithmetic =
                 }
 
         let throughCursor =
-            IlMachineState.writeManagedByrefWithBase baseClassTypes state cursor (CliType.ValueType imageless)
+            IlMachineState.writeManagedByrefWithBase
+                baseClassTypes
+                state
+                (ManagedPointerSource.requireAddressed cursor)
+                (CliType.ValueType imageless)
 
         let stored (state : IlMachineState) : CliType =
             (ManagedHeap.get addr state.ManagedHeap).Contents

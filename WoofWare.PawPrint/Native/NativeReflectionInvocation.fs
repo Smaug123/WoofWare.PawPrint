@@ -846,7 +846,11 @@ module internal NativeReflectionInvocation =
                             $"%s{operation}: expected a re-entry marker on the eval stack, optionally beneath one return value, got %d{stack.Length} value(s): %A{stack}"
 
                 let state =
-                    IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state resultPtr returned
+                    IlMachineState.writeManagedByrefWithBase
+                        ctx.BaseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed resultPtr)
+                        returned
 
                 NativeHandlerResult.completed state |> Some
         | "ReflectionInvocation_GetBoxInfo",
@@ -910,7 +914,11 @@ module internal NativeReflectionInvocation =
                 NativeHandlerResult.raiseException exnType state |> Some
             | BoxInfo.Describes description ->
                 let write ptr value state =
-                    IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state ptr value
+                    IlMachineState.writeManagedByrefWithBase
+                        ctx.BaseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed ptr)
+                        value
 
                 state
                 // The same helper `RuntimeTypeHandle_GetActivationInfo` hands back, and the same
@@ -1013,7 +1021,11 @@ module internal NativeReflectionInvocation =
             | Choice1Of2 state ->
 
             let write ptr value state =
-                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state ptr value
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed ptr)
+                    value
 
             state
             // The same helper `RuntimeTypeHandle_GetActivationInfo` and `GetBoxInfo` hand back;
