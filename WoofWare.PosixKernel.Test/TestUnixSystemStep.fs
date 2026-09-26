@@ -3522,7 +3522,10 @@ module TestUnixSystemStep =
         UnixWait.wakes (Set.ofList [ 7 ; 8 ; 9 ]) parked
         |> shouldEqual (Error (WakeRefusal.ExclusiveWaiters (descriptionOf ready system, [ 9 ; 7 ; 8 ])))
 
-        // Only waiters the client holds asleep count: with one of the two asleep, it wakes.
+        UnixWait.wakes (Set.ofList [ 7 ; 8 ]) parked
+        |> shouldEqual (Error (WakeRefusal.ExclusiveWaiters (descriptionOf ready system, [ 7 ; 8 ])))
+
+        // Only waiters the client holds asleep count: with one of them asleep, it wakes.
         UnixWait.wakes (Set.singleton 8) parked
         |> shouldEqual (
             Ok

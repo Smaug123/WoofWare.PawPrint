@@ -195,23 +195,24 @@ module TestUnixWait =
 
     [<Test>]
     let ``a released lock wakes every waiter, in the order they parked`` () : unit =
-        // Parked in an order that is neither ascending nor descending by name, so that park
-        // order is told apart from the table's own key order.
+        // Parked against the table's own key order, so that park order is told apart from it.
         let parked =
             system |> UnixWait.park 4 (parkOfTask 4) |> UnixWait.park 3 (parkOfTask 3)
 
-        let parked =
-            // Task 4 re-parks, which moves it behind task 3.
-            parked |> UnixWait.park 4 (parkOfTask 4)
-
         let asleep = Set.ofList [ 3 ; 4 ]
-
-        UnixWait.wakes asleep parked |> shouldEqual (Ok [])
 
         let fired =
             Set.singleton (WakePrimitive.FlockGrantable (blocked, FlockMode.Exclusive))
 
+        UnixWait.wakes asleep parked |> shouldEqual (Ok [])
+
         UnixWait.wakes asleep (releaseLock parked)
+        |> shouldEqual (Ok [ 4, fired ; 3, fired ])
+
+        // A re-park moves the waiter behind every park already made.
+        let reparked = parked |> UnixWait.park 4 (parkOfTask 4)
+
+        UnixWait.wakes asleep (releaseLock reparked)
         |> shouldEqual (Ok [ 3, fired ; 4, fired ])
 
     [<Test>]
