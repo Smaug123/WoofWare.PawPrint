@@ -193,6 +193,7 @@
     <Compile Include="TestMethodSignatureComparison.fs" />
     <Compile Include="TestMethodReferenceResolution.fs" />
     <Compile Include="TestMethodReferenceResolutionGenerated.fs" />
+    <Compile Include="TestEscapeAnalysis.fs" />
     <Compile Include="TestFunctionPointerConcretization.fs" />
     <Compile Include="Netstandard21FSharpCore.fs" />
     <Compile Include="TestZeroOfBaseAssemblies.fs" />
@@ -407,6 +408,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../WoofWare.PawPrint/WoofWare.PawPrint.fsproj"/>
+    <ProjectReference Include="../WoofWare.PawPrint.Analysis/WoofWare.PawPrint.Analysis.fsproj"/>
     <ProjectReference Include="../WoofWare.PawPrint.Logging/WoofWare.PawPrint.Logging.fsproj"/>
     <ProjectReference Include="../WoofWare.PawPrint.App/WoofWare.PawPrint.App.fsproj"/>
   </ItemGroup>

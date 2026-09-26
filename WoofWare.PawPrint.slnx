@@ -2,6 +2,7 @@
   <Project Path="CSharpExample/CSharpExample.csproj" />
   <Project Path="HelloWorld/HelloWorld.fsproj" />
   <Project Path="WoofWare.PawPrint.App/WoofWare.PawPrint.App.fsproj" />
+  <Project Path="WoofWare.PawPrint.Analysis/WoofWare.PawPrint.Analysis.fsproj" />
   <Project Path="WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj" />
   <Project Path="WoofWare.PawPrint.Loader/WoofWare.PawPrint.Loader.fsproj" />
   <Project Path="WoofWare.PawPrint.Semantics/WoofWare.PawPrint.Semantics.fsproj" />
