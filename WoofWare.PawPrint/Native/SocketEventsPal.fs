@@ -2,9 +2,9 @@ namespace WoofWare.PawPrint
 
 open WoofWare.PosixKernel
 
-/// The BCL's `SocketEvents` encoding of the readiness conditions
-/// `WoofWare.PosixKernel` speaks, and the conversions the socket event port's
-/// `SystemNative_*` shims perform across it.
+/// The BCL's `SocketEvents` encoding of the readiness conditions epoll
+/// reports, and the conversions the socket event port's `SystemNative_*`
+/// shims perform across it.
 ///
 /// This is PawPrint's half of the socket-event boundary, as `UnixErrorPal` is
 /// its half of the errno one. `SocketEvents` is .NET's own five-bit encoding
@@ -14,7 +14,8 @@ open WoofWare.PosixKernel
 ///
 /// The conversions below are transcriptions, so the compiler cannot keep them
 /// correct. Their oracle is upstream: `TestSocketEventsPal` re-derives all five
-/// bit values from the pinned `pal_networking.h` and fails if this disagrees.
+/// bit values from the pinned `pal_networking.h` and each conversion's rows
+/// from `pal_networking.c`, and fails if this disagrees.
 [<RequireQualifiedAccess>]
 module SocketEventsPal =
 
@@ -25,44 +26,35 @@ module SocketEventsPal =
     [<Literal>]
     let supported : int = 0x1F
 
-    /// `GetEPollEvents`, less the two bits `epoll_ctl` does not keep: the
-    /// interest a registration whose `SocketEvents` mask is `bits` leaves
-    /// behind.
-    ///
-    /// Lossy, and unavoidably so. `SA_CLOSE` and `SA_ERROR` become `EPOLLHUP`
-    /// and `EPOLLERR`, which the kernel forces into every stored mask, so a
-    /// caller that set them and one that did not have made the same
-    /// registration — nothing downstream of here can tell them apart, and
-    /// `SocketEventInterest` therefore does not carry them.
-    ///
-    /// Partial: `bits` must already have passed the `supported` screen, which
-    /// the wrapper runs in user space before any registration is attempted, so
-    /// an out-of-range mask arriving here is an interpreter bug rather than a
-    /// guest error.
-    let toInterest (context : string) (bits : int) : SocketEventInterest =
-        if bits &&& ~~~supported <> 0 then
-            failwith
-                $"%s{context}: SocketEvents mask 0x%x{bits} has bits outside READ|WRITE|READCLOSE|CLOSE|ERROR (0x1F); the wrapper's EINVAL screen should have refused it before any registration was attempted (this is an interpreter bug)."
+    /// Each condition `SocketEvents` names, in upstream's order: its bit, and
+    /// the `<sys/epoll.h>` bit of the same condition. `GetEPollEvents` and the
+    /// epoll `GetSocketEvents` are this table read in each direction.
+    let private rows : (int * uint32) list =
+        [
+            // SA_READ, EPOLLIN.
+            0x01, EpollEvents.In
+            // SA_WRITE, EPOLLOUT.
+            0x02, EpollEvents.Out
+            // SA_READCLOSE, EPOLLRDHUP.
+            0x04, EpollEvents.RdHup
+            // SA_CLOSE, EPOLLHUP.
+            0x08, EpollEvents.Hup
+            // SA_ERROR, EPOLLERR.
+            0x10, EpollEvents.Err
+        ]
 
-        {
-            SocketEventInterest.In = bits &&& 0x01 <> 0
-            Out = bits &&& 0x02 <> 0
-            RdHup = bits &&& 0x04 <> 0
-        }
+    /// `GetEPollEvents`: the epoll bits for a `SocketEvents` mask. Total: a bit
+    /// outside the five is dropped, although the wrapper's `supported` screen
+    /// means none reaches it.
+    let toEpollEvents (bits : int) : uint32 =
+        rows
+        |> List.fold (fun acc (pal, epoll) -> if bits &&& pal <> 0 then acc ||| epoll else acc) 0u
 
-    /// `GetSocketEvents`: the `SocketEvents` mask naming an epoll readiness
-    /// set.
-    ///
-    /// All five rows, as upstream has them, even though `delivered` — the only
-    /// caller — can never reach the `SA_CLOSE` one. Keeping the two functions
-    /// apart is what lets the pinned source check each of upstream's on its
-    /// own, so that a future divergence says which one moved.
-    let ofReadiness (level : ReadinessLevel) : int =
-        (if level.In then 0x01 else 0)
-        ||| (if level.Out then 0x02 else 0)
-        ||| (if level.RdHup then 0x04 else 0)
-        ||| (if level.Hup then 0x08 else 0)
-        ||| (if level.Err then 0x10 else 0)
+    /// `GetSocketEvents`, the epoll build's: the `SocketEvents` mask naming the
+    /// conditions among `events`. Total: every other epoll bit is dropped.
+    let ofEpollEvents (events : uint32) : int =
+        rows
+        |> List.fold (fun acc (pal, epoll) -> if events &&& epoll <> 0u then acc ||| pal else acc) 0
 
     /// `ConvertEventEPollToSocketAsync`: the `SocketEvent.Events` the shim
     /// writes for one delivered epoll event.
@@ -72,16 +64,47 @@ module SocketEventsPal =
     /// connection-oriented sockets", pal_networking.c — so `SA_CLOSE` never
     /// reaches a guest through this entry point, and an idle socket's
     /// `OUT|HUP` arrives as `SA_READ|SA_WRITE`.
-    let delivered (level : ReadinessLevel) : int =
-        if level.Hup then
-            { level with
-                Hup = false
-                In = true
-                Out = true
-            }
+    let delivered (events : uint32) : int =
+        if events &&& EpollEvents.Hup <> 0u then
+            (events &&& ~~~EpollEvents.Hup) ||| EpollEvents.In ||| EpollEvents.Out
         else
-            level
-        |> ofReadiness
+            events
+        |> ofEpollEvents
+
+    /// The `op` `TryChangeSocketEventRegistrationInner` passes `epoll_ctl`,
+    /// derived from the caller's *claimed* current mask and its new one:
+    /// `EPOLL_CTL_ADD` (1) when the claimed current set is empty,
+    /// `EPOLL_CTL_DEL` (2) when the new one is, and `EPOLL_CTL_MOD` (3)
+    /// otherwise, in that order of precedence. The claim is never checked
+    /// against the kernel's table; a wrong one is answered by `epoll_ctl`
+    /// itself, with EEXIST or ENOENT.
+    let epollCtlOperation (currentEvents : int) (newEvents : int) : int =
+        if currentEvents = 0 then 1
+        elif newEvents = 0 then 2
+        else 3
+
+    /// `TryChangeSocketEventRegistrationInner`, past the wrapper's two screens
+    /// (the `supported` mask, and equal masks answering success unasked): the
+    /// `epoll_ctl` the shim makes, with the operation `epollCtlOperation`
+    /// derives, the new mask's epoll bits with `EPOLLET` added, and `data`
+    /// verbatim.
+    let tryChangeSocketEventRegistration<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (portFd : int)
+        (targetFd : int)
+        (currentEvents : int)
+        (newEvents : int)
+        (data : uint64)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<EpollCtlAnswer * UnixSystem<'Task, 'Handler>, EpollCtlRefusal>
+        =
+        let events = toEpollEvents newEvents ||| EpollEvents.EdgeTriggered
+
+        UnixPoll.epollCtl
+            portFd
+            (epollCtlOperation currentEvents newEvents)
+            targetFd
+            (EpollEventArgument.Readable (events, data))
+            system
 
     /// The stride of the event buffer `SystemNative_CreateSocketEventBuffer`
     /// allocates and `SystemNative_WaitForSocketEvents` fills, in bytes.
