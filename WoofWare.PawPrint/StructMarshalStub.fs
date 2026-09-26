@@ -839,7 +839,7 @@ module StructMarshalStub =
                     baseClassTypes
                     None
                     ConstructionState.NotConstructing
-                    false
+                    IlMachineStateExecution.CallDispatch.Direct
                     false
                     false // this frame has no program counter to advance
                     IlMachineStateExecution.CallSiteTransition.StaysCooperative

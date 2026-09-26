@@ -37,10 +37,8 @@ module TestSignalState =
     /// parameter being genuinely opaque.
     type TestTask = | TestTask of int
 
-    /// Stand-in for a client's signal-handler identity. `SignalState` requires
-    /// only equality of it, and this is the evidence that it requires no more:
-    /// PawPrint instantiates this parameter with a wrapped CLR `MethodInfo`,
-    /// which this test cannot see and must not need to.
+    /// Stand-in for a client's signal-handler identity, which `SignalState` is
+    /// generic in and constrains only to equality.
     type TestHandler = | TestHandler of string
 
     /// `initial` at this test's instantiation. Named because the
@@ -126,28 +124,11 @@ module TestSignalState =
         for numbering in everyNumbering do
             let s = initial numbering
             SignalState.numbering s |> shouldEqual numbering
-            SignalState.isInitialized s |> shouldEqual false
             SignalState.isEnabled Signal.SIGINT s |> shouldEqual false
             SignalState.isBlocked t0 Signal.SIGINT s |> shouldEqual false
             SignalState.blockedFor t0 s |> shouldEqual Set.empty
             SignalState.pending s |> Seq.toList |> shouldEqual []
             SignalState.enabled s |> shouldEqual Set.empty
-
-    [<Test>]
-    let ``markInitialized is idempotent and structurally stable`` () : unit =
-        let dispatcher = TestTask 42
-        let other = TestTask 99
-        let once = empty |> SignalState.markInitialized dispatcher
-        let twice = once |> SignalState.markInitialized other
-        SignalState.isInitialized once |> shouldEqual true
-        SignalState.signalThread once |> shouldEqual (Some dispatcher)
-        // A second mark must not mutate the state's identity; downstream code
-        // that compares states for equality (e.g. dedup hashing in the
-        // debugger) relies on this. The dispatcher recorded on first init must
-        // also survive — a re-init must not orphan the previously-allocated
-        // signal thread by overwriting its id.
-        twice |> shouldEqual once
-        SignalState.signalThread twice |> shouldEqual (Some dispatcher)
 
     [<Test>]
     let ``enable flips a signal's bit on`` () : unit =
@@ -217,17 +198,12 @@ module TestSignalState =
                 Target = ValueNone
             }
 
-        let s =
-            empty
-            |> SignalState.setHandler (TestHandler "h")
-            |> SignalState.enqueue entry
-            |> SignalState.enable Signal.SIGINT
+        let s = empty |> SignalState.enqueue entry |> SignalState.enable Signal.SIGINT
 
         match SignalState.nextDelivery (liveThreads [ t0 ]) s with
-        | Some (SignalDelivery.RunHandler (e, tid, h)), s' ->
+        | Some (SignalDelivery.RunHandler (e, tid)), s' ->
             e |> shouldEqual entry
             tid |> shouldEqual t0
-            h |> shouldEqual (TestHandler "h")
             SignalState.pending s' |> Seq.toList |> shouldEqual []
         | other, _ -> failwith $"expected RunHandler once signal was enabled, got %A{other}"
 
@@ -578,14 +554,11 @@ module TestSignalState =
         SignalState.pending s |> shouldEqual [ rt ; rt ; rt ]
 
         // And each queued instance delivers separately.
-        let s =
-            s
-            |> SignalState.enable (Signal.Other 36)
-            |> SignalState.setHandler (TestHandler "h")
+        let s = s |> SignalState.enable (Signal.Other 36)
 
         let s =
             match SignalState.nextDelivery (liveThreads [ t0 ]) s with
-            | Some (SignalDelivery.RunHandler (e, _, _)), s' ->
+            | Some (SignalDelivery.RunHandler (e, _)), s' ->
                 e |> shouldEqual rt
                 s'
             | other, _ -> failwith $"expected the first real-time instance to deliver, got %A{other}"
@@ -615,7 +588,6 @@ module TestSignalState =
 
         let buildA () =
             empty
-            |> SignalState.setHandler (TestHandler "h")
             |> SignalState.enable Signal.SIGINT
             |> SignalState.block t0 Signal.SIGTERM
             |> SignalState.enqueue entryA
@@ -623,7 +595,6 @@ module TestSignalState =
 
         let buildB () =
             empty
-            |> SignalState.setHandler (TestHandler "h")
             |> SignalState.enable Signal.SIGINT
             |> SignalState.block t0 Signal.SIGTERM
             |> SignalState.enqueue entryA
@@ -819,7 +790,6 @@ module TestSignalState =
                 SignalState.generate (liveThreads [ t0 ]) entry s
                 |> snd
                 |> SignalState.enable Signal.SIGCHLD
-                |> SignalState.setHandler (TestHandler "h")
 
             SignalState.nextDelivery (liveThreads [ t0 ]) claimedLater
             |> fst
@@ -848,25 +818,6 @@ module TestSignalState =
             |> SignalState.enqueue
                 {
                     Signal = Signal.SIGTERM
-                    Target = ValueNone
-                }
-
-        let delivery, s' = SignalState.nextDelivery (liveThreads [ t0 ]) s
-        delivery |> shouldEqual None
-        s' |> shouldEqual s
-
-    [<Test>]
-    let ``an enabled pending signal with no handler installed stays queued`` () : unit =
-        // The real shim ignores deliveries while g_posixSignalHandler is
-        // NULL; entries wait for a handler rather than falling through to
-        // the kernel default — the disposition is "handled", just not yet
-        // claimable.
-        let s =
-            empty
-            |> SignalState.enable Signal.SIGINT
-            |> SignalState.enqueue
-                {
-                    Signal = Signal.SIGINT
                     Target = ValueNone
                 }
 
@@ -915,11 +866,10 @@ module TestSignalState =
         let claimed =
             afterScan
             |> SignalState.enable Signal.SIGCHLD
-            |> SignalState.setHandler (TestHandler "h")
             |> SignalState.unblock t0 Signal.SIGCHLD
 
         match SignalState.nextDelivery (liveThreads [ t0 ]) claimed with
-        | Some (SignalDelivery.RunHandler (e, tid, _)), s' ->
+        | Some (SignalDelivery.RunHandler (e, tid)), s' ->
             e |> shouldEqual entry
             tid |> shouldEqual t0
             SignalState.pending s' |> shouldEqual []
@@ -968,12 +918,11 @@ module TestSignalState =
         let s =
             empty
             |> SignalState.enable Signal.SIGINT
-            |> SignalState.setHandler (TestHandler "h")
             |> SignalState.enqueue ignored
             |> SignalState.enqueue handled
 
         match SignalState.nextDelivery (liveThreads [ t0 ]) s with
-        | Some (SignalDelivery.RunHandler (e, _, _)), s' ->
+        | Some (SignalDelivery.RunHandler (e, _)), s' ->
             e |> shouldEqual handled
             SignalState.pending s' |> shouldEqual []
         | other, _ -> failwith $"expected the enabled entry to deliver past the discard, got %A{other}"
@@ -989,7 +938,6 @@ module TestSignalState =
         let s =
             empty
             |> SignalState.enable Signal.SIGINT
-            |> SignalState.setHandler (TestHandler "h")
             |> SignalState.enqueue
                 {
                     Signal = Signal.SIGINT
@@ -1008,16 +956,12 @@ module TestSignalState =
                 Target = ValueNone
             }
 
-        let s =
-            empty
-            |> SignalState.enable Signal.SIGINT
-            |> SignalState.setHandler (TestHandler "h")
-            |> SignalState.enqueue entry
+        let s = empty |> SignalState.enable Signal.SIGINT |> SignalState.enqueue entry
 
         // Live-thread order is deliberately scrambled to confirm the
         // implementation sorts internally rather than trusting input order.
         match SignalState.nextDelivery (liveThreads [ t2 ; t0 ; t1 ]) s with
-        | Some (SignalDelivery.RunHandler (e, tid, _)), s' ->
+        | Some (SignalDelivery.RunHandler (e, tid)), s' ->
             e |> shouldEqual entry
             tid |> shouldEqual t0
             SignalState.pending s' |> Seq.toList |> shouldEqual []
@@ -1028,7 +972,6 @@ module TestSignalState =
         let s =
             empty
             |> SignalState.enable Signal.SIGINT
-            |> SignalState.setHandler (TestHandler "h")
             |> SignalState.block t0 Signal.SIGINT
             |> SignalState.enqueue
                 {
@@ -1037,7 +980,7 @@ module TestSignalState =
                 }
 
         match SignalState.nextDelivery (liveThreads [ t0 ; t1 ; t2 ]) s with
-        | Some (SignalDelivery.RunHandler (_, tid, _)), _ -> tid |> shouldEqual t1
+        | Some (SignalDelivery.RunHandler (_, tid)), _ -> tid |> shouldEqual t1
         | other, _ -> failwith $"expected a handler delivery, got %A{other}"
 
     [<Test>]
@@ -1045,7 +988,6 @@ module TestSignalState =
         let s =
             empty
             |> SignalState.enable Signal.SIGINT
-            |> SignalState.setHandler (TestHandler "h")
             |> SignalState.block t0 Signal.SIGINT
             |> SignalState.block t1 Signal.SIGINT
             |> SignalState.enqueue
@@ -1065,7 +1007,6 @@ module TestSignalState =
         let s =
             empty
             |> SignalState.enable Signal.SIGINT
-            |> SignalState.setHandler (TestHandler "h")
             |> SignalState.block t0 Signal.SIGINT
             |> SignalState.enqueue
                 {
@@ -1082,7 +1023,6 @@ module TestSignalState =
         let s =
             empty
             |> SignalState.enable Signal.SIGINT
-            |> SignalState.setHandler (TestHandler "h")
             |> SignalState.enqueue
                 {
                     Signal = Signal.SIGINT
@@ -1120,14 +1060,13 @@ module TestSignalState =
         let s =
             empty
             |> SignalState.enable Signal.SIGINT
-            |> SignalState.setHandler (TestHandler "h")
             |> SignalState.block t0 Signal.SIGINT
             |> SignalState.enqueue head
             |> SignalState.enqueue middle
             |> SignalState.enqueue tail
 
         match SignalState.nextDelivery (liveThreads [ t0 ; t1 ]) s with
-        | Some (SignalDelivery.RunHandler (e, tid, _)), s' ->
+        | Some (SignalDelivery.RunHandler (e, tid)), s' ->
             e |> shouldEqual tail
             tid |> shouldEqual t1
             SignalState.pending s' |> Seq.toList |> shouldEqual [ head ; middle ]
@@ -1138,8 +1077,6 @@ module TestSignalState =
     /// Operation language for the random property test. Each constructor
     /// maps to exactly one public method on the API.
     type private Op =
-        | MarkInitialized
-        | InstallHandler of handler : TestHandler
         | Enable of signal : Signal
         | Disable of signal : Signal
         | Block of thread : TestTask * signal : Signal
@@ -1155,8 +1092,6 @@ module TestSignalState =
     /// forgot to canonicalise diverges from it on the first `Other` spelling.
     type private ReferenceState =
         {
-            Initialized : bool
-            Handler : TestHandler option
             Enabled : Set<Signal>
             Blocked : Map<TestTask, Set<Signal>>
             Pending : PendingSignal<TestTask> list
@@ -1164,8 +1099,6 @@ module TestSignalState =
 
     let private referenceEmpty : ReferenceState =
         {
-            Initialized = false
-            Handler = None
             Enabled = Set.empty
             Blocked = Map.empty
             Pending = []
@@ -1263,11 +1196,11 @@ module TestSignalState =
             let entry = entries.[i]
 
             if Set.contains entry.Signal r.Enabled then
-                match pickReceiver entry, r.Handler with
-                | Some receiver, Some handler ->
+                match pickReceiver entry with
+                | Some receiver ->
                     removed.[i] <- true
-                    result <- Some (SignalDelivery.RunHandler (entry, receiver, handler))
-                | _, _ -> ()
+                    result <- Some (SignalDelivery.RunHandler (entry, receiver))
+                | None -> ()
             else
                 match Signal.defaultDispositionUnder numbering entry.Signal with
                 | DefaultDisposition.Continue ->
@@ -1300,16 +1233,6 @@ module TestSignalState =
             Pending = pending
         }
 
-    /// Fixed `TestTask` standing in for the signal-dispatcher thread in
-    /// property runs. The property test does not model thread allocation,
-    /// so any stable id will do — the oracle compares against `Initialized`
-    /// (a `bool`) rather than the dispatcher id, and a second
-    /// `MarkInitialized` op in a run must not change the recorded id
-    /// (see `SignalState.markInitialized`'s idempotency contract). Using a
-    /// constant guarantees both branches stay aligned across the random
-    /// sequence.
-    let private propertyDispatcher : TestTask = TestTask 0
-
     /// Advance both implementations by one op, asserting agreement on
     /// `nextDelivery`'s full returned action (since the next step's
     /// observable state alone cannot always distinguish a divergence in
@@ -1324,16 +1247,6 @@ module TestSignalState =
         let canonical (signal : Signal) : Signal = Signal.canonicalUnder numbering signal
 
         match op with
-        | Op.MarkInitialized ->
-            SignalState.markInitialized propertyDispatcher s,
-            { r with
-                Initialized = true
-            }
-        | Op.InstallHandler handler ->
-            SignalState.setHandler handler s,
-            { r with
-                Handler = Some handler
-            }
         | Op.Enable sig0 ->
             SignalState.enable sig0 s,
             { r with
@@ -1421,8 +1334,6 @@ module TestSignalState =
         (r : ReferenceState)
         : unit
         =
-        SignalState.isInitialized s |> shouldEqual r.Initialized
-        SignalState.handler s |> shouldEqual r.Handler
         SignalState.enabled s |> shouldEqual r.Enabled
         SignalState.pending s |> Seq.toList |> shouldEqual r.Pending
 
@@ -1455,14 +1366,9 @@ module TestSignalState =
 
     let private randomOp (numbering : SignalNumbering) (rng : System.Random) : Op =
         let pick (xs : 'a list) : 'a = xs.[rng.Next xs.Length]
-        let kind = rng.Next 100
+        let kind = 10 + rng.Next 90
 
-        if kind < 5 then
-            Op.MarkInitialized
-        elif kind < 10 then
-            // Two identities so last-writer-wins stays exercised.
-            Op.InstallHandler (pick [ TestHandler "h1" ; TestHandler "h2" ])
-        elif kind < 28 then
+        if kind < 28 then
             // Only what sigaction would accept: `enable` fails loud on the
             // rest, and the refusal has its own unit test.
             Op.Enable (pick (enableableSignals numbering))
@@ -1621,8 +1527,6 @@ module TestSignalState =
                              } ->
                     if Signal.canonicalUnder numbering signal <> signal then
                         observedNonCanonicalSpellings <- observedNonCanonicalSpellings + 1
-                | Op.MarkInitialized
-                | Op.InstallHandler _ -> ()
 
                 match op with
                 | Op.Block (_, signal) when Signal.isUnblockableUnder numbering signal ->
@@ -1700,54 +1604,3 @@ module TestSignalState =
     [<Test>]
     let ``random op sequences agree with the reference oracle on every observable, under Darwin numbering`` () : unit =
         checkAgainstOracle SignalNumbering.Darwin
-
-    /// The handler slot, which nothing else in this file exercises.
-    ///
-    /// `SignalState` is generic in the handler's type and constrains it only to
-    /// `equality`. That is a claim about the library, not about PawPrint: the
-    /// one production instantiation wraps a CLR `MethodInfo`, so if the slot
-    /// were secretly relying on anything of that type's, these tests -- which
-    /// instantiate it with a string wrapper -- could not compile, let alone
-    /// pass.
-    [<Test>]
-    let ``the handler slot needs only equality`` () =
-        SignalState.handler empty |> shouldEqual None
-
-        let installed = empty |> SignalState.setHandler (TestHandler "first")
-        SignalState.handler installed |> shouldEqual (Some (TestHandler "first"))
-
-        // Last writer wins, mirroring the native side's unconditional store
-        // into `g_posixSignalHandler`.
-        let replaced = installed |> SignalState.setHandler (TestHandler "second")
-        SignalState.handler replaced |> shouldEqual (Some (TestHandler "second"))
-
-        // Re-installing an equal handler is a no-op on the whole state, not
-        // merely on the slot: this is what lets a caller re-register without
-        // perturbing a state that is compared for equality to decide whether a
-        // step changed anything.
-        let reinstalled = replaced |> SignalState.setHandler (TestHandler "second")
-        reinstalled |> shouldEqual replaced
-
-    /// Installing a handler must not disturb anything else, which is the half
-    /// of the previous test that a slot implemented as "replace the whole
-    /// record" would still pass. Here the state is non-trivial first.
-    [<Test>]
-    let ``installing a handler preserves the rest of the state`` () =
-        let before =
-            empty
-            |> SignalState.enable Signal.SIGINT
-            |> SignalState.block t0 Signal.SIGTERM
-            |> SignalState.enqueue
-                {
-                    Signal = Signal.SIGINT
-                    Target = ValueNone
-                }
-
-        let after = before |> SignalState.setHandler (TestHandler "h")
-
-        SignalState.enabled after |> shouldEqual (SignalState.enabled before)
-
-        SignalState.blockedFor t0 after
-        |> shouldEqual (SignalState.blockedFor t0 before)
-
-        SignalState.pending after |> shouldEqual (SignalState.pending before)

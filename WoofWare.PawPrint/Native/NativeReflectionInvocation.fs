@@ -705,7 +705,7 @@ module internal NativeReflectionInvocation =
 
                 let threadState = state.ThreadState.[ctx.Thread]
 
-                // performInterfaceResolution = true: CoreCLR takes
+                // Dispatch on the target: CoreCLR takes
                 // `GetSingleCallableAddrOfVirtualizedCode` for a vtable method
                 // (reflectioninvocation.cpp:419), so invoking a virtual method through a base
                 // class's MethodInfo runs the derived override.
@@ -719,7 +719,13 @@ module internal NativeReflectionInvocation =
                         ctx.BaseClassTypes
                         None
                         ConstructionState.NotConstructing
-                        true
+                        (match thisValue with
+                         | None -> IlMachineStateExecution.CallDispatch.Direct
+                         | Some this ->
+                             IlMachineStateExecution.dispatchOnReceiver
+                                 "MethodBase.Invoke"
+                                 target.Method
+                                 (EvalStackValue.ofCliType this))
                         false
                         false
                         IlMachineStateExecution.CallSiteTransition.StaysCooperative

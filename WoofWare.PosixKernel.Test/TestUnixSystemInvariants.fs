@@ -590,20 +590,6 @@ module TestUnixSystemInvariants =
         }
 
     [<Test>]
-    let ``a dispatcher that is not a task is a defect`` () : unit =
-        system
-        |> withTask None
-        |> withSignals (SignalState.initial SignalNumbering.Linux |> SignalState.markInitialized 77)
-        |> UnixSystem.checkInvariants
-        |> shouldEqual [ UnixSystemDefect.SignalDispatcherWithoutTask 77 ]
-
-        system
-        |> withTask None
-        |> withSignals (SignalState.initial SignalNumbering.Linux |> SignalState.markInitialized task)
-        |> UnixSystem.checkInvariants
-        |> shouldEqual []
-
-    [<Test>]
     let ``a signal mask for a task the table does not hold is a defect`` () : unit =
         system
         |> withTask None

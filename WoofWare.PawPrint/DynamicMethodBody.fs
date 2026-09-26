@@ -52,13 +52,16 @@ module internal DynamicMethodBody =
         | CliType.ObjectRef target -> target
         | other -> failwith $"%s{operation}: expected %s{what} to be an object reference, got %O{other}"
 
-    /// The contents of a managed `byte[]`, in order.
-    let private readByteArray
+    /// The contents of a managed `byte[]`, in order, each as the guest wrote it: a signature blob
+    /// really can hold bytes that name a type handle rather than holding a number, because
+    /// `SignatureHelper.InternalAddRuntimeType` writes eight of them for any type it cannot spell as
+    /// a token.
+    let private readNamedByteArray
         (operation : string)
         (what : string)
         (state : IlMachineState)
         (addr : ManagedHeapAddress)
-        : byte[]
+        : UInt8Source[]
         =
         let shape = ManagedHeap.getArrayShape addr state.ManagedHeap
 
@@ -73,15 +76,21 @@ module internal DynamicMethodBody =
                     ManagedHeap.getArrayValue addr i state.ManagedHeap
                     |> CliType.unwrapPrimitiveLikeDeep
                 with
-                // A signature blob really can hold a byte that names a type handle rather than
-                // holding a number: `SignatureHelper.InternalAddRuntimeType` writes eight of them
-                // for any type it cannot spell as a token. Reading the blob out as plain `byte[]`
-                // cannot express that, so it is refused here; teaching the decoders to read those
-                // eight bytes back as the type they name is what unblocks it.
-                | CliType.Numeric (CliNumericType.UInt8 b) -> UInt8Source.value $"%s{operation}: %s{what}[%d{i}]" b
-                | CliType.Numeric (CliNumericType.Int8 b) -> byte b
+                | CliType.Numeric (CliNumericType.UInt8 b) -> b
+                | CliType.Numeric (CliNumericType.Int8 b) -> UInt8Source.Verbatim (byte b)
                 | other -> failwith $"%s{operation}: expected %s{what}[%d{i}] to be a byte, got %O{other}"
             )
+
+    /// The contents of a managed `byte[]` that must hold only numbers, in order.
+    let private readByteArray
+        (operation : string)
+        (what : string)
+        (state : IlMachineState)
+        (addr : ManagedHeapAddress)
+        : byte[]
+        =
+        readNamedByteArray operation what state addr
+        |> Array.mapi (fun i b -> UInt8Source.value $"%s{operation}: %s{what}[%d{i}]" b)
 
     /// <summary>
     /// The entries of the <c>DynamicScope</c> reachable from this resolver: what each one is, so
@@ -418,16 +427,10 @@ module internal DynamicMethodBody =
     /// <summary>
     /// The body held by the <c>DynamicResolver</c> at <paramref name="resolver" />.
     /// </summary>
-    /// <param name="scopeAssembly">
-    /// The assembly the dynamic method is scoped to, used to resolve the local signature's type
-    /// references. This is the module `DynamicScope` belongs to, which is the module
-    /// `SignatureHelper` would have spelled a type against had it had one.
-    /// </param>
     let read
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (scopeAssembly : DumpedAssembly)
         (resolver : ManagedHeapAddress)
         : MintedDynamicMethodBody
         =
@@ -477,8 +480,6 @@ module internal DynamicMethodBody =
         // Decoded against the scope, not against `scopeAssembly`. A
         // token here names an entry in `m_tokens`; decoding it against the assembly's tables would
         // silently resolve it to an unrelated real row, because the bit patterns are the same.
-        // `scopeAssembly` remains the right universe for the *local signature* below, which
-        // `SignatureHelper` really does spell against a module.
         let scopeEntries = readScope operation baseClassTypes state resolver
 
         let instructions =
@@ -511,9 +512,11 @@ module internal DynamicMethodBody =
         let localVars =
             match field "m_localSignature" |> requireObject operation "m_localSignature" state with
             | Some addr ->
-                let blob = readByteArray operation "m_localSignature" state addr
-
-                LocalSignatureDecoding.decode scopeAssembly.Name (scopeAssembly.PeReader.GetMetadataReader ()) blob
+                readNamedByteArray operation "m_localSignature" state addr
+                |> ImmutableArray.CreateRange
+                |> DynamicSignatureDecoding.decodeLocals (
+                    InternalSignatureTypeResolution.ofHandle operation baseClassTypes state
+                )
                 |> Some
             | None ->
                 failwith

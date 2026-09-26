@@ -2571,6 +2571,27 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // A dynamic method whose signature and locals name nominal types: a struct, a
+                // class, two enums, constructed generics over a class and a struct definition, a
+                // struct array and a byref. `SignatureHelper` spells each with
+                // ELEMENT_TYPE_INTERNAL runs naming type handles, which `DynamicSignatureDecoding`
+                // reads back. Dynamic-code switch overridden to true like its siblings; verified by
+                // hand to exit 0 on real .NET.
+                FileName = "DynamicMethodNominalSignature.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // `Delegate_BindToMethodInfo`, the QCall behind `DynamicMethod.CreateDelegate`.
                 // Registered with the dynamic-code switch overridden to true, like its
                 // `ModuleHandle_GetDynamicMethod` sibling above. The guest walks every binding
