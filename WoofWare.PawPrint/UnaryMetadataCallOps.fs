@@ -618,8 +618,7 @@ module internal UnaryMetadataCallOps =
                 |> EvalStack.PeekNthFromTop (arity - 1 - index)
 
             // `ObjectRef` is the only shape with a metadata type to compare against the
-            // declaration: `getTypeOfObj` is partial over `NativeInt`, `ManagedPointer` and
-            // `UserDefinedValueType`, so asking about those would turn a diagnostic into a crash.
+            // declaration.
             //
             // Value-typed parameters are excluded because an object reference arriving at one is
             // usually PawPrint's representation rather than a guest defect: a `RuntimeTypeHandle`
@@ -1090,8 +1089,15 @@ module internal UnaryMetadataCallOps =
                         // its class chain up to that type; the spec's method generics were
                         // concretized against the caller's frame above, and are handed over
                         // as-is rather than re-read against the receiver's instantiation.
-                        let state, receiverHandle =
-                            IlMachineStateExecution.getTypeOfObj loggerFactory baseClassTypes state receiver
+                        let receiverHandle =
+                            match receiver with
+                            | EvalStackValue.ObjectRef addr -> ManagedHeap.getObjectConcreteType addr state.ManagedHeap
+                            | EvalStackValue.NullObjectRef ->
+                                failwith
+                                    "BUG: a null receiver of callvirt through a MethodSpec over its MethodDef raises NullReferenceException before its instantiation is sought"
+                            | other ->
+                                failwith
+                                    $"callvirt of %s{method.Name} through a MethodSpec over its MethodDef: the receiver is %O{other} rather than an object reference"
 
                         let state, instantiation =
                             receiverInstantiationOf ctx method.RequiredDeclaringType.Identity receiverHandle state
