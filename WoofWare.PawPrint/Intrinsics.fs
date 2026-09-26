@@ -135,6 +135,8 @@ module Intrinsics =
             LoggerFactory : ILoggerFactory
             BaseClassTypes : BaseClassTypes<DumpedAssembly>
             Thread : ThreadId
+            /// The intrinsic being performed, which an observation of an undefined value names.
+            Method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
             /// Moves the caller's program counter past the call. An intrinsic completes inline
             /// rather than pushing a frame, so it does what a returning frame would; a caller with
             /// no IL body (a native QCall frame reflecting onto the intrinsic, say) has no program
@@ -146,6 +148,7 @@ module Intrinsics =
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (thread : ThreadId)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (advanceProgramCounterOfCaller : bool)
         : CallSite
         =
@@ -153,6 +156,7 @@ module Intrinsics =
             LoggerFactory = loggerFactory
             BaseClassTypes = baseClassTypes
             Thread = thread
+            Method = methodToCall
             AdvanceCaller =
                 fun state ->
                     if advanceProgramCounterOfCaller then
@@ -187,11 +191,16 @@ module Intrinsics =
         match popManagedByrefArgument operation byrefArg with
         | ManagedPointerSource.Null -> nullLocation site state
         | byrefSrc ->
-            let currentValue =
-                IlMachineState.readManagedByref
+            match
+                IlMachineState.readManagedByrefForUse
                     site.BaseClassTypes
                     state
                     (ManagedPointerSource.requireAddressed byrefSrc)
+            with
+            | Error u ->
+                UndefinedValueObservation.ReadByRuntime site.Method "the location it operates on" u
+                |> IntrinsicResult.UndefinedValueObserved
+            | Ok currentValue ->
 
             let currentEval = EvalStackValue.ofCliType currentValue
             let valueCli = EvalStackValue.toCliTypeCoerced currentValue value
@@ -229,11 +238,16 @@ module Intrinsics =
         match popManagedByrefArgument operation byrefArg with
         | ManagedPointerSource.Null -> nullLocation site state
         | byrefSrc ->
-            let currentValue =
-                IlMachineState.readManagedByref
+            match
+                IlMachineState.readManagedByrefForUse
                     site.BaseClassTypes
                     state
                     (ManagedPointerSource.requireAddressed byrefSrc)
+            with
+            | Error u ->
+                UndefinedValueObservation.ReadByRuntime site.Method "the location it operates on" u
+                |> IntrinsicResult.UndefinedValueObserved
+            | Ok currentValue ->
 
             let valueCli = EvalStackValue.toCliTypeCoerced currentValue value
 
@@ -270,11 +284,16 @@ module Intrinsics =
         match popManagedByrefArgument operation byrefArg with
         | ManagedPointerSource.Null -> nullLocation site state
         | byrefSrc ->
-            let currentValue =
-                IlMachineState.readManagedByref
+            match
+                IlMachineState.readManagedByrefForUse
                     site.BaseClassTypes
                     state
                     (ManagedPointerSource.requireAddressed byrefSrc)
+            with
+            | Error u ->
+                UndefinedValueObservation.ReadByRuntime site.Method "the location it operates on" u
+                |> IntrinsicResult.UndefinedValueObserved
+            | Ok currentValue ->
 
             let current =
                 match EvalStackValue.ofCliType currentValue with
@@ -318,11 +337,16 @@ module Intrinsics =
         match popManagedByrefArgument operation byrefArg with
         | ManagedPointerSource.Null -> nullLocation site state
         | byrefSrc ->
-            let currentValue =
-                IlMachineState.readManagedByref
+            match
+                IlMachineState.readManagedByrefForUse
                     site.BaseClassTypes
                     state
                     (ManagedPointerSource.requireAddressed byrefSrc)
+            with
+            | Error u ->
+                UndefinedValueObservation.ReadByRuntime site.Method "the location it operates on" u
+                |> IntrinsicResult.UndefinedValueObserved
+            | Ok currentValue ->
 
             let current =
                 match EvalStackValue.ofCliType currentValue with
@@ -604,7 +628,7 @@ module Intrinsics =
         : IntrinsicResult
         =
         let site =
-            makeCallSite loggerFactory baseClassTypes currentThread advanceProgramCounterOfCaller
+            makeCallSite loggerFactory baseClassTypes currentThread methodToCall advanceProgramCounterOfCaller
 
         if not methodToCall.IsStatic then
             failwith $"%A{primitive}: %s{formatMethodKey (methodKey state methodToCall)} is not static"
@@ -672,6 +696,8 @@ module Intrinsics =
                 failwith
                     $"BUG: %A{primitive} completed with null argument(s) %A{faultingNulls}, on which CoreCLR raises NullReferenceException"
         | IntrinsicResult.Unrecognised -> failwith $"BUG: %A{primitive} was not performed"
+        // Not a fault: the run ends before anything the contract describes happens.
+        | IntrinsicResult.UndefinedValueObserved _ -> ()
 
         result
 
@@ -702,7 +728,7 @@ module Intrinsics =
         let intrinsicKey = methodKey state methodToCall
 
         let site =
-            makeCallSite loggerFactory baseClassTypes currentThread advanceProgramCounterOfCaller
+            makeCallSite loggerFactory baseClassTypes currentThread methodToCall advanceProgramCounterOfCaller
 
         // A primitive is performed where CoreCLR performs it, at its method's call to itself
         // (`IntrinsicBody.expandSelfCall`), so a call from anywhere else runs the method's IL.
@@ -759,13 +785,13 @@ module Intrinsics =
             |> IntrinsicResult.Completed
         | CorelibAssembly, ("ReadOnlySpan`1" | "Span`1"), "ToString" ->
             spanToString loggerFactory baseClassTypes currentThread advanceCaller methodToCall state
-            |> IntrinsicResult.Completed
+            |> IntrinsicResult.ofUse methodToCall "the characters of the span"
         | CorelibAssembly, "MemoryExtensions", "Equals" ->
             memoryExtensionsEquals baseClassTypes currentThread advanceCaller methodToCall state
-            |> IntrinsicResult.Completed
+            |> IntrinsicResult.ofUse methodToCall "the characters of the spans"
         | CorelibAssembly, "SpanHelpers", "SequenceEqual" when isSpanHelpersByteSequenceEqual state methodToCall ->
             spanHelpersSequenceEqual baseClassTypes currentThread advanceCaller methodToCall state
-            |> IntrinsicResult.Completed
+            |> IntrinsicResult.ofUse methodToCall "the bytes it compares"
         | CorelibAssembly, "Object", "MemberwiseClone" ->
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/Object.CoreCLR.cs#L26-L45
             // The managed body allocates an uninitialised clone via the
@@ -826,25 +852,34 @@ module Intrinsics =
             // `ldnull; call instance Object::GetType()` gets here, and there is no ilasm in this
             // repo to write that with; `NullReceiverGuards.cs` pins the guard instead.
             // `None` means the receiver was null.
-            let receiver : (ConcreteTypeHandle * IlMachineState) option =
+            let receiver : Result<(ConcreteTypeHandle * IlMachineState) option, UndefinedValue> =
                 // Normal Object.GetType dispatch arrives here with an ObjectRef. The managed-pointer
                 // arms are deliberately defensive for future receiver shapes and direct intrinsic use;
                 // constrained.callvirt on value types boxes before dispatching this intrinsic.
                 match arg with
                 | EvalStackValue.ObjectRef addr ->
-                    Some (ManagedHeap.getObjectConcreteType addr state.ManagedHeap, state)
+                    Some (ManagedHeap.getObjectConcreteType addr state.ManagedHeap, state) |> Ok
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null
-                | EvalStackValue.NullObjectRef -> None
+                | EvalStackValue.NullObjectRef -> Ok None
                 | EvalStackValue.ManagedPointer ptr ->
                     match
                         IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed ptr)
                     with
                     | CliType.ObjectRef (Some addr) ->
-                        Some (ManagedHeap.getObjectConcreteType addr state.ManagedHeap, state)
-                    | CliType.ObjectRef None -> None
-                    | CliType.ValueType valueType -> Some (valueType.Declared, state)
+                        Some (ManagedHeap.getObjectConcreteType addr state.ManagedHeap, state) |> Ok
+                    | CliType.ObjectRef None -> Ok None
+                    // Only the type is asked for, which a value type has however its fields read.
+                    | CliType.ValueType valueType -> Some (valueType.Declared, state) |> Ok
+                    // Whether there is an object, and which, is in the reference's bits.
+                    | CliType.Undefined u -> Error u
                     | other -> failwith $"Object.GetType: expected object ref or value type receiver, got %O{other}"
                 | other -> failwith $"Object.GetType: expected object ref or managed pointer receiver, got %O{other}"
+
+            match receiver with
+            | Error u ->
+                UndefinedValueObservation.ReadByRuntime methodToCall "the reference whose type it asks for" u
+                |> IntrinsicResult.UndefinedValueObserved
+            | Ok receiver ->
 
             match receiver with
             | None -> IntrinsicResult.RaiseException (state, baseClassTypes.NullReferenceException, None)
@@ -1081,11 +1116,16 @@ module Intrinsics =
                 match popManagedByrefArgument operation byrefArg with
                 | ManagedPointerSource.Null -> nullLocation site state
                 | byrefSrc ->
-                    let currentValue =
-                        IlMachineState.readManagedByref
+                    match
+                        IlMachineState.readManagedByrefForUse
                             baseClassTypes
                             state
                             (ManagedPointerSource.requireAddressed byrefSrc)
+                    with
+                    | Error u ->
+                        UndefinedValueObservation.ReadByRuntime methodToCall "the location it operates on" u
+                        |> IntrinsicResult.UndefinedValueObserved
+                    | Ok currentValue ->
 
                     let current =
                         match EvalStackValue.ofCliType currentValue with
@@ -1119,11 +1159,16 @@ module Intrinsics =
                 match popManagedByrefArgument operation byrefArg with
                 | ManagedPointerSource.Null -> nullLocation site state
                 | byrefSrc ->
-                    let currentValue =
-                        IlMachineState.readManagedByref
+                    match
+                        IlMachineState.readManagedByrefForUse
                             baseClassTypes
                             state
                             (ManagedPointerSource.requireAddressed byrefSrc)
+                    with
+                    | Error u ->
+                        UndefinedValueObservation.ReadByRuntime methodToCall "the location it operates on" u
+                        |> IntrinsicResult.UndefinedValueObserved
+                    | Ok currentValue ->
 
                     let current =
                         match EvalStackValue.ofCliType currentValue with
@@ -1205,11 +1250,16 @@ module Intrinsics =
                     let comparandSrc = toNativeIntSource comparand
                     let valueSrc = toNativeIntSource value
 
-                    let currentValue =
-                        IlMachineState.readManagedByref
+                    match
+                        IlMachineState.readManagedByrefForUse
                             baseClassTypes
                             state
                             (ManagedPointerSource.requireAddressed byrefSrc)
+                    with
+                    | Error u ->
+                        UndefinedValueObservation.ReadByRuntime methodToCall "the location it operates on" u
+                        |> IntrinsicResult.UndefinedValueObserved
+                    | Ok currentValue ->
 
                     // `ref IntPtr` / `ref UIntPtr` derefs to a wrapper struct. Route the read/write through
                     // the eval-stack flatten/rewrap boundary: `ofCliType` peels the primitive-like
@@ -1274,11 +1324,16 @@ module Intrinsics =
                 match popManagedByrefArgument "Interlocked.CompareExchange<T>" byrefArg with
                 | ManagedPointerSource.Null -> nullLocation site state
                 | byrefSrc ->
-                    let currentValue =
-                        IlMachineState.readManagedByref
+                    match
+                        IlMachineState.readManagedByrefForUse
                             baseClassTypes
                             state
                             (ManagedPointerSource.requireAddressed byrefSrc)
+                    with
+                    | Error u ->
+                        UndefinedValueObservation.ReadByRuntime methodToCall "the location it operates on" u
+                        |> IntrinsicResult.UndefinedValueObserved
+                    | Ok currentValue ->
 
                     let objectTarget (argName : string) (value : CliType) : ManagedHeapAddress option =
                         match value with
@@ -1388,11 +1443,16 @@ module Intrinsics =
 
                     let valueSrc = toNativeIntSource value
 
-                    let currentValue =
-                        IlMachineState.readManagedByref
+                    match
+                        IlMachineState.readManagedByrefForUse
                             baseClassTypes
                             state
                             (ManagedPointerSource.requireAddressed byrefSrc)
+                    with
+                    | Error u ->
+                        UndefinedValueObservation.ReadByRuntime methodToCall "the location it operates on" u
+                        |> IntrinsicResult.UndefinedValueObserved
+                    | Ok currentValue ->
 
                     // `ref IntPtr` / `ref UIntPtr` derefs to a wrapper struct. Route the read/write through
                     // the eval-stack flatten/rewrap boundary: `ofCliType` peels the primitive-like
@@ -1443,11 +1503,16 @@ module Intrinsics =
                 match popManagedByrefArgument "Interlocked.Exchange<T>" byrefArg with
                 | ManagedPointerSource.Null -> nullLocation site state
                 | byrefSrc ->
-                    let currentValue =
-                        IlMachineState.readManagedByref
+                    match
+                        IlMachineState.readManagedByrefForUse
                             baseClassTypes
                             state
                             (ManagedPointerSource.requireAddressed byrefSrc)
+                    with
+                    | Error u ->
+                        UndefinedValueObservation.ReadByRuntime methodToCall "the location it operates on" u
+                        |> IntrinsicResult.UndefinedValueObserved
+                    | Ok currentValue ->
 
                     let valueCli = EvalStackValue.toCliTypeCoerced currentValue value
 
@@ -3344,17 +3409,27 @@ module Intrinsics =
                 | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
                 | other -> failwith $"%s{spanTypeName}.get_Item expected Int32 index, got %O{other}"
 
-            let span : CliValueType =
+            let span : Result<CliValueType, UndefinedValue> =
                 match receiver with
                 | EvalStackValue.ManagedPointer src ->
                     match
-                        IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed src)
+                        IlMachineState.readManagedByrefForUse
+                            baseClassTypes
+                            state
+                            (ManagedPointerSource.requireAddressed src)
                     with
-                    | CliType.ValueType vt -> vt
-                    | other ->
+                    | Error u -> Error u
+                    | Ok (CliType.ValueType vt) -> Ok vt
+                    | Ok other ->
                         failwith $"%s{spanTypeName}.get_Item receiver byref read produced non-value-type %O{other}"
-                | EvalStackValue.UserDefinedValueType vt -> vt
+                | EvalStackValue.UserDefinedValueType vt -> Ok vt
                 | other -> failwith $"%s{spanTypeName}.get_Item expected span receiver byref, got %O{other}"
+
+            match span with
+            | Error u ->
+                UndefinedValueObservation.ReadByRuntime methodToCall "the span it indexes" u
+                |> IntrinsicResult.UndefinedValueObserved
+            | Ok span ->
 
             let length : int =
                 let lengthField =
@@ -3419,16 +3494,26 @@ module Intrinsics =
 
             let receiver, state = IlMachineState.popEvalStack currentThread state
 
-            let span : CliValueType =
+            let span : Result<CliValueType, UndefinedValue> =
                 match receiver with
                 | EvalStackValue.ManagedPointer src ->
                     match
-                        IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed src)
+                        IlMachineState.readManagedByrefForUse
+                            baseClassTypes
+                            state
+                            (ManagedPointerSource.requireAddressed src)
                     with
-                    | CliType.ValueType vt -> vt
-                    | other -> failwith $"Span`1.Clear receiver byref read produced non-value-type %O{other}"
-                | EvalStackValue.UserDefinedValueType vt -> vt
+                    | Error u -> Error u
+                    | Ok (CliType.ValueType vt) -> Ok vt
+                    | Ok other -> failwith $"Span`1.Clear receiver byref read produced non-value-type %O{other}"
+                | EvalStackValue.UserDefinedValueType vt -> Ok vt
                 | other -> failwith $"Span`1.Clear expected span receiver byref, got %O{other}"
+
+            match span with
+            | Error u ->
+                UndefinedValueObservation.ReadByRuntime methodToCall "the span it clears" u
+                |> IntrinsicResult.UndefinedValueObserved
+            | Ok span ->
 
             let length : int =
                 let lengthField =

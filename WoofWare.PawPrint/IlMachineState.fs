@@ -192,6 +192,38 @@ module IlMachineState =
 
     let readManagedByrefField = IlMachineManagedByref.readManagedByrefField
 
+    /// `readManagedByref`, for a runtime-implemented method that *uses* what it reads — compares
+    /// it, computes with it, sends it to the host — rather than handing it back: `Error` with the
+    /// undefined value when any leaf of it is undefined, which the method must report rather than
+    /// use.
+    let readManagedByrefForUse
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (src : AddressedByref)
+        : Result<CliType, UndefinedValue>
+        =
+        let value = IlMachineManagedByref.readManagedByref baseClassTypes state src
+
+        match CliType.tryFindUndefined value with
+        | Some u -> Error u
+        | None -> Ok value
+
+    /// `readManagedByrefBytesAs`, for a runtime-implemented method that uses what it reads; see
+    /// `readManagedByrefForUse`.
+    let readManagedByrefBytesAsForUse
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (src : AddressedByref)
+        (targetTemplate : CliType)
+        : Result<CliType, UndefinedValue>
+        =
+        let value =
+            IlMachineManagedByref.readManagedByrefBytesAs baseClassTypes state src targetTemplate
+
+        match CliType.tryFindUndefined value with
+        | Some u -> Error u
+        | None -> Ok value
+
     let readPeByteRangeBytesAs = IlMachineManagedByref.readPeByteRangeBytesAs
 
     let writeManagedByrefBytesOrTypedCell =

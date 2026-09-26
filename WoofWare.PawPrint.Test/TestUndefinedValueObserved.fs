@@ -1,5 +1,6 @@
 namespace WoofWare.Pawprint.Test
 
+open System
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -296,4 +297,314 @@ unsafe class Program
                                                        IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Callvirt, _),
                                                        _) -> method.Name |> shouldEqual "TypeOf"
                 | other -> failwith $"expected the constrained callvirt's read of hasValue, got %O{other}"
+            )
+
+    /// The observation must be the runtime's read through a pointer, of the undefined value
+    /// `expected` names; `method` names the runtime-implemented method that read it.
+    /// The observation is `methodName`'s read of `what`. A P/Invoke's own name is generated, so
+    /// `methodName` is a prefix of it.
+    let private expectReadByRuntime
+        (methodName : string)
+        (what : string)
+        (observation : UndefinedValueObservation)
+        : unit
+        =
+        match observation.Use with
+        | UndefinedValueUse.ReadByRuntime (method, actualWhat) ->
+            method.Name.StartsWith (methodName, StringComparison.Ordinal)
+            |> shouldEqual true
+
+            actualWhat |> shouldEqual what
+        | other -> failwith $"expected %s{methodName}'s read of %s{what}, got %O{other}"
+
+    [<Test>]
+    let ``Interlocked.Add on a location holding an undefined value ends the run at the add`` () : unit =
+        let source =
+            """
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    static int Main(string[] args)
+    {
+        int* numbers = stackalloc int[1];
+        int location = numbers[0];
+        // Only moved so far; the add reads it.
+        return Interlocked.Add(ref location, 1) == 1 ? 0 : 1;
+    }
+}
+"""
+
+        run
+            "UndefinedInterlockedAdd.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.Int32
+                stackOrigins observation.Value |> shouldEqual [ 0 ; 1 ; 2 ; 3 ]
+                expectReadByRuntime "ExchangeAdd" "the location it operates on" observation
+            )
+
+    [<Test>]
+    let ``Interlocked.CompareExchange on a location holding an undefined value ends the run at the compare`` () : unit =
+        let source =
+            """
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    static int Main(string[] args)
+    {
+        long* numbers = stackalloc long[1];
+        long location = numbers[0];
+        return Interlocked.CompareExchange(ref location, 1, 0) == 0 ? 0 : 1;
+    }
+}
+"""
+
+        run
+            "UndefinedInterlockedCompareExchange.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.Int64
+                expectReadByRuntime "CompareExchange" "the location it operates on" observation
+            )
+
+    [<Test>]
+    let ``Writing a buffer with an unwritten byte to a stream ends the run at the write`` () : unit =
+        let source =
+            """
+using System;
+using System.IO;
+using System.Runtime.CompilerServices;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    static int Main(string[] args)
+    {
+        byte* bytes = stackalloc byte[4];
+        bytes[0] = 65;
+        bytes[1] = 66;
+        bytes[3] = 10;
+        using Stream output = Console.OpenStandardOutput();
+        // The native write reads all four bytes, byte 2 among them.
+        output.Write(new ReadOnlySpan<byte>(bytes, 4));
+        return 0;
+    }
+}
+"""
+
+        run
+            "UndefinedNativeWrite.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.UInt8
+                stackOrigins observation.Value |> shouldEqual [ 2 ]
+                expectReadByRuntime "<Write>g__" "the buffer it writes out" observation
+            )
+
+    [<Test>]
+    let ``A path with an unwritten byte before its terminator ends the run at the syscall`` () : unit =
+        let source =
+            """
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_MkDir", SetLastError = true)]
+    static extern int MkDir(byte* path, int mode);
+
+    static int Main(string[] args)
+    {
+        byte* path = stackalloc byte[3];
+        path[0] = (byte)'d';
+        path[2] = 0;
+        // The scan for the terminator compares byte 1 with NUL.
+        return MkDir(path, 0x1ff) == 0 ? 0 : 1;
+    }
+}
+"""
+
+        run
+            "UndefinedNativePath.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.UInt8
+                stackOrigins observation.Value |> shouldEqual [ 1 ]
+                expectReadByRuntime "MkDir" "the path it reads" observation
+            )
+
+    [<Test>]
+    let ``A socket address with an unwritten port ends the run at the port's read`` () : unit =
+        let source =
+            """
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_GetPort")]
+    static extern int GetPort(byte* socketAddress, int socketAddressLen, ushort* port);
+
+    static int Main(string[] args)
+    {
+        byte* address = stackalloc byte[16];
+        // `sa_family = AF_INET` in Linux's two-byte layout; the port, at bytes 2 and 3, is
+        // never written.
+        address[0] = 2;
+        address[1] = 0;
+        ushort port;
+        return GetPort(address, 16, &port) == 0 ? 0 : 1;
+    }
+}
+"""
+
+        run
+            "UndefinedNativeSockaddrPort.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.UInt8
+                stackOrigins observation.Value |> shouldEqual [ 2 ]
+                expectReadByRuntime "GetPort" "the socket address's port" observation
+            )
+
+    [<Test>]
+    let ``A socket address with an unwritten family ends the run at the family's read`` () : unit =
+        let source =
+            """
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_GetPort")]
+    static extern int GetPort(byte* socketAddress, int socketAddressLen, ushort* port);
+
+    static int Main(string[] args)
+    {
+        byte* address = stackalloc byte[16];
+        // Only the port is written; the family, at bytes 0 and 1 on Linux, is not.
+        address[2] = 0;
+        address[3] = 80;
+        ushort port;
+        return GetPort(address, 16, &port) == 0 ? 0 : 1;
+    }
+}
+"""
+
+        run
+            "UndefinedNativeSockaddrFamily.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.UInt8
+                stackOrigins observation.Value |> shouldEqual [ 0 ]
+                expectReadByRuntime "GetPort" "the socket address's family" observation
+            )
+
+    [<Test>]
+    let ``Comparing spans a byte of which is unwritten ends the run at the comparison`` () : unit =
+        let source =
+            """
+using System;
+using System.Runtime.CompilerServices;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    static int Main(string[] args)
+    {
+        byte* left = stackalloc byte[3];
+        left[0] = 1;
+        left[2] = 3;
+        byte* right = stackalloc byte[3];
+        right[0] = 1;
+        right[1] = 2;
+        right[2] = 3;
+        // Byte 0 is equal, so the comparison goes on to byte 1 of `left`.
+        return new ReadOnlySpan<byte>(left, 3).SequenceEqual(new ReadOnlySpan<byte>(right, 3)) ? 0 : 1;
+    }
+}
+"""
+
+        run
+            "UndefinedSequenceEqual.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.UInt8
+                stackOrigins observation.Value |> shouldEqual [ 1 ]
+                expectReadByRuntime "SequenceEqual" "the bytes it compares" observation
+            )
+
+    [<Test>]
+    let ``Making a string of a span of chars one of which is unwritten ends the run there`` () : unit =
+        let source =
+            """
+using System;
+using System.Runtime.CompilerServices;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    static int Main(string[] args)
+    {
+        char* chars = stackalloc char[3];
+        chars[0] = 'a';
+        chars[2] = 'c';
+        return new ReadOnlySpan<char>(chars, 3).ToString().Length == 3 ? 0 : 1;
+    }
+}
+"""
+
+        run
+            "UndefinedSpanToString.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.Char
+                stackOrigins observation.Value |> shouldEqual [ 2 ; 3 ]
+                expectReadByRuntime "ToString" "the characters of the span" observation
+            )
+
+    [<Test>]
+    let ``Comparing char spans one of which holds an unwritten char ends the run at the comparison`` () : unit =
+        let source =
+            """
+using System;
+using System.Runtime.CompilerServices;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    static int Main(string[] args)
+    {
+        char* chars = stackalloc char[2];
+        chars[0] = 'a';
+        return new ReadOnlySpan<char>(chars, 2).Equals("ab".AsSpan(), StringComparison.Ordinal) ? 0 : 1;
+    }
+}
+"""
+
+        run
+            "UndefinedMemoryExtensionsEquals.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.Char
+                stackOrigins observation.Value |> shouldEqual [ 2 ; 3 ]
+                expectReadByRuntime "Equals" "the characters of the spans" observation
             )

@@ -2188,6 +2188,10 @@ module IlMachineStateExecution =
                 raiseRuntimeExceptionWithMessage loggerFactory baseClassTypes exnType message thread state
                 |> fst
                 |> fun state -> Some (IntrinsicOutcome.Handled (state, CallCommitment.Raised))
+            // Whatever the intrinsic did before it found the value is discarded: the state from
+            // before the call is the one to report.
+            | IntrinsicResult.UndefinedValueObserved observation ->
+                Some (IntrinsicOutcome.Handled (state, CallCommitment.UndefinedValueObserved observation))
             | IntrinsicResult.Unrecognised -> None
 
         // An intrinsic PawPrint performs itself reads its arguments, which are still on the

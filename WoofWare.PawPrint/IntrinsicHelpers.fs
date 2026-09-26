@@ -548,7 +548,15 @@ module internal IntrinsicHelpers =
             | ByrefProjection.ReinterpretAs _ :: revPrefix -> ValueSome (root, List.rev revPrefix, 0)
             | _ -> ValueNone
 
-    let byteAtOffset (operation : string) (src : ManagedPointerSource) (byteOffset : int) (value : CliType) : byte =
+    /// Byte `byteOffset` of `value`, for a comparison that uses it: `Error` with that byte as an
+    /// undefined value if it is undefined.
+    let byteAtOffset
+        (operation : string)
+        (src : ManagedPointerSource)
+        (byteOffset : int)
+        (value : CliType)
+        : Result<byte, UndefinedValue>
+        =
         if byteOffset < 0 then
             failwith $"%s{operation}: negative byte offset %d{byteOffset} through %O{src}"
 
@@ -557,8 +565,20 @@ module internal IntrinsicHelpers =
             failwith $"%s{operation}: refusing to byte-compare non-tightly-packed value type %O{vt.Declared}"
         | _ -> ()
 
+        let undefinedByte =
+            match CliType.ByteImageAt byteOffset 1 value with
+            | [| Error rejection |] -> rejection.UndefinedOrigin
+            | _ -> None
+
+        match undefinedByte with
+        | Some origin ->
+            match UndefinedValue.tryOfBytes UndefinedPrimitive.UInt8 [ ValueByte.Undefined origin ] with
+            | ValueSome u -> Error u
+            | ValueNone -> failwith "unreachable: a one-byte image of an undefined byte is undefined"
+        | None ->
+
         try
-            CliType.BytesAt byteOffset 1 value |> Array.exactlyOne
+            CliType.BytesAt byteOffset 1 value |> Array.exactlyOne |> Ok
         with ex ->
             failwith $"%s{operation}: %s{ex.Message}"
 
@@ -567,9 +587,9 @@ module internal IntrinsicHelpers =
         (operation : string)
         (state : IlMachineState)
         (src : ManagedPointerSource)
-        : byte
+        : Result<byte, UndefinedValue>
         =
-        let readPrimitiveByteView () : byte =
+        let readPrimitiveByteView () : Result<byte, UndefinedValue> =
             match
                 IlMachineState.readManagedByrefBytesAs
                     baseClassTypes
@@ -577,7 +597,8 @@ module internal IntrinsicHelpers =
                     (ManagedPointerSource.requireAddressed src)
                     byteTemplate
             with
-            | CliType.Numeric (CliNumericType.UInt8 b) -> UInt8Source.value $"%s{operation}: byte-view read" b
+            | CliType.Numeric (CliNumericType.UInt8 b) -> UInt8Source.value $"%s{operation}: byte-view read" b |> Ok
+            | CliType.Undefined u -> Error u
             | other -> failwith $"%s{operation}: byte-view read returned non-byte value %O{other}"
 
         match src with
@@ -655,7 +676,7 @@ module internal IntrinsicHelpers =
         (advanceCaller : IlMachineState -> IlMachineState)
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (state : IlMachineState)
-        : IlMachineState
+        : Result<IlMachineState, UndefinedValue>
         =
         match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
         | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
@@ -672,35 +693,40 @@ module internal IntrinsicHelpers =
 
         let byteCount = byteCountOfStackValue operation byteCountArg
 
+        // Compares a byte at a time and stops at the first difference, as the real one's answer
+        // does not depend on anything after it; an undefined byte before that decides the answer
+        // and ends the run.
         let result =
             if byteCount = 0 then
-                true
+                Ok true
             else
                 let byteType = byteConcreteType operation baseClassTypes state
                 let leftPtr = managedPointerOfPointerArgument operation leftArg
                 let rightPtr = managedPointerOfPointerArgument operation rightArg
-                let mutable equal = true
-                let mutable i = 0
 
-                while equal && i < byteCount do
-                    let left = ManagedPointerByteView.addByteOffset state byteType i leftPtr
+                let rec compareFrom (i : int) : Result<bool, UndefinedValue> =
+                    if i >= byteCount then
+                        Ok true
+                    else
+                        let left = ManagedPointerByteView.addByteOffset state byteType i leftPtr
+                        let right = ManagedPointerByteView.addByteOffset state byteType i rightPtr
 
-                    let right = ManagedPointerByteView.addByteOffset state byteType i rightPtr
+                        match readSpanHelpersSequenceEqualByte baseClassTypes operation state left with
+                        | Error u -> Error u
+                        | Ok l ->
 
-                    equal <-
-                        readSpanHelpersSequenceEqualByte baseClassTypes operation state left = readSpanHelpersSequenceEqualByte
-                            baseClassTypes
-                            operation
-                            state
-                            right
+                        match readSpanHelpersSequenceEqualByte baseClassTypes operation state right with
+                        | Error u -> Error u
+                        | Ok r -> if l = r then compareFrom (i + 1) else Ok false
 
-                    i <- i + 1
+                compareFrom 0
 
-                equal
-
-        state
-        |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
-        |> advanceCaller
+        result
+        |> Result.map (fun result ->
+            state
+            |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
+            |> advanceCaller
+        )
 
     let popPointerBackedSpanConstructorArgs
         (currentThread : ThreadId)
@@ -916,14 +942,21 @@ module internal IntrinsicHelpers =
         (operation : string)
         (state : IlMachineState)
         (receiver : EvalStackValue)
-        : CliValueType
+        : Result<CliValueType, UndefinedValue>
         =
+        // The span's reference and length are what the caller reads it for, so a span with an
+        // undefined field is a use of it.
+        let ofValue (vt : CliValueType) : Result<CliValueType, UndefinedValue> =
+            match CliType.tryFindUndefined (CliType.ValueType vt) with
+            | Some u -> Error u
+            | None -> Ok vt
+
         match receiver with
         | EvalStackValue.ManagedPointer src ->
             match IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed src) with
-            | CliType.ValueType vt -> vt
+            | CliType.ValueType vt -> ofValue vt
             | other -> failwith $"%s{operation}: receiver byref read produced non-value-type %O{other}"
-        | EvalStackValue.UserDefinedValueType vt -> vt
+        | EvalStackValue.UserDefinedValueType vt -> ofValue vt
         | other -> failwith $"%s{operation}: expected span receiver byref, got %O{other}"
 
     let spanReferenceAndLength
@@ -963,7 +996,7 @@ module internal IntrinsicHelpers =
         (operation : string)
         (state : IlMachineState)
         (span : CliValueType)
-        : string * IlMachineState
+        : Result<string * IlMachineState, UndefinedValue>
         =
         let spanType =
             AllConcreteTypes.lookup span.Declared state.ConcreteTypes
@@ -983,30 +1016,28 @@ module internal IntrinsicHelpers =
         if length < 0 then
             failwith $"%s{operation}: span length was negative: %d{length}"
 
-        let contents, state =
-            (([], state), [ 0 .. length - 1 ])
-            ||> List.fold (fun (chars, state) index ->
-                let ptr, state =
-                    offsetManagedPointerByElements
+        let rec readFrom (index : int) (chars : char list) (state : IlMachineState) =
+            if index >= length then
+                Ok (System.String (chars |> List.rev |> List.toArray), state)
+            else
+
+            let ptr, state =
+                offsetManagedPointerByElements baseClassTypes state spanType.Generics.[0] (int64<int> index) reference
+
+            let value =
+                match ptr with
+                | EvalStackValue.ManagedPointer src ->
+                    IlMachineState.readManagedByrefForUse
                         baseClassTypes
                         state
-                        spanType.Generics.[0]
-                        (int64<int> index)
-                        reference
+                        (ManagedPointerSource.requireAddressed src)
+                | other -> failwith $"%s{operation}: element pointer was not a managed pointer: %O{other}"
 
-                let value =
-                    match ptr with
-                    | EvalStackValue.ManagedPointer src ->
-                        IlMachineState.readManagedByref
-                            baseClassTypes
-                            state
-                            (ManagedPointerSource.requireAddressed src)
-                    | other -> failwith $"%s{operation}: element pointer was not a managed pointer: %O{other}"
+            match value with
+            | Error u -> Error u
+            | Ok value -> readFrom (index + 1) (charOfCliType operation value :: chars) state
 
-                charOfCliType operation value :: chars, state
-            )
-
-        System.String (contents |> List.rev |> List.toArray), state
+        readFrom 0 [] state
 
     let spanToString
         (loggerFactory : ILoggerFactory)
@@ -1015,7 +1046,7 @@ module internal IntrinsicHelpers =
         (advanceCaller : IlMachineState -> IlMachineState)
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (state : IlMachineState)
-        : IlMachineState
+        : Result<IlMachineState, UndefinedValue>
         =
         match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
         | [], MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.String) -> ()
@@ -1026,7 +1057,11 @@ module internal IntrinsicHelpers =
         let operation = $"{MethodOwner.describe methodToCall.Owner}.ToString"
         let elementType = methodToCall.DeclaringTypeGenerics |> Seq.exactlyOne
         let receiver, state = IlMachineState.popEvalStack currentThread state
-        let span = spanReceiverValue baseClassTypes operation state receiver
+
+        match spanReceiverValue baseClassTypes operation state receiver with
+        | Error u -> Error u
+        | Ok span ->
+
         let reference, length = spanReferenceAndLength operation state span
 
         if length < 0 then
@@ -1036,29 +1071,34 @@ module internal IntrinsicHelpers =
             AllConcreteTypes.lookup elementType state.ConcreteTypes
             |> Option.defaultWith (fun () -> failwith $"%s{operation}: element type %O{elementType} was not registered")
 
-        let contents, state =
+        let contents =
             if
                 AssemblyDefinitionName.isNamed "System.Private.CoreLib" elementTypeInfo.AssemblyFullName
                 && elementTypeInfo.Namespace = "System"
                 && elementTypeInfo.Name = "Char"
             then
-                (([], state), [ 0 .. length - 1 ])
-                ||> List.fold (fun (chars, state) index ->
+                let rec readFrom (index : int) (chars : char list) (state : IlMachineState) =
+                    if index >= length then
+                        Ok (System.String (chars |> List.rev |> List.toArray), state)
+                    else
+
                     let ptr, state =
                         offsetManagedPointerByElements baseClassTypes state elementType (int64<int> index) reference
 
                     let value =
                         match ptr with
                         | EvalStackValue.ManagedPointer src ->
-                            IlMachineState.readManagedByref
+                            IlMachineState.readManagedByrefForUse
                                 baseClassTypes
                                 state
                                 (ManagedPointerSource.requireAddressed src)
                         | other -> failwith $"%s{operation}: element pointer was not a managed pointer: %O{other}"
 
-                    charOfCliType operation value :: chars, state
-                )
-                |> fun (chars, state) -> System.String (chars |> List.rev |> List.toArray), state
+                    match value with
+                    | Error u -> Error u
+                    | Ok value -> readFrom (index + 1) (charOfCliType operation value :: chars) state
+
+                readFrom 0 [] state
             else
                 let typeKind =
                     if methodToCall.RequiredDeclaringType.Name = "ReadOnlySpan`1" then
@@ -1066,7 +1106,11 @@ module internal IntrinsicHelpers =
                     else
                         "Span"
 
-                $"System.%s{typeKind}<%s{elementTypeInfo.Name}>[%d{length}]", state
+                Ok ($"System.%s{typeKind}<%s{elementTypeInfo.Name}>[%d{length}]", state)
+
+        match contents with
+        | Error u -> Error u
+        | Ok (contents, state) ->
 
         let stringAddr, state =
             IlMachineState.allocateManagedString loggerFactory baseClassTypes contents state
@@ -1074,6 +1118,7 @@ module internal IntrinsicHelpers =
         state
         |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some stringAddr)) currentThread
         |> advanceCaller
+        |> Ok
 
     let memoryExtensionsEquals
         (baseClassTypes : BaseClassTypes<_>)
@@ -1081,7 +1126,7 @@ module internal IntrinsicHelpers =
         (advanceCaller : IlMachineState -> IlMachineState)
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (state : IlMachineState)
-        : IlMachineState
+        : Result<IlMachineState, UndefinedValue>
         =
         match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
         | [ leftSpan ; rightSpan ; comparisonType ], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) when
@@ -1102,10 +1147,19 @@ module internal IntrinsicHelpers =
         let left, state = IlMachineState.popEvalStack currentThread state
 
         let comparisonType = int32OfEvalStackValue operation comparisonType
-        let left = spanReceiverValue baseClassTypes operation state left
-        let right = spanReceiverValue baseClassTypes operation state right
-        let left, state = readCharSpanContents baseClassTypes operation state left
-        let right, state = readCharSpanContents baseClassTypes operation state right
+
+        let contents =
+            spanReceiverValue baseClassTypes operation state left
+            |> Result.bind (fun left -> readCharSpanContents baseClassTypes operation state left)
+            |> Result.bind (fun (left, state) ->
+                spanReceiverValue baseClassTypes operation state right
+                |> Result.bind (fun right -> readCharSpanContents baseClassTypes operation state right)
+                |> Result.map (fun (right, state) -> left, right, state)
+            )
+
+        match contents with
+        | Error u -> Error u
+        | Ok (left, right, state) ->
 
         let result =
             match comparisonType with
@@ -1124,6 +1178,7 @@ module internal IntrinsicHelpers =
         state
         |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
         |> advanceCaller
+        |> Ok
 
     /// The size operand of `initblk` (ECMA-335 III.3.36) and of `cpblk` (III.3.30) is an
     /// *unsigned* int32, so the int32 evaluation-stack slot is reinterpreted rather than
