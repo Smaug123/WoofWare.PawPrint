@@ -36,10 +36,38 @@ module TestStartupSignalDispositions =
         finally
             Marshal.FreeHGlobal buffer
 
+    /// What the test claims for one signal, decided before the guest runs,
+    /// because the guest must be told whether to wait for its own death.
+    [<RequireQualifiedAccess>]
+    type private Claim =
+        /// This test host ignores the signal, and the oracle's child inherits
+        /// that, so the row says nothing about the runtime.
+        | Inherited
+        /// The table says the runtime overrides the terminating default.
+        | Overridden
+        /// The kernel's default terminates, and the table does not override it.
+        | Dies
+        /// The kernel's default does not terminate.
+        | Survives
+
+    // With "await-death", the guest never returns after sending the signal: a
+    // row that expects death must observe it, because the guest cannot observe
+    // that it has survived. CoreCLR's handlers for SIGINT, SIGQUIT and SIGTERM
+    // restore the default and send the signal again, and the handler runs with
+    // the signal masked on the thread that sent it, so on Darwin the second,
+    // fatal copy is pending on another thread when kill returns. Nothing
+    // orders that thread's next run before Main's return, and sigpending
+    // reports only the calling thread's signals. Only rows that do not expect
+    // death return after kill, and a race there can only disguise a death as
+    // survival. A `Survives` row's default cannot kill the process. An
+    // `Overridden` row would miss a death only if the runtime killed the
+    // process with a second copy of the signal sent from its handler, which
+    // is not how any signal in the table ends.
     let private guest : string =
         """
 using System;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 class Program
 {
@@ -49,7 +77,12 @@ class Program
     static int Main(string[] args)
     {
         if (Kill(Environment.ProcessId, int.Parse(args[0])) != 0) return 1;
-        return 42;
+        switch (args[1])
+        {
+            case "await-death": Thread.Sleep(Timeout.Infinite); return 2;
+            case "return": return 42;
+            default: return 3;
+        }
     }
 }
 """
@@ -62,67 +95,106 @@ class Program
 
             let image = Roslyn.compile [ guest ]
 
+            let signalOf (signo : int) : Signal =
+                match Signal.ofRawSignoUnder numbering signo with
+                | ValueSome signal -> signal
+                | ValueNone -> failwith $"%d{signo} is not a signal under %O{numbering}"
+
             // A stop signal would stop the child until the oracle's timeout
             // kills it, so those are left out; the model refuses them anyway.
             let signos =
                 [ 1 .. Signal.highestSignoUnder numbering ]
                 |> List.filter (fun signo ->
-                    match Signal.ofRawSignoUnder numbering signo with
-                    | ValueSome signal -> Signal.defaultDispositionUnder numbering signal <> DefaultDisposition.Stop
-                    | ValueNone -> failwith $"%d{signo} is not a signal under %O{numbering}"
+                    Signal.defaultDispositionUnder numbering (signalOf signo)
+                    <> DefaultDisposition.Stop
                 )
 
-            let observed = ConcurrentDictionary<int, RealRuntimeResult> ()
+            let claimOf (signo : int) : Claim =
+                let signal = signalOf signo
+
+                let overridden =
+                    StartupSignalDispositions.overridesTerminatingDefault numbering signal
+
+                let terminatesByDefault =
+                    Signal.defaultDispositionUnder numbering signal = DefaultDisposition.Terminate
+
+                // A row the launcher ignores says nothing about the runtime
+                // unless the runtime's own disposition decides it anyway.
+                if hostIgnores signo && terminatesByDefault && not overridden then
+                    Claim.Inherited
+                elif overridden then
+                    Claim.Overridden
+                elif terminatesByDefault then
+                    Claim.Dies
+                else
+                    Claim.Survives
+
+            let claims = signos |> List.map (fun signo -> signo, claimOf signo)
+
+            // An exception from the oracle (in a `Dies` row, most likely its
+            // timeout, because the runtime survived) is kept against its
+            // signal rather than escaping the loop unattributed.
+            let observed = ConcurrentDictionary<int, Result<RealRuntimeResult, exn>> ()
 
             Parallel.ForEach (
-                signos,
+                claims,
                 ParallelOptions (MaxDegreeOfParallelism = 8),
-                fun (signo : int) ->
-                    observed.[signo] <- RealRuntime.executeWithRealRuntime [| string<int> signo |] image
+                fun (signo : int, claim : Claim) ->
+                    let mode =
+                        match claim with
+                        | Claim.Inherited -> None
+                        | Claim.Dies -> Some "await-death"
+                        | Claim.Overridden
+                        | Claim.Survives -> Some "return"
+
+                    match mode with
+                    | None -> ()
+                    | Some mode ->
+                        observed.[signo] <-
+                            try
+                                Ok (RealRuntime.executeWithRealRuntime [| string<int> signo ; mode |] image)
+                            with e ->
+                                Error e
             )
             |> ignore<ParallelLoopResult>
 
-            let mismatches =
-                [
-                    for signo in signos do
-                        let signal =
-                            match Signal.ofRawSignoUnder numbering signo with
-                            | ValueSome signal -> signal
-                            | ValueNone -> failwith "unreachable: filtered above"
+            let exact (signo : int) (expected : RealRuntimeResult) : string option =
+                let signal = signalOf signo
 
-                        let diedOfIt = RealRuntimeResult.NormalExit (128 + signo)
-                        let survived = RealRuntimeResult.NormalExit 42
+                match observed.[signo] with
+                | Ok result when result = expected -> None
+                | Ok result ->
+                    Some $"signo %d{signo} (%O{signal}): expected %O{expected}, the real runtime gave %O{result}"
+                | Error e ->
+                    Some
+                        $"signo %d{signo} (%O{signal}): expected %O{expected}, the real runtime could not be observed: %s{e.Message}"
 
-                        let overridden =
-                            StartupSignalDispositions.overridesTerminatingDefault numbering signal
+            let mismatchOf (signo : int, claim : Claim) : string option =
+                let signal = signalOf signo
+                let diedOfIt = RealRuntimeResult.NormalExit (128 + signo)
 
-                        let terminatesByDefault =
-                            Signal.defaultDispositionUnder numbering signal = DefaultDisposition.Terminate
+                match claim with
+                | Claim.Inherited ->
+                    printfn
+                        $"signo %d{signo} (%O{signal}): not checked, because this test host ignores it and the oracle's child inherits that."
 
-                        // A row the launcher ignores says nothing about the
-                        // runtime unless the runtime's own disposition decides
-                        // it anyway.
-                        let inherited = hostIgnores signo && terminatesByDefault && not overridden
+                    None
+                | Claim.Overridden ->
+                    // What the runtime's disposition does instead is not one
+                    // answer: the process survives most of these, but on
+                    // x86-64 Linux SIGTRAP kills it with SIGILL. The table
+                    // claims only that the default is not what happens.
+                    match observed.[signo] with
+                    | Ok result when result = diedOfIt ->
+                        Some
+                            $"signo %d{signo} (%O{signal}): the table says the runtime overrides the default, but the real runtime died of it (%O{diedOfIt})"
+                    | Ok _ -> None
+                    | Error e ->
+                        Some $"signo %d{signo} (%O{signal}): the real runtime could not be observed: %s{e.Message}"
+                | Claim.Dies -> exact signo diedOfIt
+                | Claim.Survives -> exact signo (RealRuntimeResult.NormalExit 42)
 
-                        if inherited then
-                            printfn
-                                $"signo %d{signo} (%O{signal}): not checked, because this test host ignores it and the oracle's child inherits that."
-                        elif overridden then
-                            // What the runtime's disposition does instead is
-                            // not one answer: the process survives most of
-                            // these, but on x86-64 Linux SIGTRAP kills it with
-                            // SIGILL. The table claims only that the default
-                            // is not what happens.
-                            if observed.[signo] = diedOfIt then
-                                yield
-                                    $"signo %d{signo} (%O{signal}): the table says the runtime overrides the default, but the real runtime died of it (%O{diedOfIt})"
-                        else
-                            let expected = if terminatesByDefault then diedOfIt else survived
-
-                            if observed.[signo] <> expected then
-                                yield
-                                    $"signo %d{signo} (%O{signal}): expected %O{expected}, the real runtime gave %O{observed.[signo]}"
-                ]
+            let mismatches = claims |> List.choose mismatchOf
 
             if not mismatches.IsEmpty then
                 failwith (

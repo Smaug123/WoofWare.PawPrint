@@ -84,6 +84,9 @@
     <Compile Include="TestSocketWait.fs" />
     <Compile Include="TestDatagramDissolve.fs" />
     <Compile Include="TestEpollCtl.fs" />
+    <Compile Include="TestPipeBuffer.fs" />
+    <Compile Include="TestPipeBufferCorpus.fs" />
+    <Compile Include="TestPipeBufferAgainstHost.fs" />
     <Compile Include="TestSockaddrField.fs" />
     <Compile Include="TestSockaddrLayoutAgainstHost.fs" />
   </ItemGroup>
@@ -100,6 +103,12 @@
     <!-- What `epoll_ctl(2)` answered for every cell of the probe's ladder,
          measured on Linux; `TestEpollCtl` holds `UnixPoll.epollCtl` to it. -->
     <EmbeddedResource Include="epollCtl\linux-ladder.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- What a real pipe answered to random non-blocking reads and writes,
+         measured per flavour; `TestPipeBufferCorpus` holds `PipeBuffer` to it. -->
+    <EmbeddedResource Include="pipeBuffer\*.txt" />
   </ItemGroup>
 
   <ItemGroup>
