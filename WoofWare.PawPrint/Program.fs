@@ -889,7 +889,7 @@ module Program =
                                 )
                             )
                 elif PosixSignalShim.signalThread state.Kernel.PosixSignalShim = Some terminatingThread then
-                    // The kernel-owned signal-dispatch thread's handler frame
+                    // The shim's signal-dispatch thread's handler frame
                     // has returned past its bottom; `Ret` surfaces that as a
                     // `Terminated` outcome because the bottom frame has no
                     // `ReturnState`. Reset the dispatcher to its idle Parked

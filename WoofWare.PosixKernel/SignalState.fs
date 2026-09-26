@@ -14,17 +14,15 @@ type PendingSignal<'Task> =
     }
 
 /// What the kernel does with the next receivable pending signal, as decided
-/// by `SignalState.nextDelivery`: hand it to the client's installed handler
-/// on a chosen receiver thread, or apply the signal's kernel default. The
-/// client interprets it — runs the handler, terminates the simulated
-/// process by the signal, or refuses what it does not model.
+/// by `SignalState.nextDelivery`: deliver it to a chosen receiver thread, so
+/// that the handler the client installed for it runs, or apply the signal's
+/// kernel default. The client interprets it — runs its handler, terminates
+/// the simulated process by the signal, or refuses what it does not model.
 [<RequireQualifiedAccess>]
 type SignalDelivery<'Task, 'Handler> =
-    /// Deliver `entry` to the client's dispatch callback. `receiver` is the
-    /// thread the kernel chose to take the signal; a client whose handlers
-    /// all run on a dedicated dispatcher task (as CoreCLR's do) may ignore
-    /// it today, but it is the thread a `pthread_kill`-style branch would
-    /// interrupt.
+    /// A handler is installed for `entry`'s signal: the client runs it.
+    /// `receiver` is the thread the kernel chose to take the signal, which is
+    /// the thread the handler interrupts.
     | RunHandler of entry : PendingSignal<'Task> * receiver : 'Task
     /// No handler claims the signal and its kernel default is to terminate
     /// the process. A parent's `wait` then reports the process as killed by
@@ -59,15 +57,14 @@ type SignalGeneration =
 /// Pure, deterministic model of the simulator's signal-handling state.
 ///
 /// The shape is deliberately small:
-///   * `Enabled` — the set of signals the client has asked to have
-///     delivered to it. This mirrors the enable bits a real signal shim
-///     keeps; the mapping from a signal to whatever the client runs for it
-///     is the client's own, and is none of this module's concern. A pending
-///     entry whose signal is not enabled falls to its kernel default; see
-///     `nextDelivery`.
+///   * `Enabled` — the signals the client has installed a handler for, as
+///     `sigaction(2)` installs one. Which handler that is, is the client's
+///     own record and none of this module's concern: nothing here holds a
+///     `'Handler`. A pending entry whose signal is not enabled falls to its
+///     kernel default; see `nextDelivery`.
 ///   * `Blocked` — per-thread sigprocmask. A signal in a thread's set is
 ///     blocked for that thread and cannot be delivered to it.
-///   * `Pending` — FIFO queue of generated signals waiting for dispatch.
+///   * `Pending` — FIFO queue of generated signals waiting for delivery.
 ///
 /// One instance of this type belongs to each simulated process. A client
 /// polls it for deliverable signals and dispatches out of it; the data shape
@@ -146,11 +143,9 @@ module SignalState =
     /// The enabled set, every member in its canonical spelling.
     let enabled (state : SignalState<'Task, 'Handler>) : Set<Signal> = state.Enabled
 
-    /// Mark `signal` as enabled for managed dispatch. Idempotent: a second
-    /// `enable` of an already-enabled signal is a no-op. Mirrors
-    /// `SystemNative_EnablePosixSignalHandling` on the C side, which flips
-    /// a per-signo enable bit; the actual handler dictionary lives on the
-    /// simulated managed heap.
+    /// Install a handler for `signal`, so that a delivery of it runs the
+    /// client's handler rather than the kernel default. Idempotent: a second
+    /// `enable` of an already-enabled signal is a no-op.
     ///
     /// Fails loud on a signal `sigaction(2)` refuses to install a handler
     /// for: the enable bit stands for a disposition the kernel holds, and no
@@ -171,10 +166,11 @@ module SignalState =
                 Enabled = Set.add signal state.Enabled
             }
 
-    /// Clear the enable bit for `signal`. No-op if not enabled. Pending
-    /// entries for the signal remain queued, but `nextDelivery` now applies
-    /// the signal's kernel default to them rather than running the handler:
-    /// a disposition is read at delivery, not at generation.
+    /// Remove `signal`'s handler, restoring its kernel default. No-op if not
+    /// enabled. Pending entries for the signal remain queued, but
+    /// `nextDelivery` now applies the signal's kernel default to them rather
+    /// than running the handler: a disposition is read at delivery, not at
+    /// generation.
     ///
     /// Unlike `enable`, an uncatchable signal is *not* refused here: it is
     /// provably absent from the enabled set (`enable` cannot admit one), so
@@ -410,8 +406,8 @@ module SignalState =
     let pending (state : SignalState<'Task, 'Handler>) : PendingSignal<'Task> list = state.Pending
 
     /// Walk the pending queue in FIFO order and decide what the kernel does
-    /// next: hand a signal to the installed handler on a chosen receiver, or
-    /// apply a default disposition. Returns the possibly-updated state in
+    /// next: deliver a signal with a handler installed to a chosen receiver,
+    /// or apply a default disposition. Returns the possibly-updated state in
     /// every case, because a scan can change the state without producing an
     /// action (see the Ignore rule below), and a client that dropped the
     /// no-action state would replay those discards forever.
@@ -427,7 +423,7 @@ module SignalState =
     ///
     /// What happens to a receivable entry is its signal's disposition *now*,
     /// not at generation:
-    ///   * enabled — `RunHandler`;
+    ///   * enabled, so a handler is installed — `RunHandler`;
     ///   * not enabled — the kernel default applies: `Terminate` and `Stop`
     ///     surface as their cases for the client to act on, and Ignore is
     ///     discarded silently, the scan continuing past it. That discard is

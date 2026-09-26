@@ -3,8 +3,9 @@ namespace WoofWare.PawPrint
 open System.Collections.Immutable
 open WoofWare.PosixKernel
 
-/// Drives signal delivery onto the kernel-owned dispatcher thread allocated
-/// by `SystemNative_InitializeTerminalAndSignalHandling`. Mirrors the real
+/// Drives signal delivery onto the shim's dispatcher thread allocated
+/// by `SystemNative_InitializeTerminalAndSignalHandling` (see
+/// `PosixSignalShim`). Mirrors the real
 /// CoreCLR `SignalHandlerLoop` pthread: a long-lived auxiliary thread that
 /// the runtime owns and the guest never names, woken by the kernel when a
 /// pending signal becomes deliverable, runs the installed managed handler,
@@ -17,8 +18,8 @@ open WoofWare.PosixKernel
 ///     step from `Program.stepPrepared`. If a pending entry in
 ///     `SignalState.Pending` is deliverable now (signal enabled, target alive
 ///     and not blocking it, or no specific target but at least one such live
-///     thread exists, and a handler has been installed), and the dispatcher
-///     itself is currently Parked, we pop the entry off the queue and install
+///     thread exists), and the dispatcher itself is currently Parked, we pop
+///     the entry off the queue and install
 ///     a fresh bottom frame on the dispatcher that calls the registered
 ///     handler with `(int signo, int posixSignalEnumValue)`. The frame has no
 ///     `ReturnState`, so when the handler eventually `ret`urns, the bottom
@@ -37,7 +38,7 @@ open WoofWare.PosixKernel
 /// process-directed signal whose mask is vacuously empty on the dispatcher
 /// cannot pick the dispatcher as its receiver. The receiver chosen by
 /// `nextDelivery` is intentionally discarded today; this module models the
-/// "handler runs on the kernel-owned dispatcher thread" branch (which matches
+/// "handler runs on the runtime-owned dispatcher thread" branch (which matches
 /// CoreCLR's `SignalHandlerLoop`). When PawPrint grows the
 /// `pthread_kill`-style branch where the receiver thread itself takes the
 /// hit, the receiver id will be needed and this discard goes away.
@@ -135,13 +136,17 @@ module SignalDispatch =
 
     /// Polled once per tick by `Program.stepPrepared` immediately before the
     /// scheduler picks its next thread. If a pending signal is deliverable
-    /// now, the dispatcher is currently Parked, and a handler is installed,
+    /// now and the dispatcher is currently Parked,
     /// pop the entry off the queue, build a `(signo, posixSignal-enum)`
     /// invocation frame for the handler, and flip the dispatcher
     /// Parked → Runnable so the scheduler picks it up on this tick. Otherwise
     /// returns the state unchanged: every guard path here is "no-op and let
     /// the next tick try again", matching the long-poll cadence of the real
     /// `SignalHandlerLoop`.
+    ///
+    /// Fails if the signal to deliver finds no callback installed by
+    /// `SystemNative_SetPosixSignalHandler`: the shim asserts there is one,
+    /// and the BCL installs it before it enables any signal.
     let trySpawnHandler (baseClassTypes : BaseClassTypes<DumpedAssembly>) (state : IlMachineState) : IlMachineState =
         match PosixSignalShim.signalThread state.Kernel.PosixSignalShim with
         | None ->
@@ -156,7 +161,7 @@ module SignalDispatch =
             | Some ts -> ts.Status
             | None ->
                 failwith
-                    $"SignalDispatch.trySpawnHandler: dispatcher thread %O{dispatcher} recorded in SignalState but no ThreadState entry exists — the initialisation path should always allocate both."
+                    $"SignalDispatch.trySpawnHandler: dispatcher thread %O{dispatcher} recorded in PosixSignalShim but no ThreadState entry exists — the initialisation path should always allocate both."
 
         match dispatcherStatus with
         | ThreadStatus.Parked -> ()
@@ -193,9 +198,8 @@ module SignalDispatch =
 
         match delivery with
         | None ->
-            // Nothing receivable now (queue empty, no handler installed for
-            // an enabled entry, target dead/blocking, or — for a
-            // process-directed signal — no eligible live thread).
+            // Nothing receivable now (queue empty, target dead/blocking, or —
+            // for a process-directed signal — no eligible live thread).
             state
         | Some (SignalDelivery.DefaultTerminate signal)
         | Some (SignalDelivery.DefaultStop signal)

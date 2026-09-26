@@ -6,7 +6,7 @@ open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
-/// Focused tests for the kernel-owned signal-dispatch thread that PawPrint
+/// Focused tests for the runtime-owned signal-dispatch thread that PawPrint
 /// spawns on the first call to
 /// `SystemNative_InitializeTerminalAndSignalHandling`. The dispatcher mirrors
 /// real CoreCLR's `SignalHandlerLoop` pthread: it exists permanently from
@@ -97,7 +97,7 @@ module TestSignalDispatcherThread =
 
     [<Test>]
     let ``allocateParkedThread does not register a managed Thread object`` () : unit =
-        // The dispatcher is kernel-owned, not constructed via the managed
+        // The dispatcher is runtime-owned, not constructed via the managed
         // `new Thread(...)` path. There is no `Thread` heap object for guest
         // code to observe, so `ManagedThreadObjects` must not be touched.
         let initial = baseState ()

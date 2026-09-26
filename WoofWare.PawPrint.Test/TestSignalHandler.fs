@@ -7,7 +7,7 @@ open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
-/// Focused tests for the `SignalHandler` wrapper that `SignalState.Handler`
+/// Focused tests for the `SignalHandler` wrapper that `PosixSignalShim`
 /// stores. The wrapper exists so a `MethodInfo` (whose naked structural
 /// equality is unstable — its `ImmutableArray` fields and `MethodBody` payloads
 /// compare by reference) can be embedded in a structurally-compared
@@ -17,7 +17,7 @@ open WoofWare.PosixKernel
 ///     method even when the two `MethodInfo` records were constructed
 ///     independently (so `PosixSignalShim.setHandler` is idempotent in practice).
 ///   * Distinct methods compare unequal at both the `SignalHandler` and
-///     enclosing `SignalState` layers.
+///     enclosing `PosixSignalShim` layers.
 ///   * `GetHashCode` agrees with `Equals` for the equal-handler case.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -136,7 +136,7 @@ module TestSignalHandler =
 
     [<Test>]
     let ``PosixSignalShim structural equality survives an installed handler`` () : unit =
-        // `EmulatedKernel` (which embeds `SignalState`) is compared
+        // `EmulatedKernel` (which embeds `PosixSignalShim`) is compared
         // structurally for deterministic state dedup. Two states built
         // independently with the same logical handler installed must compare
         // equal — otherwise dedup would split semantically-equivalent states.

@@ -37,10 +37,8 @@ module TestSignalState =
     /// parameter being genuinely opaque.
     type TestTask = | TestTask of int
 
-    /// Stand-in for a client's signal-handler identity. `SignalState` requires
-    /// only equality of it, and this is the evidence that it requires no more:
-    /// PawPrint instantiates this parameter with a wrapped CLR `MethodInfo`,
-    /// which this test cannot see and must not need to.
+    /// Stand-in for a client's signal-handler identity, which `SignalState` is
+    /// generic in and constrains only to equality.
     type TestHandler = | TestHandler of string
 
     /// `initial` at this test's instantiation. Named because the

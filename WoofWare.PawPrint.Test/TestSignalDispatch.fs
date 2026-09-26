@@ -7,7 +7,7 @@ open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
 /// Focused tests for the `SignalDispatch` module that drives wake/sleep
-/// transitions on the kernel-owned signal-dispatch thread. The dispatcher is
+/// transitions on the runtime-owned signal-dispatch thread. The dispatcher is
 /// the auxiliary thread allocated by
 /// `SystemNative_InitializeTerminalAndSignalHandling` and parked permanently
 /// until a deliverable signal arrives; these tests pin down each guard path

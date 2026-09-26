@@ -813,9 +813,9 @@ type EmulatedKernel =
 /// keep unreachable.
 ///
 /// The system's own rules are `UnixSystemDefect`, which `System` carries. What
-/// is left here is the two things PawPrint holds that no POSIX kernel does: the
-/// native-heap blocks a guest's `DIR*` values are, and the threads its tasks
-/// belong to.
+/// is left here is the three things PawPrint holds that no POSIX kernel does: the
+/// native-heap blocks a guest's `DIR*` values are, the threads its tasks
+/// belong to, and the shim's signal dispatcher.
 [<RequireQualifiedAccess>]
 type EmulatedKernelDefect =
     /// A way the POSIX system this kernel runs is itself unsound: see
@@ -1692,8 +1692,9 @@ module EmulatedKernel =
 
     /// Every way this kernel's tables disagree with each other, including the
     /// POSIX system's own rules: `UnixSystem.checkInvariants` answers those, and
-    /// this adds the one thing PawPrint holds that no POSIX kernel does — the
-    /// native-heap blocks a guest's `DIR*` values are.
+    /// this adds two things PawPrint holds that no POSIX kernel does — the
+    /// native-heap blocks a guest's `DIR*` values are, and the thread
+    /// `PosixSignalShim` records as its dispatcher, which must be a task.
     ///
     /// The descriptor table's own rules are `FileDescriptorRegistry.checkInvariants`,
     /// and the filesystem's are `VirtualFileSystem.checkInvariants`; this

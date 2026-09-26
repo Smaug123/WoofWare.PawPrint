@@ -1,38 +1,42 @@
 namespace WoofWare.PawPrint
 
-/// Initialisation state of the simulator's signal subsystem. Mirrors
-/// real CoreCLR's lazy setup: the C side spins up a dedicated
-/// `SignalHandlerLoop` pthread the first time
-/// its signal handling is initialised. A client mirrors that contract by
-/// allocating a single parked dispatcher
-/// task at the same moment and stashing it here. Encoding the
-/// pair as a DU rather than `Initialized : bool + DispatcherTask :
-/// 'Task option` makes the invariant — "the dispatcher
-/// task exists iff signal handling is initialised" — unrepresentable
-/// to violate. Idempotent re-initialisation is a transition this DU
-/// observes (the existing dispatcher is preserved); the QCall site
-/// must check `isInitialized` before allocating a thread, otherwise a
-/// second init call would mint a dead second dispatcher.
+/// Whether System.Native's signal handling has been initialised, and if so
+/// which thread is its dispatcher. The first
+/// `SystemNative_InitializeTerminalAndSignalHandling` starts the shim's
+/// `SignalHandlerLoop` pthread, which reads each caught signal off the shim's
+/// pipe and calls the managed callback; PawPrint allocates a parked thread at
+/// the same moment to play that part (`IlMachineState.allocateParkedThread`)
+/// and records it here.
+///
+/// A DU rather than `Initialized : bool` beside `Dispatcher : ThreadId option`,
+/// so that "the dispatcher exists iff signal handling is initialised" cannot be
+/// violated. Re-initialising preserves the existing dispatcher, so the
+/// P/Invoke's handler must check `PosixSignalShim.isInitialized` before it
+/// allocates a thread, or a second call would mint a second dispatcher that
+/// nothing ever wakes.
 [<RequireQualifiedAccess>]
-type SignalInitState<'Task> =
+type SignalInitState =
     /// Signal handling has not yet been set up; no dispatcher thread
-    /// exists. `SignalState.initial` starts here.
+    /// exists. `PosixSignalShim.initial` starts here.
     | NotInitialized
-    /// The client has initialised signal handling at least once;
-    /// `dispatcher` identifies the client's signal-dispatch task,
-    /// allocated at that moment. What that task *is* is the client's
-    /// business — this type only records which one it was, so that the
-    /// "exists iff initialised" invariant has somewhere to live.
-    | Initialized of dispatcher : 'Task
+    /// Signal handling has been initialised at least once, and `dispatcher`
+    /// is the parked thread allocated then.
+    | Initialized of dispatcher : ThreadId
 
 /// What System.Native's signal code keeps in its own globals rather than
 /// asking the kernel for: whether signal handling is initialised, with the
 /// dispatcher thread that initialisation started, and the managed callback
-/// installed by `SystemNative_SetPosixSignalHandler`.
+/// installed by `SystemNative_SetPosixSignalHandler` (the shim's
+/// `g_posixSignalHandler`).
+///
+/// The kernel's half of signal handling (which signals have a handler, what
+/// is pending, what each thread blocks) is `SignalState`, on the process.
+/// `EmulatedKernel.checkInvariants` refuses a dispatcher that is not one of
+/// the kernel's tasks.
 type PosixSignalShim =
     private
         {
-            Init : SignalInitState<ThreadId>
+            Init : SignalInitState
             Handler : SignalHandler option
         }
 
@@ -45,30 +49,28 @@ module PosixSignalShim =
             Handler = None
         }
 
+    /// Whether `SystemNative_InitializeTerminalAndSignalHandling` has run.
     let isInitialized (state : PosixSignalShim) : bool =
         match state.Init with
         | SignalInitState.NotInitialized -> false
         | SignalInitState.Initialized _ -> true
 
     /// `Some dispatcher` once signal handling has been initialised, where
-    /// `dispatcher` identifies the client's signal-dispatch task, spawned at
-    /// that moment. `None` until the client first initialises signal
-    /// handling.
-    /// Mirrors real CoreCLR's `SignalHandlerLoop` pthread, which is
-    /// created at the same point in startup.
+    /// `dispatcher` is the parked thread that plays the shim's
+    /// `SignalHandlerLoop`. `None` until then.
     let signalThread (state : PosixSignalShim) : ThreadId option =
         match state.Init with
         | SignalInitState.NotInitialized -> None
         | SignalInitState.Initialized dispatcher -> Some dispatcher
 
-    /// Idempotent: a second call preserves the existing dispatcher and
-    /// does *not* swap in the caller-supplied one. The
-    /// caller is expected to guard with `isInitialized` and skip thread
-    /// allocation entirely on the second call; the idempotency here is a
-    /// defence in depth so a defensive caller does not accidentally
-    /// orphan an already-allocated dispatcher task. Mirrors the usual
-    /// client shape, where an `EnsureInitialized` may run more than once but
-    /// the underlying signal apparatus is set up exactly once.
+    /// Record `dispatcher` as the thread initialisation started. Idempotent:
+    /// once initialised, a second call preserves the existing dispatcher and
+    /// does *not* swap in the one supplied. The caller is expected to check
+    /// `isInitialized` and skip allocating a thread entirely on a second
+    /// initialisation, as the shim starts its `SignalHandlerLoop` exactly
+    /// once however often the BCL's initialisers call it; the idempotency
+    /// here means a caller that allocated anyway does not orphan the thread
+    /// already running.
     let markInitialized (dispatcher : ThreadId) (state : PosixSignalShim) : PosixSignalShim =
         match state.Init with
         | SignalInitState.Initialized _ -> state
@@ -77,18 +79,18 @@ module PosixSignalShim =
                 Init = SignalInitState.Initialized dispatcher
             }
 
-    /// The currently-installed dispatch callback, or `None` if the client has
-    /// not yet registered one. A consumer reads it at the moment of dispatch.
+    /// The managed callback `SystemNative_SetPosixSignalHandler` installed, or
+    /// `None` if it has not been called. Read at the moment of dispatch.
     let handler (state : PosixSignalShim) : SignalHandler option = state.Handler
 
-    /// Install (or replace) the client's signal-dispatch callback.
-    /// A real signal shim stores the pointer into its global handler slot
-    /// unconditionally, overwriting any prior value, so the contract is "last
-    /// writer wins". Note the consequence for a client whose handler identity
-    /// is a wrapper it re-constructs: two installs of the same handler are
-    /// equal, so the state transition is idempotent, which is what lets a
-    /// caller re-register without perturbing a state that is compared for
-    /// equality.
+    /// Install (or replace) the managed callback, as
+    /// `SystemNative_SetPosixSignalHandler` does. The shim stores the pointer
+    /// into `g_posixSignalHandler` unconditionally, so the last writer wins
+    /// (a debug build of the shim also asserts that the slot was empty or
+    /// already held this callback; the BCL sets it once). Two installs of the
+    /// same method are equal `SignalHandler`s, so re-installing one leaves the
+    /// shim equal to what it was, which is what lets a caller re-register
+    /// without perturbing a state that is compared for equality.
     let setHandler (handler : SignalHandler) (state : PosixSignalShim) : PosixSignalShim =
         { state with
             Handler = Some handler
