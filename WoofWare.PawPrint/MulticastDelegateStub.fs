@@ -254,7 +254,7 @@ module MulticastDelegateStub =
                     baseClassTypes
                     None
                     ConstructionState.NotConstructing
-                    false // CoreCLR's stub `call`s `Invoke`; it is not virtual
+                    IlMachineStateExecution.CallDispatch.Direct // CoreCLR's stub `call`s `Invoke`; it is not virtual
                     false
                     false // this frame has no program counter to advance
                     IlMachineStateExecution.CallSiteTransition.StaysCooperative

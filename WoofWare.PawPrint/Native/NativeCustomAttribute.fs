@@ -593,7 +593,7 @@ module NativeCustomAttribute =
                             ctx.BaseClassTypes
                             None
                             ConstructionState.NotConstructing
-                            false
+                            IlMachineStateExecution.CallDispatch.Direct
                             false
                             false
                             concretizedResolver.Generics
@@ -751,7 +751,7 @@ module NativeCustomAttribute =
                         ctx.BaseClassTypes
                         None
                         ConstructionState.NotConstructing
-                        false
+                        IlMachineStateExecution.CallDispatch.Direct
                         false
                         false
                         concretizedCtor.Generics

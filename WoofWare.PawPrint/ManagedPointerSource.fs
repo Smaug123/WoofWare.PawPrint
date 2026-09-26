@@ -1183,14 +1183,20 @@ module ManagedPointerSource =
         // a base claim with.
         | ManagedPointerSource.Byref _ -> None
 
-    /// The storage `src` addresses, for a caller that dereferences it but cannot raise the
-    /// `NullReferenceException` a null pointer calls for. Fails for a null pointer, and for a
-    /// bit-pattern placeholder, which must never be dereferenced.
+    /// The storage `src` addresses, for a caller that dereferences it without answering a null
+    /// pointer itself. Fails for a null pointer, and for a bit-pattern placeholder, which must
+    /// never be dereferenced.
+    ///
+    /// A caller that can be handed a null pointer by guest code, at a dereference where real .NET
+    /// raises a catchable `NullReferenceException`, must match `ManagedPointerSource.Null` and raise
+    /// it before calling this.
     let requireAddressed (src : ManagedPointerSource) : AddressedByref =
         match src with
         | ManagedPointerSource.Byref addressed -> addressed
         | ManagedPointerSource.Null ->
-            failwith "TODO: throw NullReferenceException for a dereference of a null managed pointer"
+            // Which of these it is depends on the call site, which this function cannot see.
+            failwith
+                "dereference of a null managed pointer at a site that does not answer null. Either the caller should have ruled null out, and this is an interpreter bug; or real .NET would crash the process here (a fault inside native code); or real .NET raises a catchable NullReferenceException here, which PawPrint does not yet model at this site"
         | ManagedPointerSource.NativeIntPlaceholder bits ->
             failwith $"cannot dereference fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
 

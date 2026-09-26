@@ -405,7 +405,7 @@ module internal UnaryMetadataTokenOps =
     /// a `callvirt` of the same token on the same receiver would have run.
     ///
     /// The dispatch has to happen here rather than at the call: a closed delegate built from this
-    /// pointer is invoked with `performInterfaceResolution = false`
+    /// pointer is invoked with `CallDispatch.Direct`
     /// (`AbstractMachine.dispatchDelegateInvoke`), so whatever method the pointer names is the
     /// method that runs. That matches CoreCLR, which
     /// also binds the target eagerly — `Delegate.Equals` compares the stored `_methodPtr`, so two

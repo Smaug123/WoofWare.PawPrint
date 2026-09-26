@@ -680,7 +680,7 @@ module internal UnaryMetadataCallOps =
                 ctx.BaseClassTypes
                 None
                 ConstructionState.NotConstructing
-                false
+                IlMachineStateExecution.CallDispatch.Direct
                 false
                 true
                 IlMachineStateExecution.CallSiteTransition.StaysCooperative
@@ -956,12 +956,12 @@ module internal UnaryMetadataCallOps =
     [<RequireQualifiedAccess>]
     type private ConstrainedReceiver =
         /// The receiver and arguments on the evaluation stack are what the call dispatches on, and
-        /// `method` is what it calls. `performInterfaceResolution` is false when the prefix has
+        /// `method` is what it calls. `dispatchesOnReceiver` is false when the prefix has
         /// already chosen the implementation.
         | Ready of
             IlMachineState *
             method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
-            performInterfaceResolution : bool
+            dispatchesOnReceiver : bool
         /// The prefix loads through its byref receiver, and that byref is null, so the instruction
         /// faults. The call's arguments are popped and the program counter has not moved.
         | NullDereference of IlMachineState
@@ -1373,7 +1373,7 @@ module internal UnaryMetadataCallOps =
 
             match transformed with
             | ConstrainedReceiver.NullDereference _ -> transformed
-            | ConstrainedReceiver.Ready (state, concretizedMethod, performInterfaceResolution) ->
+            | ConstrainedReceiver.Ready (state, concretizedMethod, dispatchesOnReceiver) ->
                 // Restore the method arguments on top of the transformed receiver.
                 // argsBottomToTop has the bottom-most arg at the head; pushing left-to-right
                 // returns each arg to its original slot (with the top-most arg landing on top).
@@ -1381,27 +1381,37 @@ module internal UnaryMetadataCallOps =
                     (state, argsBottomToTop)
                     ||> List.fold (fun state arg -> IlMachineState.pushToEvalStack' arg thread state)
 
-                ConstrainedReceiver.Ready (state, concretizedMethod, performInterfaceResolution)
+                ConstrainedReceiver.Ready (state, concretizedMethod, dispatchesOnReceiver)
 
         match constrainedReceiver with
         | ConstrainedReceiver.NullDereference state ->
             IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
-        | ConstrainedReceiver.Ready (state, concretizedMethod, performInterfaceResolution) ->
+        | ConstrainedReceiver.Ready (state, concretizedMethod, dispatchesOnReceiver) ->
 
-        // Callvirt always performs a null check on the receiver, even for non-virtual methods.
-        if
-            not concretizedMethod.IsStatic
-            && (
+        let receiver =
+            if concretizedMethod.IsStatic then
+                None
+            else
                 match
                     state.ThreadState.[thread].MethodState.EvaluationStack
                     |> EvalStack.PeekNthFromTop (MethodInfo.arity concretizedMethod)
                 with
-                | Some EvalStackValue.NullObjectRef -> true
-                | _ -> false
-            )
-        then
+                | None ->
+                    failwith
+                        $"callvirt of %O{concretizedMethod}: no receiver beneath its %d{MethodInfo.arity concretizedMethod} argument(s) on the evaluation stack"
+                | Some receiver -> Some receiver
+
+        // Callvirt always performs a null check on the receiver, even for non-virtual methods.
+        match receiver with
+        | Some EvalStackValue.NullObjectRef ->
             IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
-        else
+        | _ ->
+
+        let dispatch =
+            match receiver with
+            | Some receiver when dispatchesOnReceiver ->
+                IlMachineStateExecution.dispatchOnReceiver "callvirt" concretizedMethod receiver
+            | _ -> IlMachineStateExecution.CallDispatch.Direct
 
         let state =
             refuseUnverifiableArguments loggerFactory baseClassTypes "callvirt" false concretizedMethod thread state
@@ -1414,7 +1424,7 @@ module internal UnaryMetadataCallOps =
                 baseClassTypes
                 None
                 ConstructionState.NotConstructing
-                performInterfaceResolution
+                dispatch
                 false
                 true
                 IlMachineStateExecution.CallSiteTransition.StaysCooperative
@@ -1950,7 +1960,7 @@ module internal UnaryMetadataCallOps =
                 baseClassTypes
                 None
                 ConstructionState.NotConstructing
-                false
+                IlMachineStateExecution.CallDispatch.Direct
                 false
                 true
                 callSiteTransition

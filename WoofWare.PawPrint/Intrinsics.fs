@@ -2144,7 +2144,12 @@ module Intrinsics =
 
                 let ptr, state = IlMachineState.popEvalStack currentThread state
 
-                let src = managedPointerOfPointerArgument "Unsafe.ReadUnaligned(void*)" ptr
+                match managedPointerOfPointerArgument "Unsafe.ReadUnaligned(void*)" ptr with
+                // The same substituted body as the `ref byte` overload, so a null pointer faults
+                // the same way.
+                | ManagedPointerSource.Null ->
+                    IntrinsicResult.RaiseException (state, baseClassTypes.NullReferenceException, None)
+                | src ->
 
                 let v =
                     IlMachineState.readManagedByrefBytesAs
@@ -2224,7 +2229,11 @@ module Intrinsics =
                 let value, state = IlMachineState.popEvalStack currentThread state
                 let ptr, state = IlMachineState.popEvalStack currentThread state
 
-                let src = managedPointerOfPointerArgument "Unsafe.WriteUnaligned(void*)" ptr
+                match managedPointerOfPointerArgument "Unsafe.WriteUnaligned(void*)" ptr with
+                // As for `ReadUnaligned(void*)`: the `ref byte` overload's body, and its fault.
+                | ManagedPointerSource.Null ->
+                    IntrinsicResult.RaiseException (state, baseClassTypes.NullReferenceException, None)
+                | src ->
 
                 let valueAsCli = EvalStackValue.toCliTypeCoerced tZero value
 
