@@ -186,7 +186,11 @@ module DebuggerServer =
             // what a park holds: an epoll instance is a description, so a `dup`'d
             // port waits on the same one, and the descriptor number the guest
             // called through may since have been closed or reused.
-            match task |> Option.bind (fun task -> task.Parked) with
+            match
+                task
+                |> Option.bind (fun task -> task.Parked)
+                |> Option.map (fun park -> park.Syscall)
+            with
             | Some (ParkedSyscall.SocketWait wait) ->
                 writer.WriteString ("kind", "blockedOnSocketEvents")
                 let (OpenFileDescriptionId port) = wait.Port

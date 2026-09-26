@@ -216,11 +216,9 @@ module Program =
         | ThreadStatus.BlockedOnSyncBlockAcquire (_, None)
         | ThreadStatus.BlockedOnJoin (_, None)
         | ThreadStatus.BlockedOnSleep None
-        // `BlockedInSyscall` has no deadline to project: neither parking syscall takes a
-        // timeout, so the clock can never wake such a thread. There is deliberately no
-        // `FiredDeadline` case for one, which is what makes that unrepresentable rather than
-        // merely unwritten. A parking syscall that *does* take a timeout puts its deadline in
-        // the task's park record, and this function will have to consult it.
+        // A call parked in the kernel keeps its deadline in its wake condition, where
+        // `syscallDeadlines` reads it, and it fires through `fireSyscallWakes`, which asks
+        // the kernel. There is deliberately no `FiredDeadline` case for one.
         | ThreadStatus.BlockedInSyscall
         | ThreadStatus.Runnable
         | ThreadStatus.NotStarted
@@ -362,16 +360,14 @@ module Program =
             state
 
 
-    /// The threads parked in a syscall, each with what it parked in.
+    /// The threads parked in a syscall.
     ///
     /// Runs once per scheduler tick — that is, once per interpreted instruction —
     /// so it accumulates only matches rather than materialising the thread map.
     ///
-    /// With one park status, "asleep in a syscall" and "asleep in *this* syscall"
-    /// are different questions and only the record answers the second. A thread
-    /// parked with no record at all could never be woken by anything, so it is
-    /// refused here rather than quietly skipped.
-    let private syscallWaiters (state : IlMachineState) : (ThreadId * ParkedSyscall) list =
+    /// A thread parked with no record at all could never be woken by anything, so
+    /// it is refused here rather than quietly skipped.
+    let private syscallWaiters (state : IlMachineState) : ThreadId list =
         ((state.ThreadState, [])
          ||> Map.foldBack (fun tid ts acc ->
              match ts.Status with
@@ -380,21 +376,18 @@ module Program =
                  | None ->
                      failwith
                          $"syscallWaiters: thread %O{tid} is parked in BlockedInSyscall but its task records no park, so there is nothing to say what it waits for. A park writes the record and the status together (this is an interpreter bug)."
-                 | Some parked -> (tid, parked) :: acc
+                 | Some _ -> tid :: acc
              | _ -> acc
          ))
 
     /// Wake every thread whose syscall could get further now.
     ///
     /// One sweep for every parking syscall rather than one each, because the
-    /// question is the same for all of them: ask the record what it is waiting
-    /// for, and ask the kernel whether that has happened. Nothing here reads a
-    /// park's payload — `WakeCondition.ofPark` is the only thing that
-    /// destructures one — so no syscall's sweep can mistake another's waiter for
-    /// its own, and a new parking syscall needs no sweep at all: it needs a
-    /// `WakeCondition` case, and the compiler asks for one.
+    /// question is the same for all of them, and the kernel answers it:
+    /// `UnixWait.wakes` reads each park's wake condition and decides which
+    /// waiters it wakes, so a new parking syscall needs no sweep here at all.
     ///
-    /// Every park here is re-entrant — the native frame stays and the caller's
+    /// Every park is re-entrant — the native frame stays and the caller's
     /// program counter still names the call — so waking is exactly a flip to
     /// `Runnable`, and the re-entered handler finishes the call from the caller's
     /// own frame.
@@ -410,71 +403,50 @@ module Program =
     /// A wake is not a promise. Two threads can be woken for one lock and only
     /// one of them get it; the loser re-enters, finds it taken, and parks again
     /// on the record it still holds.
-    let private fireSyscallWakes (parked : (ThreadId * ParkedSyscall) list) (state : IlMachineState) : IlMachineState =
+    let private fireSyscallWakes (asleep : ThreadId list) (state : IlMachineState) : IlMachineState =
         // Before projecting the kernel, which allocates a `UnixSystem`: this runs
         // on every tick of every workload, and almost none of them ever park.
-        match parked with
+        match asleep with
         | [] -> state
-        | parked ->
+        | asleep ->
 
-        let unix = EmulatedKernel.unix state.Kernel
+        match UnixWait.wakes (Set.ofList asleep) (EmulatedKernel.unix state.Kernel) with
+        | Error (WakeRefusal.ExclusiveWaiters (port, waiters)) ->
+            // No managed caller can reach this: `SocketAsyncEngine` dedicates one
+            // thread to each port.
+            let tids = waiters |> List.map (fun tid -> $"%O{tid}") |> String.concat ", "
 
-        let satisfied =
-            parked
-            |> List.choose (fun (tid, parked) ->
-                let condition = WakeCondition.ofPark parked
+            failwith
+                $"fireSyscallWakes: threads %s{tids} are all parked in SystemNative_WaitForSocketEvents on port %O{port}, which now has a deliverable event. epoll parks waiters exclusively, so a real kernel wakes exactly one of them, chosen by park order, which the kernel records but whose semantics have not been measured. Implement the one-wakeup rule before parking several threads on one port."
+        | Ok woken -> (state, woken) ||> List.fold (fun s (tid, _) -> Scheduler.wakeFromSyscall tid s)
 
-                if WakeCondition.isSatisfied condition unix then
-                    Some (tid, condition)
-                else
-                    None
-            )
+    /// Every deadline a thread parked in a syscall is waiting for, as the first
+    /// tick of the virtual clock at or after it.
+    let private syscallDeadlines (state : IlMachineState) : int64 list =
+        match syscallWaiters state with
+        | [] -> []
+        | asleep ->
+            UnixWait.deadlines (Set.ofList asleep) (EmulatedKernel.unix state.Kernel)
+            |> List.map ClockPal.firstTickAtOrAfter
 
-        // How many waiters one satisfied condition may wake is a question each
-        // syscall answers for itself, so this matches on the condition rather
-        // than counting: exhaustively, so that a future one has to say which
-        // answer it gives instead of inheriting "all of them" by silence.
-        for condition, sharing in satisfied |> List.groupBy snd do
-            match condition with
-            | WakeCondition.SocketEventDeliverable port ->
-                // An edge arriving with several threads parked on one port is
-                // unmodelled: `ep_poll` adds each waiter to the port's wait queue
-                // *exclusively*, so a real event wakes one of them — in an order
-                // PawPrint keeps no state to reproduce (the queue is park-order)
-                // and has not measured. No managed caller can reach this
-                // (`SocketAsyncEngine` dedicates one thread per port), so refuse
-                // loudly rather than wake every waiter and let the scheduler
-                // invent the winner.
-                if List.length sharing > 1 then
-                    let tids = sharing |> List.map (fun (tid, _) -> $"%O{tid}") |> String.concat ", "
+    /// Every finite wait deadline currently outstanding, in no particular order
+    /// and with duplicates where two threads are parked on the same instant:
+    /// the runtime-level waits' own deadlines, and those of the calls parked in
+    /// the kernel. The candidate set `ClockJitterStrategy.EagerDeadlines` draws
+    /// from, which is why it is the whole collection and not just the minimum
+    /// `nextDeadline` reports.
+    let private pendingDeadlines (state : IlMachineState) : int64 list =
+        let threadDeadlines =
+            state.ThreadState
+            |> Map.toList
+            |> List.choose (fun (_, ts) -> waitDeadline ts.Status |> Option.map snd)
 
-                    failwith
-                        $"fireSyscallWakes: threads %s{tids} are all parked in SystemNative_WaitForSocketEvents on port %O{port}, which now has a deliverable event. epoll parks waiters exclusively, so a real kernel wakes exactly one of them, chosen by park order — state PawPrint does not record and semantics it has not measured. Implement the one-wakeup rule before parking several threads on one port."
-            | WakeCondition.FlockGrantable _ ->
-                // The opposite rule, and deliberately: `flock` has no exclusive
-                // handoff — a release wakes every blocker and they race, exactly
-                // as `flock(2)` does — and, decisively for a simulator, *which*
-                // waiter wins is not observable from userspace on any platform.
-                // So waking them all and letting the scheduler pick is not
-                // inventing a winner; it is declining to, and handing the choice
-                // to the machinery whose purpose is exploring exactly such
-                // choices under a seed.
-                //
-                // Several threads really can share one condition here, which is
-                // what makes this arm load-bearing rather than a formality: locks
-                // belong to the open file description, so two threads blocking
-                // through one shared descriptor for the same mode park on
-                // structurally equal conditions and land in one group.
-                ()
+        threadDeadlines @ syscallDeadlines state
 
-        (state, satisfied)
-        ||> List.fold (fun s (tid, _) -> Scheduler.wakeFromSyscall tid s)
-
-    /// The minimum wait deadline among currently-blocked threads, or
-    /// `None` if no thread is parked with a finite timeout. Used by the
-    /// driver loop's jump-to-deadline fallback: if no thread is Runnable
-    /// but at least one has a finite-timeout wait outstanding, advance
-    /// `VirtualClockTicks` to the nearest such deadline so the wait can
+    /// The minimum of `pendingDeadlines`, or `None` if no thread is parked with a
+    /// finite timeout. Used by the driver loop's jump-to-deadline fallback: if no
+    /// thread is Runnable but at least one has a finite-timeout wait outstanding,
+    /// advance `VirtualClockTicks` to the nearest such deadline so the wait can
     /// resolve on the next pass.
     ///
     /// The clock-jump must not bump `StepCounter` — the spurious-wakeup
@@ -483,26 +455,9 @@ module Program =
     /// separate is exactly why `VirtualClockTicks` is its own clock rather
     /// than derived from `StepCounter`.
     let private nextDeadline (state : IlMachineState) : int64 option =
-        state.ThreadState
-        |> Map.toSeq
-        |> Seq.choose (fun (_, ts) -> waitDeadline ts.Status |> Option.map snd)
-        |> Seq.fold
-            (fun acc d ->
-                match acc with
-                | None -> Some d
-                | Some a -> Some (min a d)
-            )
-            None
-
-    /// Every finite wait deadline currently outstanding, in no particular order
-    /// and with duplicates where two threads are parked on the same instant.
-    /// The candidate set `ClockJitterStrategy.EagerDeadlines` draws from, which
-    /// is why it is the whole collection and not just the minimum
-    /// `nextDeadline` reports.
-    let private pendingDeadlines (state : IlMachineState) : int64 list =
-        state.ThreadState
-        |> Map.toList
-        |> List.choose (fun (_, ts) -> waitDeadline ts.Status |> Option.map snd)
+        match pendingDeadlines state with
+        | [] -> None
+        | deadlines -> Some (List.min deadlines)
 
     let private logStepOutcome
         (logger : ILogger)
@@ -690,6 +645,11 @@ module Program =
         // shrinks (no fire creates a new deadline), so the loop
         // terminates.
         //
+        // Each iteration sweeps the syscall waiters as well as firing the
+        // runtime-level deadlines, because a jump to a kernel park's deadline
+        // is resolved only by the kernel's wake: without the sweep that
+        // deadline would stay outstanding and be jumped to forever.
+        //
         // Only `VirtualClockTicks` is advanced (not `StepCounter`), so the
         // spurious-wakeup schedule is untouched. A jump-driven wake is
         // not a scheduler tick — it is the resolution of a timeout that
@@ -717,7 +677,8 @@ module Program =
                             EmulatedKernel.withVirtualClockTicks (max state.Kernel.VirtualClockTicks target)
                         )
 
-                    advanceUntilRunnableOrQuiescent (fireExpiredDeadlines state)
+                    let state = fireExpiredDeadlines state
+                    advanceUntilRunnableOrQuiescent (fireSyscallWakes (syscallWaiters state) state)
 
         { prepared with
             State = advanceUntilRunnableOrQuiescent state

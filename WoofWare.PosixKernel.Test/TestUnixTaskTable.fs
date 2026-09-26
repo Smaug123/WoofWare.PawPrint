@@ -15,6 +15,9 @@ module TestUnixTaskTable =
 
     let private empty : Map<int, UnixTaskState> = Map.empty
 
+    let private initial : UnixSystem<int, string> =
+        UnixSystem.initial SimulatedUnixPlatform.linuxX64
+
     let private withTask (name : int) (cpu : int) (tasks : Map<int, UnixTaskState>) : Map<int, UnixTaskState> =
         UnixTaskTable.register name (CpuId cpu) (OsThreadId (uint32 name + 1u)) tasks
 
@@ -56,7 +59,14 @@ module TestUnixTaskTable =
                 MaxEvents = 8
             }
 
-        let parked = UnixTaskTable.withParked 7 (Some (ParkedSyscall.SocketWait wait)) tasks
+        let parked =
+            (UnixWait.park
+                7
+                (ParkedSyscall.SocketWait wait)
+                { initial with
+                    Tasks = tasks
+                })
+                .Tasks
 
         UnixTaskTable.parkedFor 7 parked
         |> shouldEqual (Some (ParkedSyscall.SocketWait wait))
@@ -64,7 +74,7 @@ module TestUnixTaskTable =
         UnixTaskTable.cpuOf 7 parked |> shouldEqual (CpuId 3)
         UnixTaskTable.osThreadIdOf 7 parked |> shouldEqual (OsThreadId 8u)
 
-        let released = UnixTaskTable.withParked 7 None parked
+        let released = UnixTaskTable.unpark 7 parked
         UnixTaskTable.parkedFor 7 released |> shouldEqual None
         UnixTaskTable.cpuOf 7 released |> shouldEqual (CpuId 3)
 

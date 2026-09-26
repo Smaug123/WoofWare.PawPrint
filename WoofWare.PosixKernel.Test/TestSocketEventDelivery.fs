@@ -955,17 +955,13 @@ module TestSocketEventDelivery =
             let kernel =
                 kernel
                 |> mapTasks (UnixTaskTable.register 1 (CpuId 0) (OsThreadId 2u))
-                |> mapTasks (
-                    UnixTaskTable.withParked
-                        1
-                        (Some (
-                            ParkedSyscall.SocketWait
-                                {
-                                    ParkedSocketWait.Port = portId
-                                    MaxEvents = 8
-                                }
-                        ))
-                )
+                |> UnixWait.park
+                    1
+                    (ParkedSyscall.SocketWait
+                        {
+                            ParkedSocketWait.Port = portId
+                            MaxEvents = 8
+                        })
 
             portFd, dupFd, kernel
 

@@ -129,7 +129,7 @@ type UnixSystemDefect<'Task> =
     /// would have no measured order.
     | DuplicateSocketEventRegistrationOrdinal of registeredAt : int64
     /// A task is parked on an open file description the table does not hold,
-    /// so its wait can never be satisfied, and asking `WakeCondition.isSatisfied`
+    /// so its wait can never be satisfied, and asking `WakeCondition.satisfied`
     /// about it crashes. `close` refuses to destroy a description a task is
     /// parked on, so this is a park recorded without one or a close made
     /// around it.
@@ -138,6 +138,14 @@ type UnixSystemDefect<'Task> =
     /// socket event port, which no wait could have produced and which
     /// `SocketEventPort.hasDeliverableEvent` crashes on.
     | ParkedSocketWaitOnNonPort of task : 'Task * description : OpenFileDescriptionId * target : OpenFileTarget
+    /// A task's park records an ordinal at or above the next one to mint, so
+    /// some future park would repeat it, and the two waiters' order would be
+    /// unspecified.
+    | ParkOrdinalNotFresh of next : ParkOrdinal * task : 'Task * ordinal : ParkOrdinal
+    /// Two tasks' parks record the same ordinal. Ordinals are minted from one
+    /// monotonic counter, so a duplicate means two parks were stamped with one
+    /// mint.
+    | DuplicateParkOrdinal of ordinal : ParkOrdinal
     /// A listening socket has no address: `listen(2)` binds an unbound socket
     /// before it listens, and a connect looks listeners up by their binding,
     /// so this one can never be reached.
@@ -533,7 +541,7 @@ module UnixSystem =
             system.Tasks
             |> Map.toList
             |> List.collect (fun (task, state) ->
-                match state.Parked with
+                match state.Parked |> Option.map (fun park -> park.Syscall) with
                 | None -> []
                 | Some (ParkedSyscall.Flock parked) ->
                     if Map.containsKey parked.Requester descriptions then
@@ -554,6 +562,24 @@ module UnixSystem =
                                 UnixSystemDefect.ParkedSocketWaitOnNonPort (task, wait.Port, description.Target)
                             ]
             )
+
+        let parkOrdinals =
+            system.Tasks
+            |> Map.toList
+            |> List.choose (fun (task, state) -> state.Parked |> Option.map (fun park -> task, park.Ordinal))
+
+        let parkOrdinalFreshness =
+            parkOrdinals
+            |> List.filter (fun (_, ordinal) -> ordinal >= system.Machine.NextParkOrdinal)
+            |> List.map (fun (task, ordinal) ->
+                UnixSystemDefect.ParkOrdinalNotFresh (system.Machine.NextParkOrdinal, task, ordinal)
+            )
+
+        let parkOrdinalDuplicates =
+            parkOrdinals
+            |> List.countBy snd
+            |> List.filter (fun (_, count) -> count > 1)
+            |> List.map (fun (ordinal, _) -> UnixSystemDefect.DuplicateParkOrdinal ordinal)
 
         // Bindings no bind or listen could have produced.
         let bindings =
@@ -675,6 +701,8 @@ module UnixSystem =
         @ ordinalFreshness
         @ ordinalDuplicates
         @ parks
+        @ parkOrdinalFreshness
+        @ parkOrdinalDuplicates
         @ bindings
         @ signals
         @ fileSystemType
@@ -867,6 +895,7 @@ module UnixSystem =
                     Connections = Map.empty
                     NextConnectionId = ConnectionId 0L
                     NextSocketEventRegistrationOrdinal = 0L
+                    NextParkOrdinal = ParkOrdinal 0L
                     NextSocketId = SocketId 0L
                     NextEphemeralPort = fst (defaultEphemeralPortRange flavour)
                     EphemeralPortRange = defaultEphemeralPortRange flavour

@@ -22,6 +22,10 @@ module TestUnixSystemStep =
 
     let private rootInode : InodeNumber = InodeNumber 1L
 
+    /// Whether the syscall that parked on `condition` would get further now.
+    let private holds (condition : WakeCondition) (system : UnixSystem<int, string>) : bool =
+        not (Set.isEmpty (WakeCondition.satisfied condition system))
+
     /// A system with task `name` registered, since a park is recorded against a
     /// task and `UnixTaskTable` is loudly partial in names it has never minted.
     let private withTask (name : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
@@ -2634,7 +2638,9 @@ module TestUnixSystemStep =
         // Keyed on the description rather than on the descriptor: a `dup` of
         // `second` waits on the same lock.
         condition
-        |> shouldEqual (WakeCondition.FlockGrantable (descriptionOf second held, FlockMode.Exclusive))
+        |> shouldEqual (
+            WakeCondition.Primitive (WakePrimitive.FlockGrantable (descriptionOf second held, FlockMode.Exclusive))
+        )
 
     [<Test>]
     let ``a park is never already satisfied`` () : unit =
@@ -2653,7 +2659,7 @@ module TestUnixSystemStep =
             let condition, parkedIn =
                 UnixDescriptor.flock waiterTask second requester held |> parked
 
-            WakeCondition.isSatisfied condition parkedIn |> shouldEqual false
+            holds condition parkedIn |> shouldEqual false
 
         // ...and shared-on-shared is the control: it is granted, so there is no
         // condition for the predicate to be wrong about.
@@ -2671,7 +2677,7 @@ module TestUnixSystemStep =
 
         let released = UnixDescriptor.flock holderTask first 8 parkedIn |> granted
 
-        WakeCondition.isSatisfied condition released |> shouldEqual true
+        holds condition released |> shouldEqual true
 
     [<Test>]
     let ``a condition names the lock it wants, not the holder it is waiting out`` () : unit =
@@ -2691,7 +2697,7 @@ module TestUnixSystemStep =
         let third, opened = withAnotherDescription first released
         let contended = UnixDescriptor.flock thirdTask third 2 opened |> granted
 
-        WakeCondition.isSatisfied condition contended |> shouldEqual false
+        holds condition contended |> shouldEqual false
 
     [<Test>]
     let ``two holders must both release before the condition holds`` () : unit =
@@ -2707,10 +2713,10 @@ module TestUnixSystemStep =
         let condition, parkedIn = UnixDescriptor.flock thirdTask third 2 held |> parked
 
         let oneReleased = UnixDescriptor.flock holderTask first 8 parkedIn |> granted
-        WakeCondition.isSatisfied condition oneReleased |> shouldEqual false
+        holds condition oneReleased |> shouldEqual false
 
         let bothReleased = UnixDescriptor.flock waiterTask second 8 oneReleased |> granted
-        WakeCondition.isSatisfied condition bothReleased |> shouldEqual true
+        holds condition bothReleased |> shouldEqual true
 
     [<Test>]
     let ``a parked conversion is holding nothing`` () : unit =
@@ -2756,7 +2762,7 @@ module TestUnixSystemStep =
         let reacquired = UnixDescriptor.flock thirdTask first 1 parkedIn |> granted
         let released = UnixDescriptor.flock waiterTask second 8 reacquired |> granted
 
-        WakeCondition.isSatisfied condition released |> shouldEqual true
+        holds condition released |> shouldEqual true
 
     [<Test>]
     let ``a descriptor number is not a stable name for what a waiter waits on`` () : unit =
@@ -2793,7 +2799,7 @@ module TestUnixSystemStep =
             | other -> failwith $"expected the close to succeed, got %A{other}"
 
         // The description survives the close, because the alias still names it.
-        WakeCondition.isSatisfied condition closed |> shouldEqual false
+        holds condition closed |> shouldEqual false
 
         // ...and the number it was waited on through is now free, so the next
         // open takes it and it names something the waiter never asked about.
@@ -2804,10 +2810,10 @@ module TestUnixSystemStep =
         // The condition is unmoved by all of that: it still names the
         // description, which is still what the release must satisfy.
         condition
-        |> shouldEqual (WakeCondition.FlockGrantable (waitedOn, FlockMode.Exclusive))
+        |> shouldEqual (WakeCondition.Primitive (WakePrimitive.FlockGrantable (waitedOn, FlockMode.Exclusive)))
 
         let released = UnixDescriptor.flock holderTask first 8 opened |> granted
-        WakeCondition.isSatisfied condition released |> shouldEqual true
+        holds condition released |> shouldEqual true
 
     [<Test>]
     let ``a condition whose description has gone gets no answer`` () : unit =
@@ -2833,8 +2839,7 @@ module TestUnixSystemStep =
                 }
             | other -> failwith $"expected the forged close to destroy the description, got %A{other}"
 
-        let exn =
-            Assert.Throws<exn> (fun () -> WakeCondition.isSatisfied condition closed |> ignore)
+        let exn = Assert.Throws<exn> (fun () -> holds condition closed |> ignore)
 
         exn.Message |> shouldContainText "closed underneath it"
 
@@ -2900,7 +2905,7 @@ module TestUnixSystemStep =
         let requester = descriptionOf second parkedIn
         let released = UnixDescriptor.flock holderTask first 8 parkedIn |> granted
 
-        WakeCondition.isSatisfied condition released |> shouldEqual true
+        holds condition released |> shouldEqual true
 
         let finished = UnixDescriptor.flockAcquire waiterTask released |> granted
 
@@ -2992,7 +2997,9 @@ module TestUnixSystemStep =
         let condition, parkedIn = UnixDescriptor.flock waiterTask second 2 held |> parked
 
         condition
-        |> shouldEqual (WakeCondition.FlockGrantable (descriptionOf second parkedIn, FlockMode.Exclusive))
+        |> shouldEqual (
+            WakeCondition.Primitive (WakePrimitive.FlockGrantable (descriptionOf second parkedIn, FlockMode.Exclusive))
+        )
 
         UnixTaskTable.parkedFor waiterTask parkedIn.Tasks
         |> shouldEqual (
@@ -3056,7 +3063,7 @@ module TestUnixSystemStep =
         let _, parkedIn = UnixDescriptor.flock waiterTask second 2 held |> parked
         let released = UnixDescriptor.flock holderTask first 8 parkedIn |> granted
 
-        // Beaten: the record stands, so the task can be woken again later.
+        // Beaten: the task is parked on the same record, so it can be woken again later.
         let taken = UnixDescriptor.flock thirdTask another 2 released |> granted
         let _, beaten = UnixDescriptor.flockAcquire waiterTask taken |> parked
 
@@ -3071,6 +3078,35 @@ module TestUnixSystemStep =
         UnixDescriptor.flock waiterTask second 8 finished
         |> granted
         |> ignore<UnixSystem<int, string>>
+
+    [<Test>]
+    let ``a beaten resume goes to the back of park order`` () : unit =
+        // A real kernel re-queues a waiter that lost the race behind the waiters already
+        // there, so the order in which beaten waiters resume decides the next wake's order.
+        let first, second, system = withTwoDescriptions linux
+        let another, system = withAnotherDescription first system
+
+        let held = UnixDescriptor.flock holderTask first 2 system |> granted
+        let _, parkedIn = UnixDescriptor.flock waiterTask second 2 held |> parked
+        let _, parkedIn = UnixDescriptor.flock thirdTask another 2 parkedIn |> parked
+
+        let retaken =
+            UnixDescriptor.flock holderTask first 8 parkedIn
+            |> granted
+            |> UnixDescriptor.flock holderTask first 2
+            |> granted
+
+        // Resumed in the opposite order to the one they parked in, and both beaten.
+        let _, beaten = UnixDescriptor.flockAcquire thirdTask retaken |> parked
+        let _, beaten = UnixDescriptor.flockAcquire waiterTask beaten |> parked
+
+        let freed = UnixDescriptor.flock holderTask first 8 beaten |> granted
+
+        let firedFor (fd : int) : Set<WakePrimitive> =
+            Set.singleton (WakePrimitive.FlockGrantable (descriptionOf fd freed, FlockMode.Exclusive))
+
+        UnixWait.wakes (Set.ofList [ waiterTask ; thirdTask ]) freed
+        |> shouldEqual (Ok [ thirdTask, firedFor another ; waiterTask, firedFor second ])
 
     [<Test>]
     let ``flockAcquire for a task that is not parked in an flock is refused`` () : unit =
@@ -3107,11 +3143,11 @@ module TestUnixSystemStep =
         | other -> failwith $"expected the close to be refused, got %A{other}"
 
         // ...so the condition is still answerable.
-        WakeCondition.isSatisfied condition parkedIn |> shouldEqual false
+        holds condition parkedIn |> shouldEqual false
 
     [<Test>]
     let ``closing the last descriptor onto a parked lock is refused`` () : unit =
-        // What makes `WakeCondition.isSatisfied`'s vanished-description arm unreachable, and what
+        // What makes `WakeCondition.satisfied`'s vanished-description arm unreachable, and what
         // `flockAcquire` relies on to be total. A real kernel's blocked `flock` holds the file, so
         // the description outlives every descriptor; this table has no such reference.
         let first, second, system = withTwoDescriptions linux
@@ -3153,7 +3189,7 @@ module TestUnixSystemStep =
         | Ok (SyscallAnswer.Completed 0L, closed) ->
             // ...and the condition is still answerable afterwards, which is the whole point of
             // refusing the other case.
-            WakeCondition.isSatisfied condition closed |> shouldEqual false
+            holds condition closed |> shouldEqual false
 
             ignore<int> alias
         | other -> failwith $"expected the close to succeed, got %A{other}"
@@ -3175,19 +3211,14 @@ module TestUnixSystemStep =
     let private parkedOnPort (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         let system = withTask 7 system
 
-        { system with
-            Tasks =
-                UnixTaskTable.withParked
-                    7
-                    (Some (
-                        ParkedSyscall.SocketWait
-                            {
-                                ParkedSocketWait.Port = descriptionOf fd system
-                                MaxEvents = 8
-                            }
-                    ))
-                    system.Tasks
-        }
+        UnixWait.park
+            7
+            (ParkedSyscall.SocketWait
+                {
+                    ParkedSocketWait.Port = descriptionOf fd system
+                    MaxEvents = 8
+                })
+            system
 
     [<Test>]
     let ``closing the last descriptor onto a parked-on port is refused under Linux`` () : unit =
@@ -3437,7 +3468,9 @@ module TestUnixSystemStep =
                 }
 
         WakeCondition.ofPark parked
-        |> shouldEqual (WakeCondition.FlockGrantable (descriptionOf fd system, FlockMode.Shared))
+        |> shouldEqual (
+            WakeCondition.Primitive (WakePrimitive.FlockGrantable (descriptionOf fd system, FlockMode.Shared))
+        )
 
     [<Test>]
     let ``a port waiter is never read as a lock waiter`` () : unit =
@@ -3453,22 +3486,76 @@ module TestUnixSystemStep =
         // The event count is re-entry state for the finishing call, and no part of what is being
         // waited for: one deliverable event satisfies a wait for any number of them.
         WakeCondition.ofPark parked
-        |> shouldEqual (WakeCondition.SocketEventDeliverable (descriptionOf fd system))
+        |> shouldEqual (WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable (descriptionOf fd system)))
 
     [<Test>]
     let ``a wait on a port with nothing pending is not satisfied, and a pending entry satisfies it`` () : unit =
-        // The socket condition through `isSatisfied`, which is what a client actually polls —
+        // The socket condition through `satisfied`, which is what a client actually polls —
         // `SocketEventPort.hasDeliverableEvent` has its own rows, and this is the wiring between
         // them.
         let quiet, system = withPort linux
 
-        WakeCondition.isSatisfied (WakeCondition.SocketEventDeliverable (descriptionOf quiet system)) system
+        holds (WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable (descriptionOf quiet system))) system
         |> shouldEqual false
 
         let ready, system = withPendingPort linux
 
-        WakeCondition.isSatisfied (WakeCondition.SocketEventDeliverable (descriptionOf ready system)) system
+        holds (WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable (descriptionOf ready system))) system
         |> shouldEqual true
+
+    /// `waiters` parked, in this order, in a socket wait on the port `fd` names.
+    let private parkedOnPortInOrder
+        (waiters : int list)
+        (fd : int)
+        (system : UnixSystem<int, string>)
+        : UnixSystem<int, string>
+        =
+        (system, waiters)
+        ||> List.fold (fun system task ->
+            withTask task system
+            |> UnixWait.park
+                task
+                (ParkedSyscall.SocketWait
+                    {
+                        ParkedSocketWait.Port = descriptionOf fd system
+                        MaxEvents = 8
+                    })
+        )
+
+    [<Test>]
+    let ``one waiter on a deliverable port is woken, saying what woke it`` () : unit =
+        let ready, system = withPendingPort linux
+        let parked = parkedOnPortInOrder [ 7 ] ready system
+
+        UnixWait.wakes (Set.singleton 7) parked
+        |> shouldEqual (
+            Ok
+                [
+                    7, Set.singleton (WakePrimitive.SocketEventDeliverable (descriptionOf ready system))
+                ]
+        )
+
+    [<Test>]
+    let ``several waiters on one deliverable port are refused, named in park order`` () : unit =
+        // A real kernel wakes exactly one of them; which end of its queue that is has not been
+        // measured, so the sweep refuses rather than inventing a winner.
+        let ready, system = withPendingPort linux
+        let parked = parkedOnPortInOrder [ 9 ; 7 ; 8 ] ready system
+
+        UnixWait.wakes (Set.ofList [ 7 ; 8 ; 9 ]) parked
+        |> shouldEqual (Error (WakeRefusal.ExclusiveWaiters (descriptionOf ready system, [ 9 ; 7 ; 8 ])))
+
+        UnixWait.wakes (Set.ofList [ 7 ; 8 ]) parked
+        |> shouldEqual (Error (WakeRefusal.ExclusiveWaiters (descriptionOf ready system, [ 7 ; 8 ])))
+
+        // Only waiters the client holds asleep count: with one of them asleep, it wakes.
+        UnixWait.wakes (Set.singleton 8) parked
+        |> shouldEqual (
+            Ok
+                [
+                    8, Set.singleton (WakePrimitive.SocketEventDeliverable (descriptionOf ready system))
+                ]
+        )
 
     [<Test>]
     let ``truncateAt refuses a negative length rather than emptying the file`` () : unit =

@@ -47,6 +47,7 @@
         <Compile Include="RemovalRules.fs" />
         <Compile Include="RenameRules.fs" />
         <Compile Include="SimulatedUnixPlatform.fs" />
+        <Compile Include="PipeBuffer.fs" />
         <Compile Include="EntropyPool.fs" />
         <Compile Include="ProcessId.fs" />
         <Compile Include="UnixProcess.fs" />
@@ -57,6 +58,7 @@
         <Compile Include="UnixConnection.fs" />
         <Compile Include="UnixPoll.fs" />
         <Compile Include="WakeCondition.fs" />
+        <Compile Include="UnixWait.fs" />
         <Compile Include="UnixDescriptor.fs" />
         <Compile Include="UnixPathResolution.fs" />
         <Compile Include="UnixReadWrite.fs" />
