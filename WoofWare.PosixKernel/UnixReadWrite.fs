@@ -26,6 +26,11 @@ type ReadRefusal =
     /// A socket. Every answer a real kernel gives here is a claim about
     /// connection state, which this kernel does not model.
     | SocketConnectionState of socket : SocketId * domain : SocketDomain * kind : SocketKind
+    /// A directory this description has read part of the way through, on a
+    /// filesystem whose position there this kernel cannot bound, and a count
+    /// for which the answer depends on that position: EINVAL if position +
+    /// count passes `INT64_MAX`, EISDIR otherwise.
+    | ScannedDirectoryPosition of inode : InodeNumber * fileSystem : EmulatedFileSystemType
 
 [<RequireQualifiedAccess>]
 module ReadRefusal =
@@ -37,6 +42,8 @@ module ReadRefusal =
         | ReadRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | ReadRefusal.SocketConnectionState (socket, domain, kind) ->
             $"the descriptor is socket %O{socket} (%O{domain}, %O{kind}). This kernel models no socket connection state, and `read(2)` on a socket is an answer about exactly that: measured on an unconnected socket it is ENOTCONN for a TCP socket, EINVAL on Linux against ENOTCONN on Darwin for a Unix-domain stream socket, and a block with no wake source for a datagram socket. Any constant here would become a lie the moment connection state is modelled."
+        | ReadRefusal.ScannedDirectoryPosition (inode, fileSystem) ->
+            $"the descriptor is directory %O{inode} on %O{fileSystem}, which this description has read part of the way through. Linux answers EINVAL when position + count passes INT64_MAX, ahead of a directory's EISDIR, and the position after a partial scan is %O{fileSystem}'s own cookie (on an NFS mount, whatever the server chose, up to INT64_MAX), which is not a number this kernel's position corresponds to. So whether this read is EINVAL or EISDIR is unknown here."
 
 /// What `write(2)` did, for a request this kernel could answer.
 [<RequireQualifiedAccess>]
@@ -145,8 +152,9 @@ type private ReadTarget =
     | File of inode : InodeNumber * offset : int64
     /// A socket, which is refused rather than answered.
     | Socket of socket : SocketId
-    /// A directory, which has no byte contents to read.
-    | Directory
+    /// A directory, which has no byte contents to read, at the position its
+    /// open file description holds.
+    | Directory of inode : InodeNumber * position : DirectoryPosition
 
 /// What a `write` will operate on, once the descriptor's access mode has been
 /// checked and before its buffer is screened.
@@ -189,6 +197,43 @@ module UnixReadWrite =
         match SimulatedUnixPlatform.flavour platform with
         | SimulatedUnixFlavour.Linux -> count > uint64 (System.Int64.MaxValue - position)
         | SimulatedUnixFlavour.Darwin -> false
+
+    /// `positionOverflows` for a directory description at `position`. `Error`
+    /// where the answer depends on a position this kernel cannot state: the
+    /// filesystem's own cookie partway through a scan.
+    let private directoryPositionOverflows
+        (platform : SimulatedUnixPlatform)
+        (fileSystem : EmulatedFileSystemType)
+        (position : DirectoryPosition)
+        (count : uint64)
+        : Result<bool, unit>
+        =
+        match position with
+        | DirectoryPosition.Cursor DirectoryCursor.Start -> Ok (positionOverflows platform 0L count)
+        | DirectoryPosition.Unenumerable offset -> Ok (positionOverflows platform offset count)
+        | DirectoryPosition.Cursor (DirectoryCursor.After _)
+        | DirectoryPosition.Cursor DirectoryCursor.ReturnedDotDot
+        | DirectoryPosition.Cursor DirectoryCursor.ReturnedDot ->
+            // The largest position a description partway through a scan can
+            // hold. On tmpfs, measured on Linux 6.18.5 aarch64 by
+            // docs/plans/2026-08-23-posix-kernel-extraction/transfer-counts-directory.c:
+            // each entry's own small offset partway through, and INT_MAX once
+            // the scan is done. An NFS position is the server's cookie, which
+            // can be anything up to INT64_MAX (ext4's 64-bit hash cookies end
+            // at it). APFS is never mounted where the check exists, so it is
+            // given no bound either.
+            let largest =
+                match fileSystem with
+                | EmulatedFileSystemType.Tmpfs -> int64 System.Int32.MaxValue
+                | EmulatedFileSystemType.Nfs
+                | EmulatedFileSystemType.Apfs -> System.Int64.MaxValue
+
+            // The position is somewhere in [0, largest], and the check is
+            // monotone in it, so the two ends decide it whenever they agree.
+            match positionOverflows platform 0L count, positionOverflows platform largest count with
+            | true, _ -> Ok true
+            | false, false -> Ok false
+            | false, true -> Error ()
 
     /// The count the object's own operation sees: at most one call's worth.
     /// Where the platform refuses a longer count instead, that refusal has
@@ -341,7 +386,7 @@ module UnixReadWrite =
                 | SimulatedUnixFlavour.Darwin -> Error UnixError.ENXIO
             | OpenFileTarget.Socket socketId -> Ok (ReadTarget.Socket socketId)
             | OpenFileTarget.File (inode, offset) -> Ok (ReadTarget.File (inode, offset))
-            | OpenFileTarget.Directory _ -> Ok ReadTarget.Directory
+            | OpenFileTarget.Directory (inode, position) -> Ok (ReadTarget.Directory (inode, position))
 
         match target with
         | Error error -> Ok (ReadAnswer.Failed error, system)
@@ -397,12 +442,19 @@ module UnixReadWrite =
             | SimulatedUnixFlavour.Darwin, _ ->
                 let socket = UnixMachineState.socket socketId system.Machine
                 Error (ReadRefusal.SocketConnectionState (socketId, socket.Domain, socket.Kind))
-        | ReadTarget.Directory ->
-            // EISDIR on both, and behind the buffer screen rather than ahead of
-            // it: measured, `read(dir, NULL, 5)` is EISDIR while
-            // `read(dir, (void*)-1, 5)` is EFAULT under a screening flavour.
-            // The same answer `pread` reaches through the directory's content.
-            Ok (ReadAnswer.Failed UnixError.EISDIR, system)
+        | ReadTarget.Directory (inode, position) ->
+            // A directory has a position too, and Linux checks position + count
+            // against it ahead of EISDIR, exactly as for a file.
+            match directoryPositionOverflows platform system.Machine.FileSystemType position count with
+            | Error () -> Error (ReadRefusal.ScannedDirectoryPosition (inode, system.Machine.FileSystemType))
+            | Ok true -> Ok (ReadAnswer.Failed UnixError.EINVAL, system)
+            | Ok false ->
+                // EISDIR on both, and behind the buffer screen rather than ahead
+                // of it: measured, `read(dir, NULL, 5)` is EISDIR while
+                // `read(dir, (void*)-1, 5)` is EFAULT under a screening flavour.
+                // The same answer `pread` reaches through the directory's
+                // content.
+                Ok (ReadAnswer.Failed UnixError.EISDIR, system)
         | ReadTarget.Stdin ->
             // **Immediate end-of-file**, and this is a claim about how the
             // process was launched rather than a fallback: this kernel models

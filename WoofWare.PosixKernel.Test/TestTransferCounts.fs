@@ -696,7 +696,16 @@ module TestTransferCounts =
         | "closed" -> 7, system
         | "stdin" -> 0, system
         | "stdout" -> 1, system
-        | "dir" -> reopen rootInode FileAccessMode.ReadOnly
+        | "dir" ->
+            let fd, registry = FileDescriptorRegistry.openDirectory rootInode registry
+
+            fd,
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors = registry
+                    }
+            }
         | "port" ->
             let fd, registry = FileDescriptorRegistry.createSocketEventPort registry
 
@@ -883,6 +892,91 @@ module TestTransferCounts =
 
             (op, kind, "Darwin", counts |> List.map (seen op kind darwin))
             |> shouldEqual (op, kind, "Darwin", onDarwin)
+
+    /// A directory has a position too, and Linux checks position + count
+    /// against it ahead of EISDIR. At its start the position is 0, and after an
+    /// `lseek` it is the offset `lseek` set. Partway through a scan it is the
+    /// filesystem's own: on tmpfs at most INT_MAX, measured
+    /// (transfer-counts-directory.c), so no count the buffer screen admits can
+    /// carry it past INT64_MAX; on NFS the server's cookie, which could be
+    /// anything, so a nonzero count is refused. Darwin checks no position.
+    [<Test>]
+    let ``a directory read checks the position its description holds`` () : unit =
+        let nearTop = Int64.MaxValue - 10L
+
+        let scanned =
+            DirectoryPosition.Cursor (DirectoryCursor.After (DirectoryEntryName.parseOrFail context "a"))
+
+        let finished = DirectoryPosition.Cursor DirectoryCursor.ReturnedDot
+        let start = DirectoryPosition.Cursor DirectoryCursor.Start
+        let arm64Limit = ObservedUserAddressLimit.Arm64FortyEightBit
+
+        let seenAt
+            (platform : SimulatedUnixPlatform)
+            (fileSystem : EmulatedFileSystemType)
+            (position : DirectoryPosition)
+            (count : uint64)
+            : Seen
+            =
+            let system = systemOn (platform, None)
+
+            let system =
+                { system with
+                    Machine = UnixMachineState.withFileSystemType (Some fileSystem) system.Machine
+                }
+
+            let fd, registry =
+                FileDescriptorRegistry.openDirectory rootInode system.Process.FileDescriptors
+
+            let system =
+                { system with
+                    Process =
+                        { system.Process with
+                            FileDescriptors = FileDescriptorRegistry.setDirectoryPosition fd position registry
+                        }
+                }
+
+            match UnixReadWrite.read fd UserBuffer.Mapped count system with
+            | Ok (ReadAnswer.Failed error, _) -> Seen.Errno error
+            | Ok (ReadAnswer.Completed bytes, _) -> Seen.Moved bytes.Length
+            | Error (ReadRefusal.ScannedDirectoryPosition _) -> Seen.Refused
+            | Error other -> failwith $"unexpected refusal %A{other}"
+
+        let eisdir = Seen.Errno UnixError.EISDIR
+        let einval = Seen.Errno UnixError.EINVAL
+        let efault = Seen.Errno UnixError.EFAULT
+        let linux = SimulatedUnixPlatform.linuxArm64
+        let darwin = SimulatedUnixPlatform.macOsArm64
+
+        let rows =
+            [
+                // Where `lseek` put it: ten bytes fit below INT64_MAX, eleven do not.
+                linux, EmulatedFileSystemType.Tmpfs, DirectoryPosition.Unenumerable nearTop, 10UL, eisdir
+                linux, EmulatedFileSystemType.Tmpfs, DirectoryPosition.Unenumerable nearTop, 11UL, einval
+                linux, EmulatedFileSystemType.Nfs, DirectoryPosition.Unenumerable nearTop, 11UL, einval
+                darwin, EmulatedFileSystemType.Apfs, DirectoryPosition.Unenumerable nearTop, 11UL, eisdir
+                // At the start, position 0: nothing the screen admits overflows.
+                linux, EmulatedFileSystemType.Nfs, start, 1UL, eisdir
+                linux, EmulatedFileSystemType.Tmpfs, start, arm64Limit, eisdir
+                linux, EmulatedFileSystemType.Tmpfs, start, arm64Limit + 1UL, efault
+                // Partway through, and at the end, of a tmpfs scan: at most INT_MAX.
+                linux, EmulatedFileSystemType.Tmpfs, scanned, 1UL, eisdir
+                linux, EmulatedFileSystemType.Tmpfs, finished, arm64Limit, eisdir
+                // ...of an NFS scan: the server's cookie, so only a count of zero
+                // is decided.
+                linux, EmulatedFileSystemType.Nfs, scanned, 0UL, eisdir
+                linux, EmulatedFileSystemType.Nfs, scanned, 1UL, Seen.Refused
+                linux, EmulatedFileSystemType.Nfs, finished, 1UL, Seen.Refused
+                // The screen still comes first.
+                linux, EmulatedFileSystemType.Nfs, finished, UInt64.MaxValue, efault
+                // Darwin has no position check to depend on the cookie.
+                darwin, EmulatedFileSystemType.Nfs, finished, 5UL, eisdir
+                darwin, EmulatedFileSystemType.Apfs, scanned, IntMax, eisdir
+            ]
+
+        for platform, fileSystem, position, count, expected in rows do
+            (platform, fileSystem, position, count, seenAt platform fileSystem position count)
+            |> shouldEqual (platform, fileSystem, position, count, expected)
 
     // ---------------------------------------------------------------- getcwd
 
