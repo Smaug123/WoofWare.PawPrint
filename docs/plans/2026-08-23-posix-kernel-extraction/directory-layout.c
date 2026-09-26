@@ -238,11 +238,12 @@ int main(int argc, char **argv) {
         errno = 0; n = rawgetdents(ff, big, sizeof big, NULL);
         printf("ERRORS regular_file ret=%ld errno=%d\n", n, errno);
         close(ff);
+        // Before the pipe, which would otherwise reuse ff's number.
+        errno = 0; n = rawgetdents(ff, big, 0, NULL);
+        printf("ERRORS closed_fd_size0 ret=%ld errno=%d\n", n, errno);
         int pf[2]; pipe(pf);
         errno = 0; n = rawgetdents(pf[0], big, sizeof big, NULL);
         printf("ERRORS pipe ret=%ld errno=%d\n", n, errno);
-        errno = 0; n = rawgetdents(ff, big, 0, NULL);
-        printf("ERRORS closed_fd_size0 ret=%ld errno=%d\n", n, errno);
         ff = open(q, O_RDONLY);
         errno = 0; n = rawgetdents(ff, big, 0, NULL);
         printf("ERRORS regular_file_size0 ret=%ld errno=%d\n", n, errno);
