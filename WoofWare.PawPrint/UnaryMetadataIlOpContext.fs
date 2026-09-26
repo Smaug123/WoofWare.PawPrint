@@ -30,14 +30,16 @@ type internal ResolvedMetadataOperand =
     /// `DynamicScope`. Non-closed targets never get here: they are an invalid program, and
     /// <c>UnaryMetadataIlOp.execute</c> raises before dispatching.
     | ScopeType of ConcreteTypeHandle
-    /// A dynamic method read from entry <c>scopeIndex</c> of the executing dynamic method's
-    /// `DynamicScope`.
+    /// A method read from entry <c>scopeIndex</c> of the executing dynamic method's `DynamicScope`:
+    /// another dynamic method, or a reflected method whose declaring type is closed and whose own
+    /// generic parameters are all bound. Anything else never gets here: it is an invalid program,
+    /// and <c>UnaryMetadataIlOp.execute</c> raises before dispatching.
     ///
     /// The handle, and not a concretised <see cref="MethodInfo"/>: turning one into the other threads
-    /// interpreter state and latches the callee's <c>initLocals</c> as a side effect, neither of
-    /// which belongs in a step whose whole job is to read the operand. The op does that, alongside
-    /// everything else it does to state.
-    | ScopeMethod of DynamicMethodHandle
+    /// interpreter state, and for a dynamic method latches the callee's <c>initLocals</c> as a side
+    /// effect, neither of which belongs in a step whose whole job is to read the operand. The op
+    /// does that, alongside everything else it does to state.
+    | ScopeMethod of MethodHandle
     /// A field read from entry <c>scopeIndex</c> of the executing dynamic method's `DynamicScope`,
     /// as the identity the field-handle registry holds rather than as a projected
     /// <see cref="FieldInfo"/>. Declaring types that are not closed never get here: they are an

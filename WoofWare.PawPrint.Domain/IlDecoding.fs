@@ -55,14 +55,11 @@ module IlDecoding =
         /// through `Type.GetTypeFromHandle` to the right `Type` — where <see cref="Type"/>'s
         /// narrowing refuses the first three outright.
         | AnyType
-        /// A method: today a `DynamicMethod`, either bare (as `Emit(OpCode, MethodInfo)` stores it)
-        /// or inside the `VarArgMethod` wrapper `EmitCall` always stores. The other kinds
-        /// `ResolveToken` accepts in method position — a `RuntimeMethodHandle`, a
-        /// `GenericMethodInfo`, or a `VarArgMethod` wrapping a *reflected* method — are emittable
-        /// and mintable (measured: `Emit(Call, reflectedMethodInfo)` on a module-hosted
-        /// `DynamicMethod` builds its call-site signature, and `CreateDelegate` succeeds), and are
-        /// refused later, when the body's `call` asks the scope for a method and finds a
-        /// `System.RuntimeMethodHandle` instead.
+        /// A method: a `DynamicMethod`, either bare (as `Emit(OpCode, MethodInfo)` stores it) or
+        /// inside the `VarArgMethod` wrapper `EmitCall` always stores, or a reflected method, as the
+        /// bare `RuntimeMethodHandle` or the `GenericMethodInfo` that `Emit(OpCode, MethodInfo)`
+        /// stores for one. Which of those the entry is decides nothing about the opcode's
+        /// behaviour: `ResolveToken` turns every one into a method before the JIT looks at it.
         | Method
         /// A field: a `GenericFieldInfo`, which is what everything reachable through
         /// `Type.GetField` arrives as, or a bare `RuntimeFieldHandle`, which is what a
@@ -86,20 +83,16 @@ module IlDecoding =
         | UnaryMetadataTokenIlOp.Sizeof
         | UnaryMetadataTokenIlOp.Ldelema -> ScopeOperandKind.Type
 
-        | UnaryMetadataTokenIlOp.Call -> ScopeOperandKind.Method
+        | UnaryMetadataTokenIlOp.Call
+        // Every method entry, a DynamicMethod included: real .NET answers a `callvirt` of any static
+        // method with MissingMethodException, and a DynamicMethod is always static, so that is one
+        // rule about the resolved callee rather than a property of the entry (both measured).
+        | UnaryMetadataTokenIlOp.Callvirt -> ScopeOperandKind.Method
 
         // The rest of the method-shaped opcodes, each refused for its own measured reason. Which of
         // them a guest can even emit is not obvious: `Emit(OpCode, MethodInfo)`'s `DynamicMethod`
         // branch rules out only `ldtoken`, `ldftn` and `ldvirtftn` (`DynamicILGenerator.cs:73-82`),
         // so the others accept one and it is the *runtime* that decides what to do with it.
-        | UnaryMetadataTokenIlOp.Callvirt ->
-            // Emittable with either operand kind, and real .NET treats the two quite differently
-            // (both measured): a DynamicMethod gives MissingMethodException ("Method not found:
-            // '?'.") at first JIT, since a DynamicMethod is always static and so has no virtual
-            // slot, whereas a reflected MethodInfo dispatches and runs. So this refusal covers one
-            // shape PawPrint would have to *raise* and one it would have to *resolve*.
-            ScopeOperandKind.NotYetSupported
-                "callvirt naming a DynamicMethod is a MissingMethodException on real .NET, while callvirt naming a reflected method dispatches and runs (both measured); PawPrint does neither yet"
         | UnaryMetadataTokenIlOp.Newobj ->
             // Emittable with either operand kind, and again they diverge on real .NET (both
             // measured): a DynamicMethod gives a catchable InvalidProgramException, whereas a
@@ -122,9 +115,10 @@ module IlDecoding =
         | UnaryMetadataTokenIlOp.Ldvirtftn ->
             // `Emit` refuses a DynamicMethod operand for these outright (measured: ArgumentException
             // at emit), so an entry here is necessarily one of the reflected kinds — which emit,
-            // mint and run on real .NET (measured), and which PawPrint cannot yet resolve.
+            // mint and run on real .NET (measured). PawPrint resolves those for `call` and
+            // `callvirt`; these two opcodes are not wired to them yet.
             ScopeOperandKind.NotYetSupported
-                "ldftn/ldvirtftn refuse a DynamicMethod operand at emit, so their scope entries are the reflected method kinds (RuntimeMethodHandle, GenericMethodInfo, VarArgMethod), which PawPrint cannot yet resolve"
+                "ldftn/ldvirtftn refuse a DynamicMethod operand at emit, so their scope entries are the reflected method kinds (RuntimeMethodHandle, GenericMethodInfo, VarArgMethod), which PawPrint resolves for call and callvirt but not yet for ldftn or ldvirtftn"
 
         | UnaryMetadataTokenIlOp.Ldfld
         | UnaryMetadataTokenIlOp.Ldflda
@@ -143,8 +137,11 @@ module IlDecoding =
         // errors.
         | UnaryMetadataTokenIlOp.Ldtoken -> ScopeOperandKind.AnyType
         | UnaryMetadataTokenIlOp.Constrained ->
+            // Its operand is a type entry, but a `callvirt` naming a scope entry does not yet apply
+            // the receiver transformation the prefix asks for, so the prefix stays refused here
+            // rather than being silently dropped there.
             ScopeOperandKind.NotYetSupported
-                "constrained. is only meaningful as a prefix to a callvirt, which needs method entries"
+                "constrained. is a prefix to callvirt, and a callvirt naming a DynamicScope entry does not yet apply the receiver transformation it asks for"
         | UnaryMetadataTokenIlOp.Cpobj
         | UnaryMetadataTokenIlOp.Mkrefany
         | UnaryMetadataTokenIlOp.Refanyval ->
@@ -196,6 +193,10 @@ module IlDecoding =
             // `Emit(OpCode, MethodInfo)` and `EmitCall` differ only in whether the entry is wrapped;
             // both are ordinary ways to spell the same call, so both are accepted here.
             | ScopeOperandKind.Method, DynamicScopeEntry.VarArgMethod
+            // A reflected method, wrapped with its declaring type when that type is generic or an
+            // array; `ResolveToken` answers both with the method.
+            | ScopeOperandKind.Method, DynamicScopeEntry.MethodHandle
+            | ScopeOperandKind.Method, DynamicScopeEntry.GenericMethodInfo
             // `Emit(OpCode, FieldInfo)` and `DynamicILInfo.GetTokenFor` differ only in whether the
             // handle is wrapped with the declaring type it was observed on; both name a field.
             | ScopeOperandKind.Field, DynamicScopeEntry.GenericFieldInfo
@@ -240,6 +241,10 @@ module IlDecoding =
             | Some DynamicScopeEntry.GenericFieldInfo ->
                 failwith
                     $"a dynamic method's ldstr names DynamicScope entry %d{index} (token 0x%08x{value}), which holds a field rather than a string"
+            | Some DynamicScopeEntry.MethodHandle
+            | Some DynamicScopeEntry.GenericMethodInfo ->
+                failwith
+                    $"a dynamic method's ldstr names DynamicScope entry %d{index} (token 0x%08x{value}), which holds a reflected method rather than a string"
             | Some (DynamicScopeEntry.Unsupported description) ->
                 failwith
                     $"a dynamic method's ldstr names DynamicScope entry %d{index} (token 0x%08x{value}), which holds %s{description} rather than a string"

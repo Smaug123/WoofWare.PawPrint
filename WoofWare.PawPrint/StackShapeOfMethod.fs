@@ -169,6 +169,48 @@ module StackShapeOfMethod =
         | Error e, _
         | _, Error e -> Error e
 
+    /// The shape of a call to a reflected method: its own signature, read under the declaring type's
+    /// instantiation and its own, which the identity carries.
+    let private reflectedCalleeShape
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (identity : MetadataMethodIdentity)
+        : TokenShape
+        =
+        let definition =
+            MethodHandleResolution.methodInfoOfMetadataIdentity operation state identity
+
+        let assembly =
+            state.LoadedAssembly (identity.GetAssemblyFullName ())
+            |> Option.defaultWith (fun () ->
+                failwith $"%s{operation}: assembly %s{identity.GetAssemblyFullName ()} of a scope method is not loaded"
+            )
+
+        let toTypeDefn (handle : ConcreteTypeHandle) : TypeDefn =
+            Concretization.concreteHandleToTypeDefn baseClassTypes handle state.ConcreteTypes state._LoadedAssemblies
+
+        let typeArguments =
+            let declaring = MethodHandleResolution.requireClosedDeclaringType operation identity
+
+            match IlMachineState.tryGetConcreteTypeInfo state declaring with
+            | Some (concreteType, _) -> concreteType.Generics |> Seq.map toTypeDefn |> ImmutableArray.CreateRange
+            | None ->
+                failwith
+                    $"%s{operation}: the declaring type %O{declaring} of a scope method is not a registered nominal type"
+
+        let substitution =
+            {
+                TypeArguments = Some typeArguments
+                MethodArguments =
+                    identity.GetMethodGenerics ()
+                    |> Seq.map toTypeDefn
+                    |> ImmutableArray.CreateRange
+                    |> Some
+            }
+
+        StackShapeTokens.calleeShape assembly GenericBinding.AtDefinition substitution definition.Signature
+
     /// The effect of one `DynamicScope` operand, read the way the instruction itself will read it.
     let private dynamicTokenShape
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -181,12 +223,17 @@ module StackShapeOfMethod =
         let operation = $"stack shape of %O{op}"
 
         match op with
-        | UnaryMetadataTokenIlOp.Call ->
-            // An entry that is not a dynamic method (a guest can put a `RuntimeMethodHandle`
-            // there after the mint) is the call's own problem when it executes.
-            match DynamicScopeOperand.tryDynamicMethod baseClassTypes operation index state handle with
-            | Error why -> Error why
-            | Ok (DynamicMethodResolution.Resolved callee) ->
+        | UnaryMetadataTokenIlOp.Call
+        | UnaryMetadataTokenIlOp.Callvirt ->
+            // An entry the instruction would refuse, or one PawPrint does not implement, is the
+            // instruction's own problem when it executes. So is a `callvirt` of a static callee,
+            // which raises before it pops anything: the shape given it here is never applied.
+            match DynamicScopeOperand.tryMethod baseClassTypes operation index state handle with
+            | Error (ScopeEntryRefusal.GuestException (_, why))
+            | Error (ScopeEntryRefusal.Unsupported why) -> Error why
+            | Ok (ScopeMethodResolution.Resolved (MethodHandle.FromMetadata identity)) ->
+                Ok (Some (reflectedCalleeShape baseClassTypes operation state identity))
+            | Ok (ScopeMethodResolution.Resolved (MethodHandle.FromDynamic callee)) ->
                 let definition =
                     MethodHandleRegistry.resolveDynamicMethod callee state.MethodHandles
                     |> Option.defaultWith (fun () ->
@@ -211,9 +258,8 @@ module StackShapeOfMethod =
                             signature
                     )
                 )
-            | Ok (DynamicMethodResolution.NeedsMinting callee) ->
+            | Ok (ScopeMethodResolution.NeedsMinting callee) ->
                 unmintedCalleeShape baseClassTypes operation state callee |> Result.map Some
-        | UnaryMetadataTokenIlOp.Callvirt
         | UnaryMetadataTokenIlOp.Calli
         | UnaryMetadataTokenIlOp.Newobj
         | UnaryMetadataTokenIlOp.Jmp ->
@@ -226,8 +272,8 @@ module StackShapeOfMethod =
             // Reading ahead decides nothing: an entry the guest's instruction would raise on, or
             // one PawPrint does not implement, is the instruction's own problem when it executes.
             match DynamicScopeOperand.tryField baseClassTypes operation index state handle with
-            | Error (ScopeFieldRefusal.GuestException (_, why))
-            | Error (ScopeFieldRefusal.Unsupported why) -> Error why
+            | Error (ScopeEntryRefusal.GuestException (_, why))
+            | Error (ScopeEntryRefusal.Unsupported why) -> Error why
             | Ok field ->
                 let assembly =
                     state.LoadedAssembly (field.GetAssemblyFullName ())

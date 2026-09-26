@@ -35,8 +35,9 @@ open WoofWare.PawPrint
 [<Parallelizable(ParallelScope.All)>]
 module TestNativeGetDynamicMethod =
 
-    /// A trivial guest; nothing here reads it, but `Program.prepare` needs an entry assembly and
-    /// the QCall needs a loaded assembly to scope the minted method to.
+    /// A trivial guest: `Program.prepare` needs an entry assembly, and the QCall needs a loaded
+    /// assembly to scope the minted method to. Its other methods are what a scope entry naming a
+    /// reflected method points at.
     let private guestSource =
         """
 public static class Entry
@@ -45,6 +46,15 @@ public static class Entry
     {
         return 0;
     }
+
+    public static int Answer() => 42;
+
+    public static T Id<T>(T x) => x;
+}
+
+public class Box<T>
+{
+    public static int Answer() => 42;
 }
 """
 
@@ -557,6 +567,15 @@ public static class Entry
         ///
         /// Zeroed, for the reason `FieldHandleObject` is.
         | GenericFieldInfoObject
+        /// A boxed `System.RuntimeMethodHandle` whose `m_value` is <paramref name="methodInfo"/>, as
+        /// `GetTokenFor(RuntimeMethodHandle)` adds for `Emit(OpCode, MethodInfo)` when the reflected
+        /// method's declaring type is neither generic nor an array.
+        | MethodHandleObject of methodInfo : ManagedHeapAddress option
+        /// A `System.Reflection.Emit.GenericMethodInfo` pairing <paramref name="methodInfo"/> with
+        /// the type <paramref name="context"/> names, as
+        /// `GetTokenFor(RuntimeMethodHandle, RuntimeTypeHandle)` adds when the declaring type is
+        /// generic or an array.
+        | GenericMethodInfoObject of methodInfo : ManagedHeapAddress option * context : RuntimeTypeHandleTarget option
 
     /// One clause of an `__ExceptionInfo`, in the shape the parallel arrays hold it.
     type private ClauseSpec =
@@ -785,6 +804,55 @@ public static class Entry
                     | ScopeEntry.GenericFieldInfoObject ->
                         let addr, state =
                             allocateZeroed loggerFactory baseClassTypes baseClassTypes.GenericFieldInfo state
+
+                        CliType.ObjectRef (Some addr), state
+                    | ScopeEntry.MethodHandleObject methodInfo ->
+                        let addr, state =
+                            allocateZeroedAs
+                                loggerFactory
+                                baseClassTypes
+                                (TypeDefn.FromDefinition (
+                                    baseClassTypes.RuntimeMethodHandle.Identity,
+                                    SignatureTypeKind.ValueType
+                                ))
+                                baseClassTypes.RuntimeMethodHandle
+                                state
+
+                        let state =
+                            IlMachineState.setOwnInstanceField addr "m_value" (CliType.ObjectRef methodInfo) state
+
+                        CliType.ObjectRef (Some addr), state
+                    | ScopeEntry.GenericMethodInfoObject (methodInfo, context) ->
+                        let addr, state =
+                            allocateZeroed loggerFactory baseClassTypes baseClassTypes.GenericMethodInfo state
+
+                        let runtimeType, state =
+                            match context with
+                            | None -> None, state
+                            | Some target ->
+                                let runtimeType, state =
+                                    IlMachineState.getOrAllocateType loggerFactory baseClassTypes target state
+
+                                Some runtimeType, state
+
+                        // Both fields are single-field structs, so each is set by rewriting the one
+                        // field inside the zeroed struct the allocation left there.
+                        let setInner (outer : string) (inner : string) (value : CliType) (state : IlMachineState) =
+                            let heapObj = ManagedHeap.get addr state.ManagedHeap
+
+                            match AllocatedNonArrayObject.DereferenceField outer heapObj with
+                            | CliType.ValueType cvt ->
+                                IlMachineState.setOwnInstanceField
+                                    addr
+                                    outer
+                                    (CliType.ValueType (CliValueType.WithFieldSet inner value cvt))
+                                    state
+                            | other -> failwith $"expected GenericMethodInfo.%s{outer} to be a struct, got %O{other}"
+
+                        let state =
+                            state
+                            |> setInner "m_methodHandle" "m_value" (CliType.ObjectRef methodInfo)
+                            |> setInner "m_context" "m_type" (CliType.ObjectRef runtimeType)
 
                         CliType.ObjectRef (Some addr), state
                     | ScopeEntry.FieldHandleObject ->
@@ -1652,7 +1720,7 @@ public static class Entry
             | _ -> None
         )
 
-    /// The scope indices this body's `call`s name, in order. The sibling of `scopeTypeOperands`, and
+    /// The scope indices this body's `call`s and `callvirt`s name, in order. The sibling of `scopeTypeOperands`, and
     /// separate from it so that a `call` decoded as a metadata token fails here loudly rather than
     /// being silently dropped.
     let private scopeMethodOperands (body : MintedDynamicMethodBody) : int list =
@@ -1660,7 +1728,7 @@ public static class Entry
         |> List.map fst
         |> List.choose (fun op ->
             match op with
-            | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Call, operand) ->
+            | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Call | UnaryMetadataTokenIlOp.Callvirt), operand) ->
                 match operand with
                 | MetadataOperand.FromDynamicScope index -> Some index
                 | MetadataOperand.FromMetadata token ->
@@ -1959,20 +2027,20 @@ public static class Entry
     /// "This opcode is not wired for scope operands yet" and "this entry is the wrong kind" are
     /// different facts and must read differently: a guest that trips either just gets parked, so the
     /// message is the only diagnostic anyone gets. A method-shaped opcode naming a perfectly good
-    /// *method* entry is the case that separates them, and `callvirt` is the one to use, since
-    /// `call` is wired: a `DynamicMethod` is always static, so real .NET answers a `callvirt` naming
-    /// one with MissingMethodException (measured) rather than by resolving it.
+    /// *method* entry is the case that separates them, and `newobj` is the one to use, since `call`
+    /// and `callvirt` are wired: real .NET answers a `newobj` naming a `DynamicMethod` with
+    /// InvalidProgramException (measured) rather than by constructing anything.
     [<Test>]
-    let ``a callvirt naming a dynamic-method entry is refused as unsupported rather than as wrong-kind`` () : unit =
+    let ``a newobj naming a dynamic-method entry is refused as unsupported rather than as wrong-kind`` () : unit =
         let loggerFactory, prepared, state = loadFixture ()
 
-        // ldnull; callvirt <scope 2>; ret
+        // ldnull; newobj <scope 2>; ret
         let body =
             { doublingBody with
                 Code =
                     Array.concat
                         [
-                            [| 0x14uy ; 0x6Fuy |]
+                            [| 0x14uy ; 0x73uy |]
                             System.BitConverter.GetBytes (2 ||| 0x0A000000)
                             [| 0x2Auy |]
                         ]
@@ -1986,11 +2054,51 @@ public static class Entry
 
         let message = mintExpectingFailureIn loggerFactory prepared body state
 
-        message |> shouldContainText "Callvirt"
-        message |> shouldContainText "MissingMethodException"
+        message |> shouldContainText "Newobj"
+        message |> shouldContainText "InvalidProgramException"
         // Not the wrong-kind wording ("... which holds X rather than Y"): the entry is fine, the
         // opcode is what is missing.
         message |> shouldNotContainText "which holds"
+
+    /// `call` and `callvirt` accept every entry `ResolveToken` resolves in method position: a
+    /// `DynamicMethod`, bare or in the `VarArgMethod` wrapper `EmitCall` stores, and a reflected
+    /// method, bare or in the `GenericMethodInfo` stored for a generic or array declaring type.
+    /// Decoding classifies each by its type alone, so zeroed objects are enough here; what each
+    /// names is read when the instruction runs.
+    [<Test>]
+    let ``call and callvirt naming any method entry are minted`` () : unit =
+        for opcode, opcodeName in [ 0x28uy, "call" ; 0x6Fuy, "callvirt" ] do
+            for entry in
+                [
+                    ScopeEntry.DynamicMethodObject
+                    ScopeEntry.VarArgMethodObject
+                    ScopeEntry.MethodHandleObject None
+                    ScopeEntry.GenericMethodInfoObject (None, None)
+                ] do
+                let loggerFactory, prepared, state = loadFixture ()
+
+                // ldnull; call-or-callvirt <scope 2>; ret
+                let body =
+                    { doublingBody with
+                        Code =
+                            Array.concat
+                                [
+                                    [| 0x14uy ; opcode |]
+                                    System.BitConverter.GetBytes (2 ||| 0x0A000000)
+                                    [| 0x2Auy |]
+                                ]
+                        Scope = [ ScopeEntry.Null ; ScopeEntry.Blob [| 0x00uy |] ; entry ]
+                    }
+
+                let stubAddress, _, state =
+                    mintOne loggerFactory prepared "Probe" doublingSignature body state
+
+                let _, definition = definitionBehindStub state stubAddress
+
+                let operands = scopeMethodOperands (definition.GetBody ())
+
+                if operands <> [ 2 ] then
+                    failwith $"%s{opcodeName} naming %A{entry} decoded to scope operands %A{operands}"
 
     /// The other half of that distinction:
     /// `call` is wired, so a `call` naming a type entry is a wrong-kind refusal rather than
@@ -2089,6 +2197,272 @@ public static class Entry
         let _, definition = definitionBehindStub state stubAddress
 
         scopeMethodOperands (definition.GetBody ()) |> shouldEqual [ 2 ]
+
+    /// Nor a reflected method, in either of the shapes `Emit` stores one.
+    [<Test>]
+    let ``an ldstr naming a reflected-method entry is refused`` () : unit =
+        for entry in
+            [
+                ScopeEntry.MethodHandleObject None
+                ScopeEntry.GenericMethodInfoObject (None, None)
+            ] do
+            let message =
+                ldstrBody 2 [ ScopeEntry.Null ; ScopeEntry.Blob [| 0x00uy |] ; entry ]
+                |> mintExpectingFailure
+
+            message |> shouldContainText "entry 2"
+            message |> shouldContainText "a reflected method rather than a string"
+
+    /// A method of the guest, by its declaring type's name and its own.
+    let private guestMethod
+        (prepared : Program.PreparedProgram)
+        (typeName : string)
+        (methodName : string)
+        : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
+        =
+        let assembly =
+            prepared.State.LoadedAssembly prepared.State.EntryAssembly.FullName
+            |> Option.defaultWith (fun () -> failwith "the guest assembly is not loaded")
+
+        assembly.Methods.Values
+        |> Seq.find (fun method -> method.RequiredDeclaringType.Name = typeName && method.Name = methodName)
+
+    /// The guest's `Box<T>` over <paramref name="argument"/>, as a closed type handle.
+    let private closedBox
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (argument : TypeDefn)
+        (state : IlMachineState)
+        : RuntimeTypeHandleTarget * IlMachineState
+        =
+        let box = guestMethod prepared "Box`1" "Answer"
+
+        let state, handle =
+            IlMachineState.concretizeType
+                loggerFactory
+                prepared.BaseClassTypes
+                state
+                box.DeclaringAssemblyFullName
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.GenericInstantiation (
+                    TypeDefn.FromDefinition (box.RequiredDeclaringType.Identity, SignatureTypeKind.Class),
+                    ImmutableArray.Create argument
+                ))
+
+        RuntimeTypeHandleTarget.Closed handle, state
+
+    /// A fresh `RuntimeMethodInfoStub` naming <paramref name="method"/> as declared by
+    /// <paramref name="declaringType"/>, with none of the method's own generic parameters bound:
+    /// the `IRuntimeMethodInfo` a scope entry's `RuntimeMethodHandle` holds.
+    let private stubFor
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (declaringType : RuntimeTypeHandleTarget)
+        (method : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        let baseClassTypes = prepared.BaseClassTypes
+
+        let registryId, registry =
+            MethodHandleRegistry.getOrAllocateInternalId
+                method.DeclaringAssemblyFullName
+                declaringType
+                method
+                state.MethodHandles
+
+        let state =
+            { state with
+                MethodHandles = registry
+            }
+
+        let state, stubType =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                baseClassTypes.Corelib.DefinitionFullName
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.FromDefinition (baseClassTypes.RuntimeMethodInfoStub.Identity, SignatureTypeKind.Class))
+
+        MethodHandleRegistry.allocateFreshStubForId
+            baseClassTypes
+            state.ConcreteTypes
+            state
+            (fun fields state -> IlMachineState.allocateManagedObject stubType fields state)
+            registryId
+
+    /// What `DynamicScopeOperand.tryMethod` makes of a `call` naming <paramref name="entry"/>, read
+    /// from the minted method's live scope as the instruction would read it.
+    let private resolveCallee
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (entry : ScopeEntry)
+        (state : IlMachineState)
+        : Result<ScopeMethodResolution, ScopeEntryRefusal> * IlMachineState
+        =
+        // ldnull; call <scope 2>; ret
+        let body =
+            { doublingBody with
+                Code =
+                    Array.concat
+                        [
+                            [| 0x14uy ; 0x28uy |]
+                            System.BitConverter.GetBytes (2 ||| 0x0A000000)
+                            [| 0x2Auy |]
+                        ]
+                Scope = [ ScopeEntry.Null ; ScopeEntry.Blob [| 0x00uy |] ; entry ]
+            }
+
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" doublingSignature body state
+
+        let handle, _ = definitionBehindStub state stubAddress
+
+        DynamicScopeOperand.tryMethod prepared.BaseClassTypes "test" 2 state handle, state
+
+    let private expectResolvedTo
+        (declaringType : RuntimeTypeHandleTarget)
+        (methodName : string)
+        (state : IlMachineState)
+        (result : Result<ScopeMethodResolution, ScopeEntryRefusal>)
+        : unit
+        =
+        match result with
+        | Ok (ScopeMethodResolution.Resolved (MethodHandle.FromMetadata identity)) ->
+            identity.GetDeclaringType () |> shouldEqual declaringType
+
+            (MethodHandleResolution.methodInfoOfMetadataIdentity "test" state identity).Name
+            |> shouldEqual methodName
+        | other -> failwith $"expected %s{methodName} on %O{declaringType}, got %A{other}"
+
+    let private expectUnsupported (result : Result<ScopeMethodResolution, ScopeEntryRefusal>) : string =
+        match result with
+        | Error (ScopeEntryRefusal.Unsupported why) -> why
+        | other -> failwith $"expected an unsupported refusal, got %A{other}"
+
+    /// The bare shape: a method of a non-generic type, named by its handle alone.
+    [<Test>]
+    let ``a RuntimeMethodHandle entry resolves to the method it names`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+        let answer = guestMethod prepared "Entry" "Answer"
+
+        let state, entryType =
+            IlMachineState.concretizeType
+                loggerFactory
+                prepared.BaseClassTypes
+                state
+                answer.DeclaringAssemblyFullName
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.FromDefinition (answer.RequiredDeclaringType.Identity, SignatureTypeKind.Class))
+
+        let declaring = RuntimeTypeHandleTarget.Closed entryType
+        let stub, state = stubFor loggerFactory prepared declaring answer state
+
+        let result, state =
+            resolveCallee loggerFactory prepared (ScopeEntry.MethodHandleObject (Some stub)) state
+
+        expectResolvedTo declaring "Answer" state result
+
+    /// The wrapped shape: a method of a closed generic type, with the context agreeing.
+    [<Test>]
+    let ``a GenericMethodInfo entry resolves to the method it names`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        let declaring, state =
+            closedBox loggerFactory prepared (TypeDefn.PrimitiveType PrimitiveType.Int32) state
+
+        let stub, state =
+            stubFor loggerFactory prepared declaring (guestMethod prepared "Box`1" "Answer") state
+
+        let result, state =
+            resolveCallee loggerFactory prepared (ScopeEntry.GenericMethodInfoObject (Some stub, Some declaring)) state
+
+        expectResolvedTo declaring "Answer" state result
+
+    /// CoreCLR would re-instantiate the method over a context naming another instantiation of the
+    /// same definition. `Emit` never writes such a pair, so PawPrint names the gap rather than
+    /// choosing either half.
+    [<Test>]
+    let ``a GenericMethodInfo whose context disagrees with its method is unsupported`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        let declaring, state =
+            closedBox loggerFactory prepared (TypeDefn.PrimitiveType PrimitiveType.Int32) state
+
+        let other, state =
+            closedBox loggerFactory prepared (TypeDefn.PrimitiveType PrimitiveType.String) state
+
+        let stub, state =
+            stubFor loggerFactory prepared declaring (guestMethod prepared "Box`1" "Answer") state
+
+        let result, _ =
+            resolveCallee loggerFactory prepared (ScopeEntry.GenericMethodInfoObject (Some stub, Some other)) state
+
+        let why = expectUnsupported result
+        why |> shouldContainText "m_context"
+        why |> shouldContainText "TODO"
+
+    /// A method of an open generic type definition is an invalid program, measured on real .NET
+    /// against a closed control that runs; the guest can catch it.
+    [<Test>]
+    let ``a method of an open generic type definition is an invalid program`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+        let answer = guestMethod prepared "Box`1" "Answer"
+
+        let declaring =
+            RuntimeTypeHandleTarget.OpenGenericTypeDefinition answer.RequiredDeclaringType.Identity
+
+        let stub, state = stubFor loggerFactory prepared declaring answer state
+
+        let result, _ =
+            resolveCallee loggerFactory prepared (ScopeEntry.GenericMethodInfoObject (Some stub, Some declaring)) state
+
+        match result with
+        | Error (ScopeEntryRefusal.GuestException (exceptionType, _)) ->
+            exceptionType.Identity
+            |> shouldEqual prepared.BaseClassTypes.InvalidProgramException.Identity
+        | other -> failwith $"expected InvalidProgramException, got %A{other}"
+
+    /// A generic method definition with no instantiation: real .NET compiles the call with the
+    /// method's type parameters unbound, which PawPrint cannot represent, so it names the gap.
+    [<Test>]
+    let ``an uninstantiated generic method definition is unsupported`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+        let id = guestMethod prepared "Entry" "Id"
+
+        let state, entryType =
+            IlMachineState.concretizeType
+                loggerFactory
+                prepared.BaseClassTypes
+                state
+                id.DeclaringAssemblyFullName
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.FromDefinition (id.RequiredDeclaringType.Identity, SignatureTypeKind.Class))
+
+        let stub, state =
+            stubFor loggerFactory prepared (RuntimeTypeHandleTarget.Closed entryType) id state
+
+        let result, _ =
+            resolveCallee loggerFactory prepared (ScopeEntry.MethodHandleObject (Some stub)) state
+
+        let why = expectUnsupported result
+        why |> shouldContainText "generic method definition"
+        why |> shouldContainText "Id"
+
+    /// `default(RuntimeMethodHandle)`, which `Emit` never stores.
+    [<Test>]
+    let ``a RuntimeMethodHandle entry with a null m_value is unsupported`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        let result, _ =
+            resolveCallee loggerFactory prepared (ScopeEntry.MethodHandleObject None) state
+
+        expectUnsupported result |> shouldContainText "null m_value"
 
     /// The mirror image, as for type entries: `ldstr` must not accept a method entry either.
     [<Test>]

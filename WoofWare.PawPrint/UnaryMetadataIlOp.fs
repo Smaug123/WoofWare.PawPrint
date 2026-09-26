@@ -88,14 +88,11 @@ module internal UnaryMetadataIlOp =
                     | Ok handle -> ResolvedMetadataOperand.ScopeType handle |> OperandResolution.Ready
                     | Error (exceptionType, why) -> OperandResolution.Invalid (exceptionType, why)
                 | IlDecoding.ScopeOperandKind.Method ->
-                    // No `Invalid` arm: every way a method-position entry can be wrong is
-                    // unreachable from a guest today, so `dynamicMethod` crashes rather than
-                    // fabricating the exception real .NET would raise. See its docs for the
-                    // measurements.
-                    match DynamicScopeOperand.dynamicMethod baseClassTypes operation scopeIndex state scope with
-                    | DynamicMethodResolution.Resolved handle ->
+                    match DynamicScopeOperand.method baseClassTypes operation scopeIndex state scope with
+                    | Ok (ScopeMethodResolution.Resolved handle) ->
                         ResolvedMetadataOperand.ScopeMethod handle |> OperandResolution.Ready
-                    | DynamicMethodResolution.NeedsMinting callee -> OperandResolution.NeedsMinting callee
+                    | Ok (ScopeMethodResolution.NeedsMinting callee) -> OperandResolution.NeedsMinting callee
+                    | Error (exceptionType, why) -> OperandResolution.Invalid (exceptionType, why)
                 | IlDecoding.ScopeOperandKind.AnyType ->
                     // No narrowing: `ldtoken` hands the handle to the guest rather than consuming
                     // it, so every shape a target can take is a legal operand. See `closedType` for

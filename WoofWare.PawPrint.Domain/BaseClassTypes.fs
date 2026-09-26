@@ -96,6 +96,9 @@ module BaseClassTypes =
         let genericFieldInfoType =
             findCorelibType corelib "System.Reflection.Emit" "GenericFieldInfo"
 
+        let genericMethodInfoType =
+            findCorelibType corelib "System.Reflection.Emit" "GenericMethodInfo"
+
         let runtimeMethodHandleInternalType =
             findCorelibType corelib "System" "RuntimeMethodHandleInternal"
 
@@ -242,6 +245,7 @@ module BaseClassTypes =
             DynamicMethod = dynamicMethodType
             VarArgMethod = varArgMethodType
             GenericFieldInfo = genericFieldInfoType
+            GenericMethodInfo = genericMethodInfoType
             RuntimeMethodHandleInternal = runtimeMethodHandleInternalType
             RuntimeFieldHandle = runtimeFieldHandleType
             RuntimeFieldInfoStub = runtimeFieldInfoStubType

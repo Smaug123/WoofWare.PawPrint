@@ -202,6 +202,17 @@ module internal DynamicMethodBody =
                             // whenever the field has a declaring type, which everything reachable
                             // through `Type.GetField` does.
                             DynamicScopeEntry.GenericFieldInfo
+                        elif
+                            DynamicScopeOperand.isCorelibType baseClassTypes.RuntimeMethodHandle state concreteType
+                        then
+                            // A reflected method whose declaring type is neither generic nor an
+                            // array. Which method it names is read live, for the reason
+                            // `TypeHandle` gives.
+                            DynamicScopeEntry.MethodHandle
+                        elif DynamicScopeOperand.isCorelibType baseClassTypes.GenericMethodInfo state concreteType then
+                            // A reflected method on a generic type or an array, paired with that
+                            // type. Read live, like the rest.
+                            DynamicScopeEntry.GenericMethodInfo
                         else
                             DynamicScopeEntry.Unsupported $"a %s{describeType concreteType}"
                 | other -> failwith $"%s{operation}: expected DynamicScope entry %d{i} to be a reference, got %O{other}"

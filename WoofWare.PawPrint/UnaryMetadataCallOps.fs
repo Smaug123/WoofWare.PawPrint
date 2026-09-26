@@ -723,12 +723,44 @@ module internal UnaryMetadataCallOps =
             ctx.Thread
             state
 
+    /// Enter the callee a `call` names, once no `constrained.` prefix is left to resolve it: an
+    /// abstract method is refused as `raiseNamedAbstractMethod` describes, and anything else is
+    /// entered. Shared by the metadata operand and a reflected method named by a `DynamicScope`
+    /// entry, which real .NET refuses in the same way (measured: `call` of `Stream.Flush` emitted
+    /// into a dynamic method is a `BadImageFormatException`, "Bad IL format.").
+    let private enterNamedCallee
+        (ctx : UnaryMetadataIlOpContext)
+        (concretizedMethod : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (state : IlMachineState)
+        : IlMachineState * WhatWeDid
+        =
+        match concretizedMethod.Body with
+        | MethodBody.Abstract -> raiseNamedAbstractMethod ctx state
+        | MethodBody.Il _
+        | MethodBody.InternalCall
+        | MethodBody.PInvoke
+        | MethodBody.RuntimeProvided _ -> enterCallee ctx concretizedMethod state
+
     let executeCall (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         // Split on the operand before anything else: `ctx.ActiveAssembly` and `ctx.MetadataToken`
         // are partial, and a scope operand has neither, so binding them eagerly would fail for a
         // dynamic method's `call` even though nothing below would have used them.
         match ctx.Operand with
-        | ResolvedMetadataOperand.ScopeMethod handle ->
+        | ResolvedMetadataOperand.ScopeMethod (MethodHandle.FromMetadata identity) ->
+            // A reflected method. The identity is already the callee, instantiation and all, so
+            // none of the metadata path's token resolution applies, and there is no `constrained.`
+            // prefix to honour, for the reason the dynamic-method arm below gives. What remains is
+            // the metadata path's own last step.
+            let state, concretizedMethod, _declaringType =
+                MethodHandleResolution.concretizeClosedMetadataIdentity
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    "call naming a DynamicScope entry"
+                    identity
+                    state
+
+            enterNamedCallee ctx concretizedMethod state
+        | ResolvedMetadataOperand.ScopeMethod (MethodHandle.FromDynamic handle) ->
             // Everything the metadata path does between here and `enterCallee` is token resolution:
             // multi-dim array Get/Set synthesis, MethodSpec/MemberRef lookup, and concretising the
             // result against the caller's generic context. None of it applies. A `DynamicMethod` is
@@ -913,14 +945,7 @@ module internal UnaryMetadataCallOps =
                     state
 
             enterCallee ctx implementation state
-        | None ->
-
-        match concretizedMethod.Body with
-        | MethodBody.Abstract -> raiseNamedAbstractMethod ctx state
-        | MethodBody.Il _
-        | MethodBody.InternalCall
-        | MethodBody.PInvoke
-        | MethodBody.RuntimeProvided _ -> enterCallee ctx concretizedMethod state
+        | None -> enterNamedCallee ctx concretizedMethod state
 
     /// The generic arguments the receiver's runtime type supplies for `declaring`, read off the
     /// link of its class chain whose definition is `declaring`. `None` when no link is: the
@@ -966,7 +991,137 @@ module internal UnaryMetadataCallOps =
         /// faults. The call's arguments are popped and the program counter has not moved.
         | NullDereference of IlMachineState
 
+    /// Enter the callee a `callvirt` has resolved: check the receiver for null, as `callvirt` always
+    /// does, then dispatch on it when `dispatchesOnReceiver`, which is false only when a
+    /// `constrained.` prefix has already chosen the implementation. Shared by the metadata operand
+    /// and a method named by a `DynamicScope` entry, so that the two cannot drift on how a callee is
+    /// dispatched.
+    let private enterVirtualCallee
+        (ctx : UnaryMetadataIlOpContext)
+        (concretizedMethod : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (dispatchesOnReceiver : bool)
+        (state : IlMachineState)
+        : IlMachineState * WhatWeDid
+        =
+        let receiver =
+            if concretizedMethod.IsStatic then
+                None
+            else
+                match
+                    state.ThreadState.[ctx.Thread].MethodState.EvaluationStack
+                    |> EvalStack.PeekNthFromTop (MethodInfo.arity concretizedMethod)
+                with
+                | None ->
+                    failwith
+                        $"callvirt of %O{concretizedMethod}: no receiver beneath its %d{MethodInfo.arity concretizedMethod} argument(s) on the evaluation stack"
+                | Some receiver -> Some receiver
+
+        // Callvirt always performs a null check on the receiver, even for non-virtual methods.
+        match receiver with
+        | Some EvalStackValue.NullObjectRef ->
+            IlMachineStateExecution.raiseOpcodeFault
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
+                OpcodeFault.NullReference
+                ctx.Thread
+                state
+        | _ ->
+
+        let dispatch =
+            match receiver with
+            | Some receiver when dispatchesOnReceiver ->
+                IlMachineStateExecution.dispatchOnReceiver "callvirt" concretizedMethod receiver
+            | _ -> IlMachineStateExecution.CallDispatch.Direct
+
+        let state =
+            refuseUnverifiableArguments
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
+                "callvirt"
+                false
+                concretizedMethod
+                ctx.Thread
+                state
+
+        let threadState = state.ThreadState.[ctx.Thread]
+
+        let state, commitment =
+            IlMachineStateExecution.callMethodWithCommitment
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
+                None
+                ConstructionState.NotConstructing
+                dispatch
+                false
+                true
+                IlMachineStateExecution.CallSiteTransition.StaysCooperative
+                concretizedMethod.Generics
+                concretizedMethod
+                ctx.Thread
+                threadState
+                None
+                ReturnValueDisposition.PushToCaller
+                false // wrapExceptionInTargetInvocation
+                state
+
+        match commitment with
+        | IlMachineStateExecution.CallCommitment.Aborted fatal -> state, WhatWeDid.Aborted fatal
+        | IlMachineStateExecution.CallCommitment.Committed
+        | IlMachineStateExecution.CallCommitment.Raised -> state, WhatWeDid.Executed
+
+    /// `callvirt` of a method a `DynamicScope` entry names.
+    ///
+    /// Real .NET refuses a `callvirt` of a static method when it compiles the caller, with
+    /// `MissingMethodException` "Method not found: '?'." — measured both for a reflected static
+    /// method and for a `DynamicMethod`, which is always static, so the second needs no resolving
+    /// beyond the mint `UnaryMetadataIlOp.execute` has already done (`ResolveToken` mints it too).
+    /// PawPrint raises it when the instruction runs rather than before the caller runs anything,
+    /// the divergence `raiseNamedAbstractMethod` records for its own refusal.
+    ///
+    /// No `constrained.` prefix can be pending: its operand would be a `DynamicScope` entry, which
+    /// `IlDecoding.scopeOperandKind` refuses, so the decoder rejects such a body when it is minted.
+    let private executeScopeCallvirt
+        (ctx : UnaryMetadataIlOpContext)
+        (callee : MethodHandle)
+        (state : IlMachineState)
+        : IlMachineState * WhatWeDid
+        =
+        let raiseStaticCallee (state : IlMachineState) : IlMachineState * WhatWeDid =
+            IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
+                ctx.BaseClassTypes.MissingMethodException
+                (Some "Method not found: '?'.")
+                ctx.Thread
+                state
+
+        match callee with
+        | MethodHandle.FromDynamic _ -> raiseStaticCallee state
+        | MethodHandle.FromMetadata identity ->
+
+        let state, concretizedMethod, _declaringType =
+            MethodHandleResolution.concretizeClosedMetadataIdentity
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
+                "callvirt naming a DynamicScope entry"
+                identity
+                state
+
+        if concretizedMethod.IsStatic then
+            raiseStaticCallee state
+        else
+            enterVirtualCallee ctx concretizedMethod true state
+
     let executeCallvirt (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
+        // Split on the operand first, for the reason `executeCall` gives: `ctx.ActiveAssembly` and
+        // `ctx.MetadataToken` are partial, and a scope operand has neither.
+        match ctx.Operand with
+        | ResolvedMetadataOperand.ScopeMethod callee -> executeScopeCallvirt ctx callee state
+        | ResolvedMetadataOperand.FromMetadata _
+        | ResolvedMetadataOperand.ScopeType _
+        | ResolvedMetadataOperand.ScopeField _
+        | ResolvedMetadataOperand.ScopeTypeTarget _ ->
+
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
         let activeAssy = ctx.ActiveAssembly
@@ -1388,59 +1543,7 @@ module internal UnaryMetadataCallOps =
             IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
         | ConstrainedReceiver.Ready (state, concretizedMethod, dispatchesOnReceiver) ->
 
-        let receiver =
-            if concretizedMethod.IsStatic then
-                None
-            else
-                match
-                    state.ThreadState.[thread].MethodState.EvaluationStack
-                    |> EvalStack.PeekNthFromTop (MethodInfo.arity concretizedMethod)
-                with
-                | None ->
-                    failwith
-                        $"callvirt of %O{concretizedMethod}: no receiver beneath its %d{MethodInfo.arity concretizedMethod} argument(s) on the evaluation stack"
-                | Some receiver -> Some receiver
-
-        // Callvirt always performs a null check on the receiver, even for non-virtual methods.
-        match receiver with
-        | Some EvalStackValue.NullObjectRef ->
-            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
-        | _ ->
-
-        let dispatch =
-            match receiver with
-            | Some receiver when dispatchesOnReceiver ->
-                IlMachineStateExecution.dispatchOnReceiver "callvirt" concretizedMethod receiver
-            | _ -> IlMachineStateExecution.CallDispatch.Direct
-
-        let state =
-            refuseUnverifiableArguments loggerFactory baseClassTypes "callvirt" false concretizedMethod thread state
-
-        let threadState = state.ThreadState.[thread]
-
-        let state, commitment =
-            IlMachineStateExecution.callMethodWithCommitment
-                loggerFactory
-                baseClassTypes
-                None
-                ConstructionState.NotConstructing
-                dispatch
-                false
-                true
-                IlMachineStateExecution.CallSiteTransition.StaysCooperative
-                concretizedMethod.Generics
-                concretizedMethod
-                thread
-                threadState
-                None
-                ReturnValueDisposition.PushToCaller
-                false // wrapExceptionInTargetInvocation
-                state
-
-        match commitment with
-        | IlMachineStateExecution.CallCommitment.Aborted fatal -> state, WhatWeDid.Aborted fatal
-        | IlMachineStateExecution.CallCommitment.Committed
-        | IlMachineStateExecution.CallCommitment.Raised -> state, WhatWeDid.Executed
+        enterVirtualCallee ctx concretizedMethod dispatchesOnReceiver state
 
     /// The first instruction at or after `offset` that is not itself a prefix — PawPrint's
     /// counterpart to CoreCLR's `impGetNonPrefixOpcode` (`importer.cpp`), which skips exactly
