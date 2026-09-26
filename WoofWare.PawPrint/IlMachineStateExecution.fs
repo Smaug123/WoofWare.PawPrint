@@ -1615,6 +1615,10 @@ module IlMachineStateExecution =
         /// Distinct from `Raised` because there is no handler search to follow and no state the
         /// caller could usefully continue from: every caller must propagate rather than carry on.
         | Aborted of FatalError
+        /// The callee is an intrinsic PawPrint performs itself, which reads its arguments, and one
+        /// of them is undefined. Nothing was performed and no frame was pushed; as for `Aborted`,
+        /// every caller must propagate, and the run ends.
+        | UndefinedValueObserved of UndefinedValueObservation
 
     /// What a call site does to the thread on the way into its callee: whether it is still in
     /// cooperative mode when the callee's prologue runs.
@@ -1781,6 +1785,47 @@ module IlMachineStateExecution =
                 |> Some
             else
                 None
+
+    /// End the step because the instruction this thread is positioned at would use `value`, an
+    /// undefined value, in a way the instruction's `OperandUse` entry does not show and only its
+    /// implementation discovers. `description` says what that use is.
+    ///
+    /// The state returned is irrelevant: `AbstractMachine` reports the run as ending at the state
+    /// from before the instruction began.
+    let observeUndefinedInInstruction
+        (description : string)
+        (value : UndefinedValue)
+        (currentThread : ThreadId)
+        (state : IlMachineState)
+        : IlMachineState * WhatWeDid
+        =
+        let methodState = state.ThreadState.[currentThread].MethodState
+
+        let instruction =
+            match methodState.ExecutingMethod.Body with
+            | MethodBody.Il instructions ->
+                match instructions.Locations.TryGetValue methodState.IlOpIndex with
+                | true, op -> op
+                | false, _ ->
+                    failwith
+                        $"logic error: %s{MethodOwner.describe methodState.ExecutingMethod.Owner}::%s{methodState.ExecutingMethod.Name} is positioned at IL_%04X{methodState.IlOpIndex}, which is not an instruction offset in that body"
+            | body ->
+                failwith
+                    $"logic error: %s{description} of the undefined %O{value} was reported by an instruction, but %s{MethodOwner.describe methodState.ExecutingMethod.Owner}::%s{methodState.ExecutingMethod.Name}'s body is %O{body} rather than IL"
+
+        let observation =
+            {
+                Value = value
+                Use =
+                    UndefinedValueUse.InstructionDetail (
+                        methodState.ExecutingMethod,
+                        methodState.IlOpIndex,
+                        instruction,
+                        description
+                    )
+            }
+
+        state, WhatWeDid.UndefinedValueObserved observation
 
     /// What `OpcodeFaults` says the instruction this thread is positioned at may raise.
     ///
@@ -2144,6 +2189,36 @@ module IlMachineStateExecution =
                 |> fst
                 |> fun state -> Some (IntrinsicOutcome.Handled (state, CallCommitment.Raised))
             | IntrinsicResult.Unrecognised -> None
+
+        // An intrinsic PawPrint performs itself reads its arguments, which are still on the
+        // caller's stack. Refused before any is tried, so that none of them can see an undefined
+        // value; one that declines runs IL that would only have moved it, which makes this
+        // stricter than it needs to be for those.
+        let undefinedIntrinsicArgument : (int * UndefinedValue) option =
+            match intrinsic with
+            | None -> None
+            | Some _ ->
+                let argumentCount =
+                    MethodInfo.arity methodToCall + (if methodToCall.IsStatic then 0 else 1)
+
+                activeMethodState.EvaluationStack.Values
+                |> List.truncate argumentCount
+                |> List.rev
+                |> List.indexed
+                |> List.tryPick (fun (index, value) ->
+                    EvalStackValue.tryFindUndefined value |> Option.map (fun u -> index, u)
+                )
+
+        match undefinedIntrinsicArgument with
+        | Some (index, value) ->
+            let observation =
+                {
+                    Value = value
+                    Use = UndefinedValueUse.RuntimeArgument (methodToCall, index)
+                }
+
+            state, CallCommitment.UndefinedValueObserved observation
+        | None ->
 
         let outcome =
             match intrinsic with
@@ -2604,6 +2679,11 @@ module IlMachineStateExecution =
         |> function
             | state, CallCommitment.Committed
             | state, CallCommitment.Raised -> state
+            | _, CallCommitment.UndefinedValueObserved observation ->
+                // As for an abort below: this wrapper serves the interpreter's own entries, and has
+                // nowhere to put the end of the run.
+                failwith
+                    $"TODO: a call made through `callMethod` would have performed an intrinsic on an undefined argument (%O{observation}), and this wrapper has no way to end the run"
             | _, CallCommitment.Aborted fatal ->
                 // This wrapper's return type has nowhere to put an abort, and dropping one would
                 // let the caller carry on against a state whose process has already died. Its
@@ -3061,6 +3141,10 @@ module IlMachineStateExecution =
         /// nothing, so its fault must not be. A helper raising on both their behalves would have to
         /// choose one route for both.
         | Refused of state : IlMachineState
+        /// The value stored into a reference-typed element is undefined, and the check would have
+        /// to read its type. The caller ends the run, naming its own kind of use: an instruction
+        /// or a runtime-synthesised method.
+        | ValueUndefined of UndefinedValue
 
     /// ECMA-335 III.4.x runtime-assignment-compatibility gate for `stelem` /
     /// runtime-synthesized `T[<rank>]::Set`. For reference-typed array elements, the
@@ -3103,6 +3187,7 @@ module IlMachineStateExecution =
         else
 
         match value with
+        | EvalStackValue.Undefined u -> ArrayStoreVarianceCheck.ValueUndefined u
         | EvalStackValue.NullObjectRef ->
             // Null is always storable into a reference-typed array slot.
             ArrayStoreVarianceCheck.Allowed state

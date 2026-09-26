@@ -35,6 +35,8 @@ module TestRaces =
     /// claim.
     let private exitCodeOfOutcome (sourceName : string) (seed : uint64 option) (outcome : RunOutcome) : int =
         match outcome with
+        | RunOutcome.UndefinedValueObserved (_, _, observation) ->
+            failwith $"guest used an undefined value: %O{observation}"
         | RunOutcome.NormalExit (terminalState, _)
         | RunOutcome.ProcessExit (terminalState, _) -> terminalState.LatchedExitCode
         | RunOutcome.Aborted (_, _, fatal) ->

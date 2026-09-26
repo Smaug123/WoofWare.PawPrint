@@ -112,7 +112,10 @@ module StructMarshalStub =
             isBlittableField concreteTypes assemblies corelib charSet descriptor underlyingType underlying
         | None ->
 
-        match t with
+        // Blittability is a question about the field's type, which an undefined value answers by
+        // its shape.
+        match CliType.Shape t with
+        | CliType.Undefined _ -> failwith "unreachable: CliType.Shape never returns an undefined value"
         | CliType.Bool _
         | CliType.Char _ ->
             CliValueType.TryBoolCharFieldMarshal charSet descriptor t = Some (Result.Ok BoolCharMarshal.Utf16Char)
@@ -147,7 +150,7 @@ module StructMarshalStub =
             | Some (FieldMarshalDescriptor.Malformed _) -> false
         | None ->
 
-        match t with
+        match CliType.Shape t with
         | CliType.ValueType vt ->
             let isDefaultOrStruct =
                 match descriptor with
@@ -195,6 +198,7 @@ module StructMarshalStub =
         | CliType.Char _
         | CliType.RuntimePointer _
         | CliType.ObjectRef _ -> failwith $"unreachable: %O{t} was classified above"
+        | CliType.Undefined _ -> failwith "unreachable: CliType.Shape never returns an undefined value"
 
     /// Whether every field of `vt` is blittable, each judged under `vt`'s own `CharSet`: CoreCLR
     /// computes a nested struct's blittability once, for its own `MethodTable`.
@@ -245,6 +249,8 @@ module StructMarshalStub =
         | CliType.Char _
         | CliType.ObjectRef _
         | CliType.RuntimePointer _ -> false
+        // An undefined value has no image to copy; it is refused before a marshalling stub runs.
+        | CliType.Undefined _ -> false
 
     /// The `bestFit` and `throwOnUnmappableChar` flags CoreCLR builds `typeHandle`'s struct stub
     /// with (`CreateStructMarshalILStub`, dllimport.cpp:5312): `ReadBestFitCustomAttribute`
@@ -855,6 +861,8 @@ module StructMarshalStub =
             match commitment with
             | IlMachineStateExecution.CallCommitment.Aborted fatal ->
                 ExecutionResult.stepped (state, WhatWeDid.Aborted fatal)
+            | IlMachineStateExecution.CallCommitment.UndefinedValueObserved observation ->
+                ExecutionResult.stepped (state, WhatWeDid.UndefinedValueObserved observation)
             | IlMachineStateExecution.CallCommitment.Committed
             | IlMachineStateExecution.CallCommitment.Raised ->
                 // Either a callee frame or an exception constructor is now on top of us; in both

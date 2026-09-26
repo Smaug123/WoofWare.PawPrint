@@ -283,6 +283,8 @@ module private Harness =
                 peImage
                 (HostConfig.Default dotnetRuntimeDirs)
         with
+        | RunOutcome.UndefinedValueObserved (_, _, observation) ->
+            failwith $"guest used an undefined value: %O{observation}"
         | RunOutcome.NormalExit (terminalState, _)
         | RunOutcome.ProcessExit (terminalState, _) -> terminalState.LatchedExitCode
         | RunOutcome.Aborted (_, _, fatal) ->

@@ -19,6 +19,7 @@
     <ItemGroup>
         <Compile Include="ContextSwitchPrior.fs" />
         <Compile Include="OpcodeFaults.fs" />
+        <Compile Include="OperandUse.fs" />
         <Compile Include="StackShape.fs" />
         <Compile Include="StackShapeTokens.fs" />
         <Compile Include="HardwareIntrinsicsProfile.fs" />

@@ -89,6 +89,35 @@ module AbstractMachine =
         =
         let instruction = state.ThreadState.[thread].MethodState
 
+        // A method whose implementation the runtime supplies reads its arguments: none of them may
+        // be undefined, down to the leaves of a value type. `readsArgument` narrows that for the
+        // stubs that only move some of theirs on to a callee.
+        let observeRuntimeArguments
+            (readsArgument : int -> bool)
+            (proceed : unit -> ExecutionResult)
+            : ExecutionResult
+            =
+            let undefinedArgument =
+                instruction.Arguments
+                |> Seq.indexed
+                |> Seq.tryPick (fun (index, argument) ->
+                    if readsArgument index then
+                        CliType.tryFindUndefined argument |> Option.map (fun u -> index, u)
+                    else
+                        None
+                )
+
+            match undefinedArgument with
+            | Some (index, value) ->
+                let observation =
+                    {
+                        Value = value
+                        Use = UndefinedValueUse.RuntimeArgument (instruction.ExecutingMethod, index)
+                    }
+
+                ExecutionResult.UndefinedValueObserved (state, thread, observation)
+            | None -> proceed ()
+
         let dispatchNative () =
             let nativeImport = instruction.ExecutingMethod.TryNativeImport
 
@@ -468,34 +497,78 @@ module AbstractMachine =
             match commitment with
             | IlMachineStateExecution.CallCommitment.Aborted fatal ->
                 ExecutionResult.stepped (state, WhatWeDid.Aborted fatal)
+            | IlMachineStateExecution.CallCommitment.UndefinedValueObserved observation ->
+                ExecutionResult.stepped (state, WhatWeDid.UndefinedValueObserved observation)
             | IlMachineStateExecution.CallCommitment.Committed
             | IlMachineStateExecution.CallCommitment.Raised -> ExecutionResult.stepped (state, WhatWeDid.Executed)
 
+        // A delegate's `Invoke` reads only the delegate; the arguments after it are moved on to
+        // the target, as a call moves them.
+        let onlyTheDelegate (index : int) : bool = index = 0
+        let everyArgument (_ : int) : bool = true
+
         match instruction.ExecutingMethod.Body with
-        | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateCtor -> dispatchDelegateCtor ()
-        | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateInvoke -> dispatchDelegateInvoke ()
+        | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateCtor ->
+            observeRuntimeArguments everyArgument dispatchDelegateCtor
+        | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateInvoke ->
+            observeRuntimeArguments
+                onlyTheDelegate
+                (fun () ->
+                    // A virtual call stub also reads the receiver's type, which is the first
+                    // argument after the delegate. Asked only once the delegate is known to be
+                    // defined, since finding the stub reads it.
+                    let delegateAddr =
+                        match instruction.Arguments.[0] with
+                        | CliType.ObjectRef (Some addr) -> Some addr
+                        | _ -> None
+
+                    let dispatchesOnReceiver =
+                        match delegateAddr with
+                        | None -> false
+                        | Some addr ->
+                            match
+                                DelegateRepresentation.invocationOf baseClassTypes "delegate invocation" addr state
+                            with
+                            | DelegateInvocation.ThroughShuffleThunk (FunctionPointerTarget.VirtualCallStub _) -> true
+                            | DelegateInvocation.ThroughShuffleThunk _
+                            | DelegateInvocation.ThroughMethodPtr _ -> false
+
+                    observeRuntimeArguments (fun index -> dispatchesOnReceiver && index = 1) dispatchDelegateInvoke
+                )
         | MethodBody.RuntimeProvided RuntimeBehaviour.StructMarshalStub ->
-            StructMarshalStub.executeStubCall loggerFactory baseClassTypes thread instruction state
+            observeRuntimeArguments
+                everyArgument
+                (fun () -> StructMarshalStub.executeStubCall loggerFactory baseClassTypes thread instruction state)
         | MethodBody.RuntimeProvided RuntimeBehaviour.MulticastDelegateInvoke ->
-            MulticastDelegateStub.execute loggerFactory baseClassTypes thread instruction state
+            observeRuntimeArguments
+                onlyTheDelegate
+                (fun () -> MulticastDelegateStub.execute loggerFactory baseClassTypes thread instruction state)
         | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessorInvalidKind (_, hasTypeNameOverrides)) ->
-            UnsafeAccessorDispatch.executeInvalidKind
-                loggerFactory
-                baseClassTypes
-                thread
-                instruction
-                hasTypeNameOverrides
-                state
+            observeRuntimeArguments
+                everyArgument
+                (fun () ->
+                    UnsafeAccessorDispatch.executeInvalidKind
+                        loggerFactory
+                        baseClassTypes
+                        thread
+                        instruction
+                        hasTypeNameOverrides
+                        state
+                )
         | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName, hasTypeNameOverrides)) ->
-            UnsafeAccessorDispatch.execute
-                loggerFactory
-                baseClassTypes
-                thread
-                instruction
-                kind
-                targetName
-                hasTypeNameOverrides
-                state
+            observeRuntimeArguments
+                everyArgument
+                (fun () ->
+                    UnsafeAccessorDispatch.execute
+                        loggerFactory
+                        baseClassTypes
+                        thread
+                        instruction
+                        kind
+                        targetName
+                        hasTypeNameOverrides
+                        state
+                )
         | MethodBody.RuntimeProvided (RuntimeBehaviour.Unrecognised name) ->
             failwith
                 $"BUG: reached executeOneStep for {MethodOwner.describe instruction.ExecutingMethod.Owner}::{instruction.ExecutingMethod.Name} which is runtime-provided but unclassified ({name}); add explicit handling"
@@ -503,7 +576,7 @@ module AbstractMachine =
             failwith
                 $"reached executeOneStep for abstract method {MethodOwner.describe instruction.ExecutingMethod.Owner}::{instruction.ExecutingMethod.Name}. Virtual dispatch resolves to an override, and call, ldftn, calli and delegate invocation each raise BadImageFormatException rather than push a frame for an abstract method. TODO: MethodBase.Invoke of a static abstract method still arrives here, where real .NET raises a TargetInvocationException wrapping that BadImageFormatException; any other route arriving here is a PawPrint bug"
         | MethodBody.InternalCall
-        | MethodBody.PInvoke -> dispatchNative ()
+        | MethodBody.PInvoke -> observeRuntimeArguments everyArgument dispatchNative
         | MethodBody.Il instructions ->
 
         let state = StackShapeOfMethod.beforeInstruction baseClassTypes thread state
@@ -578,18 +651,56 @@ module AbstractMachine =
                     executingInstruction
                 )
 
-        match executingInstruction with
-        | IlOp.Nullary op -> NullaryIlOp.execute loggerFactory baseClassTypes state thread op
-        | IlOp.UnaryConst unaryConstIlOp ->
-            UnaryConstIlOp.execute baseClassTypes state thread unaryConstIlOp
-            |> ExecutionResult.stepped
-        | IlOp.UnaryMetadataToken (unaryMetadataTokenIlOp, bytes) ->
-            UnaryMetadataIlOp.execute loggerFactory baseClassTypes unaryMetadataTokenIlOp bytes state thread
-            |> ExecutionResult.stepped
-        | IlOp.Switch immutableArray -> SwitchIlOp.execute state thread immutableArray |> ExecutionResult.stepped
-        | IlOp.UnaryStringToken (unaryStringTokenIlOp, stringHandle) ->
-            UnaryStringTokenIlOp.execute loggerFactory baseClassTypes unaryStringTokenIlOp stringHandle state thread
-            |> ExecutionResult.stepped
+        // An operand the instruction observes may not be undefined; the run ends here, before the
+        // instruction starts, if one is. `OperandUse` is the one place that decides which operands
+        // those are. A `callvirt` receiver lies beneath arguments only the call can count, and the
+        // call checks it itself.
+        let undefinedOperand =
+            OperandUse.observedPositions executingInstruction
+            |> List.tryPick (fun position ->
+                match EvalStack.PeekNthFromTop position instruction.EvaluationStack with
+                | Some (EvalStackValue.Undefined value) -> Some (position, value)
+                | _ -> None
+            )
+
+        match undefinedOperand with
+        | Some (position, value) ->
+            let observation =
+                {
+                    Value = value
+                    Use =
+                        UndefinedValueUse.Operand (
+                            instruction.ExecutingMethod,
+                            instruction.IlOpIndex,
+                            executingInstruction,
+                            position
+                        )
+                }
+
+            ExecutionResult.UndefinedValueObserved (state, thread, observation)
+        | None ->
+
+        let result =
+            match executingInstruction with
+            | IlOp.Nullary op -> NullaryIlOp.execute loggerFactory baseClassTypes state thread op
+            | IlOp.UnaryConst unaryConstIlOp ->
+                UnaryConstIlOp.execute baseClassTypes state thread unaryConstIlOp
+                |> ExecutionResult.stepped
+            | IlOp.UnaryMetadataToken (unaryMetadataTokenIlOp, bytes) ->
+                UnaryMetadataIlOp.execute loggerFactory baseClassTypes unaryMetadataTokenIlOp bytes state thread
+                |> ExecutionResult.stepped
+            | IlOp.Switch immutableArray -> SwitchIlOp.execute state thread immutableArray |> ExecutionResult.stepped
+            | IlOp.UnaryStringToken (unaryStringTokenIlOp, stringHandle) ->
+                UnaryStringTokenIlOp.execute loggerFactory baseClassTypes unaryStringTokenIlOp stringHandle state thread
+                |> ExecutionResult.stepped
+
+        match result with
+        // An instruction that finds an undefined value partway through has usually popped its
+        // operands by then. The run ends as though it had never started, which is what an operand
+        // caught above reports too.
+        | ExecutionResult.Stepped (_, WhatWeDid.UndefinedValueObserved observation, effect) ->
+            ExecutionResult.Stepped (state, WhatWeDid.UndefinedValueObserved observation, effect)
+        | _ -> result
 
     /// Convert a step that tore the process down -- by aborting, or by raising an exception
     /// nothing on the thread handles -- into the terminating outcome.
@@ -617,6 +728,12 @@ module AbstractMachine =
             // As for an abort: the step never completed, so it has no effect to ask for.
             failwith
                 $"logic error: thread %O{thread} ended with an unhandled exception while also requesting the step effect %O{effect}; a step that did not retire must not emit one"
+        | ExecutionResult.Stepped (state, WhatWeDid.UndefinedValueObserved observation, StepEffect.NoEffect) ->
+            ExecutionResult.UndefinedValueObserved (state, thread, observation)
+        | ExecutionResult.Stepped (_, WhatWeDid.UndefinedValueObserved observation, effect) ->
+            // As for an abort: the step never completed, so it has no effect to ask for.
+            failwith
+                $"logic error: thread %O{thread} observed an undefined value (%O{observation}) while also requesting the step effect %O{effect}; a step that did not retire must not emit one"
         | _ -> result
 
     /// Execute one step of the given thread: its active frame's prologue if it still has one, and

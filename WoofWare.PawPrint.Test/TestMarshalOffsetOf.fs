@@ -578,6 +578,8 @@ public static class OffsetOfSweep
                             reraise ()
 
                     match outcome with
+                    | RunOutcome.UndefinedValueObserved (_, _, observation) ->
+                        failwith $"guest used an undefined value: %O{observation}"
                     | RunOutcome.NormalExit (terminalState, _)
                     | RunOutcome.ProcessExit (terminalState, _) -> terminalState.LatchedExitCode
                     | RunOutcome.GuestUnhandledException (_, _, exn) ->

@@ -135,6 +135,8 @@ module CrossAssemblyHarness =
 
             let terminalState =
                 match outcome with
+                | RunOutcome.UndefinedValueObserved (_, _, observation) ->
+                    failwith $"guest used an undefined value: %O{observation}"
                 | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
                     failwith $"Guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
                 | RunOutcome.Aborted (_, _, fatal) ->

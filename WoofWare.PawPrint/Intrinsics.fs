@@ -58,6 +58,7 @@ module Intrinsics =
     /// `Int64Source.bitAnd` / `bitOr`, which can answer for a pointer-derived operand.
     let internal int64ValueArgument (operation : string) (value : EvalStackValue) : Int64Source =
         match value with
+        | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved operation u
         | EvalStackValue.Int64 src -> src
         | EvalStackValue.Int32 src -> Int64Source.Verbatim (int64<int32> (Int32Source.value operation src))
         | EvalStackValue.NativeInt src -> Int64Source.widenedNativeInt src true
@@ -476,6 +477,7 @@ module Intrinsics =
             | CliType.ValueType _
             | CliType.ObjectRef _
             | CliType.RuntimePointer _ -> false
+            | CliType.Undefined u -> failwith $"unreachable: the zero value of %O{ty} is the undefined %O{u}"
 
         state
         |> IlMachineState.pushToEvalStack (CliType.ofBool result) site.Thread
@@ -537,6 +539,7 @@ module Intrinsics =
         let arr, state = IlMachineState.popEvalStack site.Thread state
 
         match arr with
+        | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "MemoryMarshal.GetArrayDataReference" u
         | EvalStackValue.Int32 _
         | EvalStackValue.Int64 _
         | EvalStackValue.Float _ -> failwith "expected reference"
@@ -2668,6 +2671,7 @@ module Intrinsics =
 
                 let ptr =
                     match inputAddr with
+                    | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "Unsafe.As" u
                     | EvalStackValue.Int32 _
                     | EvalStackValue.Int64 _
                     | EvalStackValue.Float _ -> failwith "expected pointer type"

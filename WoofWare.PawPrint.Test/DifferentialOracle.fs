@@ -75,6 +75,8 @@ module DifferentialOracle =
             | other -> other
 
         match realResult, normalisedPawPrint with
+        | _, RunOutcome.UndefinedValueObserved (_, _, observation) ->
+            failwith $"PawPrint: guest used an undefined value: %O{observation}"
         | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, _) ->
             if exitCode <> expectedReturnCode then
                 failwith

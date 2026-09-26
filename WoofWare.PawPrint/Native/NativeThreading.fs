@@ -931,6 +931,9 @@ module NativeThreading =
                 // and nothing there catches it: the worker is terminating before its first step,
                 // and the process with it. Attributed to the worker for the same reason as above.
                 NativeHandlerResult.unhandledException newThreadId exn state |> Some
+            | WhatWeDid.UndefinedValueObserved observation ->
+                // Attributed to the worker for the same reason as above.
+                NativeHandlerResult.undefinedValueObserved newThreadId observation state |> Some
             | WhatWeDid.Executed
             | WhatWeDid.VoluntaryYield _
             | WhatWeDid.SuspendedForClassInit

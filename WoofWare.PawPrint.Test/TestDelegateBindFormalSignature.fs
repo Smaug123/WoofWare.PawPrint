@@ -466,6 +466,8 @@ public static class Program
                     | RunOutcome.Aborted (_, _, fatal) -> failwith $"%s{sourceName}: guest aborted: %O{fatal}"
                     | RunOutcome.SignalTerminated (_, signal) ->
                         failwith $"%s{sourceName}: guest was signalled: %O{signal}"
+                    | RunOutcome.UndefinedValueObserved (_, _, observation) ->
+                        failwith $"%s{sourceName}: guest used an undefined value: %O{observation}"
                 )
 
         match realResult with

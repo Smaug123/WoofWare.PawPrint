@@ -671,6 +671,30 @@ module internal DebuggerValueJson =
             }
         )
 
+    /// A value some of whose bytes nothing wrote: its shape, and its bytes, each a number or `null`
+    /// together with the never-written byte it descends from.
+    let private writeUndefined (writer : Utf8JsonWriter) (value : UndefinedValue) : unit =
+        writer.WriteStartObject ()
+        writer.WriteString ("kind", "undefined")
+        writer.WriteString ("shape", sprintf "%A" value.Kind)
+        writer.WriteStartArray "bytes"
+
+        for b in value.Bytes do
+            writer.WriteStartObject ()
+
+            match b with
+            | ValueByte.Defined b ->
+                writer.WriteNumber ("value", int b)
+                writer.WriteNull "origin"
+            | ValueByte.Undefined origin ->
+                writer.WriteNull "value"
+                writer.WriteString ("origin", string origin)
+
+            writer.WriteEndObject ()
+
+        writer.WriteEndArray ()
+        writer.WriteEndObject ()
+
     /// The heap objects `value` refers to directly, in the order its fields hold them. Only
     /// object references count: a byref or native int that happens to point into the heap is not
     /// an edge of the object graph.
@@ -682,6 +706,8 @@ module internal DebuggerValueJson =
         | CliType.Bool _
         | CliType.Char _
         | CliType.RuntimePointer _ -> []
+        // Its content is undefined, so it refers to nothing the collector could follow.
+        | CliType.Undefined _ -> []
         | CliType.ValueType valueType -> referencesOfValueType valueType
 
     /// As `referencesOfCliType`, over every field of a value type or of a heap object's contents.
@@ -763,6 +789,7 @@ module internal DebuggerValueJson =
             writeRuntimePointerSource writer context pointer
             writer.WriteEndObject ()
         | CliType.ValueType valueType -> writeValueType writer context valueType
+        | CliType.Undefined value -> writeUndefined writer value
 
     /// A value on the evaluation stack.
     let writeEvalStackValue (writer : Utf8JsonWriter) (context : DebuggerValueContext) (value : EvalStackValue) : unit =
@@ -790,3 +817,4 @@ module internal DebuggerValueJson =
         | EvalStackValue.NullObjectRef -> writeObjectRef writer context None
         | EvalStackValue.ObjectRef address -> writeObjectRef writer context (Some address)
         | EvalStackValue.UserDefinedValueType valueType -> writeValueType writer context valueType
+        | EvalStackValue.Undefined value -> writeUndefined writer value

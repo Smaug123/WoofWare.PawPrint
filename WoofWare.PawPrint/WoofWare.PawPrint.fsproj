@@ -40,6 +40,7 @@
     <Compile Include="CliNumericType.fs" />
     <Compile Include="DynamicSignatureDecoding.fs" />
     <Compile Include="DeclaredTypeFacts.fs" />
+    <Compile Include="UndefinedValue.fs" />
     <Compile Include="CliType.fs" />
     <Compile Include="FieldIdentity.fs" />
     <Compile Include="RuntimeFieldInfoStubLayout.fs" />

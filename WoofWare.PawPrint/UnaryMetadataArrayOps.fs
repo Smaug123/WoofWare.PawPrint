@@ -394,6 +394,12 @@ module internal UnaryMetadataArrayOps =
                 OpcodeFault.ArrayTypeMismatch
                 thread
                 state
+        | IlMachineStateExecution.ArrayStoreVarianceCheck.ValueUndefined u ->
+            IlMachineStateExecution.observeUndefinedInInstruction
+                "the type check a store into an array of references makes of the reference stored"
+                u
+                thread
+                state
         | IlMachineStateExecution.ArrayStoreVarianceCheck.Allowed state ->
 
         let contents = EvalStackValue.toCliTypeCoerced zeroOfType contents

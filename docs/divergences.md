@@ -978,6 +978,59 @@ byte[] a = GC.AllocateUninitializedArray<byte>(2048);
 and documents the flag handling; `sourcesPure/GcAllocateArray.cs` covers the API while
 deliberately never reading an uninitialized element before writing it.
 
+## Using a value read from memory nothing wrote ends the run
+
+**CoreCLR**: A `localloc` in a method without `localsinit` — which is every one in CoreLib, compiled
+`[module: SkipLocalsInit]`, and any C# `stackalloc` under `[SkipLocalsInit]` — and a native
+allocation such as `NativeMemory.Alloc` hand back memory holding whatever was there before. A read
+of a byte nothing has written yields that garbage, and the program carries on with it.
+
+**PawPrint**: The read succeeds, and yields an *undefined value*: one that remembers which of its
+bytes nothing wrote, and where each of those bytes lives. It may be moved freely — into a local, an
+argument, a field, an array element or memory, returned, duplicated, popped, copied a byte at a
+time — and overwritten. The first time the program would *use* its content the run ends with
+`RunOutcome.UndefinedValueObserved`, naming the value's never-written bytes and the use: a branch or
+`switch`, arithmetic, a comparison or conversion, an address, a receiver, a thrown object, an
+argument to a method the runtime implements, or the exit code. `WoofWare.PawPrint.App` reports it and
+exits with 70 (`EX_SOFTWARE`).
+
+**Spec status**: ECMA-335 III.3.47 leaves the contents of a non-`localsinit` `localloc` block
+undefined, so no particular answer is required, and ending the run is not one CoreCLR gives.
+
+**Why we chose this**: Any value PawPrint chose for the garbage would be a guess presented as a
+measurement, and a program whose behaviour depends on garbage has no single correct behaviour to
+reproduce. Ending the run at the first use keeps every run that does *not* depend on it — such as the
+`LibraryImport` stub behind every nested-name `Type.GetType`, which reads a slot of its buffer into
+a local it overwrites at once — while never inventing bits for one that does. The line between a
+move and a use is drawn conservatively: arithmetic and conversions are uses even where the result
+would only be moved on, and so is every argument to an intrinsic PawPrint implements.
+`Semantics/OperandUse.fs` is where it is drawn, and so where it would move.
+
+**Observable example**:
+
+```csharp
+[module: SkipLocalsInit]
+unsafe class Program
+{
+    static int Main()
+    {
+        bool* flags = stackalloc bool[1];
+        return flags[0] ? 1 : 0;
+        // CoreCLR:  exits 0 or 1, depending on the stack's previous contents.
+        // PawPrint: ends with UndefinedValueObserved at the branch.
+    }
+}
+```
+
+`ConstructorInfo.Invoke(instance, args)` with more than four arguments reaches exactly this in
+CoreLib's `MethodBaseInvoker.CopyBack`, which branches on a `stackalloc bool[]` it never wrote.
+
+**Where this lives in code**: `UndefinedValue.fs` (the value and its bytes), `MemoryPools.fs`
+(`readValueBytes`, and `writeCell` storing an undefined value as its bytes), `Semantics/OperandUse.fs`
+(which operands an instruction uses), and the checks in `AbstractMachine.executeOneStepInitialised`
+and `IlMachineStateExecution.callMethodWithCommitment`. `TestUndefinedValueObserved` pins the
+outcomes, and `TestUndefinedMemory` the memory model.
+
 ## A negative-length `newarr` always reports the `AllocateSzArray` message
 
 **CoreCLR**: `newarr` with a negative length raises `OverflowException` either way, but with one

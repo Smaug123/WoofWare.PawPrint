@@ -72,6 +72,8 @@ class Program
 
     let private outcomeSignature (outcome : RunOutcome) : OutcomeSignature =
         match outcome with
+        | RunOutcome.UndefinedValueObserved (_, _, observation) ->
+            failwith $"guest used an undefined value: %O{observation}"
         | RunOutcome.NormalExit (state, _)
         | RunOutcome.ProcessExit (state, _) -> OutcomeSignature.ExitCode state.LatchedExitCode
         | RunOutcome.Aborted (_, _, fatal) -> OutcomeSignature.Aborted (fatal.Code, fatal.Message)

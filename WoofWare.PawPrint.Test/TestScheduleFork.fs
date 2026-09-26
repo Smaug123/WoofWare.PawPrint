@@ -63,6 +63,7 @@ module TestScheduleFork =
 
     let private describeWhatWeDid (what : WhatWeDid) : string =
         match what with
+        | WhatWeDid.UndefinedValueObserved observation -> $"undefinedValueObserved(%O{observation})"
         | WhatWeDid.Executed -> "executed"
         | WhatWeDid.VoluntaryYield reportsSwitch -> $"yield(%b{reportsSwitch})"
         | WhatWeDid.SuspendedForClassInit -> "suspendedForClassInit"
@@ -77,6 +78,7 @@ module TestScheduleFork =
     /// printable at any sane size.
     let private describeOutcome (outcome : RunOutcome) : string =
         match outcome with
+        | RunOutcome.UndefinedValueObserved (_, _, observation) -> $"undefined value observed: %O{observation}"
         | RunOutcome.NormalExit (state, _)
         | RunOutcome.ProcessExit (state, _) -> $"exit %d{state.LatchedExitCode}"
         | RunOutcome.Aborted (_, _, fatal) ->
@@ -87,6 +89,7 @@ module TestScheduleFork =
 
     let private terminalStateOf (outcome : RunOutcome) : IlMachineState =
         match outcome with
+        | RunOutcome.UndefinedValueObserved (state, _, _)
         | RunOutcome.NormalExit (state, _)
         | RunOutcome.ProcessExit (state, _)
         | RunOutcome.Aborted (state, _, _)

@@ -286,6 +286,21 @@ module AppProgram =
                         -532462766
                     else
                         134
+                | RunOutcome.UndefinedValueObserved (state, thread, observation) ->
+                    drainRemaining state
+
+                    // Nothing a real .NET process does: it would have gone on with whatever the
+                    // memory held, so from here its behaviour is undefined and PawPrint does not
+                    // pick one. The exit code is `EX_SOFTWARE` from sysexits.h, which no .NET
+                    // runtime termination produces, so a script can tell this apart from both a
+                    // guest's own exit and an abort.
+                    logger.LogCritical (
+                        "Guest used an undefined value on thread {Thread}, so its behaviour from here is undefined: {Observation}",
+                        thread,
+                        observation
+                    )
+
+                    70
 
             // The stepping loop is driven here rather than by calling `Program.run`,
             // because `Program.run` hands back only a terminal `RunOutcome` and the
