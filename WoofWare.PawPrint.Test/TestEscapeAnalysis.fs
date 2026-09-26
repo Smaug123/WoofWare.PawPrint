@@ -1,7 +1,12 @@
 namespace WoofWare.PawPrint.Test
 
 open System
+open System.Collections.Immutable
 open System.IO
+open System.Reflection
+open System.Reflection.Metadata
+open System.Reflection.Metadata.Ecma335
+open System.Reflection.PortableExecutable
 open FsUnitTyped
 open Microsoft.CodeAnalysis
 open NUnit.Framework
@@ -117,6 +122,29 @@ public static class Cases
 
     // Nothing says what the parameter is at run time.
     public static void ThrowsParameter(Exception e) { throw e; }
+}
+
+// A static virtual is dispatched on the type argument: the default body is not what runs for
+// ThrowingParse.
+public interface IParse
+{
+    static virtual int Parse() => 1;
+}
+
+public sealed class ThrowingParse : IParse
+{
+    public static int Parse() => throw new FormatException();
+}
+
+public static class StaticVirtualCases
+{
+    public static int CallParse<T>() where T : IParse => T.Parse();
+}
+
+// Each instantiation has its own initializer: initializing G<string> runs G<int>'s, which can fail.
+public class G<T>
+{
+    public static int Value = 1 / G<int>.Value;
 }
 
 public class LocalBase : Exception { }
@@ -258,6 +286,12 @@ public class NullReferenceException : Exception { }
             { expect "Fixture.Cases" "CoreLibThrowHelper" with
                 Contains = [ "=System.ArgumentNullException" ]
             }
+            { expect "Fixture.StaticVirtualCases" "CallParse" with
+                Unknown = Some true
+            }
+            { expect "Fixture.G`1" ".cctor" with
+                Contains = [ "=System.TypeInitializationException" ]
+            }
             // `Boom`'s initializer fails, and calling `M` runs it first.
             { expect "Fixture.CctorCases" "CallsBoom" with
                 Contains = [ "=System.TypeInitializationException" ]
@@ -267,8 +301,37 @@ public class NullReferenceException : Exception { }
             }
         ]
 
-    [<Test>]
-    let ``each fixture method's escaping exceptions are as stated`` () : unit =
+    /// An answer as the expectations spell it: `=T` for `Exactly T`, `<:T` for `SubtypeOf T`.
+    let private render (analysis : EscapeAnalysisState) (escapes : Escapes) : Set<string> =
+        escapes.Types
+        |> Seq.map (fun thrown ->
+            match thrown with
+            | ThrownType.Exactly ty -> "=" + EscapeAnalysis.typeName analysis ty
+            | ThrownType.SubtypeOf ty -> "<:" + EscapeAnalysis.typeName analysis ty
+        )
+        |> Set.ofSeq
+
+    /// The method of this name on the type of this full name, in `assembly`.
+    let private methodNamed (assembly : DumpedAssembly) (typeName : string) (methodName : string) : MethodKey =
+        assembly.Methods
+        |> Seq.pick (fun (KeyValue (handle, method)) ->
+            if
+                method.Name = methodName
+                && TypeInfo.fullName
+                    (fun h -> assembly.TypeDefs.[h])
+                    assembly.TypeDefs.[method.RequiredDeclaringType.Definition.Get] = typeName
+            then
+                Some (MethodKey.make assembly handle)
+            else
+                None
+        )
+
+    /// An analysis over CoreLib and `assemblies`, with `bind` applied to the load context.
+    let private analysisOver
+        (assemblies : DumpedAssembly list)
+        (bind : LoadedAssemblies -> LoadedAssemblies)
+        : EscapeAnalysisState
+        =
         let frameworkDir = FrameworkUnderTest.sharedFrameworkDirectory ()
         let runtimeDirs = FrameworkUnderTest.runtimeDirs ()
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -276,53 +339,37 @@ public class NullReferenceException : Exception { }
         let corelib =
             Assembly.readFile loggerFactory (Path.Combine (frameworkDir, "System.Private.CoreLib.dll"))
 
+        let baseClassTypes = BaseClassTypes.ofCorelib corelib
+        let loaded = LoadedAssemblies.ofAssemblies (corelib :: assemblies) |> bind
+
+        EscapeAnalysis.create
+            loggerFactory
+            runtimeDirs
+            {
+                ConcreteTypes = Corelib.concretizeAll loaded baseClassTypes AllConcreteTypes.Empty
+                LoadedAssemblies = loaded
+                BaseTypes = baseClassTypes
+            }
+
+    [<Test>]
+    let ``each fixture method's escaping exceptions are as stated`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
         let image =
             Roslyn.compileAssembly "EscapeFixture" OutputKind.DynamicallyLinkedLibrary [] [ source ; shadow ]
 
         let fixture =
             Assembly.read loggerFactory (Some "EscapeFixture.dll") (new MemoryStream (image))
 
-        let baseClassTypes = BaseClassTypes.ofCorelib corelib
-        let loaded = LoadedAssemblies.ofAssemblies [ corelib ; fixture ]
-
-        let mutable analysis =
-            EscapeAnalysis.create
-                loggerFactory
-                runtimeDirs
-                {
-                    ConcreteTypes = Corelib.concretizeAll loaded baseClassTypes AllConcreteTypes.Empty
-                    LoadedAssemblies = loaded
-                    BaseTypes = baseClassTypes
-                }
-
-        let methodNamed (typeName : string, methodName : string) : MethodKey =
-            fixture.Methods
-            |> Seq.pick (fun (KeyValue (handle, method)) ->
-                if
-                    method.Name = methodName
-                    && TypeInfo.fullName
-                        (fun h -> fixture.TypeDefs.[h])
-                        fixture.TypeDefs.[method.RequiredDeclaringType.Definition.Get] = typeName
-                then
-                    Some (MethodKey.make fixture handle)
-                else
-                    None
-            )
-
+        let mutable analysis = analysisOver [ fixture ] id
         let failures = ResizeArray<string> ()
 
         for expectation in expectations do
-            let next, escapes = EscapeAnalysis.escapes analysis (methodNamed expectation.Method)
-            analysis <- next
+            let next, escapes =
+                EscapeAnalysis.escapes analysis (methodNamed fixture (fst expectation.Method) (snd expectation.Method))
 
-            let shown =
-                escapes.Types
-                |> Seq.map (fun thrown ->
-                    match thrown with
-                    | ThrownType.Exactly ty -> "=" + EscapeAnalysis.typeName analysis ty
-                    | ThrownType.SubtypeOf ty -> "<:" + EscapeAnalysis.typeName analysis ty
-                )
-                |> Set.ofSeq
+            analysis <- next
+            let shown = render analysis escapes
 
             let describe () =
                 let ty, name = expectation.Method
@@ -343,3 +390,269 @@ public class NullReferenceException : Exception { }
 
         if failures.Count > 0 then
             failures |> String.concat Environment.NewLine |> failwith
+
+    /// A client compiled against one version of a provider, run against another that lacks what it
+    /// uses. The JIT binds a body's tokens before the body runs, so the failure comes out of the
+    /// caller and the client's own `catch` cannot stop it.
+    [<Test>]
+    let ``what the provider no longer has fails to bind, past the method's own handlers`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let version1 =
+            """
+namespace Provider;
+
+public class Parent
+{
+    public static int Value = 1;
+    public static void Gone() { }
+}
+
+public class GoneType { }
+"""
+
+        let version2 =
+            """
+namespace Provider;
+
+public class Parent { }
+"""
+
+        let client =
+            """
+namespace Client;
+
+public static class Uses
+{
+    public static int Read() => Provider.Parent.Value;
+    public static void CallGone() { Provider.Parent.Gone(); }
+    public static void CaughtCallGone()
+    {
+        try { Provider.Parent.Gone(); }
+        catch (System.MissingMethodException) { }
+    }
+    public static object UseGoneType() => new Provider.GoneType();
+    public static bool IsGone(object o) => o is Provider.GoneType;
+    public static object ListOfGone() => new System.Collections.Generic.List<Provider.GoneType>();
+}
+"""
+
+        let compile (name : string) (references : byte[] list) (text : string) : byte[] =
+            Roslyn.compileAssembly
+                name
+                OutputKind.DynamicallyLinkedLibrary
+                (references
+                 |> List.map (fun image -> MetadataReference.CreateFromImage (ImmutableArray.CreateRange image)))
+                [ text ]
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let providerImage1 = compile "Provider" [] version1
+        let clientAssembly = read "Client" (compile "Client" [ providerImage1 ] client)
+
+        let answers (provider : DumpedAssembly) : string -> Set<string> =
+            let providerReference =
+                clientAssembly.AssemblyReferences.Values
+                |> Seq.find (fun r -> r.Name.Name = "Provider")
+
+            let mutable analysis =
+                analysisOver
+                    [ clientAssembly ; provider ]
+                    (fun loaded -> fst (loaded.WithBoundReference providerReference provider))
+
+            fun methodName ->
+                let next, escapes =
+                    EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Uses" methodName)
+
+                analysis <- next
+                render analysis escapes
+
+        let against1 = answers (read "Provider" providerImage1)
+        let against2 = answers (read "Provider" (compile "Provider" [] version2))
+
+        for methodName, failure in
+            [
+                "Read", "=System.MissingFieldException"
+                "CallGone", "=System.MissingMethodException"
+                "CaughtCallGone", "=System.MissingMethodException"
+                "UseGoneType", "=System.TypeLoadException"
+                // A type token of its own.
+                "IsGone", "=System.TypeLoadException"
+                // A type argument of the member's parent, whose definition does resolve.
+                "ListOfGone", "=System.TypeLoadException"
+            ] do
+            let bound = against1 methodName
+            let unbound = against2 methodName
+
+            if bound.Contains failure then
+                failwith $"%s{methodName} against the provider it was compiled against: %A{Set.toList bound}"
+
+            if not (unbound.Contains failure) then
+                failwith $"%s{methodName} against the provider lacking what it uses: %A{Set.toList unbound}"
+
+    /// `int32[,]`'s constructor taking lower bounds and lengths raises `ArgumentOutOfRangeException`
+    /// for bounds whose upper end overflows; the one taking lengths alone does not. C# spells
+    /// neither, so the calls are emitted directly.
+    [<Test>]
+    let ``a multidimensional array constructor taking lower bounds can reject them`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let metadata = MetadataBuilder ()
+        let ilStream = BlobBuilder ()
+        let bodies = MethodBodyStreamEncoder ilStream
+
+        metadata.AddModule (
+            0,
+            metadata.GetOrAddString "ArrayCtors.dll",
+            metadata.GetOrAddGuid (Guid "3c9d1b2a-4e5f-4a6b-9c8d-7e6f5a4b3c2d"),
+            Unchecked.defaultof<GuidHandle>,
+            Unchecked.defaultof<GuidHandle>
+        )
+        |> ignore<ModuleDefinitionHandle>
+
+        metadata.AddAssembly (
+            metadata.GetOrAddString "ArrayCtors",
+            Version (1, 0, 0, 0),
+            Unchecked.defaultof<StringHandle>,
+            Unchecked.defaultof<BlobHandle>,
+            Unchecked.defaultof<AssemblyFlags>,
+            AssemblyHashAlgorithm.None
+        )
+        |> ignore<AssemblyDefinitionHandle>
+
+        let corelibName = typeof<obj>.Assembly.GetName ()
+
+        let corelibRef =
+            metadata.AddAssemblyReference (
+                metadata.GetOrAddString corelibName.Name,
+                corelibName.Version,
+                Unchecked.defaultof<StringHandle>,
+                metadata.GetOrAddBlob (corelibName.GetPublicKeyToken ()),
+                Unchecked.defaultof<AssemblyFlags>,
+                Unchecked.defaultof<BlobHandle>
+            )
+
+        let objectRef =
+            metadata.AddTypeReference (
+                (AssemblyReferenceHandle.op_Implicit corelibRef : EntityHandle),
+                metadata.GetOrAddString "System",
+                metadata.GetOrAddString "Object"
+            )
+
+        let rankTwo =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .TypeSpecificationSignature()
+                .Array (
+                    (fun element -> element.Int32 ()),
+                    (fun shape -> shape.Shape (2, ImmutableArray.Empty, ImmutableArray.Create (0, 0)))
+                )
+
+            metadata.AddTypeSpecification (metadata.GetOrAddBlob blob)
+
+        let constructor (arity : int) : MemberReferenceHandle =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature(isInstanceMethod = true)
+                .Parameters (
+                    arity,
+                    (fun returnType -> returnType.Void ()),
+                    (fun parameters ->
+                        for _ in 1..arity do
+                            parameters.AddParameter().Type().Int32 ()
+                    )
+                )
+
+            metadata.AddMemberReference (
+                (TypeSpecificationHandle.op_Implicit rankTwo : EntityHandle),
+                metadata.GetOrAddString ".ctor",
+                metadata.GetOrAddBlob blob
+            )
+
+        let body (arity : int) : int =
+            let code = InstructionEncoder (BlobBuilder ())
+
+            for _ in 1..arity do
+                code.LoadConstantI4 1
+
+            code.OpCode ILOpCode.Newobj
+            code.Token (MemberReferenceHandle.op_Implicit (constructor arity) : EntityHandle)
+            code.OpCode ILOpCode.Pop
+            code.OpCode ILOpCode.Ret
+            bodies.AddMethodBody code
+
+        let staticVoid =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature()
+                .Parameters (0, (fun returnType -> returnType.Void ()), ignore<ParametersEncoder>)
+
+            metadata.GetOrAddBlob blob
+
+        let addMethod (name : string) (arity : int) =
+            metadata.AddMethodDefinition (
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                MethodImplAttributes.IL,
+                metadata.GetOrAddString name,
+                staticVoid,
+                body arity,
+                MetadataTokens.ParameterHandle 1
+            )
+
+        let lowerBounds = addMethod "LowerBounds" 4
+        addMethod "Lengths" 2 |> ignore<MethodDefinitionHandle>
+
+        metadata.AddTypeDefinition (
+            TypeAttributes.Class,
+            Unchecked.defaultof<StringHandle>,
+            metadata.GetOrAddString "<Module>",
+            Unchecked.defaultof<EntityHandle>,
+            MetadataTokens.FieldDefinitionHandle 1,
+            lowerBounds
+        )
+        |> ignore<TypeDefinitionHandle>
+
+        metadata.AddTypeDefinition (
+            TypeAttributes.Public
+            ||| TypeAttributes.Class
+            ||| TypeAttributes.Abstract
+            ||| TypeAttributes.Sealed,
+            metadata.GetOrAddString "W",
+            metadata.GetOrAddString "Arrays",
+            (TypeReferenceHandle.op_Implicit objectRef : EntityHandle),
+            MetadataTokens.FieldDefinitionHandle 1,
+            lowerBounds
+        )
+        |> ignore<TypeDefinitionHandle>
+
+        let peBuilder =
+            ManagedPEBuilder (
+                PEHeaderBuilder (imageCharacteristics = Characteristics.Dll),
+                MetadataRootBuilder metadata,
+                ilStream
+            )
+
+        let image = BlobBuilder ()
+        peBuilder.Serialize image |> ignore<BlobContentId>
+
+        let assembly =
+            Assembly.read loggerFactory (Some "ArrayCtors.dll") (new MemoryStream (image.ToArray ()))
+
+        let mutable analysis = analysisOver [ assembly ] id
+
+        let answer (name : string) =
+            let next, escapes =
+                EscapeAnalysis.escapes analysis (methodNamed assembly "W.Arrays" name)
+
+            analysis <- next
+            render analysis escapes
+
+        let withBounds = answer "LowerBounds"
+        let withoutBounds = answer "Lengths"
+        withBounds |> shouldContain "=System.ArgumentOutOfRangeException"
+        withBounds |> shouldContain "=System.OverflowException"
+        withoutBounds |> shouldNotContain "=System.ArgumentOutOfRangeException"
+        withoutBounds |> shouldContain "=System.OverflowException"

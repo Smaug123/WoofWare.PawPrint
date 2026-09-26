@@ -193,6 +193,7 @@
     <Compile Include="TestMethodSignatureComparison.fs" />
     <Compile Include="TestMethodReferenceResolution.fs" />
     <Compile Include="TestMethodReferenceResolutionGenerated.fs" />
+    <Compile Include="TestFieldReferenceResolution.fs" />
     <Compile Include="TestEscapeAnalysis.fs" />
     <Compile Include="TestFunctionPointerConcretization.fs" />
     <Compile Include="Netstandard21FSharpCore.fs" />

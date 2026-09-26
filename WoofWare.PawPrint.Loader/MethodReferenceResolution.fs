@@ -41,6 +41,10 @@ type MethodReferenceTarget =
     /// vectors than the spelling shows.
     | DependsOnInstantiation
 
+    /// The parent names no type in the assembly it is scoped to, so binding the reference throws
+    /// <c>TypeLoadException</c>.
+    | ParentTypeMissing of TypeResolutionMiss
+
 /// <summary>
 /// Which method a MemberRef names, answered at the level of generic definitions: no type is
 /// instantiated, and a reference to a member of <c>List&lt;int&gt;</c> resolves to the method of
@@ -57,57 +61,6 @@ module MethodReferenceResolution =
             Identity : ResolvedTypeIdentity
             Context : TypeConcretization.SubstitutionContext
         }
-
-    /// The definition a type spelling in `spellingAssembly` names, whether nominally or as one of
-    /// the primitive element types a TypeSpec may carry.
-    let private identityOfSpelling
-        (loggerFactory : ILoggerFactory)
-        (dotnetRuntimeDirs : string seq)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (spellingAssembly : DumpedAssembly)
-        (spelling : TypeDefn)
-        (assemblies : LoadedAssemblies)
-        : LoadedAssemblies * ResolvedTypeIdentity
-        =
-        // A custom modifier annotates a signature; the type it annotates is the one being named.
-        match TypeDefn.stripCustomModifiers spelling with
-        | TypeDefn.GenericInstantiation (root, _) ->
-            match TypeDefn.stripCustomModifiers root with
-            | TypeDefn.FromDefinition (identity, _) -> assemblies, identity
-            | TypeDefn.FromReference (typeRef, _) ->
-                match
-                    TypeResolution.resolveTypeRefIdentity
-                        loggerFactory
-                        dotnetRuntimeDirs
-                        spellingAssembly
-                        typeRef
-                        assemblies
-                with
-                | assemblies, Ok identity -> assemblies, identity
-                | _, Error miss ->
-                    failwith
-                        $"Type reference %s{typeRef.Namespace}.%s{typeRef.Name} from %s{spellingAssembly.DefinitionFullName} does not resolve: %O{miss}"
-            | other ->
-                failwith
-                    $"An instantiation in %s{spellingAssembly.DefinitionFullName} applies arguments to %O{other}, which names no generic definition"
-        | TypeDefn.FromDefinition (identity, _) -> assemblies, identity
-        | TypeDefn.FromReference (typeRef, _) ->
-            match
-                TypeResolution.resolveTypeRefIdentity
-                    loggerFactory
-                    dotnetRuntimeDirs
-                    spellingAssembly
-                    typeRef
-                    assemblies
-            with
-            | assemblies, Ok identity -> assemblies, identity
-            | _, Error miss ->
-                failwith
-                    $"Type reference %s{typeRef.Namespace}.%s{typeRef.Name} from %s{spellingAssembly.DefinitionFullName} does not resolve: %O{miss}"
-        | TypeDefn.PrimitiveType primitive -> assemblies, (BaseClassTypes.ofPrimitive baseClassTypes primitive).Identity
-        | other ->
-            failwith
-                $"Expected a type with a method table in %s{spellingAssembly.DefinitionFullName}, but got %O{other}"
 
     /// The header of every method the runtime synthesises on an array type: an instance method with
     /// the default calling convention.
@@ -445,8 +398,17 @@ module MethodReferenceResolution =
                 let systemArray = searchedDefinition ctx.BaseTypes.Array.Identity 0
                 findMethod ctx systemArray.Context systemArray true
 
-        match row.Parent with
-        | MetadataToken.MethodDef handle ->
+        match
+            MemberReferenceParent.resolve
+                loggerFactory
+                dotnetRuntimeDirs
+                ctx.BaseTypes
+                ctx.LoadedAssemblies
+                referencingAssembly
+                reference
+        with
+        | assemblies, MemberReferenceParent.VarArgDefinition handle ->
+            let ctx = withAssemblies ctx assemblies
             // A vararg call site: the parent is the definition itself, in this module, and
             // CoreCLR only checks the signatures agree.
             let method = referencingAssembly.Methods.[handle]
@@ -465,40 +427,9 @@ module MethodReferenceResolution =
                 ctx, MethodReferenceTarget.Defined (referencingAssembly, handle)
             else
                 ctx, MethodReferenceTarget.Missing
-        | MetadataToken.TypeDefinition handle -> searchFrom ctx referencingAssembly.TypeDefs.[handle].Identity
-        | MetadataToken.TypeReference handle ->
-            let assemblies, identity =
-                identityOfSpelling
-                    loggerFactory
-                    dotnetRuntimeDirs
-                    ctx.BaseTypes
-                    referencingAssembly
-                    (TypeDefn.FromReference (referencingAssembly.TypeRefs.[handle], SignatureTypeKind.Class))
-                    ctx.LoadedAssemblies
-
-            searchFrom (withAssemblies ctx assemblies) identity
-        | MetadataToken.TypeSpecification handle ->
-            let spelling = referencingAssembly.TypeSpecs.[handle].Signature
-
-            match TypeDefn.stripCustomModifiers spelling with
-            | TypeDefn.OneDimensionalArrayLowerBoundZero _
-            | TypeDefn.Array _ as arrayType -> searchArray ctx arrayType
-            | TypeDefn.GenericTypeParameter _
-            | TypeDefn.GenericMethodParameter _ -> ctx, MethodReferenceTarget.DependsOnInstantiation
-            | _ ->
-                let assemblies, identity =
-                    identityOfSpelling
-                        loggerFactory
-                        dotnetRuntimeDirs
-                        ctx.BaseTypes
-                        referencingAssembly
-                        spelling
-                        ctx.LoadedAssemblies
-
-                searchFrom (withAssemblies ctx assemblies) identity
-        | MetadataToken.ModuleReference _ ->
-            failwith
-                $"TODO: MemberRef %s{name} in %s{referencingAssembly.DefinitionFullName} names a global function of another module, which is not modelled"
-        | other ->
-            failwith
-                $"MemberRef %s{name} in %s{referencingAssembly.DefinitionFullName} has parent %O{other}, which ECMA-335 does not permit"
+        | assemblies, MemberReferenceParent.Nominal identity -> searchFrom (withAssemblies ctx assemblies) identity
+        | assemblies, MemberReferenceParent.Array arrayType -> searchArray (withAssemblies ctx assemblies) arrayType
+        | assemblies, MemberReferenceParent.TypeVariable ->
+            withAssemblies ctx assemblies, MethodReferenceTarget.DependsOnInstantiation
+        | assemblies, MemberReferenceParent.Unresolved miss ->
+            withAssemblies ctx assemblies, MethodReferenceTarget.ParentTypeMissing miss

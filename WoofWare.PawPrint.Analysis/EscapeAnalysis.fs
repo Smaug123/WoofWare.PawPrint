@@ -39,14 +39,19 @@ type internal LocalFacts =
         Opaque : (int * Opacity) list
         Calls : (int * MethodKey) list
         Regions : ExceptionRegion list
+        /// What binding the tokens the body names can throw: a member or type the assembly it is
+        /// looked for in does not have. The JIT binds them before the body runs, so none of the
+        /// body's own handlers can catch these.
+        BindingFailures : Set<ThrownType>
     }
 
 /// What a call instruction's token names.
 [<RequireQualifiedAccess>]
 type internal CallTarget =
     | Method of MethodKey
-    | ArrayAccessor of ArrayAccessor
+    | ArrayAccessor of arrayType : TypeDefn * ArrayAccessor
     | Missing
+    | TypeMissing
     | DependsOnInstantiation
 
 /// An escape analysis in progress: the assemblies loaded so far and every answer computed so far.
@@ -340,8 +345,10 @@ module EscapeAnalysis =
             match target with
             | MethodReferenceTarget.Defined (declaring, method) ->
                 state, CallTarget.Method (MethodKey.make declaring method)
-            | MethodReferenceTarget.ArrayMethod (_, accessor) -> state, CallTarget.ArrayAccessor accessor
+            | MethodReferenceTarget.ArrayMethod (arrayType, accessor) ->
+                state, CallTarget.ArrayAccessor (arrayType, accessor)
             | MethodReferenceTarget.Missing -> state, CallTarget.Missing
+            | MethodReferenceTarget.ParentTypeMissing _ -> state, CallTarget.TypeMissing
             | MethodReferenceTarget.DependsOnInstantiation -> state, CallTarget.DependsOnInstantiation
         | other -> failwith $"A call in %s{assembly.DefinitionFullName} names %O{other}, which is not a method"
 
@@ -371,24 +378,160 @@ module EscapeAnalysis =
         let _, ty = definitionOf state identity
         ty.Methods |> List.exists (fun m -> m.Name = ".cctor" && m.IsStatic)
 
+    /// A static virtual method, which only a `constrained.` call reaches, and which the type that
+    /// prefix names decides.
+    let private isStaticVirtual (state : EscapeAnalysisState) (key : MethodKey) : bool =
+        let _, method = methodOf state key
+        method.IsStatic && method.IsVirtual
+
     /// The runtime's own exceptions from one of the methods it supplies on an array type: those of
-    /// the instruction each stands in for, `ldelem`, `stelem.ref`, `ldelema` and `newarr`.
-    let private arrayAccessorFaults (accessor : ArrayAccessor) : OpcodeFault list =
-        match accessor with
-        | ArrayAccessor.Get -> [ OpcodeFault.NullReference ; OpcodeFault.IndexOutOfRange ]
-        | ArrayAccessor.Set ->
-            [
-                OpcodeFault.NullReference
-                OpcodeFault.IndexOutOfRange
-                OpcodeFault.ArrayTypeMismatch
-            ]
-        | ArrayAccessor.Address ->
-            [
-                OpcodeFault.NullReference
-                OpcodeFault.IndexOutOfRange
-                OpcodeFault.ArrayTypeMismatch
-            ]
-        | ArrayAccessor.Constructor _ -> [ OpcodeFault.Overflow ; OpcodeFault.OutOfMemory ]
+    /// the instruction each stands in for, `ldelem`, `stelem.ref`, `ldelema` and `newarr`, and for a
+    /// multidimensional array's constructor taking lower bounds, `ArgumentOutOfRangeException` for
+    /// bounds whose upper end overflows.
+    let private arrayAccessorRaises
+        (state : EscapeAnalysisState)
+        (arrayType : TypeDefn)
+        (accessor : ArrayAccessor)
+        : ThrownType list
+        =
+        let faults =
+            match accessor with
+            | ArrayAccessor.Get -> [ OpcodeFault.NullReference ; OpcodeFault.IndexOutOfRange ]
+            | ArrayAccessor.Set ->
+                [
+                    OpcodeFault.NullReference
+                    OpcodeFault.IndexOutOfRange
+                    OpcodeFault.ArrayTypeMismatch
+                ]
+            | ArrayAccessor.Address ->
+                [
+                    OpcodeFault.NullReference
+                    OpcodeFault.IndexOutOfRange
+                    OpcodeFault.ArrayTypeMismatch
+                ]
+            | ArrayAccessor.Constructor _ -> [ OpcodeFault.Overflow ; OpcodeFault.OutOfMemory ]
+
+        let lowerBounds =
+            match arrayType, accessor with
+            | TypeDefn.Array (_, rank), ArrayAccessor.Constructor arity when arity = 2 * rank ->
+                [ ThrownType.Exactly (corelibException state "ArgumentOutOfRangeException") ]
+            | _ -> []
+
+        (faults |> List.map (fun fault -> ThrownType.Exactly (faultType state fault)))
+        @ lowerBounds
+
+    /// Does every type reference in a spelling name a type? One that does not makes binding the
+    /// token that spells it throw `TypeLoadException`. Custom modifiers and function pointer
+    /// signatures are not bound.
+    let rec private spellingBinds
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (spelling : TypeDefn)
+        : EscapeAnalysisState * bool
+        =
+        match spelling with
+        | TypeDefn.FromReference (typeRef, _) ->
+            match resolveTypeRef state assembly typeRef with
+            | state, Some _ -> state, true
+            | state, None -> state, false
+        | TypeDefn.GenericInstantiation (root, arguments) ->
+            ((state, true), Seq.append [ root ] arguments)
+            ||> Seq.fold (fun (state, soFar) spelling ->
+                if soFar then
+                    spellingBinds state assembly spelling
+                else
+                    state, false
+            )
+        | TypeDefn.Array (element, _)
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element
+        | TypeDefn.Pointer element
+        | TypeDefn.Byref element
+        | TypeDefn.Pinned element -> spellingBinds state assembly element
+        | TypeDefn.Modified modified -> spellingBinds state assembly modified.Unmodified
+        | TypeDefn.FromDefinition _
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.GenericMethodParameter _
+        | TypeDefn.FunctionPointer _
+        | TypeDefn.Void -> state, true
+
+    /// Bind the metadata token an instruction names, as the JIT does before the body runs: what it
+    /// names when that is a method, and what binding it can throw.
+    let rec private bindToken
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (token : MetadataToken)
+        : EscapeAnalysisState * CallTarget option * ThrownType list
+        =
+        let typeLoad () =
+            [ ThrownType.Exactly (corelibException state "TypeLoadException") ]
+
+        match token with
+        | MetadataToken.MethodDef _ ->
+            let state, target = callTarget state assembly token
+            state, Some target, []
+        | MetadataToken.MethodSpecification handle ->
+            let spec = assembly.MethodSpecs.[handle]
+            let state, target, failures = bindToken state assembly spec.Method
+
+            let state, argumentsBind =
+                ((state, true), spec.Signature)
+                ||> Seq.fold (fun (state, soFar) argument ->
+                    if soFar then
+                        spellingBinds state assembly argument
+                    else
+                        state, false
+                )
+
+            state, target, (if argumentsBind then failures else typeLoad () @ failures)
+        | MetadataToken.MemberReference handle ->
+            // Resolving the member reads only the parent's definition, but binding the reference
+            // loads the parent type itself, with every type argument it spells.
+            let state, parentBinds =
+                match assembly.Members.[handle].Parent with
+                | MetadataToken.TypeSpecification parent ->
+                    spellingBinds state assembly assembly.TypeSpecs.[parent].Signature
+                | _ -> state, true
+
+            let state, target, failures =
+                match assembly.Members.[handle].Signature with
+                | MemberSignature.Method _ ->
+                    match callTarget state assembly token with
+                    | state, CallTarget.Missing ->
+                        state,
+                        Some CallTarget.Missing,
+                        [ ThrownType.Exactly (corelibException state "MissingMethodException") ]
+                    | state, CallTarget.TypeMissing -> state, Some CallTarget.TypeMissing, typeLoad ()
+                    | state, target -> state, Some target, []
+                | MemberSignature.Field _ ->
+                    let assemblies, target =
+                        FieldReferenceResolution.resolve
+                            state.LoggerFactory
+                            state.RuntimeDirs
+                            state.Context.BaseTypes
+                            state.Context.LoadedAssemblies
+                            assembly
+                            handle
+
+                    let state = withAssemblies state assemblies
+
+                    match target with
+                    | FieldReferenceTarget.Missing ->
+                        state, None, [ ThrownType.Exactly (corelibException state "MissingFieldException") ]
+                    | FieldReferenceTarget.ParentTypeMissing _ -> state, None, typeLoad ()
+                    | FieldReferenceTarget.Defined _
+                    | FieldReferenceTarget.DependsOnInstantiation -> state, None, []
+
+            state, target, (if parentBinds then failures else typeLoad () @ failures)
+        | MetadataToken.TypeReference handle ->
+            match resolveTypeRef state assembly assembly.TypeRefs.[handle] with
+            | state, Some _ -> state, None, []
+            | state, None -> state, None, typeLoad ()
+        | MetadataToken.TypeSpecification handle ->
+            match spellingBinds state assembly assembly.TypeSpecs.[handle].Signature with
+            | state, true -> state, None, []
+            | state, false -> state, None, typeLoad ()
+        | _ -> state, None, []
 
     /// The static type of the value a call returns, as the call site's own signature spells it.
     let rec private returnTypeOfCall
@@ -418,6 +561,7 @@ module EscapeAnalysis =
             Opaque = [ 0, reason ]
             Calls = []
             Regions = []
+            BindingFailures = Set.empty
         }
 
     /// What one body does by itself.
@@ -474,9 +618,15 @@ module EscapeAnalysis =
             Seq.append fromBranches fromHandlers |> Set.ofSeq
 
         // Inside a type initializer, touching the type it initializes cannot trigger it: the CLI
-        // lets the initializing thread straight through (ECMA-335 I.8.9.5).
+        // lets the initializing thread straight through (ECMA-335 I.8.9.5). Only for a non-generic
+        // type, though: each instantiation of a generic one has its own statics and initializer, and
+        // a definition cannot tell `G<int>` from the `G<string>` being initialized.
         let initializing =
-            if method.Name = ".cctor" && method.IsStatic then
+            if
+                method.Name = ".cctor"
+                && method.IsStatic
+                && method.RequiredDeclaringType.Generics.IsEmpty
+            then
                 Some method.RequiredDeclaringType.Identity
             else
                 None
@@ -484,14 +634,19 @@ module EscapeAnalysis =
         // Whether a `TypeInitializationException` from this instruction is impossible: the type it
         // touches has no initializer to fail, or is the one this body is initializing. A
         // `callvirt` names where dispatch starts rather than where it lands, so it is never pruned.
-        let typeInitializationImpossible (state : EscapeAnalysisState) (op : IlOp) : EscapeAnalysisState * bool =
+        let typeInitializationImpossible
+            (state : EscapeAnalysisState)
+            (op : IlOp)
+            (methodTarget : CallTarget option)
+            : EscapeAnalysisState * bool
+            =
             let owner (state : EscapeAnalysisState) : EscapeAnalysisState * ResolvedTypeIdentity option =
                 match op with
                 | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Call | UnaryMetadataTokenIlOp.Newobj | UnaryMetadataTokenIlOp.Jmp),
-                                           MetadataOperand.FromMetadata token) ->
-                    match callTarget state assembly token.Token with
-                    | state, CallTarget.Method callee -> state, Some (declaringTypeOf state callee)
-                    | state, _ -> state, None
+                                           _) ->
+                    match methodTarget with
+                    | Some (CallTarget.Method callee) -> state, Some (declaringTypeOf state callee)
+                    | _ -> state, None
                 | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Ldsfld | UnaryMetadataTokenIlOp.Stsfld | UnaryMetadataTokenIlOp.Ldsflda),
                                            MetadataOperand.FromMetadata token) ->
                     match token.Token with
@@ -516,11 +671,20 @@ module EscapeAnalysis =
                 state : EscapeAnalysisState,
                 raises : (int * ThrownType) list,
                 opaque : (int * Opacity) list,
-                calls : (int * MethodKey) list
+                calls : (int * MethodKey) list,
+                bindingFailures : Set<ThrownType>
             )
             (index : int)
             =
             let op, offset = ops.[index]
+
+            // 0. Bind the token the instruction names, which the JIT does before the body runs.
+            let state, methodTarget, bindingFailures =
+                match op with
+                | IlOp.UnaryMetadataToken (_, MetadataOperand.FromMetadata token) ->
+                    let state, target, failures = bindToken state assembly token.Token
+                    state, target, Set.union bindingFailures (Set.ofList failures)
+                | _ -> state, None, bindingFailures
 
             // 1. What the instruction raises by itself.
             let state, raises, opaque =
@@ -538,7 +702,7 @@ module EscapeAnalysis =
                         ||> List.fold (fun (state, raises) fault ->
                             let state, impossible =
                                 if fault = OpcodeFault.TypeInitialization then
-                                    typeInitializationImpossible state op
+                                    typeInitializationImpossible state op methodTarget
                                 else
                                     state, false
 
@@ -581,38 +745,45 @@ module EscapeAnalysis =
                 | _ -> state, raises, opaque
 
             // 3. What the instruction calls.
-            match op with
-            | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Calli, _) ->
-                state, raises, (offset, Opacity.IndirectCall) :: opaque, calls
-            | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Call | UnaryMetadataTokenIlOp.Callvirt | UnaryMetadataTokenIlOp.Newobj | UnaryMetadataTokenIlOp.Jmp) as call,
-                                       operand) ->
-                match operand with
-                | MetadataOperand.FromDynamicScope _ -> state, raises, (offset, Opacity.IndirectCall) :: opaque, calls
-                | MetadataOperand.FromMetadata token ->
-                    match callTarget state assembly token.Token with
-                    | state, CallTarget.Method callee ->
-                        if call = UnaryMetadataTokenIlOp.Callvirt && isOverridable state callee then
+            let state, raises, opaque, calls =
+                match op with
+                | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Calli, _) ->
+                    state, raises, (offset, Opacity.IndirectCall) :: opaque, calls
+                | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Call | UnaryMetadataTokenIlOp.Callvirt | UnaryMetadataTokenIlOp.Newobj | UnaryMetadataTokenIlOp.Jmp) as call,
+                                           operand) ->
+                    match operand, methodTarget with
+                    | MetadataOperand.FromDynamicScope _, _ ->
+                        state, raises, (offset, Opacity.IndirectCall) :: opaque, calls
+                    | MetadataOperand.FromMetadata _, Some (CallTarget.Method callee) ->
+                        // A static virtual is dispatched on the type a `constrained.` prefix names,
+                        // which is how the only legal call to one is written.
+                        if
+                            (call = UnaryMetadataTokenIlOp.Callvirt && isOverridable state callee)
+                            || isStaticVirtual state callee
+                        then
                             state, raises, (offset, Opacity.VirtualCall) :: opaque, calls
                         else
                             state, raises, opaque, (offset, callee) :: calls
-                    | state, CallTarget.ArrayAccessor accessor ->
+                    | MetadataOperand.FromMetadata _, Some (CallTarget.ArrayAccessor (arrayType, accessor)) ->
                         let raised =
-                            arrayAccessorFaults accessor
-                            |> List.map (fun fault -> offset, ThrownType.Exactly (faultType state fault))
+                            arrayAccessorRaises state arrayType accessor
+                            |> List.map (fun thrown -> offset, thrown)
 
                         state, raised @ raises, opaque, calls
-                    | state, CallTarget.Missing ->
-                        state,
-                        (offset, ThrownType.Exactly (corelibException state "MissingMethodException"))
-                        :: raises,
-                        opaque,
-                        calls
-                    | state, CallTarget.DependsOnInstantiation ->
+                    | MetadataOperand.FromMetadata _, Some CallTarget.DependsOnInstantiation ->
                         state, raises, (offset, Opacity.DependsOnInstantiation) :: opaque, calls
-            | _ -> state, raises, opaque, calls
+                    // Binding the token fails, which step 0 recorded; there is nothing to call.
+                    | MetadataOperand.FromMetadata _, Some CallTarget.Missing
+                    | MetadataOperand.FromMetadata _, Some CallTarget.TypeMissing -> state, raises, opaque, calls
+                    | MetadataOperand.FromMetadata token, None ->
+                        failwith
+                            $"A call in %s{assembly.DefinitionFullName} names %O{token.Token}, which is not a method"
+                | _ -> state, raises, opaque, calls
 
-        let state, raises, opaque, calls =
-            ((state, [], [], []), [ 0 .. ops.Length - 1 ]) ||> List.fold folder
+            state, raises, opaque, calls, bindingFailures
+
+        let state, raises, opaque, calls, bindingFailures =
+            ((state, [], [], [], Set.empty), [ 0 .. ops.Length - 1 ]) ||> List.fold folder
 
         state,
         {
@@ -620,6 +791,7 @@ module EscapeAnalysis =
             Opaque = List.rev opaque
             Calls = List.rev calls
             Regions = List.ofSeq body.ExceptionRegions
+            BindingFailures = bindingFailures
         }
 
     /// The full name of a type the analysis has loaded, for reporting.
@@ -666,8 +838,9 @@ module EscapeAnalysis =
         let seedOf (state : EscapeAnalysisState) (key : MethodKey) : EscapeAnalysisState * Escapes =
             let facts = state.Facts.[key]
 
+            // Binding failures happen before the body runs, so none of its handlers apply.
             let state, types =
-                ((state, Set.empty), facts.Raises)
+                ((state, facts.BindingFailures), facts.Raises)
                 ||> List.fold (fun (state, types) (offset, thrown) ->
                     match escapesAt state key offset (Some thrown) with
                     | state, true -> state, Set.add thrown types
