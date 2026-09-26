@@ -1,18 +1,14 @@
 namespace WoofWare.PosixKernel
 
-/// What a task parked in a syscall is waiting for.
+/// One thing a task parked in a syscall can be waiting for, which holds or does
+/// not of a given system.
 ///
-/// Data, and deliberately transparent: a client that cannot make progress needs
-/// to *read* a condition as well as evaluate it — for example, to advance the
-/// virtual clock to the nearest deadline when nothing is runnable, which a
-/// predicate cannot answer. So no case may carry a function.
-///
-/// A condition names live kernel objects rather than a snapshot of them, and
+/// A primitive names live kernel objects rather than a snapshot of them, and
 /// stays true to what a real kernel waits on rather than to what is convenient
 /// to evaluate. Keeping those objects alive while something waits on them is the
 /// client's obligation, and it is what `close` refuses to break.
 [<RequireQualifiedAccess>]
-type WakeCondition =
+type WakePrimitive =
     /// An `flock` acquisition of `mode` by the open file description
     /// `requester`, parked because another description naming the same object
     /// holds a conflicting lock.
@@ -39,14 +35,67 @@ type WakeCondition =
     /// reason `FlockGrantable`'s requester is: the number can be closed and
     /// reused while the wait sleeps, and a `dup` of it waits on the same port.
     | SocketEventDeliverable of port : OpenFileDescriptionId
+    /// The machine's monotonic clock (`UnixMachineState.NanosecondsSinceBoot`)
+    /// has reached `nanosecondsSinceBoot`.
+    ///
+    /// Absolute rather than relative, so that it means the same instant however
+    /// often it is asked: a syscall's relative timeout becomes one of these when
+    /// the call parks.
+    | DeadlinePassed of nanosecondsSinceBoot : int64
+
+/// What a task parked in a syscall is waiting for: one primitive, or the first
+/// of several.
+///
+/// Data, and deliberately transparent: a client that cannot make progress needs
+/// to *read* a condition as well as evaluate it — for example, to advance the
+/// virtual clock to the nearest deadline when nothing is runnable, which
+/// `WakeCondition.deadlines` answers and a predicate could not. So no case may
+/// carry a function.
+[<RequireQualifiedAccess>]
+type WakeCondition =
+    /// Wait for this one primitive.
+    | Primitive of WakePrimitive
+    /// Wait until any of these holds. Never empty: a wait for any of nothing
+    /// could never end.
+    ///
+    /// Only the set of primitives it contains matters, so nesting and repetition
+    /// are immaterial: `satisfied` of an `AnyOf` is the union of `satisfied` of
+    /// its members.
+    | AnyOf of first : WakeCondition * rest : WakeCondition list
 
 [<RequireQualifiedAccess>]
 module WakeCondition =
 
-    /// Would the syscall that parked on this condition get further now?
+    // A primitive that names a description no longer in the table has had its
+    // wait broken underneath it: see `satisfied`.
+    let private holds<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (primitive : WakePrimitive)
+        (system : UnixSystem<'Task, 'Handler>)
+        : bool
+        =
+        match primitive with
+        | WakePrimitive.FlockGrantable (requester, mode) ->
+            let registry = system.Process.FileDescriptors
+
+            match FileDescriptorRegistry.descriptions registry |> Map.tryFind requester with
+            | None ->
+                failwith
+                    $"WakeCondition.satisfied: open file description %O{requester} is not in the table, so a task parked on an flock of it has had that description closed underneath it. This library's table models no reference from a waiter to what it waits on, so a client that parks must refuse such a close (as `close` does for a task parked in a socket-event wait)."
+            | Some description ->
+                FileDescriptorRegistry.flockConflicts (OpenFileDescription.object description) requester mode registry
+                |> not
+        | WakePrimitive.SocketEventDeliverable port -> SocketEventPort.hasDeliverableEvent port system
+        | WakePrimitive.DeadlinePassed deadline -> system.Machine.NanosecondsSinceBoot >= deadline
+
+    /// The primitives of `condition` which hold of `system`: empty exactly when
+    /// the syscall that parked on it would get no further now.
+    ///
+    /// A set rather than a yes or no so that the call which finishes the wait
+    /// can tell *why* it woke — an event, or its deadline — which a real kernel
+    /// reports differently.
     ///
     /// Pure, and cheap enough to poll: a client that has parked a task asks this
-    /// of each candidate state until it answers `true`, then finishes the call
+    /// of each candidate state until it is non-empty, then finishes the call
     /// against the object the condition names — see `SyscallOutcome.WouldBlock`
     /// for why that is not the same as re-issuing it against the descriptor it
     /// was made through. It is never a promise that finishing succeeds: another
@@ -62,23 +111,32 @@ module WakeCondition =
     /// gone is that obligation being broken, and it fails loudly rather than
     /// answering: the honest answers are "grantable", which wakes the task into
     /// an `EBADF` no kernel produces, and "not yet", which sleeps forever.
-    let isSatisfied<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let rec satisfied<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (condition : WakeCondition)
         (system : UnixSystem<'Task, 'Handler>)
-        : bool
+        : Set<WakePrimitive>
         =
         match condition with
-        | WakeCondition.FlockGrantable (requester, mode) ->
-            let registry = system.Process.FileDescriptors
+        | WakeCondition.Primitive primitive ->
+            if holds primitive system then
+                Set.singleton primitive
+            else
+                Set.empty
+        | WakeCondition.AnyOf (first, rest) ->
+            (satisfied first system, rest)
+            ||> List.fold (fun acc condition -> Set.union acc (satisfied condition system))
 
-            match FileDescriptorRegistry.descriptions registry |> Map.tryFind requester with
-            | None ->
-                failwith
-                    $"WakeCondition.isSatisfied: open file description %O{requester} is not in the table, so a task parked on an flock of it has had that description closed underneath it. This library's table models no reference from a waiter to what it waits on, so a client that parks must refuse such a close (as `close` does for a task parked in a socket-event wait)."
-            | Some description ->
-                FileDescriptorRegistry.flockConflicts (OpenFileDescription.object description) requester mode registry
-                |> not
-        | WakeCondition.SocketEventDeliverable port -> SocketEventPort.hasDeliverableEvent port system
+    /// Every deadline in `condition`, in nanoseconds since boot, one per
+    /// `DeadlinePassed` it contains.
+    ///
+    /// What a client whose tasks are all asleep reads to learn how far it may
+    /// advance the clock before a parked call's timeout would fire.
+    let rec deadlines (condition : WakeCondition) : int64 list =
+        match condition with
+        | WakeCondition.Primitive (WakePrimitive.DeadlinePassed deadline) -> [ deadline ]
+        | WakeCondition.Primitive (WakePrimitive.FlockGrantable _)
+        | WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable _) -> []
+        | WakeCondition.AnyOf (first, rest) -> deadlines first @ List.collect deadlines rest
 
     /// What the task holding `parked` is waiting for.
     ///
@@ -86,16 +144,16 @@ module WakeCondition =
     /// use. A record is *richer* than its condition — a socket wait also carries
     /// the event count its finishing call will copy out with, which no condition
     /// mentions — so record to condition is total where condition to record is
-    /// not, and only `flock`, whose record is exactly its condition, has a
-    /// `parkFlock` going the other way.
+    /// not.
     ///
     /// Deriving rather than storing the condition beside the record is what stops
     /// the two disagreeing: a client cannot park a task on one object while
     /// polling for another, because the thing polled *is* the thing parked on.
     let ofPark (parked : ParkedSyscall) : WakeCondition =
         match parked with
-        | ParkedSyscall.Flock parked -> WakeCondition.FlockGrantable (parked.Requester, parked.Mode)
-        | ParkedSyscall.SocketWait wait -> WakeCondition.SocketEventDeliverable wait.Port
+        | ParkedSyscall.Flock parked ->
+            WakeCondition.Primitive (WakePrimitive.FlockGrantable (parked.Requester, parked.Mode))
+        | ParkedSyscall.SocketWait wait -> WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable wait.Port)
 
 /// What became of a request this kernel could answer, where "answer" may be
 /// "the calling task sleeps".
@@ -104,8 +162,8 @@ type SyscallOutcome =
     /// The entry point returned.
     | Answered of SyscallAnswer
     /// The entry point did not return. The calling task sleeps until
-    /// `WakeCondition.isSatisfied` holds of this condition, and then finishes
-    /// the call; what sleeping means, and when to re-ask, are the client's
+    /// `WakeCondition.satisfied` of this condition is non-empty, and then
+    /// finishes the call; what sleeping means, and when to re-ask, are the client's
     /// scheduler's business, which is why this library has no opinion on either.
     ///
     /// **Finishing is not re-issuing the original call.** The syscall's

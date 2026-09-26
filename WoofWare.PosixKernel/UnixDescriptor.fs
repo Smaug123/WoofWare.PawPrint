@@ -904,26 +904,17 @@ module UnixDescriptor =
                     failwith
                         $"flock: fd %d{fd} reported contention but names no open file description (this is a bug in this library)"
 
-            // The record is derived from the condition rather than built beside
-            // it, so a task cannot be parked on one lock while a client polls
-            // for another: `WakeCondition.ofPark` of this record is this
-            // condition.
-            let parkedIn =
-                { advanced with
-                    Tasks =
-                        UnixTaskTable.withParked
-                            task
-                            (Some (
-                                ParkedSyscall.Flock
-                                    {
-                                        ParkedFlock.Requester = requester
-                                        Mode = requested
-                                    }
-                            ))
-                            advanced.Tasks
-                }
+            let parked =
+                ParkedSyscall.Flock
+                    {
+                        ParkedFlock.Requester = requester
+                        Mode = requested
+                    }
 
-            Ok (SyscallOutcome.WouldBlock (WakeCondition.FlockGrantable (requester, requested)), parkedIn)
+            // The condition is derived from the record rather than built beside
+            // it, so a task cannot be parked on one lock while a client polls
+            // for another.
+            Ok (SyscallOutcome.WouldBlock (WakeCondition.ofPark parked), UnixWait.park task parked advanced)
         | None -> Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), advanced)
 
     /// Finish the `flock` acquisition `task` parked in, against the open file
@@ -1000,11 +991,14 @@ module UnixDescriptor =
             failwith
                 $"UnixDescriptor.flockAcquire: acquiring on open file description %O{requester} reported EBADF, which only a descriptor lookup can produce (this is a bug in this library)."
         | Some FlockError.WouldBlock ->
-            Ok (SyscallOutcome.WouldBlock (WakeCondition.FlockGrantable (requester, mode)), advanced)
+            Ok (
+                SyscallOutcome.WouldBlock (WakeCondition.Primitive (WakePrimitive.FlockGrantable (requester, mode))),
+                advanced
+            )
         | None ->
             let granted =
                 { advanced with
-                    Tasks = UnixTaskTable.withParked task None advanced.Tasks
+                    Tasks = UnixTaskTable.unpark task advanced.Tasks
                 }
 
             Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), granted)
@@ -1068,7 +1062,7 @@ module UnixDescriptor =
             let waiter =
                 system.Tasks
                 |> Map.tryPick (fun task state ->
-                    match state.Parked with
+                    match state.Parked |> Option.map (fun park -> park.Syscall) with
                     | Some (ParkedSyscall.SocketWait wait) when wait.Port = closingId -> Some task
                     | Some _
                     | None -> None
@@ -1090,7 +1084,7 @@ module UnixDescriptor =
         | None ->
 
         // The same question for a lock rather than a port, and the reason
-        // `WakeCondition.isSatisfied` may treat a vanished description as a
+        // `WakeCondition.satisfied` may treat a vanished description as a
         // broken precondition rather than as something to answer.
         //
         // Two ladders over one park record rather than one ladder, because they
@@ -1113,7 +1107,7 @@ module UnixDescriptor =
 
             system.Tasks
             |> Map.tryPick (fun task state ->
-                match state.Parked with
+                match state.Parked |> Option.map (fun park -> park.Syscall) with
                 | Some (ParkedSyscall.Flock parked) when parked.Requester = closingId ->
                     Some (CloseRefusal.LastFlockedDescriptorWithWaiter (closingId, task))
                 | Some _
