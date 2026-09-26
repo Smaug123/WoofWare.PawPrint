@@ -1542,13 +1542,39 @@ module TestUnixSystemStep =
         let fd, system = withOpenFile linux
 
         let system =
-            { system with
-                Process = UnixProcessState.withUserAndGroupId 41u 43u system.Process
-            }
+            system
+            |> UnixSystem.withCredentials
+                "test"
+                (Credentials.ofIds (UserId.parseOrFail "test" 41u) (GroupId.parseOrFail "test" 43u) [])
 
         let status = UnixPathResolution.fstat fd system |> reported
-        status.UserId |> shouldEqual 41u
-        status.GroupId |> shouldEqual 43u
+        status.UserId |> shouldEqual (UserId.parseOrFail "test" 41u)
+        status.GroupId |> shouldEqual (GroupId.parseOrFail "test" 43u)
+
+    [<Test>]
+    let ``ownership and geteuid report the effective IDs, not the real or saved ones`` () : unit =
+        // Six distinct IDs, so an answer read from the wrong one of them names
+        // which.
+        let fd, system = withOpenFile linux
+
+        let credentials =
+            {
+                RealUser = UserId.parseOrFail "test" 51u
+                EffectiveUser = UserId.parseOrFail "test" 52u
+                SavedUser = UserId.parseOrFail "test" 53u
+                RealGroup = GroupId.parseOrFail "test" 61u
+                EffectiveGroup = GroupId.parseOrFail "test" 62u
+                SavedGroup = GroupId.parseOrFail "test" 63u
+                SupplementaryGroups = [ GroupId.parseOrFail "test" 64u ]
+            }
+
+        let system = system |> UnixSystem.withCredentials "test" credentials
+
+        let status = UnixPathResolution.fstat fd system |> reported
+        status.UserId |> shouldEqual credentials.EffectiveUser
+        status.GroupId |> shouldEqual credentials.EffectiveGroup
+
+        UnixDescriptor.effectiveUserId system |> shouldEqual credentials.EffectiveUser
 
     [<Test>]
     let ``fstat of a descriptor that is not open is EBADF`` () : unit =
@@ -1815,9 +1841,8 @@ module TestUnixSystemStep =
         // uid 0 is exempt, which is what says the rule is being read from the
         // process rather than hardcoded.
         let asRoot =
-            { system with
-                Process = UnixProcessState.withUserAndGroupId 0u 0u system.Process
-            }
+            system
+            |> UnixSystem.withCredentials "test" (Credentials.ofIds UserId.root (GroupId.parseOrFail "test" 0u) [])
 
         match UnixPathResolution.resolvePath SymlinkPolicy.Follow (statPath "/d/inner/t") asRoot with
         | Ok _ -> ()
@@ -2268,7 +2293,8 @@ module TestUnixSystemStep =
         // Not a `SyscallAnswer`: `geteuid(2)` cannot fail, so a shape that
         // admitted `Failed` would make an unreachable state representable. The
         // per-syscall function is the primitive for exactly this reason.
-        UnixDescriptor.effectiveUserId linux |> shouldEqual 1000u
+        UnixDescriptor.effectiveUserId linux
+        |> shouldEqual (UserId.parseOrFail "test" 1000u)
 
     [<Test>]
     let ``step agrees with the primitive it dispatches to`` () : unit =
@@ -2276,7 +2302,9 @@ module TestUnixSystemStep =
         // logs and replays through is not the surface it computes through.
         match UnixSystem.step holderTask Syscall.GetEffectiveUserId linux |> stepAnswered with
         | Ok (SyscallAnswer.Completed answer, after) ->
-            answer |> shouldEqual (int64 (UnixDescriptor.effectiveUserId linux))
+            answer
+            |> shouldEqual (int64 (UserId.toUInt32 (UnixDescriptor.effectiveUserId linux)))
+
             after |> shouldEqual linux
         | other -> failwith $"unexpected: %O{other}"
 
@@ -5391,9 +5419,8 @@ module TestUnixSystemStep =
         // permission check rather than anything else about that directory, so
         // uid 0 walks straight in.
         let asRoot =
-            { withChDirTree linux with
-                Process = UnixProcessState.withUserAndGroupId 0u 0u (withChDirTree linux).Process
-            }
+            withChDirTree linux
+            |> UnixSystem.withCredentials "test" (Credentials.ofIds UserId.root (GroupId.parseOrFail "test" 0u) [])
 
         changedTo "ronly" asRoot |> shouldEqual (Ok (Some "/ronly"))
 

@@ -746,8 +746,7 @@ type EmulatedKernel =
     member this.NextDirectoryStreamId : DirectoryStreamId =
         this.Process.NextDirectoryStreamId
 
-    member this.UserId : uint32 = this.Process.UserId
-    member this.GroupId : uint32 = this.Process.GroupId
+    member this.Credentials : Credentials = this.Process.Credentials
     member this.Umask : PermissionBits = this.Process.Umask
     member this.Signals : SignalState<ThreadId, SignalHandler> = this.Process.Signals
 
@@ -1866,15 +1865,24 @@ type KernelConfig =
         /// never reads the real filesystem, so two runs of the same seed see
         /// the same tree whatever the machine.
         FileSystem : Map<DirectoryEntryName, SeedEntry>
-        /// Effective user ID the simulated process runs as, observed as every
-        /// inode's `st_uid`, or `None` for the flavour's first interactive
-        /// user (1000 on Linux, 501 on Darwin). See `UnixSystem.defaultUserId`
-        /// for why the default is not root.
+        /// User ID the simulated process runs as (its real, effective and saved
+        /// user IDs alike), observed as every inode's `st_uid`, or `None` for
+        /// the flavour's first interactive user (1000 on Linux, 501 on Darwin).
+        /// See `UnixSystem.defaultUserId` for why the default is not root.
+        /// `(uid_t)-1` is refused: no process can hold it.
         UserId : uint32 option
-        /// Effective group ID the simulated process runs as, observed as every
-        /// inode's `st_gid`, or `None` for the flavour's default (1000 on
-        /// Linux, 20 on Darwin).
+        /// Group ID the simulated process runs as (its real, effective and saved
+        /// group IDs alike), observed as every inode's `st_gid`, or `None` for
+        /// the flavour's default (1000 on Linux, 20 on Darwin). `(gid_t)-1` is
+        /// refused.
         GroupId : uint32 option
+        /// The simulated process's supplementary groups, in the order
+        /// `setgroups(2)` would have been given them. More than the platform's
+        /// `NGROUPS_MAX` (65536 on Linux, 16 on Darwin) is refused.
+        ///
+        /// No guest can observe these yet: `SystemNative_GetGroups` is not
+        /// implemented, for the reason given at `SystemNative_GetEUid`.
+        SupplementaryGroups : uint32 list
         /// The file-mode creation mask `open(O_CREAT)` applies to the mode its
         /// caller asked for. See `EmulatedKernel.Umask`; it does not affect the
         /// modes `FileSystem` states, which describe a tree this process did not
@@ -1938,6 +1946,7 @@ type KernelConfig =
             FileSystem = FileSystemSeed.empty
             UserId = None
             GroupId = None
+            SupplementaryGroups = []
             Umask = UnixSystem.defaultUmask
             ProcessId = UnixSystem.defaultProcessId
             FileSystemType = None
@@ -1985,10 +1994,18 @@ module KernelConfig =
             (UnixTimestamp.ofMillisecondsSinceEpoch config.WallClockEpochMs)
             config.FileSystem
             config.CurrentDirectory
-        |> EmulatedKernel.mapProcess (
-            UnixProcessState.withUserAndGroupId
-                (config.UserId |> Option.defaultValue (UnixSystem.defaultUserId flavour))
-                (config.GroupId |> Option.defaultValue (UnixSystem.defaultGroupId flavour))
+        |> EmulatedKernel.mapUnix (
+            UnixSystem.withCredentials
+                "KernelConfig"
+                (Credentials.ofIds
+                    (config.UserId
+                     |> Option.map (UserId.parseOrFail "KernelConfig.UserId")
+                     |> Option.defaultValue (UnixSystem.defaultUserId flavour))
+                    (config.GroupId
+                     |> Option.map (GroupId.parseOrFail "KernelConfig.GroupId")
+                     |> Option.defaultValue (UnixSystem.defaultGroupId flavour))
+                    (config.SupplementaryGroups
+                     |> List.map (GroupId.parseOrFail "KernelConfig.SupplementaryGroups")))
         )
         |> EmulatedKernel.mapMachine (
             UnixMachineState.withEphemeralPortRange (

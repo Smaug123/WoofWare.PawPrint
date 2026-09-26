@@ -1006,6 +1006,19 @@ module SimulatedUnixPlatform =
     /// yet, and a knob with no consumer is a knob no test covers.
     let privilegedPortCeiling : uint16 = 1024us
 
+    /// The most supplementary groups a process on this platform can hold:
+    /// `NGROUPS_MAX`, 65536 on Linux and 16 on Darwin.
+    let supplementaryGroupLimit (platform : SimulatedUnixPlatform) : int =
+        // Measured by `docs/plans/2026-08-23-posix-kernel-extraction/credentials.c`
+        // as `setgroups(2)`'s own boundary, on Linux 6.18.5 as root: 65536 groups
+        // succeed and 65537 are EINVAL. On Darwin 27.0 at uid 501, 17 groups are
+        // EINVAL while 16 get as far as the privilege check (EPERM), so the count
+        // is checked first and 16 passes it. `sysconf(_SC_NGROUPS_MAX)` agrees on
+        // both.
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> 65536
+        | SimulatedUnixFlavour.Darwin -> 16
+
     /// `AF_INET6`, in the platform's own numbering, which unlike `AF_INET` the two
     /// families disagree about: 10 on Linux against 30 on Darwin. Measured.
     let internetV6AddressFamily (platform : SimulatedUnixPlatform) : int =

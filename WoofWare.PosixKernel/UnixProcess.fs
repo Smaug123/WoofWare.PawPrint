@@ -115,16 +115,12 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         DirectoryStreams : Map<DirectoryStreamId, DirectoryStream>
         /// The id `UnixNamespace.opendir` will hand out next.
         NextDirectoryStreamId : DirectoryStreamId
-        /// The effective user ID the simulated process runs as, reported by
-        /// `stat` as every inode's `st_uid` and by `geteuid(2)`.
+        /// Who the simulated process is: its real, effective and saved user and
+        /// group IDs, and its supplementary groups.
         ///
-        /// Process-wide rather than per-inode: this library models no `chown(2)`,
-        /// so a per-inode field could never make two inodes differ and would
-        /// carry no information this does not.
-        UserId : uint32
-        /// The effective group ID, reported as every inode's `st_gid`. See
-        /// `UserId`.
-        GroupId : uint32
+        /// `stat` reports the effective IDs as every inode's `st_uid` and
+        /// `st_gid`, because this library stores no per-inode ownership yet.
+        Credentials : Credentials
         /// The simulated process's file-mode creation mask: the permission bits
         /// `open(O_CREAT)` clears from the mode its caller asked for.
         ///
@@ -202,41 +198,23 @@ module UnixProcessState =
             ProcessId = ProcessId.assertValid context pid
         }
 
-    /// Set the effective user and group IDs the simulated process runs as.
-    let withUserAndGroupId<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (userId : uint32)
-        (groupId : uint32)
-        (proc : UnixProcessState<'Task, 'Handler>)
-        : UnixProcessState<'Task, 'Handler>
-        =
-        { proc with
-            UserId = userId
-            GroupId = groupId
-        }
-
     /// Whether the simulated process is exempt from the permission rules a kernel
-    /// applies to everyone else: uid 0, and nothing else.
+    /// applies to everyone else. This is `Credentials.privilege` of its
+    /// credentials, which is where the rule is stated.
     ///
-    /// One definition rather than a comparison at each site, because the sites
-    /// answer *different* questions from the same fact — whether `open` may ignore
-    /// a mode that forbids the access it was asked for, and whether a write keeps
-    /// a file's set-user-ID bits — and they must not be able to drift apart about
-    /// who root is. `CallerPrivilege` rather than a `bool` for the same reason:
-    /// the answer travels through several signatures before it is used, and a
-    /// bare flag arrives at them saying nothing about which fact it is.
+    /// `CallerPrivilege` rather than a `bool` because the answer travels through
+    /// several signatures before it is used, and a bare flag arrives at them
+    /// saying nothing about which fact it is.
     ///
-    /// A client should think before defaulting `UserId` to 0: root passes
-    /// every permission check this kernel models, and programs commonly skip
-    /// their own guards when they find they are root. That is why
-    /// `UnixSystem.defaultUserId` is 1000.
+    /// A client should think before making a process root: root passes every
+    /// permission check this kernel models, and programs commonly skip their own
+    /// guards when they find they are root. That is why
+    /// `UnixSystem.defaultUserId` is not 0.
     let callerPrivilege<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (proc : UnixProcessState<'Task, 'Handler>)
         : CallerPrivilege
         =
-        if proc.UserId = 0u then
-            CallerPrivilege.Privileged
-        else
-            CallerPrivilege.Unprivileged
+        Credentials.privilege proc.Credentials
 
     /// Set the environment the simulated process was started with, replacing
     /// whatever it held. The entries are kept in the order given, duplicates and

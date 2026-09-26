@@ -166,7 +166,7 @@ module PermissionBits =
     /// Consults the <b>owner</b> triple only.
     /// (You can't use this function for a consumer whose inodes have real per-uid ownership.)
     /// That's enough for WoofWare.PosixKernel right now, because <c>stat</c> reports
-    /// <c>Kernel.UserId</c> as every inode's <c>st_uid</c>: the emulated process
+    /// the caller's effective user ID as every inode's <c>st_uid</c>: the emulated process
     /// owns everything it can see, so the group and other triples can never be
     /// the applicable ones.
     /// </remarks>

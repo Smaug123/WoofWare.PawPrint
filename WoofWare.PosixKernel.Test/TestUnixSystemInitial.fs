@@ -132,8 +132,11 @@ module TestUnixSystemInitial =
         let system : UnixSystem<int, string> = UnixSystem.initial platform
         system.Machine.EphemeralPortRange |> shouldEqual (uint16 low, uint16 high)
         system.Machine.NextEphemeralPort |> shouldEqual (uint16 low)
-        system.Process.UserId |> shouldEqual (uint32 uid)
-        system.Process.GroupId |> shouldEqual (uint32 gid)
+
+        system.Process.Credentials
+        |> shouldEqual (
+            Credentials.ofIds (UserId.parseOrFail "test" (uint32 uid)) (GroupId.parseOrFail "test" (uint32 gid)) []
+        )
 
     /// Both clocks belong to the simulation rather than to the machine it
     /// claims to be, so a recorded trace's timestamps must not depend on which

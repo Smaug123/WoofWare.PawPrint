@@ -194,16 +194,38 @@ module TestBind =
         |> shouldEqual (BindAnswer.Bound (loopback 1024us))
 
         let asRoot =
-            { system with
-                Process =
-                    { system.Process with
-                        UserId = 0u
-                    }
-            }
+            system
+            |> UnixSystem.withCredentials "test" (Credentials.ofIds UserId.root (GroupId.parseOrFail "test" 0u) [])
 
         bindOrFail fd (loopback 1023us) asRoot
         |> fst
         |> shouldEqual (BindAnswer.Bound (loopback 1023us))
+
+    /// Whether a port below the ceiling may be bound is decided by the effective
+    /// user ID alone, measured on Linux (`credentials.c`): a real or saved uid of
+    /// 0 grants nothing, and an effective one does whatever the other two are.
+    [<Test>]
+    let ``a privileged port needs an effective uid of 0`` () : unit =
+        let rows =
+            [
+                // real, effective, saved, measured answer
+                0u, 1000u, 0u, BindAnswer.Failed UnixError.EACCES
+                1000u, 0u, 1000u, BindAnswer.Bound (loopback 80us)
+                1000u, 1000u, 0u, BindAnswer.Failed UnixError.EACCES
+            ]
+
+        for real, effective, saved, expected in rows do
+            let fd, system = stream SimulatedUnixPlatform.linuxX64
+
+            let credentials =
+                { Credentials.ofIds (UserId.parseOrFail context effective) (GroupId.parseOrFail context 1000u) [] with
+                    RealUser = UserId.parseOrFail context real
+                    SavedUser = UserId.parseOrFail context saved
+                }
+
+            let system = system |> UnixSystem.withCredentials context credentials
+
+            bindOrFail fd (loopback 80us) system |> fst |> shouldEqual expected
 
     /// Port 0 is not a privileged port: it is a request for an allocation rather
     /// than for a number, so the ceiling does not apply to it.

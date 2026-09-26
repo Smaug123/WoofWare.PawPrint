@@ -62,7 +62,7 @@ module private RemovalChecks =
     ///
     /// Write alone: the search half is the walk's, and a resolution that got
     /// this far has passed it. Only the owner triple can ever apply, since
-    /// `stat` reports `Kernel.UserId` as every inode's `st_uid`, and the sticky
+    /// `stat` reports the caller's effective user ID as every inode's `st_uid`, and the sticky
     /// bit can never refuse for the same reason — POSIX permits the removal when
     /// the caller owns the file *or* the directory, and one kernel-wide identity
     /// owns both.

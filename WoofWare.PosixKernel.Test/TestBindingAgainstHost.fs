@@ -146,12 +146,13 @@ module TestBindingAgainstHost =
         let initial = UnixSystem.initial platform
 
         let system =
-            { initial with
-                Process =
-                    { initial.Process with
-                        UserId = geteuid ()
-                    }
-            }
+            initial
+            |> UnixSystem.withCredentials
+                "TestBindingAgainstHost"
+                (Credentials.ofIds
+                    (UserId.parseOrFail "TestBindingAgainstHost" (geteuid ()))
+                    initial.Process.Credentials.EffectiveGroup
+                    [])
 
         match
             UnixSystem.withFileSystemAndCurrentDirectory

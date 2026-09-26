@@ -45,8 +45,7 @@ module TestUnixProcessState =
             ProcessPath = None
             DirectoryStreams = Map.empty
             NextDirectoryStreamId = DirectoryStreamId 0L
-            UserId = 1000u
-            GroupId = 1000u
+            Credentials = Credentials.ofIds (UserId.parseOrFail context 1000u) (GroupId.parseOrFail context 1000u) []
             Umask = PermissionBits.parseOrFail context 0o022
             ProcessId = ProcessId.parseOrFail context 4242
             Signals = SignalState.initial SignalNumbering.Linux
@@ -162,28 +161,18 @@ module TestUnixProcessState =
         proc.ProcessPath |> shouldEqual None
 
     [<Test>]
-    let ``only uid 0 is privileged`` () : unit =
-        UnixProcessState.callerPrivilege empty
-        |> shouldEqual CallerPrivilege.Unprivileged
+    let ``the process's privilege is its credentials' privilege`` () : unit =
+        let property (credentials : Credentials) : unit =
+            UnixProcessState.callerPrivilege
+                { empty with
+                    Credentials = credentials
+                }
+            |> shouldEqual (Credentials.privilege credentials)
 
-        UnixProcessState.callerPrivilege
-            { empty with
-                UserId = 0u
-            }
-        |> shouldEqual CallerPrivilege.Privileged
-
-        // Group 0 is not root: `IsPrivilegedProcess` reads the *user* id.
-        UnixProcessState.callerPrivilege
-            { empty with
-                GroupId = 0u
-            }
-        |> shouldEqual CallerPrivilege.Unprivileged
-
-    [<Test>]
-    let ``the ids a setter writes are the ids it was given`` () : unit =
-        let proc = empty |> UnixProcessState.withUserAndGroupId 3u 5u
-        proc.UserId |> shouldEqual 3u
-        proc.GroupId |> shouldEqual 5u
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 200,
+            Prop.forAll (Arb.fromGen CredentialsGen.credentials) property
+        )
 
     [<Test>]
     let ``every reference this record holds keeps its inode alive`` () : unit =

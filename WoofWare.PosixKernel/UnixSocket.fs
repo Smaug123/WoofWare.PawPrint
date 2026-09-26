@@ -667,7 +667,7 @@ module UnixSocket =
             | Some endpoint ->
                 endpoint.Port > 0us
                 && endpoint.Port < SimulatedUnixPlatform.privilegedPortCeiling
-                && system.Process.UserId <> 0u
+                && UnixProcessState.callerPrivilege system.Process = CallerPrivilege.Unprivileged
 
         let conflictsWith (binding : SocketBinding) : bool =
             UnixMachineState.bindingConflicts socketId socket binding system.Machine
