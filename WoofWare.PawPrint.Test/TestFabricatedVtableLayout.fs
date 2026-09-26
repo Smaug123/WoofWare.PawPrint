@@ -693,7 +693,7 @@ module TestFabricatedVtableLayout =
     let private vtableOf (name : string) : VtableSlot list = vtableOfClosedAt name []
 
     /// The slot table of a fabricated type, both halves.
-    let private slotTableOf (name : string) : VirtualSlotLayout.MethodSlotTable =
+    let private slotTableOf (name : string) : MethodTableLayout.MethodSlotTable =
         let state, handle = closedAt name []
         VirtualSlotLayout.slotTableOfClosed loggerFactory bct "test" state handle |> snd
 
