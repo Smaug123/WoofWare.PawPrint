@@ -2480,7 +2480,7 @@ module Concretization =
 
         // First, we need to create a TypeDefn for the declaring type with its generics instantiated
         let declaringTypeDefn =
-            if declaringType._Generics.IsEmpty then
+            if declaringType.Generics.IsEmpty then
                 // Non-generic type - determine the SignatureTypeKind
                 let assy = concCtx.LoadedAssemblies.ByDefinitionName declaringType.AssemblyFullName
                 let arg = assy.TypeDefs.[declaringType.Definition.Get]

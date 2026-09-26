@@ -1,11 +1,12 @@
 {
-  "version": "0.9",
+  "version": "0.10",
   "publicReleaseRefSpec": [
     "^refs/heads/main$"
   ],
   "pathFilters": [
     "./",
     ":/WoofWare.PawPrint.Domain",
+    ":/WoofWare.PawPrint.Loader",
     ":/WoofWare.PawPrint.Semantics",
     ":/WoofWare.PosixKernel",
     ":/Directory.Build.props",

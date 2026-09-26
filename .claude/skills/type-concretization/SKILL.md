@@ -53,7 +53,7 @@ let contextMethodGenerics = currentMethod.Generics
 
 ## Key Files
 
-- **TypeConcretisation.fs**: Core type concretization logic
+- **WoofWare.PawPrint.Loader/TypeConcretisation.fs**: Core type concretization logic
   - `concretizeType`: Main entry point
   - `concretizeGenericInstantiation`: Handles generic instantiations like `List<T>`
   - `ConcretizationContext`: Tracks state during concretization
@@ -63,7 +63,7 @@ let contextMethodGenerics = currentMethod.Generics
   - `concretizeFieldForExecution`: Prepares fields for access
   - Manages the flow of generic contexts through execution
 
-- **Assembly.fs**:
+- **WoofWare.PawPrint.Loader/CrossAssemblyResolution.fs**:
   - `resolveTypeRef`: Resolves type references across assemblies
   - `resolveTopLevelTypeFromName`: Discovers top-level types (by namespace + name), falling back to exported types
   - `resolveTypeFromExport`: Follows type forwarding chains
