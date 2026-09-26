@@ -31,6 +31,12 @@ The answer is an over-approximation: whatever a run can let escape is in it, nam
 "unknown". Resource exhaustion is in it too, so almost every method can escape
 `StackOverflowException`.
 
+One callback is assumed to behave as documented rather than analysed. Casting an object to an
+interface, or storing it in an array (whose element type may be an interface), calls
+`IDynamicInterfaceCastable.IsInterfaceImplemented` if the object's class implements that interface.
+The analysis assumes that throws nothing but the `InvalidCastException` its documentation asks for;
+an implementation that throws anything else can let that escape unreported.
+
 That holds for a set of assemblies that agree with each other. When one has changed since another
 was compiled against it, a missing member or type is reported as above, and says that the set
 needs rebuilding (or, for a package, a different version). Other ways such a change can break a

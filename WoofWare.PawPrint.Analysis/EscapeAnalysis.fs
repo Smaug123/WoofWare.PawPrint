@@ -82,6 +82,10 @@ type EscapeAnalysisState =
 /// so almost every method can escape <c>StackOverflowException</c>; a report that wants to drop
 /// those does so knowingly.
 ///
+/// An interface cast or an array store calls <c>IDynamicInterfaceCastable.IsInterfaceImplemented</c>
+/// on an object whose class implements it. That is assumed to throw nothing but the
+/// <c>InvalidCastException</c> its documentation asks for.
+///
 /// That holds for assemblies that agree with each other. A member or type that a body names and
 /// the loaded assembly it is looked for in lacks is reported, as the exception binding it throws,
 /// and signals that they do not. What else such a disagreement can break is not checked, and the
