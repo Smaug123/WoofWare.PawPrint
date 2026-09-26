@@ -115,10 +115,34 @@ module TestFileSystemTypePal =
 
     /// What `SystemNative_GetFileSystemType` returns: the PAL's number, or 0 for
     /// any failure.
-    let private shimAnswer (answer : FileSystemTypeAnswer) : uint32 =
+    let private shimAnswer (answer : FileSystemStatisticsAnswer) : uint32 =
         match answer with
-        | FileSystemTypeAnswer.Reported fields -> FileSystemTypePal.ofFields fields
-        | FileSystemTypeAnswer.Failed _ -> 0u
+        | FileSystemStatisticsAnswer.Reported statistics ->
+            FileSystemTypePal.ofFields (FileSystemStatistics.typeFields statistics)
+        | FileSystemStatisticsAnswer.Failed _ -> 0u
+
+    /// What the library's `fstatfs` answers for `target` on a machine of
+    /// `flavour` whose mount is a default one of `fsType`; `None` is a
+    /// descriptor the process does not hold.
+    let private modelAnswer
+        (flavour : SimulatedUnixFlavour)
+        (fsType : EmulatedFileSystemType)
+        (target : OpenFileObject option)
+        : FileSystemStatisticsAnswer
+        =
+        let system : UnixSystem<int, string> =
+            UnixSystem.initial (HostPlatform.platformOf flavour)
+
+        let machine =
+            UnixMachineState.withMount (Some (EmulatedMount.defaultOf fsType)) system.Machine
+
+        match target with
+        | None ->
+            { system with
+                Machine = machine
+            }
+            |> UnixPathResolution.fstatfs 4242
+        | Some target -> FileSystemStatistics.ofObject machine.UnixPlatform machine.Mount target
 
     [<Test>]
     let ``the shim's number is CoreLib's UnixFileSystemTypes member for every modelled answer`` () : unit =
@@ -146,7 +170,7 @@ module TestFileSystemTypePal =
 
         for flavour, fsType in everyCoherentPair do
             for target in everyTarget do
-                EmulatedFileSystemType.reportedFor flavour fsType target
+                modelAnswer flavour fsType target
                 |> shimAnswer
                 |> shouldEqual (expected flavour fsType target)
 
@@ -226,7 +250,7 @@ module TestFileSystemTypePal =
                     let hostErrno = Marshal.GetLastPInvokeError ()
 
                     let modelSaid =
-                        EmulatedFileSystemType.reportedFor flavour (EmulatedFileSystemType.defaultFor flavour) target
+                        modelAnswer flavour (EmulatedFileSystemType.defaultFor flavour) target
 
                     if hostSaid <> shimAnswer modelSaid then
                         failwith
@@ -237,13 +261,13 @@ module TestFileSystemTypePal =
                     // filesystem", and it is what a guest declaring
                     // `SetLastError` would see.
                     match modelSaid with
-                    | FileSystemTypeAnswer.Failed error ->
+                    | FileSystemStatisticsAnswer.Failed error ->
                         let expected = UnixError.toRawErrno error
 
                         if hostErrno <> expected then
                             failwith
                                 $"a %s{label} on this %O{flavour} host fails with errno %d{hostErrno}, but the library says %O{error} (errno %d{expected})."
-                    | FileSystemTypeAnswer.Reported _ -> ()
+                    | FileSystemStatisticsAnswer.Reported _ -> ()
             finally
                 close ends.[0] |> ignore<int>
                 close ends.[1] |> ignore<int>

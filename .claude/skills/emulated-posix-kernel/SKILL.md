@@ -17,7 +17,7 @@ because three of them look alike from the call site.
 | home | the fact is… | examples |
 | --- | --- | --- |
 | `SimulatedUnixPlatform` | true of *this kernel's source*, the same on every machine running it | the architecture and page size the image was built for, `sa_family_t` width, `AF_INET6`'s number, `sizeof(struct sockaddr_storage)`, `reportsBirthTime`, `setIdBitsOnTruncation`, `creatingOpenRules` |
-| `KernelConfig` | true of *this machine or mount or process*, and a different admin could change it | `FileSystemType`, `UserAddressLimit`, `UserId`, `Umask`, `ProcessorCount`, `WallClockEpochMs` |
+| `KernelConfig` | true of *this machine or mount or process*, and a different admin could change it | `Mount`, `UserAddressLimit`, `UserId`, `Umask`, `ProcessorCount`, `WallClockEpochMs` |
 | CoreLib flavour | not modelled at all — it decides which *guest* code path exists | `Environment.OSVersion`'s implementation, `Lock.ThreadId.InitializeForCurrentThread` |
 | the interpreter | an artefact of how PawPrint represents memory, which no real kernel has | `Int32.MaxValue / stride` limits on a native block |
 
@@ -36,7 +36,7 @@ named trigger for becoming configuration, stated beside it: a second filesystem
 for the first two, and `SystemNative_SymLink` letting a guest create a link. Do
 not cite any of them as a reason to put a machine-dependent fact in the platform.
 `SystemNative_GetFileSystemType` is the worked example: the value is a *mount*
-fact, so it lives in `KernelConfig.FileSystemType`, even though the flavour
+fact, so it lives in `KernelConfig.Mount`, even though the flavour
 constrains which types are possible (`Tmpfs` is Linux-only, `Apfs` Darwin-only).
 
 Two traps when adding a `KernelConfig` field:
@@ -49,7 +49,7 @@ Two traps when adding a `KernelConfig` field:
 - **The platform is a constructor argument, never a setter's.**
   `UnixSystem.initial` and `EmulatedKernel.create` take it, and nothing
   changes it afterwards, so a setter that reads `machine.UnixPlatform` for a
-  flavour-derived default (`withSoMaxConn`, `withFileSystemType`, the limits
+  flavour-derived default (`withSoMaxConn`, `withMount`, the limits
   `withFileSystemAndCurrentDirectory` admits a directory under) is not
   order-dependent: there is no platform setter to run after it. A field whose
   default depends on the flavour is an `option` in `KernelConfig`, resolved by

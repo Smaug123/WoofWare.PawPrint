@@ -180,7 +180,7 @@ module TestDirectoryReadAgainstHost =
         let wanted =
             EmulatedFileSystemType.defaultFor flavour
             |> EmulatedFileSystemType.fieldsFor flavour
-            |> FileSystemTypeAnswer.Reported
+            |> Ok
 
         if not (Directory.Exists candidate) then
             None
@@ -193,7 +193,7 @@ module TestDirectoryReadAgainstHost =
         else
 
         try
-            if HostFileSystemType.answerFor flavour fd = wanted then
+            if HostFileSystemType.typeFieldsFor flavour fd = wanted then
                 Some candidate
             else
                 None

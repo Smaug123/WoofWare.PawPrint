@@ -1014,7 +1014,7 @@ module TestImpureCases =
                 // the table holds, under each flavour in turn. Not differential:
                 // the number a *file* reports is a property of whichever mount
                 // the oracle's scratch directory is on, where PawPrint's is
-                // `KernelConfig.FileSystemType`. The portable half — that the
+                // `KernelConfig.Mount`. The portable half — that the
                 // reported filesystem is one CoreCLR will lock, so
                 // `File.WriteAllBytes` works — is in `WriteSeeded.cs` and
                 // `FlockContentionSeeded.cs`.
@@ -1056,7 +1056,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig =
                     { KernelConfig.Default with
-                        FileSystemType = Some EmulatedFileSystemType.Nfs
+                        Mount = Some EmulatedMount.Nfs
                         FileSystem =
                             let name (s : string) =
                                 DirectoryEntryName.parseOrFail "test seed" s
