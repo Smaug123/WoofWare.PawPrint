@@ -1,6 +1,8 @@
 namespace WoofWare.PosixKernel.Test
 
 open System.Collections.Immutable
+open FsCheck
+open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
@@ -8,9 +10,10 @@ open WoofWare.PosixKernel
 /// `UnixSocket.setNonBlocking`, `UnixSocket.isNonBlocking`, and what
 /// `UnixSocket.socket` creates.
 ///
-/// The flag's whole subtlety is *where it lives* and *which targets may carry
-/// it*: it is a property of the open file description rather than of the
-/// descriptor, one target refuses it, and one stores it while reporting a
+/// The flag's whole subtlety is *where it lives* and *what each target does
+/// with it*: it is a property of the open file description rather than of the
+/// descriptor, a standard stream stores it and refuses the one write it would
+/// shorten, and an event port stores it while reporting a
 /// failure — which is a flavour split no guest can reach, since a guest runs one
 /// flavour and the managed surface never sets the flag on an event port.
 [<TestFixture>]
@@ -46,9 +49,13 @@ module TestNonBlocking =
         (system : UnixSystem<int, string>)
         : SetNonBlockingAnswer * UnixSystem<int, string>
         =
-        match UnixSocket.setNonBlocking fd value system with
-        | Ok result -> result
-        | Error refusal -> failwith $"expected an answer, got a refusal: %s{SetNonBlockingRefusal.describe refusal}"
+        UnixSocket.setNonBlocking fd value system
+
+    /// What `poll` would report for `fd` right now.
+    let private readinessOf (fd : int) (system : UnixSystem<int, string>) : uint32 =
+        match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+        | Some id -> LinuxReadiness.ofDescription id system
+        | None -> failwith $"fd %d{fd} is not open"
 
     let private set (fd : int) (value : bool) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         match setOrFail fd value system with
@@ -172,30 +179,272 @@ module TestNonBlocking =
             let after = set fd true system
             UnixSocket.isNonBlocking fd after |> shouldEqual (Some true)
 
-    /// A standard stream refuses to be *set*, because no modelled stream
-    /// transfer consults the flag and storing it would keep blocking semantics
-    /// silently.
+    // ------------------------------------------------------------------
+    // The standard streams
+    // ------------------------------------------------------------------
+
+    // Every row in this section was measured by
+    // docs/plans/2026-08-23-posix-kernel-extraction/stdio-nonblock.c, under the
+    // launch shape `FileDescriptorRegistry.initial` models: three distinct
+    // pipes, standard input's writer closed before the process runs, and the
+    // output streams read by the launcher as fast as it can. Linux 6.18.5
+    // aarch64 and Darwin 27.0.0 arm64 answered every row identically.
+
+    let private streamPlatforms : SimulatedUnixPlatform list =
+        [
+            SimulatedUnixPlatform.linuxX64
+            SimulatedUnixPlatform.linuxArm64
+            SimulatedUnixPlatform.macOsArm64
+        ]
+
+    /// One `fcntl(F_SETFL)` on a standard stream, or on a `dup` of one: the
+    /// index is into `[0; 1; 2; dup 0; dup 1; dup 2]`.
+    type private StreamFlagOp =
+        {
+            Index : int
+            Value : bool
+        }
+
+    /// A system whose descriptors 3, 4 and 5 are `dup`s of 0, 1 and 2.
+    let private withStreamDuplicates (system : UnixSystem<int, string>) : int list * UnixSystem<int, string> =
+        let fds, registry =
+            [ 0 ; 1 ; 2 ]
+            |> List.mapFold
+                (fun registry fd ->
+                    match FileDescriptorRegistry.dup fd registry with
+                    | Ok (duplicate, registry) -> duplicate, registry
+                    | Error error -> failwith $"could not dup %d{fd}: %A{error}"
+                )
+                system.Process.FileDescriptors
+
+        [ 0 ; 1 ; 2 ] @ fds,
+        { system with
+            Process =
+                { system.Process with
+                    FileDescriptors = registry
+                }
+        }
+
+    /// Measured: `F_SETFL` takes `O_NONBLOCK` on each of the three streams and
+    /// answers 0, `F_GETFL` reads it back, and it lives on the description, so a
+    /// `dup` sees it and clearing it through the `dup` clears it for the
+    /// original. Checked against a model holding one flag per description, over
+    /// every sequence of sets and clears through either number.
     [<Test>]
-    let ``setting the flag on a standard stream is refused`` () : unit =
-        let rows =
+    let ``the flag on a standard stream is stored on its description`` () : unit =
+        let property (platform : SimulatedUnixPlatform, ops : StreamFlagOp list) : unit =
+            let fds, system = withStreamDuplicates (systemOn platform)
+            let readiness = fds |> List.map (fun fd -> readinessOf fd system)
+            let mutable system = system
+            // One flag per description: index mod 3 names it.
+            let mutable model = [| false ; false ; false |]
+
+            for op in ops do
+                let answer, after = setOrFail fds.[op.Index] op.Value system
+                answer |> shouldEqual SetNonBlockingAnswer.Set
+                system <- after
+                model.[op.Index % 3] <- op.Value
+
+                fds
+                |> List.mapi (fun index fd -> UnixSocket.isNonBlocking fd system, Some model.[index % 3])
+                |> List.iter (fun (actual, expected) -> actual |> shouldEqual expected)
+
+                UnixSystem.checkInvariants system |> shouldEqual []
+
+                // Measured: `poll` answers the same with the flag set as clear.
+                fds |> List.map (fun fd -> readinessOf fd system) |> shouldEqual readiness
+
+        let opGen =
+            Gen.zip (Gen.choose (0, 5)) (Gen.elements [ true ; false ])
+            |> Gen.map (fun (index, value) ->
+                {
+                    Index = index
+                    Value = value
+                }
+            )
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 200,
+            Prop.forAll
+                (Arb.fromGen (Gen.zip (Gen.elements streamPlatforms) (Gen.listOf opGen |> Gen.map (List.truncate 30))))
+                property
+        )
+
+    /// The rows of the property above as literals, so that it cannot agree with
+    /// a store that answers something other than what was measured.
+    [<Test>]
+    let ``setting the flag on each standard stream answers and reads back`` () : unit =
+        for platform in streamPlatforms do
+            for fd in [ 0 ; 1 ; 2 ] do
+                let answer, after = setOrFail fd true (systemOn platform)
+                answer |> shouldEqual SetNonBlockingAnswer.Set
+                UnixSocket.isNonBlocking fd after |> shouldEqual (Some true)
+
+                // Only the description `fd` names carries it: the launch
+                // shape's three streams are three descriptions.
+                for other in [ 0 ; 1 ; 2 ] |> List.filter ((<>) fd) do
+                    UnixSocket.isNonBlocking other after |> shouldEqual (Some false)
+
+                let answer, after = setOrFail fd false after
+                answer |> shouldEqual SetNonBlockingAnswer.Set
+                UnixSocket.isNonBlocking fd after |> shouldEqual (Some false)
+
+    let private bufferGen : Gen<UserBuffer> =
+        Gen.oneof
             [
-                0, FileDescriptorRole.StandardInput
-                1, FileDescriptorRole.StandardOutput
-                2, FileDescriptorRole.StandardError
+                Gen.constant UserBuffer.Mapped
+                Gen.constant UserBuffer.Opaque
+                Gen.constant UserBuffer.Addressless
+                Gen.elements [ 0UL ; 1UL ; 0x7FFF_FFFF_F000UL ; 0xFFFF_FFFF_FFFF_F000UL ]
+                |> Gen.map UserBuffer.Unmapped
             ]
 
-        for fd, role in rows do
-            UnixSocket.setNonBlocking fd true linux
-            |> shouldEqual (Error (SetNonBlockingRefusal.UnmodelledOnStandardStream role))
+    let private streamCountGen : Gen<int> =
+        Gen.frequency
+            [
+                3, Gen.choose (0, 64)
+                3,
+                Gen.elements
+                    [
+                        0
+                        1
+                        16
+                        511
+                        512
+                        513
+                        4095
+                        4096
+                        4097
+                        65535
+                        65536
+                        65537
+                        70000
+                    ]
+                2, Gen.choose (0, 200_000)
+            ]
 
-    /// ...but *clearing* it is answered, because `false` is what a stream
-    /// already reads back: the refusal is about a divergence that clearing does
-    /// not create.
+    /// Measured: standard input's writer is gone, so a non-blocking read answers
+    /// end-of-file exactly as a blocking one does (`read(0, buf, 16)`,
+    /// `read(0, NULL, 16)` and `read(0, buf, 0)` are all 0). So the flag changes
+    /// no answer a read of standard input gives, whatever the count and buffer,
+    /// and the read changes nothing either way.
     [<Test>]
-    let ``clearing the flag on a standard stream is answered`` () : unit =
-        for fd in [ 0 ; 1 ; 2 ] do
-            setOrFail fd false linux |> fst |> shouldEqual SetNonBlockingAnswer.Set
-            UnixSocket.isNonBlocking fd linux |> shouldEqual (Some false)
+    let ``the flag changes no read of standard input`` () : unit =
+        let property (platform : SimulatedUnixPlatform, buffer : UserBuffer, count : int) : unit =
+            let clear = systemOn platform
+            let flagged = set 0 true clear
+
+            let answerOf (system : UnixSystem<int, string>) =
+                match UnixReadWrite.read 0 buffer count system with
+                | Ok (answer, after) ->
+                    after |> shouldEqual system
+                    Ok answer
+                | Error refusal -> Error refusal
+
+            answerOf flagged |> shouldEqual (answerOf clear)
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 300,
+            Prop.forAll (Arb.fromGen (Gen.zip3 (Gen.elements streamPlatforms) bufferGen streamCountGen)) property
+        )
+
+    /// The measured rows themselves, as literals.
+    [<Test>]
+    let ``a non-blocking read of standard input is end of file`` () : unit =
+        for platform in streamPlatforms do
+            let flagged = set 0 true (systemOn platform)
+
+            for buffer, count in [ UserBuffer.Mapped, 16 ; UserBuffer.Unmapped 0UL, 16 ; UserBuffer.Mapped, 0 ] do
+                match UnixReadWrite.read 0 buffer count flagged with
+                | Ok (ReadAnswer.Completed bytes, _) -> bytes.IsEmpty |> shouldEqual true
+                | other -> failwith $"%O{platform}: read(0, %A{buffer}, %d{count}) answered %A{other}"
+
+    /// Measured: with the far reader draining as fast as it can, a non-blocking
+    /// write to stdout or stderr of at most 65536 bytes is taken whole, and a
+    /// longer one takes 65536 and comes back short -- 20 writes to each stream
+    /// of each of sixteen sizes from 1 to 1 MiB, each after the pipe had
+    /// drained, on both flavours. That
+    /// is what a write into an empty pipe takes. The whole writes are answered
+    /// exactly as a blocking write is; the short ones are refused.
+    [<Test>]
+    let ``a non-blocking write to an output stream is whole up to what an empty pipe takes`` () : unit =
+        let emptyPipeTakes = 65536
+
+        let property (platform : SimulatedUnixPlatform, fd : int, count : int) : unit =
+            let clear = systemOn platform
+            let flagged = set fd true clear
+            let bytes = ImmutableArray.Create<byte> (Array.init count byte)
+
+            let role =
+                match fd with
+                | 1 -> FileDescriptorRole.StandardOutput
+                | _ -> FileDescriptorRole.StandardError
+
+            let unflag (system : UnixSystem<int, string>) =
+                match UnixSocket.setNonBlocking fd false system with
+                | SetNonBlockingAnswer.Set, system -> system
+                | SetNonBlockingAnswer.Failed error, _ -> failwith $"could not clear the flag: %O{error}"
+
+            match UnixReadWrite.write fd bytes flagged, UnixReadWrite.write fd bytes clear with
+            | Ok (answer, after), Ok (blockingAnswer, blockingAfter) when count <= emptyPipeTakes ->
+                answer |> shouldEqual (WriteAnswer.Completed count)
+                answer |> shouldEqual blockingAnswer
+
+                // The same bytes reach the same log, entry for entry, and the
+                // flag is the only other difference.
+                let entries (system : UnixSystem<int, string>) =
+                    system.Process.OutputLog
+                    |> Seq.map (fun entry -> entry.Role, List.ofSeq entry.Bytes)
+                    |> List.ofSeq
+
+                entries after |> shouldEqual (entries blockingAfter)
+
+                // Compared entry by entry above: an `ImmutableArray`'s own
+                // equality is its array's identity.
+                let withoutLog (system : UnixSystem<int, string>) =
+                    { system with
+                        Process =
+                            { system.Process with
+                                OutputLog = ImmutableArray.Empty
+                            }
+                    }
+
+                withoutLog (unflag after) |> shouldEqual (withoutLog blockingAfter)
+            | Error refusal, Ok (WriteAnswer.Completed written, _) when count > emptyPipeTakes ->
+                written |> shouldEqual count
+
+                refusal
+                |> shouldEqual (WriteRefusal.NonBlockingStandardStreamShortWrite (role, count, emptyPipeTakes))
+            | flaggedResult, clearResult ->
+                failwith
+                    $"%O{platform}: write(%d{fd}, %d{count} bytes) answered %A{Result.map fst flaggedResult} with the flag set and %A{Result.map fst clearResult} without it"
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 300,
+            Prop.forAll
+                (Arb.fromGen (
+                    Gen.zip3 (Gen.elements streamPlatforms) (Gen.elements [ 1 ; 2 ]) (streamCountGen |> Gen.map (max 1))
+                ))
+                property
+        )
+
+    /// The boundary of the property above, as literals.
+    [<Test>]
+    let ``a non-blocking write one byte longer than an empty pipe takes is refused`` () : unit =
+        for platform in streamPlatforms do
+            let flagged = set 1 true (systemOn platform)
+
+            match UnixReadWrite.write 1 (ImmutableArray.Create<byte> (Array.zeroCreate 65536)) flagged with
+            | Ok (WriteAnswer.Completed 65536, _) -> ()
+            | other -> failwith $"%O{platform}: a 65536-byte write answered %A{Result.map fst other}"
+
+            UnixReadWrite.write 1 (ImmutableArray.Create<byte> (Array.zeroCreate 65537)) flagged
+            |> Result.map fst
+            |> shouldEqual (
+                Error (
+                    WriteRefusal.NonBlockingStandardStreamShortWrite (FileDescriptorRole.StandardOutput, 65537, 65536)
+                )
+            )
 
     // ------------------------------------------------------------------
     // The event port, where store and answer come apart

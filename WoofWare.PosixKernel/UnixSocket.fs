@@ -208,27 +208,6 @@ type SetNonBlockingAnswer =
     /// toggles and the answer is a failure anyway.
     | Failed of error : UnixError
 
-/// Why this kernel will not set a descriptor's `O_NONBLOCK`.
-[<RequireQualifiedAccess>]
-type SetNonBlockingRefusal =
-    /// The descriptor is a standard stream and the caller asked to *set* the
-    /// flag.
-    ///
-    /// A real pipe honours `O_NONBLOCK` -- an empty read becomes `EAGAIN` -- and
-    /// no modelled stream transfer consults it, so storing the flag would keep
-    /// blocking semantics silently. Clearing it is fine, and answered: `false`
-    /// is what a stream already reads back.
-    | UnmodelledOnStandardStream of role : FileDescriptorRole
-
-[<RequireQualifiedAccess>]
-module SetNonBlockingRefusal =
-    /// What this kernel knows about why it will not set the flag. The client
-    /// supplies its own half -- which entry point asked, and which descriptor.
-    let describe (refusal : SetNonBlockingRefusal) : string =
-        match refusal with
-        | SetNonBlockingRefusal.UnmodelledOnStandardStream role ->
-            $"the descriptor is the standard stream %O{role}, which this kernel models as a pipe, and no modelled stream transfer consults `O_NONBLOCK`; storing it would silently keep blocking semantics. Decide what a non-blocking stream read does before accepting this."
-
 /// What `getsockname(2)` reports about a socket's own address.
 [<RequireQualifiedAccess>]
 type GetSockNameAnswer =
@@ -915,18 +894,17 @@ module UnixSocket =
     /// The flag lands on the *description*, where POSIX keeps the status flags,
     /// so a `dup` of the descriptor sees it too.
     ///
-    /// Only for the targets whose every modelled operation honours it: a socket
-    /// (`accept` and `connect` consult it, and each transfer that lands must
-    /// too), a regular file (both kernels give `O_NONBLOCK` no effect there, so
-    /// an operation that never looks is right not to), and a socket event port
-    /// (whose waits block per their own timeout argument, never per this flag).
-    /// The one target whose modelled transfers would *ignore* a stored flag is
-    /// refused rather than silently diverging.
+    /// Every target takes it. A socket's `accept` and `connect` consult it, and
+    /// each transfer that lands must too. Both kernels give it no effect on a
+    /// regular file, so an operation there that never looks is right not to. A
+    /// socket event port's waits block per their own timeout argument, never
+    /// per this flag. On a standard stream it changes one answer, which
+    /// `UnixReadWrite.write` refuses: a write longer than an empty pipe holds.
     let setNonBlocking<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (isNonBlocking : bool)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<SetNonBlockingAnswer * UnixSystem<'Task, 'Handler>, SetNonBlockingRefusal>
+        : SetNonBlockingAnswer * UnixSystem<'Task, 'Handler>
         =
         let stored (system : UnixSystem<'Task, 'Handler>) : UnixSystem<'Task, 'Handler> =
             { system with
@@ -938,9 +916,7 @@ module UnixSocket =
             }
 
         match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
-        | None -> Ok (SetNonBlockingAnswer.Failed UnixError.EBADF, system)
-        | Some (OpenFileTarget.StandardStream role) when isNonBlocking ->
-            Error (SetNonBlockingRefusal.UnmodelledOnStandardStream role)
+        | None -> SetNonBlockingAnswer.Failed UnixError.EBADF, system
         | Some (OpenFileTarget.SocketEventPort _) ->
             // Store first, report second: measured, the platforms agree that the
             // bit toggles and disagree on the answer -- Linux succeeds where
@@ -948,19 +924,22 @@ module UnixSocket =
             let system = stored system
 
             match SimulatedUnixPlatform.eventPortSetStatusFlagsError system.Machine.UnixPlatform with
-            | None -> Ok (SetNonBlockingAnswer.Set, system)
-            | Some error -> Ok (SetNonBlockingAnswer.Failed error, system)
-        | Some (OpenFileTarget.StandardStream _)
+            | None -> SetNonBlockingAnswer.Set, system
+            | Some error -> SetNonBlockingAnswer.Failed error, system
+        | Some (OpenFileTarget.StandardStream _) ->
+            // Measured on both flavours under the launch shape this library
+            // models (stdio-nonblock.c): `F_SETFL` answers 0 on each of the
+            // three streams, and `F_GETFL` reads the flag back.
+            SetNonBlockingAnswer.Set, stored system
         | Some (OpenFileTarget.File _)
         | Some (OpenFileTarget.Directory _)
-        | Some (OpenFileTarget.Socket _) -> Ok (SetNonBlockingAnswer.Set, stored system)
+        | Some (OpenFileTarget.Socket _) -> SetNonBlockingAnswer.Set, stored system
 
     /// `fcntl(F_GETFL)`'s `O_NONBLOCK` half: whether the open file description
     /// `fd` names carries the flag.
     ///
     /// `None` for a descriptor that is not live, which a caller reports as
-    /// `EBADF`. Reads for every target kind, where `setNonBlocking` refuses one:
-    /// `false` is the truth for a target the setter will not flag.
+    /// `EBADF`.
     ///
     /// Changes nothing: a read of a status flag is a question.
     let isNonBlocking<'Task, 'Handler when 'Task : comparison and 'Handler : equality>

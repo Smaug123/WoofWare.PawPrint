@@ -570,9 +570,10 @@ type OpenFileDescription =
         /// `dup(2)` pair shares them. Set through `fcntl(F_SETFL)`, which is
         /// `UnixSocket.setNonBlocking`.
         ///
-        /// `true` is recorded only against a target whose every modelled
-        /// transfer honours it — see `setNonBlocking` — so a caller that
-        /// consults this may trust it rather than re-checking the target kind.
+        /// Every modelled operation on every target honours a stored `true`,
+        /// or refuses where it cannot — see `UnixSocket.setNonBlocking` — so a
+        /// caller that consults this may trust it rather than re-checking the
+        /// target kind.
         NonBlocking : bool
         /// The `flock(2)` lock this description holds, if any.
         ///
@@ -1371,17 +1372,12 @@ module FileDescriptorRegistry =
     ///
     /// Like `setOffset`, *partial* in the descriptor: the caller
     /// (`UnixSocket.setNonBlocking`) has already answered `EBADF` for
-    /// a dead fd. It has also refused to *set* the flag on a standard stream —
-    /// modelled as a pipe, whose reads a real kernel's `O_NONBLOCK` turns into
-    /// `EAGAIN` while this library's stream reads would block regardless, so a
-    /// stored `true` there would be a divergence nothing could see coming, and
-    /// is a bug in the caller here. Clearing is always honest and always
-    /// permitted. A socket event port stores freely: measured on both
-    /// flavours, `F_SETFL` genuinely toggles the bit there (even on Darwin,
-    /// where the call also reports ENOTTY — the caller's business, not this
-    /// store's), and no modelled wait consults it, because `epoll_wait` and
-    /// `kevent` block per their own timeout argument rather than per the
-    /// descriptor's flags.
+    /// a dead fd. Every target stores the flag, a socket event port included:
+    /// measured on both flavours, `F_SETFL` genuinely toggles the bit there
+    /// (even on Darwin, where the call also reports ENOTTY — the caller's
+    /// business, not this store's), and no modelled wait consults it, because
+    /// `epoll_wait` and `kevent` block per their own timeout argument rather
+    /// than per the descriptor's flags.
     let setNonBlocking (fd : int) (value : bool) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =
         match Map.tryFind fd registry.Fds with
         | None ->
@@ -1395,16 +1391,6 @@ module FileDescriptorRegistry =
             | None ->
                 failwith
                     $"file descriptor %d{fd} names open file description %O{id}, which is not present in the table (this is a bug in this library: every descriptor names a description in the table)"
-
-        match description.Target, value with
-        | OpenFileTarget.StandardStream role, true ->
-            failwith
-                $"setNonBlocking: fd %d{fd} names standard stream %O{role}, and no modelled stream transfer consults O_NONBLOCK, so a stored `true` would silently keep blocking semantics (this is a bug in the caller of FileDescriptorRegistry.setNonBlocking, which should have refused)."
-        | OpenFileTarget.StandardStream _, false
-        | OpenFileTarget.SocketEventPort _, _
-        | OpenFileTarget.File _, _
-        | OpenFileTarget.Directory _, _
-        | OpenFileTarget.Socket _, _ ->
 
         { registry with
             Descriptions =
