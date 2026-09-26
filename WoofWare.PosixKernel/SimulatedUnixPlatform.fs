@@ -62,7 +62,7 @@ type SimulatedUnixPlatform =
 /// Only reachable since `rmdir` could orphan a current directory. Measured on
 /// both with the cwd removed out from under the process, sweeping the size from
 /// 1 past the length of the path that used to be there: a zero-length buffer is
-/// EINVAL everywhere (the shim's own guard, before `getcwd` is called at all),
+/// EINVAL everywhere (libc's own `getcwd(3)` guard, before the kernel is asked),
 /// and everything else splits on the *first byte* only.
 [<RequireQualifiedAccess>]
 type GetCwdOrphanAnswer =
@@ -286,10 +286,10 @@ module SimulatedUnixPlatform =
     ///
     /// Same shape as `rawErrnoNumbering`, and needed for the same reason: a
     /// signo says nothing until something names the Unix that assigned it.
-    /// 17 is `SIGCHLD` on Linux and `SIGSTOP` on Darwin, so a guest that
-    /// registers for `PosixSignal.SIGCHLD` must be handed 17 on the one and 20
-    /// on the other, and one that hands 17 back must be told it cannot catch
-    /// it on Darwin alone. `Signal.toRawSignoUnder` and its siblings take the
+    /// 17 is `SIGCHLD` on Linux and `SIGSTOP` on Darwin, so a client that
+    /// asks for `SIGCHLD` must be handed 17 on the one and 20 on the other,
+    /// and one that hands 17 back must be told it cannot catch it on Darwin
+    /// alone. `Signal.toRawSignoUnder` and its siblings take the
     /// answer.
     let signalNumbering (platform : SimulatedUnixPlatform) : SignalNumbering =
         match flavour platform with
@@ -352,10 +352,8 @@ module SimulatedUnixPlatform =
     ///
     /// Measured, not read from a feature test: macOS 26.6's libc exports no such
     /// symbol, so a program that called it would not link, and there is no
-    /// answer for a caller to compare against. Linux 6.18.5 provides it. A
-    /// caller that has no answer of its own to give for the absent case wants
-    /// <c>UnixDescriptor.posixFadvise</c>, which reports the absence rather than
-    /// leaving it to be guessed.
+    /// answer for a caller to compare against. Linux 6.18.5 provides it.
+    /// <c>UnixDescriptor.posixFadvise</c> refuses on a platform without it.
     ///
     /// Darwin's nearest equivalent is the <c>F_RDADVISE</c> fcntl, which takes a
     /// different argument shape and is not modelled: the two are not

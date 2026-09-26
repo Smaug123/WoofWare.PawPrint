@@ -52,3 +52,15 @@ module StaticStorage =
         value : CliType ->
         storage : StaticStorage ->
             StaticStorage
+
+/// Read-only introspection of static storage by code that is *not the running guest*: the
+/// debugger server, crash reporting, and tests. Split from `StaticStorage` by caller identity,
+/// for the reason `HeapObserver` is split from `ManagedHeap`: a debugger listing every static
+/// did not make the guest read any of them.
+[<RequireQualifiedAccess>]
+module StaticStorageObserver =
+    /// Every slot that has been written, with its current value, in ascending order of owner,
+    /// then declaring type, then field. A slot that has never been written is absent: it holds
+    /// its field type's zero.
+    val writtenSlots :
+        storage : StaticStorage -> (StaticOwner * ConcreteTypeHandle * ComparableFieldDefinitionHandle * CliType) list

@@ -67,15 +67,16 @@ module TestFileAdvicePal =
             failwith
                 $"TestFileAdvicePal: the pinned pal_io.h has no PAL_POSIX_FADV_%s{name}. The enum has been renamed or reordered upstream."
 
-    /// The advice each name denotes, as this library spells it.
-    let private meaning : (string * FileAccessAdvice) list =
+    /// The Linux `POSIX_FADV_*` number each PAL name denotes (`<linux/fadvise.h>`,
+    /// the same on x86-64 and aarch64), which is what the library takes.
+    let private meaning : (string * int) list =
         [
-            "NORMAL", FileAccessAdvice.Normal
-            "RANDOM", FileAccessAdvice.Random
-            "SEQUENTIAL", FileAccessAdvice.Sequential
-            "WILLNEED", FileAccessAdvice.WillNeed
-            "DONTNEED", FileAccessAdvice.DontNeed
-            "NOREUSE", FileAccessAdvice.NoReuse
+            "NORMAL", 0
+            "RANDOM", 1
+            "SEQUENTIAL", 2
+            "WILLNEED", 3
+            "DONTNEED", 4
+            "NOREUSE", 5
         ]
 
     [<Test>]

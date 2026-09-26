@@ -58,3 +58,19 @@ module StaticStorage =
         {
             Slots = storage.Slots.SetItem (owner, ownerSlots)
         }
+
+[<RequireQualifiedAccess>]
+module StaticStorageObserver =
+    let writtenSlots
+        (storage : StaticStorage)
+        : (StaticOwner * ConcreteTypeHandle * ComparableFieldDefinitionHandle * CliType) list
+        =
+        [
+            for KeyValue (owner, ownerSlots) in storage.Slots do
+                for KeyValue (ty, fields) in ownerSlots do
+                    for KeyValue (field, value) in fields do
+                        yield owner, ty, field, value
+        ]
+        // `ImmutableDictionary` enumerates in hash-code order, which for today's key types agrees
+        // with `compare`; the order promised in the signature must not rest on that.
+        |> List.sortBy (fun (owner, ty, field, _) -> owner, ty, field)
