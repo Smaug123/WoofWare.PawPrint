@@ -613,24 +613,40 @@ module TestPipeBuffer =
 
             PipeBuffer.held buffer |> shouldEqual 0
 
+    /// Each count is a single array of up to 2 GiB, so the rows run one at a
+    /// time, on their own, and each array is dropped before the next is made.
     [<Test>]
-    let ``a write too large to add to what the buffer holds takes what fits`` () : unit =
-        // `pipe-buffer-huge-write.c`: with 512 bytes held, a count whose sum
-        // with them exceeds Int32.MaxValue takes exactly what a 65536- or
-        // 70000-byte count takes.
-        let huge =
-            ImmutableCollectionsMarshal.AsImmutableArray (Array.zeroCreate<byte> 2147483500)
+    [<NonParallelizable>]
+    let ``a huge write takes what fits, after Linux's per-call clamp`` () : unit =
+        let hugeWrite (platform : SimulatedUnixPlatform) (held : int) (count : int) : int =
+            let _, buffer = PipeBuffer.write (payload 0 held) (PipeBuffer.empty platform)
 
-        for platform, expected in
-            [
-                SimulatedUnixPlatform.macOsArm64, 65024
-                SimulatedUnixPlatform.linuxX64, 61440
-                SimulatedUnixPlatform.linuxArm64, 61440
-            ] do
-            let _, buffer = PipeBuffer.write (payload 0 512) (PipeBuffer.empty platform)
+            let bytes =
+                ImmutableCollectionsMarshal.AsImmutableArray (Array.zeroCreate<byte> count)
 
-            (platform, fst (PipeBuffer.write huge buffer))
-            |> shouldEqual (platform, expected)
+            let taken = fst (PipeBuffer.write bytes buffer)
+            GC.Collect ()
+            taken
 
-            (platform, fst (PipeBuffer.write (payload 0 70000) buffer))
-            |> shouldEqual (platform, (if expected = 65024 then 65024 else 61808))
+        // `pipe-buffer-huge-write.c`. Darwin fills its 64 KiB buffer whatever
+        // the count, including one whose sum with the bytes held exceeds
+        // Int32.MaxValue; it has no per-call clamp below any count an array
+        // can hold.
+        for held, expected in [ 512, 65024 ; 1, 65535 ] do
+            (held, hugeWrite SimulatedUnixPlatform.macOsArm64 held 2147483500)
+            |> shouldEqual (held, expected)
+
+        // Linux, with 1 byte held: 0x7FFFF000, the largest count that reaches
+        // the pipe, has no sub-page remainder and takes 15 slots; 0x7FFFEFFF's
+        // 4095-byte remainder merges into the first slot as well.
+        for count, expected in [ 0x7FFFF000, 61440 ; 0x7FFFEFFF, 65535 ] do
+            (count, hugeWrite SimulatedUnixPlatform.linuxX64 1 count)
+            |> shouldEqual (count, expected)
+
+        // A real kernel clamps 0x7FFFF001 to 0x7FFFF000 and takes 61440 after 1
+        // byte; unclamped, its 1-byte remainder would merge and take 61441. So a
+        // longer count is the caller's to clamp, and refused here.
+        Assert.Throws<Exception> (fun () -> hugeWrite SimulatedUnixPlatform.linuxX64 1 0x7FFFF001 |> ignore)
+        |> ignore
+
+        GC.Collect ()

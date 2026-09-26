@@ -80,6 +80,44 @@ class LinuxSlots:
         return 0, 0
 
 
+class LinuxBytes:
+    """The rejected alternative for Linux, with Linux's own observables: a byte
+    counter against 64 KiB, writes of at most PIPE_BUF (4096) all-or-nothing,
+    larger ones taking what fits, the write end ready while any byte is free,
+    st_size always 0, EAGAIN 11."""
+
+    def __init__(self):
+        self.cnt = 0
+
+    def avail(self):
+        return self.cnt
+
+    def write(self, n):
+        if n == 0:
+            return 0, 0
+        free = 65536 - self.cnt
+        c = (n if free >= n else 0) if n <= 4096 else min(n, free)
+        if c == 0:
+            return -1, 11
+        self.cnt += c
+        return c, 0
+
+    def read(self, n):
+        if n == 0:
+            return 0, 0
+        if self.cnt == 0:
+            return -1, 11
+        c = min(n, self.cnt)
+        self.cnt -= c
+        return c, 0
+
+    def poll(self):
+        return (0x41 if self.cnt else 0), (0x104 if self.cnt < 65536 else 0)
+
+    def st_size(self):
+        return 0, 0
+
+
 class DarwinRing:
     """A byte counter against a fixed capacity; writes of at most PIPE_BUF are
     all-or-nothing, larger ones take what fits."""
@@ -175,7 +213,7 @@ def main():
     variant = sys.argv[3] if len(sys.argv) > 3 else ''
     mk = {
         'linux': lambda: LinuxSlots(merge=(variant != 'nomerge')),
-        'linux-bytes': lambda: DarwinRing(cap=65536, pipe_buf=4096),
+        'linux-bytes': LinuxBytes,
         'darwin': lambda: DarwinRing(out_threshold=int(variant) if variant else None),
         'darwin-dyn': lambda: DarwinDynamic(*[int(x) for x in variant.split(',')] if variant else []),
     }[flavour]

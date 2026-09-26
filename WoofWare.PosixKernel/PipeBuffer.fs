@@ -254,6 +254,11 @@ module PipeBuffer =
     /// waiting; a count below `bytes.Length` is a short write. A write of at most
     /// `atomicWriteLimit` bytes is never short. A write of no bytes takes none
     /// and changes nothing.
+    ///
+    /// `bytes` is what reaches the pipe, after the kernel's limit on one call's
+    /// transfer. On Linux that limit is `INT_MAX` rounded down to a page, and a
+    /// longer count is the caller's to shorten first: the pipe takes a
+    /// different amount from a clamped count than from the unclamped one.
     let write (bytes : ImmutableArray<byte>) (buffer : PipeBuffer) : int * PipeBuffer =
         if bytes.IsDefault then
             failwith
@@ -268,6 +273,15 @@ module PipeBuffer =
         match buffer with
         | PipeBuffer.Linux linux ->
             let page = linux.PageSize
+
+            // MAX_RW_COUNT: the same limit `UnixEntropy.getRandomMaxTransfer`
+            // states for getrandom. Measured with pipe-buffer-huge-write.c.
+            let maxTransfer = System.Int32.MaxValue &&& ~~~(page - 1)
+
+            if n > maxTransfer then
+                failwith
+                    $"PipeBuffer.write: a count of %d{n} exceeds Linux's per-call limit of %d{maxTransfer}, which the kernel applies before the pipe sees the write; clamp the count first (this is a bug in the caller of PipeBuffer.write)."
+
 
             let slice (start : int) (length : int) =
                 ImmutableArray.Create (bytes, start, length)

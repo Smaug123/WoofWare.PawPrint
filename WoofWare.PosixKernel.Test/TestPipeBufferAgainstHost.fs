@@ -44,6 +44,9 @@ module TestPipeBufferAgainstHost =
     [<DllImport("libSystem.Native", EntryPoint = "SystemNative_FcntlSetIsNonBlocking")>]
     extern int private hostSetNonBlocking(nativeint fd, int isNonBlocking)
 
+    [<DllImport("libSystem.Native", EntryPoint = "SystemNative_FcntlGetPipeSz")>]
+    extern int private hostGetPipeSize(nativeint fd)
+
     [<DllImport("libSystem.Native", EntryPoint = "SystemNative_GetBytesAvailable")>]
     extern int private hostBytesAvailable(nativeint fd, int& available)
 
@@ -69,9 +72,36 @@ module TestPipeBufferAgainstHost =
 
         (fds.[0].Revents &&& events) <> 0s
 
+    /// Skip unless a fresh Linux pipe on this host has the capacity the model's
+    /// sixteen slots of the preset's page size give it. A pipe starts smaller
+    /// when `fs.pipe-max-size` is below that or the user is over
+    /// `fs.pipe-user-pages-soft`, and a kernel with larger pages starts larger;
+    /// all three are this machine's configuration rather than the rule under
+    /// test.
+    let private requireDefaultLinuxCapacity (platform : SimulatedUnixPlatform) : unit =
+        match SimulatedUnixPlatform.flavour platform with
+        | SimulatedUnixFlavour.Darwin -> ()
+        | SimulatedUnixFlavour.Linux ->
+            let expected =
+                16 * SimulatedPageSize.bytes (SimulatedUnixPlatform.pageSize platform)
+
+            let fds = Array.zeroCreate<int> 2
+
+            if hostPipe fds <> 0 then
+                failwith $"pipe failed: errno %d{Marshal.GetLastPInvokeError ()}"
+
+            let capacity = hostGetPipeSize (nativeint fds.[1])
+            hostClose fds.[0] |> ignore
+            hostClose fds.[1] |> ignore
+
+            if capacity <> expected then
+                Assert.Ignore
+                    $"a fresh pipe on this host holds %d{capacity} bytes (F_GETPIPE_SZ), not the %d{expected} the model's %O{platform} preset starts with"
+
     [<Test>]
     let ``a real pipe and the model answer every call alike`` () : unit =
         HostPlatform.onUnixHostPreset (fun platform ->
+            requireDefaultLinuxCapacity platform
             let flavour = SimulatedUnixPlatform.flavour platform
 
             let property (ops : PipeBufferOp list) : unit =
