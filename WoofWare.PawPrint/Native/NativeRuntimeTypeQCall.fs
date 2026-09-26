@@ -908,7 +908,7 @@ module NativeRuntimeTypeQCall =
                         ctx.BaseClassTypes
                         None
                         ConstructionState.NotConstructing
-                        false
+                        IlMachineStateExecution.CallDispatch.Direct
                         false
                         false
                         concretizedCtor.Generics

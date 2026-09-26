@@ -443,7 +443,13 @@ module AbstractMachine =
                     baseClassTypes
                     None
                     ConstructionState.NotConstructing
-                    dispatchesOnReceiver
+                    (if dispatchesOnReceiver then
+                         IlMachineStateExecution.dispatchOnReceiver
+                             "delegate invocation"
+                             methodPtr
+                             (EvalStackValue.ofCliType instruction.Arguments.[1])
+                     else
+                         IlMachineStateExecution.CallDispatch.Direct)
                     false
                     false
                     IlMachineStateExecution.CallSiteTransition.StaysCooperative

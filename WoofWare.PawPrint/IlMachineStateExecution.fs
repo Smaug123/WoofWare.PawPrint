@@ -1544,6 +1544,39 @@ module IlMachineStateExecution =
 
         firstResolved state retargets
 
+    /// How a call chooses the method it runs.
+    [<RequireQualifiedAccess>]
+    type CallDispatch =
+        /// Run the named method.
+        | Direct
+        /// Run the implementation of the named virtual method that this receiver's runtime type
+        /// selects. The receiver is the object the call passes as `this`. It is never null: a call
+        /// site raises NullReferenceException for a null receiver before it dispatches.
+        | Virtual of receiver : ManagedHeapAddress
+
+    /// The dispatch for a call site that dispatches on its receiver `this`: `Virtual` when
+    /// `methodToCall` dispatches virtually, and `Direct` otherwise. The caller must already have
+    /// raised NullReferenceException for a null receiver; `site` names the call site in the failure
+    /// when it has not, or when `this` is not an object reference at all.
+    let dispatchOnReceiver
+        (site : string)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (this : EvalStackValue)
+        : CallDispatch
+        =
+        if not methodToCall.DispatchesVirtually then
+            CallDispatch.Direct
+        else
+
+        match this with
+        | EvalStackValue.ObjectRef receiver -> CallDispatch.Virtual receiver
+        | EvalStackValue.NullObjectRef ->
+            failwith
+                $"BUG: %s{site}: virtual dispatch of %O{methodToCall} reached a null receiver; the call site must raise NullReferenceException before dispatching"
+        | other ->
+            failwith
+                $"%s{site}: virtual dispatch of %O{methodToCall} needs an object reference as its receiver, but `this` is %O{other}"
+
     /// What `callMethodWithCommitment` actually did, for callers that must distinguish the cases.
     ///
     /// Initialising the callee's declaring type is the callee's own prologue, which runs after
@@ -1774,7 +1807,7 @@ module IlMachineStateExecution =
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (wasInitialising : ConcreteTypeHandle option)
         (wasConstructing : ConstructionState)
-        (performInterfaceResolution : bool)
+        (dispatch : CallDispatch)
         (wasClassConstructor : bool)
         (advanceProgramCounterOfCaller : bool)
         (callSiteTransition : CallSiteTransition)
@@ -1794,24 +1827,23 @@ module IlMachineStateExecution =
 
         // Virtual/interface resolution runs before the `[Intrinsic]` classification below, so
         // that `intrinsic` describes the method we are actually about to execute.
-        let shouldPerformVirtualResolution =
-            performInterfaceResolution && methodToCall.DispatchesVirtually
-
         let state, methodToCall =
-            if shouldPerformVirtualResolution then
-                let callingObjTyHandle =
-                    match
-                        activeMethodState.EvaluationStack
-                        |> EvalStack.PeekNthFromTop (MethodInfo.arity methodToCall)
-                    with
-                    | None -> failwith "unexpectedly no `this` on the eval stack of instance method"
-                    | Some (EvalStackValue.ObjectRef addr) -> ManagedHeap.getObjectConcreteType addr state.ManagedHeap
-                    | Some EvalStackValue.NullObjectRef ->
-                        failwith
-                            $"BUG: virtual dispatch of %O{methodToCall} reached a null receiver; every caller that asks for virtual resolution must raise NullReferenceException itself first"
-                    | Some other ->
-                        failwith
-                            $"virtual dispatch of %O{methodToCall}: the receiver, %d{MethodInfo.arity methodToCall} slot(s) down the evaluation stack, is %O{other} rather than an object reference"
+            match dispatch with
+            | CallDispatch.Direct -> state, methodToCall
+            | CallDispatch.Virtual receiver ->
+                if not methodToCall.DispatchesVirtually then
+                    failwith
+                        $"BUG: virtual dispatch requested for %O{methodToCall}, which does not dispatch virtually; build the dispatch with `dispatchOnReceiver`"
+
+                // The receiver the caller dispatches on must be the `this` it passes.
+                match
+                    activeMethodState.EvaluationStack
+                    |> EvalStack.PeekNthFromTop (MethodInfo.arity methodToCall)
+                with
+                | Some (EvalStackValue.ObjectRef this) when this = receiver -> ()
+                | this ->
+                    failwith
+                        $"BUG: virtual dispatch of %O{methodToCall} on receiver %O{receiver}, but `this`, %d{MethodInfo.arity methodToCall} slot(s) down the evaluation stack, is %O{this}"
 
                 let state, resolved =
                     tryResolveVirtualImplementation
@@ -1820,13 +1852,11 @@ module IlMachineStateExecution =
                         thread
                         methodGenerics
                         methodToCall
-                        callingObjTyHandle
+                        (ManagedHeap.getObjectConcreteType receiver state.ManagedHeap)
                         true
                         state
 
                 state, resolved |> Option.defaultValue methodToCall
-            else
-                state, methodToCall
 
         // Keyed on the call site, not on the target alone -- the target is perfectly legal to
         // enter. `sourcesPure/UnmanagedCallersOnlyFunctionPointer.cs` calls this very method
@@ -2067,7 +2097,7 @@ module IlMachineStateExecution =
                     baseClassTypes
                     None
                     (ConstructionState.Constructing allocatedAddr)
-                    false
+                    CallDispatch.Direct
                     false
                     advanceProgramCounterOfCaller
                     concretizedCtor.Generics
@@ -2201,7 +2231,7 @@ module IlMachineStateExecution =
                                 baseClassTypes
                                 None
                                 ConstructionState.NotConstructing
-                                false
+                                CallDispatch.Direct
                                 false
                                 advanceProgramCounterOfCaller
                                 helper.Generics
@@ -2521,7 +2551,7 @@ module IlMachineStateExecution =
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (wasInitialising : ConcreteTypeHandle option)
         (wasConstructing : ConstructionState)
-        (performInterfaceResolution : bool)
+        (dispatch : CallDispatch)
         (wasClassConstructor : bool)
         (advanceProgramCounterOfCaller : bool)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
@@ -2539,7 +2569,7 @@ module IlMachineStateExecution =
             baseClassTypes
             wasInitialising
             wasConstructing
-            performInterfaceResolution
+            dispatch
             wasClassConstructor
             advanceProgramCounterOfCaller
             // Every caller of this wrapper is interpreter-internal machinery entering a method the
@@ -2737,7 +2767,7 @@ module IlMachineStateExecution =
                     baseClassTypes
                     (Some ty)
                     ConstructionState.NotConstructing
-                    true
+                    CallDispatch.Direct
                     true
                     false
                     // constructor is surely not generic
@@ -2872,7 +2902,7 @@ module IlMachineStateExecution =
                 baseClassTypes
                 None
                 (ConstructionState.Constructing addr) // weAreConstructingObj
-                false // no interface resolution
+                CallDispatch.Direct
                 false // wasClassConstructor
                 false // do NOT advance caller PC — dispatch needs the faulting instruction's offset
                 concretizedCtor.Generics
