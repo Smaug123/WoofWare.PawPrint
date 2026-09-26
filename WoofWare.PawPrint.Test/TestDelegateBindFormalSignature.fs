@@ -271,6 +271,61 @@ public static class FormalSignatureSweep
             $"disagreed first on typeof(%s{guestType}).GetMethod(\"%s{methodName}\").CreateDelegate(typeof(%s{delegateSpelling})) with target %s{targetSpelling}, where real .NET's outcome is %s{outcome}"
 
     [<Test>]
+    let ``a binding refused by arity never loads the target's parameter types`` () : unit =
+        // CoreCLR compares the arities first, from the signature's argument count alone, and loads
+        // a parameter's type only when it comes to compare it. So a method of an open definition
+        // over a type from an assembly that is not deployed is refused by arity like any other.
+        {
+            Assemblies =
+                [
+                    CrossAssemblySpec.library "FormalMissing.Lib" [] [ "public class Missing<T> { }" ]
+                    CrossAssemblySpec.entryPoint
+                        "FormalMissing.Entry"
+                        [ "FormalMissing.Lib" ]
+                        [
+                            """
+using System;
+
+public class G<T>
+{
+    public static void TakesMissing(Missing<T> x) { }
+    public static void TakesMissingThenInt(Missing<T> x, int n) { }
+    public static void TakesIntThenMissing(int n, Missing<T> x) { }
+}
+
+public static class Program
+{
+    static int Refused(string name, Type delegateType)
+    {
+        try
+        {
+            typeof(G<>).GetMethod(name).CreateDelegate(delegateType);
+            return 1;
+        }
+        catch (ArgumentException e)
+        {
+            return e.GetType() == typeof(ArgumentException) ? 0 : 2;
+        }
+    }
+
+    public static int Main()
+    {
+        if (Refused("TakesMissing", typeof(Action<int, int>)) != 0) return 1;
+        if (Refused("TakesMissingThenInt", typeof(Action<int, int, int>)) != 0) return 2;
+        // The arities agree, but the first parameter is compared first, and is not a `string`.
+        if (Refused("TakesIntThenMissing", typeof(Action<string, int>)) != 0) return 3;
+        return 0;
+    }
+}
+"""
+                        ]
+                ]
+            EntryAssemblyName = "FormalMissing.Entry"
+            ExpectedReturnCode = 0
+        }
+        |> CrossAssemblyHarness.runTestWithout [ "FormalMissing.Lib" ]
+
+    [<Test>]
     let ``virtualising onto a default interface method is refused`` () : unit =
         // Real .NET binds the definition's own default body here, where dispatching through the
         // closed instantiation finds `IChild`'s override: see

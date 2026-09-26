@@ -141,6 +141,21 @@ module private BindTarget =
                 TargetFirstArgument.DeclaringType (RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition)
 
 /// <summary>
+/// The target's signature as <c>COMDelegate::IsMethodDescCompatible</c> reads it, against
+/// <c>pMethMT</c> (comdelegate.cpp:2576), before any of its types is loaded.
+/// </summary>
+[<RequireQualifiedAccess>]
+type private TargetSignature =
+    /// Read against a closed declaring type, or a dynamic method's, whose types are all resolved.
+    | Closed of TypeMethodSignature<ConcreteTypeHandle>
+    /// Read against an open generic definition's typical instantiation: each type is spelled in
+    /// `assembly`'s token space and names variables `environment` gives the meaning of.
+    | Formal of
+        signature : TypeMethodSignature<TypeDefn> *
+        assembly : DumpedAssembly *
+        environment : ReflectedTypeTarget.ReflectionTypeEnvironment
+
+/// <summary>
 /// The QCalls behind <c>Delegate.CreateDelegate</c>, <c>Delegate.Method</c> and
 /// <c>Delegate.Equals</c>. Three are implemented: <c>Delegate_BindToMethodInfo</c>, for a target
 /// minted by <c>Reflection.Emit</c> and for one with a MethodDef row; <c>Delegate_FindMethodHandle</c>,
@@ -383,7 +398,7 @@ module NativeDelegate =
     /// should add their arms back with the tests that exercise them.
     /// </para>
     /// </remarks>
-    let private isCompatible
+    let private isCompatible<'target>
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
@@ -393,7 +408,11 @@ module NativeDelegate =
         /// The runtime type of the object supplied as the bound first argument, if one was.
         (firstArgType : ConcreteTypeHandle option)
         (invokeSignature : TypeMethodSignature<ConcreteTypeHandle>)
-        (targetSignature : TypeMethodSignature<RuntimeTypeHandleTarget>)
+        /// Resolves one type of `targetSignature`, which may load an assembly: CoreCLR loads each
+        /// type of the target's signature only when it comes to compare it
+        /// (`MetaSig::GetLastTypeHandleThrowing`), so a binding refused before then never does.
+        (resolveTargetType : IlMachineState -> 'target -> IlMachineState * RuntimeTypeHandleTarget)
+        (targetSignature : TypeMethodSignature<'target>)
         (state : IlMachineState)
         : IlMachineState * DelegateBindingShape option
         =
@@ -479,9 +498,9 @@ module NativeDelegate =
             // (comdelegate.cpp:1156), not any declared type. On the target side it is the first
             // declared parameter for a static method and the declaring type for an instance one
             // (comdelegate.cpp:2681-2707).
-            let firstTargetArg =
+            let state, firstTargetArg =
                 match targetFirstArgument with
-                | TargetFirstArgument.FirstFixedParameter -> targetSignature.ParameterTypes.Head
+                | TargetFirstArgument.FirstFixedParameter -> resolveTargetType state targetSignature.ParameterTypes.Head
                 | TargetFirstArgument.DeclaringType declaringType ->
                     // "If the delegate is open and the target method is on a value type or
                     // primitive then the first argument of the invoke method must be a reference to
@@ -500,9 +519,9 @@ module NativeDelegate =
                         isOpen
                         && not (IlMachineRuntimeMetadata.isObjRefTarget baseClassTypes state declaringType)
                     then
-                        RuntimeTypeHandleTarget.composite CompositeShape.Byref declaringType
+                        state, RuntimeTypeHandleTarget.composite CompositeShape.Byref declaringType
                     else
-                        declaringType
+                        state, declaringType
 
             // "We always relax signature matching for the first argument of an instance method,
             // since it's always allowable to call the method on a more derived type"
@@ -599,6 +618,8 @@ module NativeDelegate =
                 if not soFar then
                     state, false
                 else
+                    let state, targetArg = resolveTargetType state targetArg
+
                     isLocationAssignable
                         loggerFactory
                         baseClassTypes
@@ -623,6 +644,8 @@ module NativeDelegate =
             | MethodReturnType.Void, MethodReturnType.Returns _
             | MethodReturnType.Returns _, MethodReturnType.Void -> state, false
             | MethodReturnType.Returns targetReturn, MethodReturnType.Returns invokeReturn ->
+                let state, targetReturn = resolveTargetType state targetReturn
+
                 isLocationAssignable
                     loggerFactory
                     baseClassTypes
@@ -916,21 +939,8 @@ module NativeDelegate =
                                     |> ReflectedTypeTarget.ReflectionVariableBinding.Bound
                             }
 
-                        let state, targetSignature =
-                            TypeMethodSignature.map
-                                state
-                                (fun state ty ->
-                                    ReflectedTypeTarget.reflectedTypeTarget
-                                        ctx.LoggerFactory
-                                        ctx.BaseClassTypes
-                                        operation
-                                        $"the signature of %s{methodInfo.Name}"
-                                        assembly
-                                        environment
-                                        state
-                                        ty
-                                )
-                                methodInfo.Signature
+                        let targetSignature =
+                            TargetSignature.Formal (methodInfo.Signature, assembly, environment)
 
                         state, targetSignature, BindTarget.OnGenericDefinition (methodInfo, definition)
                     | _ ->
@@ -966,13 +976,9 @@ module NativeDelegate =
                             (identity.GetMethodGenerics () |> ImmutableArray.CreateRange)
                             state
 
-                    let _, targetSignature =
-                        TypeMethodSignature.map
-                            ()
-                            (fun () ty -> (), RuntimeTypeHandleTarget.Closed ty)
-                            concretised.Signature
-
-                    state, targetSignature, BindTarget.Metadata (concretised, declaringType)
+                    state,
+                    TargetSignature.Closed concretised.Signature,
+                    BindTarget.Metadata (concretised, declaringType)
 
                 | MethodHandle.FromDynamic dynamicHandle ->
 
@@ -1022,10 +1028,7 @@ module NativeDelegate =
                         ImmutableArray.Empty
                         ImmutableArray.Empty
 
-                let _, targetSignature =
-                    TypeMethodSignature.map () (fun () ty -> (), RuntimeTypeHandleTarget.Closed ty) targetSignature
-
-                state, targetSignature, BindTarget.Dynamic dynamicHandle
+                state, TargetSignature.Closed targetSignature, BindTarget.Dynamic dynamicHandle
 
             let delegateType = ManagedHeap.getObjectConcreteType delegateAddr state.ManagedHeap
 
@@ -1039,17 +1042,41 @@ module NativeDelegate =
                 |> Option.map (fun addr -> ManagedHeap.getObjectConcreteType addr state.ManagedHeap)
 
             let state, shape =
-                isCompatible
-                    ctx.LoggerFactory
-                    ctx.BaseClassTypes
-                    operation
-                    (flags &&& DelegateBindingFlags.relaxedSignature <> 0)
-                    openDelegateOnly
-                    (BindTarget.firstArgument bindTarget)
-                    firstArgType
-                    invokeMethod.Signature
-                    targetSignature
-                    state
+                let relaxed = flags &&& DelegateBindingFlags.relaxedSignature <> 0
+
+                match targetSignature with
+                | TargetSignature.Closed signature ->
+                    isCompatible
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        operation
+                        relaxed
+                        openDelegateOnly
+                        (BindTarget.firstArgument bindTarget)
+                        firstArgType
+                        invokeMethod.Signature
+                        (fun state ty -> state, RuntimeTypeHandleTarget.Closed ty)
+                        signature
+                        state
+                | TargetSignature.Formal (signature, assembly, environment) ->
+                    isCompatible
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        operation
+                        relaxed
+                        openDelegateOnly
+                        (BindTarget.firstArgument bindTarget)
+                        firstArgType
+                        invokeMethod.Signature
+                        (ReflectedTypeTarget.reflectedTypeTarget
+                            ctx.LoggerFactory
+                            ctx.BaseClassTypes
+                            operation
+                            "the signature of a method of an open generic definition"
+                            assembly
+                            environment)
+                        signature
+                        state
 
             // `Ok` with the delegate bound, or with it untouched if the shapes are incompatible; or
             // `Error` naming the exception `BindToMethod` raises instead, and its message if CoreCLR
