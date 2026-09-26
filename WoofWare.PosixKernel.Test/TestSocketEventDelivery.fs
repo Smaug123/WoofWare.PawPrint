@@ -20,33 +20,24 @@ module TestSocketEventDelivery =
     let private inetFamily : int option =
         Some SimulatedUnixPlatform.internetAddressFamily
 
-    /// Every condition a registration can ask for. Hangup and error are not
-    /// among them: epoll reports those unasked, which is why an interest record
-    /// has three fields and not five.
-    let private allInterest : SocketEventInterest =
-        {
-            SocketEventInterest.In = true
-            Out = true
-            RdHup = true
-        }
+    /// The events a registration through the shim asks for when it wants every
+    /// condition the shim names: `EPOLLIN|EPOLLOUT|EPOLLRDHUP`, with the
+    /// `EPOLLERR|EPOLLHUP` the kernel adds anyway, edge-triggered.
+    let private allInterest : uint32 =
+        EpollEvents.In
+        ||| EpollEvents.Out
+        ||| EpollEvents.RdHup
+        ||| EpollEvents.Err
+        ||| EpollEvents.Hup
+        ||| EpollEvents.EdgeTriggered
 
     /// Writability alone.
-    let private writeInterest : SocketEventInterest =
-        {
-            SocketEventInterest.In = false
-            Out = true
-            RdHup = false
-        }
+    let private writeInterest : uint32 = EpollEvents.Out ||| EpollEvents.EdgeTriggered
 
-    /// A registration that asks for nothing at all, which is a reachable state
-    /// rather than a degenerate one: a caller asking only for the conditions
-    /// epoll reports unasked has asked for nothing this record can hold.
-    let private emptyInterest : SocketEventInterest =
-        {
-            SocketEventInterest.In = false
-            Out = false
-            RdHup = false
-        }
+    /// A registration that asks for no condition at all, which is a reachable
+    /// state rather than a degenerate one: it still reports the `EPOLLERR` and
+    /// `EPOLLHUP` the kernel stores for every registration.
+    let private emptyInterest : uint32 = EpollEvents.EdgeTriggered
 
     let private initialSystem : UnixSystem<int, string> =
         UnixSystem.initial SimulatedUnixPlatform.linuxX64
@@ -79,7 +70,7 @@ module TestSocketEventDelivery =
         (portId : OpenFileDescriptionId)
         (maxCount : int)
         (kernel : UnixSystem<int, string>)
-        : (uint64 * ReadinessLevel) list * UnixSystem<int, string>
+        : (uint64 * uint32) list * UnixSystem<int, string>
         =
         let predicted = SocketEventPort.hasDeliverableEvent portId kernel
         let delivered, system = SocketEventPort.drain portId maxCount kernel
@@ -168,16 +159,10 @@ module TestSocketEventDelivery =
         (kernel : UnixSystem<int, string>)
         : UnixSystem<int, string>
         =
-        match
-            UnixPoll.changeSocketEventRegistration
-                portFd
-                targetFd
-                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, allInterest, data))
-                kernel
-        with
-        | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
-        | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> failwith $"registration failed: %O{reason}"
-        | Error refusal -> failwith $"registration failed: %s{SocketEventRegistrationRefusal.describe refusal}"
+        match UnixPoll.epollCtl portFd 1 targetFd (EpollEventArgument.Readable (allInterest, data)) kernel with
+        | Ok (EpollCtlAnswer.Changed, kernel) -> kernel
+        | Ok (EpollCtlAnswer.Failed reason, _) -> failwith $"registration failed: %O{reason}"
+        | Error refusal -> failwith $"registration failed: %s{EpollCtlRefusal.describe refusal}"
 
     let private connect
         (client : SocketId)
@@ -192,7 +177,7 @@ module TestSocketEventDelivery =
 
     /// The delivered rows' `Data` fields, so a test can assert order without
     /// restating every mask.
-    let private dataOf (rows : (uint64 * ReadinessLevel) list) : uint64 list = rows |> List.map fst
+    let private dataOf (rows : (uint64 * uint32) list) : uint64 list = rows |> List.map fst
 
     let private readyOf
         (portId : OpenFileDescriptionId)
@@ -247,14 +232,7 @@ module TestSocketEventDelivery =
 
         let delivered, kernel = deliverSocketEvents portId 8 kernel
 
-        delivered
-        |> shouldEqual
-            [
-                7UL,
-                { ReadinessLevel.none with
-                    In = true
-                }
-            ]
+        delivered |> shouldEqual [ 7UL, (EpollEvents.In) ]
 
         // B: the level is still high (queue nonempty), and nothing reports.
         let delivered, kernel = deliverSocketEvents portId 8 kernel
@@ -461,16 +439,10 @@ module TestSocketEventDelivery =
         dataOf delivered |> shouldEqual [ 7UL ]
 
         let kernel =
-            match
-                UnixPoll.changeSocketEventRegistration
-                    portFd
-                    listenerFd
-                    (SocketEventRegistrationChange.Modify (SocketEventTrigger.EdgeTriggered, allInterest, 7UL))
-                    kernel
-            with
-            | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
-            | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> failwith $"modify failed: %O{reason}"
-            | Error refusal -> failwith $"modify failed: %s{SocketEventRegistrationRefusal.describe refusal}"
+            match UnixPoll.epollCtl portFd 3 listenerFd (EpollEventArgument.Readable (allInterest, 7UL)) kernel with
+            | Ok (EpollCtlAnswer.Changed, kernel) -> kernel
+            | Ok (EpollCtlAnswer.Failed reason, _) -> failwith $"modify failed: %O{reason}"
+            | Error refusal -> failwith $"modify failed: %s{EpollCtlRefusal.describe refusal}"
 
         let delivered, kernel = deliverSocketEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 7UL ]
@@ -490,16 +462,10 @@ module TestSocketEventDelivery =
         let _, kernel = connect c2 false (loopback 5001us) kernel
 
         let kernel =
-            match
-                UnixPoll.changeSocketEventRegistration
-                    portFd
-                    l2Fd
-                    (SocketEventRegistrationChange.Modify (SocketEventTrigger.EdgeTriggered, allInterest, 2UL))
-                    kernel
-            with
-            | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
-            | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> failwith $"modify failed: %O{reason}"
-            | Error refusal -> failwith $"modify failed: %s{SocketEventRegistrationRefusal.describe refusal}"
+            match UnixPoll.epollCtl portFd 3 l2Fd (EpollEventArgument.Readable (allInterest, 2UL)) kernel with
+            | Ok (EpollCtlAnswer.Changed, kernel) -> kernel
+            | Ok (EpollCtlAnswer.Failed reason, _) -> failwith $"modify failed: %O{reason}"
+            | Error refusal -> failwith $"modify failed: %s{EpollCtlRefusal.describe refusal}"
 
         let delivered, kernel = deliverSocketEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 2UL ; 1UL ]
@@ -519,15 +485,7 @@ module TestSocketEventDelivery =
         // Consume the idle OUT|HUP edge the ADD-of-ready queued.
         let delivered, kernel = deliverSocketEvents portId 8 kernel
 
-        delivered
-        |> shouldEqual
-            [
-                5UL,
-                { ReadinessLevel.none with
-                    Out = true
-                    Hup = true
-                }
-            ]
+        delivered |> shouldEqual [ 5UL, (EpollEvents.Out ||| EpollEvents.Hup) ]
 
         // Nothing listens at 5999: the refusal latches and signals.
         let outcome, kernel = connect clientId true (loopback 5999us) kernel
@@ -540,13 +498,11 @@ module TestSocketEventDelivery =
         |> shouldEqual
             [
                 5UL,
-                {
-                    In = true
-                    Out = true
-                    RdHup = true
-                    Hup = true
-                    Err = true
-                }
+                (EpollEvents.In
+                 ||| EpollEvents.Out
+                 ||| EpollEvents.RdHup
+                 ||| EpollEvents.Hup
+                 ||| EpollEvents.Err)
             ]
 
         let delivered, kernel = deliverSocketEvents portId 8 kernel
@@ -559,15 +515,7 @@ module TestSocketEventDelivery =
 
         let delivered, kernel = deliverSocketEvents portId 8 kernel
 
-        delivered
-        |> shouldEqual
-            [
-                5UL,
-                { ReadinessLevel.none with
-                    Out = true
-                    Hup = true
-                }
-            ]
+        delivered |> shouldEqual [ 5UL, (EpollEvents.Out ||| EpollEvents.Hup) ]
 
         assertSound kernel
 
@@ -585,12 +533,10 @@ module TestSocketEventDelivery =
         readyOf portId kernel |> List.length |> shouldEqual 1
 
         let kernel =
-            match
-                UnixPoll.changeSocketEventRegistration portFd listenerFd SocketEventRegistrationChange.Remove kernel
-            with
-            | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
-            | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> failwith $"remove failed: %O{reason}"
-            | Error refusal -> failwith $"remove failed: %s{SocketEventRegistrationRefusal.describe refusal}"
+            match UnixPoll.epollCtl portFd 2 listenerFd EpollEventArgument.Unreadable kernel with
+            | Ok (EpollCtlAnswer.Changed, kernel) -> kernel
+            | Ok (EpollCtlAnswer.Failed reason, _) -> failwith $"remove failed: %O{reason}"
+            | Error refusal -> failwith $"remove failed: %s{EpollCtlRefusal.describe refusal}"
 
         readyOf portId kernel |> shouldEqual []
         hasDeliverableSocketEvents portId kernel |> shouldEqual false
@@ -636,17 +582,10 @@ module TestSocketEventDelivery =
         let kernel = register portFd listenerFd 7UL kernel
         let before = kernel.Machine.NextSocketEventRegistrationOrdinal
 
-        match
-            UnixPoll.changeSocketEventRegistration
-                portFd
-                listenerFd
-                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, allInterest, 8UL))
-                kernel
-        with
-        | Ok (SocketEventRegistrationAnswer.Changed, _) -> failwith "expected EEXIST"
-        | Ok (SocketEventRegistrationAnswer.Failed reason, _) ->
-            reason |> shouldEqual SocketEventRegistrationError.AlreadyRegistered
-        | Error refusal -> failwith (SocketEventRegistrationRefusal.describe refusal)
+        match UnixPoll.epollCtl portFd 1 listenerFd (EpollEventArgument.Readable (allInterest, 8UL)) kernel with
+        | Ok (EpollCtlAnswer.Changed, _) -> failwith "expected EEXIST"
+        | Ok (EpollCtlAnswer.Failed reason, _) -> reason |> shouldEqual EpollCtlError.AlreadyRegistered
+        | Error refusal -> failwith (EpollCtlRefusal.describe refusal)
 
         before |> shouldEqual kernel.Machine.NextSocketEventRegistrationOrdinal
 
@@ -667,14 +606,7 @@ module TestSocketEventDelivery =
         // Consume the ADD-of-ready edge (established, live peer: OUT).
         let delivered, kernel = deliverSocketEvents portId 8 kernel
 
-        delivered
-        |> shouldEqual
-            [
-                5UL,
-                { ReadinessLevel.none with
-                    Out = true
-                }
-            ]
+        delivered |> shouldEqual [ 5UL, (EpollEvents.Out) ]
 
         let kernel =
             match closeFd serverFd kernel with
@@ -684,15 +616,7 @@ module TestSocketEventDelivery =
         let delivered, kernel = deliverSocketEvents portId 8 kernel
 
         delivered
-        |> shouldEqual
-            [
-                5UL,
-                { ReadinessLevel.none with
-                    In = true
-                    Out = true
-                    RdHup = true
-                }
-            ]
+        |> shouldEqual [ 5UL, (EpollEvents.In ||| EpollEvents.Out ||| EpollEvents.RdHup) ]
 
         assertSound kernel
 
@@ -717,16 +641,10 @@ module TestSocketEventDelivery =
         let serverFd, _, kernel = UnixConnection.acceptConnection listenerId kernel
 
         let kernel =
-            match
-                UnixPoll.changeSocketEventRegistration
-                    portFd
-                    clientFd
-                    (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, emptyInterest, 5UL))
-                    kernel
-            with
-            | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
-            | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> failwith $"registration failed: %O{reason}"
-            | Error refusal -> failwith $"registration failed: %s{SocketEventRegistrationRefusal.describe refusal}"
+            match UnixPoll.epollCtl portFd 1 clientFd (EpollEventArgument.Readable (emptyInterest, 5UL)) kernel with
+            | Ok (EpollCtlAnswer.Changed, kernel) -> kernel
+            | Ok (EpollCtlAnswer.Failed reason, _) -> failwith $"registration failed: %O{reason}"
+            | Error refusal -> failwith $"registration failed: %s{EpollCtlRefusal.describe refusal}"
 
         readyOf portId kernel |> shouldEqual []
 
@@ -749,16 +667,10 @@ module TestSocketEventDelivery =
         let _, kernel = connect c2 false (loopback 5001us) kernel
 
         let kernel =
-            match
-                UnixPoll.changeSocketEventRegistration
-                    portFd
-                    clientFd
-                    (SocketEventRegistrationChange.Modify (SocketEventTrigger.EdgeTriggered, allInterest, 5UL))
-                    kernel
-            with
-            | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
-            | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> failwith $"modify failed: %O{reason}"
-            | Error refusal -> failwith $"modify failed: %s{SocketEventRegistrationRefusal.describe refusal}"
+            match UnixPoll.epollCtl portFd 3 clientFd (EpollEventArgument.Readable (allInterest, 5UL)) kernel with
+            | Ok (EpollCtlAnswer.Changed, kernel) -> kernel
+            | Ok (EpollCtlAnswer.Failed reason, _) -> failwith $"modify failed: %O{reason}"
+            | Error refusal -> failwith $"modify failed: %s{EpollCtlRefusal.describe refusal}"
 
         let delivered, kernel = deliverSocketEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 5UL ; 9UL ]
@@ -785,15 +697,7 @@ module TestSocketEventDelivery =
         let delivered, kernel = deliverSocketEvents portId 8 kernel
 
         delivered
-        |> shouldEqual
-            [
-                5UL,
-                { ReadinessLevel.none with
-                    In = true
-                    Out = true
-                    RdHup = true
-                }
-            ]
+        |> shouldEqual [ 5UL, (EpollEvents.In ||| EpollEvents.Out ||| EpollEvents.RdHup) ]
 
         assertSound kernel
 
@@ -855,14 +759,7 @@ module TestSocketEventDelivery =
 
         let delivered, kernel = deliverSocketEvents portId 8 kernel
 
-        delivered
-        |> shouldEqual
-            [
-                6UL,
-                { ReadinessLevel.none with
-                    Out = true
-                }
-            ]
+        delivered |> shouldEqual [ 6UL, (EpollEvents.Out) ]
 
         assertSound kernel
 
@@ -883,15 +780,7 @@ module TestSocketEventDelivery =
 
         let delivered, kernel = deliverSocketEvents portId 8 kernel
 
-        delivered
-        |> shouldEqual
-            [
-                6UL,
-                { ReadinessLevel.none with
-                    Out = true
-                    Hup = true
-                }
-            ]
+        delivered |> shouldEqual [ 6UL, (EpollEvents.Out ||| EpollEvents.Hup) ]
 
         assertSound kernel
 
@@ -910,16 +799,10 @@ module TestSocketEventDelivery =
         // l1 watches WRITE alone: a queued connection raises only IN, and a
         // listener reports no ERR or HUP.
         let kernel =
-            match
-                UnixPoll.changeSocketEventRegistration
-                    portFd
-                    l1Fd
-                    (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, writeInterest, 1UL))
-                    kernel
-            with
-            | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
-            | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> failwith $"registration failed: %O{reason}"
-            | Error refusal -> failwith $"registration failed: %s{SocketEventRegistrationRefusal.describe refusal}"
+            match UnixPoll.epollCtl portFd 1 l1Fd (EpollEventArgument.Readable (writeInterest, 1UL)) kernel with
+            | Ok (EpollCtlAnswer.Changed, kernel) -> kernel
+            | Ok (EpollCtlAnswer.Failed reason, _) -> failwith $"registration failed: %O{reason}"
+            | Error refusal -> failwith $"registration failed: %s{EpollCtlRefusal.describe refusal}"
 
         let kernel = register portFd l2Fd 2UL kernel
 
@@ -930,20 +813,59 @@ module TestSocketEventDelivery =
         let _, kernel = connect c2 false (loopback 5002us) kernel
 
         let kernel =
-            match
-                UnixPoll.changeSocketEventRegistration
-                    portFd
-                    l1Fd
-                    (SocketEventRegistrationChange.Modify (SocketEventTrigger.EdgeTriggered, allInterest, 1UL))
-                    kernel
-            with
-            | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
-            | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> failwith $"modify failed: %O{reason}"
-            | Error refusal -> failwith $"modify failed: %s{SocketEventRegistrationRefusal.describe refusal}"
+            match UnixPoll.epollCtl portFd 3 l1Fd (EpollEventArgument.Readable (allInterest, 1UL)) kernel with
+            | Ok (EpollCtlAnswer.Changed, kernel) -> kernel
+            | Ok (EpollCtlAnswer.Failed reason, _) -> failwith $"modify failed: %O{reason}"
+            | Error refusal -> failwith $"modify failed: %s{EpollCtlRefusal.describe refusal}"
 
         let delivered, kernel = deliverSocketEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 2UL ; 1UL ]
         assertSound kernel
+
+    /// A listener's data-ready wake is keyed with what `sock_def_readable`
+    /// passes, `IN|PRI|RDNORM|RDBAND`, not with the level it leaves: a
+    /// registration asking for `PRI` or `RDBAND` alone is queued although a
+    /// listener never reports either, and keeps the wake's place through a
+    /// later MOD. Measured for every bit below the modes by `epoll-ctl.c`'s
+    /// WAKE section: A registered with the bit, B with `IN`; connect to A,
+    /// connect to B, MOD A to `IN`, wait. A came first for exactly these four
+    /// bits.
+    [<Test>]
+    let ``a data-ready wake queues exactly the registrations its key meets`` () : unit =
+        let keyed =
+            Set.ofList [ EpollEvents.In ; EpollEvents.Pri ; EpollEvents.RdNorm ; EpollEvents.RdBand ]
+
+        for bit in 0..27 do
+            let mask = 1u <<< bit
+            let portFd, portId, kernel = addPort initialSystem
+            let aFd, _, kernel = addListener 5001us kernel
+            let bFd, _, kernel = addListener 5002us kernel
+            let _, c1, kernel = addStream kernel
+            let _, c2, kernel = addStream kernel
+
+            let ctl (op : int) (fd : int) (events : uint32) (data : uint64) kernel =
+                match UnixPoll.epollCtl portFd op fd (EpollEventArgument.Readable (events, data)) kernel with
+                | Ok (EpollCtlAnswer.Changed, kernel) -> kernel
+                | other -> failwith $"bit %d{bit}: epoll_ctl answered %A{other}"
+
+            let kernel = ctl 1 aFd (mask ||| EpollEvents.EdgeTriggered) 1UL kernel
+            let kernel = ctl 1 bFd (EpollEvents.In ||| EpollEvents.EdgeTriggered) 2UL kernel
+            let _, kernel = deliverSocketEvents portId 8 kernel
+            let _, kernel = connect c1 false (loopback 5001us) kernel
+            let _, kernel = connect c2 false (loopback 5002us) kernel
+            let kernel = ctl 3 aFd (EpollEvents.In ||| EpollEvents.EdgeTriggered) 1UL kernel
+            let delivered, kernel = deliverSocketEvents portId 8 kernel
+
+            let expected =
+                if Set.contains mask keyed then
+                    [ 1UL ; 2UL ]
+                else
+                    [ 2UL ; 1UL ]
+
+            if dataOf delivered <> expected then
+                failwith $"bit %d{bit} (0x%08x{mask}): expected %A{expected}, delivered %A{dataOf delivered}"
+
+            assertSound kernel
 
     /// The walk re-applies the interest at delivery: an entry queued under a
     /// wide interest and then narrowed while pending keeps its place (row L)
@@ -958,16 +880,10 @@ module TestSocketEventDelivery =
         readyOf portId kernel |> List.length |> shouldEqual 1
 
         let kernel =
-            match
-                UnixPoll.changeSocketEventRegistration
-                    portFd
-                    listenerFd
-                    (SocketEventRegistrationChange.Modify (SocketEventTrigger.EdgeTriggered, writeInterest, 6UL))
-                    kernel
-            with
-            | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
-            | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> failwith $"modify failed: %O{reason}"
-            | Error refusal -> failwith $"modify failed: %s{SocketEventRegistrationRefusal.describe refusal}"
+            match UnixPoll.epollCtl portFd 3 listenerFd (EpollEventArgument.Readable (writeInterest, 6UL)) kernel with
+            | Ok (EpollCtlAnswer.Changed, kernel) -> kernel
+            | Ok (EpollCtlAnswer.Failed reason, _) -> failwith $"modify failed: %O{reason}"
+            | Error refusal -> failwith $"modify failed: %s{EpollCtlRefusal.describe refusal}"
 
         readyOf portId kernel |> List.length |> shouldEqual 1
         hasDeliverableSocketEvents portId kernel |> shouldEqual false
@@ -1002,16 +918,10 @@ module TestSocketEventDelivery =
         // Consume the two entries the not-ready listener never queued —
         // nothing pends yet, so nothing to consume; MOD the older entry.
         let kernel =
-            match
-                UnixPoll.changeSocketEventRegistration
-                    portFd
-                    listenerFd
-                    (SocketEventRegistrationChange.Modify (SocketEventTrigger.EdgeTriggered, allInterest, 1UL))
-                    kernel
-            with
-            | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
-            | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> failwith $"modify failed: %O{reason}"
-            | Error refusal -> failwith $"modify failed: %s{SocketEventRegistrationRefusal.describe refusal}"
+            match UnixPoll.epollCtl portFd 3 listenerFd (EpollEventArgument.Readable (allInterest, 1UL)) kernel with
+            | Ok (EpollCtlAnswer.Changed, kernel) -> kernel
+            | Ok (EpollCtlAnswer.Failed reason, _) -> failwith $"modify failed: %O{reason}"
+            | Error refusal -> failwith $"modify failed: %s{EpollCtlRefusal.describe refusal}"
 
         let _, kernel = connect c1 false (loopback 5000us) kernel
 

@@ -199,11 +199,13 @@ module UnixConnection =
         }
 
     /// A *data-ready* wake on `socketId` — the accept-queue push is the one
-    /// modelled producer. Keyed: the producer signals synchronously with the
-    /// state change, so the socket's new level is the signalled mask, and a
-    /// registration whose interest misses it entirely is never queued
-    /// (measured, `order6.c`). Lazy so the level is computed only when a
-    /// registration actually targets the socket.
+    /// modelled producer. Keyed with what `sock_def_readable` passes its
+    /// waiters, `EPOLLIN|EPOLLPRI|EPOLLRDNORM|EPOLLRDBAND`, so a registration
+    /// whose stored mask misses all four is never queued (measured,
+    /// `order6.c`), and one asking only for `EPOLLPRI` or `EPOLLRDBAND` is
+    /// queued although a listener never reports either (measured, the WAKE
+    /// section of `epoll-ctl.c`: such an entry keeps the wake's place in the
+    /// ready list through a later MOD).
     ///
     /// The producers are a measured set, not "anything that writes the
     /// socket table": a datagram re-target or dissolve, `bind(2)`, and the
@@ -220,7 +222,7 @@ module UnixConnection =
                     FileDescriptors =
                         FileDescriptorRegistry.signalSocketEventPorts
                             (UnixProcessState.descriptionsNamingSocket socketId system.Process)
-                            (Some (lazy (UnixMachineState.socketReadinessLevel socketId system.Machine)))
+                            (Some (EpollEvents.In ||| EpollEvents.Pri ||| EpollEvents.RdNorm ||| EpollEvents.RdBand))
                             system.Process.FileDescriptors
                 }
         }
