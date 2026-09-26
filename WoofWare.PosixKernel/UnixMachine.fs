@@ -60,7 +60,7 @@ type UnixMachineState =
         /// address inside and Darwin ignores. See
         /// `UnixSystem.defaultLocalRoutes`.
         LocalRoutes : Ipv4Prefix list
-        /// The identity the next `UnixSocket.createSocket` will allocate.
+        /// The identity the next `UnixSocket.socket` will allocate.
         ///
         /// Monotonic, and never reused: no syscall reports a
         /// `SocketId`, but a replay trace does, and reuse would make two
@@ -407,10 +407,9 @@ module UnixMachineState =
                 { ReadinessLevel.none with
                     Out = true
                 }
-            | SocketKind.Raw
             | SocketKind.SeqPacket ->
                 failwith
-                    $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is %O{target.Kind}, whose readiness is measured for poll but not for epoll. Both kinds are reachable only in the AF_UNIX domain, and two callers arrive here: an epoll ADD through `UnixPoll.epollCtl` (the registration screen rejects only regular files and directories, so a socket of any kind is admitted) and `UnixPoll.poll` (which needs no registration at all). On Linux `poll(2)` reports OUT|WRNORM|WRBAND for a fresh SOCK_RAW and OUT|HUP|WRNORM|WRBAND for a fresh SOCK_SEQPACKET (docs/plans/2026-08-23-socket-poll/pollgaps.c, and docs/plans/2026-08-23-posix-kernel-extraction/poll-alphabet.c for the WRNORM and WRBAND bits). Those two rows are the whole answer only while `listen`, `connect` and `accept` keep refusing these kinds (their `UnmeasuredKind` refusals), which is what confines such a socket to `Idle` — the real kernel does accept connections on SOCK_SEQPACKET, so measuring those operations reopens every other phase for it. They are still refused because what `epoll_wait` reports is only *inferred* from the two waiters sharing one poll handler, and every other row in this function is measured through both. Take an epoll measurement (an et.c-style probe on an AF_UNIX raw and seqpacket socket) before answering, since answering here makes epoll delivery answer too."
+                    $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is %O{target.Kind}, whose readiness is measured for poll but not for epoll. The kind is reachable only in the AF_UNIX domain, and two callers arrive here: an epoll ADD through `UnixPoll.changeSocketEventRegistration` (the registration screen rejects only regular files, so a socket of any kind is admitted) and `UnixPoll.poll` (which needs no registration at all). On Linux `poll(2)` reports OUT|HUP|WRNORM|WRBAND for a fresh SOCK_SEQPACKET (docs/plans/2026-08-23-socket-poll/pollgaps.c, and docs/plans/2026-08-23-posix-kernel-extraction/poll-alphabet.c for the WRNORM and WRBAND bits). That row is the whole answer only while `listen`, `connect` and `accept` keep refusing the kind (their `UnmeasuredKind` refusals), which is what confines such a socket to `Idle` — the real kernel does accept connections on SOCK_SEQPACKET, so measuring those operations reopens every other phase for it. It is still refused because what `epoll_wait` reports is only *inferred* from the two waiters sharing one poll handler, and every other row in this function is measured through both. Take an epoll measurement (an et.c-style probe on an AF_UNIX seqpacket socket) before answering, since answering here makes epoll delivery answer too."
         | SocketPhase.EstablishedPendingReport connectionId
         | SocketPhase.Established connectionId ->
             // With the peer alive and no receive path modelled, both ends

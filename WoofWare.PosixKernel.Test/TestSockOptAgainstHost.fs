@@ -168,8 +168,7 @@ module TestSockOptAgainstHost =
                 failwith $"socket failed with errno %d{Marshal.GetLastPInvokeError ()}"
 
             try
-                let modelFd, system =
-                    UnixSocket.createSocket SocketDomain.InterNetwork modelKind protocol system
+                let modelFd, system = NewSocket.create SocketDomain.Inet modelKind protocol system
 
                 action fd modelFd system
             finally

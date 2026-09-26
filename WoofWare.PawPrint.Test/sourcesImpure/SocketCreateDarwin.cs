@@ -16,6 +16,10 @@ using System.Runtime.InteropServices;
 // model, so the Linux sibling cannot assert anything about them at all.
 // Configured as macOS for the same reason `SocketEventPortDarwin.cs` is.
 //
+// Then two rows Darwin's kernel answers differently from Linux's once every
+// screen has passed, with the raw errno `socket(2)` leaves behind (measured on
+// Darwin 25.6.0 and 27.0.0; see socketSyscall/darwin.tsv).
+//
 // The exit code is the index of the first check that failed; 0 means all passed.
 // Kept below 128, since an exit code is eight bits.
 class Program
@@ -31,7 +35,10 @@ class Program
 
     const int PAL_SUCCESS = 0;
     const int PAL_EAFNOSUPPORT = 0x10005;
+    const int PAL_EPROTONOSUPPORT = 0x10045;
+    const int PAL_EPROTOTYPE = 0x10046;
 
+    const int AF_UNIX = 1;
     const int AF_INET = 2;
     const int AF_PACKET = 65536;
     const int AF_CAN = 65537;
@@ -39,13 +46,27 @@ class Program
     const int SOCK_STREAM = 1;
     const int SOCK_DGRAM = 2;
     const int SOCK_RAW = 3;
+    const int SOCK_SEQPACKET = 5;
 
     const int PT_UNSPECIFIED = 0;
     const int PT_TCP = 6;
+    const int PT_UDP = 17;
     const int PT_RAW = 255;
 
     // Darwin numbering, which is what PawPrint reports under this flavour.
     const int ESPIPE = 29;
+    const int EPROTOTYPE = 41;
+    const int EPROTONOSUPPORT = 43;
+
+    /// Returns true if the kernel refused the triple with exactly `expected`,
+    /// leaving the out-parameter -1 and errno `expectedErrno`.
+    static unsafe bool KernelRefuses(int addressFamily, int socketType, int protocolType, int expected, int expectedErrno)
+    {
+        IntPtr created = (IntPtr)0x5EED;
+        Marshal.SetLastSystemError(0);
+        int result = Socket(addressFamily, socketType, protocolType, &created);
+        return result == expected && created == (IntPtr)(-1) && Marshal.GetLastSystemError() == expectedErrno;
+    }
 
     static unsafe bool Refuses(int addressFamily, int socketType, int protocolType)
     {
@@ -88,6 +109,15 @@ class Program
 
         if (Close(sock) != 0)
             return 7;
+
+        // UDP is a protocol Darwin's AF_INET has, under another type; Linux
+        // answers EPROTONOSUPPORT.
+        if (!KernelRefuses(AF_INET, SOCK_STREAM, PT_UDP, PAL_EPROTOTYPE, EPROTOTYPE))
+            return 8;
+
+        // A Unix-domain seqpacket socket, which Linux creates.
+        if (!KernelRefuses(AF_UNIX, SOCK_SEQPACKET, PT_UNSPECIFIED, PAL_EPROTONOSUPPORT, EPROTONOSUPPORT))
+            return 9;
 
         return 0;
     }

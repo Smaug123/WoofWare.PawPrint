@@ -38,10 +38,9 @@ type AcceptRefusal =
     /// itself would succeed.
     | UnmodelledDomain of socket : SocketId * domain : SocketDomain
     /// The descriptor is a socket of a kind whose `accept(2)` answer is
-    /// unmeasured. `SOCK_SEQPACKET` does accept connections and `SOCK_RAW`
-    /// plausibly answers EOPNOTSUPP, but neither has been measured, and the
-    /// difference between them is the difference between an answer and a state
-    /// change.
+    /// unmeasured. `SOCK_SEQPACKET` does accept connections, so answering
+    /// rather than measuring would be the difference between an answer and a
+    /// state change.
     | UnmeasuredKind of socket : SocketId * kind : SocketKind
     /// `listener` is a *blocking* listening socket with an empty accept queue,
     /// which a real kernel sleeps in until a connection arrives.
@@ -96,7 +95,7 @@ module AcceptRefusal =
 type ConnectRefusal =
     /// The sockaddr copy could not be admitted.
     | Copy of SockaddrCopyRefusal
-    /// A raw or seqpacket socket, whose `connect(2)` is unmeasured.
+    /// A seqpacket socket, whose `connect(2)` is unmeasured.
     | UnmeasuredKind of socket : SocketId * kind : SocketKind
     /// The socket has no concrete source address and the destination is not
     /// loopback, and which source a kernel resolves for it is unmeasured.
@@ -155,7 +154,6 @@ module ConnectRefusal =
                 match kind with
                 | SocketKind.Stream -> "a SYN"
                 | SocketKind.Datagram -> "a datagram"
-                | SocketKind.Raw
                 | SocketKind.SeqPacket -> "a packet"
 
             $"destination %s{InternetEndpoint.toString destination} is not a local address of this simulated machine, and this library models no network to carry %s{carried} anywhere else. Add the address to the kernel's LocalAddresses/LocalRoutes if it should be local, or connect to loopback."
@@ -711,7 +709,6 @@ module UnixConnection =
                     failed UnixError.EINPROGRESS system
 
         match sock.Kind with
-        | SocketKind.Raw
         | SocketKind.SeqPacket -> Error (ConnectRefusal.UnmeasuredKind (socketId, sock.Kind))
         | SocketKind.Stream ->
             // The copy layer answers before any socket state on both
@@ -1246,9 +1243,9 @@ module UnixConnection =
         let socket = UnixMachineState.socket socketId system.Machine
 
         match socket.Domain with
-        | SocketDomain.InterNetworkV6
+        | SocketDomain.Inet6
         | SocketDomain.Unix -> Error (AcceptRefusal.UnmodelledDomain (socketId, socket.Domain))
-        | SocketDomain.InterNetwork ->
+        | SocketDomain.Inet ->
 
         match socket.Kind with
         | SocketKind.Datagram ->
@@ -1256,7 +1253,6 @@ module UnixConnection =
             // datagram socket -- which is also "not listening" -- answers
             // EOPNOTSUPP, blocking or not.
             Ok (AcceptAnswer.Failed UnixError.EOPNOTSUPP, system)
-        | SocketKind.Raw
         | SocketKind.SeqPacket -> Error (AcceptRefusal.UnmeasuredKind (socketId, socket.Kind))
         | SocketKind.Stream ->
 

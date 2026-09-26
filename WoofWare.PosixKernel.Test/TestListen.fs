@@ -38,7 +38,7 @@ module TestListen =
         : SocketDescription
         =
         {
-            Domain = SocketDomain.InterNetwork
+            Domain = SocketDomain.Inet
             Kind = kind
             Protocol =
                 if kind = SocketKind.Stream then
@@ -331,7 +331,7 @@ module TestListen =
 
     [<TestCaseSource(nameof platforms)>]
     let ``a socket in an unmodelled domain is refused`` (platform : SimulatedUnixPlatform) : unit =
-        for domain in [ SocketDomain.InterNetworkV6 ; SocketDomain.Unix ] do
+        for domain in [ SocketDomain.Inet6 ; SocketDomain.Unix ] do
             let socket =
                 { socketWith SocketKind.Stream None false SocketPhase.Idle with
                     Domain = domain
@@ -344,7 +344,7 @@ module TestListen =
 
     [<TestCaseSource(nameof platforms)>]
     let ``a socket of an unmeasured kind is refused`` (platform : SimulatedUnixPlatform) : unit =
-        for kind in [ SocketKind.Raw ; SocketKind.SeqPacket ] do
+        for kind in [ SocketKind.SeqPacket ] do
             let fd, system =
                 withSocket (SocketId 0L) (socketWith kind None false SocketPhase.Idle) (systemOn platform)
 

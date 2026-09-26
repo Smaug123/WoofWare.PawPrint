@@ -100,7 +100,7 @@ module TestPosixFadvise =
         }
 
     let private socket (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp system
+        NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
     /// Linux's `POSIX_FADV_*` numbers for the advice values the rows use.
     [<RequireQualifiedAccess>]

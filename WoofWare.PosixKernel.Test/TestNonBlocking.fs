@@ -5,8 +5,8 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// `UnixSocket.setNonBlocking`, `UnixSocket.isNonBlocking` and
-/// `UnixSocket.createSocket`.
+/// `UnixSocket.setNonBlocking`, `UnixSocket.isNonBlocking`, and what
+/// `UnixSocket.socket` creates.
 ///
 /// The flag's whole subtlety is *where it lives* and *which targets may carry
 /// it*: it is a property of the open file description rather than of the
@@ -56,7 +56,7 @@ module TestNonBlocking =
         | SetNonBlockingAnswer.Failed error, _ -> failwith $"expected the flag to be set, got %O{error}"
 
     // ------------------------------------------------------------------
-    // createSocket
+    // socket
     // ------------------------------------------------------------------
 
     /// The socket and its descriptor are minted together, and the identity the
@@ -66,7 +66,7 @@ module TestNonBlocking =
         let system = systemOn platform
 
         let fd, system =
-            UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp system
+            NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
         let socketId =
             match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
@@ -74,7 +74,7 @@ module TestNonBlocking =
             | other -> failwith $"expected a socket target, got %A{other}"
 
         let socket = UnixMachineState.socket socketId system.Machine
-        socket.Domain |> shouldEqual SocketDomain.InterNetwork
+        socket.Domain |> shouldEqual SocketDomain.Inet
         socket.Kind |> shouldEqual SocketKind.Stream
         socket.Protocol |> shouldEqual SocketProtocol.Tcp
 
@@ -92,10 +92,10 @@ module TestNonBlocking =
     [<TestCaseSource(nameof platforms)>]
     let ``each created socket gets a fresh identity`` (platform : SimulatedUnixPlatform) : unit =
         let first, system =
-            UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp (systemOn platform)
+            NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp (systemOn platform)
 
         let second, system =
-            UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Datagram SocketProtocol.Udp system
+            NewSocket.create SocketDomain.Inet SocketKind.Datagram SocketProtocol.Udp system
 
         first |> shouldNotEqual second
         system.Machine.Sockets |> Map.count |> shouldEqual 2
@@ -115,7 +115,7 @@ module TestNonBlocking =
     [<Test>]
     let ``the flag lives on the description, so a dup shares it`` () : unit =
         let fd, system =
-            UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp linux
+            NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp linux
 
         let duplicate, registry =
             match FileDescriptorRegistry.dup fd system.Process.FileDescriptors with
@@ -155,7 +155,7 @@ module TestNonBlocking =
     [<Test>]
     let ``a file and a socket both take the flag`` () : unit =
         let socketFd, system =
-            UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp linux
+            NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp linux
 
         let fileFd, registry =
             FileDescriptorRegistry.openFile (InodeNumber 1L) FileAccessMode.ReadOnly system.Process.FileDescriptors

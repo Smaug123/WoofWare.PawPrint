@@ -540,7 +540,7 @@ module TestDirectoryDescription =
                     system
 
             let socket, system =
-                UnixSocket.createSocket SocketDomain.Unix SocketKind.Stream SocketProtocol.Unspecified system
+                NewSocket.create SocketDomain.Unix SocketKind.Stream SocketProtocol.Default system
 
             let port, registry =
                 FileDescriptorRegistry.createSocketEventPort system.Process.FileDescriptors

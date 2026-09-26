@@ -9,10 +9,10 @@ using System.Runtime.InteropServices;
 //
 // Differential, and only these rows can be. The screens are the shim's own, so
 // they answer identically wherever the shim was built; the success rows below
-// were measured to succeed unprivileged on both platforms. The rows the *kernel*
-// decides are not like that -- `AF_INET`/`SOCK_STREAM`/`PT_UDP` is
-// EPROTONOSUPPORT on Linux and EPROTOTYPE on macOS -- and are deliberately
-// absent. PawPrint's answers for the whole 330-row matrix are checked against
+// were measured to succeed unprivileged on both platforms. Most rows the
+// *kernel* refuses are not like that -- `AF_INET`/`SOCK_STREAM`/`PT_UDP` is
+// EPROTONOSUPPORT on Linux and EPROTOTYPE on macOS -- and are left to the
+// flavour guests; `AF_UNSPEC`, which both refuse alike, is here. PawPrint's answers for the whole 330-row matrix are checked against
 // the measurement itself in TestSocketCreation.fs.
 //
 // Reached by hand-rolled P/Invoke rather than through `System.Net.Sockets.Socket`
@@ -55,6 +55,7 @@ class Program
     const int PAL_EPROTOTYPE = 0x10046;
 
     // PAL AddressFamily.
+    const int AF_UNSPEC = 0;
     const int AF_UNIX = 1;
     const int AF_INET = 2;
 
@@ -156,6 +157,12 @@ class Program
         // two checks above, is refused here.
         if (!Refuses(AF_UNIX, SOCK_STREAM, PT_TCP, PAL_EPROTONOSUPPORT))
             return 7;
+
+        // Past every screen, a triple the kernel itself refuses, the same way on
+        // both: no protocol family is AF_UNSPEC. The raw errno differs (97
+        // against 47), so only the PAL value is asserted here.
+        if (!Refuses(AF_UNSPEC, SOCK_STREAM, PT_UNSPECIFIED, PAL_EAFNOSUPPORT))
+            return 22;
 
         // The sockets both platforms make for an ordinary user. The unspecified
         // protocol and the explicit one are separate rows because they take

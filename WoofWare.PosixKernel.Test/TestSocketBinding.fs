@@ -303,7 +303,7 @@ module TestSocketBinding =
     /// on behalf of.
     let private unboundStream : SocketDescription =
         {
-            Domain = SocketDomain.InterNetwork
+            Domain = SocketDomain.Inet
             Kind = SocketKind.Stream
             Protocol = SocketProtocol.Tcp
             Binding = None

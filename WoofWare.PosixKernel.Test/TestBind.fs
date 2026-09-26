@@ -37,7 +37,7 @@ module TestBind =
 
     let private socketOfKind (kind : SocketKind) (phase : SocketPhase) : SocketDescription =
         {
-            Domain = SocketDomain.InterNetwork
+            Domain = SocketDomain.Inet
             Kind = kind
             Protocol =
                 if kind = SocketKind.Stream then

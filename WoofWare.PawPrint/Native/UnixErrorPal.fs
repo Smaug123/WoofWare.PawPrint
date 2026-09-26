@@ -78,6 +78,7 @@ module UnixErrorPal =
         | UnixError.EAFNOSUPPORT -> 0x10005
         | UnixError.EPROTOTYPE -> 0x10046
         | UnixError.EPROTONOSUPPORT -> 0x10045
+        | UnixError.ESOCKTNOSUPPORT -> 0x1005E
         | UnixError.EADDRINUSE -> 0x10003
         | UnixError.EADDRNOTAVAIL -> 0x10004
         | UnixError.EOPNOTSUPP -> 0x1003D

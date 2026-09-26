@@ -76,7 +76,7 @@ module TestEpollCtl =
                 Kind = kind
                 Protocol =
                     match domain, kind with
-                    | SocketDomain.Unix, _ -> SocketProtocol.Unspecified
+                    | SocketDomain.Unix, _ -> SocketProtocol.Default
                     | _, SocketKind.Stream -> SocketProtocol.Tcp
                     | _, _ -> SocketProtocol.Udp
                 Binding = None
@@ -97,7 +97,7 @@ module TestEpollCtl =
         }
 
     let private idleSocket (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        withSocket SocketDomain.InterNetwork SocketKind.Stream SocketPhase.Idle system
+        withSocket SocketDomain.Inet SocketKind.Stream SocketPhase.Idle system
 
     let private withFile (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         let fd, registry =
@@ -266,7 +266,7 @@ module TestEpollCtl =
         | "tcp-idle" -> idleSocket system
         | "tcp-listen" ->
             withSocket
-                SocketDomain.InterNetwork
+                SocketDomain.Inet
                 SocketKind.Stream
                 (SocketPhase.Listening
                     {
@@ -274,7 +274,7 @@ module TestEpollCtl =
                         Queue = []
                     })
                 system
-        | "udp" -> withSocket SocketDomain.InterNetwork SocketKind.Datagram SocketPhase.Idle system
+        | "udp" -> withSocket SocketDomain.Inet SocketKind.Datagram SocketPhase.Idle system
         | "unix-stream" -> withSocket SocketDomain.Unix SocketKind.Stream SocketPhase.Idle system
         | "unix-dgram" -> withSocket SocketDomain.Unix SocketKind.Datagram SocketPhase.Idle system
         | "epoll" -> withPort system
@@ -491,11 +491,11 @@ module TestEpollCtl =
                 "stdin: pipe read end, writer closed", (fun system -> 0, system), 0x0010u
                 "stdout: pipe write end, reader alive", (fun system -> 1, system), 0x0104u
                 "stderr: pipe write end, reader alive", (fun system -> 2, system), 0x0104u
-                "IPv4 TCP, idle", withSocket SocketDomain.InterNetwork SocketKind.Stream SocketPhase.Idle, 0x0114u
-                "IPv6 TCP, idle", withSocket SocketDomain.InterNetworkV6 SocketKind.Stream SocketPhase.Idle, 0x0114u
+                "IPv4 TCP, idle", withSocket SocketDomain.Inet SocketKind.Stream SocketPhase.Idle, 0x0114u
+                "IPv6 TCP, idle", withSocket SocketDomain.Inet6 SocketKind.Stream SocketPhase.Idle, 0x0114u
                 "IPv4 TCP, listening, queue empty",
                 withSocket
-                    SocketDomain.InterNetwork
+                    SocketDomain.Inet
                     SocketKind.Stream
                     (SocketPhase.Listening
                         {
@@ -505,7 +505,7 @@ module TestEpollCtl =
                 0x0000u
                 "IPv4 TCP, listening, queue nonempty",
                 withSocket
-                    SocketDomain.InterNetwork
+                    SocketDomain.Inet
                     SocketKind.Stream
                     (SocketPhase.Listening
                         {
@@ -514,21 +514,21 @@ module TestEpollCtl =
                         }),
                 0x0041u
                 "IPv4 TCP, established, peer alive",
-                withSocket SocketDomain.InterNetwork SocketKind.Stream (SocketPhase.Established connection),
+                withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established connection),
                 0x0104u
                 "IPv4 TCP, established pending report, peer alive",
-                withSocket SocketDomain.InterNetwork SocketKind.Stream (SocketPhase.EstablishedPendingReport connection),
+                withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.EstablishedPendingReport connection),
                 0x0104u
                 "IPv4 TCP, established, peer closed",
-                withSocket SocketDomain.InterNetwork SocketKind.Stream (SocketPhase.Established orphan),
+                withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established orphan),
                 0x2145u
                 "IPv4 TCP, refused, pending delivery",
-                withSocket SocketDomain.InterNetwork SocketKind.Stream SocketPhase.RefusedPendingDelivery,
+                withSocket SocketDomain.Inet SocketKind.Stream SocketPhase.RefusedPendingDelivery,
                 0x215du
-                "IPv4 UDP, idle", withSocket SocketDomain.InterNetwork SocketKind.Datagram SocketPhase.Idle, 0x0304u
-                "IPv6 UDP, idle", withSocket SocketDomain.InterNetworkV6 SocketKind.Datagram SocketPhase.Idle, 0x0304u
+                "IPv4 UDP, idle", withSocket SocketDomain.Inet SocketKind.Datagram SocketPhase.Idle, 0x0304u
+                "IPv6 UDP, idle", withSocket SocketDomain.Inet6 SocketKind.Datagram SocketPhase.Idle, 0x0304u
                 "IPv4 UDP, peer set",
-                withSocket SocketDomain.InterNetwork SocketKind.Datagram (SocketPhase.DatagramPeer peer),
+                withSocket SocketDomain.Inet SocketKind.Datagram (SocketPhase.DatagramPeer peer),
                 0x0304u
                 "Unix stream, idle", withSocket SocketDomain.Unix SocketKind.Stream SocketPhase.Idle, 0x0314u
                 "Unix datagram, idle", withSocket SocketDomain.Unix SocketKind.Datagram SocketPhase.Idle, 0x0304u
@@ -543,7 +543,7 @@ module TestEpollCtl =
         // The peer of the "peer alive" rows: a second end on the same
         // connection. Not itself a row, because it duplicates one.
         let _, system =
-            withSocket SocketDomain.InterNetwork SocketKind.Stream (SocketPhase.Established connection) system
+            withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established connection) system
 
         List.rev rows, system
 

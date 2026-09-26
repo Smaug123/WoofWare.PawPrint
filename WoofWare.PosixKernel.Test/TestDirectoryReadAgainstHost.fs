@@ -613,7 +613,7 @@ module TestDirectoryReadAgainstHost =
                     |> completed "open f"
 
                 let socket, system =
-                    UnixSocket.createSocket SocketDomain.Unix SocketKind.Stream SocketProtocol.Unspecified system
+                    NewSocket.create SocketDomain.Unix SocketKind.Stream SocketProtocol.Default system
 
                 let hostAnswer (fd : int) : ReadDirectoryAnswer =
                     match hostRead flavour fd 4096 with

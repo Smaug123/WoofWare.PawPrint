@@ -86,7 +86,7 @@ module TestPoll =
                 Kind = kind
                 Protocol =
                     match domain, kind with
-                    | SocketDomain.Unix, _ -> SocketProtocol.Unspecified
+                    | SocketDomain.Unix, _ -> SocketProtocol.Default
                     | _, SocketKind.Stream -> SocketProtocol.Tcp
                     | _, _ -> SocketProtocol.Udp
                 Binding = None
@@ -112,7 +112,7 @@ module TestPoll =
 
     /// An idle IPv4 stream socket.
     let private idleSocket (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        withSocket SocketDomain.InterNetwork SocketKind.Stream SocketPhase.Idle system
+        withSocket SocketDomain.Inet SocketKind.Stream SocketPhase.Idle system
 
     let private withFile
         (accessMode : FileAccessMode)
@@ -166,11 +166,11 @@ module TestPoll =
                 "regular file, write-only", withFile FileAccessMode.WriteOnly, 0x0145s
                 "regular file, read-write", withFile FileAccessMode.ReadWrite, 0x0145s
                 // TCP: never WRBAND, in any phase.
-                "IPv4 TCP, idle", withSocket SocketDomain.InterNetwork SocketKind.Stream SocketPhase.Idle, 0x0114s
-                "IPv6 TCP, idle", withSocket SocketDomain.InterNetworkV6 SocketKind.Stream SocketPhase.Idle, 0x0114s
+                "IPv4 TCP, idle", withSocket SocketDomain.Inet SocketKind.Stream SocketPhase.Idle, 0x0114s
+                "IPv6 TCP, idle", withSocket SocketDomain.Inet6 SocketKind.Stream SocketPhase.Idle, 0x0114s
                 "IPv4 TCP, listening, queue empty",
                 withSocket
-                    SocketDomain.InterNetwork
+                    SocketDomain.Inet
                     SocketKind.Stream
                     (SocketPhase.Listening
                         {
@@ -180,7 +180,7 @@ module TestPoll =
                 0x0000s
                 "IPv4 TCP, listening, queue nonempty",
                 withSocket
-                    SocketDomain.InterNetwork
+                    SocketDomain.Inet
                     SocketKind.Stream
                     (SocketPhase.Listening
                         {
@@ -189,25 +189,25 @@ module TestPoll =
                         }),
                 0x0041s
                 "IPv4 TCP, established, peer alive",
-                withSocket SocketDomain.InterNetwork SocketKind.Stream (SocketPhase.Established connection),
+                withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established connection),
                 0x0104s
                 "IPv4 TCP, established pending report, peer alive",
-                withSocket SocketDomain.InterNetwork SocketKind.Stream (SocketPhase.EstablishedPendingReport connection),
+                withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.EstablishedPendingReport connection),
                 0x0104s
                 "IPv4 TCP, established, peer closed",
-                withSocket SocketDomain.InterNetwork SocketKind.Stream (SocketPhase.Established orphan),
+                withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established orphan),
                 0x2145s
                 "IPv4 TCP, refused, pending delivery",
-                withSocket SocketDomain.InterNetwork SocketKind.Stream SocketPhase.RefusedPendingDelivery,
+                withSocket SocketDomain.Inet SocketKind.Stream SocketPhase.RefusedPendingDelivery,
                 0x215ds
                 // UDP: WRBAND alongside OUT, connected or not.
-                "IPv4 UDP, idle", withSocket SocketDomain.InterNetwork SocketKind.Datagram SocketPhase.Idle, 0x0304s
-                "IPv6 UDP, idle", withSocket SocketDomain.InterNetworkV6 SocketKind.Datagram SocketPhase.Idle, 0x0304s
+                "IPv4 UDP, idle", withSocket SocketDomain.Inet SocketKind.Datagram SocketPhase.Idle, 0x0304s
+                "IPv6 UDP, idle", withSocket SocketDomain.Inet6 SocketKind.Datagram SocketPhase.Idle, 0x0304s
                 "IPv4 UDP, peer set",
-                withSocket SocketDomain.InterNetwork SocketKind.Datagram (SocketPhase.DatagramPeer peer),
+                withSocket SocketDomain.Inet SocketKind.Datagram (SocketPhase.DatagramPeer peer),
                 0x0304s
                 "IPv6 UDP, peer set",
-                withSocket SocketDomain.InterNetworkV6 SocketKind.Datagram (SocketPhase.DatagramPeer peer),
+                withSocket SocketDomain.Inet6 SocketKind.Datagram (SocketPhase.DatagramPeer peer),
                 0x0304s
                 // AF_UNIX: WRBAND alongside OUT for a stream socket too, which is
                 // where it parts from TCP.
@@ -224,7 +224,7 @@ module TestPoll =
         // The peer of the "peer alive" rows: a second end on the same
         // connection. Not itself a row, because it duplicates one.
         let _, system =
-            withSocket SocketDomain.InterNetwork SocketKind.Stream (SocketPhase.Established connection) system
+            withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established connection) system
 
         List.rev rows, system
 
@@ -298,7 +298,7 @@ module TestPoll =
     let ``RDNORM and WRNORM answer only for themselves`` () : unit =
         let listenerFd, system =
             withSocket
-                SocketDomain.InterNetwork
+                SocketDomain.Inet
                 SocketKind.Stream
                 (SocketPhase.Listening
                     {
@@ -323,7 +323,7 @@ module TestPoll =
         let tcp, system = idleSocket linux
 
         let udp, system =
-            withSocket SocketDomain.InterNetwork SocketKind.Datagram SocketPhase.Idle system
+            withSocket SocketDomain.Inet SocketKind.Datagram SocketPhase.Idle system
 
         let unixStream, system =
             withSocket SocketDomain.Unix SocketKind.Stream SocketPhase.Idle system
@@ -336,7 +336,7 @@ module TestPoll =
     [<Test>]
     let ``RDHUP is reported when asked for`` () : unit =
         let fd, system =
-            withSocket SocketDomain.InterNetwork SocketKind.Stream (SocketPhase.Established (ConnectionId 3L)) linux
+            withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established (ConnectionId 3L)) linux
 
         pollOrFail [ entry fd pollRdHup ] 0 system |> shouldEqual ([ pollRdHup ], 1)
         pollOrFail [ entry fd pollIn ] 0 system |> shouldEqual ([ pollIn ], 1)
@@ -388,7 +388,7 @@ module TestPoll =
     [<Test>]
     let ``ERR is reported whatever was asked`` () : unit =
         let fd, system =
-            withSocket SocketDomain.InterNetwork SocketKind.Stream SocketPhase.RefusedPendingDelivery linux
+            withSocket SocketDomain.Inet SocketKind.Stream SocketPhase.RefusedPendingDelivery linux
 
         pollOrFail [ entry fd 0s ] 0 system |> shouldEqual ([ pollErr ||| pollHup ], 1)
 

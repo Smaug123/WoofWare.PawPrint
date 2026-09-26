@@ -47,7 +47,7 @@ module TestSockOpt =
         let system : UnixSystem<int, string> = UnixSystem.initial platform
 
         let socketFd, system =
-            UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp system
+            NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
         let binding =
             match phase with
@@ -498,15 +498,30 @@ module TestSockOpt =
                 | other -> failwith $"%O{platform}: an empty queue answered %A{other}"
 
     /// Every socket shape this kernel creates takes the option. Measured on
-    /// both flavours for every shape in `creatableSockets`.
+    /// both flavours for every shape `UnixSocket.socket` creates.
     [<Test>]
     let ``every creatable socket takes SO_REUSEADDR`` () : unit =
+        let mutable created = 0
+
         for platform in platforms do
-            for domain, kind, protocol in SimulatedUnixPlatform.creatableSockets platform do
-                let system : UnixSystem<int, string> = UnixSystem.initial platform
-                let fd, system = UnixSocket.createSocket domain kind protocol system
-                let system = ReuseAddress.set true fd system
-                reuseFlag system |> shouldEqual true
+            for domain in [ SocketDomain.Inet ; SocketDomain.Inet6 ; SocketDomain.Unix ] do
+                for kind in [ SocketKind.Stream ; SocketKind.Datagram ; SocketKind.SeqPacket ] do
+                    for protocol in [ SocketProtocol.Default ; SocketProtocol.Tcp ; SocketProtocol.Udp ] do
+                        let system : UnixSystem<int, string> = UnixSystem.initial platform
+
+                        let rawDomain, rawKind, rawProtocol =
+                            NewSocket.arguments platform domain kind protocol
+
+                        match UnixSocket.socket rawDomain rawKind rawProtocol system with
+                        | Ok (Ok (fd, system)) ->
+                            created <- created + 1
+                            let system = ReuseAddress.set true fd system
+                            reuseFlag system |> shouldEqual true
+                        | Ok (Error _)
+                        | Error _ -> ()
+
+        // Linux's ten and its seqpacket socket, and Darwin's ten.
+        created |> shouldEqual 21
 
     // ------------------------------------------------------------------
     // What the value means, and what reads back
@@ -766,7 +781,7 @@ module TestSockOpt =
         | BindAnswer.Failed error, _ -> failwith $"expected the bind to succeed, got %O{error}"
 
     let private stream (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp system
+        NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
     let private bindsOk (answer : BindAnswer) : bool =
         match answer with

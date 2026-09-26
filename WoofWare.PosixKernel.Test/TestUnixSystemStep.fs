@@ -279,7 +279,7 @@ module TestUnixSystemStep =
 
     let private socketDescription : SocketDescription =
         {
-            Domain = SocketDomain.InterNetwork
+            Domain = SocketDomain.Inet
             Kind = SocketKind.Stream
             Protocol = SocketProtocol.Tcp
             Binding = None
@@ -307,7 +307,7 @@ module TestUnixSystemStep =
         }
 
     let private socketRefused : Result<ReadAnswer * UnixSystem<int, string>, ReadRefusal> =
-        Error (ReadRefusal.SocketConnectionState (socketZero, SocketDomain.InterNetwork, SocketKind.Stream))
+        Error (ReadRefusal.SocketConnectionState (socketZero, SocketDomain.Inet, SocketKind.Stream))
 
     [<Test>]
     let ``a socket is refused, and the refusal names it`` () : unit =
@@ -337,7 +337,7 @@ module TestUnixSystemStep =
 
             UnixReadWrite.read darwinFd wild count darwinSystem
             |> shouldEqual (
-                Error (ReadRefusal.SocketConnectionState (socketZero, SocketDomain.InterNetwork, SocketKind.Stream))
+                Error (ReadRefusal.SocketConnectionState (socketZero, SocketDomain.Inet, SocketKind.Stream))
             )
 
     [<Test>]
@@ -355,9 +355,7 @@ module TestUnixSystemStep =
         |> shouldEqual (Ok (ReadAnswer.Completed ImmutableArray.Empty, linuxSystem))
 
         UnixReadWrite.read darwinFd UserBuffer.Mapped 0 darwinSystem
-        |> shouldEqual (
-            Error (ReadRefusal.SocketConnectionState (socketZero, SocketDomain.InterNetwork, SocketKind.Stream))
-        )
+        |> shouldEqual (Error (ReadRefusal.SocketConnectionState (socketZero, SocketDomain.Inet, SocketKind.Stream)))
 
         // And the rule really is about the length rather than the socket: one
         // byte is refused on both.
@@ -619,7 +617,7 @@ module TestUnixSystemStep =
 
         let socket : SocketDescription =
             {
-                Domain = SocketDomain.InterNetwork
+                Domain = SocketDomain.Inet
                 Kind = SocketKind.Stream
                 Protocol = SocketProtocol.Tcp
                 Binding = None
@@ -643,7 +641,7 @@ module TestUnixSystemStep =
             }
 
         let expected =
-            Error (WriteRefusal.SocketConnectionState (socketId, SocketDomain.InterNetwork, SocketKind.Stream))
+            Error (WriteRefusal.SocketConnectionState (socketId, SocketDomain.Inet, SocketKind.Stream))
 
         UnixReadWrite.admitWrite fd UserBuffer.Mapped 5 system |> shouldEqual expected
 
@@ -666,7 +664,7 @@ module TestUnixSystemStep =
 
         let socket : SocketDescription =
             {
-                Domain = SocketDomain.InterNetwork
+                Domain = SocketDomain.Inet
                 Kind = SocketKind.Stream
                 Protocol = SocketProtocol.Tcp
                 Binding = None
@@ -699,9 +697,7 @@ module TestUnixSystemStep =
             |> shouldEqual (Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EFAULT)))
 
             UnixReadWrite.admitWrite darwinFd wild count darwinSystem
-            |> shouldEqual (
-                Error (WriteRefusal.SocketConnectionState (socketId, SocketDomain.InterNetwork, SocketKind.Stream))
-            )
+            |> shouldEqual (Error (WriteRefusal.SocketConnectionState (socketId, SocketDomain.Inet, SocketKind.Stream)))
 
     [<Test>]
     let ``a defaulted byte array is rejected rather than written`` () : unit =
@@ -1248,9 +1244,7 @@ module TestUnixSystemStep =
         let fd, system = withSocket linux
 
         UnixReadWrite.admitWrite fd UserBuffer.Mapped 4 system
-        |> shouldEqual (
-            Error (WriteRefusal.SocketConnectionState (socketZero, SocketDomain.InterNetwork, SocketKind.Stream))
-        )
+        |> shouldEqual (Error (WriteRefusal.SocketConnectionState (socketZero, SocketDomain.Inet, SocketKind.Stream)))
 
         let portFd, portSystem = withSocketEventPort linux
 
@@ -4691,7 +4685,7 @@ module TestUnixSystemStep =
         // an address, and every value this one could report would be invented.
         // IPv6 and Unix-domain differ in *shape* from what is modelled, not in
         // width, so there is nothing to truncate into an answer.
-        for domain in [ SocketDomain.InterNetworkV6 ; SocketDomain.Unix ] do
+        for domain in [ SocketDomain.Inet6 ; SocketDomain.Unix ] do
             let fd, system = withSocket linux
 
             let system =
@@ -4724,7 +4718,7 @@ module TestUnixSystemStep =
         // have to build, is the client's half of the message.
         for refusal in
             [
-                GetSockNameRefusal.UnmodelledDomain (socketZero, SocketDomain.InterNetworkV6)
+                GetSockNameRefusal.UnmodelledDomain (socketZero, SocketDomain.Inet6)
                 GetSockNameRefusal.Buffer BufferRefusal.AddresslessAtTransfer
             ] do
             GetSockNameRefusal.describe refusal |> shouldNotContainText "PawPrint"

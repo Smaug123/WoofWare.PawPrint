@@ -312,7 +312,7 @@ module SocketFuzz =
         match op with
         | FuzzOp.NewSocket slot ->
             let fd, kernel =
-                UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp state.Kernel
+                NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp state.Kernel
 
             "ok",
             assignSlot

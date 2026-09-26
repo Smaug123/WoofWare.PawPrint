@@ -1526,21 +1526,6 @@ module EmulatedKernel =
 
 
 
-    /// `UnixSocket.createSocket` — allocate a fresh socket and a descriptor onto
-    /// it — through this kernel rather than through its POSIX half.
-    ///
-    /// Here for the reason the adapters beside it are: nine fixtures call it
-    /// holding an `EmulatedKernel`.
-    let createSocket
-        (domain : SocketDomain)
-        (kind : SocketKind)
-        (protocol : SocketProtocol)
-        (kernel : EmulatedKernel)
-        : int * EmulatedKernel
-        =
-        let fd, system = UnixSocket.createSocket domain kind protocol (unix kernel)
-        fd, withUnix system kernel
-
     /// The stream the `DIR*` backed by `block` names.
     ///
     /// Total, and loudly partial rather than an option: every `DIR*` a guest can
