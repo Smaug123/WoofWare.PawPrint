@@ -41,16 +41,6 @@ type InternalSignatureType =
 [<RequireQualifiedAccess>]
 module DynamicSignatureDecoding =
 
-    /// Where a type sits, which decides what it may be. ECMA-335 II.23.2: `void` is a return type
-    /// or a pointee; a byref and `TypedReference` are a whole return, parameter or local.
-    [<RequireQualifiedAccess>]
-    type private Slot =
-        | Return
-        | ParameterOrLocal
-        | Pointee
-        /// An array element, a generic argument, or a byref's referent.
-        | Nested
-
     type private Blob =
         {
             /// Completes "a ..." in every refusal: which blob this is.
@@ -115,26 +105,17 @@ module DynamicSignatureDecoding =
         failwith
             $"%s{blob.What} spells a type at byte %d{pos} as a metadata token (element type 0x%02x{code}). A null-module SignatureHelper never writes one; a DynamicILInfo local signature does, but its tokens index the method's DynamicScope rather than any assembly's tables, and PawPrint does not yet resolve them"
 
-    let rec private typeAt (blob : Blob) (slot : Slot) (pos : int) : TypeDefn * int =
+    // Structural, like SignatureDecoder: `void`, `TYPEDBYREF` and `BYREF` decode wherever they
+    // appear. ECMA-335 II.23.2 places them more narrowly, but the runtime does not hold a dynamic
+    // method to that (measured: `void&`, `TypedReference&` and `TypedReference*` locals run on real
+    // .NET), and `SignatureHelper` writes whatever `Type` it is given.
+    let rec private typeAt (blob : Blob) (pos : int) : TypeDefn * int =
         let code = numberAt blob pos
         let next = pos + 1
 
         match code with
-        | 0x01uy ->
-            match slot with
-            | Slot.Return
-            | Slot.Pointee -> TypeDefn.Void, next
-            | Slot.ParameterOrLocal
-            | Slot.Nested ->
-                failwith $"%s{blob.What} has void at byte %d{pos}; void is legal only as a return type or a pointee"
-        | 0x16uy ->
-            match slot with
-            | Slot.Return
-            | Slot.ParameterOrLocal -> TypeDefn.PrimitiveType PrimitiveType.TypedReference, next
-            | Slot.Pointee
-            | Slot.Nested ->
-                failwith
-                    $"%s{blob.What} has TYPEDBYREF at byte %d{pos}; it is legal only as a whole return type, parameter or local"
+        | 0x01uy -> TypeDefn.Void, next
+        | 0x16uy -> TypeDefn.PrimitiveType PrimitiveType.TypedReference, next
         | code when
             (code >= 0x02uy && code <= 0x0Euy)
             || code = 0x18uy
@@ -145,23 +126,16 @@ module DynamicSignatureDecoding =
             | Some primitive -> TypeDefn.PrimitiveType primitive, next
             | None -> failwith $"BUG: element type 0x%02x{code} is in the primitive range but names no primitive"
         | 0x0Fuy ->
-            let pointee, next = typeAt blob Slot.Pointee next
+            let pointee, next = typeAt blob next
             TypeDefn.Pointer pointee, next
         | 0x10uy ->
-            match slot with
-            | Slot.Return
-            | Slot.ParameterOrLocal ->
-                let referent, next = typeAt blob Slot.Nested next
-                TypeDefn.Byref referent, next
-            | Slot.Pointee
-            | Slot.Nested ->
-                failwith
-                    $"%s{blob.What} has BYREF at byte %d{pos}; a byref is legal only as a whole return type, parameter or local"
+            let referent, next = typeAt blob next
+            TypeDefn.Byref referent, next
         | 0x1Duy ->
-            let element, next = typeAt blob Slot.Nested next
+            let element, next = typeAt blob next
             TypeDefn.OneDimensionalArrayLowerBoundZero element, next
         | 0x14uy ->
-            let element, next = typeAt blob Slot.Nested next
+            let element, next = typeAt blob next
             let rank, next = compressedAt blob next
             let sizeCount, next = compressedAt blob next
 
@@ -222,7 +196,7 @@ module DynamicSignatureDecoding =
             let next =
                 (next, [ 1..count ])
                 ||> List.fold (fun next _ ->
-                    let argument, next = typeAt blob Slot.Nested next
+                    let argument, next = typeAt blob next
                     arguments.Add argument
                     next
                 )
@@ -294,7 +268,7 @@ module DynamicSignatureDecoding =
             failwith
                 $"method signature blob declares %d{declared} parameter(s) but has only %d{blob.Bytes.Length - pos} byte(s) left to spell them and the return type in; it is truncated or corrupt"
 
-        let returnType, pos = typeAt blob Slot.Return pos
+        let returnType, pos = typeAt blob pos
         let parameters = ImmutableArray.CreateBuilder<TypeDefn> declared
         let mutable pos = pos
         let mutable required = None
@@ -311,7 +285,7 @@ module DynamicSignatureDecoding =
                 required <- Some index
                 pos <- pos + 1
 
-            let parameter, next = typeAt blob Slot.ParameterOrLocal pos
+            let parameter, next = typeAt blob pos
             parameters.Add parameter
             pos <- next
 
@@ -371,7 +345,7 @@ module DynamicSignatureDecoding =
         for _ in 1..count do
             let pinned = numberAt blob pos = 0x45uy
             let start = if pinned then pos + 1 else pos
-            let local, next = typeAt blob Slot.ParameterOrLocal start
+            let local, next = typeAt blob start
             locals.Add (if pinned then TypeDefn.Pinned local else local)
             pos <- next
 

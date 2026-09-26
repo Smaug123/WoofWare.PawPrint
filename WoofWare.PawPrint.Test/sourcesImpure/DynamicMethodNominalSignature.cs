@@ -136,6 +136,20 @@ public class Program
             return 50;
         }
 
+        // Locals ECMA-335 would not place where they are: byrefs to void and to TypedReference.
+        // SignatureHelper writes each, and real .NET runs the method.
+        DynamicMethod unusual = new DynamicMethod("Unusual", typeof(int), Type.EmptyTypes, typeof(Program).Module);
+        ILGenerator unusualIl = unusual.GetILGenerator();
+        unusualIl.DeclareLocal(typeof(void).MakeByRefType());
+        unusualIl.DeclareLocal(typeof(TypedReference).MakeByRefType());
+        unusualIl.Emit(OpCodes.Ldc_I4, 42);
+        unusualIl.Emit(OpCodes.Ret);
+
+        if (((Func<int>) unusual.CreateDelegate(typeof(Func<int>)))() != 42)
+        {
+            return 51;
+        }
+
         return 0;
     }
 }

@@ -316,6 +316,13 @@ module TestDynamicSignatureDecoding =
                 6, genAny 3
                 2, genAny 3 |> Gen.map (fun t -> t.MakeByRefType ())
                 1, Gen.constant typedReference
+                1,
+                Gen.elements
+                    [
+                        typeof<Void>.MakeByRefType ()
+                        typedReference.MakeByRefType ()
+                        typedReference.MakePointerType ()
+                    ]
             ]
 
     let private genReturn : Gen<Type> =
@@ -535,13 +542,23 @@ module TestDynamicSignatureDecoding =
             exn.Message |> shouldContainText $"0x%02x{elementType}"
 
     [<Test>]
-    let ``refuses void as a parameter`` () : unit =
-        let exn =
-            Assert.Throws<Exception> (fun () ->
-                decodeMethod (verbatim [| 0x00uy ; 0x01uy ; 0x08uy ; 0x01uy |]) |> ignore
-            )
+    let ``void, TypedReference and byrefs decode wherever the encoder writes them`` () : unit =
+        // ECMA-335 places these more narrowly than this, but real .NET runs a dynamic method with
+        // each of these as a local, so the decoder must not refuse them.
+        let locals =
+            [
+                typeof<Void>.MakeByRefType ()
+                typedReference.MakeByRefType ()
+                typedReference.MakePointerType ()
+            ]
 
-        exn.Message |> shouldContainText "void"
+        decodeLocals (verbatim (encodeLocals (locals |> List.map (fun t -> t, false))))
+        |> shouldEqual
+            [
+                TypeDefn.Byref TypeDefn.Void
+                TypeDefn.Byref (TypeDefn.PrimitiveType PrimitiveType.TypedReference)
+                TypeDefn.Pointer (TypeDefn.PrimitiveType PrimitiveType.TypedReference)
+            ]
 
     [<Test>]
     let ``void is legal as a return type and as a pointee`` () : unit =
