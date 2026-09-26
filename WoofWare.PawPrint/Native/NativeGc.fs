@@ -324,7 +324,11 @@ module NativeGc =
             let arrayAddr, state =
                 IlMachineState.allocateArray arrayType (fun () -> zero) length state
 
-            IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state ret (CliType.ObjectRef (Some arrayAddr))
+            IlMachineState.writeManagedByrefWithBase
+                ctx.BaseClassTypes
+                state
+                (ManagedPointerSource.requireAddressed ret)
+                (CliType.ObjectRef (Some arrayAddr))
             |> NativeHandlerResult.completed
             |> Some
         | _ -> None

@@ -467,7 +467,7 @@ module NativeSystemNative =
                 IlMachineState.writeManagedByrefBytesOrTypedCell
                     ctx.BaseClassTypes
                     state
-                    dest
+                    (ManagedPointerSource.requireAddressed dest)
                     (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim bytes.[i])))
 
         state
@@ -814,7 +814,11 @@ module NativeSystemNative =
             |> setInt32At 8 nameLength
             |> setInt32At 12 inodeType
 
-        IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state output (CliType.ValueType structure)
+        IlMachineState.writeManagedByrefWithBase
+            ctx.BaseClassTypes
+            state
+            (ManagedPointerSource.requireAddressed output)
+            (CliType.ValueType structure)
 
     /// `sizeof(FileStatus)`: four 32-bit fields, then twelve 64-bit ones, then
     /// a trailing `uint32_t`, rounded up to the struct's 8-byte alignment.
@@ -4814,7 +4818,7 @@ module NativeSystemNative =
                 IlMachineState.writeIndirectPrimitiveStore
                     ctx.BaseClassTypes
                     state
-                    destination
+                    (ManagedPointerSource.requireAddressed destination)
                     (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer pointer)))
 
             let stride = SocketEventsPal.socketEventBufferElementSize state.Kernel.UnixPlatform

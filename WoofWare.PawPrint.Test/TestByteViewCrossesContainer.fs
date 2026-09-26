@@ -162,7 +162,7 @@ module TestByteViewCrossesContainer =
             IlMachineManagedByref.writeManagedByrefBytesOrTypedCell
                 baseClassTypes
                 state
-                ptr
+                (ManagedPointerSource.requireAddressed ptr)
                 (CliType.Numeric (CliNumericType.Int32 7))
 
         readNextX arr index state
@@ -198,7 +198,7 @@ module TestByteViewCrossesContainer =
             IlMachineManagedByref.writeManagedByrefBytesOrTypedCell
                 baseClassTypes
                 state
-                ptr
+                (ManagedPointerSource.requireAddressed ptr)
                 (CliType.Numeric (CliNumericType.Int32 7))
         )
         |> shouldContainText "past array bounds"
@@ -293,7 +293,7 @@ module TestByteViewCrossesContainer =
                 IlMachineManagedByref.writeManagedByrefBytesOrTypedCell
                     baseClassTypes
                     state
-                    ptr
+                    (ManagedPointerSource.requireAddressed ptr)
                     (CliType.Numeric (CliNumericType.Int32 7))
             )
 

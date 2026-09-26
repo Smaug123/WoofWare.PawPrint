@@ -174,7 +174,11 @@ module NativeMetadataImport =
         (value : int32)
         : IlMachineState
         =
-        IlMachineState.writeManagedByrefWithBase baseClassTypes state ptr (CliType.Numeric (CliNumericType.Int32 value))
+        IlMachineState.writeManagedByrefWithBase
+            baseClassTypes
+            state
+            (ManagedPointerSource.requireAddressed ptr)
+            (CliType.Numeric (CliNumericType.Int32 value))
 
     let private int32BufferElementPointer
         (operation : string)
@@ -1073,7 +1077,7 @@ module NativeMetadataImport =
             IlMachineState.writeManagedByrefWithBase
                 ctx.BaseClassTypes
                 state
-                out
+                (ManagedPointerSource.requireAddressed out)
                 (CliType.RuntimePointer (CliRuntimePointer.Managed ptr))
 
         // S_OK; the managed wrapper runs every HRESULT through `ThrowBadImageExceptionForHR`.
@@ -1178,7 +1182,7 @@ module NativeMetadataImport =
                         IlMachineState.writeManagedByrefWithBase
                             ctx.BaseClassTypes
                             state
-                            longResult
+                            (ManagedPointerSource.requireAddressed longResult)
                             (CliType.ObjectRef (Some resultArrayAddr))
 
             let state = writeInt32AtPointer ctx.BaseClassTypes state lengthOut values.Length
@@ -1393,14 +1397,14 @@ module NativeMetadataImport =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    valueOut
+                    (ManagedPointerSource.requireAddressed valueOut)
                     (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim value)))
 
             let writeStringPointer (state : IlMachineState) (pointer : ManagedPointerSource) : IlMachineState =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    stringValueOut
+                    (ManagedPointerSource.requireAddressed stringValueOut)
                     (CliType.RuntimePointer (CliRuntimePointer.Managed pointer))
 
             let state, value, stringPointer, length, corElementType =
@@ -1530,7 +1534,11 @@ module NativeMetadataImport =
                 buildConstArray ctx.LoggerFactory ctx.BaseClassTypes operation attr.Value state
 
             let state =
-                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state signatureOut constArrayValue
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed signatureOut)
+                    constArrayValue
 
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread state
@@ -1580,7 +1588,11 @@ module NativeMetadataImport =
                 buildConstArray ctx.LoggerFactory ctx.BaseClassTypes operation blob state
 
             let state =
-                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state signatureOut constArrayValue
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed signatureOut)
+                    constArrayValue
 
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread state
@@ -1632,7 +1644,11 @@ module NativeMetadataImport =
                 buildConstArrayOverPeByteRange ctx.LoggerFactory ctx.BaseClassTypes operation peByteRange state
 
             let state =
-                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state signatureOut constArrayValue
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed signatureOut)
+                    constArrayValue
 
             // The managed wrapper turns a negative HRESULT into BadImageFormatException
             // (MdImport.cs, ThrowBadImageExceptionForHR). Every failure above is instead a host-level
@@ -1704,7 +1720,11 @@ module NativeMetadataImport =
                         state
 
             let state =
-                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state fieldMarshalOut constArrayValue
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed fieldMarshalOut)
+                    constArrayValue
 
             // S_OK. Every rejection above is a host-level crash rather than the negative HRESULT
             // CoreCLR's managed wrapper would turn into a BadImageFormatException, as in the sibling
@@ -1792,7 +1812,11 @@ module NativeMetadataImport =
                         (state : IlMachineState)
                         : IlMachineState
                         =
-                        IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state ptr value
+                        IlMachineState.writeManagedByrefWithBase
+                            ctx.BaseClassTypes
+                            state
+                            (ManagedPointerSource.requireAddressed ptr)
+                            value
 
                     let writeInt32
                         (ptr : ManagedPointerSource)
@@ -1892,7 +1916,11 @@ module NativeMetadataImport =
                 buildConstArrayOverPeByteRange ctx.LoggerFactory ctx.BaseClassTypes operation peByteRange state
 
             let state =
-                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state signatureOut constArrayValue
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed signatureOut)
+                    constArrayValue
 
             // The raw Property.Flags column, as `getPropFlagsOfProperty` returns it; the managed
             // wrapper casts it to `PropertyAttributes`.
@@ -1950,7 +1978,11 @@ module NativeMetadataImport =
                 buildConstArray ctx.LoggerFactory ctx.BaseClassTypes operation blob state
 
             let state =
-                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state signatureOut constArrayValue
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed signatureOut)
+                    constArrayValue
 
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread state

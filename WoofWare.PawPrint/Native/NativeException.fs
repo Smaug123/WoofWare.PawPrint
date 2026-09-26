@@ -60,7 +60,7 @@ module NativeException =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    retString
+                    (ManagedPointerSource.requireAddressed retString)
                     (CliType.ObjectRef (Some messageAddr))
 
             NativeHandlerResult.completed state |> Some
@@ -121,7 +121,11 @@ module NativeException =
                 |> CliType.ObjectRef
 
             let state =
-                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state retStackTrace frozenTrace
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed retStackTrace)
+                    frozenTrace
 
             NativeHandlerResult.completed state |> Some
         | _ -> None

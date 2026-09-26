@@ -265,7 +265,11 @@ module NativeRuntimeAssembly =
         (length : uint32)
         : IlMachineState
         =
-        IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state lengthOut (NativeCall.cliUInt32 length)
+        IlMachineState.writeManagedByrefWithBase
+            ctx.BaseClassTypes
+            state
+            (ManagedPointerSource.requireAddressed lengthOut)
+            (NativeCall.cliUInt32 length)
 
     let private assemblyHandleOfRuntimeAssemblyRef
         (operation : string)
@@ -864,7 +868,7 @@ module NativeRuntimeAssembly =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    retType
+                    (ManagedPointerSource.requireAddressed retType)
                     (CliType.ObjectRef (Some runtimeTypeAddr))
 
             NativeHandlerResult.completed state |> Some
@@ -1007,7 +1011,7 @@ module NativeRuntimeAssembly =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    retString
+                    (ManagedPointerSource.requireAddressed retString)
                     (CliType.ObjectRef (Some emptyAddr))
 
             // FALSE. The BCL marshals this back to `bool`, so any non-zero value would read
@@ -1057,7 +1061,7 @@ module NativeRuntimeAssembly =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    retAssembly
+                    (ManagedPointerSource.requireAddressed retAssembly)
                     (CliType.ObjectRef (Some runtimeAssemblyAddr))
 
             NativeHandlerResult.completed state |> Some
@@ -1155,7 +1159,7 @@ module NativeRuntimeAssembly =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    retAssemblies
+                    (ManagedPointerSource.requireAddressed retAssemblies)
                     (CliType.ObjectRef (Some arrayAddr))
 
             NativeHandlerResult.completed state |> Some
@@ -1240,7 +1244,7 @@ module NativeRuntimeAssembly =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    retAssembly
+                    (ManagedPointerSource.requireAddressed retAssembly)
                     (CliType.ObjectRef (Some runtimeAssemblyAddr))
 
             NativeHandlerResult.completed state |> Some
@@ -1293,7 +1297,7 @@ module NativeRuntimeAssembly =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    retString
+                    (ManagedPointerSource.requireAddressed retString)
                     (CliType.ObjectRef (Some emptyAddr))
 
             NativeHandlerResult.completed state |> Some
@@ -1484,7 +1488,7 @@ module NativeRuntimeAssembly =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    retString
+                    (ManagedPointerSource.requireAddressed retString)
                     (CliType.ObjectRef (Some localeAddr))
 
             NativeHandlerResult.completed state |> Some
@@ -1532,7 +1536,7 @@ module NativeRuntimeAssembly =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    retPublicKey
+                    (ManagedPointerSource.requireAddressed retPublicKey)
                     (CliType.ObjectRef (Some arrayAddr))
 
             NativeHandlerResult.completed state |> Some
@@ -1593,7 +1597,7 @@ module NativeRuntimeAssembly =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    retSimpleName
+                    (ManagedPointerSource.requireAddressed retSimpleName)
                     (CliType.ObjectRef (Some nameAddr))
 
             NativeHandlerResult.completed state |> Some
@@ -1662,7 +1666,7 @@ module NativeRuntimeAssembly =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    retString
+                    (ManagedPointerSource.requireAddressed retString)
                     (CliType.ObjectRef (Some nameAddr))
 
             NativeHandlerResult.completed state |> Some
@@ -1733,7 +1737,7 @@ module NativeRuntimeAssembly =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    target
+                    (ManagedPointerSource.requireAddressed target)
                     (CliType.Numeric (CliNumericType.Int32 value))
 
             let state =
@@ -1859,7 +1863,7 @@ module NativeRuntimeAssembly =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    retModules
+                    (ManagedPointerSource.requireAddressed retModules)
                     (CliType.ObjectRef (Some arrayAddr))
 
             NativeHandlerResult.completed state |> Some

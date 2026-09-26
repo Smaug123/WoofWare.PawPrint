@@ -1300,7 +1300,7 @@ module NullaryIlOp =
                 IlMachineState.writeIndirectPrimitiveStore
                     corelib
                     state
-                    src
+                    (ManagedPointerSource.requireAddressed src)
                     (EvalStackValue.toCliTypeCoerced varType valueToStore)
             | EvalStackValue.NativeInt nativeIntSource ->
                 failwith $"TODO: Native int pointer store not implemented for %O{nativeIntSource}"
@@ -1308,7 +1308,7 @@ module NullaryIlOp =
                 IlMachineState.writeIndirectPrimitiveStore
                     corelib
                     state
-                    src
+                    (ManagedPointerSource.requireAddressed src)
                     (EvalStackValue.toCliTypeCoerced varType valueToStore)
             | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
             | EvalStackValue.ObjectRef _ ->
@@ -3073,7 +3073,7 @@ module NullaryIlOp =
                     IlMachineState.writeManagedByrefWithBase
                         corelib
                         state
-                        src
+                        (ManagedPointerSource.requireAddressed src)
                         (EvalStackValue.toCliTypeCoerced (CliType.ObjectRef None) value)
                 | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
                 | addr -> failwith $"TODO: {addr}"

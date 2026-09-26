@@ -1399,7 +1399,7 @@ module NativeRuntimeMethodHandle =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    refMethod
+                    (ManagedPointerSource.requireAddressed refMethod)
                     (CliType.ObjectRef (Some stubAddress))
 
             NativeHandlerResult.completed state |> Some

@@ -1391,7 +1391,7 @@ module NativeSignature =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    resultPtr
+                    (ManagedPointerSource.requireAddressed resultPtr)
                     (CliType.ObjectRef (Some arrayAddr))
 
             NativeHandlerResult.completed state |> Some

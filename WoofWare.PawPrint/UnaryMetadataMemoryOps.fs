@@ -48,7 +48,11 @@ module internal UnaryMetadataMemoryOps =
             | EvalStackValue.NullObjectRef
             | EvalStackValue.ObjectRef _ -> failwith "TODO: Initobj requires a managed pointer"
             | EvalStackValue.ManagedPointer src ->
-                IlMachineState.writeManagedByrefWithBase baseClassTypes state src zeroOfType
+                IlMachineState.writeManagedByrefWithBase
+                    baseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed src)
+                    zeroOfType
             | EvalStackValue.UserDefinedValueType evalStackValueUserType -> failwith "todo"
 
         state
@@ -87,16 +91,12 @@ module internal UnaryMetadataMemoryOps =
             let coerced = EvalStackValue.toCliTypeCoerced targetZero valueToStore
 
             match src with
-            | ManagedPointerSource.Byref {
-                                             Root = ByrefRoot.StackMemoryByte _
-                                             Projections = _
-                                         }
-            | ManagedPointerSource.Byref {
-                                             Root = ByrefRoot.NativeMemoryByte _
-                                             Projections = _
-                                         } ->
-                IlMachineState.writeManagedByrefBytesOrTypedCell baseClassTypes state src coerced
-            | ManagedPointerSource.Byref _ -> IlMachineState.writeManagedByrefWithBase baseClassTypes state src coerced
+            | ManagedPointerSource.Byref addressed ->
+                match addressed.Root with
+                | ByrefRoot.StackMemoryByte _
+                | ByrefRoot.NativeMemoryByte _ ->
+                    IlMachineState.writeManagedByrefBytesOrTypedCell baseClassTypes state addressed coerced
+                | _ -> IlMachineState.writeManagedByrefWithBase baseClassTypes state addressed coerced
             | ManagedPointerSource.Null -> failwith "unreachable: null Stobj target handled above"
             | ManagedPointerSource.NativeIntPlaceholder bits ->
                 failwith

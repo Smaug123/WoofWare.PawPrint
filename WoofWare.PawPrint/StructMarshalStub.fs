@@ -891,7 +891,11 @@ module StructMarshalStub =
                         $"%s{operation}: field %s{step.Placement.Field.Name} occupies offset %d{step.Placement.NativeOffset} for %d{step.Placement.NativeSize.Size} byte(s), past the %d{plan.NativeSize.Size}-byte unmanaged image of %O{typeHandle}"
 
         let writeAt (nativeOffset : int) (value : CliType) (state : IlMachineState) : IlMachineState =
-            IlMachineState.writeManagedByrefWithBase baseClassTypes state (addressOf nativeOffset state) value
+            IlMachineState.writeManagedByrefWithBase
+                baseClassTypes
+                state
+                (ManagedPointerSource.requireAddressed (addressOf nativeOffset state))
+                value
 
         /// Write the unmanaged image: each step contributes its native value at its placement, and
         /// every byte not covered by a step is zeroed.
@@ -1080,7 +1084,11 @@ module StructMarshalStub =
                         |> EvalStackValue.toCliTypeCoerced template
 
                     let state =
-                        IlMachineState.writeManagedByrefWithBase baseClassTypes state (homeOf step) value
+                        IlMachineState.writeManagedByrefWithBase
+                            baseClassTypes
+                            state
+                            (ManagedPointerSource.requireAddressed (homeOf step))
+                            value
 
                     unmarshalFrom (index + 1) state
                 | StructMarshalFieldKind.OADate ->
@@ -1117,7 +1125,11 @@ module StructMarshalStub =
                             failwith
                                 $"%s{operation}: unmarshalling field %s{step.Placement.Field.Name} of %O{typeHandle}, the native bool read back as %O{other}"
 
-                    IlMachineState.writeManagedByrefWithBase baseClassTypes state (homeOf step) (CliType.ofBool isTrue)
+                    IlMachineState.writeManagedByrefWithBase
+                        baseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed (homeOf step))
+                        (CliType.ofBool isTrue)
                     |> unmarshalFrom (index + 1)
                 | StructMarshalFieldKind.AnsiChar _ ->
                     let nativeByte = readNativeScalar step native state
@@ -1172,7 +1184,11 @@ module StructMarshalStub =
                     let _, state = IlMachineState.popEvalStack thread state
                     let value = EvalStackValue.toCliTypeCoerced (CliType.Char (0uy, 0uy)) converted
 
-                    IlMachineState.writeManagedByrefWithBase baseClassTypes state (homeOf step) value
+                    IlMachineState.writeManagedByrefWithBase
+                        baseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed (homeOf step))
+                        value
                     |> unmarshalFrom k
                 | _ ->
                     failwith

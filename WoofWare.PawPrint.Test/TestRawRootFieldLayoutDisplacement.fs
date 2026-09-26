@@ -580,7 +580,11 @@ public unsafe struct Nest
         =
         (state, contents)
         ||> List.fold (fun state (offset, stored) ->
-            IlMachineState.writeManagedByrefBytesOrTypedCell bct state (atByte offset) (storedValue stored)
+            IlMachineState.writeManagedByrefBytesOrTypedCell
+                bct
+                state
+                (ManagedPointerSource.requireAddressed (atByte offset))
+                (storedValue stored)
         )
 
     /// The byref `spec` describes, built through the production constructors.
@@ -1016,9 +1020,20 @@ public unsafe struct Nest
                 match case.Writer, access with
                 // `stind.i1` / `stind.i4`. A pointer field is stored by `stfld`, whose value is the
                 // field's own pointer type rather than the native int `stind.i` carries.
-                | 1, (Access.Byte | Access.Int32) -> IlMachineState.writeIndirectPrimitiveStore bct state ptr value
-                | 2, _ -> IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr value
-                | _ -> IlMachineState.writeManagedByrefWithBase bct state ptr value
+                | 1, (Access.Byte | Access.Int32) ->
+                    IlMachineState.writeIndirectPrimitiveStore
+                        bct
+                        state
+                        (ManagedPointerSource.requireAddressed ptr)
+                        value
+                | 2, _ ->
+                    IlMachineState.writeManagedByrefBytesOrTypedCell
+                        bct
+                        state
+                        (ManagedPointerSource.requireAddressed ptr)
+                        value
+                | _ ->
+                    IlMachineState.writeManagedByrefWithBase bct state (ManagedPointerSource.requireAddressed ptr) value
 
             // `writeManagedByrefWithBase` is `stfld`'s writer, and follows the chain structurally.
             let structural =
@@ -1156,7 +1171,8 @@ public unsafe struct Nest
         let viaField =
             ManagedPointerSource.appendProjection (ByrefProjection.Field (fieldId holderHandle "P")) (atByte 16)
 
-        let state = IlMachineState.writeIndirectPrimitiveStore bct state viaField tagged
+        let state =
+            IlMachineState.writeIndirectPrimitiveStore bct state (ManagedPointerSource.requireAddressed viaField) tagged
 
         IlMachineState.readManagedByrefBytesAs bct state (ManagedPointerSource.requireAddressed (atByte 16)) tagged
         |> shouldEqual tagged
@@ -1341,7 +1357,11 @@ public unsafe struct Nest
             let state =
                 (state, case.Contents)
                 ||> List.fold (fun state (offset, value) ->
-                    IlMachineState.writeManagedByrefBytesOrTypedCell bct state (atByte offset) value
+                    IlMachineState.writeManagedByrefBytesOrTypedCell
+                        bct
+                        state
+                        (ManagedPointerSource.requireAddressed (atByte offset))
+                        value
                 )
 
             let left = build atByte state case.Left

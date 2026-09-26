@@ -271,10 +271,18 @@ module NativeMarshal =
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
 
                 let state =
-                    IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state stubOutPtr zeroNativeInt
+                    IlMachineState.writeManagedByrefWithBase
+                        ctx.BaseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed stubOutPtr)
+                        zeroNativeInt
 
                 let state =
-                    IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state sizeOutPtr zeroNativeInt
+                    IlMachineState.writeManagedByrefWithBase
+                        ctx.BaseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed sizeOutPtr)
+                        zeroNativeInt
 
                 let state =
                     IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 0)) ctx.Thread state
@@ -309,13 +317,17 @@ module NativeMarshal =
                 let size = CliType.SizeOf zero
 
                 let state =
-                    IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state stubOutPtr zeroNativeInt
+                    IlMachineState.writeManagedByrefWithBase
+                        ctx.BaseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed stubOutPtr)
+                        zeroNativeInt
 
                 let state =
                     IlMachineState.writeManagedByrefWithBase
                         ctx.BaseClassTypes
                         state
-                        sizeOutPtr
+                        (ManagedPointerSource.requireAddressed sizeOutPtr)
                         (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim (int64 size.Size))))
 
                 let state =
@@ -357,7 +369,7 @@ module NativeMarshal =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    stubOutPtr
+                    (ManagedPointerSource.requireAddressed stubOutPtr)
                     (CliType.Numeric (
                         CliNumericType.NativeInt (
                             NativeIntSource.FunctionPointer (
@@ -374,7 +386,7 @@ module NativeMarshal =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    sizeOutPtr
+                    (ManagedPointerSource.requireAddressed sizeOutPtr)
                     (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
 
             let state =

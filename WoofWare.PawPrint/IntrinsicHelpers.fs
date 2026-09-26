@@ -854,7 +854,11 @@ module internal IntrinsicHelpers =
             |> CliValueType.WithFieldSetById lengthField lengthValue
 
         let state =
-            IlMachineState.writeManagedByrefWithBase baseClassTypes state thisPtr (CliType.ValueType span)
+            IlMachineState.writeManagedByrefWithBase
+                baseClassTypes
+                state
+                (ManagedPointerSource.requireAddressed thisPtr)
+                (CliType.ValueType span)
 
         let state =
             match wasConstructing with

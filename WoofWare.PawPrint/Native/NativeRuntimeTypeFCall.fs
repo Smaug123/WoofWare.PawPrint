@@ -1111,7 +1111,7 @@ module NativeRuntimeTypeFCall =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    methodPtr
+                    (ManagedPointerSource.requireAddressed methodPtr)
                     (CliType.ValueType nextValue)
 
             NativeHandlerResult.completed state |> Some

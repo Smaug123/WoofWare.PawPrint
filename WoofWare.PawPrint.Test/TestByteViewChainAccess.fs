@@ -448,7 +448,9 @@ module TestByteViewChainAccess =
                     IlMachineState.writeManagedByrefWithBase
                         bct
                         state
-                        (ManagedPointerSource.appendProjection (ByrefProjection.Field field.Id) src)
+                        (ManagedPointerSource.requireAddressed (
+                            ManagedPointerSource.appendProjection (ByrefProjection.Field field.Id) src
+                        ))
                         value
 
                 let expected =
@@ -467,7 +469,13 @@ module TestByteViewChainAccess =
             | [] -> true
             | path ->
                 let state, addr, src = rooted case
-                let state = IlMachineState.writeManagedByrefWithBase bct state src case.CellValue
+
+                let state =
+                    IlMachineState.writeManagedByrefWithBase
+                        bct
+                        state
+                        (ManagedPointerSource.requireAddressed src)
+                        case.CellValue
 
                 let expected =
                     CliType.withCellAtPathSet path case.CellValue (CliType.ValueType case.Storage)

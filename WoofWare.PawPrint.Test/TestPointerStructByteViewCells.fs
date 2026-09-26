@@ -545,7 +545,11 @@ module TestPointerStructByteViewCells =
                     match cell with
                     | ModelCell.Gap _ -> state
                     | cell ->
-                        IlMachineState.writeManagedByrefBytesOrTypedCell bct state (atByte offset) (toCliType cell)
+                        IlMachineState.writeManagedByrefBytesOrTypedCell
+                            bct
+                            state
+                            (ManagedPointerSource.requireAddressed (atByte offset))
+                            (toCliType cell)
                 )
                 state
 
@@ -845,7 +849,11 @@ module TestPointerStructByteViewCells =
         let ptr = build spelling case state atRoot
 
         let write () =
-            IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr (viewValue case.View case.Written)
+            IlMachineState.writeManagedByrefBytesOrTypedCell
+                bct
+                state
+                (ManagedPointerSource.requireAddressed ptr)
+                (viewValue case.View case.Written)
 
         match storeOutcome case with
         | Outcome.Served ->

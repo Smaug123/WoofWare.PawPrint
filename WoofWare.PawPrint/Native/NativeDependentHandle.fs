@@ -124,7 +124,7 @@ module NativeDependentHandle =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    dependentOut
+                    (ManagedPointerSource.requireAddressed dependentOut)
                     (CliType.ObjectRef dependent)
 
             let state = NativeCall.pushObjectTarget target ctx.Thread state

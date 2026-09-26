@@ -151,7 +151,7 @@ module NativeRuntimeModule =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    retTypes
+                    (ManagedPointerSource.requireAddressed retTypes)
                     (CliType.ObjectRef (Some arrayAddr))
 
             NativeHandlerResult.completed state |> Some
@@ -215,7 +215,7 @@ module NativeRuntimeModule =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    retString
+                    (ManagedPointerSource.requireAddressed retString)
                     (CliType.ObjectRef (Some nameAddr))
 
             NativeHandlerResult.completed state |> Some

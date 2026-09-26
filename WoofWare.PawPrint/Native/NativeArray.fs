@@ -271,7 +271,7 @@ module NativeArray =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    retArray
+                    (ManagedPointerSource.requireAddressed retArray)
                     (CliType.ObjectRef (Some arrayAddr))
 
             NativeHandlerResult.completed state |> Some

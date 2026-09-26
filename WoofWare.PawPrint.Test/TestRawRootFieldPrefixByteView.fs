@@ -304,7 +304,7 @@ module TestRawRootFieldPrefixByteView =
             IlMachineState.writeManagedByrefBytesOrTypedCell
                 bct
                 state
-                (atByte offset blockStart)
+                (ManagedPointerSource.requireAddressed (atByte offset blockStart))
                 (CliType.Numeric (CliNumericType.Int32 (1000 + offset / 4)))
 
         let state =
@@ -314,7 +314,7 @@ module TestRawRootFieldPrefixByteView =
             IlMachineState.writeManagedByrefBytesOrTypedCell
                 bct
                 state
-                (atByte case.NestAt blockStart)
+                (ManagedPointerSource.requireAddressed (atByte case.NestAt blockStart))
                 (nest case.NestValues)
 
         (state, [ case.NestAt + nestSize .. 4 .. blockSize case - 4 ])
@@ -411,7 +411,13 @@ module TestRawRootFieldPrefixByteView =
                     let b = byte<int> (case.Written &&& 0xFF)
                     CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim b)), [| b |]
 
-            let state = IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr written
+            let state =
+                IlMachineState.writeManagedByrefBytesOrTypedCell
+                    bct
+                    state
+                    (ManagedPointerSource.requireAddressed ptr)
+                    written
+
             writtenBytes.CopyTo (image, address)
 
             // Read the block back a byte at a time from bare roots, which name no field and so

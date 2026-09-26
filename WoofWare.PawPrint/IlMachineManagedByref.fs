@@ -866,17 +866,6 @@ module IlMachineManagedByref =
     let internal anchorRawRootFieldPrefix (state : IlMachineState) (src : AddressedByref) : AddressedByref =
         tryAnchorRawRootFieldPrefix state src |> ValueOption.defaultValue src
 
-    /// `anchorRawRootFieldPrefix` over a pointer that may not address storage, which is left as it is.
-    let private anchorRawRootFieldPrefixOfSource
-        (state : IlMachineState)
-        (src : ManagedPointerSource)
-        : ManagedPointerSource
-        =
-        match src with
-        | ManagedPointerSource.Byref addressed -> ManagedPointerSource.Byref (anchorRawRootFieldPrefix state addressed)
-        | ManagedPointerSource.Null
-        | ManagedPointerSource.NativeIntPlaceholder _ -> src
-
     /// `readRootValue` for a caller about to resolve `projs` against the value it returns.
     ///
     /// Raises when `tryAnchorRawRootFieldPrefix` would rewrite `root` and `projs`: resolving
@@ -939,22 +928,15 @@ module IlMachineManagedByref =
         validateByteAddressableCell context value
         CliType.WithBytesAtIfChanged offset bytes value
 
-    let private splitTrailingByteView (src : ManagedPointerSource) : (ByrefRoot * ByrefProjection list * int) voption =
-        match src with
-        | ManagedPointerSource.Null -> ValueNone
-        | ManagedPointerSource.NativeIntPlaceholder _ -> ValueNone
-        | ManagedPointerSource.Byref {
-                                         Root = root
-                                         Projections = projs
-                                     } ->
-            match List.rev projs with
-            | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs _ :: revPrefix ->
-                ValueSome (root, List.rev revPrefix, n)
-            | ByrefProjection.ByteOffset n :: _ ->
-                failwith
-                    $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: %O{src} (this is an interpreter bug)"
-            | ByrefProjection.ReinterpretAs _ :: revPrefix -> ValueSome (root, List.rev revPrefix, 0)
-            | _ -> ValueNone
+    let private splitTrailingByteView (src : AddressedByref) : (ByrefRoot * ByrefProjection list * int) voption =
+        match List.rev src.Projections with
+        | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs _ :: revPrefix ->
+            ValueSome (src.Root, List.rev revPrefix, n)
+        | ByrefProjection.ByteOffset n :: _ ->
+            failwith
+                $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: %O{src} (this is an interpreter bug)"
+        | ByrefProjection.ReinterpretAs _ :: revPrefix -> ValueSome (src.Root, List.rev revPrefix, 0)
+        | _ -> ValueNone
 
     let private floorDivRem (value : int) (divisor : int) : int * int =
         if divisor <= 0 then
@@ -2818,11 +2800,11 @@ module IlMachineManagedByref =
     let private writeManagedByrefBytesOrTypedCellCore
         (baseClassTypes : BaseClassTypes<DumpedAssembly> option)
         (state : IlMachineState)
-        (src : ManagedPointerSource)
+        (src : AddressedByref)
         (newValue : CliType)
         : IlMachineState
         =
-        let src = anchorRawRootFieldPrefixOfSource state src
+        let src = anchorRawRootFieldPrefix state src
 
         // Fast path: a bare `StackMemoryByte` byref whose destination range
         // matches the layout of an existing cell (or covers no existing
@@ -2855,14 +2837,14 @@ module IlMachineManagedByref =
         // of non-byte-addressable cells (e.g. tagged-pointer cells).
         let stackMemoryByteTarget =
             match src with
-            | ManagedPointerSource.Byref {
-                                             Root = ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset)
-                                             Projections = []
-                                         } -> ValueSome (thread, frame, block, byteOffset)
-            | ManagedPointerSource.Byref {
-                                             Root = ByrefRoot.StackMemoryByte (thread, frame, block, rootByteOffset)
-                                             Projections = projs
-                                         } ->
+            | {
+                  Root = ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset)
+                  Projections = []
+              } -> ValueSome (thread, frame, block, byteOffset)
+            | {
+                  Root = ByrefRoot.StackMemoryByte (thread, frame, block, rootByteOffset)
+                  Projections = projs
+              } ->
                 // Iterative peel mirrors the read side: a chained
                 // byte-view (e.g. `[ReinterpretAs S, Field f, ReinterpretAs
                 // T]`) reduces to a single byte offset over the
@@ -2919,14 +2901,14 @@ module IlMachineManagedByref =
         // fast path to preserve `newValue`'s provenance.
         let nativeMemoryByteTarget =
             match src with
-            | ManagedPointerSource.Byref {
-                                             Root = ByrefRoot.NativeMemoryByte (block, byteOffset)
-                                             Projections = []
-                                         } -> ValueSome (block, byteOffset)
-            | ManagedPointerSource.Byref {
-                                             Root = ByrefRoot.NativeMemoryByte (block, rootByteOffset)
-                                             Projections = projs
-                                         } ->
+            | {
+                  Root = ByrefRoot.NativeMemoryByte (block, byteOffset)
+                  Projections = []
+              } -> ValueSome (block, byteOffset)
+            | {
+                  Root = ByrefRoot.NativeMemoryByte (block, rootByteOffset)
+                  Projections = projs
+              } ->
                 match peelTrailingByteView baseClassTypes state projs with
                 | ValueSome ([], viewByteOffset) ->
                     let byteOffset = rootRelativeByteOffset projs rootByteOffset viewByteOffset
@@ -2981,22 +2963,22 @@ module IlMachineManagedByref =
         // fast path declines and the byte-scatter fallback below handles the chain.
         let heapFieldPreciseWrite =
             match src with
-            | ManagedPointerSource.Byref {
-                                             Root = ByrefRoot.HeapValue addr
-                                             Projections = []
-                                         } -> tryWriteHeapValueFieldPrecise state addr 0 newValue
-            | ManagedPointerSource.Byref {
-                                             Root = ByrefRoot.HeapValue addr
-                                             Projections = projs
-                                         } ->
+            | {
+                  Root = ByrefRoot.HeapValue addr
+                  Projections = []
+              } -> tryWriteHeapValueFieldPrecise state addr 0 newValue
+            | {
+                  Root = ByrefRoot.HeapValue addr
+                  Projections = projs
+              } ->
                 match peelTrailingByteView baseClassTypes state projs with
                 | ValueSome ([], byteOffset) -> tryWriteHeapValueFieldPrecise state addr byteOffset newValue
                 | ValueSome (_ :: _, _)
                 | ValueNone -> None
-            | ManagedPointerSource.Byref {
-                                             Root = ByrefRoot.HeapObjectField (addr, field)
-                                             Projections = projs
-                                         } ->
+            | {
+                  Root = ByrefRoot.HeapObjectField (addr, field)
+                  Projections = projs
+              } ->
                 match peelTrailingByteView baseClassTypes state projs with
                 | ValueSome ([], byteOffset) ->
                     // The named field's offset is the starting point inside the heap
@@ -3014,14 +2996,14 @@ module IlMachineManagedByref =
                         newValue
                 | ValueSome (_ :: _, _)
                 | ValueNone -> None
-            | ManagedPointerSource.Byref {
-                                             Root = ByrefRoot.ArrayElement (arr, index)
-                                             Projections = []
-                                         } -> tryWriteArrayElementPrecise state arr index 0 newValue
-            | ManagedPointerSource.Byref {
-                                             Root = ByrefRoot.ArrayElement (arr, index)
-                                             Projections = projs
-                                         } ->
+            | {
+                  Root = ByrefRoot.ArrayElement (arr, index)
+                  Projections = []
+              } -> tryWriteArrayElementPrecise state arr index 0 newValue
+            | {
+                  Root = ByrefRoot.ArrayElement (arr, index)
+                  Projections = projs
+              } ->
                 match peelTrailingByteView baseClassTypes state projs with
                 | ValueSome ([], byteOffset) ->
                     // `Volatile.Write(ref array[i], obj)` lowers to a byref over the
@@ -3056,10 +3038,10 @@ module IlMachineManagedByref =
         // provenance need not match (and an empty array has no sample at all).
         let arrayElementTypedCellWrite =
             match src with
-            | ManagedPointerSource.Byref {
-                                             Root = ByrefRoot.ArrayElement _
-                                             Projections = _
-                                         } ->
+            | {
+                  Root = ByrefRoot.ArrayElement _
+                  Projections = _
+              } ->
                 match splitTrailingByteView src with
                 | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
                     let shape = ManagedHeap.getArrayShape arr state.ManagedHeap
@@ -3091,44 +3073,40 @@ module IlMachineManagedByref =
         let bytes = CliType.ToBytes newValue
 
         match src with
-        | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
-        | ManagedPointerSource.NativeIntPlaceholder bits ->
-            failwith
-                $"writeManagedByref: cannot write through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
-        | ManagedPointerSource.Byref {
-                                         Root = ByrefRoot.HeapValue addr
-                                         Projections = []
-                                     } -> writeHeapValueBytes state addr 0 bytes
-        | ManagedPointerSource.Byref {
-                                         Root = ByrefRoot.StackMemoryByte _
-                                         Projections = []
-                                     } ->
+        | {
+              Root = ByrefRoot.HeapValue addr
+              Projections = []
+          } -> writeHeapValueBytes state addr 0 bytes
+        | {
+              Root = ByrefRoot.StackMemoryByte _
+              Projections = []
+          } ->
             // Already handled by the StackMemoryByte typed-cell fast path above.
             failwith "unreachable: bare StackMemoryByte byref dispatched in fast path"
-        | ManagedPointerSource.Byref {
-                                         Root = ByrefRoot.NativeMemoryByte _
-                                         Projections = []
-                                     } ->
+        | {
+              Root = ByrefRoot.NativeMemoryByte _
+              Projections = []
+          } ->
             // Already handled by the NativeMemoryByte typed-cell fast path above.
             failwith "unreachable: bare NativeMemoryByte byref dispatched in fast path"
-        | ManagedPointerSource.Byref {
-                                         Root = ByrefRoot.PeByteRange peByteRange
-                                         Projections = _
-                                     } ->
+        | {
+              Root = ByrefRoot.PeByteRange peByteRange
+              Projections = _
+          } ->
             failwith
                 $"PE byte range is read-only; refusing byte-view write of %d{bytes.Length} bytes through %O{peByteRange}"
-        | ManagedPointerSource.Byref {
-                                         Root = ByrefRoot.StringCharAt (str, charIndex)
-                                         Projections = []
-                                     } -> writeStringBytes state str charIndex 0 bytes
-        | ManagedPointerSource.Byref {
-                                         Root = ByrefRoot.ArrayElement (arr, index)
-                                         Projections = []
-                                     } -> writeArrayBytes state arr index 0 bytes
-        | ManagedPointerSource.Byref {
-                                         Root = outerRoot
-                                         Projections = outerProjs
-                                     } ->
+        | {
+              Root = ByrefRoot.StringCharAt (str, charIndex)
+              Projections = []
+          } -> writeStringBytes state str charIndex 0 bytes
+        | {
+              Root = ByrefRoot.ArrayElement (arr, index)
+              Projections = []
+          } -> writeArrayBytes state arr index 0 bytes
+        | {
+              Root = outerRoot
+              Projections = outerProjs
+          } ->
             // Collapse any trailing byte-view segment of the projection
             // chain into an accumulated byte offset. Mirrors
             // `readManagedByrefBytesAs`: once a `ReinterpretAs` appears
@@ -3295,7 +3273,7 @@ module IlMachineManagedByref =
     let writeManagedByrefBytesOrTypedCell
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (src : ManagedPointerSource)
+        (src : AddressedByref)
         (newValue : CliType)
         : IlMachineState
         =
@@ -3645,21 +3623,17 @@ module IlMachineManagedByref =
     let private writeManagedByrefCore
         (baseClassTypes : BaseClassTypes<DumpedAssembly> option)
         (state : IlMachineState)
-        (src : ManagedPointerSource)
+        (src : AddressedByref)
         (newValue : CliType)
         : IlMachineState
         =
-        let src = anchorRawRootFieldPrefixOfSource state src
+        let src = anchorRawRootFieldPrefix state src
 
         match src with
-        | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
-        | ManagedPointerSource.NativeIntPlaceholder bits ->
-            failwith
-                $"writeManagedByrefCore: cannot write through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
-        | ManagedPointerSource.Byref {
-                                         Root = root
-                                         Projections = []
-                                     } ->
+        | {
+              Root = root
+              Projections = []
+          } ->
             // A bare byref names the *first byte* of its root, not the root as a whole. The two
             // coincide for the overwhelmingly common `ldloca x; …; stobj TypeOfX`, and that case
             // must go on replacing the slot outright — including restamping its declared type,
@@ -3686,10 +3660,10 @@ module IlMachineManagedByref =
                 failwith
                     $"storing %d{CliType.sizeOf newValue} bytes through a byref to a %d{CliType.sizeOf existing}-byte slot would overrun it: %O{src}"
             | _ -> writeRootValue state root newValue
-        | ManagedPointerSource.Byref {
-                                         Root = root
-                                         Projections = projs
-                                     } ->
+        | {
+              Root = root
+              Projections = projs
+          } ->
             // Mirror the read-side dispatch: when we have BaseClassTypes,
             // use the iterative peel so chained byte views like
             // `[ReinterpretAs S, Field f, ReinterpretAs T, Field g]`
@@ -3819,7 +3793,7 @@ module IlMachineManagedByref =
                 | _ -> useStructuralWriter ()
             | _ -> useStructuralWriter ()
 
-    let writeManagedByref (state : IlMachineState) (src : ManagedPointerSource) (newValue : CliType) : IlMachineState =
+    let writeManagedByref (state : IlMachineState) (src : AddressedByref) (newValue : CliType) : IlMachineState =
         // Call sites that can supply BaseClassTypes should use writeManagedByrefWithBase so
         // non-trailing ReinterpretAs projections can be applied bytewise. This metadata-light entry point
         // remains for primitive/external boundaries that do not currently carry type metadata.
@@ -3828,7 +3802,7 @@ module IlMachineManagedByref =
     let writeManagedByrefWithBase
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (src : ManagedPointerSource)
+        (src : AddressedByref)
         (newValue : CliType)
         : IlMachineState
         =
@@ -3909,28 +3883,22 @@ module IlMachineManagedByref =
     let private writeExactWidthPrimitiveTypedStore
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (src : ManagedPointerSource)
+        (src : AddressedByref)
         (newValue : CliType)
         (reason : string)
         (knownExisting : CliType option)
         : IlMachineState
         =
         match src with
-        | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
-        | ManagedPointerSource.NativeIntPlaceholder bits ->
-            failwith
-                $"writeExactWidthPrimitiveTypedStore: cannot write through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
-        | ManagedPointerSource.Byref {
-                                         Root = ByrefRoot.StackMemoryByte _
-                                         Projections = _
-                                     } ->
-            failwith "unreachable: StackMemoryByte primitive stores are dispatched before exact-width typed store"
-        | ManagedPointerSource.Byref {
-                                         Root = ByrefRoot.NativeMemoryByte _
-                                         Projections = _
-                                     } ->
-            failwith "unreachable: NativeMemoryByte primitive stores are dispatched before exact-width typed store"
-        | ManagedPointerSource.Byref addressed ->
+        | {
+              Root = ByrefRoot.StackMemoryByte _
+              Projections = _
+          } -> failwith "unreachable: StackMemoryByte primitive stores are dispatched before exact-width typed store"
+        | {
+              Root = ByrefRoot.NativeMemoryByte _
+              Projections = _
+          } -> failwith "unreachable: NativeMemoryByte primitive stores are dispatched before exact-width typed store"
+        | _ ->
             match splitTrailingByteView src with
             | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
                 // Byte-view-anchored array byref (set up by Conv_U/Conv_I on a
@@ -3989,7 +3957,7 @@ module IlMachineManagedByref =
             | ValueNone ->
                 let existing =
                     knownExisting
-                    |> Option.defaultWith (fun () -> readManagedByref baseClassTypes state addressed)
+                    |> Option.defaultWith (fun () -> readManagedByref baseClassTypes state src)
 
                 let existingSize = CliType.sizeOf existing
                 let newSize = CliType.sizeOf newValue
@@ -4057,26 +4025,23 @@ module IlMachineManagedByref =
     let writeIndirectPrimitiveStore
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (src : ManagedPointerSource)
+        (src : AddressedByref)
         (newValue : CliType)
         : IlMachineState
         =
-        let src = anchorRawRootFieldPrefixOfSource state src
+        let src = anchorRawRootFieldPrefix state src
 
         match src with
-        | ManagedPointerSource.NativeIntPlaceholder bits ->
-            failwith
-                $"writeIndirectPrimitiveStore: cannot write through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
         // `StackMemoryByte` and `NativeMemoryByte` byrefs use the same whole-cell test as
         // `writeManagedByrefBytesOrTypedCell`, asked about the flattened destination offset
         // (`tryFlatBlockByteOffset`) so that a byte-view projection chain — the shape a
         // `Span<T>` element indexer over stackalloc/native memory produces — is serviced
         // identically to a bare root rather than rejected one layer above the code that can
         // honour it.
-        | ManagedPointerSource.Byref {
-                                         Root = ByrefRoot.StackMemoryByte (thread, frame, block, rootByteOffset)
-                                         Projections = projs
-                                     } ->
+        | {
+              Root = ByrefRoot.StackMemoryByte (thread, frame, block, rootByteOffset)
+              Projections = projs
+          } ->
             match byteAddressabilityRejection newValue with
             | Some rejection when isNumericProvenanceRejection rejection ->
                 let typedWriteSafe =
@@ -4092,10 +4057,10 @@ module IlMachineManagedByref =
                     failwith
                         $"TODO: primitive indirect store of %O{newValue} through byte-view byref %O{src} cannot preserve new value's %s{rejection.Description}"
             | _ -> writeManagedByrefBytesOrTypedCell baseClassTypes state src newValue
-        | ManagedPointerSource.Byref {
-                                         Root = ByrefRoot.NativeMemoryByte (block, rootByteOffset)
-                                         Projections = projs
-                                     } ->
+        | {
+              Root = ByrefRoot.NativeMemoryByte (block, rootByteOffset)
+              Projections = projs
+          } ->
             match byteAddressabilityRejection newValue with
             | Some rejection when isNumericProvenanceRejection rejection ->
                 let typedWriteSafe =
@@ -4110,8 +4075,7 @@ module IlMachineManagedByref =
                     failwith
                         $"TODO: primitive indirect store of %O{newValue} through byte-view byref %O{src} cannot preserve new value's %s{rejection.Description}"
             | _ -> writeManagedByrefBytesOrTypedCell baseClassTypes state src newValue
-        | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
-        | ManagedPointerSource.Byref addressed ->
+        | _ ->
             let sourceRejection = byteAddressabilityRejection newValue
 
             match sourceRejection with
@@ -4198,7 +4162,7 @@ module IlMachineManagedByref =
                     // slot (`void*`, `delegate*<...>`), which has no byte image at all. The
                     // pointer case additionally requires a pointer-shaped payload; see
                     // `destinationNeedsWholeCellStore`.
-                    let existing = readManagedByref baseClassTypes state addressed
+                    let existing = readManagedByref baseClassTypes state src
 
                     match byteAddressabilityRejection existing with
                     | Some rejection when destinationNeedsWholeCellStore newValue rejection ->

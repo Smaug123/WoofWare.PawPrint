@@ -356,7 +356,11 @@ module NativeValueType =
             // defined.
             let state =
                 let write ptr value state =
-                    IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state ptr value
+                    IlMachineState.writeManagedByrefWithBase
+                        ctx.BaseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed ptr)
+                        value
 
                 state
                 |> write outFieldOffset (uint32Value offsetValue)

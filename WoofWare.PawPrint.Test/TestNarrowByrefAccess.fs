@@ -188,7 +188,11 @@ module TestNarrowByrefAccess =
         let payload = somewhere 42
 
         let state =
-            IlMachineState.writeManagedByrefWithBase baseClassTypes state destination (byReferenceTo payload)
+            IlMachineState.writeManagedByrefWithBase
+                baseClassTypes
+                state
+                (ManagedPointerSource.requireAddressed destination)
+                (byReferenceTo payload)
 
         let after = contentsOf state addr
 
@@ -222,7 +226,11 @@ module TestNarrowByrefAccess =
         let payload = somewhere 43
 
         let state =
-            IlMachineState.writeManagedByrefWithBase baseClassTypes state destination (byReferenceTo payload)
+            IlMachineState.writeManagedByrefWithBase
+                baseClassTypes
+                state
+                (ManagedPointerSource.requireAddressed destination)
+                (byReferenceTo payload)
 
         let after = contentsOf state addr
 
@@ -252,7 +260,11 @@ module TestNarrowByrefAccess =
                 }
 
         let state =
-            IlMachineState.writeManagedByrefWithBase baseClassTypes state destination (byReferenceTo (somewhere 44))
+            IlMachineState.writeManagedByrefWithBase
+                baseClassTypes
+                state
+                (ManagedPointerSource.requireAddressed destination)
+                (byReferenceTo (somewhere 44))
 
         match CliValueType.DereferenceField "_arg0" (contentsOf state addr) with
         | CliType.RuntimePointer _ -> ()
@@ -334,7 +346,11 @@ module TestNarrowByrefAccess =
         let replacement = byReferenceTo (somewhere 47)
 
         let state =
-            IlMachineState.writeManagedByrefWithBase baseClassTypes state destination replacement
+            IlMachineState.writeManagedByrefWithBase
+                baseClassTypes
+                state
+                (ManagedPointerSource.requireAddressed destination)
+                replacement
 
         let after = contentsOf state addr
         after.Declared |> shouldEqual byReferenceHandle
@@ -356,7 +372,11 @@ module TestNarrowByrefAccess =
 
         let outcome =
             try
-                IlMachineState.writeManagedByrefWithBase baseClassTypes state destination tooWide
+                IlMachineState.writeManagedByrefWithBase
+                    baseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed destination)
+                    tooWide
                 |> ignore
 
                 Choice1Of2 ()
@@ -417,7 +437,11 @@ module TestNarrowByrefAccess =
             System.Array.Copy (payload, 0, expected, 0, payload.Length)
 
             let state =
-                IlMachineState.writeManagedByrefWithBase baseClassTypes state destination (CliType.ValueType narrow)
+                IlMachineState.writeManagedByrefWithBase
+                    baseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed destination)
+                    (CliType.ValueType narrow)
 
             let after = contentsOf state addr
 

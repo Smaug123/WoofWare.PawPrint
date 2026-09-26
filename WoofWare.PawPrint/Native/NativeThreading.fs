@@ -253,7 +253,7 @@ module NativeThreading =
                 IlMachineState.writeManagedByrefWithBase
                     ctx.BaseClassTypes
                     state
-                    threadOut
+                    (ManagedPointerSource.requireAddressed threadOut)
                     (CliType.ObjectRef (Some addr))
 
             NativeHandlerResult.completed state |> Some
