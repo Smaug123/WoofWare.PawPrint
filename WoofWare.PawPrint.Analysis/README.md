@@ -13,15 +13,25 @@ method, a `rethrow`) may add more:
   the same table the PawPrint interpreter raises them through;
 * a `catch` absorbs what derives from its type, decided on the real base chains of types in any
   assembly, which `WoofWare.PawPrint.Loader` resolves exactly as the interpreter does;
+* an object thrown that is not an exception is named as itself; a `catch` sees it as a
+  `RuntimeWrappedException` if its method's assembly wraps such throws (C# and Visual Basic
+  assemblies do, F# ones do not), and as itself if not;
 * a `TypeInitializationException` is left out wherever the type a call touches has no initializer;
-* every token a body names is bound against the assemblies actually loaded, and a member or type
-  that is not there contributes the `MissingMethodException`, `MissingFieldException` or
-  `TypeLoadException` the JIT would throw. That happens before the body runs, so the body's own
+* every token a body names, and the type of every local it declares, is bound against the
+  assemblies actually loaded, and a member or type that is not there contributes the
+  `MissingMethodException`, `MissingFieldException` or `TypeLoadException` the JIT would throw. That happens before the body runs, so the body's own
   handlers do not catch it.
 
 The answer is an over-approximation: whatever a run can let escape is in it, named or covered by
 "unknown". Resource exhaustion is in it too, so almost every method can escape
 `StackOverflowException`.
+
+That holds for a set of assemblies that agree with each other. When one has changed since another
+was compiled against it, a missing member or type is reported as above, and says that the set
+needs rebuilding (or, for a package, a different version). Two other ways such a change can break a
+caller are not checked, and neither is reported: a member made inaccessible to it
+(`FieldAccessException`, `MethodAccessException`), and a generic instantiation it spells that a
+constraint added since now rejects (`TypeLoadException`).
 
 This package sees `WoofWare.PawPrint.Domain`, `WoofWare.PawPrint.Loader` and
 `WoofWare.PawPrint.Semantics`, and never the interpreter.

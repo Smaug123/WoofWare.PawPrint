@@ -23,6 +23,10 @@ module MethodKey =
         }
 
 /// The type of an exception that may escape.
+///
+/// IL may throw an object that is not an exception. Such an object is named as itself here; a
+/// <c>catch</c> or <c>filter</c> clause sees it as <c>RuntimeWrappedException</c> instead if its
+/// method's assembly wraps non-exception throws (<c>RuntimeCompatibility.wrapsNonExceptionThrows</c>).
 [<RequireQualifiedAccess>]
 type ThrownType =
     /// An exception of exactly this type: one constructed with `newobj` and thrown, or raised by the

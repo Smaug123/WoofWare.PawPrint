@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint.Analysis
 
+open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
 open Microsoft.Extensions.Logging
@@ -39,9 +40,9 @@ type internal LocalFacts =
         Opaque : (int * Opacity) list
         Calls : (int * MethodKey) list
         Regions : ExceptionRegion list
-        /// What binding the tokens the body names can throw: a member or type the assembly it is
-        /// looked for in does not have. The JIT binds them before the body runs, so none of the
-        /// body's own handlers can catch these.
+        /// What binding the tokens the body names and the types of its locals can throw: a member
+        /// or type the assembly it is looked for in does not have. The JIT binds them before the
+        /// body runs, so none of the body's own handlers can catch these.
         BindingFailures : Set<ThrownType>
     }
 
@@ -78,6 +79,12 @@ type EscapeAnalysisState =
 /// the faults the runtime raises by itself (<c>OpcodeFaults</c>), resource exhaustion among them,
 /// so almost every method can escape <c>StackOverflowException</c>; a report that wants to drop
 /// those does so knowingly.
+///
+/// That holds for assemblies that agree with each other. A member or type that an assembly names
+/// and the loaded one it is looked for in lacks is reported, as the exception binding it throws,
+/// and signals that they do not. A member that has become inaccessible to its caller, or a generic
+/// instantiation that a constraint added since rejects, is not checked, and the exception it causes
+/// is not reported.
 ///
 /// A method's summary is computed once and shared by every instantiation of it: a generic
 /// method's IL is the same for all of them, and the calls whose target an instantiation decides
@@ -124,11 +131,15 @@ module EscapeAnalysis =
         | Some ty -> ty.Identity
         | None -> failwith $"CoreLib declares no %s{qualified}, which OpcodeFaults names"
 
+    /// The CoreLib type of this namespace and name.
+    let private corelibType (state : EscapeAnalysisState) (ns : string) (name : string) : ResolvedTypeIdentity =
+        match state.Context.BaseTypes.Corelib.TryGetTopLevelTypeDef ns name with
+        | Some ty -> ty.Identity
+        | None -> failwith $"CoreLib declares no %s{ns}.%s{name}"
+
     /// The CoreLib exception type of this name, which the runtime raises by itself.
     let private corelibException (state : EscapeAnalysisState) (name : string) : ResolvedTypeIdentity =
-        match state.Context.BaseTypes.Corelib.TryGetTopLevelTypeDef "System" name with
-        | Some ty -> ty.Identity
-        | None -> failwith $"CoreLib declares no System.%s{name}"
+        corelibType state "System" name
 
     let private resolveTypeRef
         (state : EscapeAnalysisState)
@@ -236,8 +247,12 @@ module EscapeAnalysis =
         | _ -> state, None
 
     /// Does an exception raised at `offset` get past this body's handlers? `thrown` is `None` for
-    /// one the analysis cannot name, which only a clause catching everything stops. A `finally` or
-    /// `fault` never stops one, and a `filter` may decline, so neither counts.
+    /// one the analysis cannot name. A `finally` or `fault` never stops one, and a `filter` may
+    /// decline, so neither counts.
+    ///
+    /// A clause sees a thrown object that is not an exception as `RuntimeWrappedException` if
+    /// `assembly` wraps such throws, and as itself if not; an unknown one may be such an object, so
+    /// only a clause catching everything it could be seen as stops it.
     let private escapesHandlers
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
@@ -246,9 +261,43 @@ module EscapeAnalysis =
         (thrown : ThrownType option)
         : EscapeAnalysisState * bool
         =
-        let catchesEverything (caught : ResolvedTypeIdentity) : bool =
-            caught = state.Context.BaseTypes.Object.Identity
-            || caught = state.Context.BaseTypes.Exception.Identity
+        let objectType = state.Context.BaseTypes.Object.Identity
+        let exceptionType = state.Context.BaseTypes.Exception.Identity
+        let wraps = lazy (RuntimeCompatibility.wrapsNonExceptionThrows assembly)
+
+        // Does a clause catching `caught` stop what was thrown?
+        let stops (state : EscapeAnalysisState) (caught : ResolvedTypeIdentity) : EscapeAnalysisState * bool =
+            if caught = objectType then
+                state, true
+            else
+
+            match thrown with
+            | None -> state, caught = exceptionType && wraps.Force ()
+            | Some (ThrownType.Exactly ty)
+            | Some (ThrownType.SubtypeOf ty) ->
+
+            match derivesFrom state ty exceptionType with
+            | state, true -> derivesFrom state ty caught
+            | state, false ->
+                // What is thrown is not an exception, or, below `object` or an interface, may be
+                // either; each possibility must be caught.
+                let mayBeException =
+                    match thrown with
+                    | Some (ThrownType.SubtypeOf _) ->
+                        ty = objectType
+                        || (snd (definitionOf state ty)).TypeAttributes.HasFlag TypeAttributes.Interface
+                    | _ -> false
+
+                let state, nonExceptionStopped =
+                    if wraps.Force () then
+                        derivesFrom
+                            state
+                            (corelibType state "System.Runtime.CompilerServices" "RuntimeWrappedException")
+                            caught
+                    else
+                        derivesFrom state ty caught
+
+                state, nonExceptionStopped && (not mayBeException || caught = exceptionType)
 
         let rec go (state : EscapeAnalysisState) (regions : ExceptionRegion list) =
             match regions with
@@ -257,15 +306,10 @@ module EscapeAnalysis =
                 offset >= o.TryOffset && offset < o.TryOffset + o.TryLength
                 ->
                 match catchType state assembly token with
-                | state, Some caught when catchesEverything caught -> state, false
                 | state, Some caught ->
-                    match thrown with
-                    | Some (ThrownType.Exactly ty)
-                    | Some (ThrownType.SubtypeOf ty) ->
-                        match derivesFrom state ty caught with
-                        | state, true -> state, false
-                        | state, false -> go state rest
-                    | None -> go state rest
+                    match stops state caught with
+                    | state, true -> state, false
+                    | state, false -> go state rest
                 | state, None -> go state rest
             | _ :: rest -> go state rest
 
@@ -782,8 +826,19 @@ module EscapeAnalysis =
 
             state, raises, opaque, calls, bindingFailures
 
+        // The JIT loads the type of every local before the body runs, as it binds every token.
+        let state, localFailures =
+            ((state, Set.empty), Option.defaultValue ImmutableArray.Empty body.LocalVars)
+            ||> Seq.fold (fun (state, failures) local ->
+                match spellingBinds state assembly local with
+                | state, true -> state, failures
+                | state, false ->
+                    state, Set.add (ThrownType.Exactly (corelibException state "TypeLoadException")) failures
+            )
+
         let state, raises, opaque, calls, bindingFailures =
-            ((state, [], [], [], Set.empty), [ 0 .. ops.Length - 1 ]) ||> List.fold folder
+            ((state, [], [], [], localFailures), [ 0 .. ops.Length - 1 ])
+            ||> List.fold folder
 
         state,
         {

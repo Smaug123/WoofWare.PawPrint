@@ -434,6 +434,20 @@ public static class Uses
     public static object UseGoneType() => new Provider.GoneType();
     public static bool IsGone(object o) => o is Provider.GoneType;
     public static object ListOfGone() => new System.Collections.Generic.List<Provider.GoneType>();
+    public static bool LocalOfGone()
+    {
+        Provider.GoneType x = null;
+        return x != null;
+    }
+    public static bool CaughtLocalOfGone()
+    {
+        try
+        {
+            Provider.GoneType x = null;
+            return x != null;
+        }
+        catch (System.TypeLoadException) { return false; }
+    }
 }
 """
 
@@ -481,6 +495,9 @@ public static class Uses
                 "IsGone", "=System.TypeLoadException"
                 // A type argument of the member's parent, whose definition does resolve.
                 "ListOfGone", "=System.TypeLoadException"
+                // Named by no instruction, only by the type of a local.
+                "LocalOfGone", "=System.TypeLoadException"
+                "CaughtLocalOfGone", "=System.TypeLoadException"
             ] do
             let bound = against1 methodName
             let unbound = against2 methodName
@@ -656,3 +673,442 @@ public static class Uses
         withBounds |> shouldContain "=System.OverflowException"
         withoutBounds |> shouldNotContain "=System.ArgumentOutOfRangeException"
         withoutBounds |> shouldContain "=System.OverflowException"
+
+    /// Where the object a `throw` raises comes from, in an emitted method.
+    [<RequireQualifiedAccess>]
+    type private Raise =
+        /// `newobj object::.ctor; throw`.
+        | Constructed
+        /// `call object Make(); throw`, whose static type is only `object`.
+        | Returned
+        /// `call object MakeException(); throw`: an exception, whose static type is only `object`.
+        | ReturnedException
+        /// `call Throw()`, which throws a constructed object.
+        | Callee
+        /// `ldnull; throw`, whose operand's type the analysis does not know.
+        | Untyped
+
+    /// The `catch` clause, if any, around an emitted method's raise.
+    [<RequireQualifiedAccess>]
+    type private Clause =
+        | Uncaught
+        | Catch of ns : string * name : string
+
+    let private raises : Raise list =
+        [
+            Raise.Constructed
+            Raise.Returned
+            Raise.ReturnedException
+            Raise.Callee
+            Raise.Untyped
+        ]
+
+    let private clauses : Clause list =
+        [
+            Clause.Uncaught
+            Clause.Catch ("System", "Exception")
+            Clause.Catch ("System.Runtime.CompilerServices", "RuntimeWrappedException")
+            Clause.Catch ("System", "Object")
+        ]
+
+    let private emittedMethodName (raise : Raise) (clause : Clause) : string =
+        match clause with
+        | Clause.Uncaught -> $"%A{raise}"
+        | Clause.Catch (_, name) -> $"%A{raise}_%s{name}"
+
+    /// An assembly `W.Throws` with one static method per raise and clause, plus the helpers `Make`,
+    /// `MakeException` and `Throw`, carrying one `RuntimeCompatibilityAttribute` per blob in `attributes`, in order.
+    let private emitThrows (attributes : byte[] list) : byte[] =
+        let metadata = MetadataBuilder ()
+        let ilStream = BlobBuilder ()
+        let bodies = MethodBodyStreamEncoder ilStream
+
+        metadata.AddModule (
+            0,
+            metadata.GetOrAddString "Throws.dll",
+            metadata.GetOrAddGuid (Guid "5a1e7c3b-9d2f-4b8e-a6c4-1f3e5d7b9a2c"),
+            Unchecked.defaultof<GuidHandle>,
+            Unchecked.defaultof<GuidHandle>
+        )
+        |> ignore<ModuleDefinitionHandle>
+
+        let assemblyDefinition =
+            metadata.AddAssembly (
+                metadata.GetOrAddString "Throws",
+                Version (1, 0, 0, 0),
+                Unchecked.defaultof<StringHandle>,
+                Unchecked.defaultof<BlobHandle>,
+                Unchecked.defaultof<AssemblyFlags>,
+                AssemblyHashAlgorithm.None
+            )
+
+        let corelibName = typeof<obj>.Assembly.GetName ()
+
+        let corelibRef =
+            metadata.AddAssemblyReference (
+                metadata.GetOrAddString corelibName.Name,
+                corelibName.Version,
+                Unchecked.defaultof<StringHandle>,
+                metadata.GetOrAddBlob (corelibName.GetPublicKeyToken ()),
+                Unchecked.defaultof<AssemblyFlags>,
+                Unchecked.defaultof<BlobHandle>
+            )
+
+        let typeRef (ns : string) (name : string) : EntityHandle =
+            metadata.AddTypeReference (
+                (AssemblyReferenceHandle.op_Implicit corelibRef : EntityHandle),
+                metadata.GetOrAddString ns,
+                metadata.GetOrAddString name
+            )
+            |> TypeReferenceHandle.op_Implicit
+
+        let objectRef = typeRef "System" "Object"
+
+        let signature (isInstance : bool) (returnsObject : bool) : BlobHandle =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature(isInstanceMethod = isInstance)
+                .Parameters (
+                    0,
+                    (fun returnType ->
+                        if returnsObject then
+                            returnType.Type().Object ()
+                        else
+                            returnType.Void ()
+                    ),
+                    ignore<ParametersEncoder>
+                )
+
+            metadata.GetOrAddBlob blob
+
+        let constructorOf (ty : EntityHandle) : EntityHandle =
+            metadata.AddMemberReference (ty, metadata.GetOrAddString ".ctor", signature true false)
+            |> MemberReferenceHandle.op_Implicit
+
+        let objectConstructor = constructorOf objectRef
+        let exceptionConstructor = constructorOf (typeRef "System" "Exception")
+
+        let compatibilityConstructor =
+            constructorOf (typeRef "System.Runtime.CompilerServices" "RuntimeCompatibilityAttribute")
+
+        for blob in attributes do
+            metadata.AddCustomAttribute (
+                (AssemblyDefinitionHandle.op_Implicit assemblyDefinition : EntityHandle),
+                compatibilityConstructor,
+                metadata.GetOrAddBlob blob
+            )
+            |> ignore<CustomAttributeHandle>
+
+        // Method definitions are numbered in the order they are added: `Make`, `MakeException`,
+        // `Throw`, then the cases in the order of `raises` and `clauses`.
+        let make = MetadataTokens.MethodDefinitionHandle 1
+        let makeException = MetadataTokens.MethodDefinitionHandle 2
+        let throw = MetadataTokens.MethodDefinitionHandle 3
+
+        let emitRaise (code : InstructionEncoder) (raise : Raise) : unit =
+            match raise with
+            | Raise.Constructed ->
+                code.OpCode ILOpCode.Newobj
+                code.Token objectConstructor
+                code.OpCode ILOpCode.Throw
+            | Raise.Returned ->
+                code.Call make
+                code.OpCode ILOpCode.Throw
+            | Raise.ReturnedException ->
+                code.Call makeException
+                code.OpCode ILOpCode.Throw
+            | Raise.Callee -> code.Call throw
+            | Raise.Untyped ->
+                code.OpCode ILOpCode.Ldnull
+                code.OpCode ILOpCode.Throw
+
+        let addMethod (name : string) (returnsObject : bool) (body : int) : unit =
+            metadata.AddMethodDefinition (
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                MethodImplAttributes.IL,
+                metadata.GetOrAddString name,
+                signature false returnsObject,
+                body,
+                MetadataTokens.ParameterHandle 1
+            )
+            |> ignore<MethodDefinitionHandle>
+
+        let makeBody =
+            let code = InstructionEncoder (BlobBuilder ())
+            code.OpCode ILOpCode.Newobj
+            code.Token objectConstructor
+            code.OpCode ILOpCode.Ret
+            bodies.AddMethodBody code
+
+        addMethod "Make" true makeBody
+
+        let makeExceptionBody =
+            let code = InstructionEncoder (BlobBuilder ())
+            code.OpCode ILOpCode.Newobj
+            code.Token exceptionConstructor
+            code.OpCode ILOpCode.Ret
+            bodies.AddMethodBody code
+
+        addMethod "MakeException" true makeExceptionBody
+
+        let throwBody =
+            let code = InstructionEncoder (BlobBuilder ())
+            emitRaise code Raise.Constructed
+            bodies.AddMethodBody code
+
+        addMethod "Throw" false throwBody
+
+        for raise in raises do
+            for clause in clauses do
+                let body =
+                    match clause with
+                    | Clause.Uncaught ->
+                        let code = InstructionEncoder (BlobBuilder ())
+                        emitRaise code raise
+                        code.OpCode ILOpCode.Ret
+                        bodies.AddMethodBody code
+                    | Clause.Catch (ns, name) ->
+                        let flow = ControlFlowBuilder ()
+                        let code = InstructionEncoder (BlobBuilder (), flow)
+                        let tryStart = code.DefineLabel ()
+                        let handlerStart = code.DefineLabel ()
+                        let handlerEnd = code.DefineLabel ()
+                        code.MarkLabel tryStart
+                        emitRaise code raise
+                        code.Branch (ILOpCode.Leave_s, handlerEnd)
+                        code.MarkLabel handlerStart
+                        code.OpCode ILOpCode.Pop
+                        code.Branch (ILOpCode.Leave_s, handlerEnd)
+                        code.MarkLabel handlerEnd
+                        code.OpCode ILOpCode.Ret
+                        flow.AddCatchRegion (tryStart, handlerStart, handlerStart, handlerEnd, typeRef ns name)
+                        bodies.AddMethodBody code
+
+                addMethod (emittedMethodName raise clause) false body
+
+        metadata.AddTypeDefinition (
+            TypeAttributes.Class,
+            Unchecked.defaultof<StringHandle>,
+            metadata.GetOrAddString "<Module>",
+            Unchecked.defaultof<EntityHandle>,
+            MetadataTokens.FieldDefinitionHandle 1,
+            make
+        )
+        |> ignore<TypeDefinitionHandle>
+
+        metadata.AddTypeDefinition (
+            TypeAttributes.Public
+            ||| TypeAttributes.Class
+            ||| TypeAttributes.Abstract
+            ||| TypeAttributes.Sealed,
+            metadata.GetOrAddString "W",
+            metadata.GetOrAddString "Throws",
+            objectRef,
+            MetadataTokens.FieldDefinitionHandle 1,
+            make
+        )
+        |> ignore<TypeDefinitionHandle>
+
+        let peBuilder =
+            ManagedPEBuilder (
+                PEHeaderBuilder (imageCharacteristics = Characteristics.Dll),
+                MetadataRootBuilder metadata,
+                ilStream
+            )
+
+        let image = BlobBuilder ()
+        peBuilder.Serialize image |> ignore<BlobContentId>
+        image.ToArray ()
+
+    /// Run each of `methods` of `W.Throws` in `image` on the real runtime, answering which let an
+    /// exception escape.
+    let private escapingOnRealRuntime (image : byte[]) (methods : string list) : Map<string, bool> =
+        let context =
+            System.Runtime.Loader.AssemblyLoadContext ("Throws", isCollectible = true)
+
+        try
+            let throws = context.LoadFromStream(new MemoryStream (image)).GetType "W.Throws"
+
+            methods
+            |> List.map (fun name ->
+                let escaped =
+                    try
+                        throws.GetMethod(name).Invoke ((null : obj), Array.empty<obj>) |> ignore<obj>
+                        false
+                    with :? TargetInvocationException ->
+                        true
+
+                name, escaped
+            )
+            |> Map.ofList
+        finally
+            context.Unload ()
+
+    /// A `RuntimeCompatibility` blob: the prolog, a named-argument count, and the arguments.
+    let private compatibilityBlob (count : int16) (arguments : byte list list) : byte[] =
+        [ 0x01uy ; 0x00uy ; byte count ; byte (count >>> 8) ] @ List.concat arguments
+        |> Array.ofList
+
+    /// A named argument: its field or property tag, its serialization type, its name and its value.
+    let private namedArgument (kind : byte) (serialization : byte) (name : string) (value : byte list) : byte list =
+        let name = Text.Encoding.UTF8.GetBytes name
+        [ kind ; serialization ; byte name.Length ] @ List.ofArray name @ value
+
+    let private wrapProperty (value : byte list) : byte list =
+        namedArgument 0x54uy 0x02uy "WrapNonExceptionThrows" value
+
+    [<Test>]
+    let ``whether an assembly wraps what it throws is read as CoreCLR reads it`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let cases : (string * byte[] list) list =
+            [
+                "no attribute", []
+                "true", [ compatibilityBlob 1s [ wrapProperty [ 1uy ] ] ]
+                "false", [ compatibilityBlob 1s [ wrapProperty [ 0uy ] ] ]
+                "any nonzero byte", [ compatibilityBlob 1s [ wrapProperty [ 2uy ] ] ]
+                "set as a field",
+                [
+                    compatibilityBlob 1s [ namedArgument 0x53uy 0x02uy "WrapNonExceptionThrows" [ 1uy ] ]
+                ]
+                "set twice", [ compatibilityBlob 2s [ wrapProperty [ 1uy ] ; wrapProperty [ 1uy ] ] ]
+                "then an unknown argument",
+                [
+                    compatibilityBlob 2s [ wrapProperty [ 1uy ] ; namedArgument 0x54uy 0x02uy "Other" [ 1uy ] ]
+                ]
+                "no arguments", [ compatibilityBlob 0s [] ]
+                "no count", [ [| 0x01uy ; 0x00uy |] ]
+                "a negative count", [ compatibilityBlob -1s [ wrapProperty [ 1uy ] ] ]
+                "as an int32",
+                [
+                    compatibilityBlob
+                        1s
+                        [
+                            namedArgument 0x54uy 0x08uy "WrapNonExceptionThrows" [ 1uy ; 0uy ; 0uy ; 0uy ]
+                        ]
+                ]
+                "under another case",
+                [
+                    compatibilityBlob 1s [ namedArgument 0x54uy 0x02uy "wrapNonExceptionThrows" [ 1uy ] ]
+                ]
+                "without its value", [ compatibilityBlob 1s [ wrapProperty [] ] ]
+                "with trailing bytes", [ Array.append (compatibilityBlob 1s [ wrapProperty [ 1uy ] ]) [| 0xAAuy |] ]
+                "under a bad prolog",
+                [
+                    Array.append [| 0x00uy ; 0x00uy |] (compatibilityBlob 1s [ wrapProperty [ 1uy ] ]).[2..]
+                ]
+                "false, then true",
+                [
+                    compatibilityBlob 1s [ wrapProperty [ 0uy ] ]
+                    compatibilityBlob 1s [ wrapProperty [ 1uy ] ]
+                ]
+                "true, then false",
+                [
+                    compatibilityBlob 1s [ wrapProperty [ 1uy ] ]
+                    compatibilityBlob 1s [ wrapProperty [ 0uy ] ]
+                ]
+            ]
+
+        let probe =
+            emittedMethodName Raise.Constructed (Clause.Catch ("System", "Exception"))
+
+        let answers =
+            cases
+            |> List.map (fun (description, attributes) ->
+                let image = emitThrows attributes
+                // A `catch (Exception)` stops the object only if the assembly wraps it.
+                let runtime = not (escapingOnRealRuntime image [ probe ]).[probe]
+
+                let ours =
+                    Assembly.read loggerFactory (Some "Throws.dll") (new MemoryStream (image))
+                    |> RuntimeCompatibility.wrapsNonExceptionThrows
+
+                description, runtime, ours
+            )
+
+        for description, runtime, ours in answers do
+            if runtime <> ours then
+                failwith $"%s{description}: the runtime wraps %b{runtime}, we say %b{ours}"
+
+        // Both answers occur, so neither side is constant.
+        answers
+        |> List.map (fun (_, runtime, _) -> runtime)
+        |> List.distinct
+        |> List.length
+        |> shouldEqual 2
+
+    [<Test>]
+    let ``a thrown object that is not an exception is caught as the catching assembly sees it`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let cases =
+            [
+                for raise in raises do
+                    for clause in clauses do
+                        raise, clause, emittedMethodName raise clause
+            ]
+
+        for wraps in [ false ; true ] do
+            let image =
+                emitThrows (
+                    if wraps then
+                        [ compatibilityBlob 1s [ wrapProperty [ 1uy ] ] ]
+                    else
+                        []
+                )
+
+            let assembly =
+                Assembly.read loggerFactory (Some "Throws.dll") (new MemoryStream (image))
+
+            RuntimeCompatibility.wrapsNonExceptionThrows assembly |> shouldEqual wraps
+
+            // `ldnull; throw` raises a `NullReferenceException` at run time, which says nothing
+            // about how an unknown exception is caught, so only the analysis is asked about those.
+            let runtime =
+                cases
+                |> List.filter (fun (raise, _, _) -> raise <> Raise.Untyped)
+                |> List.map (fun (_, _, name) -> name)
+                |> escapingOnRealRuntime image
+
+            let mutable analysis = analysisOver [ assembly ] id
+
+            for raise, clause, name in cases do
+                let next, escapes =
+                    EscapeAnalysis.escapes analysis (methodNamed assembly "W.Throws" name)
+
+                analysis <- next
+
+                let describe () =
+                    let wrapping = if wraps then "wraps" else "does not wrap"
+                    $"%s{name} in an assembly that %s{wrapping}: %A{render analysis escapes}, unknown %b{escapes.Unknown}"
+
+                match raise with
+                | Raise.Untyped ->
+                    let absorbed =
+                        match clause with
+                        | Clause.Catch ("System", "Object") -> true
+                        | Clause.Catch ("System", "Exception") -> wraps
+                        | _ -> false
+
+                    if escapes.Unknown = absorbed then
+                        failwith $"%s{describe ()}; expected unknown %b{not absorbed}"
+                | _ ->
+                    let objectEscapes =
+                        render analysis escapes
+                        |> Set.exists (fun shown -> shown = "=System.Object" || shown = "<:System.Object")
+
+                    // Everything that escapes is reported. A returned object's type is known only
+                    // to be `object`, so it may or may not be an exception, and whatever could not
+                    // stop both is reported to let it escape; otherwise the answer is exact.
+                    let exact =
+                        match raise with
+                        | Raise.Returned
+                        | Raise.ReturnedException -> false
+                        | _ -> true
+
+                    if
+                        (runtime.[name] && not objectEscapes)
+                        || (exact && objectEscapes <> runtime.[name])
+                    then
+                        failwith $"%s{describe ()}; the runtime lets it escape: %b{runtime.[name]}"
