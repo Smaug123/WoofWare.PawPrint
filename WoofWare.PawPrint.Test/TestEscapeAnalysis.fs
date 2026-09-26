@@ -1075,6 +1075,12 @@ public static class Uses
         | ReturnedException
         /// `call Throw()`, which throws a constructed object.
         | Callee
+        /// `ldstr; newobj RuntimeWrappedException::.ctor(object); throw`: a wrapper thrown
+        /// explicitly, which a clause in an assembly that does not wrap sees unwrapped.
+        | ConstructedWrapper
+        /// `call Exception MakeWrapper(); throw`: the same wrapper, whose static type is only
+        /// `Exception`.
+        | ReturnedWrapper
         /// `ldnull; throw`, whose operand's type the analysis does not know.
         | Untyped
 
@@ -1090,6 +1096,8 @@ public static class Uses
             Raise.Returned
             Raise.ReturnedException
             Raise.Callee
+            Raise.ConstructedWrapper
+            Raise.ReturnedWrapper
             Raise.Untyped
         ]
 
@@ -1107,7 +1115,7 @@ public static class Uses
         | Clause.Catch (_, name) -> $"%A{raise}_%s{name}"
 
     /// An assembly `W.Throws` with one static method per raise and clause, plus the helpers `Make`,
-    /// `MakeException` and `Throw`, carrying one `RuntimeCompatibilityAttribute` per blob in `attributes`, in order.
+    /// `MakeException`, `Throw` and `MakeWrapper`, carrying one `RuntimeCompatibilityAttribute` per blob in `attributes`, in order.
     let private emitThrows (attributes : byte[] list) : byte[] =
         let metadata = MetadataBuilder ()
         let ilStream = BlobBuilder ()
@@ -1177,7 +1185,26 @@ public static class Uses
             |> MemberReferenceHandle.op_Implicit
 
         let objectConstructor = constructorOf objectRef
-        let exceptionConstructor = constructorOf (typeRef "System" "Exception")
+        let exceptionRef = typeRef "System" "Exception"
+        let exceptionConstructor = constructorOf exceptionRef
+
+        let wrapperConstructor : EntityHandle =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature(isInstanceMethod = true)
+                .Parameters (
+                    1,
+                    (fun returnType -> returnType.Void ()),
+                    (fun parameters -> parameters.AddParameter().Type().Object ())
+                )
+
+            metadata.AddMemberReference (
+                typeRef "System.Runtime.CompilerServices" "RuntimeWrappedException",
+                metadata.GetOrAddString ".ctor",
+                metadata.GetOrAddBlob blob
+            )
+            |> MemberReferenceHandle.op_Implicit
 
         let compatibilityConstructor =
             constructorOf (typeRef "System.Runtime.CompilerServices" "RuntimeCompatibilityAttribute")
@@ -1191,10 +1218,16 @@ public static class Uses
             |> ignore<CustomAttributeHandle>
 
         // Method definitions are numbered in the order they are added: `Make`, `MakeException`,
-        // `Throw`, then the cases in the order of `raises` and `clauses`.
+        // `Throw`, `MakeWrapper`, then the cases in the order of `raises` and `clauses`.
         let make = MetadataTokens.MethodDefinitionHandle 1
         let makeException = MetadataTokens.MethodDefinitionHandle 2
         let throw = MetadataTokens.MethodDefinitionHandle 3
+        let makeWrapper = MetadataTokens.MethodDefinitionHandle 4
+
+        let constructWrapper (code : InstructionEncoder) : unit =
+            code.LoadString (metadata.GetOrAddUserString "sentinel")
+            code.OpCode ILOpCode.Newobj
+            code.Token wrapperConstructor
 
         let emitRaise (code : InstructionEncoder) (raise : Raise) : unit =
             match raise with
@@ -1209,6 +1242,12 @@ public static class Uses
                 code.Call makeException
                 code.OpCode ILOpCode.Throw
             | Raise.Callee -> code.Call throw
+            | Raise.ConstructedWrapper ->
+                constructWrapper code
+                code.OpCode ILOpCode.Throw
+            | Raise.ReturnedWrapper ->
+                code.Call makeWrapper
+                code.OpCode ILOpCode.Throw
             | Raise.Untyped ->
                 code.OpCode ILOpCode.Ldnull
                 code.OpCode ILOpCode.Throw
@@ -1248,6 +1287,35 @@ public static class Uses
             bodies.AddMethodBody code
 
         addMethod "Throw" false throwBody
+
+        let makeWrapperBody =
+            let code = InstructionEncoder (BlobBuilder ())
+            constructWrapper code
+            code.OpCode ILOpCode.Ret
+            bodies.AddMethodBody code
+
+        let returnsException =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature()
+                .Parameters (
+                    0,
+                    (fun returnType -> returnType.Type().Type (exceptionRef, false)),
+                    ignore<ParametersEncoder>
+                )
+
+            metadata.GetOrAddBlob blob
+
+        metadata.AddMethodDefinition (
+            MethodAttributes.Public ||| MethodAttributes.Static,
+            MethodImplAttributes.IL,
+            metadata.GetOrAddString "MakeWrapper",
+            returnsException,
+            makeWrapperBody,
+            MetadataTokens.ParameterHandle 1
+        )
+        |> ignore<MethodDefinitionHandle>
 
         for raise in raises do
             for clause in clauses do
@@ -1484,21 +1552,30 @@ public static class Uses
                     if escapes.Unknown = absorbed then
                         failwith $"%s{describe ()}; expected unknown %b{not absorbed}"
                 | _ ->
-                    let objectEscapes =
+                    // What the analysis reports the raise as.
+                    let reported =
+                        match raise with
+                        | Raise.ConstructedWrapper -> [ "=System.Runtime.CompilerServices.RuntimeWrappedException" ]
+                        | Raise.ReturnedWrapper -> [ "<:System.Exception" ]
+                        | _ -> [ "=System.Object" ; "<:System.Object" ]
+
+                    let analysisEscapes =
                         render analysis escapes
-                        |> Set.exists (fun shown -> shown = "=System.Object" || shown = "<:System.Object")
+                        |> Set.exists (fun shown -> List.contains shown reported)
 
                     // Everything that escapes is reported. A returned object's type is known only
-                    // to be `object`, so it may or may not be an exception, and whatever could not
-                    // stop both is reported to let it escape; otherwise the answer is exact.
+                    // as its static type, which may cover values a clause stops and values it does
+                    // not, and whatever could not stop them all is reported to let it escape;
+                    // otherwise the answer is exact.
                     let exact =
                         match raise with
                         | Raise.Returned
-                        | Raise.ReturnedException -> false
+                        | Raise.ReturnedException
+                        | Raise.ReturnedWrapper -> false
                         | _ -> true
 
                     if
-                        (runtime.[name] && not objectEscapes)
-                        || (exact && objectEscapes <> runtime.[name])
+                        (runtime.[name] && not analysisEscapes)
+                        || (exact && analysisEscapes <> runtime.[name])
                     then
                         failwith $"%s{describe ()}; the runtime lets it escape: %b{runtime.[name]}"

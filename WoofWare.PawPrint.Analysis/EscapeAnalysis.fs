@@ -262,8 +262,9 @@ module EscapeAnalysis =
     /// decline, so neither counts.
     ///
     /// A clause sees a thrown object that is not an exception as `RuntimeWrappedException` if
-    /// `assembly` wraps such throws, and as itself if not; an unknown one may be such an object, so
-    /// only a clause catching everything it could be seen as stops it.
+    /// `assembly` wraps such throws, and as itself if not, in which case it also sees any thrown
+    /// `RuntimeWrappedException` as the object that wraps; an unknown one may be either, so only a
+    /// clause catching everything it could be seen as stops it.
     let private escapesHandlers
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
@@ -276,6 +277,12 @@ module EscapeAnalysis =
         let exceptionType = state.Context.BaseTypes.Exception.Identity
         let wraps = lazy (RuntimeCompatibility.wrapsNonExceptionThrows assembly)
 
+        let wrapperType () =
+            corelibType state "System.Runtime.CompilerServices" "RuntimeWrappedException"
+
+        let isInterface (ty : ResolvedTypeIdentity) : bool =
+            (snd (definitionOf state ty)).TypeAttributes.HasFlag TypeAttributes.Interface
+
         // Does a clause catching `caught` stop what was thrown?
         let stops (state : EscapeAnalysisState) (caught : ResolvedTypeIdentity) : EscapeAnalysisState * bool =
             if caught = objectType then
@@ -287,6 +294,25 @@ module EscapeAnalysis =
             | Some (ThrownType.Exactly ty)
             | Some (ThrownType.SubtypeOf ty) ->
 
+            // A clause in an assembly that does not wrap sees any `RuntimeWrappedException`
+            // unwrapped, even one thrown explicitly, and what it wraps may be anything.
+            let state, mayBeUnwrapped =
+                if wraps.Force () then
+                    state, false
+                else
+                    let wrapper = wrapperType ()
+
+                    match thrown with
+                    | Some (ThrownType.SubtypeOf _) ->
+                        match derivesFrom state wrapper ty with
+                        | state, true -> state, true
+                        | state, false -> state, isInterface ty
+                    | _ -> state, ty = wrapper
+
+            if mayBeUnwrapped then
+                state, false
+            else
+
             match derivesFrom state ty exceptionType with
             | state, true -> derivesFrom state ty caught
             | state, false ->
@@ -294,17 +320,12 @@ module EscapeAnalysis =
                 // either; each possibility must be caught.
                 let mayBeException =
                     match thrown with
-                    | Some (ThrownType.SubtypeOf _) ->
-                        ty = objectType
-                        || (snd (definitionOf state ty)).TypeAttributes.HasFlag TypeAttributes.Interface
+                    | Some (ThrownType.SubtypeOf _) -> ty = objectType || isInterface ty
                     | _ -> false
 
                 let state, nonExceptionStopped =
                     if wraps.Force () then
-                        derivesFrom
-                            state
-                            (corelibType state "System.Runtime.CompilerServices" "RuntimeWrappedException")
-                            caught
+                        derivesFrom state (wrapperType ()) caught
                     else
                         derivesFrom state ty caught
 
