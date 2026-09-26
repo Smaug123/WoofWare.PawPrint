@@ -162,7 +162,7 @@ module TestDelegateLayout =
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
         let corelib = readHostCorelib loggerFactory
-        let baseClassTypes = Corelib.getBaseTypes corelib
+        let baseClassTypes = BaseClassTypes.ofCorelib corelib
 
         match DelegateLayout.classify corelib baseClassTypes.DelegateType baseClassTypes.MulticastDelegateType with
         | Ok (DelegateLayout.InvocationListAndCount (binding, invocations)) ->
@@ -274,7 +274,7 @@ module TestDelegateLayout =
 
         let _, loggerFactory = LoggerFactory.makeTest ()
         let corelib = readHostCorelib loggerFactory
-        let baseClassTypes = Corelib.getBaseTypes corelib
+        let baseClassTypes = BaseClassTypes.ofCorelib corelib
         use guestStream = new MemoryStream (image)
         let guest = AssemblyApi.read loggerFactory None guestStream
 

@@ -31,7 +31,7 @@ module TestThreadStatics =
         let _, loggerFactory = LoggerFactory.makeTest ()
         Assembly.readFile loggerFactory corelibPath
 
-    let private bct : BaseClassTypes<DumpedAssembly> = Corelib.getBaseTypes corelib
+    let private bct : BaseClassTypes<DumpedAssembly> = BaseClassTypes.ofCorelib corelib
 
     let private state () : IlMachineState =
         // Factory intentionally undisposed: state.Logger outlives this scope.

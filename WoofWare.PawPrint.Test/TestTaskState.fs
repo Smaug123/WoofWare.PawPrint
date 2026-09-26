@@ -102,7 +102,7 @@ module TestTaskState =
         UnixTaskTable.cpuOf second state.Kernel.Tasks |> shouldEqual (CpuId 1)
 
     let private baseClassTypes : BaseClassTypes<DumpedAssembly> =
-        Corelib.getBaseTypes corelib
+        BaseClassTypes.ofCorelib corelib
 
     /// A frame on any concrete method: nothing reads its instructions, only that
     /// `addThread` has something to start the thread on.

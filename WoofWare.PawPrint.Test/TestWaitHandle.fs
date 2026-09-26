@@ -54,7 +54,7 @@ module TestWaitHandle =
         }
 
     let private baseClassTypes : BaseClassTypes<DumpedAssembly> =
-        Corelib.getBaseTypes corelib
+        BaseClassTypes.ofCorelib corelib
 
     /// Threads with a *real* frame, so their evaluation stack exists.
     /// Multi-handle waits need the stack: a wait-any's return value is not

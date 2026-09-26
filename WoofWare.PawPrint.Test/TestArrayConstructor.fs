@@ -33,7 +33,7 @@ module TestArrayConstructor =
         Assembly.readFile loggerFactory corelibPath
 
     let private baseClassTypes : BaseClassTypes<DumpedAssembly> =
-        Corelib.getBaseTypes corelib
+        BaseClassTypes.ofCorelib corelib
 
     let private concreteTypes : AllConcreteTypes =
         Corelib.concretizeAll (LoadedAssemblies.ofAssemblies [ corelib ]) baseClassTypes AllConcreteTypes.Empty

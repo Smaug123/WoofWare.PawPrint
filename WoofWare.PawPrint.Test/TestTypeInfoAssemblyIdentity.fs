@@ -21,7 +21,7 @@ module TestTypeInfoAssemblyIdentity =
         let _, loggerFactory = LoggerFactory.makeTest ()
         Assembly.readFile loggerFactory typeof<obj>.Assembly.Location
 
-    let private bct : BaseClassTypes<DumpedAssembly> = Corelib.getBaseTypes corelib
+    let private bct : BaseClassTypes<DumpedAssembly> = BaseClassTypes.ofCorelib corelib
 
     /// `TypeInfo.isBaseType` asks "is this type one of the base classes?", and the assembly half of
     /// that question is about *which assembly*, not about which object holds the answer. A caller

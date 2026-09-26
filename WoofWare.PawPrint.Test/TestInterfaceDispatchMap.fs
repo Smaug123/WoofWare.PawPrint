@@ -33,7 +33,7 @@ module TestInterfaceDispatchMap =
         let _, loggerFactory = LoggerFactory.makeTest ()
         Assembly.readFile loggerFactory typeof<obj>.Assembly.Location
 
-    let private bct : BaseClassTypes<DumpedAssembly> = Corelib.getBaseTypes corelib
+    let private bct : BaseClassTypes<DumpedAssembly> = BaseClassTypes.ofCorelib corelib
 
     let private stateOf (assemblies : DumpedAssembly list) : IlMachineState =
         let loaded = LoadedAssemblies.ofAssemblies (corelib :: assemblies)

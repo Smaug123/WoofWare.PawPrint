@@ -59,7 +59,7 @@ module TestGenericEnvironmentCycles =
         {
             LoggerFactory = loggerFactory
             Corelib = corelib
-            BaseTypes = Corelib.getBaseTypes corelib
+            BaseTypes = BaseClassTypes.ofCorelib corelib
             Loaded = LoadedAssemblies.ofAssemblies [ corelib ]
         }
 

@@ -25,7 +25,7 @@ module TestTypeResolution =
 
         let corelib = AssemblyApi.readFile loggerFactory corelibPath
 
-        Corelib.getBaseTypes corelib
+        BaseClassTypes.ofCorelib corelib
 
     [<Test>]
     let ``FromDefinition carries a structured resolved identity`` () : unit =

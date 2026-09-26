@@ -57,7 +57,7 @@ module TestZeroOfBaseAssemblies =
         let corelib = readAssembly corelibPath
         let fsharpCore = readAssembly fsharpCoreNetstandard21Path.Value
 
-        let baseTypes = Corelib.getBaseTypes corelib
+        let baseTypes = BaseClassTypes.ofCorelib corelib
 
         // Prime loadedAssemblies with corelib + FSharp.Core (netstandard2.1),
         // but NOT netstandard itself — that's the facade FSharp.Core's base
@@ -154,7 +154,7 @@ module TestZeroOfBaseAssemblies =
     let ``helper is idempotent and cycle-safe against repeated calls on the same handle`` () : unit =
         let corelib = readAssembly corelibPath
         let fsharpCore = readAssembly fsharpCoreNetstandard21Path.Value
-        let baseTypes = Corelib.getBaseTypes corelib
+        let baseTypes = BaseClassTypes.ofCorelib corelib
 
         let loaded : LoadedAssemblies =
             LoadedAssemblies.ofAssemblies [ corelib ; fsharpCore ]
@@ -223,7 +223,7 @@ module TestZeroOfBaseAssemblies =
         // descended into the field.
         let corelib = readAssembly corelibPath
         let fsharpCore = readAssembly fsharpCoreNetstandard21Path.Value
-        let baseTypes = Corelib.getBaseTypes corelib
+        let baseTypes = BaseClassTypes.ofCorelib corelib
         assertNetstandardAvailable ()
 
         // Build a C# library `struct Outer { FSharpValueOption<int> Inner; }`
@@ -337,7 +337,7 @@ public struct Outer
         // synthesised instantiation is a distinct ConcreteTypeHandle the
         // visited-set cannot collapse.
         let corelib = readAssembly corelibPath
-        let baseTypes = Corelib.getBaseTypes corelib
+        let baseTypes = BaseClassTypes.ofCorelib corelib
 
         let asm =
             loadCompiledLibrary
@@ -398,7 +398,7 @@ public struct S<T>
         // where the recursion goes S<int> → Box<S<S<int>>> → S<S<int>> →
         // Box<S<S<S<int>>>> → ...
         let corelib = readAssembly corelibPath
-        let baseTypes = Corelib.getBaseTypes corelib
+        let baseTypes = BaseClassTypes.ofCorelib corelib
 
         let asm =
             loadCompiledLibrary
@@ -461,7 +461,7 @@ public struct S<T>
         // unloaded-base-assembly exception.
         let corelib = readAssembly corelibPath
         let fsharpCore = readAssembly fsharpCoreNetstandard21Path.Value
-        let baseTypes = Corelib.getBaseTypes corelib
+        let baseTypes = BaseClassTypes.ofCorelib corelib
         assertNetstandardAvailable ()
 
         // A minimal generic method that never mentions T in its signature —

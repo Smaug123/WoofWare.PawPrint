@@ -460,34 +460,6 @@ type BaseClassTypes<'corelib> =
         || identity = this.IReadOnlyCollectionGeneric.Identity
 
 [<RequireQualifiedAccess>]
-module BaseClassTypes =
-    /// The CoreLib type a signature's primitive element type denotes: <c>ELEMENT_TYPE_I4</c> is
-    /// <c>System.Int32</c>, <c>ELEMENT_TYPE_OBJECT</c> is <c>System.Object</c>, and so on.
-    let ofPrimitive
-        (baseClassTypes : BaseClassTypes<'corelib>)
-        (primitive : PrimitiveType)
-        : TypeInfo<GenericParamFromMetadata, TypeDefn>
-        =
-        match primitive with
-        | PrimitiveType.Boolean -> baseClassTypes.Boolean
-        | PrimitiveType.Char -> baseClassTypes.Char
-        | PrimitiveType.SByte -> baseClassTypes.SByte
-        | PrimitiveType.Byte -> baseClassTypes.Byte
-        | PrimitiveType.Int16 -> baseClassTypes.Int16
-        | PrimitiveType.UInt16 -> baseClassTypes.UInt16
-        | PrimitiveType.Int32 -> baseClassTypes.Int32
-        | PrimitiveType.UInt32 -> baseClassTypes.UInt32
-        | PrimitiveType.Int64 -> baseClassTypes.Int64
-        | PrimitiveType.UInt64 -> baseClassTypes.UInt64
-        | PrimitiveType.Single -> baseClassTypes.Single
-        | PrimitiveType.Double -> baseClassTypes.Double
-        | PrimitiveType.String -> baseClassTypes.String
-        | PrimitiveType.Object -> baseClassTypes.Object
-        | PrimitiveType.TypedReference -> baseClassTypes.TypedReference
-        | PrimitiveType.IntPtr -> baseClassTypes.IntPtr
-        | PrimitiveType.UIntPtr -> baseClassTypes.UIntPtr
-
-[<RequireQualifiedAccess>]
 module TypeInfo =
     /// The nesting chain is joined with `+`, not `.`, matching CoreCLR's
     /// `TypeNameBuilder::AddNestedName` (`vm/typestring.cpp`) and hence `Type.FullName` /
