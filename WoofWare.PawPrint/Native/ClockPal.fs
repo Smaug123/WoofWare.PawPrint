@@ -37,6 +37,22 @@ module ClockPal =
     [<Literal>]
     let private ticksPerSecond : int64 = 10_000_000L
 
+    /// The first 100 ns tick at or after `nanoseconds`: how a kernel deadline,
+    /// which is in nanoseconds since boot, becomes a reading of the virtual clock.
+    ///
+    /// Rounded up, so that a clock advanced to the result has reached the
+    /// deadline; rounded down, a jump to it could land short, and the wait would
+    /// not fire.
+    let firstTickAtOrAfter (nanoseconds : int64) : int64 =
+        // Division truncates toward zero, which rounds a positive quotient down and
+        // a negative one up, so only a positive remainder needs the extra tick.
+        let quotient = nanoseconds / nanosecondsPerTick
+
+        if nanoseconds % nanosecondsPerTick > 0L then
+            quotient + 1L
+        else
+            quotient
+
     /// Largest legal `KernelConfig.WallClockEpochMs`: 9999-12-31T23:59:59.999Z
     /// as milliseconds since the Unix epoch, which is the last whole millisecond
     /// `System.DateTime` can represent

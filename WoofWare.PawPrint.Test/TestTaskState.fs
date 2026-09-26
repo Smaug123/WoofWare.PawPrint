@@ -224,7 +224,7 @@ module TestTaskState =
         let state, thread =
             machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
 
-        state.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.withParked thread (Some parked))), thread
+        state.MapKernel (EmulatedKernel.mapUnix (UnixWait.park thread parked)), thread
 
     [<Test>]
     let ``a syscall waiter with no record is refused`` () : unit =
@@ -280,7 +280,7 @@ module TestTaskState =
 
         let exn =
             Assert.Throws<exn> (fun () ->
-                parked.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.withParked thread (Some aLock)))
+                parked.MapKernel (EmulatedKernel.mapUnix (UnixWait.park thread aLock))
                 |> ignore<IlMachineState>
             )
 
@@ -293,7 +293,7 @@ module TestTaskState =
         // whose port was drained before it ran parks again on the same port.
         let state, thread = threadParkedIn parked
 
-        state.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.withParked thread (Some parked)))
+        state.MapKernel (EmulatedKernel.mapUnix (UnixWait.park thread parked))
         |> fun state -> UnixTaskTable.parkedFor thread state.Kernel.Tasks
         |> shouldEqual (Some parked)
 
@@ -305,8 +305,8 @@ module TestTaskState =
 
         let other = parks |> List.find (fun p -> p <> parked)
 
-        state.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.withParked thread None))
-        |> fun state -> state.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.withParked thread (Some other)))
+        state.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.unpark thread))
+        |> fun state -> state.MapKernel (EmulatedKernel.mapUnix (UnixWait.park thread other))
         |> fun state -> UnixTaskTable.parkedFor thread state.Kernel.Tasks
         |> shouldEqual (Some other)
 
@@ -365,9 +365,7 @@ module TestTaskState =
         // refuses either alone: a record on a thread that has not started is a state no wait
         // can have produced.
         let parked =
-            state.MapKernel (
-                EmulatedKernel.mapTasks (UnixTaskTable.withParked thread (Some (ParkedSyscall.SocketWait wait)))
-            )
+            state.MapKernel (EmulatedKernel.mapUnix (UnixWait.park thread (ParkedSyscall.SocketWait wait)))
             |> Scheduler.parkInSyscall thread
 
         UnixTaskTable.parkedFor thread parked.Kernel.Tasks
@@ -383,7 +381,7 @@ module TestTaskState =
         agrees woken
 
         let released =
-            woken.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.withParked thread None))
+            woken.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.unpark thread))
 
         UnixTaskTable.parkedFor thread released.Kernel.Tasks |> shouldEqual None
 

@@ -206,7 +206,7 @@ class WaitsOnADuplicatedPort
 
         let stripped =
             { prepared with
-                State = prepared.State.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.withParked thread None))
+                State = prepared.State.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.unpark thread))
             }
 
         let _messages, loggerFactory =

@@ -3186,7 +3186,8 @@ module NativeSystemNative =
                     // Woken and beaten: a release wakes every waiter and they
                     // race, so all but one of them find the lock gone. Park
                     // again on the same condition, which is the ordinary case
-                    // rather than an edge one; the record stands.
+                    // rather than an edge one; the kernel has re-parked the task on
+                    // the same record, behind every other waiter.
                     park system
                 | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed _), system) ->
                     // The grant cleared the record.
@@ -5178,16 +5179,14 @@ module NativeSystemNative =
                 // to decide whether to wake, and cannot ask a different
                 // question from the one the delivery below answers.
                 state.MapKernel (
-                    EmulatedKernel.mapTasks (
-                        UnixTaskTable.withParked
+                    EmulatedKernel.mapUnix (
+                        UnixWait.park
                             ctx.Thread
-                            (Some (
-                                ParkedSyscall.SocketWait
-                                    {
-                                        ParkedSocketWait.Port = port
-                                        MaxEvents = requestedCount
-                                    }
-                            ))
+                            (ParkedSyscall.SocketWait
+                                {
+                                    ParkedSocketWait.Port = port
+                                    MaxEvents = requestedCount
+                                })
                     )
                 )
                 |> Scheduler.parkInSyscall ctx.Thread
@@ -5228,7 +5227,7 @@ module NativeSystemNative =
                 // A successful wait leaves errno alone. The wait is over, so
                 // the captured in-flight state (if this was a re-entry) goes
                 // with it.
-                state.MapKernel (fun _ -> EmulatedKernel.mapTasks (UnixTaskTable.withParked ctx.Thread None) kernel)
+                state.MapKernel (fun _ -> EmulatedKernel.mapTasks (UnixTaskTable.unpark ctx.Thread) kernel)
                 |> writeBytesThrough ctx operation bufferPointer (ImmutableArray.CreateRange bytes)
                 |> writeBytesThrough ctx operation countCell (ImmutableArray.CreateRange countBytes)
                 |> IlMachineState.pushToEvalStack'
