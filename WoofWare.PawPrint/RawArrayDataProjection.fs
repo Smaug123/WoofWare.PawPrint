@@ -79,7 +79,11 @@ module internal RawArrayDataProjection =
 
                 match arr.ConcreteType with
                 | ConcreteTypeHandle.OneDimArrayZero _ ->
-                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (addr, 0), [ byteView ])
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.ArrayElement (addr, 0)
+                            Projections = [ byteView ]
+                        }
                     |> Some
                 | ConcreteTypeHandle.Array (_, rank) ->
                     // On a multi-dimensional array `Data` is not element 0 but the start of the
@@ -88,13 +92,15 @@ module internal RawArrayDataProjection =
                     // size to reach the elements, so the byref is element 0 less that size: the
                     // step cancels the offset exactly, and a read before element 0 is served from
                     // the block by `readArrayBytesAs`.
-                    ManagedPointerSource.Byref (
-                        ByrefRoot.ArrayElement (addr, 0),
-                        [
-                            byteView
-                            ByrefProjection.ByteOffset (-(MultiDimArrayBounds.sizeInBytes rank))
-                        ]
-                    )
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.ArrayElement (addr, 0)
+                            Projections =
+                                [
+                                    byteView
+                                    ByrefProjection.ByteOffset (-(MultiDimArrayBounds.sizeInBytes rank))
+                                ]
+                        }
                     |> Some
                 | other ->
                     failwith

@@ -350,7 +350,12 @@ public sealed class MethodSignatureHost
         let arrayAddr, state =
             IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero objectHandle) (fun () -> value) 1 state
 
-        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                Projections = []
+            },
+        state
 
     let private objectHandleOnStackValue
         (fixture : SignatureFixture)
@@ -830,8 +835,10 @@ public sealed class MethodSignatureHost
 
         let peByteRange =
             match signatureField state signatureAddr "_sig" |> CliType.unwrapPrimitiveLikeDeep with
-            | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange,
-                                                                                             _))) -> peByteRange
+            | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Byref {
+                                                                                                Root = ByrefRoot.PeByteRange peByteRange
+                                                                                                Projections = _
+                                                                                            })) -> peByteRange
             | other -> failwith $"Expected _sig to be a byref over a PE byte range, got %O{other}"
 
         peByteRange.Source
@@ -1227,7 +1234,11 @@ public sealed class MethodSignatureHost
                 state
 
         let anonymousPointer =
-            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                    Projections = []
+                }
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->

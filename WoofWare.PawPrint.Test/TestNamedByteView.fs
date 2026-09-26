@@ -81,13 +81,15 @@ module TestNamedByteView =
 
     /// `(byte*)&handle` — a byte cursor `offset` bytes into the value at `addr`.
     let private byteCursor (addr : ManagedHeapAddress) (offset : int) : ManagedPointerSource =
-        ManagedPointerSource.Byref (
-            ByrefRoot.HeapValue addr,
-            [
-                ByrefProjection.ReinterpretAs byteConcreteType
-                ByrefProjection.ByteOffset offset
-            ]
-        )
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.HeapValue addr
+                Projections =
+                    [
+                        ByrefProjection.ReinterpretAs byteConcreteType
+                        ByrefProjection.ByteOffset offset
+                    ]
+            }
 
     [<Test>]
     let ``a byte cursor into a handle reads back that byte of that handle`` () : unit =
@@ -129,7 +131,11 @@ module TestNamedByteView =
             IlMachineState.allocateManagedObject intPtrHandle (intPtrHolding handleSource) (state ())
 
         let wholeCell =
-            ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [ ByrefProjection.Field (FieldId.named "_value") ])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue addr
+                    Projections = [ ByrefProjection.Field (FieldId.named "_value") ]
+                }
 
         IlMachineState.readManagedByref baseClassTypes st wholeCell
         |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt handleSource))
@@ -193,7 +199,11 @@ module TestNamedByteView =
         let narrowedByref =
             EvalStackValue.Int32 (
                 Int32Source.NarrowedManagedPointer (
-                    ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 1), [])
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 1)
+                            Projections = []
+                        }
                 )
             )
 
@@ -224,13 +234,15 @@ module TestNamedByteView =
         let st = IlMachineState.setArrayValue arrayAddr named 2 st
 
         let cursor =
-            ManagedPointerSource.Byref (
-                ByrefRoot.ArrayElement (arrayAddr, 2),
-                [
-                    ByrefProjection.ReinterpretAs byteConcreteType
-                    ByrefProjection.ByteOffset 0
-                ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arrayAddr, 2)
+                    Projections =
+                        [
+                            ByrefProjection.ReinterpretAs byteConcreteType
+                            ByrefProjection.ByteOffset 0
+                        ]
+                }
 
         IlMachineState.readManagedByrefBytesAs baseClassTypes st cursor byteTemplate
         |> shouldEqual named
@@ -238,13 +250,15 @@ module TestNamedByteView =
         // The cells either side are untouched ordinary zero bytes, so the array is not wholly
         // poisoned by one named cell.
         let plainCursor (index : int) : ManagedPointerSource =
-            ManagedPointerSource.Byref (
-                ByrefRoot.ArrayElement (arrayAddr, index),
-                [
-                    ByrefProjection.ReinterpretAs byteConcreteType
-                    ByrefProjection.ByteOffset 0
-                ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arrayAddr, index)
+                    Projections =
+                        [
+                            ByrefProjection.ReinterpretAs byteConcreteType
+                            ByrefProjection.ByteOffset 0
+                        ]
+                }
 
         IlMachineState.readManagedByrefBytesAs baseClassTypes st (plainCursor 1) byteTemplate
         |> shouldEqual byteTemplate
@@ -272,13 +286,15 @@ module TestNamedByteView =
         let st = IlMachineState.setArrayValue arrayAddr cell 1 st
 
         let wholeCellCursor =
-            ManagedPointerSource.Byref (
-                ByrefRoot.ArrayElement (arrayAddr, 1),
-                [
-                    ByrefProjection.ReinterpretAs byteConcreteType
-                    ByrefProjection.ByteOffset 0
-                ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arrayAddr, 1)
+                    Projections =
+                        [
+                            ByrefProjection.ReinterpretAs byteConcreteType
+                            ByrefProjection.ByteOffset 0
+                        ]
+                }
 
         IlMachineState.readManagedByrefBytesAs
             baseClassTypes
@@ -309,13 +325,15 @@ module TestNamedByteView =
             IlMachineState.setArrayValue arrayAddr (CliType.Numeric (CliNumericType.NativeInt handleSource)) 1 st
 
         let cursor =
-            ManagedPointerSource.Byref (
-                ByrefRoot.ArrayElement (arrayAddr, 1),
-                [
-                    ByrefProjection.ReinterpretAs byteConcreteType
-                    ByrefProjection.ByteOffset 0
-                ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arrayAddr, 1)
+                    Projections =
+                        [
+                            ByrefProjection.ReinterpretAs byteConcreteType
+                            ByrefProjection.ByteOffset 0
+                        ]
+                }
 
         IlMachineState.readManagedByrefBytesAs
             baseClassTypes

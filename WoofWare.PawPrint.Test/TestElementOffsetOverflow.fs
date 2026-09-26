@@ -64,7 +64,13 @@ module TestElementOffsetOverflow =
     /// bounds: PawPrint models an out-of-bounds byref symbolically and only refuses it on
     /// dereference, which is exactly what lets a large `Unsafe.Add` be expressed at all.
     let private elementByref (arr : ManagedHeapAddress) (index : int) : EvalStackValue =
-        EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []))
+        EvalStackValue.ManagedPointer (
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arr, index)
+                    Projections = []
+                }
+        )
 
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
@@ -155,7 +161,13 @@ module TestElementOffsetOverflow =
 
             result
             |> shouldEqual (
-                EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, expected), []))
+                EvalStackValue.ManagedPointer (
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.ArrayElement (arr, expected)
+                            Projections = []
+                        }
+                )
             )
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen genRepresentableCase) property)
@@ -185,7 +197,11 @@ module TestElementOffsetOverflow =
         result
         |> shouldEqual (
             EvalStackValue.ManagedPointer (
-                ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, System.Int32.MaxValue), [])
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.ArrayElement (arr, System.Int32.MaxValue)
+                        Projections = []
+                    }
             )
         )
 
@@ -278,10 +294,11 @@ module TestElementOffsetOverflow =
 
         let src =
             EvalStackValue.ManagedPointer (
-                ManagedPointerSource.Byref (
-                    ByrefRoot.ArrayElement (arr, 0),
-                    [ ByrefProjection.ReinterpretAs int64View ]
-                )
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.ArrayElement (arr, 0)
+                        Projections = [ ByrefProjection.ReinterpretAs int64View ]
+                    }
             )
 
         let ex =
@@ -305,10 +322,11 @@ module TestElementOffsetOverflow =
 
         let src =
             EvalStackValue.ManagedPointer (
-                ManagedPointerSource.Byref (
-                    ByrefRoot.ArrayElement (arr, 0),
-                    [ ByrefProjection.ReinterpretAs int64View ]
-                )
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.ArrayElement (arr, 0)
+                        Projections = [ ByrefProjection.ReinterpretAs int64View ]
+                    }
             )
 
         let result =
@@ -317,7 +335,10 @@ module TestElementOffsetOverflow =
         // One `long` forward is 8 bytes, and the array's stride is 4, so the byte cursor
         // normalises cleanly back onto cell 2 rather than leaving a trailing `ByteOffset`.
         match result with
-        | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (actual, index), projs)) ->
+        | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref {
+                                                                        Root = ByrefRoot.ArrayElement (actual, index)
+                                                                        Projections = projs
+                                                                    }) ->
             actual |> shouldEqual arr
             index |> shouldEqual 2
 

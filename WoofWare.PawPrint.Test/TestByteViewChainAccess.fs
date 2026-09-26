@@ -364,7 +364,12 @@ module TestByteViewChainAccess =
             IlMachineState.allocateManagedObject storageDeclared case.Storage preparedState
 
         let src =
-            (ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, []), case.Projections)
+            (ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue addr
+                    Projections = []
+                },
+             case.Projections)
             ||> List.fold (fun src proj -> ManagedPointerSource.appendProjection proj src)
 
         state, addr, src

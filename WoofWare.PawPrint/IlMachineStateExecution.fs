@@ -2391,7 +2391,13 @@ module IlMachineStateExecution =
                             // Boxed value type receiver: implicit unbox to managed pointer
                             // into the heap object's value data.
                             CliType.RuntimePointer (
-                                CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, []))
+                                CliRuntimePointer.Managed (
+                                    ManagedPointerSource.Byref
+                                        {
+                                            Root = ByrefRoot.HeapValue addr
+                                            Projections = []
+                                        }
+                                )
                             )
                         | _ -> EvalStackValue.toCliTypeCoerced thisArgTarget rawThis
 

@@ -1089,7 +1089,11 @@ module IlMachineTypeResolution =
         let state, byteType = ensureByteConcreteType loggerFactory baseClassTypes state
 
         state,
-        ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, [ ByrefProjection.ReinterpretAs byteType ])
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.PeByteRange peByteRange
+                Projections = [ ByrefProjection.ReinterpretAs byteType ]
+            }
 
     /// PE byte range pointer over a Constant table row's value blob (ECMA II.22.9).
     let peByteRangeForConstantBlob (assembly : DumpedAssembly) (constantHandle : ConstantHandle) : PeByteRangePointer =
@@ -1201,4 +1205,8 @@ module IlMachineTypeResolution =
         let state, charType = ensureCharConcreteType loggerFactory baseClassTypes state
 
         state,
-        ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, [ ByrefProjection.ReinterpretAs charType ])
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.PeByteRange peByteRange
+                Projections = [ ByrefProjection.ReinterpretAs charType ]
+            }

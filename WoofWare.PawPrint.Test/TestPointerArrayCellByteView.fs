@@ -75,10 +75,12 @@ module TestPointerArrayCellByteView =
                 let! slot = Gen.choose (0, 5)
 
                 return
-                    ManagedPointerSource.Byref (
-                        ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId frame, uint16<int> slot),
-                        []
-                    )
+                    ManagedPointerSource.Byref
+                        {
+                            Root =
+                                ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId frame, uint16<int> slot)
+                            Projections = []
+                        }
                     |> CliRuntimePointer.Managed
             }
 
@@ -122,7 +124,11 @@ module TestPointerArrayCellByteView =
         (byteOffset : int)
         : ManagedPointerSource
         =
-        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, root), [])
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.ArrayElement (arr, root)
+                Projections = []
+            }
         |> ManagedPointerByteView.addByteOffset state byteType byteOffset
 
     type private Case =

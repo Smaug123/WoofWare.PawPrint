@@ -229,7 +229,12 @@ module TestSameWidthStoreIntoNamedCell =
                 ]
 
         let src =
-            (ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, []), projections)
+            (ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue addr
+                    Projections = []
+                },
+             projections)
             ||> List.fold (fun src proj -> ManagedPointerSource.appendProjection proj src)
 
         state, addr, src, storage
@@ -281,7 +286,11 @@ module TestSameWidthStoreIntoNamedCell =
         let refOffset, _ = CliValueType.GetFieldLayoutById refId storage
 
         let src =
-            ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue addr
+                    Projections = []
+                }
             |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs int64Kind.Type)
             |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset refOffset)
 

@@ -526,7 +526,12 @@ module Intrinsics =
                 failwith "array not found"
 
             let toPush =
-                let element = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (addr, 0), [])
+                let element =
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.ArrayElement (addr, 0)
+                            Projections = []
+                        }
 
                 match generic with
                 | Some _ -> element
@@ -3022,7 +3027,10 @@ module Intrinsics =
             // handles all other shapes.
             let normalisation =
                 match srcPtr with
-                | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, _), _) ->
+                | ManagedPointerSource.Byref {
+                                                 Root = ByrefRoot.ArrayElement (arr, _)
+                                                 Projections = _
+                                             } ->
                     // See `IntrinsicHelpers.offsetManagedPointerByElements`: a zero here means
                     // "do not normalise"; `ElementStride` is strictly positive even for an
                     // empty array.
@@ -3033,7 +3041,10 @@ module Intrinsics =
 
             let typedShortcut : ManagedPointerSource option =
                 match srcPtr with
-                | ManagedPointerSource.Byref (root, projs) ->
+                | ManagedPointerSource.Byref {
+                                                 Root = root
+                                                 Projections = projs
+                                             } ->
                     let hasByteViewTail =
                         match List.tryLast projs with
                         | Some (ByrefProjection.ReinterpretAs _)
@@ -3083,7 +3094,13 @@ module Intrinsics =
                                 failwith
                                     $"TODO: Unsafe.AddByteOffset: advancing the byref at cell %d{i} of array %O{arr} by %d{offset} bytes reaches cell %d{folded}, which does not fit in the int32 PawPrint stores for a cell index; a byref this far from its root is not modelled"
 
-                            Some (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, int32<int64> folded), []))
+                            Some (
+                                ManagedPointerSource.Byref
+                                    {
+                                        Root = ByrefRoot.ArrayElement (arr, int32<int64> folded)
+                                        Projections = []
+                                    }
+                            )
                         | _ -> None
                 | _ -> None
 

@@ -608,7 +608,12 @@ public class MarshalShapes
                 length
                 state
 
-        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                Projections = []
+            },
+        state
 
     let private allocateInt32Out
         (fixture : MetadataImportFixture)
@@ -633,7 +638,10 @@ public class MarshalShapes
 
     let private readInt32BufferElement (state : IlMachineState) (ptr : ManagedPointerSource) (index : int) : int32 =
         match ptr with
-        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, baseIndex), []) ->
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.ArrayElement (arrayAddr, baseIndex)
+                                         Projections = []
+                                     } ->
             match
                 ManagedHeap.getArrayValue arrayAddr (baseIndex + index) state.ManagedHeap
                 |> CliType.unwrapPrimitiveLikeDeep
@@ -668,7 +676,12 @@ public class MarshalShapes
                 1
                 state
 
-        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                Projections = []
+            },
+        state
 
     let private objectHandleOnStack
         (fixture : MetadataImportFixture)
@@ -916,7 +929,12 @@ public class MarshalShapes
         let arrayAddr, state =
             IlMachineState.allocateArray fixture.ConstArrayHandle (fun () -> zero) 1 state
 
-        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                Projections = []
+            },
+        state
 
     /// Read back a `ConstArray` written through `ptr`: its `m_length`, the bytes its `m_constArray`
     /// addresses, and the raw `m_constArray` pointer itself. The pointer is returned because it is
@@ -965,7 +983,10 @@ public class MarshalShapes
                     [||]
                 else
                     failwith $"ConstArray with length %d{length} but null pointer"
-            | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, baseIndex), []) ->
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.ArrayElement (arrayAddr, baseIndex)
+                                             Projections = []
+                                         } ->
                 Array.init
                     length
                     (fun i ->
@@ -976,7 +997,10 @@ public class MarshalShapes
                         | CliType.Numeric (CliNumericType.UInt8 b) -> UInt8Source.value "ConstArray byte" b
                         | other -> failwith $"expected UInt8 in ConstArray storage, got %O{other}"
                     )
-            | ManagedPointerSource.Byref (ByrefRoot.PeByteRange _, _) ->
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.PeByteRange _
+                                             Projections = _
+                                         } ->
                 // Read through the pointer itself, byte cursor and all, as a guest's
                 // `ConstArray[i]` does: a pointer into the whole `#Blob` heap carries the blob's
                 // offset in that cursor, so reading the root from zero would read the wrong bytes.
@@ -1904,23 +1928,25 @@ public class MarshalShapes
             |> Option.defaultWith (fun () -> failwith "System.Byte was not concretized")
 
         let expected =
-            ManagedPointerSource.Byref (
-                ByrefRoot.PeByteRange
-                    {
-                        AssemblyFullName = fixture.Assembly.Name.FullName
-                        Source =
-                            PeByteRangePointerSource.FieldSignatureBlob (
-                                ComparableFieldDefinitionHandle.Make field.Handle
-                            )
-                        RelativeVirtualAddress = 0
-                        // `int` is `06 08`, so the range covers exactly two bytes. Spelled out
-                        // rather than taken from `length`, so that a handler which derived both the
-                        // struct's length and the range's size from the same wrong place would
-                        // still fail here.
-                        Size = 2
-                    },
-                [ ByrefProjection.ReinterpretAs byteType ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root =
+                        ByrefRoot.PeByteRange
+                            {
+                                AssemblyFullName = fixture.Assembly.Name.FullName
+                                Source =
+                                    PeByteRangePointerSource.FieldSignatureBlob (
+                                        ComparableFieldDefinitionHandle.Make field.Handle
+                                    )
+                                RelativeVirtualAddress = 0
+                                // `int` is `06 08`, so the range covers exactly two bytes. Spelled out
+                                // rather than taken from `length`, so that a handler which derived both the
+                                // struct's length and the range's size from the same wrong place would
+                                // still fail here.
+                                Size = 2
+                            }
+                    Projections = [ ByrefProjection.ReinterpretAs byteType ]
+                }
 
         length |> shouldEqual 2
         pointer |> shouldEqual expected
@@ -2363,19 +2389,22 @@ public class MarshalShapes
         // past the blob's end as it does over CoreCLR's mapped metadata; the blob itself is found by
         // the byte cursor. `Custom`'s blob is under 128 bytes, so its length prefix is one byte.
         let expected =
-            ManagedPointerSource.Byref (
-                ByrefRoot.PeByteRange
-                    {
-                        AssemblyFullName = fixture.Assembly.Name.FullName
-                        Source = PeByteRangePointerSource.BlobHeap
-                        RelativeVirtualAddress = 0
-                        Size = mr.GetHeapSize HeapIndex.Blob
-                    },
-                [
-                    ByrefProjection.ReinterpretAs byteType
-                    ByrefProjection.ByteOffset (MetadataTokens.GetHeapOffset descriptor + 1)
-                ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root =
+                        ByrefRoot.PeByteRange
+                            {
+                                AssemblyFullName = fixture.Assembly.Name.FullName
+                                Source = PeByteRangePointerSource.BlobHeap
+                                RelativeVirtualAddress = 0
+                                Size = mr.GetHeapSize HeapIndex.Blob
+                            }
+                    Projections =
+                        [
+                            ByrefProjection.ReinterpretAs byteType
+                            ByrefProjection.ByteOffset (MetadataTokens.GetHeapOffset descriptor + 1)
+                        ]
+                }
 
         pointer |> shouldEqual expected
         length |> shouldEqual (mr.GetBlobReader descriptor).Length
@@ -2393,7 +2422,12 @@ public class MarshalShapes
         let arrayAddr, state =
             IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero handle) (fun () -> zero) 1 state
 
-        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                Projections = []
+            },
+        state
 
     /// Everything `GetMarshalAs` wrote, read back: the six integers, and each of the three `byte*`
     /// out-params followed to the NUL the managed wrapper's scan stops at, as that wrapper decodes
@@ -2822,7 +2856,10 @@ public class MarshalShapes
         // byte-wise, so `byte` would also do); `char` is pinned here because it is the type the API
         // declares, and pinning it is what stops it drifting silently.
         match out.StringPointer with
-        | ManagedPointerSource.Byref (ByrefRoot.PeByteRange range, [ ByrefProjection.ReinterpretAs charType ]) ->
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.PeByteRange range
+                                         Projections = [ ByrefProjection.ReinterpretAs charType ]
+                                     } ->
             range.AssemblyFullName |> shouldEqual fixture.Assembly.Name.FullName
             range.Size |> shouldEqual 10
 
@@ -2920,7 +2957,10 @@ public class MarshalShapes
         | 0x0E ->
             match out.StringPointer with
             | ManagedPointerSource.Null -> box ""
-            | ManagedPointerSource.Byref (ByrefRoot.PeByteRange range, _) ->
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.PeByteRange range
+                                             Projections = _
+                                         } ->
                 let charTemplate, _ =
                     IlMachineState.cliTypeZeroOfHandle
                         state
@@ -2992,7 +3032,10 @@ public class MarshalShapes
     /// refuses; there is deliberately no scan limit here to soften that into a nicer message.
     let private readNameBufferIncludingTerminator (state : IlMachineState) (ptr : ManagedPointerSource) : byte array =
         match ptr with
-        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []) ->
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                                         Projections = []
+                                     } ->
             let rec loop (index : int) (acc : byte list) : byte list =
                 match
                     IlMachineState.getArrayValue arrayAddr index state
@@ -3416,22 +3459,24 @@ public class MarshalShapes
             System.Reflection.Metadata.Ecma335.MetadataTokens.PropertyDefinitionHandle hostProperty.MetadataToken
 
         let expected =
-            ManagedPointerSource.Byref (
-                ByrefRoot.PeByteRange
-                    {
-                        AssemblyFullName = fixture.Assembly.Name.FullName
-                        Source =
-                            PeByteRangePointerSource.PropertySignatureBlob (
-                                ComparablePropertyDefinitionHandle.Make propertyHandle
-                            )
-                        RelativeVirtualAddress = 0
-                        // `int Alpha { get; set; }` is `28 00 08`. Spelled out rather than taken
-                        // from `length`, so that a handler which derived both the struct's length
-                        // and the range's size from the same wrong place would still fail here.
-                        Size = 3
-                    },
-                [ ByrefProjection.ReinterpretAs byteType ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root =
+                        ByrefRoot.PeByteRange
+                            {
+                                AssemblyFullName = fixture.Assembly.Name.FullName
+                                Source =
+                                    PeByteRangePointerSource.PropertySignatureBlob (
+                                        ComparablePropertyDefinitionHandle.Make propertyHandle
+                                    )
+                                RelativeVirtualAddress = 0
+                                // `int Alpha { get; set; }` is `28 00 08`. Spelled out rather than taken
+                                // from `length`, so that a handler which derived both the struct's length
+                                // and the range's size from the same wrong place would still fail here.
+                                Size = 3
+                            }
+                    Projections = [ ByrefProjection.ReinterpretAs byteType ]
+                }
 
         length |> shouldEqual 3
         pointer |> shouldEqual expected
@@ -4225,7 +4270,10 @@ public class MarshalShapes
         out.Length |> shouldEqual 5
 
         match out.StringPointer with
-        | ManagedPointerSource.Byref (ByrefRoot.PeByteRange range, [ ByrefProjection.ReinterpretAs _ ]) ->
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.PeByteRange range
+                                         Projections = [ ByrefProjection.ReinterpretAs _ ]
+                                     } ->
             range.Size |> shouldEqual 10
 
             range.Source

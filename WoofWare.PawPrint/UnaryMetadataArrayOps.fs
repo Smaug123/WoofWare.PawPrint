@@ -268,7 +268,11 @@ module internal UnaryMetadataArrayOps =
 
         let buildResult (state : IlMachineState) : IlMachineState * WhatWeDid =
             let result =
-                ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrAddr, index), [])
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.ArrayElement (arrAddr, index)
+                        Projections = []
+                    }
                 |> EvalStackValue.ManagedPointer
 
             let state =

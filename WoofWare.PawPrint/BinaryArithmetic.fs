@@ -43,20 +43,39 @@ module private ArithmeticTarget =
         | ManagedPointerSource.NativeIntPlaceholder bits ->
             failwith
                 $"refusing to do pointer arithmetic on fake non-null byref @ 0x%x{bits}; the placeholder must never be advanced"
-        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), []) ->
-            ArithmeticTarget.StackMemoryTarget (thread, frame, block, byteOffset)
-        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset), []) ->
-            ArithmeticTarget.NativeMemoryTarget (block, byteOffset)
-        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
-            ArithmeticTarget.ArrayTarget (arr, index)
-        | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), []) ->
-            ArithmeticTarget.StringTarget (str, charIndex)
-        | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, field), []) ->
-            ArithmeticTarget.FieldTarget (FieldContainer.HeapObject addr, field)
-        | ManagedPointerSource.Byref (root, projs) ->
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset)
+                                         Projections = []
+                                     } -> ArithmeticTarget.StackMemoryTarget (thread, frame, block, byteOffset)
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.NativeMemoryByte (block, byteOffset)
+                                         Projections = []
+                                     } -> ArithmeticTarget.NativeMemoryTarget (block, byteOffset)
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.ArrayElement (arr, index)
+                                         Projections = []
+                                     } -> ArithmeticTarget.ArrayTarget (arr, index)
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.StringCharAt (str, charIndex)
+                                         Projections = []
+                                     } -> ArithmeticTarget.StringTarget (str, charIndex)
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.HeapObjectField (addr, field)
+                                         Projections = []
+                                     } -> ArithmeticTarget.FieldTarget (FieldContainer.HeapObject addr, field)
+        | ManagedPointerSource.Byref {
+                                         Root = root
+                                         Projections = projs
+                                     } ->
             match List.rev projs with
             | ByrefProjection.Field field :: revRest ->
-                let parentPtr = ManagedPointerSource.Byref (root, List.rev revRest)
+                let parentPtr =
+                    ManagedPointerSource.Byref
+                        {
+                            Root = root
+                            Projections = List.rev revRest
+                        }
+
                 ArithmeticTarget.FieldTarget (FieldContainer.ByrefContainer parentPtr, field)
             | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs ty :: revRest ->
                 ArithmeticTarget.ByteViewTarget (root, List.rev revRest, ty, n)
@@ -107,7 +126,11 @@ module private ArithmeticTarget =
         | FieldContainer.HeapObject addr -> CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
         | FieldContainer.ByrefContainer ptr ->
             match ptr, FieldId.tryDeclaringType field with
-            | ManagedPointerSource.Byref (root, _), Some declaringHandle when IlMachineManagedByref.isRawByteRoot root ->
+            | ManagedPointerSource.Byref {
+                                             Root = root
+                                             Projections = _
+                                         },
+              Some declaringHandle when IlMachineManagedByref.isRawByteRoot root ->
                 match AllConcreteTypes.lookup declaringHandle state.ConcreteTypes with
                 | Some declaringType -> IlMachineManagedByref.zeroForConcreteType baseClassTypes state declaringType
                 | None ->
@@ -349,12 +372,20 @@ module ArithmeticOperation =
         | ArithmeticTarget.StackMemoryTarget (thread, frame, block, byteOffset) ->
             let byteOffset = checkedAddInt32 "localloc byte offset" byteOffset v
 
-            ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset)
+                    Projections = []
+                }
             |> Choice1Of2
         | ArithmeticTarget.NativeMemoryTarget (block, byteOffset) ->
             let byteOffset = checkedAddInt32 "native memory byte offset" byteOffset v
 
-            ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.NativeMemoryByte (block, byteOffset)
+                    Projections = []
+                }
             |> Choice1Of2
         | ArithmeticTarget.ArrayTarget (arr, index) ->
             // ECMA-335 III.1.5 makes `&` +/- `int` byte arithmetic, whatever the byref's pointee
@@ -369,7 +400,12 @@ module ArithmeticOperation =
             // `Checked`. Predicting that overflow here would need a second copy of the stride
             // arithmetic that could disagree with the one that matters, so the trap is caught
             // and named instead.
-            let plain = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), [])
+            let plain =
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.ArrayElement (arr, index)
+                        Projections = []
+                    }
 
             // The byte cursor is anchored on the *element's* shape rather than on `System.Byte`,
             // which is what `Conv_I`/`Conv_U` do through `anchorByteViewIfPlainArrayByref` and for
@@ -393,7 +429,10 @@ module ArithmeticOperation =
                 | _ ->
 
                 match ManagedPointerByteView.anchorByteViewIfPlainArrayByref baseClassTypes state plain with
-                | ManagedPointerSource.Byref (_, []) ->
+                | ManagedPointerSource.Byref {
+                                                 Root = _
+                                                 Projections = []
+                                             } ->
                     // Every other decline is a lookup that should have succeeded — a concrete
                     // element type missing from `AllConcreteTypes`, or `System.Object` missing
                     // when a jagged array needs it as the surrogate for its cells' shape.
@@ -415,13 +454,21 @@ module ArithmeticOperation =
                         $"managed pointer arithmetic (array index) overflowed int32 offset model: element %d{index} of %O{arr} advanced by %d{v} bytes"
 
             match advanced with
-            | ManagedPointerSource.Byref (root, [ ByrefProjection.ReinterpretAs _ ]) ->
+            | ManagedPointerSource.Byref {
+                                             Root = root
+                                             Projections = [ ByrefProjection.ReinterpretAs _ ]
+                                         } ->
                 // The whole advance folded into the cell index with nothing left over, so the
                 // address is a cell boundary and the byte view can go. That matters beyond
                 // tidiness: the cells of a reference array have no byte image, so a cursor left
                 // over one could not be dereferenced, and `&a[1]` on an `object[]` is an
                 // ordinary managed pointer on the real runtime.
-                ManagedPointerSource.Byref (root, []) |> Choice1Of2
+                ManagedPointerSource.Byref
+                    {
+                        Root = root
+                        Projections = []
+                    }
+                |> Choice1Of2
             | _ ->
                 // Mid-cell, so a byte cursor is the honest representation. Whether those bytes
                 // can be read is a question for the access, which refuses cells holding
@@ -430,7 +477,11 @@ module ArithmeticOperation =
         | ArithmeticTarget.StringTarget (str, charIndex) ->
             let charType = charConcreteType baseClassTypes state
 
-            ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.StringCharAt (str, charIndex)
+                    Projections = []
+                }
             |> ManagedPointerSource.addByteOffsetUnderReinterpret
                 ByteOffsetNormalisationContext.nonArrayRootsOnly
                 charType
@@ -449,7 +500,11 @@ module ArithmeticOperation =
                 | FieldContainer.HeapObject addr ->
                     let byteType = byteConcreteType baseClassTypes state
 
-                    ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.HeapValue addr
+                            Projections = []
+                        }
                     |> ManagedPointerByteView.addByteOffset state byteType offset
                     |> Choice1Of2
                 | FieldContainer.ByrefContainer parentPtr ->
@@ -464,7 +519,11 @@ module ArithmeticOperation =
                 let newPtr =
                     match container with
                     | FieldContainer.HeapObject addr ->
-                        ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, newField), [])
+                        ManagedPointerSource.Byref
+                            {
+                                Root = ByrefRoot.HeapObjectField (addr, newField)
+                                Projections = []
+                            }
                     | FieldContainer.ByrefContainer parentPtr ->
                         ManagedPointerSource.appendProjection (ByrefProjection.Field newField) parentPtr
 
@@ -612,9 +671,14 @@ module ArithmeticOperation =
     /// ordinary decomposition.
     let private sameArgumentRoot (ptr1 : ManagedPointerSource) (ptr2 : ManagedPointerSource) : bool =
         match ptr1, ptr2 with
-        | ManagedPointerSource.Byref (ByrefRoot.Argument (thread1, frame1, index1), _),
-          ManagedPointerSource.Byref (ByrefRoot.Argument (thread2, frame2, index2), _) ->
-            thread1 = thread2 && frame1 = frame2 && index1 = index2
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.Argument (thread1, frame1, index1)
+                                         Projections = _
+                                     },
+          ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.Argument (thread2, frame2, index2)
+                                         Projections = _
+                                     } -> thread1 = thread2 && frame1 = frame2 && index1 = index2
         | _ -> false
 
     /// Pointer subtraction is shared between `sub` and `sub.ovf`: ECMA-335
@@ -652,10 +716,25 @@ module ArithmeticOperation =
         | ManagedPointerSource.NativeIntPlaceholder _, _
         | _, ManagedPointerSource.NativeIntPlaceholder _ ->
             failwith $"refusing to subtract through fake non-null byref placeholder: %O{ptr1} and %O{ptr2}"
-        | ManagedPointerSource.Byref (ByrefRoot.Argument _, _), _
-        | _, ManagedPointerSource.Byref (ByrefRoot.Argument _, _) when not (sameArgumentRoot ptr1 ptr2) ->
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.Argument _
+                                         Projections = _
+                                     },
+          _
+        | _,
+          ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.Argument _
+                                         Projections = _
+                                     } when not (sameArgumentRoot ptr1 ptr2) ->
             failwith $"refusing to operate on pointers to arguments: %O{ptr1} and %O{ptr2}"
-        | ManagedPointerSource.Byref (root1, _), ManagedPointerSource.Byref (root2, _) ->
+        | ManagedPointerSource.Byref {
+                                         Root = root1
+                                         Projections = _
+                                     },
+          ManagedPointerSource.Byref {
+                                         Root = root2
+                                         Projections = _
+                                     } ->
             // Two byrefs into one localloc or native-heap block are two byte coordinates in it,
             // however each was spelt: a `Field` step there is a layout displacement, so
             // `&p[1].A - &p[0].B` is arithmetic on the coordinates `StorageLocation` computes,
@@ -878,11 +957,19 @@ module ArithmeticOperation =
             // advancing a whole-slot pointer would work while measuring the advance would not.
             // The slot's own address is byte offset zero, so the delta is just the cursor's.
             | ArithmeticTarget.ByteViewTarget (root1, [], _, off1), ArithmeticTarget.WholeValueTarget slot2 when
-                ManagedPointerSource.Byref (root1, []) = slot2
+                ManagedPointerSource.Byref
+                    {
+                        Root = root1
+                        Projections = []
+                    } = slot2
                 ->
                 int64 off1 |> verbatimInt64 |> Choice2Of2
             | ArithmeticTarget.WholeValueTarget slot1, ArithmeticTarget.ByteViewTarget (root2, [], _, off2) when
-                slot1 = ManagedPointerSource.Byref (root2, [])
+                slot1 = ManagedPointerSource.Byref
+                    {
+                        Root = root2
+                        Projections = []
+                    }
                 ->
                 -(int64 off2) |> verbatimInt64 |> Choice2Of2
             | ArithmeticTarget.WholeValueTarget slot1, ArithmeticTarget.WholeValueTarget slot2 ->

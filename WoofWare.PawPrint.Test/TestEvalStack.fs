@@ -109,15 +109,19 @@ module TestEvalStack =
             }
 
         let ptr =
-            ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, [ ByrefProjection.ByteOffset 4 ])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.PeByteRange peByteRange
+                    Projections = [ ByrefProjection.ByteOffset 4 ]
+                }
 
         match EvalStackValue.toUnsignedNativeInt (EvalStackValue.ManagedPointer ptr) with
         | UnsignedNativeIntSource.FromManagedPointer actual ->
             match actual with
-            | ManagedPointerSource.Byref (ByrefRoot.PeByteRange actualPeByteRange, [ ByrefProjection.ByteOffset 4 ]) when
-                actualPeByteRange = peByteRange
-                ->
-                ()
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.PeByteRange actualPeByteRange
+                                             Projections = [ ByrefProjection.ByteOffset 4 ]
+                                         } when actualPeByteRange = peByteRange -> ()
             | other -> failwith $"Expected Conv_U to preserve PE byte-range pointer provenance, got %O{other}"
         | other -> failwith $"Expected Conv_U to return FromManagedPointer for PE byte-range pointer, got %O{other}"
 
@@ -323,7 +327,11 @@ module TestEvalStack =
     [<Test>]
     let ``ceq compares managed pointers with native-int pointer forms`` () : unit =
         let ptr =
-            ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress 707), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue (ManagedHeapAddress 707)
+                    Projections = []
+                }
 
         let managedPtr = EvalStackValue.ManagedPointer ptr
         let nativePtr = EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr)
@@ -511,10 +519,11 @@ module TestEvalStack =
         let ptr =
             EvalStackValue.NativeInt (
                 NativeIntSource.ManagedPointer (
-                    ManagedPointerSource.Byref (
-                        ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId 0, 0us),
-                        []
-                    )
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId 0, 0us)
+                            Projections = []
+                        }
                 )
             )
 
@@ -571,7 +580,11 @@ module TestEvalStack =
         let popped =
             EvalStackValue.Int32 (
                 Int32Source.NarrowedManagedPointer (
-                    ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 42), [])
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 42)
+                            Projections = []
+                        }
                 )
             )
 
@@ -648,7 +661,11 @@ module TestEvalStack =
         let pointerAt (byteOffset : int) : EvalStackValue =
             EvalStackValue.NativeInt (
                 NativeIntSource.ManagedPointer (
-                    ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset), [])
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.NativeMemoryByte (block, byteOffset)
+                            Projections = []
+                        }
                 )
             )
 
@@ -858,7 +875,13 @@ module TestEvalStack =
         let str = ManagedHeapAddress.ManagedHeapAddress 105
 
         let at (charIndex : int) : EvalStackValue =
-            EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), []))
+            EvalStackValue.ManagedPointer (
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.StringCharAt (str, charIndex)
+                        Projections = []
+                    }
+            )
 
         let atStart = at 0
         let later = at 28
@@ -893,12 +916,20 @@ module TestEvalStack =
         // correct.
         let first =
             EvalStackValue.ManagedPointer (
-                ManagedPointerSource.Byref (ByrefRoot.StringCharAt (ManagedHeapAddress.ManagedHeapAddress 105, 0), [])
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.StringCharAt (ManagedHeapAddress.ManagedHeapAddress 105, 0)
+                        Projections = []
+                    }
             )
 
         let second =
             EvalStackValue.ManagedPointer (
-                ManagedPointerSource.Byref (ByrefRoot.StringCharAt (ManagedHeapAddress.ManagedHeapAddress 106, 4), [])
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.StringCharAt (ManagedHeapAddress.ManagedHeapAddress 106, 4)
+                        Projections = []
+                    }
             )
 
         let lt =
@@ -928,14 +959,21 @@ module TestEvalStack =
 
         let projected =
             EvalStackValue.ManagedPointer (
-                ManagedPointerSource.Byref (
-                    ByrefRoot.StringCharAt (str, 0),
-                    [ ByrefProjection.Field (FieldId.Named "someField") ]
-                )
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.StringCharAt (str, 0)
+                        Projections = [ ByrefProjection.Field (FieldId.Named "someField") ]
+                    }
             )
 
         let bare =
-            EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, 1), []))
+            EvalStackValue.ManagedPointer (
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.StringCharAt (str, 1)
+                        Projections = []
+                    }
+            )
 
         let lt =
             Assert.Throws<System.Exception> (fun () -> EvalStackValueComparisons.cltUn projected bare |> ignore)
@@ -952,10 +990,11 @@ module TestEvalStack =
         // than emptiness.
         let alsoProjected =
             EvalStackValue.ManagedPointer (
-                ManagedPointerSource.Byref (
-                    ByrefRoot.StringCharAt (str, 1),
-                    [ ByrefProjection.Field (FieldId.Named "someField") ]
-                )
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.StringCharAt (str, 1)
+                        Projections = [ ByrefProjection.Field (FieldId.Named "someField") ]
+                    }
             )
 
         if not (EvalStackValueComparisons.cltUn projected alsoProjected) then
@@ -1205,7 +1244,11 @@ module TestEvalStack =
     [<Test>]
     let ``narrowing refuses a byref whose address is not modelled`` () : unit =
         let byref =
-            ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 21), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 21)
+                    Projections = []
+                }
 
         // At 32 bits the byref survives as a narrowed pointer rather than becoming a
         // number: a mask against it is still answerable, which is what managed code

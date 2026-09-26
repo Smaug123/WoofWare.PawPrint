@@ -63,7 +63,10 @@ module NativeCustomAttribute =
         : ManagedHeapAddress * int
         =
         match ptr with
-        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, idx), []) -> arr, idx
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.ArrayElement (arr, idx)
+                                         Projections = []
+                                     } -> arr, idx
         | ManagedPointerSource.Null ->
             failwith
                 $"TODO: %s{operation} %s{label} pointer is null; CoreCLR allows a null *ppBlob to skip the entire blob parse but PawPrint hasn't modelled that path yet"
@@ -665,10 +668,11 @@ module NativeCustomAttribute =
                         ||> List.fold (fun state _ -> IlMachineState.popEvalStack ctx.Thread state |> snd)
 
                 let updatedCursor =
-                    ManagedPointerSource.Byref (
-                        ByrefRoot.ArrayElement (blobStartArr, blobStartIdx + cursorAfterNamedArgs),
-                        []
-                    )
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.ArrayElement (blobStartArr, blobStartIdx + cursorAfterNamedArgs)
+                            Projections = []
+                        }
 
                 let state =
                     IlMachineState.writeManagedByrefWithBase
@@ -980,10 +984,11 @@ module NativeCustomAttribute =
                     blobCursorSlot
                     (CliType.RuntimePointer (
                         CliRuntimePointer.Managed (
-                            ManagedPointerSource.Byref (
-                                ByrefRoot.ArrayElement (blobStartArr, blobStartIdx + consumed),
-                                []
-                            )
+                            ManagedPointerSource.Byref
+                                {
+                                    Root = ByrefRoot.ArrayElement (blobStartArr, blobStartIdx + consumed)
+                                    Projections = []
+                                }
                         )
                     ))
 

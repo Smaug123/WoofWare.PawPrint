@@ -120,7 +120,13 @@ module TestPrimitiveBackingFieldAddress =
                             2
                             state
 
-                    let src = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, 1), [])
+                    let src =
+                        ManagedPointerSource.Byref
+                            {
+                                Root = ByrefRoot.ArrayElement (arr, 1)
+                                Projections = []
+                            }
+
                     let pointer, state = fieldAddress ti src state
 
                     if pointer <> src then
@@ -148,12 +154,22 @@ module TestPrimitiveBackingFieldAddress =
                     let boxed, state =
                         Boxing.boxValueType loggerFactory bct handle (EvalStackValue.ofCliType stored) state
 
-                    let src = ManagedPointerSource.Byref (ByrefRoot.HeapValue boxed, [])
+                    let src =
+                        ManagedPointerSource.Byref
+                            {
+                                Root = ByrefRoot.HeapValue boxed
+                                Projections = []
+                            }
+
                     let pointer, state = fieldAddress ti src state
                     let _, fieldId = backingField ti
 
                     let expected =
-                        ManagedPointerSource.Byref (ByrefRoot.HeapValue boxed, [ ByrefProjection.Field fieldId ])
+                        ManagedPointerSource.Byref
+                            {
+                                Root = ByrefRoot.HeapValue boxed
+                                Projections = [ ByrefProjection.Field fieldId ]
+                            }
 
                     if pointer <> expected then
                         failwithf "%s: expected the projection %O, got %O" name expected pointer
@@ -191,9 +207,21 @@ module TestPrimitiveBackingFieldAddress =
         let arr, state =
             IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero handle) (fun () -> zero) 1 state
 
-        let src = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, 0), [])
+        let src =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arr, 0)
+                    Projections = []
+                }
+
         let pointer, _ = fieldAddress bct.IntPtr src state
         let _, fieldId = backingField bct.IntPtr
 
         pointer
-        |> shouldEqual (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, 0), [ ByrefProjection.Field fieldId ]))
+        |> shouldEqual (
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arr, 0)
+                    Projections = [ ByrefProjection.Field fieldId ]
+                }
+        )

@@ -183,11 +183,25 @@ module NativeMetadataImport =
         : ManagedPointerSource option
         =
         match buffer with
-        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, baseIndex), []) ->
-            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, baseIndex + index), [])
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.ArrayElement (arr, baseIndex)
+                                         Projections = []
+                                     } ->
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arr, baseIndex + index)
+                    Projections = []
+                }
             |> Some
-        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), []) ->
-            ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset + (index * 4)), [])
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset)
+                                         Projections = []
+                                     } ->
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset + (index * 4))
+                    Projections = []
+                }
             |> Some
         | ManagedPointerSource.Null -> failwith $"%s{operation}: expected non-null Int32 result buffer"
         | ManagedPointerSource.NativeIntPlaceholder bits ->

@@ -614,7 +614,12 @@ public static class StreamVersionLibrary
                 1
                 state
 
-        let target = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
+        let target =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                    Projections = []
+                }
 
         let handleType =
             requiredTopLevelType baseClassTypes.Corelib "System.Runtime.CompilerServices" handleTypeName
@@ -667,7 +672,12 @@ public static class StreamVersionLibrary
                 1
                 state
 
-        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                Projections = []
+            },
+        state
 
     let private readInt32Out
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

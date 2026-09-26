@@ -78,10 +78,11 @@ module internal UnaryConstIlOp =
         state
         |> IlMachineState.pushToEvalStack'
             (EvalStackValue.ManagedPointer (
-                ManagedPointerSource.Byref (
-                    ByrefRoot.LocalVariable (currentThread, threadState.ActiveMethodState, index),
-                    []
-                )
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.LocalVariable (currentThread, threadState.ActiveMethodState, index)
+                        Projections = []
+                    }
             ))
             currentThread
 
@@ -102,10 +103,11 @@ module internal UnaryConstIlOp =
         state
         |> IlMachineState.pushToEvalStack'
             (EvalStackValue.ManagedPointer (
-                ManagedPointerSource.Byref (
-                    ByrefRoot.Argument (currentThread, threadState.ActiveMethodState, index),
-                    []
-                )
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.Argument (currentThread, threadState.ActiveMethodState, index)
+                        Projections = []
+                    }
             ))
             currentThread
 

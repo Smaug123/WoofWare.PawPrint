@@ -320,7 +320,13 @@ module TestNativeRuntimeFieldHandlePointerFields =
         match value with
         | PointerValue.Bits bits -> CliRuntimePointer.Verbatim bits
         | PointerValue.Cell index ->
-            CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (fixtures.Cells, index), []))
+            CliRuntimePointer.Managed (
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.ArrayElement (fixtures.Cells, index)
+                        Projections = []
+                    }
+            )
 
     let private pointerValueGen : Gen<PointerValue> =
         Gen.oneof

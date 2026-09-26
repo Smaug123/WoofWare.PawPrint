@@ -63,7 +63,15 @@ module TestByrefAlignmentAgainstHost =
         width, (List.head addresses &&& ((1L <<< width) - 1L))
 
     let private containerBaseOf (root : ByrefRoot) : ByrefContainerBase =
-        match ManagedPointerSource.tryContainerBase (ManagedPointerSource.Byref (root, [])) with
+        match
+            ManagedPointerSource.tryContainerBase (
+                ManagedPointerSource.Byref
+                    {
+                        Root = root
+                        Projections = []
+                    }
+            )
+        with
         | Some containerBase -> containerBase
         | None ->
             failwith $"ManagedPointerSource.tryContainerBase makes no claim for %O{root}, so there is nothing to check."

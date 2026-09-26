@@ -260,7 +260,10 @@ module internal UnaryMetadataFieldOps =
         | CliType.Bool _
         | CliType.Char _ ->
             match src with
-            | ManagedPointerSource.Byref (ByrefRoot.HeapValue _, []) -> FieldThroughByref.Projected, state
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.HeapValue _
+                                             Projections = []
+                                         } -> FieldThroughByref.Projected, state
             | ManagedPointerSource.Byref _ -> FieldThroughByref.IsContainer declaringZero, state
             // Neither addresses storage; the projection is what refuses them.
             | ManagedPointerSource.Null
@@ -580,7 +583,13 @@ module internal UnaryMetadataFieldOps =
         | ObjectRef addr ->
             match RuntimeFieldProjection.tryProjectFieldAddress baseClassTypes field addr state with
             | Some ptr -> state, ptr
-            | None -> state, ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, fieldId), [])
+            | None ->
+                state,
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.HeapObjectField (addr, fieldId)
+                        Projections = []
+                    }
         | Int32 _
         | Int64 _
         | Float _
@@ -796,7 +805,12 @@ module internal UnaryMetadataFieldOps =
 
                     IlMachineState.setStatic owner declaringTypeHandle fieldHandle zero state
 
-            state, ManagedPointerSource.Byref (ByrefRoot.StaticField (declaringTypeHandle, fieldHandle, owner), [])
+            state,
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.StaticField (declaringTypeHandle, fieldHandle, owner)
+                    Projections = []
+                }
 
     let executeLdsflda (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory

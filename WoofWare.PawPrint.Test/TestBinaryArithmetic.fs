@@ -126,7 +126,11 @@ module TestBinaryArithmetic =
     let private valuesOfLength (length : int) : int list = List.init length id
 
     let private arrayPointer (arr : ManagedHeapAddress) (index : int) : EvalStackValue =
-        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), [])
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.ArrayElement (arr, index)
+                Projections = []
+            }
         |> EvalStackValue.ManagedPointer
 
     let private byteViewPointerAs
@@ -145,7 +149,11 @@ module TestBinaryArithmetic =
                     ByrefProjection.ByteOffset byteOffset
                 ]
 
-        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), projs)
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.ArrayElement (arr, index)
+                Projections = projs
+            }
         |> EvalStackValue.ManagedPointer
 
     let private byteViewPointer : ManagedHeapAddress -> int -> int -> EvalStackValue =
@@ -167,7 +175,10 @@ module TestBinaryArithmetic =
         : unit
         =
         match actual with
-        | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), [])) ->
+        | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref {
+                                                                        Root = ByrefRoot.ArrayElement (arr, index)
+                                                                        Projections = []
+                                                                    }) ->
             arr |> shouldEqual expectedArr
             index |> shouldEqual expectedIndex
         | other -> failwith $"expected array element pointer at index %d{expectedIndex}, got %O{other}"
@@ -349,14 +360,23 @@ module TestBinaryArithmetic =
     let private pointerForNormalisationCase (case : ByteOffsetNormalisationCase) : ManagedPointerSource =
         match case.Kind with
         | NormalisableRootKind.StackMemory ->
-            ManagedPointerSource.Byref (
-                ByrefRoot.StackMemoryByte (ThreadId 0, FrameId 0, StackMemoryBlockId 0, case.RootOffset),
-                []
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.StackMemoryByte (ThreadId 0, FrameId 0, StackMemoryBlockId 0, case.RootOffset)
+                    Projections = []
+                }
         | NormalisableRootKind.Array ->
-            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (ManagedHeapAddress 123, case.RootOffset), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (ManagedHeapAddress 123, case.RootOffset)
+                    Projections = []
+                }
         | NormalisableRootKind.String ->
-            ManagedPointerSource.Byref (ByrefRoot.StringCharAt (ManagedHeapAddress 456, case.RootOffset), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.StringCharAt (ManagedHeapAddress 456, case.RootOffset)
+                    Projections = []
+                }
 
     let private expectedNormalisedPointer (case : ByteOffsetNormalisationCase) : ManagedPointerSource =
         let cellSize =
@@ -385,7 +405,11 @@ module TestBinaryArithmetic =
                     ByrefProjection.ByteOffset inCellOffset
                 ]
 
-        ManagedPointerSource.Byref (root, projs)
+        ManagedPointerSource.Byref
+            {
+                Root = root
+                Projections = projs
+            }
 
     [<Test>]
     let ``byte offset helper normalises every byte-addressable root`` () : unit =
@@ -451,8 +475,11 @@ module TestBinaryArithmetic =
                 raise (System.Exception ($"%O{case}: %s{e.Message}", e))
 
             match expected with
-            | ManagedPointerSource.Byref (_, [ ByrefProjection.ReinterpretAs _ ; ByrefProjection.ByteOffset _ ]) ->
-                residualOffsets <- residualOffsets + 1
+            | ManagedPointerSource.Byref {
+                                             Root = _
+                                             Projections = [ ByrefProjection.ReinterpretAs _
+                                                             ByrefProjection.ByteOffset _ ]
+                                         } -> residualOffsets <- residualOffsets + 1
             | _ -> ()
 
         // Exact counts, so narrowing any range in the enumeration is a failure rather than
@@ -1118,14 +1145,16 @@ module TestBinaryArithmetic =
         // under a field of an array element, against a plain array byref). Both ops
         // must refuse them; only the refusal is compared, not the messages.
         let byteViewUnderField : EvalStackValue =
-            ManagedPointerSource.Byref (
-                ByrefRoot.ArrayElement (arr1, 1),
-                [
-                    ByrefProjection.Field (FieldId.named "X")
-                    ByrefProjection.ReinterpretAs byteType
-                    ByrefProjection.ByteOffset 1
-                ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arr1, 1)
+                    Projections =
+                        [
+                            ByrefProjection.Field (FieldId.named "X")
+                            ByrefProjection.ReinterpretAs byteType
+                            ByrefProjection.ByteOffset 1
+                        ]
+                }
             |> EvalStackValue.ManagedPointer
 
         let refused : (EvalStackValue * EvalStackValue) list =
@@ -1254,10 +1283,11 @@ module TestBinaryArithmetic =
         |> expectNativeInt 4L
 
     let private nativeMemoryPointer (block : int) (byteOffset : int) : EvalStackValue =
-        ManagedPointerSource.Byref (
-            ByrefRoot.NativeMemoryByte (NativeMemoryBlockId.NativeMemoryBlockId block, byteOffset),
-            []
-        )
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.NativeMemoryByte (NativeMemoryBlockId.NativeMemoryBlockId block, byteOffset)
+                Projections = []
+            }
         |> EvalStackValue.ManagedPointer
 
     let private expectNativeMemoryPointer
@@ -1267,9 +1297,11 @@ module TestBinaryArithmetic =
         : unit
         =
         match actual with
-        | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (NativeMemoryBlockId.NativeMemoryBlockId block,
-                                                                                                 byteOffset),
-                                                                     [])) ->
+        | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref {
+                                                                        Root = ByrefRoot.NativeMemoryByte (NativeMemoryBlockId.NativeMemoryBlockId block,
+                                                                                                           byteOffset)
+                                                                        Projections = []
+                                                                    }) ->
             block |> shouldEqual expectedBlock
             byteOffset |> shouldEqual expectedByteOffset
         | other ->
@@ -1354,7 +1386,10 @@ module TestBinaryArithmetic =
 
         let block =
             match ptr with
-            | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, 0), []) -> block
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.NativeMemoryByte (block, 0)
+                                             Projections = []
+                                         } -> block
             | other -> failwith $"expected bare NativeMemoryByte byref, got %O{other}"
 
         // Write raw bytes directly into the native-memory pool, bypassing typed-cell stores.
@@ -1465,8 +1500,14 @@ module TestBinaryArithmetic =
             // And it really is back at the boundary rather than merely comparing equal under
             // some looser rule: no byte offset survives.
             match backPointer with
-            | ManagedPointerSource.Byref (_, [])
-            | ManagedPointerSource.Byref (_, [ ByrefProjection.ReinterpretAs _ ]) -> ()
+            | ManagedPointerSource.Byref {
+                                             Root = _
+                                             Projections = []
+                                         }
+            | ManagedPointerSource.Byref {
+                                             Root = _
+                                             Projections = [ ByrefProjection.ReinterpretAs _ ]
+                                         } -> ()
             | other -> failwith $"expected the round trip to leave no byte offset behind, got %O{other}"
 
             // Subtracting the two byrefs reports the byte distance, in both directions, whether
@@ -1886,11 +1927,11 @@ module TestBinaryArithmetic =
         // the same root and prefix. With element size 4 (int32), 5 bytes lands in
         // index 2 with a 1-byte residual cursor.
         match recovered with
-        | NativeIntSource.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (resultArr, idx),
-                                                                      [ ByrefProjection.ReinterpretAs _
-                                                                        ByrefProjection.ByteOffset off ])) when
-            resultArr = arr
-            ->
+        | NativeIntSource.ManagedPointer (ManagedPointerSource.Byref {
+                                                                         Root = ByrefRoot.ArrayElement (resultArr, idx)
+                                                                         Projections = [ ByrefProjection.ReinterpretAs _
+                                                                                         ByrefProjection.ByteOffset off ]
+                                                                     }) when resultArr = arr ->
             idx |> shouldEqual 2
             off |> shouldEqual 1
         | other -> failwith $"unexpected advanced byref shape: %O{other}"
@@ -2006,7 +2047,12 @@ module TestBinaryArithmetic =
     let ``byteAddressDeltaSign throws on a non-canonical negative trailing byte cursor`` () : unit =
         let _, arr = stateWithIntArray (List.init 4 id)
 
-        let canonical = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, 0), [])
+        let canonical =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arr, 0)
+                    Projections = []
+                }
 
         // Manually construct a malformed pointer: the trailing ByteOffset
         // bypasses normaliseTrailingByteOffset's floor-division and is negative.
@@ -2014,10 +2060,11 @@ module TestBinaryArithmetic =
         // residual sitting in [0, cellSize); a negative residual indicates a
         // construction-site bug and must not silently degrade to a wrong sign.
         let malformed =
-            ManagedPointerSource.Byref (
-                ByrefRoot.ArrayElement (arr, 1),
-                [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset -1 ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arr, 1)
+                    Projections = [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset -1 ]
+                }
 
         let outcome =
             try
@@ -2035,21 +2082,28 @@ module TestBinaryArithmetic =
     let ``byteAddressDeltaSign throws on a ByteOffset at a non-trailing position`` () : unit =
         let _, arr = stateWithIntArray (List.init 4 id)
 
-        let canonical = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, 0), [])
+        let canonical =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arr, 0)
+                    Projections = []
+                }
 
         // ByrefProjection.ByteOffset is documented to only appear as the final
         // element preceded by ReinterpretAs. A non-trailing ByteOffset is an
         // invariant violation; the helper must throw rather than silently
         // returning a wrong sign.
         let malformed =
-            ManagedPointerSource.Byref (
-                ByrefRoot.ArrayElement (arr, 1),
-                [
-                    ByrefProjection.ReinterpretAs byteType
-                    ByrefProjection.ByteOffset 1
-                    ByrefProjection.ReinterpretAs byteType
-                ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arr, 1)
+                    Projections =
+                        [
+                            ByrefProjection.ReinterpretAs byteType
+                            ByrefProjection.ByteOffset 1
+                            ByrefProjection.ReinterpretAs byteType
+                        ]
+                }
 
         let outcome =
             try
@@ -2067,13 +2121,22 @@ module TestBinaryArithmetic =
     let ``byteAddressDeltaSign throws on a trailing ByteOffset without ReinterpretAs`` () : unit =
         let _, arr = stateWithIntArray (List.init 4 id)
 
-        let canonical = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, 0), [])
+        let canonical =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arr, 0)
+                    Projections = []
+                }
 
         // A trailing ByteOffset must be preceded by ReinterpretAs (the byte
         // cursor is on top of a byte view of the cell). Without that pairing
         // the projection list is malformed.
         let malformed =
-            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, 1), [ ByrefProjection.ByteOffset 1 ])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arr, 1)
+                    Projections = [ ByrefProjection.ByteOffset 1 ]
+                }
 
         let outcome =
             try
@@ -2137,14 +2200,24 @@ module TestBinaryArithmetic =
 
         let addr, state = IlMachineState.allocateManagedObject int32Handle contents state
 
-        state, ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
+        state,
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.HeapValue addr
+                Projections = []
+            }
 
     [<Test>]
     let ``adding zero to a whole-slot byref returns the very same byref`` () : unit =
         let state = state ()
 
         for name, root in wholeValueRoots do
-            let ptr = ManagedPointerSource.Byref (root, [])
+            let ptr =
+                ManagedPointerSource.Byref
+                    {
+                        Root = root
+                        Projections = []
+                    }
 
             // Resolving `p + 0` to the field at offset 0 would give one address two structural
             // forms, and `ceq` / `Unsafe.AreSame` compare structurally. `sub` routes through the
@@ -2177,16 +2250,21 @@ module TestBinaryArithmetic =
                 (EvalStackValue.ManagedPointer ptr)
                 (EvalStackValue.Int32 (Int32Source.Verbatim offset))
         with
-        | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (root,
-                                                                     [ ByrefProjection.ReinterpretAs viewType
-                                                                       ByrefProjection.ByteOffset actualOffset ])) ->
+        | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref {
+                                                                        Root = root
+                                                                        Projections = [ ByrefProjection.ReinterpretAs viewType
+                                                                                        ByrefProjection.ByteOffset actualOffset ]
+                                                                    }) ->
             viewType.Name |> shouldEqual "Byte"
             actualOffset |> shouldEqual offset
 
             root
             |> shouldEqual (
                 match ptr with
-                | ManagedPointerSource.Byref (root, []) -> root
+                | ManagedPointerSource.Byref {
+                                                 Root = root
+                                                 Projections = []
+                                             } -> root
                 | other -> failwith $"test set-up produced an unexpected pointer %O{other}"
             )
         | other -> failwith $"expected a byte cursor %d{offset} bytes in, got %O{other}"
@@ -2232,8 +2310,14 @@ module TestBinaryArithmetic =
         // And the byte cursor really is back at zero rather than merely comparing equal by
         // some looser rule: nothing but a zero offset survives normalisation.
         match returned with
-        | ManagedPointerSource.Byref (_, [])
-        | ManagedPointerSource.Byref (_, [ ByrefProjection.ReinterpretAs _ ]) -> ()
+        | ManagedPointerSource.Byref {
+                                         Root = _
+                                         Projections = []
+                                     }
+        | ManagedPointerSource.Byref {
+                                         Root = _
+                                         Projections = [ ByrefProjection.ReinterpretAs _ ]
+                                     } -> ()
         | other -> failwith $"expected the round trip to leave no byte offset behind, got %O{other}"
 
     [<Test>]
@@ -2283,7 +2367,13 @@ module TestBinaryArithmetic =
                 Size = 8
             }
 
-        let ptr = ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, [])
+        let ptr =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.PeByteRange peByteRange
+                    Projections = []
+                }
+
         let state = state ()
 
         // A PE byte range is byte-addressed, so field resolution would be a lie about the
@@ -2309,7 +2399,11 @@ module TestBinaryArithmetic =
     [<Test>]
     let ``a RuntimeType cache cell refuses pointer arithmetic`` () : unit =
         let ptr =
-            ManagedPointerSource.Byref (ByrefRoot.ExposedClassObject (RuntimeTypeHandleTarget.Closed int32Handle), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ExposedClassObject (RuntimeTypeHandleTarget.Closed int32Handle)
+                    Projections = []
+                }
 
         let state = state ()
 
@@ -2344,7 +2438,11 @@ module TestBinaryArithmetic =
         // contrast, *do* serialise, which is why this test uses a byref field and not one of
         // those.
         let heldPointer =
-            ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 99), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 99)
+                    Projections = []
+                }
 
         let imageless =
             [
@@ -2365,7 +2463,13 @@ module TestBinaryArithmetic =
                 System.Runtime.InteropServices.CharSet.Ansi
 
         let addr, state = IlMachineState.allocateManagedObject int32Handle imageless state
-        let ptr = ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
+
+        let ptr =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue addr
+                    Projections = []
+                }
 
         // Guard the premise: if this storage acquired a byte image, the test would pass while
         // covering nothing.
@@ -2397,7 +2501,11 @@ module TestBinaryArithmetic =
         // The same write through a zero-length byte cursor — the form a non-identity zero offset
         // would have produced. It names the same single cell, so it must land the same value.
         let cursor =
-            ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [ ByrefProjection.ReinterpretAs byteType ])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue addr
+                    Projections = [ ByrefProjection.ReinterpretAs byteType ]
+                }
 
         let throughCursor =
             IlMachineState.writeManagedByrefWithBase baseClassTypes state cursor (CliType.ValueType imageless)
@@ -2442,10 +2550,18 @@ module TestBinaryArithmetic =
         let state = state ()
 
         let first =
-            ManagedPointerSource.Byref (ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId 3, 0us), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId 3, 0us)
+                    Projections = []
+                }
 
         let second =
-            ManagedPointerSource.Byref (ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId 3, 1us), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId 3, 1us)
+                    Projections = []
+                }
 
         // Two locals are separate storage here, not offsets into one address space, so there
         // is no byte distance to report. Inventing one would let a guest compute a difference
@@ -2477,10 +2593,18 @@ module TestBinaryArithmetic =
         let frame = FrameId.FrameId 3
 
         let argument (index : uint16) : ManagedPointerSource =
-            ManagedPointerSource.Byref (ByrefRoot.Argument (ThreadId.ThreadId 0, frame, index), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.Argument (ThreadId.ThreadId 0, frame, index)
+                    Projections = []
+                }
 
         let local =
-            ManagedPointerSource.Byref (ByrefRoot.LocalVariable (ThreadId.ThreadId 0, frame, 0us), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.LocalVariable (ThreadId.ThreadId 0, frame, 0us)
+                    Projections = []
+                }
 
         let cases =
             [
@@ -2536,11 +2660,21 @@ module TestBinaryArithmetic =
         // A zero total normalises the cursor away entirely, which is what makes a round trip
         // return to its starting pointer.
         match actual with
-        | ManagedPointerSource.Byref (_, [ ByrefProjection.ReinterpretAs _ ; ByrefProjection.ByteOffset offset ]) ->
+        | ManagedPointerSource.Byref {
+                                         Root = _
+                                         Projections = [ ByrefProjection.ReinterpretAs _
+                                                         ByrefProjection.ByteOffset offset ]
+                                     } ->
             offset |> shouldEqual expected
             expected |> shouldNotEqual 0
-        | ManagedPointerSource.Byref (_, [ ByrefProjection.ReinterpretAs _ ])
-        | ManagedPointerSource.Byref (_, []) -> expected |> shouldEqual 0
+        | ManagedPointerSource.Byref {
+                                         Root = _
+                                         Projections = [ ByrefProjection.ReinterpretAs _ ]
+                                     }
+        | ManagedPointerSource.Byref {
+                                         Root = _
+                                         Projections = []
+                                     } -> expected |> shouldEqual 0
         | other -> failwith $"expected a byte cursor or a bare slot pointer, got %O{other}"
 
     /// A finite or infinite float32 from its bit pattern, so every magnitude and both zeros

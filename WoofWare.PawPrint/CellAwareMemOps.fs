@@ -141,14 +141,24 @@ module internal CellAwareMemOps =
             let residual = List.rev residualRev
 
             if isPlainResidual residual then
-                Some (ManagedPointerSource.Byref (root, residual), inCellOffset)
+                Some (
+                    ManagedPointerSource.Byref
+                        {
+                            Root = root
+                            Projections = residual
+                        },
+                    inCellOffset
+                )
             else
                 None
 
         match ptr with
         | ManagedPointerSource.Null
         | ManagedPointerSource.NativeIntPlaceholder _ -> None
-        | ManagedPointerSource.Byref (root, projs) ->
+        | ManagedPointerSource.Byref {
+                                         Root = root
+                                         Projections = projs
+                                     } ->
             match List.rev projs with
             | [] -> Some (ptr, 0)
             | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs _ :: revRest -> tryReturn root revRest n
@@ -230,7 +240,10 @@ module internal CellAwareMemOps =
     /// is the modelled access shape and we must not bypass it.
     let private byrefAnchorsCellAwareRoot (ptr : ManagedPointerSource) : bool =
         match ptr with
-        | ManagedPointerSource.Byref (root, _) -> rootIsCellAware root
+        | ManagedPointerSource.Byref {
+                                         Root = root
+                                         Projections = _
+                                     } -> rootIsCellAware root
         | _ -> false
 
     /// Attempt to move one whole storage cell across, with the copy cursor sitting at byte `i` of
@@ -383,8 +396,15 @@ module internal CellAwareMemOps =
 
                 let destByref =
                     match destPlain with
-                    | ManagedPointerSource.Byref (root, projs) ->
-                        ManagedPointerSource.Byref (root, projs @ List.map ByrefProjection.Field destPath)
+                    | ManagedPointerSource.Byref {
+                                                     Root = root
+                                                     Projections = projs
+                                                 } ->
+                        ManagedPointerSource.Byref
+                            {
+                                Root = root
+                                Projections = projs @ List.map ByrefProjection.Field destPath
+                            }
                     | other ->
                         failwith
                             $"tryWholeCellMoveAt: byte-view stripping returned a non-Byref pointer %O{other} (this is an interpreter bug)"

@@ -395,7 +395,12 @@ public class Detection
 
             let targetIndex = owners |> List.findIndex (fun o -> o = target)
 
-            let ptr = ManagedPointerSource.Byref (ByrefRoot.StaticField (ty, field, target), [])
+            let ptr =
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.StaticField (ty, field, target)
+                        Projections = []
+                    }
 
             IlMachineState.readManagedByref bct state ptr |> shouldEqual (value targetIndex)
 
@@ -422,7 +427,12 @@ public class Detection
                     (fun state (i, owner) -> IlMachineState.setStatic owner ty field (value i) state)
                     (state ())
 
-            let ptr = ManagedPointerSource.Byref (ByrefRoot.StaticField (ty, field, target), [])
+            let ptr =
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.StaticField (ty, field, target)
+                        Projections = []
+                    }
 
             let after = IlMachineState.writeManagedByref before ptr (value written)
 
@@ -458,7 +468,11 @@ public class Detection
 
         // Taken while thread A was running.
         let capturedOnA =
-            ManagedPointerSource.Byref (ByrefRoot.StaticField (ty, field, threadA), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.StaticField (ty, field, threadA)
+                    Projections = []
+                }
 
         // Dereferenced later, with no reference to thread B's context - and the answer is
         // still A's slot.
@@ -480,7 +494,11 @@ public class Detection
         let field = fieldHandle 0
 
         let ofOwner (owner : StaticOwner) : ManagedPointerSource =
-            ManagedPointerSource.Byref (ByrefRoot.StaticField (ty, field, owner), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.StaticField (ty, field, owner)
+                    Projections = []
+                }
 
         let a = ofOwner (StaticOwner.OwnedBy (ThreadId 1))
         let b = ofOwner (StaticOwner.OwnedBy (ThreadId 2))

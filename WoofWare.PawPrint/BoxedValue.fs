@@ -209,7 +209,14 @@ module BoxedValue =
                 // The box's storage is the target type's own fields, and `HeapValue` denotes the
                 // whole boxed value (see `CellAwareMemOps`), so every consumer — `ldind`, `ldobj`,
                 // `ldfld`, `ldflda`, `stobj`, `stfld` — finds exactly the value it expects there.
-                state, UnboxAddress.Address (ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, []))
+                state,
+                UnboxAddress.Address (
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.HeapValue addr
+                            Projections = []
+                        }
+                )
             | Some _
             | None ->
                 // Either the box holds a bare primitive, which `box` wrapped in a single-field
@@ -226,7 +233,11 @@ module BoxedValue =
                     let field = CliConcreteField.ToCliField field
 
                     let cell =
-                        ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [ ByrefProjection.Field field.Id ])
+                        ManagedPointerSource.Byref
+                            {
+                                Root = ByrefRoot.HeapValue addr
+                                Projections = [ ByrefProjection.Field field.Id ]
+                            }
 
                     let address =
                         if field.Type = targetConcreteTypeHandle then

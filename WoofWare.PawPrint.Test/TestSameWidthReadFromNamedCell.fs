@@ -280,7 +280,12 @@ module TestSameWidthReadFromNamedCell =
                 ByrefRoot.ArrayElement (arr, 1), state
 
         let src =
-            (ManagedPointerSource.Byref (byrefRoot, []), projections)
+            (ManagedPointerSource.Byref
+                {
+                    Root = byrefRoot
+                    Projections = []
+                },
+             projections)
             ||> List.fold (fun src proj -> ManagedPointerSource.appendProjection proj src)
 
         state, src
@@ -369,7 +374,11 @@ module TestSameWidthReadFromNamedCell =
             CliType.Numeric (
                 CliNumericType.NativeInt (
                     NativeIntSource.ManagedPointer (
-                        ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 9), [])
+                        ManagedPointerSource.Byref
+                            {
+                                Root = ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 9)
+                                Projections = []
+                            }
                     )
                 )
             )

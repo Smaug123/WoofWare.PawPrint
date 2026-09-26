@@ -676,13 +676,15 @@ public unsafe struct PointerWrapper
         : IlMachineState
         =
         let ptr =
-            ManagedPointerSource.Byref (
-                ByrefRoot.HeapValue addr,
-                [
-                    ByrefProjection.ReinterpretAs types.FourBytesConcrete
-                    ByrefProjection.Field types.FourBytesFields.[fieldIndex]
-                ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue addr
+                    Projections =
+                        [
+                            ByrefProjection.ReinterpretAs types.FourBytesConcrete
+                            ByrefProjection.Field types.FourBytesFields.[fieldIndex]
+                        ]
+                }
 
         IlMachineState.writeManagedByrefWithBase
             bct
@@ -930,10 +932,11 @@ public unsafe struct PointerWrapper
     let private taggedNativeIntSources () : NativeIntSource list =
         [
             NativeIntSource.ManagedPointer (
-                ManagedPointerSource.Byref (
-                    ByrefRoot.StackMemoryByte (ThreadId 0, FrameId 0, StackMemoryBlockId 0, 0),
-                    []
-                )
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.StackMemoryByte (ThreadId 0, FrameId 0, StackMemoryBlockId 0, 0)
+                        Projections = []
+                    }
             )
             functionPointerSource ()
             NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed (handleFor bct.Int32))
@@ -1648,9 +1651,11 @@ public unsafe struct PointerWrapper
         whatWeDid |> shouldEqual WhatWeDid.Executed
 
         match IlMachineState.peekEvalStack thread state with
-        | Some (EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (actualArrayAddr,
-                                                                                                   actualIndex),
-                                                                           [ ByrefProjection.ReinterpretAs actualView ]))) ->
+        | Some (EvalStackValue.ManagedPointer (ManagedPointerSource.Byref {
+                                                                              Root = ByrefRoot.ArrayElement (actualArrayAddr,
+                                                                                                             actualIndex)
+                                                                              Projections = [ ByrefProjection.ReinterpretAs actualView ]
+                                                                          })) ->
             actualArrayAddr |> shouldEqual arrayAddr
             actualIndex |> shouldEqual 0
             actualView |> shouldEqual (concreteTypeFor bct.Byte)
@@ -1688,8 +1693,10 @@ public unsafe struct PointerWrapper
         whatWeDid |> shouldEqual WhatWeDid.Executed
 
         match IlMachineState.peekEvalStack thread state with
-        | Some (EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.HeapValue actualAddr,
-                                                                           [ ByrefProjection.ReinterpretAs actualView ]))) ->
+        | Some (EvalStackValue.ManagedPointer (ManagedPointerSource.Byref {
+                                                                              Root = ByrefRoot.HeapValue actualAddr
+                                                                              Projections = [ ByrefProjection.ReinterpretAs actualView ]
+                                                                          })) ->
             actualAddr |> shouldEqual boxedAddr
             actualView |> shouldEqual (concreteTypeFor bct.Byte)
         | other -> failwith $"Expected RawData::Data boxed-value byte-view byref, got %O{other}"
@@ -1842,15 +1849,17 @@ public unsafe struct PointerWrapper
         let addr, state = allocateInt32Wrapper types 0x01020304
 
         let ptr =
-            ManagedPointerSource.Byref (
-                ByrefRoot.HeapValue addr,
-                [
-                    ByrefProjection.ReinterpretAs types.FourByteWrappersConcrete
-                    ByrefProjection.Field types.FourByteWrapperFields.[0]
-                    ByrefProjection.ReinterpretAs types.ByteWrapperConcrete
-                    ByrefProjection.Field types.ByteWrapperValueField
-                ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue addr
+                    Projections =
+                        [
+                            ByrefProjection.ReinterpretAs types.FourByteWrappersConcrete
+                            ByrefProjection.Field types.FourByteWrapperFields.[0]
+                            ByrefProjection.ReinterpretAs types.ByteWrapperConcrete
+                            ByrefProjection.Field types.ByteWrapperValueField
+                        ]
+                }
 
         let state =
             IlMachineState.writeManagedByrefWithBase
@@ -1868,15 +1877,17 @@ public unsafe struct PointerWrapper
         let addr, state = allocateInt32Wrapper types 0x01020304
 
         let ptr =
-            ManagedPointerSource.Byref (
-                ByrefRoot.HeapValue addr,
-                [
-                    ByrefProjection.ReinterpretAs types.FourBytesConcrete
-                    ByrefProjection.ByteOffset 1
-                    ByrefProjection.ReinterpretAs types.ByteWrapperConcrete
-                    ByrefProjection.Field types.ByteWrapperValueField
-                ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue addr
+                    Projections =
+                        [
+                            ByrefProjection.ReinterpretAs types.FourBytesConcrete
+                            ByrefProjection.ByteOffset 1
+                            ByrefProjection.ReinterpretAs types.ByteWrapperConcrete
+                            ByrefProjection.Field types.ByteWrapperValueField
+                        ]
+                }
 
         let state =
             IlMachineState.writeManagedByrefWithBase
@@ -1894,10 +1905,11 @@ public unsafe struct PointerWrapper
         let addr, state = allocateInt32Wrapper types 0x01020304
 
         let ptr =
-            ManagedPointerSource.Byref (
-                ByrefRoot.HeapValue addr,
-                [ ByrefProjection.ReinterpretAs types.PointerWrapperConcrete ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue addr
+                    Projections = [ ByrefProjection.ReinterpretAs types.PointerWrapperConcrete ]
+                }
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
@@ -1924,13 +1936,15 @@ public unsafe struct PointerWrapper
                 state
 
         let ptr =
-            ManagedPointerSource.Byref (
-                ByrefRoot.ArrayElement (arrayAddr, 0),
-                [
-                    ByrefProjection.ReinterpretAs types.FourBytesConcrete
-                    ByrefProjection.Field types.FourBytesFields.[0]
-                ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                    Projections =
+                        [
+                            ByrefProjection.ReinterpretAs types.FourBytesConcrete
+                            ByrefProjection.Field types.FourBytesFields.[0]
+                        ]
+                }
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
@@ -1964,13 +1978,15 @@ public unsafe struct PointerWrapper
         let arrayAddr, state = allocateSingleValueTypeArray valueType state
 
         let ptr =
-            ManagedPointerSource.Byref (
-                ByrefRoot.ArrayElement (arrayAddr, 0),
-                [
-                    ByrefProjection.ReinterpretAs types.FourBytesConcrete
-                    ByrefProjection.Field types.FourBytesFields.[0]
-                ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                    Projections =
+                        [
+                            ByrefProjection.ReinterpretAs types.FourBytesConcrete
+                            ByrefProjection.Field types.FourBytesFields.[0]
+                        ]
+                }
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
@@ -2005,7 +2021,13 @@ public unsafe struct PointerWrapper
 
         let state = state ()
         let boxedAddr, state = allocateBoxedIntPtr 0x0102030405060708L state
-        let ptr = ManagedPointerSource.Byref (ByrefRoot.HeapValue boxedAddr, [])
+
+        let ptr =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue boxedAddr
+                    Projections = []
+                }
 
         let replacement =
             System.BitConverter.ToInt32 ([| 0xDDuy ; 0xCCuy ; 0xBBuy ; 0xAAuy |], 0)
@@ -2040,13 +2062,15 @@ public unsafe struct PointerWrapper
             let payload = System.BitConverter.ToUInt16 (initialBytes, sample.Offset)
 
             let ptr =
-                ManagedPointerSource.Byref (
-                    ByrefRoot.ArrayElement (arrayAddr, 0),
-                    [
-                        ByrefProjection.ReinterpretAs (concreteTypeFor bct.Byte)
-                        ByrefProjection.ByteOffset sample.Offset
-                    ]
-                )
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                        Projections =
+                            [
+                                ByrefProjection.ReinterpretAs (concreteTypeFor bct.Byte)
+                                ByrefProjection.ByteOffset sample.Offset
+                            ]
+                    }
 
             let state =
                 IlMachineState.writeManagedByrefBytesOrTypedCell
@@ -2074,7 +2098,11 @@ public unsafe struct PointerWrapper
             let initialBytes = System.BitConverter.GetBytes sample.Initial
 
             let plainPtr =
-                ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [ ByrefProjection.Field valueField ])
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                        Projections = [ ByrefProjection.Field valueField ]
+                    }
 
             let plainPayload = System.BitConverter.ToUInt16 (initialBytes, 0)
 
@@ -2088,14 +2116,16 @@ public unsafe struct PointerWrapper
             System.Object.ReferenceEquals (stateAfterPlain, state) |> shouldEqual true
 
             let byteViewPtr =
-                ManagedPointerSource.Byref (
-                    ByrefRoot.ArrayElement (arrayAddr, 0),
-                    [
-                        ByrefProjection.Field valueField
-                        ByrefProjection.ReinterpretAs (concreteTypeFor bct.Byte)
-                        ByrefProjection.ByteOffset sample.Offset
-                    ]
-                )
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                        Projections =
+                            [
+                                ByrefProjection.Field valueField
+                                ByrefProjection.ReinterpretAs (concreteTypeFor bct.Byte)
+                                ByrefProjection.ByteOffset sample.Offset
+                            ]
+                    }
 
             let stateAfterByteView =
                 IlMachineState.writeManagedByrefBytesOrTypedCell
@@ -2118,7 +2148,13 @@ public unsafe struct PointerWrapper
             IlMachineState.allocateArray doubleArrayHandle (fun () -> nan) 1 state
 
         let arrayBefore = arrayRecord arrayAddr state
-        let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
+
+        let ptr =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                    Projections = []
+                }
 
         let state = IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr nan
         let arrayAfter = arrayRecord arrayAddr state
@@ -2138,10 +2174,11 @@ public unsafe struct PointerWrapper
         let arrayBefore = arrayRecord arrayAddr state
 
         let ptr =
-            ManagedPointerSource.Byref (
-                ByrefRoot.ArrayElement (arrayAddr, 0),
-                [ ByrefProjection.ReinterpretAs (concreteTypeFor bct.Int16) ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                    Projections = [ ByrefProjection.ReinterpretAs (concreteTypeFor bct.Int16) ]
+                }
 
         let state =
             IlMachineState.writeManagedByrefWithBase bct state ptr shortWithSameBytes
@@ -2174,7 +2211,13 @@ public unsafe struct PointerWrapper
                 CliNumericType.Int64 (Int64Source.Verbatim (System.BitConverter.ToInt64 (writtenBytes, 0)))
             )
 
-        let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
+        let ptr =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                    Projections = []
+                }
+
         let state = IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr written
         let arrayAfter = arrayRecord arrayAddr state
 
@@ -2202,7 +2245,13 @@ public unsafe struct PointerWrapper
             let arrayAddr, state =
                 IlMachineState.allocateArray doubleArrayHandle (fun () -> initial) 1 state
 
-            let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
+            let ptr =
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                        Projections = []
+                    }
+
             let state = IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr written
 
             let actual =
@@ -2224,7 +2273,12 @@ public unsafe struct PointerWrapper
         let stringAddr, state =
             IlMachineState.allocateManagedString loggerFactory bct "AZ" state
 
-        let ptr = ManagedPointerSource.Byref (ByrefRoot.StringCharAt (stringAddr, 0), [])
+        let ptr =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.StringCharAt (stringAddr, 0)
+                    Projections = []
+                }
 
         let stateAfter =
             IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr (CliType.ofChar 'A')
@@ -2245,14 +2299,21 @@ public unsafe struct PointerWrapper
 
         let block =
             match ptr with
-            | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (_, _, block, 0), []) -> block
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.StackMemoryByte (_, _, block, 0)
+                                             Projections = []
+                                         } -> block
             | other -> failwith $"Expected local-memory root pointer, got %O{other}"
 
         let initial = CliType.Numeric (CliNumericType.Int32 0x11223344)
         let state = IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr initial
 
         let bareBytePtr =
-            ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, 0), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.StackMemoryByte (thread, frame, block, 0)
+                    Projections = []
+                }
 
         let stateAfterBare =
             IlMachineState.writeManagedByref
@@ -2299,7 +2360,10 @@ public unsafe struct PointerWrapper
 
         let block =
             match ptr with
-            | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (_, _, block, 0), []) -> block
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.StackMemoryByte (_, _, block, 0)
+                                             Projections = []
+                                         } -> block
             | other -> failwith $"Expected local-memory root pointer, got %O{other}"
 
         let byteViewAt (offset : int) : ManagedPointerSource =
@@ -2469,14 +2533,21 @@ public unsafe struct PointerWrapper
 
         let block =
             match ptr with
-            | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (_, _, block, 0), []) -> block
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.StackMemoryByte (_, _, block, 0)
+                                             Projections = []
+                                         } -> block
             | other -> failwith $"Expected local-memory root pointer, got %O{other}"
 
         let cell = CliType.Numeric (CliNumericType.Int32 0x11223344)
         let state = IlMachineState.writeManagedByref state ptr cell
 
         let midCellPtr =
-            ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, 1), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.StackMemoryByte (thread, frame, block, 1)
+                    Projections = []
+                }
 
         Assert.Throws<System.Exception> (fun () ->
             IlMachineState.writeManagedByref
@@ -2634,7 +2705,10 @@ public unsafe struct PointerWrapper
 
         let block =
             match ptr with
-            | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (_, _, block, 0), []) -> block
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.StackMemoryByte (_, _, block, 0)
+                                             Projections = []
+                                         } -> block
             | other -> failwith $"Expected local-memory root pointer, got %O{other}"
 
         // Install a typed Int32 cell at offset 0.
@@ -2644,7 +2718,11 @@ public unsafe struct PointerWrapper
         // Write a UInt8 at offset 1 via the bytes path. This is the dispatch
         // shape that an unaligned stackalloc store would produce.
         let midCellPtr =
-            ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, 1), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.StackMemoryByte (thread, frame, block, 1)
+                    Projections = []
+                }
 
         let state =
             IlMachineState.writeManagedByrefBytesOrTypedCell
@@ -2767,7 +2845,12 @@ public unsafe struct PointerWrapper
         let state =
             IlMachineState.setArrayValue arrayAddr (CliType.Numeric (CliNumericType.Int32 0x11223344)) 0 state
 
-        let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
+        let ptr =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                    Projections = []
+                }
 
         let state =
             state
@@ -2853,11 +2936,21 @@ public unsafe struct PointerWrapper
                     let arrayAddr, state =
                         IlMachineState.allocateArray nativeIntArrayHandle (fun () -> initial) 1 state
 
-                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                            Projections = []
+                        },
+                    state
                 | TaggedNativeIntDestination.IntPtrField ->
                     let boxedAddr, state = allocateBoxedIntPtr 0L state
 
-                    ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (boxedAddr, intPtrValueFieldId ()), []), state
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.HeapObjectField (boxedAddr, intPtrValueFieldId ())
+                            Projections = []
+                        },
+                    state
 
             let state =
                 state
@@ -3052,7 +3145,11 @@ public unsafe struct PointerWrapper
         let taggedSource = NativeIntSource.FieldHandlePtr 0xBEEFL
 
         let fieldPtr =
-            ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (boxedAddr, fieldId), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapObjectField (boxedAddr, fieldId)
+                    Projections = []
+                }
 
         let state =
             IlMachineState.writeManagedByref state fieldPtr (CliType.Numeric (CliNumericType.NativeInt taggedSource))
@@ -3077,7 +3174,12 @@ public unsafe struct PointerWrapper
         | CliType.ValueType vt when vt.PrimitiveLikeKind.IsSome -> ()
         | other -> failwith $"expected cliTypeZeroOfHandle for IntPtr to return a primitive-like wrapper; got %O{other}"
 
-        let heapPtr = ManagedPointerSource.Byref (ByrefRoot.HeapValue boxedAddr, [])
+        let heapPtr =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue boxedAddr
+                    Projections = []
+                }
 
         Assert.Throws<System.Exception> (fun () ->
             IlMachineState.writeManagedByrefBytesOrTypedCell bct state heapPtr wrappedIntPtrNewValue
@@ -3120,7 +3222,12 @@ public unsafe struct PointerWrapper
                 | TaggedInt64Destination.Int64ArrayElement ->
                     let arrayAddr, state = allocateInt64Array 1 state
 
-                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                            Projections = []
+                        },
+                    state
 
             let state =
                 state
@@ -3157,7 +3264,11 @@ public unsafe struct PointerWrapper
         let int64ArrayAddr, nativeIntState = allocateInt64Array 1 nativeIntState
 
         let int64Ptr =
-            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (int64ArrayAddr, 0), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (int64ArrayAddr, 0)
+                    Projections = []
+                }
 
         let nativeIntState =
             nativeIntState
@@ -3190,7 +3301,11 @@ public unsafe struct PointerWrapper
                 int64State
 
         let nativeIntPtr =
-            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (nativeIntArrayAddr, 0), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (nativeIntArrayAddr, 0)
+                    Projections = []
+                }
 
         let int64State =
             int64State
@@ -3301,11 +3416,18 @@ public unsafe struct PointerWrapper
 
         let block =
             match ptr with
-            | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (_, _, block, 0), []) -> block
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.StackMemoryByte (_, _, block, 0)
+                                             Projections = []
+                                         } -> block
             | other -> failwith $"Expected local-memory root pointer, got %O{other}"
 
         let occupiedPtr =
-            ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, 8), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.StackMemoryByte (thread, frame, block, 8)
+                    Projections = []
+                }
 
         let state =
             IlMachineState.writeManagedByref state occupiedPtr (CliType.Numeric (CliNumericType.Int32 0x55667788))
@@ -3815,7 +3937,12 @@ public unsafe struct PointerWrapper
             let arrayAddr, state =
                 IlMachineState.allocateArray objectArrayHandle (fun () -> CliType.ObjectRef (Some initialAddr)) 1 state
 
-            let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
+            let ptr =
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                        Projections = []
+                    }
 
             let state =
                 state
@@ -3846,7 +3973,11 @@ public unsafe struct PointerWrapper
             IlMachineState.setLocalVariable localThread localFrame 0us localInitial localState
 
         let localPtr =
-            ManagedPointerSource.Byref (ByrefRoot.LocalVariable (localThread, localFrame, 0us), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.LocalVariable (localThread, localFrame, 0us)
+                    Projections = []
+                }
 
         let localAfter = IlMachineState.writeManagedByref localState localPtr localInitial
 
@@ -3860,7 +3991,11 @@ public unsafe struct PointerWrapper
             IlMachineState.setArgument argumentThread argumentFrame 0us argumentInitial argumentState
 
         let argumentPtr =
-            ManagedPointerSource.Byref (ByrefRoot.Argument (argumentThread, argumentFrame, 0us), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.Argument (argumentThread, argumentFrame, 0us)
+                    Projections = []
+                }
 
         let argumentAfter =
             IlMachineState.writeManagedByref argumentState argumentPtr argumentInitial
@@ -3878,7 +4013,11 @@ public unsafe struct PointerWrapper
             |> IlMachineState.setStatic StaticOwner.Shared staticType staticField staticInitial
 
         let staticPtr =
-            ManagedPointerSource.Byref (ByrefRoot.StaticField (staticType, staticField, StaticOwner.Shared), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.StaticField (staticType, staticField, StaticOwner.Shared)
+                    Projections = []
+                }
 
         let staticAfter =
             IlMachineState.writeManagedByref staticState staticPtr staticInitial
@@ -3887,7 +4026,13 @@ public unsafe struct PointerWrapper
 
         let heapAddr, heapState = allocateBoxedIntPtr 0x0102030405060708L (state ())
         let heapContents = boxedPayloadValueType heapAddr heapState
-        let heapPtr = ManagedPointerSource.Byref (ByrefRoot.HeapValue heapAddr, [])
+
+        let heapPtr =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue heapAddr
+                    Projections = []
+                }
 
         let heapAfter =
             IlMachineState.writeManagedByref heapState heapPtr (CliType.ValueType heapContents)
@@ -3902,7 +4047,11 @@ public unsafe struct PointerWrapper
             |> AllocatedNonArrayObject.DereferenceFieldById fieldId
 
         let fieldPtr =
-            ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (fieldAddr, fieldId), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapObjectField (fieldAddr, fieldId)
+                    Projections = []
+                }
 
         let fieldAfter = IlMachineState.writeManagedByref fieldState fieldPtr fieldValue
 
@@ -3912,7 +4061,13 @@ public unsafe struct PointerWrapper
     let ``Bare boxed value byref byte view rejects object reference storage`` () : unit =
         let state = state ()
         let boxedAddr, state = allocateObjectReferenceValue state
-        let ptr = ManagedPointerSource.Byref (ByrefRoot.HeapValue boxedAddr, [])
+
+        let ptr =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue boxedAddr
+                    Projections = []
+                }
 
         assertReadWriteByteViewRejected
             state
@@ -3929,7 +4084,13 @@ public unsafe struct PointerWrapper
     let ``Bare boxed value byref byte view rejects runtime pointer storage`` () : unit =
         let state = state ()
         let boxedAddr, state = allocateRuntimePointerValue state
-        let ptr = ManagedPointerSource.Byref (ByrefRoot.HeapValue boxedAddr, [])
+
+        let ptr =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue boxedAddr
+                    Projections = []
+                }
 
         assertReadWriteByteViewRejected
             state
@@ -3947,7 +4108,13 @@ public unsafe struct PointerWrapper
         let state = state ()
         let valueType, state = objectReferenceValueType state
         let arrayAddr, state = allocateSingleValueTypeArray valueType state
-        let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
+
+        let ptr =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                    Projections = []
+                }
 
         assertReadWriteByteViewRejected
             state
@@ -3964,7 +4131,13 @@ public unsafe struct PointerWrapper
         let state = state ()
         let valueType = runtimePointerValueType state
         let arrayAddr, state = allocateSingleValueTypeArray valueType state
-        let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
+
+        let ptr =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                    Projections = []
+                }
 
         assertReadWriteByteViewRejected
             state
@@ -3994,8 +4167,11 @@ public unsafe struct PointerWrapper
         let ptr = projectRawDataDataPointer arrayAddr state
 
         match ptr with
-        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (actualAddr, 0),
-                                      [ ByrefProjection.ReinterpretAs view ; ByrefProjection.ByteOffset offset ]) ->
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.ArrayElement (actualAddr, 0)
+                                         Projections = [ ByrefProjection.ReinterpretAs view
+                                                         ByrefProjection.ByteOffset offset ]
+                                     } ->
             actualAddr |> shouldEqual arrayAddr
             view |> shouldEqual byteView
             offset |> shouldEqual (-nativeIntSize)
@@ -4007,7 +4183,10 @@ public unsafe struct PointerWrapper
             ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset nativeIntSize) ptr
 
         match skipped with
-        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (actualAddr, 0), [ ByrefProjection.ReinterpretAs view ]) ->
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.ArrayElement (actualAddr, 0)
+                                         Projections = [ ByrefProjection.ReinterpretAs view ]
+                                     } ->
             actualAddr |> shouldEqual arrayAddr
             view |> shouldEqual byteView
         | other ->
@@ -4057,7 +4236,10 @@ public unsafe struct PointerWrapper
         let ptr = projectRawDataDataPointer containerAddr state
 
         match ptr with
-        | ManagedPointerSource.Byref (ByrefRoot.HeapValue actualAddr, [ ByrefProjection.ReinterpretAs view ]) ->
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.HeapValue actualAddr
+                                         Projections = [ ByrefProjection.ReinterpretAs view ]
+                                     } ->
             actualAddr |> shouldEqual containerAddr
             view |> shouldEqual (concreteTypeFor bct.Byte)
         | other -> failwith $"Expected RawData::Data byte-view byref over reference-type heap object, got %O{other}"
@@ -4205,10 +4387,11 @@ public unsafe struct PointerWrapper
         let stringType = concreteTypeFor bct.String
 
         let ptr =
-            ManagedPointerSource.Byref (
-                ByrefRoot.HeapObjectField (containerAddr, FieldId.named "Ref"),
-                [ ByrefProjection.ReinterpretAs stringType ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapObjectField (containerAddr, FieldId.named "Ref")
+                    Projections = [ ByrefProjection.ReinterpretAs stringType ]
+                }
 
         IlMachineState.readManagedByref bct state ptr
         |> shouldEqual (CliType.ObjectRef (Some storedAddr))
@@ -4226,10 +4409,11 @@ public unsafe struct PointerWrapper
         let stringType = concreteTypeFor bct.String
 
         let ptr =
-            ManagedPointerSource.Byref (
-                ByrefRoot.HeapObjectField (containerAddr, FieldId.named "Ref"),
-                [ ByrefProjection.ReinterpretAs stringType ; ByrefProjection.ByteOffset 4 ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapObjectField (containerAddr, FieldId.named "Ref")
+                    Projections = [ ByrefProjection.ReinterpretAs stringType ; ByrefProjection.ByteOffset 4 ]
+                }
 
         let ex =
             Assert.Throws<System.Exception> (fun () -> IlMachineState.readManagedByref bct state ptr |> ignore)
@@ -4470,7 +4654,11 @@ public unsafe struct PointerWrapper
         let int32Type = concreteTypeFor bct.Int32
 
         let ptr =
-            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (ManagedHeapAddress 123, 4), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (ManagedHeapAddress 123, 4)
+                    Projections = []
+                }
 
         ManagedPointerSource.reinterpretAs byteType ptr
         |> shouldEqual (ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs byteType) ptr)
@@ -4489,10 +4677,11 @@ public unsafe struct PointerWrapper
         |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 3)
         |> ManagedPointerSource.reinterpretAs int32Type
         |> shouldEqual (
-            ManagedPointerSource.Byref (
-                ByrefRoot.ArrayElement (ManagedHeapAddress 123, 4),
-                [ ByrefProjection.ReinterpretAs int32Type ; ByrefProjection.ByteOffset 3 ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (ManagedHeapAddress 123, 4)
+                    Projections = [ ByrefProjection.ReinterpretAs int32Type ; ByrefProjection.ByteOffset 3 ]
+                }
         )
 
     /// A handle in `stackalloc` or native memory, read a byte at a time. `TestNamedByteView`
@@ -4513,7 +4702,10 @@ public unsafe struct PointerWrapper
 
         let block =
             match ptr with
-            | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (_, _, block, 0), []) -> block
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.StackMemoryByte (_, _, block, 0)
+                                             Projections = []
+                                         } -> block
             | other -> failwith $"Expected local-memory root pointer, got %O{other}"
 
         let handleSource =
@@ -4530,7 +4722,11 @@ public unsafe struct PointerWrapper
 
         for offset in 0..7 do
             let cursor =
-                ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, offset), [])
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.StackMemoryByte (thread, frame, block, offset)
+                        Projections = []
+                    }
 
             IlMachineState.readManagedByrefBytesAs bct state cursor byteTemplate
             |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.NativeIntByte (handleSource, offset))))

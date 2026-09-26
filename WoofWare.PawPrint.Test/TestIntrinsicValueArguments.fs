@@ -27,7 +27,11 @@ module TestIntrinsicValueArguments =
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
     let private byref : ManagedPointerSource =
-        ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 7), [])
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 7)
+                Projections = []
+            }
 
     /// Integer-shaped stack values whose bits PawPrint knows exactly, paired with those bits.
     /// Every one of these is a legal int32 argument under the CLI coercion above.

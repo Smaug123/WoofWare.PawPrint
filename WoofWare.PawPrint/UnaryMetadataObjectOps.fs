@@ -230,7 +230,11 @@ module internal UnaryMetadataObjectOps =
         : IlMachineState
         =
         let heapValueByref (addr : ManagedHeapAddress) : ManagedPointerSource =
-            ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue addr
+                    Projections = []
+                }
 
         let ctorAssembly =
             state.LoadedAssembly concretizedCtor.DeclaringAssemblyFullName |> Option.get

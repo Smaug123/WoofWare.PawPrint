@@ -67,15 +67,21 @@ module TestEmptyArrayByrefWalks =
             IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero int32Handle) (fun () -> zero) len state
 
         let src =
-            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, 0), projections)
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arr, 0)
+                    Projections = projections
+                }
             |> EvalStackValue.ManagedPointer
 
         let result, _ =
             IntrinsicHelpers.offsetManagedPointerByElements baseClassTypes state (handleFor elementType) offset src
 
         match result with
-        | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (_, index), projs)) ->
-            index, projs
+        | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref {
+                                                                        Root = ByrefRoot.ArrayElement (_, index)
+                                                                        Projections = projs
+                                                                    }) -> index, projs
         | other -> failwith $"expected an array-element byref, got %O{other}"
 
     [<Test>]
@@ -179,10 +185,11 @@ module TestEmptyArrayByrefWalks =
             }
 
         let src =
-            ManagedPointerSource.Byref (
-                ByrefRoot.ArrayElement (arr, 0),
-                [ ByrefProjection.ReinterpretAs (concreteTypeFor baseClassTypes.Byte) ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arr, 0)
+                    Projections = [ ByrefProjection.ReinterpretAs (concreteTypeFor baseClassTypes.Byte) ]
+                }
 
         let result =
             ManagedPointerByteView.addByteOffsetToByteView state System.Int32.MinValue src
@@ -190,8 +197,11 @@ module TestEmptyArrayByrefWalks =
         // -2147483648 = 3 * -715827883 + 1, with the residual in [0, 3) as floor division
         // requires.
         match result with
-        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (_, index),
-                                      [ ByrefProjection.ReinterpretAs _ ; ByrefProjection.ByteOffset residual ]) ->
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.ArrayElement (_, index)
+                                         Projections = [ ByrefProjection.ReinterpretAs _
+                                                         ByrefProjection.ByteOffset residual ]
+                                     } ->
             index |> shouldEqual -715827883
             residual |> shouldEqual 1
         | other -> failwith $"expected a folded array-element byref with a 1-byte residual, got %O{other}"

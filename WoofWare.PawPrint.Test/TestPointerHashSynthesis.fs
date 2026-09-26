@@ -330,7 +330,11 @@ module TestPointerHashSynthesis =
     let ``non-null managed pointer is refused with reason embedded in message`` () : unit =
         let src =
             NativeIntSource.ManagedPointer (
-                ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 21), [])
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 21)
+                        Projections = []
+                    }
             )
 
         let ex =

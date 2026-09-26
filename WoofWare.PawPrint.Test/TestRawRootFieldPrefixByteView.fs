@@ -278,10 +278,24 @@ module TestRawRootFieldPrefixByteView =
 
     let private atByte (offset : int) (blockStart : ManagedPointerSource) : ManagedPointerSource =
         match blockStart with
-        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, 0), []) ->
-            ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, offset), [])
-        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, 0), []) ->
-            ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, offset), [])
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.NativeMemoryByte (block, 0)
+                                         Projections = []
+                                     } ->
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.NativeMemoryByte (block, offset)
+                    Projections = []
+                }
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.StackMemoryByte (thread, frame, block, 0)
+                                         Projections = []
+                                     } ->
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.StackMemoryByte (thread, frame, block, offset)
+                    Projections = []
+                }
         | other -> failwith $"expected a byref to byte 0 of a fresh block, got %O{other}"
 
     /// The block's contents stored the way a guest stores them: a typed cell per `*p = ...`.
@@ -317,8 +331,14 @@ module TestRawRootFieldPrefixByteView =
 
     let private rootOffset (ptr : ManagedPointerSource) : int =
         match ptr with
-        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (_, offset), _)
-        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (_, _, _, offset), _) -> offset
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.NativeMemoryByte (_, offset)
+                                         Projections = _
+                                     }
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.StackMemoryByte (_, _, _, offset)
+                                         Projections = _
+                                     } -> offset
         | other -> failwith $"expected a raw-memory byref, got %O{other}"
 
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 1000
@@ -331,14 +351,21 @@ module TestRawRootFieldPrefixByteView =
 
             if List.isEmpty case.Path then
                 // With nothing to anchor, the whole displacement folds into the root.
+                let root =
+                    match atByte (accessAddress case) blockStart with
+                    | ManagedPointerSource.Byref {
+                                                     Root = root
+                                                     Projections = _
+                                                 } -> root
+                    | other -> failwith $"unreachable: %O{other}"
+
                 ptr
                 |> shouldEqual (
-                    ManagedPointerSource.Byref (
-                        (match atByte (accessAddress case) blockStart with
-                         | ManagedPointerSource.Byref (root, _) -> root
-                         | other -> failwith $"unreachable: %O{other}"),
-                        [ ByrefProjection.ReinterpretAs (viewType case.View) ]
-                    )
+                    ManagedPointerSource.Byref
+                        {
+                            Root = root
+                            Projections = [ ByrefProjection.ReinterpretAs (viewType case.View) ]
+                        }
                 )
             else
                 rootOffset ptr |> shouldEqual case.NestAt

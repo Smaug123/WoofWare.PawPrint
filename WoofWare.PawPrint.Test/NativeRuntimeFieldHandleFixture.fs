@@ -326,7 +326,12 @@ public sealed class GenericHolder<T>
         let arrayAddr, state =
             IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero objectHandle) (fun () -> value) 1 state
 
-        let target = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
+        let target =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                    Projections = []
+                }
 
         let objectHandleOnStackType =
             requiredTopLevelType fixture.Corelib "System.Runtime.CompilerServices" "ObjectHandleOnStack"
@@ -394,7 +399,13 @@ public sealed class GenericHolder<T>
 
         let ptr =
             CliType.RuntimePointer (
-                CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []))
+                CliRuntimePointer.Managed (
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                            Projections = []
+                        }
+                )
             )
 
         arrayAddr, ptr, state

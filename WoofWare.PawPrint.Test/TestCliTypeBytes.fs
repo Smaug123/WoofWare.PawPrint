@@ -458,10 +458,11 @@ module TestCliTypeBytes =
     let private refusedNativeIntSources () : NativeIntSource list =
         [
             NativeIntSource.ManagedPointer (
-                ManagedPointerSource.Byref (
-                    ByrefRoot.StackMemoryByte (ThreadId 0, FrameId 0, StackMemoryBlockId 0, 0),
-                    []
-                )
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.StackMemoryByte (ThreadId 0, FrameId 0, StackMemoryBlockId 0, 0)
+                        Projections = []
+                    }
             )
             syntheticCrossStorageNativeIntSource ()
         ]

@@ -56,7 +56,11 @@ module TestByrefComparison =
         ByrefRoot.LocalVariable (thread, frame, index)
 
     let private byref (root : ByrefRoot) (projs : ByrefProjection list) : NormalisedManagedPointerSource =
-        ManagedPointerSource.Byref (root, projs)
+        ManagedPointerSource.Byref
+            {
+                Root = root
+                Projections = projs
+            }
         |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
 
     let private ceq (p1 : NormalisedManagedPointerSource) (p2 : NormalisedManagedPointerSource) : bool =
@@ -103,7 +107,11 @@ module TestByrefComparison =
         let obj = ManagedHeapAddress 1
 
         let field (name : string) =
-            ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (obj, FieldId.Named name), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapObjectField (obj, FieldId.Named name)
+                    Projections = []
+                }
             |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
 
         let exn = Assert.Throws (fun () -> ceq (field "A") (field "B") |> ignore)
@@ -114,7 +122,11 @@ module TestByrefComparison =
     [<Test>]
     let ``fields of different heap objects are unequal`` () =
         let field (addr : int) (name : string) =
-            ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (ManagedHeapAddress addr, FieldId.Named name), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapObjectField (ManagedHeapAddress addr, FieldId.Named name)
+                    Projections = []
+                }
             |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
 
         ceq (field 1 "A") (field 2 "B") |> shouldEqual false
@@ -124,7 +136,11 @@ module TestByrefComparison =
     [<Test>]
     let ``the same field of one heap object is equal`` () =
         let field () =
-            ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (ManagedHeapAddress 1, FieldId.Named "A"), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapObjectField (ManagedHeapAddress 1, FieldId.Named "A")
+                    Projections = []
+                }
             |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
 
         ceq (field ()) (field ()) |> shouldEqual true
@@ -135,7 +151,11 @@ module TestByrefComparison =
     [<Test>]
     let ``distinct undisplaced elements of one array are unequal`` () =
         let element (index : int) =
-            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (ManagedHeapAddress 1, index), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (ManagedHeapAddress 1, index)
+                    Projections = []
+                }
             |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
 
         ceq (element 0) (element 1) |> shouldEqual false
@@ -147,18 +167,24 @@ module TestByrefComparison =
     [<Test>]
     let ``a displaced element byref against another element is refused`` () =
         let displaced =
-            ManagedPointerSource.Byref (
-                ByrefRoot.ArrayElement (ManagedHeapAddress 1, 0),
-                [
-                    fieldY
-                    ByrefProjection.ReinterpretAs byteType
-                    ByrefProjection.ByteOffset 4
-                ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (ManagedHeapAddress 1, 0)
+                    Projections =
+                        [
+                            fieldY
+                            ByrefProjection.ReinterpretAs byteType
+                            ByrefProjection.ByteOffset 4
+                        ]
+                }
             |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
 
         let bare =
-            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (ManagedHeapAddress 1, 1), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (ManagedHeapAddress 1, 1)
+                    Projections = []
+                }
             |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
 
         let exn = Assert.Throws (fun () -> ceq displaced bare |> ignore)
@@ -215,14 +241,19 @@ module TestByrefComparison =
     [<Test>]
     let ``a field-free in-cell cursor still decides against another element`` () =
         let inCell =
-            ManagedPointerSource.Byref (
-                ByrefRoot.ArrayElement (ManagedHeapAddress 1, 0),
-                [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset 1 ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (ManagedHeapAddress 1, 0)
+                    Projections = [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset 1 ]
+                }
             |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
 
         let other =
-            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (ManagedHeapAddress 1, 1), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (ManagedHeapAddress 1, 1)
+                    Projections = []
+                }
             |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
 
         ceq inCell other |> shouldEqual false
@@ -255,14 +286,19 @@ module TestByrefComparison =
     [<Test>]
     let ``the same cursor on a fold-eligible root still decides`` () =
         let displaced =
-            ManagedPointerSource.Byref (
-                ByrefRoot.ArrayElement (ManagedHeapAddress 1, 0),
-                [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset 2 ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (ManagedHeapAddress 1, 0)
+                    Projections = [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset 2 ]
+                }
             |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
 
         let other =
-            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (ManagedHeapAddress 1, 1), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (ManagedHeapAddress 1, 1)
+                    Projections = []
+                }
             |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
 
         ceq displaced other |> shouldEqual false
@@ -273,14 +309,19 @@ module TestByrefComparison =
     [<Test>]
     let ``a reinterpreted-but-undisplaced byref still decides against another root`` () =
         let reinterpreted =
-            ManagedPointerSource.Byref (
-                ByrefRoot.ArrayElement (ManagedHeapAddress 1, 0),
-                [ ByrefProjection.ReinterpretAs byteType ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (ManagedHeapAddress 1, 0)
+                    Projections = [ ByrefProjection.ReinterpretAs byteType ]
+                }
             |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
 
         let other =
-            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (ManagedHeapAddress 1, 1), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (ManagedHeapAddress 1, 1)
+                    Projections = []
+                }
             |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
 
         ceq reinterpreted other |> shouldEqual false
@@ -654,13 +695,15 @@ module TestByrefComparison =
     [<Test>]
     let ``coalescing two cursors past int32 is refused rather than truncated`` () =
         let cursored =
-            ManagedPointerSource.Byref (
-                local 0us,
-                [
-                    ByrefProjection.ReinterpretAs byteType
-                    ByrefProjection.ByteOffset System.Int32.MaxValue
-                ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = local 0us
+                    Projections =
+                        [
+                            ByrefProjection.ReinterpretAs byteType
+                            ByrefProjection.ByteOffset System.Int32.MaxValue
+                        ]
+                }
 
         let exn =
             Assert.Throws (fun () ->
@@ -675,13 +718,15 @@ module TestByrefComparison =
         // representation rather than a refusal of multi-step cursor arithmetic.
         ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset -1) cursored
         |> shouldEqual (
-            ManagedPointerSource.Byref (
-                local 0us,
-                [
-                    ByrefProjection.ReinterpretAs byteType
-                    ByrefProjection.ByteOffset (System.Int32.MaxValue - 1)
-                ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = local 0us
+                    Projections =
+                        [
+                            ByrefProjection.ReinterpretAs byteType
+                            ByrefProjection.ByteOffset (System.Int32.MaxValue - 1)
+                        ]
+                }
         )
 
     /// The concrete collision, spelled out. `Int32.MaxValue + 1` and `Int32.MinValue` are the

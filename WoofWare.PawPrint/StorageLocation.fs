@@ -92,13 +92,19 @@ module internal StorageLocation =
         match ptr with
         | ManagedPointerSource.Null -> None
         | ManagedPointerSource.NativeIntPlaceholder _ -> None
-        | ManagedPointerSource.Byref (root, projs) ->
+        | ManagedPointerSource.Byref {
+                                         Root = root
+                                         Projections = projs
+                                     } ->
             let templateFor (ty : ConcreteType<ConcreteTypeHandle>) : CliType =
                 IlMachineManagedByref.zeroForConcreteType baseClassTypes state ty
 
             let root, projs =
                 match IlMachineManagedByref.tryAnchorRawRootFieldPrefixToLayout state ptr with
-                | ValueSome (ManagedPointerSource.Byref (root, projs)) -> root, projs
+                | ValueSome (ManagedPointerSource.Byref {
+                                                            Root = root
+                                                            Projections = projs
+                                                        }) -> root, projs
                 | ValueSome other ->
                     failwith $"interpreter bug: anchoring the byref %O{ptr} produced the non-byref %O{other}"
                 | ValueNone -> root, projs
@@ -170,7 +176,10 @@ module internal StorageLocation =
     /// storage with another byref under PawPrint's model.
     let private sharedStorageKey (ptr : ManagedPointerSource) : SharedStorageKey option =
         match ptr with
-        | ManagedPointerSource.Byref (root, _) -> Some (sharedStorageKeyOfRoot root)
+        | ManagedPointerSource.Byref {
+                                         Root = root
+                                         Projections = _
+                                     } -> Some (sharedStorageKeyOfRoot root)
         | ManagedPointerSource.Null
         | ManagedPointerSource.NativeIntPlaceholder _ -> None
 

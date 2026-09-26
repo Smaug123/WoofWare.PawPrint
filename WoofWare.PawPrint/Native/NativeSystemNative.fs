@@ -93,7 +93,14 @@ module internal BufferPointer =
     /// no bytes to transfer.
     let dereferenceable (pointer : BufferPointer) : ManagedPointerSource option =
         match pointer with
-        | BufferPointer.Storage (root, projections) -> Some (ManagedPointerSource.Byref (root, projections))
+        | BufferPointer.Storage (root, projections) ->
+            Some (
+                ManagedPointerSource.Byref
+                    {
+                        Root = root
+                        Projections = projections
+                    }
+            )
         | BufferPointer.RawAddress _ -> None
         | BufferPointer.Symbolic _ -> failwith (refusalMessage pointer BufferRefusal.OpaqueAtTransfer)
         | BufferPointer.Unstatable _ -> failwith (refusalMessage pointer BufferRefusal.AddresslessAtTransfer)
@@ -312,7 +319,10 @@ module NativeSystemNative =
     let internal bufferPointerArgument (operation : string) (argName : string) (arg : CliType) : BufferPointer =
         let classify (ptr : ManagedPointerSource) : BufferPointer =
             match ptr with
-            | ManagedPointerSource.Byref (root, projections) -> BufferPointer.Storage (root, projections)
+            | ManagedPointerSource.Byref {
+                                             Root = root
+                                             Projections = projections
+                                         } -> BufferPointer.Storage (root, projections)
             | ManagedPointerSource.Null -> BufferPointer.RawAddress 0UL
             // The placeholder's own contract is that it must never be
             // dereferenced; it exists to carry a bit pattern through a managed
@@ -2729,7 +2739,10 @@ module NativeSystemNative =
 
             let block =
                 match handle with
-                | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, 0), []) -> block
+                | ManagedPointerSource.Byref {
+                                                 Root = ByrefRoot.NativeMemoryByte (block, 0)
+                                                 Projections = []
+                                             } -> block
                 | other ->
                     failwith
                         $"%s{operation}: the name buffer allocation returned an unexpected pointer shape (%O{other}); this is an interpreter bug."
@@ -2858,7 +2871,11 @@ module NativeSystemNative =
                 operation
                 directoryEntryHandle
                 output
-                (ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, 0), []))
+                (ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.NativeMemoryByte (block, 0)
+                        Projections = []
+                    })
                 nameLength
                 inodeType
                 state
