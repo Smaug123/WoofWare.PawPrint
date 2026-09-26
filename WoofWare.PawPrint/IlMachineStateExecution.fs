@@ -9,58 +9,6 @@ open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
 module IlMachineStateExecution =
-    let getTypeOfObj
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (esv : EvalStackValue)
-        : IlMachineState * ConcreteTypeHandle
-        =
-        match esv with
-        | EvalStackValue.Int32 _ ->
-            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Int32
-            |> IlMachineState.concretizeType
-                loggerFactory
-                baseClassTypes
-                state
-                baseClassTypes.Corelib.DefinitionFullName
-                ImmutableArray.Empty
-                ImmutableArray.Empty
-        | EvalStackValue.Int64 _ ->
-            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Int64
-            |> IlMachineState.concretizeType
-                loggerFactory
-                baseClassTypes
-                state
-                baseClassTypes.Corelib.DefinitionFullName
-                ImmutableArray.Empty
-                ImmutableArray.Empty
-        | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
-        | EvalStackValue.Float (EvalStackFloat.Single _) ->
-            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Single
-            |> IlMachineState.concretizeType
-                loggerFactory
-                baseClassTypes
-                state
-                baseClassTypes.Corelib.DefinitionFullName
-                ImmutableArray.Empty
-                ImmutableArray.Empty
-        | EvalStackValue.Float (EvalStackFloat.Double _) ->
-            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Double
-            |> IlMachineState.concretizeType
-                loggerFactory
-                baseClassTypes
-                state
-                baseClassTypes.Corelib.DefinitionFullName
-                ImmutableArray.Empty
-                ImmutableArray.Empty
-        | EvalStackValue.ManagedPointer _ -> failwith "cannot get type of managed pointer target"
-        | EvalStackValue.ObjectRef addr ->
-            let concreteType = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
-            state, concreteType
-        | EvalStackValue.NullObjectRef -> failwith "TODO: throw NullReferenceException"
-        | EvalStackValue.UserDefinedValueType tuples -> failwith "todo"
-
     let isAssignableFrom
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1851,16 +1799,19 @@ module IlMachineStateExecution =
 
         let state, methodToCall =
             if shouldPerformVirtualResolution then
-                let callingObj =
+                let callingObjTyHandle =
                     match
                         activeMethodState.EvaluationStack
                         |> EvalStack.PeekNthFromTop (MethodInfo.arity methodToCall)
                     with
                     | None -> failwith "unexpectedly no `this` on the eval stack of instance method"
-                    | Some this -> this
-
-                let state, callingObjTyHandle =
-                    getTypeOfObj loggerFactory baseClassTypes state callingObj
+                    | Some (EvalStackValue.ObjectRef addr) -> ManagedHeap.getObjectConcreteType addr state.ManagedHeap
+                    | Some EvalStackValue.NullObjectRef ->
+                        failwith
+                            $"BUG: virtual dispatch of %O{methodToCall} reached a null receiver; every caller that asks for virtual resolution must raise NullReferenceException itself first"
+                    | Some other ->
+                        failwith
+                            $"virtual dispatch of %O{methodToCall}: the receiver, %d{MethodInfo.arity methodToCall} slot(s) down the evaluation stack, is %O{other} rather than an object reference"
 
                 let state, resolved =
                     tryResolveVirtualImplementation
