@@ -49,6 +49,9 @@ class Program
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_PRead", SetLastError = true)]
     static extern unsafe int PRead(IntPtr fd, byte* buffer, int bufferSize, long fileOffset);
 
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_PWrite", SetLastError = true)]
+    static extern unsafe int PWrite(IntPtr fd, byte* buffer, int bufferSize, long fileOffset);
+
     static unsafe IntPtr OpenF()
     {{
         byte* path = stackalloc byte[2];
@@ -114,6 +117,22 @@ class Program
         exn.Message |> shouldContainText "bufferSize -1"
         // The message must carry the measurement, since it is the storage medium for it.
         exn.Message |> shouldContainText "macOS answers EINVAL and Linux answers EFAULT"
+
+    /// `SystemNative_PWrite` has no `Common_Write` in front of it either, casts the size to
+    /// `uint32_t` the same way, and is refused for the same reason, ahead of the descriptor too.
+    [<Test>]
+    let ``a negative PWrite bufferSize is refused loudly too`` () : unit =
+        let source =
+            guest
+                """
+        return PWrite(new IntPtr(4242), buf, -1, 0);
+"""
+
+        let exn =
+            Assert.Catch (fun () -> run "PWriteNegativeSize.cs" source |> ignore<RunOutcome>)
+
+        exn.Message |> shouldContainText "SystemNative_PWrite"
+        exn.Message |> shouldContainText "bufferSize -1"
 
     /// The control: the same call with a *non-negative* size is served, so the refusal is narrow
     /// rather than "PRead refuses sizes". Without this, a handler that refused every call would

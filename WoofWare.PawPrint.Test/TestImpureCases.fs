@@ -1200,6 +1200,58 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // Linux's EINVAL for a transfer that would carry the file
+                // position past INT64_MAX, through all four entry points, and
+                // where it sits against the range screen and EISDIR. Configured
+                // as arm64 rather than the default x86-64, so that a handler
+                // which read the platform from anywhere but the kernel it was
+                // given would be caught. Not differential: the Darwin half
+                // answers these reads 0.
+                FileName = "TransferPositionLinuxSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.linuxArm64
+                        FileSystem =
+                            let name (s : string) =
+                                DirectoryEntryName.parseOrFail "test seed" s
+
+                            Map.ofList
+                                [
+                                    name "f",
+                                    SeedEntry.file (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
+                                    name "d", SeedEntry.directory Map.empty
+                                ]
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The same reads under Darwin, which has no such check.
+                FileName = "TransferPositionDarwinSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        FileSystem =
+                            let name (s : string) =
+                                DirectoryEntryName.parseOrFail "test seed" s
+
+                            Map.ofList
+                                [
+                                    name "f",
+                                    SeedEntry.file (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
+                                    name "d", SeedEntry.directory Map.empty
+                                ]
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // A socket event port as a descriptor: that
                 // `SystemNative_CreateSocketEventPort` allocates one like any
                 // other fd, that `dup`/`close` treat it like any other, and what

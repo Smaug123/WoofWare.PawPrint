@@ -28,14 +28,29 @@ module TestUserBuffer =
     let private both : UserBufferCheck list = [ screening ; atCopyTime ]
 
     [<Test>]
-    let ``storage is never screened`` () : unit =
-        // Not "screened and passed": real storage is inside the user address
-        // space of every platform modelled here, so the range check is not
-        // performed at all. Asserted at a length no address could accommodate,
-        // which is what tells those two apart.
-        for check in both do
-            UserBufferCheck.faultsBeforeOperationFor check UserBuffer.Mapped System.UInt64.MaxValue
-            |> shouldEqual (Ok false)
+    let ``storage is screened only for a range no placement fits`` () : unit =
+        // Real storage is somewhere in the user address space, but the range a
+        // call names runs from it for the whole count, and a range longer than
+        // the address space faults wherever it starts: measured on Linux 6.18.5
+        // aarch64, a count of 2^48 + 1 faults even through NULL. Anything
+        // shorter is taken to fit, the address being unknown here.
+        let limit = 0x0000_7FFF_FFFF_F000UL
+
+        for buffer in [ UserBuffer.Mapped ; UserBuffer.Opaque ] do
+            for length, faults in
+                [
+                    0UL, false
+                    4096UL, false
+                    limit, false
+                    limit + 1UL, true
+                    System.UInt64.MaxValue, true
+                ] do
+                UserBufferCheck.faultsBeforeOperationFor screening buffer length
+                |> shouldEqual (Ok faults)
+
+                // A platform that screens nothing up front asks nothing.
+                UserBufferCheck.faultsBeforeOperationFor atCopyTime buffer length
+                |> shouldEqual (Ok false)
 
     [<Test>]
     let ``an opaque address passes every screen`` () : unit =

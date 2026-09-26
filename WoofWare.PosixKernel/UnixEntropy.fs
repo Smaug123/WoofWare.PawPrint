@@ -92,8 +92,9 @@ module GetEntropyRefusal =
 module UnixEntropy =
 
     /// The most bytes one `getrandom` moves on `platform`, however many were
-    /// asked for: Linux's `MAX_RW_COUNT`, which is `INT_MAX` rounded down to a
-    /// whole page. A larger request is not an error; it returns this many.
+    /// asked for: the same limit as one `read(2)`, which on Linux, the one
+    /// flavour with a `getrandom`, is `MAX_RW_COUNT` (`INT_MAX` rounded down to
+    /// a whole page). A larger request is not an error; it returns this many.
     let getRandomMaxTransfer (platform : SimulatedUnixPlatform) : uint64 =
         // Measured with 4 KiB pages, the only size a Linux platform admits:
         // 0x7FFFF000 on 6.18.5 aarch64 for requests of INT_MAX, 2^31,
@@ -101,8 +102,7 @@ module UnixEntropy =
         // size measured up to 256 MiB; and 0x7FFFF000 on 6.12 x86-64 for INT_MAX,
         // 2^31 and SIZE_MAX. `TestEntropyAgainstHost` measures it again on a
         // Linux host.
-        let pageBytes = SimulatedPageSize.bytes (SimulatedUnixPlatform.pageSize platform)
-        uint64 (System.Int32.MaxValue &&& ~~~(pageBytes - 1))
+        uint64 (TransferCountLimit.maxTransfer (SimulatedUnixPlatform.transferCountLimit platform))
 
     /// The most bytes one `getentropy` will be asked for. A longer request is
     /// EINVAL, and moves nothing.

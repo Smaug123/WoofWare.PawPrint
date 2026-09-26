@@ -35,6 +35,7 @@
     <Compile Include="TestNoPawPrintReference.fs" />
     <Compile Include="TestPathArgument.fs" />
     <Compile Include="TestUserBuffer.fs" />
+    <Compile Include="TestTransferCounts.fs" />
     <Compile Include="TestUserBufferCheckAgainstHost.fs" />
     <Compile Include="TestEntropyPool.fs" />
     <Compile Include="TestUnixEntropy.fs" />

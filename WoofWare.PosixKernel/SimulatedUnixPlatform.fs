@@ -192,6 +192,32 @@ type ReadLinkCapacityVerdict =
     /// The size is one the copy can honour.
     | Admit
 
+/// What a platform's `read(2)`, `write(2)`, `pread(2)` and `pwrite(2)` do with
+/// a count larger than one call moves. The count itself is a `size_t`, so any
+/// value up to `UInt64.MaxValue` can be asked for.
+[<RequireQualifiedAccess>]
+type TransferCountLimit =
+    /// A larger count is not an error: the call moves at most `maxTransfer`
+    /// bytes, and returns how many it moved.
+    ///
+    /// The count is shortened only after the buffer's range and the file
+    /// position have been checked, and both of those checks see the whole count
+    /// the caller asked for.
+    | Shortened of maxTransfer : int
+    /// A larger count is EINVAL, and that is the first thing the call answers:
+    /// before the descriptor is looked up, the buffer is looked at, or anything
+    /// else about the call is decided.
+    | Refused of maxTransfer : int
+
+[<RequireQualifiedAccess>]
+module TransferCountLimit =
+    /// The most bytes one call moves, whether a larger count is shortened to it
+    /// or refused.
+    let maxTransfer (limit : TransferCountLimit) : int =
+        match limit with
+        | TransferCountLimit.Shortened maxTransfer
+        | TransferCountLimit.Refused maxTransfer -> maxTransfer
+
 [<RequireQualifiedAccess>]
 module SimulatedUnixPlatform =
     /// Loosest ceiling any Unix we model imposes on `utsname.release`:
@@ -644,6 +670,27 @@ module SimulatedUnixPlatform =
         match flavour platform with
         | SimulatedUnixFlavour.Linux -> true
         | SimulatedUnixFlavour.Darwin -> false
+
+    /// What this platform's `read(2)` family does with a count larger than one
+    /// call moves. See `TransferCountLimit`.
+    let transferCountLimit (platform : SimulatedUnixPlatform) : TransferCountLimit =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux ->
+            // `MAX_RW_COUNT`: `INT_MAX` rounded down to a whole page. Measured
+            // 0x7FFFF000 with 4 KiB pages, the only size a Linux platform
+            // admits, on 6.18.5 aarch64 for read, pread, write and pwrite (and
+            // for `getrandom`, on 6.12 x86-64 too): every count from 0x7FFFF000
+            // to 2^48 moved exactly 0x7FFFF000 bytes. The range check sees the
+            // count before this shortening, and so does the check on the file
+            // position; docs/plans/2026-08-23-posix-kernel-extraction/
+            // transfer-counts.c and transfer-counts-position.c.
+            let pageBytes = SimulatedPageSize.bytes (pageSize platform)
+            TransferCountLimit.Shortened (System.Int32.MaxValue &&& ~~~(pageBytes - 1))
+        | SimulatedUnixFlavour.Darwin ->
+            // Measured on 27.0.0 arm64: every count above INT_MAX is EINVAL,
+            // ahead of a descriptor that is not open, through the raw syscall as
+            // through libc; INT_MAX itself moves INT_MAX bytes in one call.
+            TransferCountLimit.Refused System.Int32.MaxValue
 
     /// How this platform's `readlink(2)` treats a buffer size that is not
     /// positive, measured on both (`docs/probes/readlink/capacity.py`):
