@@ -90,6 +90,13 @@ public class ContraImpl : IContra<object>
 {
     public string M() { return "impl"; }
 }
+
+public class ContraExplicit : IContra<object>
+{
+    string IContra<object>.M() { return "explicit"; }
+}
+
+public class ContraDerived : ContraImpl { }
 """
 
     /// A method as the guest names it (`typeof(G<>)`) and as the host's reflection does (`G`1`).
@@ -161,6 +168,8 @@ public class ContraImpl : IContra<object>
             "\"x\"", Some (fun _ -> box "x")
             "new Derived()", Some (construct "Derived")
             "new ContraImpl()", Some (construct "ContraImpl")
+            "new ContraExplicit()", Some (construct "ContraExplicit")
+            "new ContraDerived()", Some (construct "ContraDerived")
         ]
 
     let private corpusBytes : byte array =
@@ -260,6 +269,39 @@ public static class FormalSignatureSweep
                 cases.[exitCode - 1]
 
             $"disagreed first on typeof(%s{guestType}).GetMethod(\"%s{methodName}\").CreateDelegate(typeof(%s{delegateSpelling})) with target %s{targetSpelling}, where real .NET's outcome is %s{outcome}"
+
+    [<Test>]
+    let ``virtualising onto a default interface method is refused`` () : unit =
+        // Real .NET binds the definition's own default body here, where dispatching through the
+        // closed instantiation finds `IChild`'s override: see
+        // `sourcesPure/DelegateBindOpenGenericDefinitionDefaultMethod.cs`, which is parked on this.
+        let fileName = "DelegateBindOpenGenericDefinitionDefaultMethod.cs"
+
+        let image =
+            Roslyn.compile
+                [
+                    Assembly.getEmbeddedResourceAsString fileName (System.Reflection.Assembly.GetExecutingAssembly ())
+                ]
+
+        let _messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", fileName ]
+
+        use _loggerFactoryResource = loggerFactory
+        use peImage = new MemoryStream (image)
+
+        let exc =
+            Assert.Throws<GuestFailureException> (fun () ->
+                BoundedRun.runWith
+                    loggerFactory
+                    BoundedRun.defaultMaxSteps
+                    fileName
+                    (Some fileName)
+                    peImage
+                    (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
+                |> ignore<RunOutcome>
+            )
+
+        Assert.That (exc.Message, Does.Contain "which implements it with a default interface method")
 
     [<Test>]
     let ``the sweep reaches every outcome`` () : unit =

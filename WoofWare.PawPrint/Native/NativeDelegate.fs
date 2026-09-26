@@ -1226,6 +1226,21 @@ module NativeDelegate =
 
                             match distinctImplementations with
                             | [ Some implementation ] ->
+                                // A class's implementation is found through its dispatch map, which
+                                // CoreCLR searches by variance for the typical instantiation just as
+                                // for a closed one. A default body is not: measured, over a receiver
+                                // whose `IChild : IContra<object>` overrides `IContra<T>.M`'s
+                                // default, real .NET binds the definition's own default body where
+                                // the closed instantiation would dispatch to the override.
+                                let implementationIsOnInterface =
+                                    state._LoadedAssemblies
+                                        .ByDefinitionName(implementation.DeclaringAssemblyFullName)
+                                        .TypeDefs.[implementation.RequiredDeclaringType.Definition.Get].IsInterface
+
+                                if implementationIsOnInterface then
+                                    failwith
+                                        $"TODO: %s{operation} must virtualise %s{method.Name} of the open generic definition %O{definition} over a %O{receiverType}, which implements it with a default interface method; CoreCLR's default-method search for the typical instantiation differs from the one for a closed instantiation, and PawPrint does not model it"
+
                                 state,
                                 Ok (DelegateBinding.Closed (targetAddr, FunctionPointerTarget.Managed implementation))
                             | [] ->
