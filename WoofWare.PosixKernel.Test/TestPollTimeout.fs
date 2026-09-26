@@ -468,6 +468,27 @@ module TestPollTimeout =
         exn.Message |> shouldContainText "is not parked"
 
     [<Test>]
+    let ``a task parked in a poll cannot be parked in another syscall`` () : unit =
+        let _, parked = parks [ entry listener pollIn ] 10 idle
+
+        for other in
+            [
+                ParkedSyscall.Flock
+                    {
+                        Requester = idOf listener idle
+                        Mode = FlockMode.Shared
+                    }
+                ParkedSyscall.SocketWait
+                    {
+                        Port = idOf listener idle
+                        MaxEvents = 1
+                    }
+            ] do
+            let exn = Assert.Throws<exn> (fun () -> UnixWait.park task other parked |> ignore)
+
+            exn.Message |> shouldContainText "without clearing the first"
+
+    [<Test>]
     let ``a Darwin-flavoured poll with a timeout is refused, as every Darwin poll is`` () : unit =
         let darwin = UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
 
