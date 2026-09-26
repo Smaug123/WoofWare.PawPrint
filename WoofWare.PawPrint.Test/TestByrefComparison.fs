@@ -42,12 +42,12 @@ module TestByrefComparison =
             ImmutableArray<ConcreteTypeHandle>.Empty
 
     let private byteType : ConcreteType<ConcreteTypeHandle> =
-        concreteType (Corelib.getBaseTypes corelib).Byte
+        concreteType (BaseClassTypes.ofCorelib corelib).Byte
 
     /// A second type, so that a test can vary the *view* a chain takes without varying the
     /// address it names.
     let private int32Type : ConcreteType<ConcreteTypeHandle> =
-        concreteType (Corelib.getBaseTypes corelib).Int32
+        concreteType (BaseClassTypes.ofCorelib corelib).Int32
 
     let private thread = ThreadId 0
     let private frame = FrameId 0

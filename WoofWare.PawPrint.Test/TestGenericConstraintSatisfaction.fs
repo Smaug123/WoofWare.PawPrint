@@ -162,7 +162,7 @@ public class H2_BaseThenMarker<A, B> where A : BaseType where B : IMarker { }
         use stream = new MemoryStream (image)
         AssemblyApi.read loggerFactory None stream
 
-    let private bct : BaseClassTypes<DumpedAssembly> = Corelib.getBaseTypes corelib
+    let private bct : BaseClassTypes<DumpedAssembly> = BaseClassTypes.ofCorelib corelib
 
     let private initialState : IlMachineState =
         let withAssemblies =

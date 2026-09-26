@@ -134,7 +134,7 @@ Two placements that store the runtime were considered and not taken:
 
 Admission happens at CoreLib *resolution*. `Program.beginStartup` walks the entry type's base
 chain to the assembly that defines `System.Object`, and classifies that assembly before it
-calls `Corelib.getBaseTypes`: a CoreLib of an unsupported major may lack a type `getBaseTypes`
+calls `BaseClassTypes.ofCorelib`: a CoreLib of an unsupported major may lack a type `getBaseTypes`
 demands, and that failure would hide the real reason. An unsupported major raises
 `UnsupportedRuntimeException` naming the CoreLib, the major it states, the majors supported,
 and the runtime directories it was resolved along. No guest code has run at that point, and

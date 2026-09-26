@@ -791,7 +791,7 @@ public static class Entry
         let corelib =
             global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory typeof<obj>.Assembly.Location
 
-        let baseClassTypes = Corelib.getBaseTypes corelib
+        let baseClassTypes = BaseClassTypes.ofCorelib corelib
 
         let state =
             IlMachineState.initial loggerFactory ImmutableArray.Empty assembly

@@ -622,7 +622,7 @@ module TestFabricatedVtableLayout =
         let _, loggerFactory = LoggerFactory.makeTest ()
         Assembly.read loggerFactory None (new MemoryStream (image))
 
-    let private bct : BaseClassTypes<DumpedAssembly> = Corelib.getBaseTypes corelib
+    let private bct : BaseClassTypes<DumpedAssembly> = BaseClassTypes.ofCorelib corelib
 
     let private loaded : LoadedAssemblies =
         LoadedAssemblies.ofAssemblies [ corelib ; fabricated ]

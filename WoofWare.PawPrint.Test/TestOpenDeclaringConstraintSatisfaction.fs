@@ -143,7 +143,7 @@ public class D_Self<T> where T : class { public void M_Self<U>() where U : D_Sel
         use stream = new MemoryStream (image)
         AssemblyApi.read loggerFactory None stream
 
-    let private bct : BaseClassTypes<DumpedAssembly> = Corelib.getBaseTypes corelib
+    let private bct : BaseClassTypes<DumpedAssembly> = BaseClassTypes.ofCorelib corelib
 
     let private initialState : IlMachineState =
         let withAssemblies =

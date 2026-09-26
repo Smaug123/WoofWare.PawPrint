@@ -878,7 +878,7 @@ module TestMethodReferenceResolutionGenerated =
         let corelib =
             Assembly.readFile loggerFactory (Path.Combine (frameworkDir, "System.Private.CoreLib.dll"))
 
-        let baseClassTypes = Corelib.getBaseTypes corelib
+        let baseClassTypes = BaseClassTypes.ofCorelib corelib
 
         let failures = ResizeArray<string> ()
         let outcomes = Collections.Generic.Dictionary<string, int> ()
@@ -1018,7 +1018,7 @@ module TestMethodReferenceResolutionGenerated =
         let corelib =
             Assembly.readFile loggerFactory (Path.Combine (frameworkDir, "System.Private.CoreLib.dll"))
 
-        let baseClassTypes = Corelib.getBaseTypes corelib
+        let baseClassTypes = BaseClassTypes.ofCorelib corelib
 
         let cases : (GeneratedReference * Type * Type * bool) list =
             [

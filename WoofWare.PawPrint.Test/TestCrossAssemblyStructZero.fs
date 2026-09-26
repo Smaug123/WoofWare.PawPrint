@@ -175,7 +175,7 @@ class Program
 
         let corelibPath = typeof<obj>.Assembly.Location
         let corelib = Assembly.readFile loggerFactory corelibPath
-        let bct = Corelib.getBaseTypes corelib
+        let bct = BaseClassTypes.ofCorelib corelib
 
         let lib =
             Assembly.readFile loggerFactory (Path.Combine (tempDir, "ArrCopy.Lib.dll"))

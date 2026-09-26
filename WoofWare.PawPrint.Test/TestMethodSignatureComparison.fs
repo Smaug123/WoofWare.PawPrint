@@ -38,7 +38,7 @@ module TestMethodSignatureComparison =
         let corelib =
             global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory typeof<obj>.Assembly.Location
 
-        let baseClassTypes = Corelib.getBaseTypes corelib
+        let baseClassTypes = BaseClassTypes.ofCorelib corelib
 
         use assemblyStream = new MemoryStream (image)
 

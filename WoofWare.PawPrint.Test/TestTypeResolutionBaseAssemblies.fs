@@ -55,7 +55,7 @@ module TestTypeResolutionBaseAssemblies =
     let private setUp () : DumpedAssembly * BaseClassTypes<DumpedAssembly> * LoadedAssemblies * string list =
         let corelib = readAssembly Netstandard21FSharpCore.corelibPath
         let fsharpCore = readAssembly Netstandard21FSharpCore.path.Value
-        let baseTypes = Corelib.getBaseTypes corelib
+        let baseTypes = BaseClassTypes.ofCorelib corelib
         Netstandard21FSharpCore.assertNetstandardAvailable ()
 
         let loaded = LoadedAssemblies.ofAssemblies [ corelib ; fsharpCore ]

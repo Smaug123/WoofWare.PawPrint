@@ -79,7 +79,7 @@ public static class Methods
 
     let private makeFixture () : Fixture =
         let corelib = readAssembly corelibPath
-        let baseTypes = Corelib.getBaseTypes corelib
+        let baseTypes = BaseClassTypes.ofCorelib corelib
         let asm = loadCompiledLibrary "ConcretizeMethodArity" source
         let loaded = LoadedAssemblies.ofAssemblies [ corelib ; asm ]
 

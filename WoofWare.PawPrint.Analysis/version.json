@@ -1,0 +1,14 @@
+{
+  "version": "0.1",
+  "publicReleaseRefSpec": [
+    "^refs/heads/main$"
+  ],
+  "pathFilters": [
+    "./",
+    ":/WoofWare.PawPrint.Domain",
+    ":/WoofWare.PawPrint.Loader",
+    ":/WoofWare.PawPrint.Semantics",
+    ":/Directory.Build.props",
+    ":/logos/light.png"
+  ]
+}

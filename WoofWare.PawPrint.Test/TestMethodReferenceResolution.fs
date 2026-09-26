@@ -52,10 +52,10 @@ module TestMethodReferenceResolution =
         | NoAnswer of exn
 
     /// A generic context a MemberRef is actually used in: the type and method type parameters of
-    /// some method whose IL names it, directly or through a MethodSpec. Those parameters satisfy
+    /// some method whose IL names it, directly or through a MethodSpec. Field references included. Those parameters satisfy
     /// whatever constraints the reference's parent places on them, because the compiler checked
     /// exactly that where it emitted the use.
-    let private contextsOfUse
+    let contextsOfUse
         (analysed : DumpedAssembly)
         : System.Collections.Generic.IReadOnlyDictionary<MemberReferenceHandle, MethodDefinitionHandle>
         =
@@ -145,7 +145,7 @@ module TestMethodReferenceResolution =
             Assembly.readFile loggerFactory (Path.Combine (frameworkDir, "System.Private.CoreLib.dll"))
 
         let analysed = Assembly.readFile loggerFactory reflected.Location
-        let baseClassTypes = Corelib.getBaseTypes corelib
+        let baseClassTypes = BaseClassTypes.ofCorelib corelib
         let loaded = LoadedAssemblies.ofAssemblies [ corelib ; analysed ]
 
         let mutable ctx : TypeConcretization.ConcretizationContext<DumpedAssembly> =

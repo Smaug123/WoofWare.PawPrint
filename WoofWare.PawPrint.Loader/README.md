@@ -30,6 +30,9 @@ What lives here:
   `MethodDef` of a generic definition, a method the runtime supplies on an array type, or nothing
   (a `MissingMethodException`). It searches each type's method table as `MethodTableLayout` lays it
   out, in the order CoreCLR does, and is checked against the real runtime's own answer.
+* `FieldReferenceResolution` — which field a `MemberRef` names: the parent's own fields only, never
+  a literal one, matched by name and exact type, as CoreCLR's `FindField` binds it, or nothing (a
+  `MissingFieldException`). `MemberReferenceParent` reads the parent token both resolvers share.
 * `TypeConcretization` — instantiating a generic type definition over the whole set of loaded
   assemblies, to a handle that identifies one concrete type.
 * `VtableSlot`, `MethodTableLayout` — a type definition's method table as CoreCLR's

@@ -56,9 +56,11 @@
         <Compile Include="FriendAssemblies.fs" />
         <Compile Include="SequencePoint.fs" />
         <Compile Include="Assembly.fs" />
+        <Compile Include="BaseClassTypes.fs" />
         <Compile Include="AccessCheck.fs" />
         <Compile Include="IlFormatting.fs" />
         <Compile Include="AttributeFormatting.fs" />
+        <Compile Include="RuntimeCompatibility.fs" />
         <Compile Include="IlDumpRendering.fs" />
         <!-- After TypeConcretisation.fs, for `SubstitutionContext`, and before IlMachineStateModel
              in the main project, which memoises the walks that produce these. -->
