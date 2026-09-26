@@ -267,12 +267,11 @@ module TestUnixSystemInvariants =
                         [
                             (3, OpenFileDescriptionId 1L),
                             {
-                                Interest =
-                                    {
-                                        In = true
-                                        Out = false
-                                        RdHup = false
-                                    }
+                                Events =
+                                    EpollEvents.In
+                                    ||| EpollEvents.Err
+                                    ||| EpollEvents.Hup
+                                    ||| EpollEvents.EdgeTriggered
                                 Data = 0UL
                                 RegisteredAt = ordinal
                             }

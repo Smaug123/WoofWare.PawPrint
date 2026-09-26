@@ -33,6 +33,20 @@ preset's string.
 The same test caught that `container --arch amd64` presents an arm64 kernel
 behind an `x86_64` uname. Check `/proc/self/maps`, not `uname -m`.
 
+## Rosetta is not an x86-64 kernel
+
+That arm64 kernel matters whenever the answer depends on the architecture.
+Rosetta translates an x86-64 process's syscalls to the arm64 kernel's, and
+renders the x86-64 ABI only partly: `epoll_wait` delivers 12-byte packed events,
+but its `maxevents` bound is the arm64 kernel's 134217727 rather than x86-64's
+178956970, and it screens no buffer at all. So measure an architecture-dependent
+fact on a real x86-64 kernel. Full-system emulation gives you one: build a static
+probe and install a kernel in an amd64 container, pack the probe as an
+initramfs's `/init`, and boot it under `qemu-system-x86_64` (`nix build
+nixpkgs#qemu`). `architecture-facts-linux.c` in
+`docs/plans/2026-08-23-posix-kernel-extraction/` has the exact recipe; `-cpu max`
+gives five-level paging and `-cpu qemu64` four-level.
+
 ## Write the measuring test first
 
 For any kernel-behaviour constant, write the measure-the-host test before the

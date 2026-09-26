@@ -66,6 +66,7 @@ One sequence per line, ops space-separated, slots naming fds on both sides
 | `port:p` | `epoll_create1` |
 | `add:p:t:m` / `mod:p:t:m` | `epoll_ctl` ADD/MOD, interest `m` in `SA_*` bits (0..0x1F, translated 1:1 to epoll bits, `EPOLLET` always ORed in as the PAL does), data = `t` |
 | `del:p:t` | `epoll_ctl` DEL |
+| `eadd:p:t:e` / `emod:p:t:e` | `epoll_ctl` ADD/MOD with raw `<sys/epoll.h>` events `e` (decimal `uint32`, passed unconverted), data = `t`; added 2026-09-26 with `UnixPoll.epollCtl`. A mode the model refuses (level-triggering, `EPOLLEXCLUSIVE`, `EPOLLONESHOT`, `EPOLLWAKEUP`) skips the sequence; a `wait` batch then names every readiness bit Linux reports (`PRI`, `RDNORM`, `RDBAND`, `WRNORM`, `WRBAND`, `MSG` after the five) |
 | `wait:p:n` | `epoll_wait` timeout 0, maxevents `n` |
 
 Transcript: one token per op — `ok`, an errno name (`UnixError` case names and

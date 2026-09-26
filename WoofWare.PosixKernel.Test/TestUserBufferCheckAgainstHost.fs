@@ -16,8 +16,10 @@ open WoofWare.PosixKernel
 /// own limit. What is deliberately *not* checked is that limit's value: it
 /// varies by machine (paging depth, virtual-address width), so demanding that
 /// a host match the shipped default would be asserting that everyone runs the
-/// same hardware. `UnixMachineState.UserAddressLimit` carries it as configuration
-/// for that reason, and `ObservedUserAddressLimit` records the values seen.
+/// same hardware. `UnixMachineState.UserBufferCheck` carries it as configuration
+/// for that reason, and `ObservedUserAddressLimit` records the values seen; a
+/// value this host measures that is not among them for its architecture fails
+/// `the model agrees with this kernel once given its limit`, naming it.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestUserBufferCheckAgainstHost =
@@ -37,9 +39,9 @@ module TestUserBufferCheckAgainstHost =
     [<Literal>]
     let private EFAULT = 14
 
-    /// A machine on `flavour`'s platform, to apply this host's measured facts to.
-    let private machineOn (flavour : SimulatedUnixFlavour) : UnixMachineState =
-        (UnixSystem.initial<int, string> (HostPlatform.platformOf flavour)).Machine
+    /// A machine on `platform`, to apply this host's measured facts to.
+    let private machineOn (platform : SimulatedUnixPlatform) : UnixMachineState =
+        (UnixSystem.initial<int, string> platform).Machine
 
     /// Whether the host refuses `length` bytes at `address` on a descriptor with
     /// nothing to transfer.
@@ -118,7 +120,7 @@ module TestUserBufferCheckAgainstHost =
 
     /// *Whether* this host screens up front, which is what the model derives
     /// from the flavour. The limit it screens at is a property of the machine
-    /// and is deliberately not asserted here — see `UnixMachineState.UserAddressLimit`.
+    /// and is deliberately not asserted here — see `UnixMachineState.UserBufferCheck`.
     [<Test>]
     let ``the flavour decides whether this kernel screens up front`` () : unit =
         HostPlatform.onUnixHost (fun flavour ->
@@ -154,13 +156,13 @@ module TestUserBufferCheckAgainstHost =
     /// particular machine's address space is the one PawPrint ships as default.
     [<Test>]
     let ``the model agrees with this kernel once given its limit`` () : unit =
-        HostPlatform.onUnixHost (fun flavour ->
+        HostPlatform.onUnixHostPreset (fun platform ->
             withProbeDescriptor (fun fd ->
                 let check =
                     match measureLimit fd 1UL with
                     | None -> UserBufferCheck.AtCopyTime
                     | Some limit ->
-                        machineOn flavour
+                        machineOn platform
                         |> UnixMachineState.withUserAddressLimit limit
                         |> UnixMachineState.userBufferCheck
 
