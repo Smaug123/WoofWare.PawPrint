@@ -195,6 +195,20 @@ type CliByteAddressabilityRejection =
             $"value type containing non-byte-addressable field %O{field}: %s{rejection.Description}"
         | CliByteAddressabilityRejection.UndefinedByte origin -> $"undefined byte, descended from %O{origin}"
 
+    /// The never-written byte this obstruction is, through any fields it is nested in, or `None`
+    /// for an obstruction that is not an undefined byte.
+    member this.UndefinedOrigin : UninitialisedByte option =
+        match this with
+        | CliByteAddressabilityRejection.UndefinedByte origin -> Some origin
+        | CliByteAddressabilityRejection.ValueTypeContainsNonByteAddressableField (_, _, inner) -> inner.UndefinedOrigin
+        | CliByteAddressabilityRejection.ObjectReference
+        | CliByteAddressabilityRejection.RuntimePointer
+        | CliByteAddressabilityRejection.NativeIntSourceNotByteAddressable _
+        | CliByteAddressabilityRejection.UInt8SourceNotByteAddressable _
+        | CliByteAddressabilityRejection.Int64SourceNotByteAddressable _
+        | CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _
+        | CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers _ -> None
+
 type CliByteAddressability =
     | ByteAddressable
     /// Every byte of this value can be *named*, but at least one of them is a byte of a native

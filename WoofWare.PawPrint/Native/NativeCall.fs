@@ -406,6 +406,29 @@ module NativeCall =
         readNamedByte operation baseClassTypes state byteConcreteType ptr byteIndex
         |> UInt8Source.value $"%s{operation}: byte read"
 
+    /// `readNumericByte`, for a caller that uses the byte: `Error` when nothing ever wrote it.
+    let private readNumericByteForUse
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (byteConcreteType : ConcreteType<ConcreteTypeHandle>)
+        (ptr : ManagedPointerSource)
+        (byteIndex : int)
+        : Result<byte, UndefinedValue>
+        =
+        let ptr = ManagedPointerByteView.addByteOffset state byteConcreteType byteIndex ptr
+
+        match
+            IlMachineState.readManagedByrefBytesAs
+                baseClassTypes
+                state
+                (ManagedPointerSource.requireAddressed ptr)
+                (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
+        with
+        | CliType.Numeric (CliNumericType.UInt8 b) -> UInt8Source.value $"%s{operation}: byte read" b |> Ok
+        | CliType.Undefined u -> Error u
+        | other -> failwith $"%s{operation}: byte read returned non-byte value %O{other}"
+
     /// The bytes of a NUL-terminated C string, without the terminator and
     /// without interpreting them.
     ///
@@ -458,13 +481,16 @@ module NativeCall =
     /// at most `PATH_MAX` bytes and report ENAMETOOLONG if no NUL appears in
     /// them — so an unterminated buffer is an ordinary error a guest can
     /// provoke, not the interpreter abort that reading past it would give.
+    ///
+    /// `Error` with the first byte of the scan that nothing ever wrote: the scan compares each
+    /// byte with NUL, so it uses every byte it reaches.
     let readNullTerminatedBytesWithin
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (ptr : ManagedPointerSource)
         (maxBytes : int)
-        : byte array
+        : Result<byte array, UndefinedValue>
         =
         if maxBytes < 1 then
             failwith $"%s{operation}: cannot scan %d{maxBytes} bytes for a terminator; the bound must be positive."
@@ -478,18 +504,15 @@ module NativeCall =
         | ManagedPointerSource.Byref _ ->
             let byteConcreteType = requiredByteConcreteType operation baseClassTypes state
 
-            let rec loop (byteIndex : int) (bytes : byte list) : byte array =
+            let rec loop (byteIndex : int) (bytes : byte list) : Result<byte array, UndefinedValue> =
                 if byteIndex >= maxBytes then
-                    bytes |> List.rev |> Array.ofList
+                    bytes |> List.rev |> Array.ofList |> Ok
                 else
 
-                let b =
-                    readNumericByte operation baseClassTypes state byteConcreteType ptr byteIndex
-
-                if b = 0uy then
-                    bytes |> List.rev |> Array.ofList
-                else
-                    loop (byteIndex + 1) (b :: bytes)
+                match readNumericByteForUse operation baseClassTypes state byteConcreteType ptr byteIndex with
+                | Error u -> Error u
+                | Ok 0uy -> bytes |> List.rev |> Array.ofList |> Ok
+                | Ok b -> loop (byteIndex + 1) (b :: bytes)
 
             loop 0 []
 

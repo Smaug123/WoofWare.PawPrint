@@ -478,6 +478,12 @@ type UndefinedValueUse =
     | RuntimeArgument of
         method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
         index : int
+    /// Content that `method`, whose implementation the runtime supplies, reads through a pointer
+    /// or byref it was handed — the location `Interlocked.Add` adds to, the buffer a write system
+    /// call sends. `what` names it. The pointer itself is defined; what it points at is not.
+    | ReadByRuntime of
+        method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+        what : string
     /// The value the entry point returned, which would have become the process's exit code.
     | ExitCode
 
@@ -489,6 +495,8 @@ type UndefinedValueUse =
             $"%s{description}, by %O{instruction} at IL offset 0x%04x{ilOffset} in %O{method}"
         | UndefinedValueUse.RuntimeArgument (method, index) ->
             $"argument %d{index} of the runtime-implemented %O{method}"
+        | UndefinedValueUse.ReadByRuntime (method, what) ->
+            $"%s{what}, which the runtime-implemented %O{method} reads through a pointer"
         | UndefinedValueUse.ExitCode -> "the entry point's return value, as the process exit code"
 
 /// The run ended because the guest used a value whose content is undefined: `Value` descends from
@@ -509,6 +517,19 @@ type UndefinedValueObservation =
             this.Value.Origins |> List.map string<UninitialisedByte> |> String.concat ", "
 
         $"undefined value %O{this.Value} used as %O{this.Use}; its undefined bytes descend from %s{origins}, which nothing wrote"
+
+    /// `value`, read through a pointer by the runtime-implemented `method` and used there; `what`
+    /// names what was read.
+    static member ReadByRuntime
+        (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (what : string)
+        (value : UndefinedValue)
+        : UndefinedValueObservation
+        =
+        {
+            Value = value
+            Use = UndefinedValueUse.ReadByRuntime (method, what)
+        }
 
 type WhatWeDid =
     | Executed
@@ -696,6 +717,24 @@ type IntrinsicResult =
         IlMachineState *
         exnType : TypeInfo<GenericParamFromMetadata, TypeDefn> *
         message : string option
+    /// The intrinsic would have used an undefined value, typically one it read through a byref
+    /// argument, so the run ends. The case carries no state: the run is reported at the state
+    /// from before the call, whatever the intrinsic did before it found the value.
+    | UndefinedValueObserved of UndefinedValueObservation
+
+[<RequireQualifiedAccess>]
+module IntrinsicResult =
+    /// The outcome of an intrinsic that used what it read through a pointer: `Completed`, or the
+    /// end of the run if what it read was undefined. `what` names what was read.
+    let ofUse
+        (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (what : string)
+        (result : Result<IlMachineState, UndefinedValue>)
+        : IntrinsicResult
+        =
+        match result with
+        | Ok state -> IntrinsicResult.Completed state
+        | Error u -> IntrinsicResult.UndefinedValueObserved (UndefinedValueObservation.ReadByRuntime method what u)
 
 /// Outcome of an `initblk`-shaped fill (`IntrinsicHelpers.executeInitBlock`), which serves both
 /// the opcode and the `Unsafe.InitBlock` / `Unsafe.InitBlockUnaligned` intrinsics the JIT
@@ -816,6 +855,10 @@ type NativeHandlerResult =
     /// an arbitrary `ExecutionResult`, routing `Stepped(Executed)` to `Completed` and
     /// rejecting other `Stepped` shapes as logic errors.
     | Terminating of ExecutionResult
+    /// The handler would have used an undefined value, typically one it read through a pointer
+    /// argument, so the run ends. The dispatcher reports it at the state from before the handler
+    /// ran, so the handler need not unwind anything it did first.
+    | UndefinedValueObserved of UndefinedValueObservation
 
 /// Result of returning from a method frame via `Ret`.
 type ReturnFrameResult =
@@ -1048,6 +1091,16 @@ module NativeHandlerResult =
         : NativeHandlerResult
         =
         NativeHandlerResult.Terminating (ExecutionResult.UndefinedValueObserved (state, thread, observation))
+
+    /// The handler read `value` through a pointer it was handed and would use it, but it is
+    /// undefined, so the run ends; `what` names what was read.
+    let undefinedRead
+        (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (what : string)
+        (value : UndefinedValue)
+        : NativeHandlerResult
+        =
+        NativeHandlerResult.UndefinedValueObserved (UndefinedValueObservation.ReadByRuntime method what value)
 
     /// Forward a `WhatWeDid.UnhandledException` outcome from a sub-call. The thread is
     /// terminating and takes the process with it, so, as for `aborted`, the native frame's own

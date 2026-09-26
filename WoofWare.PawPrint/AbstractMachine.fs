@@ -88,6 +88,7 @@ module AbstractMachine =
         : ExecutionResult
         =
         let instruction = state.ThreadState.[thread].MethodState
+        let stateBeforeStep = state
 
         // A method whose implementation the runtime supplies reads its arguments: none of them may
         // be undefined, down to the leaves of a value type. `readsArgument` narrows that for the
@@ -214,6 +215,10 @@ module AbstractMachine =
                 // A sub-call's exception has already unwound past this native frame to the
                 // matching handler; returnStackFrame would pop the wrong frame.
                 ExecutionResult.Stepped (state, WhatWeDid.ThrowingTypeInitializationException, effect)
+            | NativeHandlerResult.UndefinedValueObserved observation ->
+                // Reported at the state from before the handler ran, so that nothing the handler
+                // did before it found the undefined value is part of the run.
+                ExecutionResult.UndefinedValueObserved (stateBeforeStep, thread, observation)
             | NativeHandlerResult.Terminating executionResult ->
                 // The handler delegated to an ExternImpl that produced a terminating
                 // outcome (ProcessExit, FailFast, Terminated, UnhandledException). Surface
