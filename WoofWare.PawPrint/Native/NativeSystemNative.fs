@@ -3849,11 +3849,9 @@ module NativeSystemNative =
         // guest hand-rolling the P/Invoke may write `AddressFamily` and friends,
         // and `int32Argument` peels the enum boxing so both reach one decode.
         //
-        // Returns a PAL `Interop.Error` rather than -1-and-errno, and — unlike
-        // `SystemNative_Open` or `SystemNative_FLock` — leaves `LastSystemError`
-        // strictly alone. Every path PawPrint models here is one of the C's own
-        // pre-syscall screens, which set no errno; the only paths that would are
-        // the `socket(2)` failures, and those are refused rather than reported.
+        // Returns a PAL `Interop.Error` rather than -1-and-errno. The C's own
+        // pre-syscall screens set no errno; a failed `socket(2)` sets it, and
+        // the shim leaves it set.
         | Some "SystemNative_Socket",
           [ _ ; _ ; _ ; ConcretePointer _ ],
           MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
@@ -3904,48 +3902,35 @@ module NativeSystemNative =
                 |> Some
 
             match
-                SocketArgumentsPal.socketCreation
+                SocketArgumentsPal.socketArguments
                     state.Kernel.UnixPlatform
                     palAddressFamily
                     palSocketType
                     palProtocolType
             with
+            | Error screen ->
+                // Each of the three screens stores -1 before returning, so a
+                // caller that ignores the return code sees an invalid handle
+                // rather than whatever was in the variable. No syscall ran, so
+                // errno is untouched.
+                state
+                |> storeCreatedSocket -1L
+                |> completeWith (UnixErrorPal.toPal (SocketArgumentScreen.error screen))
+            | Ok (domain, socketType, protocol) ->
+
+            match UnixSocket.socket domain socketType protocol (EmulatedKernel.unix state.Kernel) with
             | Error refusal ->
-                let error =
-                    match refusal with
-                    | SocketCreationRefusal.AddressFamily -> UnixError.EAFNOSUPPORT
-                    | SocketCreationRefusal.SocketType -> UnixError.EPROTOTYPE
-                    | SocketCreationRefusal.Protocol -> UnixError.EPROTONOSUPPORT
-                    | SocketCreationRefusal.Unmodelled ->
-                        // Past every screen the shim applies, so a real run
-                        // would call `socket(2)` here, and PawPrint has not
-                        // decided what this socket is. Two quite different
-                        // decisions are owed depending on why, so ask which:
-                        // `shapeOf` failing means the shape has no name in the
-                        // library's vocabulary at all, where `shapeOf`
-                        // succeeding means it has one and the kernel's table
-                        // simply does not list it.
-                        match SocketArgumentsPal.shapeOf palAddressFamily palSocketType palProtocolType with
-                        | None ->
-                            failwith
-                                $"%s{operation}: PAL address family %d{palAddressFamily}, type %d{palSocketType} and protocol %d{palProtocolType} pass every screen the native shim applies, but name no socket WoofWare.PosixKernel can represent — SocketDomain, SocketKind and SocketProtocol each cover only the values a modelled socket can take. Deciding what this socket *is* comes before deciding whether the kernel creates it: widen the library's vocabulary first, and note that AF_PACKET and AF_CAN sockets also need send/receive paths nothing offers yet."
-                        | Some _ ->
-                            // The remaining answers are configuration PawPrint
-                            // does not model (`CAP_NET_RAW` for any raw socket,
-                            // `net.ipv4.ping_group_range` for Linux's ICMP
-                            // datagram sockets) or a deterministic kernel
-                            // refusal nobody has measured.
-                            failwith
-                                $"%s{operation}: PawPrint names the socket with PAL address family %d{palAddressFamily}, type %d{palSocketType} and protocol %d{palProtocolType}, but SimulatedUnixPlatform.creatableSockets does not list it under %O{state.Kernel.UnixPlatform}. Every screen the native shim applies passed, so a real run would reach socket(2); what that answers is privilege-dependent for a raw socket, sysctl-dependent for a Linux ICMP datagram socket, and otherwise a deterministic kernel refusal nobody has modelled. Add a measured row to that table rather than guessing an errno."
-
-                // Each of the three conversion failures stores -1 before
-                // returning, so a caller that ignores the return code sees an
-                // invalid handle rather than whatever was in the variable.
-                state |> storeCreatedSocket -1L |> completeWith (UnixErrorPal.toPal error)
-            | Ok (domain, kind, protocol) ->
-
-            let fd, unix =
-                UnixSocket.createSocket domain kind protocol (EmulatedKernel.unix state.Kernel)
+                failwith
+                    $"%s{operation}: PAL address family %d{palAddressFamily}, type %d{palSocketType} and protocol %d{palProtocolType} pass every screen the native shim applies, so a real run would call socket(%d{domain}, 0x%x{socketType}, %d{protocol}), and WoofWare.PosixKernel has no answer: %s{SocketRefusal.describe refusal}"
+            | Ok (Error error) ->
+                // `*createdSocket = socket(...)` stores the failed call's -1,
+                // and `socket(2)` leaves its errno for `Marshal.GetLastSystemError`
+                // to read; the shim returns the PAL conversion of it.
+                state
+                |> withErrnoOnly ctx error
+                |> storeCreatedSocket -1L
+                |> completeWith (UnixErrorPal.toPal error)
+            | Ok (Ok (fd, unix)) ->
 
             state.MapKernel (EmulatedKernel.withUnix unix)
             |> storeCreatedSocket (int64 fd)
@@ -4010,10 +3995,10 @@ module NativeSystemNative =
                     // about CoreLib rather than about any kernel.
                     let reachedBy =
                         match domain with
-                        | SocketDomain.InterNetworkV6 ->
+                        | SocketDomain.Inet6 ->
                             "No *managed* guest can hold one -- `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket and `SystemNative_SetSockOpt` is unimplemented -- so this is a hand-rolled P/Invoke. Implement SetSockOpt first: the cross-family bind-conflict rules measured so far are facts about IPV6_V6ONLY=0, and Linux inverts several of them at 1."
                         | SocketDomain.Unix -> "That belongs with the filesystem work (issue #956), not here."
-                        | SocketDomain.InterNetwork ->
+                        | SocketDomain.Inet ->
                             failwith
                                 $"%s{operation}: the library refused an IPv4 socket's domain, which it models. This is an interpreter bug."
 
@@ -4184,11 +4169,11 @@ module NativeSystemNative =
                 // CoreLib rather than about any kernel.
                 let reachedBy =
                     match refusal with
-                    | ListenRefusal.UnmodelledDomain (_, SocketDomain.InterNetworkV6) ->
+                    | ListenRefusal.UnmodelledDomain (_, SocketDomain.Inet6) ->
                         " No *managed* guest can hold one -- `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket and `SystemNative_SetSockOpt` is unimplemented -- so this is a hand-rolled P/Invoke."
                     | ListenRefusal.UnmodelledDomain (_, SocketDomain.Unix) ->
                         " That belongs with the filesystem work (issue #956), not here."
-                    | ListenRefusal.UnmodelledDomain (_, SocketDomain.InterNetwork) ->
+                    | ListenRefusal.UnmodelledDomain (_, SocketDomain.Inet) ->
                         failwith
                             $"%s{operation}: the library refused an IPv4 socket's domain, which it models. This is an interpreter bug."
                     | ListenRefusal.UnmeasuredKind _
@@ -4295,10 +4280,10 @@ module NativeSystemNative =
                 // CoreLib rather than about any kernel.
                 let reachedBy =
                     match domain with
-                    | SocketDomain.InterNetworkV6 ->
+                    | SocketDomain.Inet6 ->
                         "No *managed* guest can hold one -- `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket and `SystemNative_SetSockOpt` is unimplemented -- so this is a hand-rolled P/Invoke. Implement SetSockOpt first: the cross-family bind-conflict rules measured so far are facts about IPV6_V6ONLY=0, and Linux inverts several of them at 1."
                     | SocketDomain.Unix -> "That belongs with the filesystem work (issue #956), not here."
-                    | SocketDomain.InterNetwork ->
+                    | SocketDomain.Inet ->
                         failwith
                             $"%s{operation}: the library refused an IPv4 socket's domain, which it models. This is an interpreter bug."
 
@@ -4431,10 +4416,10 @@ module NativeSystemNative =
                     // about CoreLib rather than about any kernel.
                     let reachedBy =
                         match domain with
-                        | SocketDomain.InterNetworkV6 ->
+                        | SocketDomain.Inet6 ->
                             "No *managed* guest can hold one -- `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket and `SystemNative_SetSockOpt` is unimplemented -- so this is a hand-rolled P/Invoke. Implement SetSockOpt first: the cross-family bind-conflict rules measured so far are facts about IPV6_V6ONLY=0, and Linux inverts several of them at 1."
                         | SocketDomain.Unix -> "That belongs with the filesystem work (issue #956), not here."
-                        | SocketDomain.InterNetwork ->
+                        | SocketDomain.Inet ->
                             failwith
                                 $"%s{operation}: the library refused an IPv4 socket's domain, which it models. This is an interpreter bug."
 
@@ -4605,10 +4590,10 @@ module NativeSystemNative =
                 // CoreLib rather than about any kernel.
                 let reachedBy =
                     match domain with
-                    | SocketDomain.InterNetworkV6 ->
+                    | SocketDomain.Inet6 ->
                         "No *managed* guest can hold one -- `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket and `SystemNative_SetSockOpt` is unimplemented -- so this is a hand-rolled P/Invoke. Implement SetSockOpt first: the cross-family bind-conflict rules measured so far are facts about IPV6_V6ONLY=0, and Linux inverts several of them at 1."
                     | SocketDomain.Unix -> "That belongs with the filesystem work (issue #956), not here."
-                    | SocketDomain.InterNetwork ->
+                    | SocketDomain.Inet ->
                         failwith
                             $"%s{operation}: the library refused an IPv4 socket's domain, which it models. This is an interpreter bug."
 

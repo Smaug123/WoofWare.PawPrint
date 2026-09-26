@@ -14,6 +14,10 @@ using System.Runtime.InteropServices;
 //  * `flock` on a socket succeeds on Linux and is ENOTSUP on Darwin, and
 //    `lseek`'s two screens are ordered differently on the two.
 //
+// Then two rows Linux's kernel answers differently from Darwin's once every
+// screen has passed, with the raw errno `socket(2)` leaves behind (measured on
+// Linux 6.18.5; see socketSyscall/linux.tsv).
+//
 // The whole matrix of triples is checked against the measurement itself in
 // TestSocketCreation.fs; what this file adds is that the handler really reaches
 // it, and the two descriptor-level rows above.
@@ -35,22 +39,39 @@ class Program
     static extern long LSeek(IntPtr fd, long offset, int whence);
 
     const int PAL_SUCCESS = 0;
+    const int PAL_EPROTONOSUPPORT = 0x10045;
+    const int PAL_ESOCKTNOSUPPORT = 0x1005E;
 
     const int AF_UNIX = 1;
+    const int AF_INET = 2;
     const int AF_INET6 = 23;
 
     const int SOCK_STREAM = 1;
     const int SOCK_RAW = 3;
+    const int SOCK_RDM = 4;
     const int SOCK_SEQPACKET = 5;
 
     const int PT_UNSPECIFIED = 0;
     const int PT_TCP = 6;
+    const int PT_UDP = 17;
 
     const int LOCK_EX = 2;
     const int LOCK_NB = 4;
 
     // Linux numbering, which is what PawPrint reports under this flavour.
     const int EINVAL = 22;
+    const int EPROTONOSUPPORT = 93;
+    const int ESOCKTNOSUPPORT = 94;
+
+    /// Returns true if the kernel refused the triple with exactly `expected`,
+    /// leaving the out-parameter -1 and errno `expectedErrno`.
+    static unsafe bool KernelRefuses(int addressFamily, int socketType, int protocolType, int expected, int expectedErrno)
+    {
+        IntPtr created = (IntPtr)0x5EED;
+        Marshal.SetLastSystemError(0);
+        int result = Socket(addressFamily, socketType, protocolType, &created);
+        return result == expected && created == (IntPtr)(-1) && Marshal.GetLastSystemError() == expectedErrno;
+    }
 
     static unsafe IntPtr Create(int addressFamily, int socketType, int protocolType)
     {
@@ -108,6 +129,15 @@ class Program
 
         if (Close(v6) != 0)
             return 9;
+
+        // UDP on a stream socket; Darwin answers EPROTOTYPE.
+        if (!KernelRefuses(AF_INET, SOCK_STREAM, PT_UDP, PAL_EPROTONOSUPPORT, EPROTONOSUPPORT))
+            return 10;
+
+        // No Unix-domain protocol provides SOCK_RDM; Darwin answers
+        // EPROTONOSUPPORT.
+        if (!KernelRefuses(AF_UNIX, SOCK_RDM, PT_UNSPECIFIED, PAL_ESOCKTNOSUPPORT, ESOCKTNOSUPPORT))
+            return 11;
 
         return 0;
     }

@@ -301,6 +301,18 @@ type UnixError =
     /// </remarks>
     | EPROTONOSUPPORT
     /// <summary>
+    /// Socket type not supported.
+    /// </summary>
+    /// <example>
+    /// Reported by Linux's <c>socket(2)</c> for a type the address family has no protocol for, such as
+    /// <c>SOCK_RDM</c> under <c>AF_INET</c>. Darwin answers <c>EPROTONOSUPPORT</c> or <c>EPROTOTYPE</c> there instead.
+    /// </example>
+    /// <remarks>
+    /// This is one of the many errnos with an integer value that's not portable.
+    /// Linux numbers it 94; Darwin numbers it 44.
+    /// </remarks>
+    | ESOCKTNOSUPPORT
+    /// <summary>
     /// Address already in use.
     /// </summary>
     /// <example>
@@ -471,6 +483,7 @@ module UnixError =
             UnixError.EAFNOSUPPORT
             UnixError.EPROTOTYPE
             UnixError.EPROTONOSUPPORT
+            UnixError.ESOCKTNOSUPPORT
             UnixError.EADDRINUSE
             UnixError.EADDRNOTAVAIL
             UnixError.EOPNOTSUPP
@@ -561,6 +574,9 @@ module UnixError =
         // Raw 93 is EPROTONOSUPPORT on Linux and ENOATTR on Darwin,
         // while raw 43 is EPROTONOSUPPORT on Darwin and EIDRM on Linux.
         | UnixError.EPROTONOSUPPORT -> platformDependent 93 43
+        // Raw 94 is ESOCKTNOSUPPORT on Linux and EBADMSG on Darwin, while
+        // raw 44 is ESOCKTNOSUPPORT on Darwin and ECHRNG on Linux.
+        | UnixError.ESOCKTNOSUPPORT -> platformDependent 94 44
         | UnixError.EADDRINUSE -> platformDependent 98 48
         | UnixError.EADDRNOTAVAIL -> platformDependent 99 49
         | UnixError.EOPNOTSUPP -> platformDependent 95 102

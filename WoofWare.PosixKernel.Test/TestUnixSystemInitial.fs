@@ -165,7 +165,7 @@ module TestUnixSystemInitial =
 
         let socket : SocketDescription =
             {
-                Domain = SocketDomain.InterNetwork
+                Domain = SocketDomain.Inet
                 Kind = SocketKind.Stream
                 Protocol = SocketProtocol.Tcp
                 Binding = None

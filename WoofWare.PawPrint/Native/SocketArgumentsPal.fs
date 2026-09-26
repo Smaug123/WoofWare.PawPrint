@@ -2,25 +2,32 @@ namespace WoofWare.PawPrint
 
 open WoofWare.PosixKernel
 
-/// Why `socketCreation` would not hand back a socket.
+/// Which of the native shim's argument screens refused a `SystemNative_Socket`
+/// before any kernel was asked.
 [<RequireQualifiedAccess>]
-type SocketCreationRefusal =
+type SocketArgumentScreen =
     /// The shim's address-family conversion has no case for this value, so
-    /// it returns `Error_EAFNOSUPPORT` without reaching `socket(2)`.
+    /// it returns `Error_EAFNOSUPPORT`.
     | AddressFamily
     /// The shim's socket-type conversion has no case for this value:
     /// `Error_EPROTOTYPE`. Note that is the *shim's* choice of errno; a
-    /// kernel asked the same question would say `ESOCKTNOSUPPORT`.
+    /// kernel asked the same question would say `ESOCKTNOSUPPORT` (Linux) or
+    /// `EPROTONOSUPPORT` (Darwin).
     | SocketType
     /// The shim's protocol conversion has no case for this value *in this
     /// address family*: `Error_EPROTONOSUPPORT`. Per-family, so the same
     /// protocol number can convert under one family and be refused under
     /// another.
     | Protocol
-    /// Every one of the shim's screens passed, so a real run would reach
-    /// `socket(2)` — and PawPrint has not decided what this socket is. Not
-    /// an errno: there is nothing truthful to report.
-    | Unmodelled
+
+[<RequireQualifiedAccess>]
+module SocketArgumentScreen =
+    /// The error the shim returns for this screen.
+    let error (screen : SocketArgumentScreen) : UnixError =
+        match screen with
+        | SocketArgumentScreen.AddressFamily -> UnixError.EAFNOSUPPORT
+        | SocketArgumentScreen.SocketType -> UnixError.EPROTOTYPE
+        | SocketArgumentScreen.Protocol -> UnixError.EPROTONOSUPPORT
 
 
 /// The BCL's `AddressFamily`/`SocketType`/`ProtocolType` numbering
@@ -33,10 +40,9 @@ type SocketCreationRefusal =
 /// translate — and the screens are pure C that runs in user space, so both are
 /// exactly knowable and neither is a fact about any kernel.
 ///
-/// What *is* a fact about the kernel stays in the library:
-/// `SimulatedUnixPlatform.creatableSockets` says which sockets it makes, and
-/// this module's job past the screens is only to name a PAL triple in that
-/// set's vocabulary.
+/// What *is* a fact about the kernel stays in the library: past the screens,
+/// this module converts a PAL triple to the platform's own numbers, which a
+/// caller hands to `UnixSocket.socket` as the shim hands them to `socket(2)`.
 ///
 /// Named for the arguments rather than for the shim, because CoreLib has a
 /// managed `System.Net.Sockets.SocketPal` of its own that several comments in
@@ -176,161 +182,119 @@ module SocketArgumentsPal =
     /// about the argument.
     let isTcpProtocolType (palProtocolType : int) : bool = palProtocolType = Pal.PtTcp
 
-    /// The `SocketDomain`/`SocketKind`/`SocketProtocol` a PAL triple names, or
-    /// `None` where it names none.
+    /// `TryConvertSocketTypePalToPlatform` (`pal_networking.c:2497`): the
+    /// platform `SOCK_*` this PAL socket type names, or `None` where the shim's
+    /// switch has no case for it.
     ///
-    /// Partial on every axis, and the shapes it refuses are *not* the ones a
-    /// screen refuses: `AF_UNSPEC`, `AF_PACKET`, `AF_CAN`, `SOCK_RDM` and every
-    /// protocol but the three modelled ones all convert in their screen and
-    /// still have no word in the library's vocabulary. Whether that is the
-    /// reason a triple was refused is what a client should ask before writing a
-    /// diagnostic, because it wants a different fix from a shape the kernel's
-    /// table merely omits.
-    let shapeOf
-        (palAddressFamily : int)
-        (palSocketType : int)
-        (palProtocolType : int)
-        : (SocketDomain * SocketKind * SocketProtocol) option
-        =
-        let domain =
-            match palAddressFamily with
-            | Pal.AfInet -> Some SocketDomain.InterNetwork
-            | Pal.AfInet6 -> Some SocketDomain.InterNetworkV6
-            | Pal.AfUnix -> Some SocketDomain.Unix
-            | _ -> None
-
-        let kind =
-            match palSocketType with
-            | Pal.SockStream -> Some SocketKind.Stream
-            | Pal.SockDgram -> Some SocketKind.Datagram
-            | Pal.SockRaw -> Some SocketKind.Raw
-            | Pal.SockSeqPacket -> Some SocketKind.SeqPacket
-            | _ -> None
-
-        let protocol =
-            match palProtocolType with
-            | Pal.PtUnspecified -> Some SocketProtocol.Unspecified
-            | Pal.PtTcp -> Some SocketProtocol.Tcp
-            | Pal.PtUdp -> Some SocketProtocol.Udp
-            | _ -> None
-
-        match domain, kind, protocol with
-        | Some domain, Some kind, Some protocol -> Some (domain, kind, protocol)
+    /// Every arm is `#ifdef`-guarded on a `SOCK_*` symbol, but both flavours
+    /// define all five, and number them alike and as the PAL does.
+    let socketTypePalToPlatform (palSocketType : int) : int option =
+        match palSocketType with
+        | Pal.SockStream -> Some 1
+        | Pal.SockDgram -> Some 2
+        | Pal.SockRaw -> Some 3
+        | Pal.SockRdm -> Some 4
+        | Pal.SockSeqPacket -> Some 5
         | _ -> None
 
-    /// What `SystemNative_Socket` does with a domain, type and protocol, all in
-    /// the PAL numbering its caller supplies them in.
+    /// `TryConvertProtocolTypePalToPlatform` (`pal_networking.c:2535`): the
+    /// platform protocol number this PAL protocol names *in this PAL address
+    /// family*, or `None` where the shim's table for that family has no case
+    /// for it.
     ///
-    /// Three of the four answers are this shim's own screens, transcribed from
-    /// `TryConvertAddressFamilyPalToPlatform`,
+    /// The `IPPROTO_*` numbers are the same on both flavours, and mostly the
+    /// PAL's own; the exceptions are `PT_ICMP` under `AF_INET6`, which the shim
+    /// sends as `IPPROTO_ICMPV6`, and `PT_RAW` under `AF_CAN`, which is
+    /// `CAN_RAW`.
+    let protocolTypePalToPlatform (palAddressFamily : int) (palProtocolType : int) : int option =
+        match palAddressFamily with
+        // The `AF_PACKET` arm passes the number straight through as an IEEE
+        // 802.3 protocol in network order, so every value converts. Only
+        // reachable on Linux: on Darwin the address-family screen refuses
+        // `AF_PACKET` first.
+        | Pal.AfPacket -> Some palProtocolType
+        // `#if HAVE_LINUX_CAN_H` — a `check_include_files` probe of the
+        // *shim's* build host (`configure.cmake:970`) rather than of any
+        // kernel. PawPrint models the header as present, which is what an
+        // official linux-x64 build has. Were it absent, this arm would
+        // vanish and every `AF_CAN` protocol would be refused below.
+        | Pal.AfCan ->
+            match palProtocolType with
+            | Pal.PtUnspecified -> Some 0
+            | Pal.PtRaw -> Some 1
+            | _ -> None
+        | Pal.AfInet ->
+            match palProtocolType with
+            | Pal.PtUnspecified -> Some 0
+            | Pal.PtIcmp -> Some 1
+            | Pal.PtTcp -> Some 6
+            | Pal.PtUdp -> Some 17
+            | Pal.PtIgmp -> Some 2
+            | Pal.PtRaw -> Some 255
+            | _ -> None
+        | Pal.AfInet6 ->
+            match palProtocolType with
+            | Pal.PtUnspecified -> Some 0
+            | Pal.PtIcmpV6
+            | Pal.PtIcmp -> Some 58
+            | Pal.PtTcp -> Some 6
+            | Pal.PtUdp -> Some 17
+            | Pal.PtIgmp -> Some 2
+            | Pal.PtRaw -> Some 255
+            | Pal.PtDstOpts -> Some 60
+            | Pal.PtNone -> Some 59
+            | Pal.PtRouting -> Some 43
+            | Pal.PtFragment -> Some 44
+            | _ -> None
+        // `AF_UNSPEC` and `AF_UNIX` share the C's `default` arm, which
+        // accepts the unspecified protocol and nothing else.
+        | _ ->
+            match palProtocolType with
+            | Pal.PtUnspecified -> Some 0
+            | _ -> None
+
+    /// Linux's `SOCK_CLOEXEC`, which `SystemNative_Socket` ORs into every type
+    /// under `#ifdef SOCK_CLOEXEC`. Darwin's headers do not define it, so there
+    /// the shim sets `FD_CLOEXEC` with a separate `fcntl` after the call, which
+    /// has nothing to change in a kernel that models no `exec`.
+    [<Literal>]
+    let private LinuxSockCloExec = 0x80000
+
+    /// The `socket(2)` arguments `SystemNative_Socket` passes for a domain, type
+    /// and protocol in the PAL numbering, or the screen that refuses them first.
+    ///
+    /// The screens are `TryConvertAddressFamilyPalToPlatform`,
     /// `TryConvertSocketTypePalToPlatform` and
-    /// `TryConvertProtocolTypePalToPlatform` (`pal_networking.c:218`, `:2497`,
-    /// `:2535`) and applied in the order `SystemNative_Socket` applies them.
-    /// They are pure C running before any syscall, so they are exactly
-    /// knowable, and their flavour-dependence is the shim's `#ifdef`s rather
-    /// than any kernel's behaviour.
-    ///
-    /// The fourth, `Unmodelled`, stands where the kernel's answer would be, and
-    /// is `SimulatedUnixPlatform.creatableSockets` — which says why that set is
-    /// as small as it is. Reaching it means every screen has passed, so a real
-    /// run would now call `socket(2)`.
-    ///
-    /// A triple `shapeOf` cannot name answers `Unmodelled` too, and that is a
-    /// different thing from a shape the kernel's table omits. The distinction
-    /// is deliberately not in this type: nothing maps `Unmodelled` to an errno,
-    /// so it costs a caller only which diagnostic it writes, and `shapeOf` is
-    /// public so that a caller who cares can ask.
-    let socketCreation
+    /// `TryConvertProtocolTypePalToPlatform`, applied in the order
+    /// `SystemNative_Socket` applies them. They are pure C running before any
+    /// syscall, so they are exactly knowable, and their flavour-dependence is
+    /// the shim's `#ifdef`s rather than any kernel's behaviour.
+    let socketArguments
         (platform : SimulatedUnixPlatform)
         (palAddressFamily : int)
         (palSocketType : int)
         (palProtocolType : int)
-        : Result<SocketDomain * SocketKind * SocketProtocol, SocketCreationRefusal>
+        : Result<int * int * int, SocketArgumentScreen>
         =
         // `TryConvertAddressFamilyPalToPlatform`, which is
         // `addressFamilyPalToPlatform` above — the same C function screens
         // `SystemNative_Socket`'s first argument and converts
         // `SystemNative_SetAddressFamily`'s, so there is one rule here, not two.
-        // Only whether it converts matters to this caller; the number it converts
-        // to is a socket address's business.
-        let familyConverts = (addressFamilyPalToPlatform platform palAddressFamily).IsSome
+        match addressFamilyPalToPlatform platform palAddressFamily with
+        | None -> Error SocketArgumentScreen.AddressFamily
+        | Some domain ->
 
-        if not familyConverts then
-            Error SocketCreationRefusal.AddressFamily
-        else
+        match socketTypePalToPlatform palSocketType with
+        | None -> Error SocketArgumentScreen.SocketType
+        | Some socketType ->
 
-        // `TryConvertSocketTypePalToPlatform`. Every arm is `#ifdef`-guarded on a
-        // `SOCK_*` symbol, but both flavours define all five, so this screen
-        // takes no flavour and fires only for a value outside the enum.
-        let typeConverts =
-            match palSocketType with
-            | Pal.SockStream
-            | Pal.SockDgram
-            | Pal.SockRaw
-            | Pal.SockRdm
-            | Pal.SockSeqPacket -> true
-            | _ -> false
+        match protocolTypePalToPlatform palAddressFamily palProtocolType with
+        | None -> Error SocketArgumentScreen.Protocol
+        | Some protocol ->
 
-        if not typeConverts then
-            Error SocketCreationRefusal.SocketType
-        else
+        let socketType =
+            match SimulatedUnixPlatform.flavour platform with
+            | SimulatedUnixFlavour.Linux -> socketType ||| LinuxSockCloExec
+            | SimulatedUnixFlavour.Darwin -> socketType
 
-        // `TryConvertProtocolTypePalToPlatform`, whose table is per address
-        // family. Only the *converts or not* answer matters here: the platform
-        // protocol number it produces can differ from the PAL one it was given
-        // (`AF_INET6` with `PT_ICMP` becomes `IPPROTO_ICMPV6`), and it is the PAL
-        // value that is worth keeping.
-        let protocolConverts =
-            match palAddressFamily with
-            // The `AF_PACKET` arm passes the number straight through as an IEEE
-            // 802.3 protocol in network order, so every value converts.
-            | Pal.AfPacket -> true
-            // `#if HAVE_LINUX_CAN_H` — a `check_include_files` probe of the
-            // *shim's* build host (`configure.cmake:970`) rather than of any
-            // kernel. PawPrint models the header as present, which is what an
-            // official linux-x64 build has. Were it absent, this arm would
-            // vanish and every `AF_CAN` protocol would be refused below.
-            | Pal.AfCan ->
-                match palProtocolType with
-                | Pal.PtUnspecified
-                | Pal.PtRaw -> true
-                | _ -> false
-            | Pal.AfInet ->
-                match palProtocolType with
-                | Pal.PtUnspecified
-                | Pal.PtIcmp
-                | Pal.PtTcp
-                | Pal.PtUdp
-                | Pal.PtIgmp
-                | Pal.PtRaw -> true
-                | _ -> false
-            | Pal.AfInet6 ->
-                match palProtocolType with
-                | Pal.PtUnspecified
-                | Pal.PtIcmpV6
-                | Pal.PtIcmp
-                | Pal.PtTcp
-                | Pal.PtUdp
-                | Pal.PtIgmp
-                | Pal.PtRaw
-                | Pal.PtDstOpts
-                | Pal.PtNone
-                | Pal.PtRouting
-                | Pal.PtFragment -> true
-                | _ -> false
-            // `AF_UNSPEC` and `AF_UNIX` share the C's `default` arm, which
-            // accepts the unspecified protocol and nothing else.
-            | _ ->
-                match palProtocolType with
-                | Pal.PtUnspecified -> true
-                | _ -> false
-
-        if not protocolConverts then
-            Error SocketCreationRefusal.Protocol
-        else
-
-        // Past every screen the shim applies, so a real run would now call
-        // `socket(2)`, and what this kernel creates is `creatableSockets`.
-        match shapeOf palAddressFamily palSocketType palProtocolType with
-        | Some shape when Set.contains shape (SimulatedUnixPlatform.creatableSockets platform) -> Ok shape
-        | _ -> Error SocketCreationRefusal.Unmodelled
+        Ok (domain, socketType, protocol)

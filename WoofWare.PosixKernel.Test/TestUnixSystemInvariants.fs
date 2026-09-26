@@ -133,12 +133,8 @@ module TestUnixSystemInvariants =
     /// anything.
     [<TestCase(true)>]
     [<TestCase(false)>]
-    let ``a stream socket holding a datagram peer is a defect`` (connectionOriented : bool) : unit =
-        let kind =
-            if connectionOriented then
-                SocketKind.Stream
-            else
-                SocketKind.Raw
+    let ``a stream socket holding a datagram peer is a defect`` (stream : bool) : unit =
+        let kind = if stream then SocketKind.Stream else SocketKind.SeqPacket
 
         let phase =
             SocketPhase.DatagramPeer (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 80us)
@@ -152,7 +148,7 @@ module TestUnixSystemInvariants =
                                 [
                                     SocketId 0L,
                                     {
-                                        Domain = SocketDomain.InterNetwork
+                                        Domain = SocketDomain.Inet
                                         Kind = kind
                                         Protocol = SocketProtocol.Tcp
                                         Binding = None
@@ -206,7 +202,7 @@ module TestUnixSystemInvariants =
                                 [
                                     SocketId 0L,
                                     {
-                                        Domain = SocketDomain.InterNetwork
+                                        Domain = SocketDomain.Inet
                                         Kind = SocketKind.Stream
                                         Protocol = SocketProtocol.Tcp
                                         Binding = None
@@ -574,7 +570,7 @@ module TestUnixSystemInvariants =
 
     let private streamSocket (binding : SocketBinding option) (phase : SocketPhase) : SocketDescription =
         {
-            Domain = SocketDomain.InterNetwork
+            Domain = SocketDomain.Inet
             Kind = SocketKind.Stream
             Protocol = SocketProtocol.Tcp
             Binding = binding

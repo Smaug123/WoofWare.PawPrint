@@ -80,7 +80,7 @@ module TestAccept =
     /// A stream socket in the IPv4 domain, in `phase`.
     let private streamSocket (phase : SocketPhase) : SocketDescription =
         {
-            Domain = SocketDomain.InterNetwork
+            Domain = SocketDomain.Inet
             Kind = SocketKind.Stream
             Protocol = SocketProtocol.Tcp
             Binding =
@@ -434,7 +434,7 @@ module TestAccept =
     /// even if the accept itself succeeded.
     [<TestCaseSource(nameof platforms)>]
     let ``a socket in an unmodelled domain is refused`` (platform : SimulatedUnixPlatform) : unit =
-        for domain in [ SocketDomain.InterNetworkV6 ; SocketDomain.Unix ] do
+        for domain in [ SocketDomain.Inet6 ; SocketDomain.Unix ] do
             let socket =
                 { streamSocket SocketPhase.Idle with
                     Domain = domain
@@ -447,7 +447,7 @@ module TestAccept =
 
     [<TestCaseSource(nameof platforms)>]
     let ``a socket of an unmeasured kind is refused`` (platform : SimulatedUnixPlatform) : unit =
-        for kind in [ SocketKind.Raw ; SocketKind.SeqPacket ] do
+        for kind in [ SocketKind.SeqPacket ] do
             let socket =
                 { streamSocket SocketPhase.Idle with
                     Kind = kind

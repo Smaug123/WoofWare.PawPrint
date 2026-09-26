@@ -63,48 +63,42 @@ type ConnectionId =
 /// The communication domain of a socket this kernel can create.
 ///
 /// Only the domains a socket can actually *be*, so this is narrower than any
-/// `AF_*` list: `AF_UNSPEC`, `AF_PACKET` and `AF_CAN` name no socket this kernel
-/// creates (`SimulatedUnixPlatform.creatableSockets`), and a client's
-/// conversion into this type has nothing to convert them to.
+/// `AF_*` list: `UnixSocket.socket` answers or refuses every other domain
+/// before a socket exists.
 [<RequireQualifiedAccess>]
 type SocketDomain =
     /// `AF_INET`.
-    | InterNetwork
+    | Inet
     /// `AF_INET6`.
-    | InterNetworkV6
+    | Inet6
     /// `AF_UNIX`.
     | Unix
 
-/// The communication semantics of a socket this kernel can create.
+/// The communication semantics of a socket this kernel can create: what
+/// `getsockopt(SO_TYPE)` would report for it.
 ///
-/// `SOCK_RDM` is absent: no kernel modelled here creates one, so it never
-/// reaches a live socket.
+/// No `SOCK_RAW`: an internet raw socket is one `UnixSocket.socket` refuses,
+/// and Linux makes an `AF_UNIX` `SOCK_RAW` request into a `SOCK_DGRAM` socket.
 [<RequireQualifiedAccess>]
 type SocketKind =
     /// `SOCK_STREAM`.
     | Stream
     /// `SOCK_DGRAM`.
     | Datagram
-    /// `SOCK_RAW`. Reachable only in the `AF_UNIX` domain under the Linux
-    /// flavour: an IP raw socket needs `CAP_NET_RAW`, which is not modelled.
-    | Raw
     /// `SOCK_SEQPACKET`. Reachable only in the `AF_UNIX` domain under the Linux
     /// flavour.
     | SeqPacket
 
-/// The protocol of a socket this kernel can create.
+/// The protocol a socket was asked for.
 ///
-/// Which protocol *number* this is depends on who is asking — a client whose
-/// own encoding differs from the platform's must convert both ways, and the two
-/// can disagree about more than the number (a runtime asking for ICMP under
-/// `AF_INET6` reaches the kernel as `IPPROTO_ICMPV6`). This type is the
-/// condition, and holds no numbering of its own.
+/// Holds no numbering of its own: `UnixSocket.socket` reads the caller's
+/// protocol number in the simulated flavour's numbering, and this is the
+/// condition that number named.
 [<RequireQualifiedAccess>]
 type SocketProtocol =
-    /// "The default protocol for this domain and kind". Not resolved to that
-    /// default here — the kernel resolves it, and what it resolves to is
-    /// `getsockopt(SO_PROTOCOL)`'s question to measure.
-    | Unspecified
+    /// The default protocol for this domain and kind: the caller passed 0, or,
+    /// on Linux, named `AF_UNIX`'s only protocol.
+    | Default
     /// TCP.
     | Tcp
     /// UDP.
@@ -216,7 +210,8 @@ type SocketDescription =
         /// The domain given to `socket(2)`, and fixed for the socket's life:
         /// no modelled syscall can change it.
         Domain : SocketDomain
-        /// The type given to `socket(2)`, likewise fixed.
+        /// The socket's type, as `getsockopt(SO_TYPE)` reports it, and likewise
+        /// fixed. Not always the type `socket(2)` was asked for: see `SocketKind`.
         Kind : SocketKind
         /// The protocol given to `socket(2)`, likewise fixed.
         Protocol : SocketProtocol
@@ -499,7 +494,7 @@ type OpenFileTarget =
     /// target, because the `dup` pair shares this description and so this
     /// table.
     | SocketEventPort of state : SocketEventPortState
-    /// A socket, handed out by `UnixSocket.createSocket`.
+    /// A socket, handed out by `UnixSocket.socket`.
     ///
     /// No offset, because neither kernel maintains one: measured, `lseek` on a
     /// socket is ESPIPE on both for every whence in 0..4 and every offset.
@@ -1079,15 +1074,15 @@ module FileDescriptorRegistry =
             NextId = OpenFileDescriptionId (raw + 1L)
         }
 
-    /// Mirrors `socket(2)`: allocate a fresh socket, a fresh open file
-    /// description naming it, and the lowest non-negative descriptor not in use.
+    /// Allocate a fresh open file description naming the socket `socketId`,
+    /// and the lowest non-negative descriptor not in use to point at it. The
+    /// description is blocking.
     ///
-    /// Says nothing about whether this domain/kind/protocol combination *can*
-    /// exist — that is `SimulatedUnixPlatform.creatableSockets`'s question, and
-    /// this is reached only once a caller has asked it.
+    /// Says nothing about whether such a socket *can* exist: that is
+    /// `UnixSocket.socket`'s question.
     ///
     /// `socketId` is minted by the caller, because the socket it names lives in
-    /// the emulated kernel's socket table rather than here; `UnixSocket.createSocket`
+    /// the emulated kernel's socket table rather than here; `UnixSocket.socket`
     /// and `UnixConnection.accept` allocate both, and are the only things that
     /// should call this.
     ///
@@ -1115,9 +1110,8 @@ module FileDescriptorRegistry =
                     {
                         Target = OpenFileTarget.Socket socketId
                         AccessMode = FileAccessMode.ReadWrite
-                        // No `SOCK_NONBLOCK`: `UnixSocket.createSocket` takes no
-                        // type flags, and a caller switches a socket to
-                        // non-blocking through a separate fcntl afterwards.
+                        // A `socket(2)` asked for `SOCK_NONBLOCK` sets it
+                        // afterwards, through `setNonBlocking`.
                         NonBlocking = false
                         // `socket(2)` takes no lock, exactly as `open(2)` does not.
                         Flock = None

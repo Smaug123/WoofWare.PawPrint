@@ -168,8 +168,8 @@ type ListenRefusal =
     /// not model, so the implicit bind below has no address to give it.
     | UnmodelledDomain of socket : SocketId * domain : SocketDomain
     /// The descriptor is a socket of a kind whose `listen(2)` answer is
-    /// unmeasured: `SOCK_SEQPACKET` does accept connections and `SOCK_RAW`
-    /// plausibly answers `EOPNOTSUPP`, but neither has been measured.
+    /// unmeasured: `SOCK_SEQPACKET` does accept connections, but that has not
+    /// been measured.
     | UnmeasuredKind of socket : SocketId * kind : SocketKind
     /// The descriptor is a stream socket in a phase whose `listen(2)` answer is
     /// unmeasured -- plausibly `EISCONN` for a connected one.
@@ -349,6 +349,64 @@ type GetSockOptAnswer =
     /// length cell was written.
     | Failed of error : UnixError
 
+/// Why this library will not answer a `socket(2)`.
+///
+/// Distinct from an errno: each case is a request whose real answer depends on
+/// something this library does not model, or that names a socket it does not
+/// model. Each carries the caller's arguments as they were passed.
+[<RequireQualifiedAccess>]
+type SocketRefusal =
+    /// A protocol family other than `AF_UNIX`, `AF_INET` and `AF_INET6` that
+    /// the simulated kernel has, or on Linux may have depending on how it was
+    /// built. This library models no socket in it.
+    | UnmodelledDomain of domain : int
+    /// `SOCK_RAW` in an internet domain, or Linux's `SOCK_PACKET` under
+    /// `AF_INET`, which asks for a packet socket. This library models no raw
+    /// socket, and which of them a real kernel creates depends on the caller's
+    /// privilege.
+    | RawSocket of domain : int * socketType : int * protocol : int
+    /// An ICMP datagram socket: `IPPROTO_ICMP` under `AF_INET`, or
+    /// `IPPROTO_ICMPV6` under `AF_INET6`. This library does not model one.
+    ///
+    /// Darwin creates one for any caller, and Linux only for a caller whose
+    /// group the system's `net.ipv4.ping_group_range` setting admits.
+    | IcmpDatagram of domain : int * protocol : int
+    /// On Linux, a request whose answer depends on which protocols the kernel
+    /// was built with or has modules for: SCTP, MPTCP, SMC, L2TP and UDP-Lite.
+    /// Depending on that, a real kernel creates a socket this library does not
+    /// model, or refuses with one errno or another.
+    | BuildDependentProtocol of domain : int * socketType : int * protocol : int
+
+[<RequireQualifiedAccess>]
+module SocketRefusal =
+    /// What this kernel knows about why it cannot answer, for a client composing
+    /// a diagnostic.
+    let describe (refusal : SocketRefusal) : string =
+        match refusal with
+        | SocketRefusal.UnmodelledDomain domain ->
+            $"domain %d{domain} names a protocol family other than AF_UNIX, AF_INET and AF_INET6, which the simulated kernel has (or, on Linux, may have, depending on how it was built). This kernel models no socket in it."
+        | SocketRefusal.RawSocket (domain, socketType, protocol) ->
+            $"domain %d{domain}, type 0x%x{socketType}, protocol %d{protocol} asks for a raw or packet socket. This kernel models none, and which of them a real kernel creates depends on the caller's privilege, which this kernel does not model either."
+        | SocketRefusal.IcmpDatagram (domain, protocol) ->
+            $"domain %d{domain}, protocol %d{protocol} asks for an ICMP datagram socket, which this kernel does not model. Darwin creates one for any caller; Linux creates one only for a group its net.ipv4.ping_group_range setting admits."
+        | SocketRefusal.BuildDependentProtocol (domain, socketType, protocol) ->
+            $"domain %d{domain}, type 0x%x{socketType}, protocol %d{protocol}: what Linux answers depends on which protocols the kernel was built with or has modules for (SCTP, MPTCP, SMC, L2TP, UDP-Lite), and this kernel models none of them."
+
+/// What `socket(2)` decided, before any allocation.
+[<RequireQualifiedAccess>]
+type private SocketDecoding =
+    | Creates of domain : SocketDomain * kind : SocketKind * protocol : SocketProtocol * nonBlocking : bool
+    | Fails of UnixError
+    | Refused of SocketRefusal
+
+/// What a Darwin protocol switch entry does when `socket(2)` selects it.
+[<RequireQualifiedAccess>]
+type private DarwinAttach =
+    | Creates of SocketKind
+    | Raw
+    | IcmpDatagram
+    | NotSupported
+
 [<RequireQualifiedAccess>]
 module UnixSocket =
 
@@ -400,9 +458,9 @@ module UnixSocket =
         let socket = UnixMachineState.socket socketId system.Machine
 
         match socket.Domain with
-        | SocketDomain.InterNetworkV6
+        | SocketDomain.Inet6
         | SocketDomain.Unix -> Error (SockaddrCopyRefusal.UnmodelledDomain (socketId, socket.Domain))
-        | SocketDomain.InterNetwork ->
+        | SocketDomain.Inet ->
 
         let platform = system.Machine.UnixPlatform
         let exactSize = SimulatedUnixPlatform.internetSocketAddressSize
@@ -450,21 +508,334 @@ module UnixSocket =
 
         Ok (SockaddrCopyAdmission.Transfer (declaredLength, fields))
 
-    /// Mirrors `socket(2)`: allocate a fresh socket, and a fresh descriptor onto
-    /// it.
+    // `<sys/socket.h>` and `<netinet/in.h>`: these numbers are the same on both
+    // flavours. `AF_INET6` is not, and is `SimulatedUnixPlatform`'s.
+    [<Literal>]
+    let private AfUnspec = 0
+
+    [<Literal>]
+    let private AfUnix = 1
+
+    [<Literal>]
+    let private SockStream = 1
+
+    [<Literal>]
+    let private SockDgram = 2
+
+    [<Literal>]
+    let private SockRaw = 3
+
+    [<Literal>]
+    let private SockSeqPacket = 5
+
+    [<Literal>]
+    let private IpProtoIcmp = 1
+
+    [<Literal>]
+    let private IpProtoTcp = 6
+
+    [<Literal>]
+    let private IpProtoUdp = 17
+
+    [<Literal>]
+    let private IpProtoIcmpV6 = 58
+
+    /// The condition a protocol number names, for a socket whose selection has
+    /// already accepted that number.
+    let private requestedProtocol (protocol : int) : SocketProtocol =
+        match protocol with
+        | IpProtoTcp -> SocketProtocol.Tcp
+        | IpProtoUdp -> SocketProtocol.Udp
+        | _ -> SocketProtocol.Default
+
+    // Linux's rules are `__sys_socket`, `__sock_create`, `unix_create` and
+    // `inet_create`/`inet6_create`, none of which is architecture-specific, and
+    // every answer below was measured on Linux 6.18.5 aarch64 at euid 1000 and
+    // again as root, by
+    // `docs/plans/2026-08-23-posix-kernel-extraction/socket-arguments.c`, over
+    // every domain in [-2, 63] and a few beyond, every type in [0, 15] with and
+    // without flag bits, and every protocol in [-2, 300] and a few beyond. (An
+    // x86-64 build of the probe under Rosetta answered identically, but that is
+    // the same aarch64 kernel behind an x86-64 ABI.) The sweep is checked in,
+    // and `TestSocketSyscall` holds this function to it;
+    // `TestSocketSyscallAgainstHost` repeats the answered calls on whatever
+    // kernel runs the suite, which in CI is x86-64.
+
+    /// Linux's `SOCK_NONBLOCK` and `SOCK_CLOEXEC`, which are `O_NONBLOCK` and
+    /// `O_CLOEXEC`: `asm-generic/fcntl.h`'s values, which x86-64 and aarch64
+    /// both use. Measured on aarch64 only.
+    [<Literal>]
+    let private LinuxSockNonBlock = 0x800
+
+    [<Literal>]
+    let private LinuxSockCloExec = 0x80000
+
+    /// `SOCK_TYPE_MASK`: the bits of the type word that name a type rather than
+    /// a flag.
+    [<Literal>]
+    let private LinuxSockTypeMask = 0xf
+
+    /// `SOCK_PACKET`, the obsolete way to ask `AF_INET` for a packet socket.
+    [<Literal>]
+    let private LinuxSockPacket = 10
+
+    /// `SOCK_MAX`: one past `SOCK_PACKET`.
+    [<Literal>]
+    let private LinuxSockMax = 11
+
+    /// `AF_MAX`, which is `NPROTO`: one past the highest family number Linux
+    /// has assigned.
+    [<Literal>]
+    let private LinuxAfMax = 46
+
+    /// `IPPROTO_MAX`: one past `IPPROTO_MPTCP`.
+    [<Literal>]
+    let private LinuxIpProtoMax = 263
+
+    let private decodeLinux
+        (platform : SimulatedUnixPlatform)
+        (domain : int)
+        (socketType : int)
+        (protocol : int)
+        : SocketDecoding
+        =
+        let flags = socketType &&& ~~~LinuxSockTypeMask
+        let baseType = socketType &&& LinuxSockTypeMask
+        let nonBlocking = flags &&& LinuxSockNonBlock <> 0
+        let inet6 = SimulatedUnixPlatform.internetV6AddressFamily platform
+
+        let internet (icmp : int) : SocketDecoding =
+            if protocol < 0 || protocol >= LinuxIpProtoMax then
+                SocketDecoding.Fails UnixError.EINVAL
+            else
+
+            let shape (kind : SocketKind) : SocketDecoding =
+                let domain =
+                    if domain = SimulatedUnixPlatform.internetAddressFamily then
+                        SocketDomain.Inet
+                    else
+                        SocketDomain.Inet6
+
+                SocketDecoding.Creates (domain, kind, requestedProtocol protocol, nonBlocking)
+
+            let buildDependent () : SocketDecoding =
+                SocketDecoding.Refused (SocketRefusal.BuildDependentProtocol (domain, socketType, protocol))
+
+            // The protocols a type's switch holds, each tried in turn, with 0
+            // taking the type's first. Absent protocols are EPROTONOSUPPORT, and
+            // a type with no protocols at all is ESOCKTNOSUPPORT. Beside the ones
+            // modelled, a kernel may register SCTP (132, stream and seqpacket),
+            // SMC (256) and MPTCP (262) for streams, and L2TP (115) and UDP-Lite
+            // (136) for datagrams, depending on how it was built.
+            match baseType with
+            | SockStream ->
+                match protocol with
+                | 0
+                | IpProtoTcp -> shape SocketKind.Stream
+                | 132
+                | 256
+                | 262 -> buildDependent ()
+                | _ -> SocketDecoding.Fails UnixError.EPROTONOSUPPORT
+            | SockDgram ->
+                match protocol with
+                | 0
+                | IpProtoUdp -> shape SocketKind.Datagram
+                | _ when protocol = icmp -> SocketDecoding.Refused (SocketRefusal.IcmpDatagram (domain, protocol))
+                | 115
+                | 136 -> buildDependent ()
+                | _ -> SocketDecoding.Fails UnixError.EPROTONOSUPPORT
+            | SockRaw ->
+                // The raw switch entry matches any protocol but 0, and only
+                // then is the caller's privilege checked.
+                if protocol = 0 then
+                    SocketDecoding.Fails UnixError.EPROTONOSUPPORT
+                else
+                    SocketDecoding.Refused (SocketRefusal.RawSocket (domain, socketType, protocol))
+            // SCTP is the only protocol a seqpacket switch ever holds, so
+            // whether it is there decides every answer: a socket for 0 or 132,
+            // and EPROTONOSUPPORT against ESOCKTNOSUPPORT for the rest.
+            | SockSeqPacket -> buildDependent ()
+            | _ -> SocketDecoding.Fails UnixError.ESOCKTNOSUPPORT
+
+        if flags &&& ~~~(LinuxSockNonBlock ||| LinuxSockCloExec) <> 0 then
+            SocketDecoding.Fails UnixError.EINVAL
+        elif domain < 0 || domain >= LinuxAfMax then
+            SocketDecoding.Fails UnixError.EAFNOSUPPORT
+        elif baseType >= LinuxSockMax then
+            SocketDecoding.Fails UnixError.EINVAL
+        elif
+            domain = SimulatedUnixPlatform.internetAddressFamily
+            && baseType = LinuxSockPacket
+        then
+            // `__sock_create` redirects this to `AF_PACKET`, whose sockets need
+            // `CAP_NET_RAW` whatever the protocol: measured, every protocol is
+            // EPERM at euid 1000, out-of-range ones included, and every one
+            // creates a socket as root.
+            SocketDecoding.Refused (SocketRefusal.RawSocket (domain, socketType, protocol))
+        elif domain = AfUnix then
+            // `unix_create` accepts `PF_UNIX` as well as 0, and discards it:
+            // `getsockopt(SO_PROTOCOL)` reads 0 for both. It checks the
+            // protocol before the type.
+            if protocol <> 0 && protocol <> AfUnix then
+                SocketDecoding.Fails UnixError.EPROTONOSUPPORT
+            else
+
+            match baseType with
+            | SockStream ->
+                SocketDecoding.Creates (SocketDomain.Unix, SocketKind.Stream, SocketProtocol.Default, nonBlocking)
+            // A `SOCK_RAW` request makes a datagram socket: `SO_TYPE` reads
+            // `SOCK_DGRAM` for it.
+            | SockDgram
+            | SockRaw ->
+                SocketDecoding.Creates (SocketDomain.Unix, SocketKind.Datagram, SocketProtocol.Default, nonBlocking)
+            | SockSeqPacket ->
+                SocketDecoding.Creates (SocketDomain.Unix, SocketKind.SeqPacket, SocketProtocol.Default, nonBlocking)
+            | _ -> SocketDecoding.Fails UnixError.ESOCKTNOSUPPORT
+        elif domain = SimulatedUnixPlatform.internetAddressFamily then
+            internet IpProtoIcmp
+        elif domain = inet6 then
+            internet IpProtoIcmpV6
+        elif domain = AfUnspec then
+            SocketDecoding.Fails UnixError.EAFNOSUPPORT
+        else
+            // Every other number below `AF_MAX` is a family Linux has assigned,
+            // and whether this kernel has it depends on how it was built and
+            // which modules it can load: EAFNOSUPPORT if not.
+            SocketDecoding.Refused (SocketRefusal.UnmodelledDomain domain)
+
+    // Darwin's rule is `socreate_internal` over each domain's protocol switch.
+    // With a protocol, it takes the entry of exactly that protocol and type, or
+    // for `SOCK_RAW` the domain's catch-all raw entry; without one, the first
+    // entry of that type. Finding nothing, it answers EAFNOSUPPORT for a domain
+    // it does not have, EPROTOTYPE for a protocol it has under some other type,
+    // and EPROTONOSUPPORT otherwise. Darwin has no type flags: every bit of the
+    // type word must match an entry.
+    //
+    // Measured on Darwin 27.0.0 (arm64) at euid 501 by the same probe and sweep
+    // as Linux's, and checked in beside it. The switches below are that
+    // measurement's: every protocol that answered EPROTOTYPE under some type,
+    // at the type that did not. Only the order of the first two entries of a
+    // type matters, and that is `in_proto.c`'s and `in6_proto.c`'s.
+
+    let private darwinUnixSwitch : (int * int * DarwinAttach) list =
+        [
+            SockStream, 0, DarwinAttach.Creates SocketKind.Stream
+            SockDgram, 0, DarwinAttach.Creates SocketKind.Datagram
+        ]
+
+    let private darwinInetSwitch : (int * int * DarwinAttach) list =
+        [
+            SockDgram, IpProtoUdp, DarwinAttach.Creates SocketKind.Datagram
+            SockStream, IpProtoTcp, DarwinAttach.Creates SocketKind.Stream
+            SockRaw, 255, DarwinAttach.Raw
+            SockRaw, IpProtoIcmp, DarwinAttach.Raw
+            SockDgram, IpProtoIcmp, DarwinAttach.IcmpDatagram
+            SockRaw, 2, DarwinAttach.Raw
+            SockRaw, 4, DarwinAttach.Raw
+            SockRaw, 41, DarwinAttach.Raw
+            SockRaw, 47, DarwinAttach.Raw
+            // ESP and AH answer EOPNOTSUPP rather than EPERM at euid 501.
+            SockRaw, 50, DarwinAttach.Raw
+            SockRaw, 51, DarwinAttach.Raw
+            SockRaw, 0, DarwinAttach.Raw
+        ]
+
+    let private darwinInet6Switch : (int * int * DarwinAttach) list =
+        [
+            // A placeholder entry with no type, which only a request for type 0
+            // and protocol 41 selects: measured, that is EOPNOTSUPP.
+            0, 41, DarwinAttach.NotSupported
+            SockDgram, IpProtoUdp, DarwinAttach.Creates SocketKind.Datagram
+            SockStream, IpProtoTcp, DarwinAttach.Creates SocketKind.Stream
+            SockRaw, 255, DarwinAttach.Raw
+            SockRaw, IpProtoIcmpV6, DarwinAttach.Raw
+            SockDgram, IpProtoIcmpV6, DarwinAttach.IcmpDatagram
+            SockRaw, 4, DarwinAttach.Raw
+            SockRaw, 41, DarwinAttach.Raw
+            // Routing, fragment, ESP, AH and destination-options headers
+            // answer EOPNOTSUPP rather than EPERM at euid 501.
+            SockRaw, 43, DarwinAttach.Raw
+            SockRaw, 44, DarwinAttach.Raw
+            SockRaw, 50, DarwinAttach.Raw
+            SockRaw, 51, DarwinAttach.Raw
+            SockRaw, 60, DarwinAttach.Raw
+            SockRaw, 0, DarwinAttach.Raw
+        ]
+
+    /// The families Darwin has besides the three modelled: `AF_ROUTE`,
+    /// `AF_NDRV`, `AF_KEY`, `AF_SYSTEM`, 34, `AF_MULTIPATH` and `AF_VSOCK`.
+    let private darwinOtherDomains : Set<int> =
+        Set.ofList [ 17 ; 27 ; 29 ; 32 ; 34 ; 39 ; 40 ]
+
+    let private decodeDarwin
+        (platform : SimulatedUnixPlatform)
+        (domain : int)
+        (socketType : int)
+        (protocol : int)
+        : SocketDecoding
+        =
+        let inet6 = SimulatedUnixPlatform.internetV6AddressFamily platform
+
+        let select (switch : (int * int * DarwinAttach) list) (socketDomain : SocketDomain) : SocketDecoding =
+            let selected =
+                if protocol <> 0 then
+                    switch
+                    |> List.tryFind (fun (entryType, entryProtocol, _) ->
+                        entryProtocol = protocol && entryType = socketType
+                    )
+                    |> Option.orElse (
+                        if socketType = SockRaw then
+                            switch
+                            |> List.tryFind (fun (entryType, entryProtocol, _) ->
+                                entryType = SockRaw && entryProtocol = 0
+                            )
+                        else
+                            None
+                    )
+                else
+                    // An entry with no type is never the first of a type.
+                    switch
+                    |> List.tryFind (fun (entryType, _, _) -> entryType <> 0 && entryType = socketType)
+
+            match selected with
+            | Some (_, _, DarwinAttach.Creates kind) ->
+                SocketDecoding.Creates (socketDomain, kind, requestedProtocol protocol, false)
+            | Some (_, _, DarwinAttach.Raw) ->
+                SocketDecoding.Refused (SocketRefusal.RawSocket (domain, socketType, protocol))
+            | Some (_, _, DarwinAttach.IcmpDatagram) ->
+                SocketDecoding.Refused (SocketRefusal.IcmpDatagram (domain, protocol))
+            | Some (_, _, DarwinAttach.NotSupported) -> SocketDecoding.Fails UnixError.EOPNOTSUPP
+            | None ->
+                if
+                    protocol <> 0
+                    && switch |> List.exists (fun (_, entryProtocol, _) -> entryProtocol = protocol)
+                then
+                    SocketDecoding.Fails UnixError.EPROTOTYPE
+                else
+                    SocketDecoding.Fails UnixError.EPROTONOSUPPORT
+
+        if domain = AfUnix then
+            select darwinUnixSwitch SocketDomain.Unix
+        elif domain = SimulatedUnixPlatform.internetAddressFamily then
+            select darwinInetSwitch SocketDomain.Inet
+        elif domain = inet6 then
+            select darwinInet6Switch SocketDomain.Inet6
+        elif Set.contains domain darwinOtherDomains then
+            SocketDecoding.Refused (SocketRefusal.UnmodelledDomain domain)
+        else
+            SocketDecoding.Fails UnixError.EAFNOSUPPORT
+
+    /// Allocate a fresh socket and a fresh descriptor onto it.
     ///
     /// One operation for both allocations, rather than a socket-table insert
     /// beside a separate `FileDescriptorRegistry.createSocket`, because the two
     /// must agree: the identity this mints is the identity the description
     /// names, and splitting them would let a caller do one without the other.
-    ///
-    /// Says nothing about whether this domain/kind/protocol combination *can*
-    /// exist -- `SimulatedUnixPlatform.creatableSockets` answers that, and this
-    /// is reached only once it has said yes.
-    let createSocket<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let private allocate<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (domain : SocketDomain)
         (kind : SocketKind)
         (protocol : SocketProtocol)
+        (nonBlocking : bool)
         (system : UnixSystem<'Task, 'Handler>)
         : int * UnixSystem<'Task, 'Handler>
         =
@@ -473,6 +844,12 @@ module UnixSocket =
 
         let fd, registry =
             FileDescriptorRegistry.createSocket socketId system.Process.FileDescriptors
+
+        let registry =
+            if nonBlocking then
+                FileDescriptorRegistry.setNonBlocking fd true registry
+            else
+                registry
 
         let socket =
             {
@@ -496,6 +873,41 @@ module UnixSocket =
                     FileDescriptors = registry
                 }
         }
+
+    /// `socket(2)`: create a socket in `domain`, of `socketType`, speaking
+    /// `protocol`, and a descriptor onto it: the lowest one not in use.
+    ///
+    /// All three numbers are the simulated flavour's own, as a caller of its
+    /// libc would pass them: `AF_INET6` is 10 on Linux and 30 on Darwin.
+    /// `socketType` may carry Linux's `SOCK_NONBLOCK`, which makes the new open
+    /// file description non-blocking, and `SOCK_CLOEXEC`, which is accepted and
+    /// has no effect here: it sets `FD_CLOEXEC`, which matters only across
+    /// `exec`, and this kernel models neither `exec` nor any per-descriptor flag.
+    /// Darwin has neither flag, and a type carrying either bit names no type.
+    ///
+    /// The sockets created are stream and datagram sockets in `AF_INET` and
+    /// `AF_INET6` (TCP and UDP), and in `AF_UNIX` stream and datagram sockets,
+    /// and on Linux seqpacket ones. Linux makes an `AF_UNIX` `SOCK_RAW` request
+    /// a datagram socket. Anything else is the errno the flavour answers, or a
+    /// `SocketRefusal` where that answer depends on what this kernel does not
+    /// model. A failure changes nothing.
+    let socket<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (domain : int)
+        (socketType : int)
+        (protocol : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<Result<int * UnixSystem<'Task, 'Handler>, UnixError>, SocketRefusal>
+        =
+        let decoding =
+            match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+            | SimulatedUnixFlavour.Linux -> decodeLinux system.Machine.UnixPlatform domain socketType protocol
+            | SimulatedUnixFlavour.Darwin -> decodeDarwin system.Machine.UnixPlatform domain socketType protocol
+
+        match decoding with
+        | SocketDecoding.Refused refusal -> Error refusal
+        | SocketDecoding.Fails error -> Ok (Error error)
+        | SocketDecoding.Creates (socketDomain, kind, socketProtocol, nonBlocking) ->
+            Ok (Ok (allocate socketDomain kind socketProtocol nonBlocking system))
 
     /// `fcntl(F_SETFL)`'s `O_NONBLOCK` half: put the flag on the open file
     /// description `fd` names.
@@ -796,13 +1208,12 @@ module UnixSocket =
         let socket = UnixMachineState.socket socketId system.Machine
 
         match socket.Domain with
-        | SocketDomain.InterNetworkV6
+        | SocketDomain.Inet6
         | SocketDomain.Unix -> Error (ListenRefusal.UnmodelledDomain (socketId, socket.Domain))
-        | SocketDomain.InterNetwork ->
+        | SocketDomain.Inet ->
 
         match socket.Kind with
         | SocketKind.Datagram -> Ok (ListenAnswer.Failed UnixError.EOPNOTSUPP, system)
-        | SocketKind.Raw
         | SocketKind.SeqPacket -> Error (ListenRefusal.UnmeasuredKind (socketId, socket.Kind))
         | SocketKind.Stream ->
 
@@ -941,9 +1352,9 @@ module UnixSocket =
         let socket = UnixMachineState.socket socketId system.Machine
 
         match socket.Domain with
-        | SocketDomain.InterNetworkV6
+        | SocketDomain.Inet6
         | SocketDomain.Unix -> Error (GetSockNameRefusal.UnmodelledDomain (socketId, socket.Domain))
-        | SocketDomain.InterNetwork ->
+        | SocketDomain.Inet ->
 
         let reportedLength = SimulatedUnixPlatform.internetSocketAddressSize
 

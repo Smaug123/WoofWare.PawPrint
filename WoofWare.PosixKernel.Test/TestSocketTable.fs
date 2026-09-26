@@ -108,7 +108,7 @@ module TestSocketTable =
 
     let private someSocket : SocketDescription =
         {
-            Domain = SocketDomain.InterNetwork
+            Domain = SocketDomain.Inet
             Kind = SocketKind.Stream
             Protocol = SocketProtocol.Tcp
             Binding = None
@@ -122,7 +122,7 @@ module TestSocketTable =
     [<Test>]
     let ``a fresh socket carries its triple into the socket table`` () : unit =
         let fd, kernel =
-            UnixSocket.createSocket SocketDomain.InterNetworkV6 SocketKind.Datagram SocketProtocol.Udp initialSystem
+            NewSocket.create SocketDomain.Inet6 SocketKind.Datagram SocketProtocol.Udp initialSystem
 
         match FileDescriptorRegistry.tryFind fd kernel.Process.FileDescriptors with
         | None -> failwith "the socket descriptor is not live"
@@ -131,7 +131,7 @@ module TestSocketTable =
         match description.Target with
         | OpenFileTarget.Socket socketId ->
             let socket = UnixMachineState.socket socketId kernel.Machine
-            socket.Domain |> shouldEqual SocketDomain.InterNetworkV6
+            socket.Domain |> shouldEqual SocketDomain.Inet6
             socket.Kind |> shouldEqual SocketKind.Datagram
             socket.Protocol |> shouldEqual SocketProtocol.Udp
         | other -> failwith $"expected a socket target, got %O{other}"
@@ -143,10 +143,10 @@ module TestSocketTable =
     [<Test>]
     let ``two sockets get distinct identities`` () : unit =
         let _, kernel =
-            UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp initialSystem
+            NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp initialSystem
 
         let _, kernel =
-            UnixSocket.createSocket SocketDomain.Unix SocketKind.Datagram SocketProtocol.Unspecified kernel
+            NewSocket.create SocketDomain.Unix SocketKind.Datagram SocketProtocol.Default kernel
 
         kernel.Machine.Sockets |> Map.count |> shouldEqual 2
         kernel.Machine.NextSocketId |> shouldEqual (SocketId 2L)
@@ -158,7 +158,7 @@ module TestSocketTable =
     [<Test>]
     let ``closing the last descriptor destroys the socket`` () : unit =
         let fd, kernel =
-            UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp initialSystem
+            NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp initialSystem
 
         kernel.Machine.Sockets |> Map.count |> shouldEqual 1
 
@@ -180,7 +180,7 @@ module TestSocketTable =
     [<Test>]
     let ``closing a dup leaves the socket alive`` () : unit =
         let fd, kernel =
-            UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp initialSystem
+            NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp initialSystem
 
         let duped, kernel =
             match FileDescriptorRegistry.dup fd kernel.Process.FileDescriptors with
@@ -216,7 +216,7 @@ module TestSocketTable =
     [<Test>]
     let ``closing a non-socket descriptor leaves the socket table alone`` () : unit =
         let _, kernel =
-            UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp initialSystem
+            NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp initialSystem
 
         let port, registry =
             FileDescriptorRegistry.createSocketEventPort kernel.Process.FileDescriptors
@@ -315,7 +315,7 @@ module TestSocketTable =
     /// The allocating and closing operations interleaved at random must leave
     /// *all three* tables sound. This is what connects the hand-forged defects
     /// above to the code paths that maintain them: a `close` that forgot the
-    /// socket table shows up here as `UnreferencedSocket`, a `createSocket` that
+    /// socket table shows up here as `UnreferencedSocket`, a `socket` that
     /// failed to advance the counter as `NextSocketIdNotFresh`, and a `close`
     /// that reaped an inode a surviving descriptor still names as
     /// `DanglingOpenInode`.
@@ -520,13 +520,13 @@ module TestSocketTable =
                                 }
                         }
                 | _ ->
-                    // A different triple each time, so that a `createSocket`
+                    // A different triple each time, so that a `socket`
                     // which keyed identity off the triple rather than off a
                     // counter would not be saved by them all being equal.
                     let domain =
                         match rng.Next 3 with
-                        | 0 -> SocketDomain.InterNetwork
-                        | 1 -> SocketDomain.InterNetworkV6
+                        | 0 -> SocketDomain.Inet
+                        | 1 -> SocketDomain.Inet6
                         | _ -> SocketDomain.Unix
 
                     let kind =
@@ -535,8 +535,7 @@ module TestSocketTable =
                         else
                             SocketKind.Datagram
 
-                    let _, kernel' =
-                        UnixSocket.createSocket domain kind SocketProtocol.Unspecified kernel
+                    let _, kernel' = NewSocket.create domain kind SocketProtocol.Default kernel
 
                     kernel <- kernel'
                     observedSockets <- observedSockets + 1

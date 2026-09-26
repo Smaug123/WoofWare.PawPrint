@@ -73,7 +73,7 @@ module TestConnect =
 
     let private streamSocket (binding : SocketBinding option) (phase : SocketPhase) : SocketDescription =
         {
-            Domain = SocketDomain.InterNetwork
+            Domain = SocketDomain.Inet
             Kind = SocketKind.Stream
             Protocol = SocketProtocol.Tcp
             Binding = binding
@@ -178,7 +178,7 @@ module TestConnect =
     /// because there would be no destination to connect to either way.
     [<TestCaseSource(nameof platforms)>]
     let ``a socket in an unmodelled domain is refused`` (platform : SimulatedUnixPlatform) : unit =
-        for domain in [ SocketDomain.InterNetworkV6 ; SocketDomain.Unix ] do
+        for domain in [ SocketDomain.Inet6 ; SocketDomain.Unix ] do
             let socket =
                 { streamSocket None SocketPhase.Idle with
                     Domain = domain
@@ -449,16 +449,16 @@ module TestConnect =
         | Ok answer -> failwith $"expected a refusal, got %A{answer}"
 
     [<TestCaseSource(nameof platforms)>]
-    let ``a raw socket's connect is refused as unmeasured`` (platform : SimulatedUnixPlatform) : unit =
-        let raw =
+    let ``a seqpacket socket's connect is refused as unmeasured`` (platform : SimulatedUnixPlatform) : unit =
+        let seqPacket =
             { streamSocket None SocketPhase.Idle with
-                Kind = SocketKind.Raw
+                Kind = SocketKind.SeqPacket
             }
 
-        let fd, system = withSocket (SocketId 0L) raw (systemOn platform)
+        let fd, system = withSocket (SocketId 0L) seqPacket (systemOn platform)
 
         refusedBy fd (Some (inetFamily platform)) (Some (loopback 5000us)) system
-        |> shouldEqual (ConnectRefusal.UnmeasuredKind (SocketId 0L, SocketKind.Raw))
+        |> shouldEqual (ConnectRefusal.UnmeasuredKind (SocketId 0L, SocketKind.SeqPacket))
 
     [<TestCaseSource(nameof platforms)>]
     let ``an unbound connect to a local address other than 127.0.0.1 is refused``

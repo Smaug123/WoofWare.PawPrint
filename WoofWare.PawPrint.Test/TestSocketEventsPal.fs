@@ -459,7 +459,7 @@ module TestSocketEventsPal =
                                 Kind = kind
                                 Protocol =
                                     match domain, kind with
-                                    | SocketDomain.Unix, _ -> SocketProtocol.Unspecified
+                                    | SocketDomain.Unix, _ -> SocketProtocol.Default
                                     | _, SocketKind.Stream -> SocketProtocol.Tcp
                                     | _, _ -> SocketProtocol.Udp
                                 Binding = None
@@ -495,9 +495,9 @@ module TestSocketEventsPal =
 
         let adders =
             [
-                addSocket SocketDomain.InterNetwork SocketKind.Stream SocketPhase.Idle
+                addSocket SocketDomain.Inet SocketKind.Stream SocketPhase.Idle
                 addSocket
-                    SocketDomain.InterNetwork
+                    SocketDomain.Inet
                     SocketKind.Stream
                     (SocketPhase.Listening
                         {
@@ -505,18 +505,18 @@ module TestSocketEventsPal =
                             Queue = []
                         })
                 addSocket
-                    SocketDomain.InterNetwork
+                    SocketDomain.Inet
                     SocketKind.Stream
                     (SocketPhase.Listening
                         {
                             Backlog = 8
                             Queue = [ ConnectionId 9L ]
                         })
-                addSocket SocketDomain.InterNetwork SocketKind.Stream (SocketPhase.Established connection)
-                addSocket SocketDomain.InterNetwork SocketKind.Stream (SocketPhase.Established connection)
-                addSocket SocketDomain.InterNetwork SocketKind.Stream (SocketPhase.Established (ConnectionId 8L))
-                addSocket SocketDomain.InterNetwork SocketKind.Stream SocketPhase.RefusedPendingDelivery
-                addSocket SocketDomain.InterNetwork SocketKind.Datagram SocketPhase.Idle
+                addSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established connection)
+                addSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established connection)
+                addSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established (ConnectionId 8L))
+                addSocket SocketDomain.Inet SocketKind.Stream SocketPhase.RefusedPendingDelivery
+                addSocket SocketDomain.Inet SocketKind.Datagram SocketPhase.Idle
                 addSocket SocketDomain.Unix SocketKind.Stream SocketPhase.Idle
             ]
 

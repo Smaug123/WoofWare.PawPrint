@@ -52,7 +52,7 @@ module TestDatagramDissolve =
         : int * UnixSystem<int, string>
         =
         let fd, system =
-            UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Datagram SocketProtocol.Udp (systemOn platform)
+            NewSocket.create SocketDomain.Inet SocketKind.Datagram SocketProtocol.Udp (systemOn platform)
 
         let system =
             match bindTo with
@@ -224,11 +224,7 @@ module TestDatagramDissolve =
 
         let forge (platform : SimulatedUnixPlatform) (phase : SocketPhase) : UnixSystem<int, string> =
             let fd, system =
-                UnixSocket.createSocket
-                    SocketDomain.InterNetwork
-                    SocketKind.Datagram
-                    SocketProtocol.Udp
-                    (systemOn platform)
+                NewSocket.create SocketDomain.Inet SocketKind.Datagram SocketProtocol.Udp (systemOn platform)
 
             let socketId = socketOf fd system
 
@@ -265,7 +261,7 @@ module TestDatagramDissolve =
         let _, system = halfBound ()
 
         let other, system =
-            UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Datagram SocketProtocol.Udp system
+            NewSocket.create SocketDomain.Inet SocketKind.Datagram SocketProtocol.Udp system
 
         match UnixSocket.bind other UserBuffer.Mapped 16 inetFamily (Some (endpoint loopback 0us)) system with
         | Ok (BindAnswer.Bound actual, after) ->

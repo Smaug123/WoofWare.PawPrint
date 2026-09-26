@@ -73,7 +73,7 @@ module TestSocketWait =
     let private withSocket (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         let socket =
             {
-                Domain = SocketDomain.InterNetwork
+                Domain = SocketDomain.Inet
                 Kind = SocketKind.Stream
                 Protocol = SocketProtocol.Tcp
                 Binding = None

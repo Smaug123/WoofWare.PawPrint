@@ -247,7 +247,7 @@ module TestPollEventsPal =
                 Kind = kind
                 Protocol =
                     match domain, kind with
-                    | SocketDomain.Unix, _ -> SocketProtocol.Unspecified
+                    | SocketDomain.Unix, _ -> SocketProtocol.Default
                     | _, SocketKind.Stream -> SocketProtocol.Tcp
                     | _, _ -> SocketProtocol.Udp
                 Binding = None
@@ -358,13 +358,13 @@ module TestPollEventsPal =
                 fun system -> -1, system
                 withFile FileAccessMode.ReadOnly
                 withFile FileAccessMode.ReadWrite
-                withSocket SocketDomain.InterNetwork SocketKind.Stream SocketPhase.Idle
-                withSocket SocketDomain.InterNetworkV6 SocketKind.Stream SocketPhase.Idle
+                withSocket SocketDomain.Inet SocketKind.Stream SocketPhase.Idle
+                withSocket SocketDomain.Inet6 SocketKind.Stream SocketPhase.Idle
                 withSocket SocketDomain.Unix SocketKind.Stream SocketPhase.Idle
-                withSocket SocketDomain.InterNetwork SocketKind.Datagram SocketPhase.Idle
+                withSocket SocketDomain.Inet SocketKind.Datagram SocketPhase.Idle
                 withSocket SocketDomain.Unix SocketKind.Datagram SocketPhase.Idle
                 withSocket
-                    SocketDomain.InterNetwork
+                    SocketDomain.Inet
                     SocketKind.Datagram
                     (SocketPhase.DatagramPeer
                         {
@@ -372,7 +372,7 @@ module TestPollEventsPal =
                             Port = 5555us
                         })
                 withSocket
-                    SocketDomain.InterNetwork
+                    SocketDomain.Inet
                     SocketKind.Stream
                     (SocketPhase.Listening
                         {
@@ -380,17 +380,17 @@ module TestPollEventsPal =
                             Queue = []
                         })
                 withSocket
-                    SocketDomain.InterNetwork
+                    SocketDomain.Inet
                     SocketKind.Stream
                     (SocketPhase.Listening
                         {
                             Backlog = 1
                             Queue = [ ConnectionId 9L ]
                         })
-                withSocket SocketDomain.InterNetwork SocketKind.Stream (SocketPhase.Established connection)
-                withSocket SocketDomain.InterNetwork SocketKind.Stream (SocketPhase.EstablishedPendingReport connection)
-                withSocket SocketDomain.InterNetwork SocketKind.Stream (SocketPhase.Established (ConnectionId 8L))
-                withSocket SocketDomain.InterNetwork SocketKind.Stream SocketPhase.RefusedPendingDelivery
+                withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established connection)
+                withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.EstablishedPendingReport connection)
+                withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established (ConnectionId 8L))
+                withSocket SocketDomain.Inet SocketKind.Stream SocketPhase.RefusedPendingDelivery
             ]
 
         let fds, system =

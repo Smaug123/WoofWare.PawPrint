@@ -391,12 +391,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Linked from WoofWare.PosixKernel.Test rather than held here: the
-         measurement is a fact about the simulated kernel, and both suites
-         reading one copy is what stops them drifting onto different rows. The
-         `Link` keeps the manifest resource name this project already uses. -->
-    <EmbeddedResource Include="..\WoofWare.PosixKernel.Test\socketMatrix\*.tsv"
-                      Link="socketMatrix\%(Filename)%(Extension)" />
+    <!-- What `SystemNative_Socket` answered for every PAL triple, measured per
+         flavour: the shim's screens and then `socket(2)`. `TestSocketCreation`
+         holds the composition to it; the kernel's own sweep, in raw numbers,
+         is WoofWare.PosixKernel.Test/socketSyscall. -->
+    <EmbeddedResource Include="socketMatrix\*.tsv" />
     <EmbeddedResource Include="sourcesPure\*.cs" />
     <EmbeddedResource Include="sourcesImpure\*.cs" />
     <EmbeddedResource Include="sourcesSignalTerminated\*.cs" />

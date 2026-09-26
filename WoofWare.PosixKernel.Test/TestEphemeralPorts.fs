@@ -44,7 +44,7 @@ module TestEphemeralPorts =
         }
 
     let private newStream (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp system
+        NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
     let private bindWithReuse
         (reuseAddress : bool)

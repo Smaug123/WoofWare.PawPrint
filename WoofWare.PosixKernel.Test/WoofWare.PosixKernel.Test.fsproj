@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <Compile Include="HostPlatform.fs" />
+    <Compile Include="NewSocket.fs" />
     <Compile Include="TestDarwinReleaseAgainstHost.fs" />
     <Compile Include="TestGcHeapHardLimit.fs" />
     <Compile Include="HostFileSystemType.fs" />
@@ -70,7 +71,9 @@
     <Compile Include="TestBindingAgainstHost.fs" />
     <Compile Include="TestArchitectureFacts.fs" />
     <Compile Include="TestArchitectureAgainstHost.fs" />
-    <Compile Include="TestCreatableSockets.fs" />
+    <Compile Include="SocketSweep.fs" />
+    <Compile Include="TestSocketSyscall.fs" />
+    <Compile Include="TestSocketSyscallAgainstHost.fs" />
     <Compile Include="TestAccept.fs" />
     <Compile Include="TestBind.fs" />
     <Compile Include="TestSockOpt.fs" />
@@ -92,11 +95,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- What `socket(2)` really answered, measured per flavour. It lives here
-         rather than beside its first consumer because it is a fact about the
-         kernel this library simulates; `WoofWare.PawPrint.Test` links the same
-         files, so the two suites cannot drift onto different measurements. -->
-    <EmbeddedResource Include="socketMatrix\*.tsv" />
+    <!-- What `socket(2)` answered for raw arguments, measured per flavour by
+         docs/plans/2026-08-23-posix-kernel-extraction/socket-arguments.c.
+         `TestSocketSyscall` holds `UnixSocket.socket` to it. -->
+    <EmbeddedResource Include="socketSyscall\*.tsv" />
   </ItemGroup>
 
   <ItemGroup>

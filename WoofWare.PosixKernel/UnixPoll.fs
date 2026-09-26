@@ -46,21 +46,22 @@ module LinuxReadiness =
             // WRBAND is the one bit that depends on more than the level.
             // Measured, it rides with OUT on UDP (IPv4 and IPv6, with and
             // without a peer) and on every Unix-domain socket (stream,
-            // datagram, raw and seqpacket, fresh), and never on TCP (idle,
+            // datagram, seqpacket, and Linux's raw request, which makes a
+            // datagram socket; all fresh), and never on TCP (idle,
             // listening, established with the peer alive or gone, refused) --
             // `tcp_poll` sets OUT|WRNORM, where `datagram_poll` and the
             // Unix-domain handlers set OUT|WRNORM|WRBAND.
             let writeBand =
                 match socket.Domain, socket.Kind with
                 | SocketDomain.Unix, _ -> true
-                | SocketDomain.InterNetwork, SocketKind.Datagram
-                | SocketDomain.InterNetworkV6, SocketKind.Datagram -> true
-                | SocketDomain.InterNetwork, SocketKind.Stream
-                | SocketDomain.InterNetworkV6, SocketKind.Stream -> false
-                | SocketDomain.InterNetwork, (SocketKind.Raw | SocketKind.SeqPacket)
-                | SocketDomain.InterNetworkV6, (SocketKind.Raw | SocketKind.SeqPacket) ->
+                | SocketDomain.Inet, SocketKind.Datagram
+                | SocketDomain.Inet6, SocketKind.Datagram -> true
+                | SocketDomain.Inet, SocketKind.Stream
+                | SocketDomain.Inet6, SocketKind.Stream -> false
+                | SocketDomain.Inet, SocketKind.SeqPacket
+                | SocketDomain.Inet6, SocketKind.SeqPacket ->
                     failwith
-                        $"LinuxReadiness.ofDescription: socket %O{socketId} is %O{socket.Kind} in %O{socket.Domain}, which this kernel never creates (an IP raw socket needs CAP_NET_RAW, and nothing here creates SCTP), so what a waiter reports for it is unmeasured (this is a bug in the caller's state construction)."
+                        $"LinuxReadiness.ofDescription: socket %O{socketId} is %O{socket.Kind} in %O{socket.Domain}, which this kernel never creates (nothing here creates SCTP), so what a waiter reports for it is unmeasured (this is a bug in the caller's state construction)."
 
             // No modelled socket presents PRI, RDBAND or MSG. Nor
             // POLL_BUSY_LOOP (0x8000), which a socket's handler adds only

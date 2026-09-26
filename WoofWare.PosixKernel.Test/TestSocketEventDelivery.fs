@@ -104,7 +104,7 @@ module TestSocketEventDelivery =
 
     let private addStream (kernel : UnixSystem<int, string>) : int * SocketId * UnixSystem<int, string> =
         let fd, kernel =
-            UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp kernel
+            NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp kernel
 
         let socketId =
             match FileDescriptorRegistry.tryFind fd kernel.Process.FileDescriptors with

@@ -1462,10 +1462,10 @@ module TestFileDescriptorRegistry =
     /// against tables `Unchecked.ofParts` built by hand, and this is what
     /// connects it to the allocation path.
     ///
-    /// Identities are minted here rather than by `createSocket`, which no longer
-    /// mints them — the counter lives beside the socket table in
-    /// `EmulatedKernel`. That the *kernel* keeps both tables in step under the
-    /// same interleaving is `TestEmulatedKernelSockets`' own random-mix
+    /// Identities are minted here rather than by `createSocket`, which takes
+    /// them from its caller — the counter lives beside the socket table in
+    /// `UnixMachineState`. That `UnixSocket.socket` keeps both tables in step
+    /// under the same interleaving is `TestSocketTable`'s own random-mix
     /// property.
     [<Test>]
     let ``a random mix of allocations and closes keeps the table sound`` () : unit =
@@ -1526,8 +1526,8 @@ module TestFileDescriptorRegistry =
                     // counter would not be saved by them all being equal.
                     let domain =
                         match rng.Next 3 with
-                        | 0 -> SocketDomain.InterNetwork
-                        | 1 -> SocketDomain.InterNetworkV6
+                        | 0 -> SocketDomain.Inet
+                        | 1 -> SocketDomain.Inet6
                         | _ -> SocketDomain.Unix
 
                     let kind =
@@ -1537,7 +1537,7 @@ module TestFileDescriptorRegistry =
                             SocketKind.Datagram
 
                     // The triple no longer reaches the registry at all, but it
-                    // is still drawn: `EmulatedKernel.createSocket` is what
+                    // is still drawn: `UnixSocket.socket` is what
                     // carries it to the socket table, and the kernel-level
                     // property is what asserts what becomes of it there.
                     ignore<SocketDomain * SocketKind> (domain, kind)
