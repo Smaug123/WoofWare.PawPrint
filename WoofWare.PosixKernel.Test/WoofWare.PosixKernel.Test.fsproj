@@ -43,6 +43,7 @@
     <Compile Include="TestDirectorySize.fs" />
     <Compile Include="TestWithFileSystemAndCurrentDirectory.fs" />
     <Compile Include="TestInodeLifetime.fs" />
+    <Compile Include="ErrnoHeaders.fs" />
     <Compile Include="TestUnixError.fs" />
     <Compile Include="TestUnixByteString.fs" />
     <Compile Include="TestUnixPath.fs" />
