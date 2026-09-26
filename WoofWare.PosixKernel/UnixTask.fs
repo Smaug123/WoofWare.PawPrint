@@ -62,7 +62,7 @@ type ParkedSocketWait =
 /// waiting to lock, and how.
 /// </summary>
 /// <remarks>
-/// This is exactly the payload of the <c>WakeCondition</c> that parked it.
+/// This is exactly the payload of the <c>WakePrimitive.FlockGrantable</c> that parked it.
 /// </remarks>
 type ParkedFlock =
     {
@@ -102,6 +102,33 @@ type ParkedSyscall =
     | SocketWait of ParkedSocketWait
     | Flock of ParkedFlock
 
+/// Where one park stands in the order every park on this machine was made in.
+///
+/// Minted from `UnixMachineState.NextParkOrdinal` by `UnixWait.park`, so of any
+/// two tasks parked at once, the one parked earlier holds the smaller ordinal.
+/// A kernel that wakes one waiter of several reads this to decide which.
+type ParkOrdinal =
+    | ParkOrdinal of int64
+
+    /// A human-readable description of the ordinal.
+    override this.ToString () =
+        match this with
+        | ParkOrdinal.ParkOrdinal i -> $"<park #%i{i}>"
+
+/// One task's park: the syscall it is blocked in, and where the park stands in
+/// the order parks were made in.
+type TaskPark =
+    {
+        /// The syscall the task is blocked in, with the state it was entered with.
+        Syscall : ParkedSyscall
+        /// When the task parked, relative to every other park.
+        ///
+        /// A re-park (a woken waiter that finds its condition gone and sleeps
+        /// again) mints a fresh one, as a real kernel re-queues such a waiter
+        /// behind the waiters already there.
+        Ordinal : ParkOrdinal
+    }
+
 /// What the emulated kernel knows about one task — one scheduling entity, what
 /// `gettid(2)` names.
 ///
@@ -130,7 +157,8 @@ type UnixTaskState =
         /// recycle thread ids, but a recycled one here would let a stale owner
         /// identity recorded by a user-space lock be mistaken for a live owner.
         OsThreadId : OsThreadId
-        /// The syscall this task is blocked in, if it is blocked in one.
+        /// The syscall this task is blocked in, and where that park stands in park
+        /// order, if it is blocked in one.
         ///
         /// A real kernel holds a blocked task's in-flight syscall arguments on
         /// its stack; this is that. Three readers, and they must agree, which is
@@ -145,7 +173,7 @@ type UnixTaskState =
         /// Every payload holds kernel objects by *identity*, never by descriptor
         /// number: a sleeping task keeps the object rather than the number, and
         /// descriptor numbers are reused as soon as they are free.
-        Parked : ParkedSyscall option
+        Parked : TaskPark option
     }
 
 /// The tasks a simulated process owns, by whatever a client uses to name one.
@@ -205,10 +233,13 @@ module UnixTaskTable =
         (tasks : Map<'Task, UnixTaskState>)
         : ParkedSyscall option
         =
+        (get name tasks).Parked |> Option.map (fun park -> park.Syscall)
+
+    /// The park `name` is in, with its place in park order, if it is parked.
+    let parkOf<'Task when 'Task : comparison> (name : 'Task) (tasks : Map<'Task, UnixTaskState>) : TaskPark option =
         (get name tasks).Parked
 
-    /// Record that `name` has parked in a syscall, or (with `None`) that it is
-    /// no longer in one.
+    /// Record that `name` is in `park`.
     ///
     /// Refuses to replace a park of one syscall with a park of another. A task
     /// runs no guest code between a wake and its re-entry into the syscall it
@@ -223,28 +254,44 @@ module UnixTaskTable =
     /// with less of itself left to run is the obvious future instance — and that
     /// is the syscall's business rather than this table's.
     ///
-    /// Clients park in an `flock` through `UnixDescriptor.parkFlock` rather than
-    /// through this, which is what ties that record to the condition that
-    /// produced it; this is how any park is cleared, and how `parkFlock` writes.
-    let withParked<'Task when 'Task : comparison>
+    /// Internal so that `UnixWait.park`, which mints the ordinal, is the one way a
+    /// park is written.
+    let internal withPark<'Task when 'Task : comparison>
         (name : 'Task)
-        (parked : ParkedSyscall option)
+        (park : TaskPark)
         (tasks : Map<'Task, UnixTaskState>)
         : Map<'Task, UnixTaskState>
         =
         let existing = get name tasks
 
-        match existing.Parked, parked with
-        | Some (ParkedSyscall.SocketWait _), Some (ParkedSyscall.Flock _)
-        | Some (ParkedSyscall.Flock _), Some (ParkedSyscall.SocketWait _) ->
+        match existing.Parked |> Option.map (fun park -> park.Syscall), park.Syscall with
+        | Some (ParkedSyscall.SocketWait _), ParkedSyscall.Flock _
+        | Some (ParkedSyscall.Flock _), ParkedSyscall.SocketWait _ ->
             failwith
-                $"UnixTaskTable.withParked: task %O{name} is parked in %A{existing.Parked} and something is parking it in %A{parked} without clearing the first. A task blocks in one syscall at a time, so the earlier park's completion failed to clear its record."
-        | _ -> ()
+                $"UnixTaskTable.withPark: task %O{name} is parked in %A{existing.Parked} and something is parking it in %A{park} without clearing the first. A task blocks in one syscall at a time, so the earlier park's completion failed to clear its record."
+        | None, _
+        | Some (ParkedSyscall.SocketWait _), ParkedSyscall.SocketWait _
+        | Some (ParkedSyscall.Flock _), ParkedSyscall.Flock _ -> ()
 
         Map.add
             name
             { existing with
-                Parked = parked
+                Parked = Some park
+            }
+            tasks
+
+    /// Record that `name` is no longer parked: its syscall has finished.
+    let unpark<'Task when 'Task : comparison>
+        (name : 'Task)
+        (tasks : Map<'Task, UnixTaskState>)
+        : Map<'Task, UnixTaskState>
+        =
+        let existing = get name tasks
+
+        Map.add
+            name
+            { existing with
+                Parked = None
             }
             tasks
 

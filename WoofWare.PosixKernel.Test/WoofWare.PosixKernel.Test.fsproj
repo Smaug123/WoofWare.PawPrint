@@ -19,6 +19,8 @@
     <Compile Include="TestUnixTaskTable.fs" />
     <Compile Include="CredentialsGen.fs" />
     <Compile Include="TestCredentials.fs" />
+    <Compile Include="TestWakeCondition.fs" />
+    <Compile Include="TestUnixWait.fs" />
     <Compile Include="TestUnixProcessState.fs" />
     <Compile Include="TestClock.fs" />
     <Compile Include="TestClockAgainstHost.fs" />

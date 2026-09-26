@@ -34,6 +34,13 @@ type UnixMachineState =
         /// commits, so a failed `epoll_ctl` leaves the kernel exactly as it
         /// found it.
         NextSocketEventRegistrationOrdinal : int64
+        /// The ordinal the next park of any task records as its
+        /// `TaskPark.Ordinal`. Monotonic, and bumped only by `UnixWait.park`.
+        ///
+        /// The machine's rather than a process's, because what a kernel orders
+        /// by park is a wait queue on a kernel object, and processes can share
+        /// one.
+        NextParkOrdinal : ParkOrdinal
         /// The port a `bind(2)` of port 0 will try first.
         ///
         /// A counter rather than a draw from the seeded PRNG. Which port an

@@ -51,8 +51,9 @@ A syscall that would block does not block: `step`, which takes the calling task,
 `SyscallOutcome.WouldBlock` carrying a `WakeCondition`, and the state that comes back records the task
 as parked on it (`UnixTaskTable.parkedFor`). That record is what `close` reads to refuse destroying a
 description a task is waiting on, and what `UnixDescriptor.flockAcquire` finishes the call from.
-`WakeCondition.isSatisfied` answers whether the condition holds yet, so a client's scheduler can poll it;
-the state that comes back with a `WouldBlock` is the state after whatever the call did before sleeping,
+`WakeCondition.satisfied` answers which parts of the condition hold yet, and `UnixWait.wakes` which of the
+tasks a client holds asleep should wake, so a client's scheduler can poll them; `UnixWait.deadlines` is how far
+it may advance the clock while nothing is runnable. The state that comes back with a `WouldBlock` is the state after whatever the call did before sleeping,
 which is why it is returned rather than discarded.
 This library has no scheduler and does not want one.
 
