@@ -102,35 +102,6 @@ module DirectoryEntryKind =
         | InodeContent.Directory _ -> DirectoryEntryKind.Directory
         | InodeContent.Symlink _ -> DirectoryEntryKind.Symlink
 
-/// What `opendir(3)` answers.
-[<RequireQualifiedAccess>]
-type OpenDirAnswer =
-    /// The stream to pass back to `readdir` and `closedir`.
-    ///
-    /// A minted identity rather than an address: a real `opendir` answers a
-    /// `DIR*`, which is a pointer into the caller's own address space, and this
-    /// kernel has no addresses. A client that hands its caller a pointer keeps
-    /// the mapping from that pointer to this identity.
-    | Opened of stream : DirectoryStreamId
-    /// The call returns NULL and the caller stores `error` wherever its libc
-    /// keeps errno.
-    | Failed of error : UnixError
-
-/// One entry of a directory stream, as facts rather than as a `struct dirent`.
-[<RequireQualifiedAccess>]
-type ReadDirAnswer =
-    /// The stream is exhausted. A real `readdir` answers NULL, and leaves errno
-    /// alone — which is why the C zeroes it before the call, so that it can tell
-    /// this from a failure afterwards.
-    | EndOfStream
-    /// `name` is the bytes `readdir(3)` puts in `d_name`, without a terminator:
-    /// terminating is the client's business, its buffer being the one with a
-    /// size. `.` and `..` are entries like any other and are reported here.
-    | Entry of name : ImmutableArray<byte> * kind : DirectoryEntryKind
-    /// `readdir` returns NULL with `error` in errno. Only a process that closed
-    /// or replaced the stream's descriptor can reach this.
-    | Failed of error : UnixError
-
 /// One entry of a directory, as `getdents(2)` reports it: the facts in a
 /// `struct linux_dirent64` or a Darwin `struct direntry`, without either's
 /// layout.
@@ -665,102 +636,6 @@ module UnixNamespace =
             }
 
         Ok (ReadDirectoryAnswer.Entry record, withPosition (DirectoryPosition.Cursor next) system)
-
-    /// `opendir(3)`: open `path` as `open(O_RDONLY|O_DIRECTORY|O_CLOEXEC)`
-    /// does, and start a stream over the descriptor.
-    ///
-    /// Answers a minted `DirectoryStreamId`, not a `DIR*`: see
-    /// `OpenDirAnswer.Opened`. A client that materialises a pointer for its
-    /// caller records the mapping itself, and must, because
-    /// `VirtualFileSystem.checkInvariants` refuses a state in which the two
-    /// disagree.
-    ///
-    /// The descriptor is an ordinary one, which a later `open` sees in its
-    /// numbering, and it is what the stream reads through.
-    ///
-    /// Never refused: every outcome is a stream or an errno.
-    let opendir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (path : UnixPath)
-        (system : UnixSystem<'Task, 'Handler>)
-        : OpenDirAnswer * UnixSystem<'Task, 'Handler>
-        =
-        let flags : OpenFlags =
-            {
-                Access = FileAccessMode.ReadOnly
-                Create = false
-                Exclusive = false
-                Truncate = false
-                NoFollow = false
-                CloseOnExec = true
-                Synchronous = false
-                Directory = true
-            }
-
-        match openPath flags path 0 system with
-        | SyscallAnswer.Failed error, system -> OpenDirAnswer.Failed error, system
-        | SyscallAnswer.Completed fd, system ->
-
-        let fd = int fd
-
-        let inode =
-            match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
-            | Some (OpenFileTarget.Directory (inode, _)) -> inode
-            | other ->
-                failwith
-                    $"UnixNamespace.opendir: an O_DIRECTORY open answered fd %d{fd}, which names %O{other} rather than a directory (this is a bug in this library)."
-
-        let id = system.Process.NextDirectoryStreamId
-        let (DirectoryStreamId raw) = id
-
-        let stream : DirectoryStream =
-            {
-                Fd = fd
-                Inode = inode
-            }
-
-        OpenDirAnswer.Opened id,
-        { system with
-            Process =
-                { system.Process with
-                    DirectoryStreams = Map.add id stream system.Process.DirectoryStreams
-                    NextDirectoryStreamId = DirectoryStreamId (raw + 1L)
-                }
-        }
-
-    /// `readdir(3)`: hand back the next entry of `stream`, read through its
-    /// descriptor.
-    ///
-    /// As glibc does, a directory `rmdir` has removed is end-of-stream rather
-    /// than the ENOENT the kernel answers. Any other failure is one a process
-    /// can only cause by closing or replacing the stream's descriptor behind
-    /// its back, and is reported as `readdir` would report it.
-    ///
-    /// A stream this kernel never issued is a caller bug rather than an errno --
-    /// a real libc calls that undefined behaviour -- and so is refused loudly,
-    /// as is a descriptor `lseek` moved to a position this kernel does not
-    /// model (see `ReadDirectoryRefusal`).
-    let readdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (stream : DirectoryStreamId)
-        (system : UnixSystem<'Task, 'Handler>)
-        : ReadDirAnswer * UnixSystem<'Task, 'Handler>
-        =
-        let current =
-            match Map.tryFind stream system.Process.DirectoryStreams with
-            | Some current -> current
-            | None ->
-                failwith
-                    $"UnixNamespace.readdir: %O{stream} is not a directory stream this kernel issued. A real libc calls passing an unissued DIR* undefined behaviour rather than reporting an errno, so there is nothing to answer (this is a bug in the caller)."
-
-        match readDirectoryEntry current.Fd system with
-        | Error refusal ->
-            failwith
-                $"UnixNamespace.readdir: %O{stream} reads through fd %d{current.Fd}, and %s{ReadDirectoryRefusal.describe refusal}"
-        | Ok (ReadDirectoryAnswer.EndOfDirectory, system) -> ReadDirAnswer.EndOfStream, system
-        | Ok (ReadDirectoryAnswer.Failed UnixError.ENOENT, system) -> ReadDirAnswer.EndOfStream, system
-        | Ok (ReadDirectoryAnswer.Failed error, system) -> ReadDirAnswer.Failed error, system
-        | Ok (ReadDirectoryAnswer.Entry record, system) ->
-            ReadDirAnswer.Entry (UnixByteString.toBytes (DirectoryStreamName.toByteString record.Name), record.Kind),
-            system
 
     /// `mkdir(2)`: bind a new directory at `path`.
     ///

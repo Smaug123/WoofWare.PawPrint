@@ -456,59 +456,35 @@ module TestInodeLifetime =
 
     // ------------------------------------------------------------- invariants
 
-    // ------------------------------------------------- open directory streams
+    // ------------------------------------------ open directory descriptions
 
-    /// A stream over `/outer/inner`, and the inode it is over.
-    let private streaming
-        (kernel : UnixSystem<int, string>)
-        : DirectoryStreamId * InodeNumber * UnixSystem<int, string>
-        =
+    /// An `opendir`-style open of `/outer/inner`, and the inode it is on.
+    let private openedDirectory (kernel : UnixSystem<int, string>) : int * InodeNumber * UnixSystem<int, string> =
         let inner = inodeOf kernel "/outer/inner"
 
-        match UnixNamespace.opendir (UnixPath.parseOrFail "test" "/outer/inner") kernel with
-        | OpenDirAnswer.Opened id, system -> id, inner, system
+        let flags : OpenFlags =
+            {
+                Access = FileAccessMode.ReadOnly
+                Create = false
+                Exclusive = false
+                Truncate = false
+                NoFollow = false
+                CloseOnExec = true
+                Synchronous = false
+                Directory = true
+            }
+
+        match UnixNamespace.openPath flags (UnixPath.parseOrFail "test" "/outer/inner") 0 kernel with
+        | SyscallAnswer.Completed fd, system -> int fd, inner, system
         | other -> failwith $"could not open the directory: %O{other}"
 
-    /// `closedir`'s bookkeeping half. Written out because the library has no
-    /// `closedir` to call: `opendir` mints a stream and nothing here removes
-    /// one, so every client is currently doing this for itself.
-    let private forgetStream (id : DirectoryStreamId) (kernel : UnixSystem<int, string>) : UnixSystem<int, string> =
-        { kernel with
-            Process =
-                { kernel.Process with
-                    DirectoryStreams = Map.remove id kernel.Process.DirectoryStreams
-                }
-        }
-
     [<Test>]
-    let ``an open stream holds its directory even with its descriptor gone`` () : unit =
-        // The descriptor already holds it, so this adds nothing while the stream
-        // is intact. It is here for the guest that closes the stream's own
-        // descriptor out from under it — undefined behaviour on a real libc, but
-        // a guessable fd number away here. Without it the next `readdir` would
-        // reach a reaped inode and take the interpreter down.
+    let ``a descriptor keeps an rmdir'd directory alive, and closing it reaps`` () : unit =
         let kernel = kernelAtRoot ()
-        let id, inner, kernel = streaming kernel
-
-        let kernel = closed kernel.Process.DirectoryStreams.[id].Fd kernel
-
-        UnixProcessState.heldInodes kernel.Process
-        |> Set.contains inner
-        |> shouldEqual true
-
-        // ...and it really was the stream that held it: forget the stream and
-        // the inode is unheld.
-        UnixProcessState.heldInodes (forgetStream id kernel).Process
-        |> Set.contains inner
-        |> shouldEqual false
-
-    [<Test>]
-    let ``a stream keeps an rmdir'd directory alive, and closing it reaps`` () : unit =
-        let kernel = kernelAtRoot ()
-        let id, inner, kernel = streaming kernel
+        let fd, inner, kernel = openedDirectory kernel
 
         // `rmdir /outer/inner`, which succeeds against a real kernel because the
-        // stream is not a name.
+        // descriptor is not a name.
         let removed, kernel = unbound "/outer" "inner" kernel
         removed |> shouldEqual inner
 
@@ -518,16 +494,7 @@ module TestInodeLifetime =
         VirtualFileSystem.isOrphanedDirectory inner kernel.Machine.FileSystem
         |> shouldEqual true
 
-        // And the orphan answers end-of-stream at once, dots included: probed on
-        // both kernels, `opendir` then `rmdir` then `readdir` gives NULL.
-        VirtualFileSystem.nextDirectoryEntry inner DirectoryCursor.Start kernel.Machine.FileSystem
-        |> shouldEqual None
-
-        // `closedir`: forget the stream, then close the descriptor under it.
-        // That order is what makes the reap happen — `heldInodes` counts the
-        // stream among the things holding the inode.
-        let fd = kernel.Process.DirectoryStreams.[id].Fd
-        let kernel = forgetStream id kernel |> closed fd
+        let kernel = closed fd kernel
 
         contains inner kernel |> shouldEqual false
 

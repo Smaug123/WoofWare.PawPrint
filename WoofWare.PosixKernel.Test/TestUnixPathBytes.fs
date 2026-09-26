@@ -79,18 +79,19 @@ module TestUnixPathBytes =
                 )
                 (UnixNamespace.mkdir (pathOf parent) 0o777 linux |> completed)
 
-        let stream, system =
-            match UnixNamespace.opendir (pathOf parent) system with
-            | OpenDirAnswer.Opened stream, system -> stream, system
-            | other -> failwith $"expected a stream, got %A{other}"
+        let fd, system =
+            match DirectoryReading.openDirectory (pathOf parent) system with
+            | Ok fd, system -> fd, system
+            | Error error, _ -> failwith $"expected a directory, got %O{error}"
 
-        let rec drain (system : UnixSystem<int, string>) (acc : byte list list) : byte list list =
-            match UnixNamespace.readdir stream system with
-            | ReadDirAnswer.EndOfStream, _ -> acc
-            | ReadDirAnswer.Entry (name, _), system -> drain system (List.ofSeq name :: acc)
-            | ReadDirAnswer.Failed error, _ -> failwith $"readdir failed with %O{error}"
+        let records, _ = DirectoryReading.drain fd system
 
-        drain system []
+        records
+        |> List.map (fun record ->
+            DirectoryStreamName.toByteString record.Name
+            |> UnixByteString.toBytes
+            |> List.ofSeq
+        )
         |> List.sort
         |> shouldEqual (List.sort ([ [ byte '.' ] ; [ byte '.' ; byte '.' ] ] @ names))
 

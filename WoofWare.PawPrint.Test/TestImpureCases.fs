@@ -487,11 +487,11 @@ module TestImpureCases =
     /// sound afterwards: the directory's inode had nothing left holding it, so
     /// it must have been reaped rather than left unreachable from the root.
     ///
-    /// Not a fact any guest can read. Without it, a `CloseDir` that reaped only
-    /// through `UnixDescriptor.close` would pass every other assertion in this slice, because
-    /// every other path has a live descriptor to reap through.
+    /// Not a fact any guest can read. Without it, a `CloseDir` that left the
+    /// `DIR*` bound, or a descriptor that kept holding the directory after the
+    /// guest closed it, would pass every other assertion in this slice.
     let private assertClosedFdLeftNoOrphan (state : IlMachineState) : unit =
-        state.Kernel.DirectoryStreams |> shouldEqual Map.empty
+        state.Kernel.DirectoryStreamFds |> shouldEqual Map.empty
 
         VirtualFileSystem.checkInvariants Set.empty state.Kernel.FileSystem
         |> shouldEqual []
@@ -594,7 +594,7 @@ module TestImpureCases =
     let private assertEnumerationClosedEverything (state : IlMachineState) : unit =
         let kernel = state.Kernel
 
-        kernel.DirectoryStreams |> shouldEqual Map.empty
+        kernel.DirectoryStreamFds |> shouldEqual Map.empty
 
         // The three inherited standard streams and nothing else.
         FileDescriptorRegistry.fds kernel.FileDescriptors |> Map.count |> shouldEqual 3

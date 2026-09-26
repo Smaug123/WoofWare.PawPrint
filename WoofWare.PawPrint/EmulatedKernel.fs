@@ -715,24 +715,25 @@ type EmulatedKernel =
         /// the same "fixed for the whole recorded run" reason as the other
         /// kernel knobs).
         OptimalMaxSpinWaitsPerSpinIteration : int
-        /// Which stream each guest-held `DIR*` names.
+        /// Which descriptor each guest-held `DIR*` reads through.
         ///
         /// An absent key is not a default and must never be read as one: it means
         /// the guest passed a `DIR*` this kernel never issued, or one it has
         /// already closed. Both are undefined behaviour on a real libc rather
-        /// than errors it reports, so `directoryStreamId` refuses loudly.
+        /// than errors it reports, so `directoryStreamFd` refuses loudly.
         ///
-        /// This is PawPrint's choice of how to represent a stream to its guest —
-        /// the address of a native block, whose bytes are also the `d_name`
-        /// buffer each `readdir` refills — so it is separate from
-        /// `DirectoryStreams`, which is kernel state a POSIX simulator owns
-        /// whatever its client hands out. A second client could key its own
-        /// streams on anything at all.
+        /// A `DIR*` is PawPrint's to represent — here the address of a native
+        /// block, whose bytes are also the `d_name` buffer each `readdir`
+        /// refills — and the kernel underneath knows only the descriptor, whose
+        /// open file description holds the position.
         ///
-        /// The two are maintained together by `withDirectoryStreamBlock` and
-        /// `withoutDirectoryStream`, and `checkInvariants` refuses a state in
-        /// which they disagree in either direction.
-        DirectoryStreamBlocks : Map<NativeMemoryBlockId, DirectoryStreamId>
+        /// Not injective, and not checked against the descriptor table: a guest
+        /// that closes a stream's descriptor behind its back and then opens
+        /// another directory gets the same number back, so two `DIR*`s can name
+        /// one descriptor, and one can name a descriptor that is closed. Both are
+        /// undefined behaviour on a real libc, which reads through whatever the
+        /// number names by then, as `readdir` here does.
+        DirectoryStreamFds : Map<NativeMemoryBlockId, int>
     }
 
     // Forwarding members for everything `Process` now holds, so that this split
@@ -743,12 +744,6 @@ type EmulatedKernel =
     member this.Environment : UnixByteString list = this.Process.Environment
     member this.CurrentDirectoryInode : InodeNumber = this.Process.CurrentDirectoryInode
     member this.ProcessPath : AbsoluteUnixPath option = this.Process.ProcessPath
-
-    member this.DirectoryStreams : Map<DirectoryStreamId, DirectoryStream> =
-        this.Process.DirectoryStreams
-
-    member this.NextDirectoryStreamId : DirectoryStreamId =
-        this.Process.NextDirectoryStreamId
 
     member this.Credentials : Credentials = this.Process.Credentials
     member this.Umask : PermissionBits = this.Process.Umask
@@ -812,17 +807,13 @@ type EmulatedKernel =
 /// keep unreachable.
 ///
 /// The system's own rules are `UnixSystemDefect`, which `System` carries. What
-/// is left here is the three things PawPrint holds that no POSIX kernel does: the
-/// native-heap blocks a guest's `DIR*` values are, the threads its tasks
-/// belong to, and the shim's signal dispatcher.
+/// is left here is the two things PawPrint holds that no POSIX kernel does: the
+/// threads its tasks belong to, and the shim's signal dispatcher.
 [<RequireQualifiedAccess>]
 type EmulatedKernelDefect =
     /// A way the POSIX system this kernel runs is itself unsound: see
     /// `UnixSystemDefect`.
     | System of defect : UnixSystemDefect<ThreadId>
-    /// A guest-held `DIR*` names a stream the stream table does not hold, so the
-    /// next `readdir` through it would crash rather than enumerate.
-    | DirectoryStreamBlockDangling of block : NativeMemoryBlockId * stream : DirectoryStreamId
     /// A thread exists with no task, so anything asking the kernel which
     /// processor it runs on or what OS thread id it reports would crash.
     | ThreadWithoutTask of thread : ThreadId
@@ -842,13 +833,6 @@ type EmulatedKernelDefect =
     /// with its record intact — and the record is precisely what tells the
     /// re-entered handler that it is a re-entry.
     | SyscallRecordWithoutWaiter of thread : ThreadId * status : ThreadStatus
-    /// The stream table holds a stream no `DIR*` names, so nothing can ever
-    /// read or close it and the directory it pins is held for the run.
-    | UnreachableDirectoryStream of stream : DirectoryStreamId
-    /// More than one `DIR*` names one stream, so closing either would take the
-    /// stream out from under the others. Two `opendir`s owe the guest
-    /// independent cursors, so this is never a state a stream table should hold.
-    | DirectoryStreamNamedTwice of stream : DirectoryStreamId * blocks : NativeMemoryBlockId list
     /// The signal dispatcher is not a task in the table, so no delivery can
     /// wake it.
     | SignalDispatcherWithoutTask of thread : ThreadId
@@ -1036,7 +1020,7 @@ module EmulatedKernel =
             NativeMemoryPool = NativeMemoryPool.empty
             NonCryptoRandomState = NonCryptoRandom.initialState
             PosixSignalShim = PosixSignalShim.initial
-            DirectoryStreamBlocks = Map.empty
+            DirectoryStreamFds = Map.empty
             Tasks = Map.empty
             LowLevelMonitors = Map.empty
             NextLowLevelMonitorId = 1
@@ -1526,66 +1510,35 @@ module EmulatedKernel =
 
 
 
-    /// The stream the `DIR*` backed by `block` names.
+    /// The descriptor the `DIR*` backed by `block` reads through.
     ///
     /// Total, and loudly partial rather than an option: every `DIR*` a guest can
     /// legally hold came out of `SystemNative_OpenDir` and has not been closed,
     /// and passing anything else to `readdir`/`closedir` is undefined behaviour
     /// on a real libc rather than an error it reports. Inventing EBADF here
     /// would answer a question no kernel answers.
-    let directoryStreamId (block : NativeMemoryBlockId) (kernel : EmulatedKernel) : DirectoryStreamId =
-        match Map.tryFind block kernel.DirectoryStreamBlocks with
-        | Some id -> id
+    let directoryStreamFd (block : NativeMemoryBlockId) (kernel : EmulatedKernel) : int =
+        match Map.tryFind block kernel.DirectoryStreamFds with
+        | Some fd -> fd
         | None ->
             failwith
-                $"EmulatedKernel.directoryStreamId: %O{block} names no open directory stream. The guest passed a DIR* this kernel never handed out, or one it has already closed — both are undefined behaviour on a real libc, which is why there is no errno to report."
-
-    /// The stream `block` names.
-    ///
-    /// Total, and loudly partial for the same reason as `directoryStreamId`.
-    let directoryStream (block : NativeMemoryBlockId) (kernel : EmulatedKernel) : DirectoryStream =
-        let id = directoryStreamId block kernel
-
-        match Map.tryFind id kernel.DirectoryStreams with
-        | Some stream -> stream
-        | None ->
-            // Not the guest's doing: `DirectoryStreamBlocks` named this id, so
-            // the two maps have drifted apart. `checkInvariants` reports the
-            // same state as `DirectoryStreamBlockDangling`.
-            failwith
-                $"EmulatedKernel.directoryStream: %O{block} names directory stream %O{id}, which the stream table does not hold. This is an interpreter bug: the two maps are maintained together."
+                $"EmulatedKernel.directoryStreamFd: %O{block} names no open directory stream. The guest passed a DIR* this kernel never handed out, or one it has already closed — both are undefined behaviour on a real libc, which is why there is no errno to report."
 
     /// Bind `block` — the native block whose address the guest holds as its
-    /// `DIR*` — to a stream `UnixNamespace.opendir` has just minted.
-    ///
-    /// The address is PawPrint's half of the stream and the identity is the
-    /// library's, so opening one takes both steps. A client that took only this
-    /// one, or only the library's, is caught rather than left to drift:
-    /// `checkInvariants` refuses a state in which the two maps disagree in
-    /// either direction.
-    let withDirectoryStreamBlock
-        (block : NativeMemoryBlockId)
-        (id : DirectoryStreamId)
-        (kernel : EmulatedKernel)
-        : EmulatedKernel
-        =
+    /// `DIR*` — to the descriptor `opendir` opened for it.
+    let withDirectoryStreamFd (block : NativeMemoryBlockId) (fd : int) (kernel : EmulatedKernel) : EmulatedKernel =
         { kernel with
-            DirectoryStreamBlocks = Map.add block id kernel.DirectoryStreamBlocks
+            DirectoryStreamFds = Map.add block fd kernel.DirectoryStreamFds
         }
 
-    /// Forget a stream, which `SystemNative_CloseDir` does before closing the
-    /// descriptor under it — that order matters, because the close is what
-    /// reaps an orphaned directory and this entry is one of the things holding
-    /// it.
+    /// Forget the `DIR*` backed by `block`, which `SystemNative_CloseDir` does
+    /// before closing its descriptor. Loudly partial for the same reason as
+    /// `directoryStreamFd`.
     let withoutDirectoryStream (block : NativeMemoryBlockId) (kernel : EmulatedKernel) : EmulatedKernel =
-        let id = directoryStreamId block kernel
+        directoryStreamFd block kernel |> ignore<int>
 
         { kernel with
-            DirectoryStreamBlocks = Map.remove block kernel.DirectoryStreamBlocks
-            Process =
-                { kernel.Process with
-                    DirectoryStreams = Map.remove id kernel.DirectoryStreams
-                }
+            DirectoryStreamFds = Map.remove block kernel.DirectoryStreamFds
         }
 
 
@@ -1676,8 +1629,7 @@ module EmulatedKernel =
 
     /// Every way this kernel's tables disagree with each other, including the
     /// POSIX system's own rules: `UnixSystem.checkInvariants` answers those, and
-    /// this adds two things PawPrint holds that no POSIX kernel does — the
-    /// native-heap blocks a guest's `DIR*` values are, and the thread
+    /// this adds what PawPrint holds that no POSIX kernel does — the thread
     /// `PosixSignalShim` records as its dispatcher, which must be a task.
     ///
     /// The descriptor table's own rules are `FileDescriptorRegistry.checkInvariants`,
@@ -1687,41 +1639,6 @@ module EmulatedKernel =
     /// pairs this with
     /// `VirtualFileSystem.checkInvariants (UnixDescriptor.pinnedInodes (unix kernel))`.
     let checkInvariants (kernel : EmulatedKernel) : EmulatedKernelDefect list =
-        // Both directions: a `DIR*` naming a stream that is gone would crash the
-        // next `readdir`, and a stream no `DIR*` names can never be closed, so it
-        // pins its directory through `UnixProcessState.heldInodes` for the rest of the run.
-        let directoryStreamBlocks =
-            let named = kernel.DirectoryStreamBlocks |> Map.toList |> List.map snd |> Set.ofList
-
-            let dangling =
-                kernel.DirectoryStreamBlocks
-                |> Map.toList
-                |> List.filter (fun (_, id) -> not (Map.containsKey id kernel.DirectoryStreams))
-                |> List.map EmulatedKernelDefect.DirectoryStreamBlockDangling
-
-            let unreachable =
-                kernel.DirectoryStreams
-                |> Map.toList
-                |> List.map fst
-                |> List.filter (fun id -> not (Set.contains id named))
-                |> List.map EmulatedKernelDefect.UnreachableDirectoryStream
-
-            // Injectivity, which neither check above can see: `named` is a set, so
-            // two blocks naming one stream collapse into one element and both
-            // directions come back clean. `withoutDirectoryStream` removes the
-            // stream by id and the block by name, so a second block naming that id
-            // would be left dangling by a close it had nothing to do with.
-            let namedTwice =
-                kernel.DirectoryStreamBlocks
-                |> Map.toList
-                |> List.groupBy snd
-                |> List.filter (fun (_, bindings) -> List.length bindings > 1)
-                |> List.map (fun (id, bindings) ->
-                    EmulatedKernelDefect.DirectoryStreamNamedTwice (id, bindings |> List.map fst |> List.sort)
-                )
-
-            dangling @ unreachable @ namedTwice
-
         let dispatcher =
             match PosixSignalShim.signalThread kernel.PosixSignalShim with
             | Some thread when not (Map.containsKey thread kernel.Tasks) ->
@@ -1730,7 +1647,6 @@ module EmulatedKernel =
             | None -> []
 
         (UnixSystem.checkInvariants (unix kernel) |> List.map EmulatedKernelDefect.System)
-        @ directoryStreamBlocks
         @ dispatcher
 
 /// Host-supplied configuration for the simulated process's kernel, applied by

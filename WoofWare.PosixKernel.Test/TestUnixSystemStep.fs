@@ -1898,8 +1898,8 @@ module TestUnixSystemStep =
                     0
                     system
                 |> answer
-                (match UnixNamespace.opendir path system with
-                 | OpenDirAnswer.Failed error, _ -> error
+                (match DirectoryReading.openDirectory path system with
+                 | Error error, _ -> error
                  | other -> failwith $"expected a failure, got %A{other}")
                 (match UnixNamespace.readlink path UserBuffer.Mapped 4096 system with
                  | Ok (ReadLinkAnswer.Failed error) -> error
@@ -4199,40 +4199,21 @@ module TestUnixSystemStep =
 
     // ---- `opendir` / `readdir` ---------------------------------------------
 
-    let private openedStream
-        (system : UnixSystem<int, string>)
-        (path : string)
-        : DirectoryStreamId * UnixSystem<int, string>
-        =
-        match UnixNamespace.opendir (statPath path) system with
-        | OpenDirAnswer.Opened id, after -> id, after
-        | other -> failwith $"expected a stream, got %O{other}"
+    /// An `opendir`-style open of `path`.
+    let private openedStream (system : UnixSystem<int, string>) (path : string) : int * UnixSystem<int, string> =
+        match DirectoryReading.openDirectory (statPath path) system with
+        | Ok fd, after -> fd, after
+        | Error error, _ -> failwith $"expected a directory, got %O{error}"
 
-    /// Everything the stream yields, as (name, kind) pairs in the order it
+    /// Everything the descriptor yields, as (name, kind) pairs in the order it
     /// yielded them.
     let private drain
-        (id : DirectoryStreamId)
+        (fd : int)
         (system : UnixSystem<int, string>)
         : (string * DirectoryEntryKind) list * UnixSystem<int, string>
         =
-        let rec go fuel acc system =
-            if fuel <= 0 then
-                failwith
-                    $"readdir yielded %d{List.length acc} entries without reaching end-of-stream; the cursor is not advancing."
-            else
-
-            match UnixNamespace.readdir id system with
-            | ReadDirAnswer.EndOfStream, system -> List.rev acc, system
-            | ReadDirAnswer.Failed error, _ -> failwith $"readdir failed with %O{error}"
-            | ReadDirAnswer.Entry (name, kind), system ->
-                let text = System.Text.Encoding.UTF8.GetString (name.AsSpan ())
-                go (fuel - 1) ((text, kind) :: acc) system
-
-        // Bounded rather than "until end-of-stream": a `readdir` that fails to
-        // advance its cursor is a real thing to get wrong, and an unbounded loop
-        // would hang the suite rather than report it. No fixture here holds more
-        // than a handful of entries.
-        go 64 [] system
+        let records, system = DirectoryReading.drain fd system
+        records |> List.map (fun record -> record.Name.ToString (), record.Kind), system
 
     [<Test>]
     let ``a stream yields every binding, then dotdot, then dot`` () : unit =
@@ -4338,16 +4319,16 @@ module TestUnixSystemStep =
         for flavour in [ linux ; darwin ] do
             let _, _, _, system = withTree flavour
 
-            match UnixNamespace.opendir (statPath "/l") system with
-            | OpenDirAnswer.Failed UnixError.ENOTDIR, _ -> ()
+            match DirectoryReading.openDirectory (statPath "/l") system with
+            | Error UnixError.ENOTDIR, _ -> ()
             | other -> failwith $"a link to a regular file should be ENOTDIR: %O{other}"
 
-            match UnixNamespace.opendir (statPath "/d/inner/t") system with
-            | OpenDirAnswer.Failed UnixError.ENOTDIR, _ -> ()
+            match DirectoryReading.openDirectory (statPath "/d/inner/t") system with
+            | Error UnixError.ENOTDIR, _ -> ()
             | other -> failwith $"a regular file should be ENOTDIR: %O{other}"
 
-            match UnixNamespace.opendir (statPath "/d/inner/nope") system with
-            | OpenDirAnswer.Failed UnixError.ENOENT, _ -> ()
+            match DirectoryReading.openDirectory (statPath "/d/inner/nope") system with
+            | Error UnixError.ENOENT, _ -> ()
             | other -> failwith $"a free name should be ENOENT: %O{other}"
 
     [<Test>]
@@ -4374,13 +4355,12 @@ module TestUnixSystemStep =
             withStream |> shouldEqual (withoutStream + 1)
 
     [<Test>]
-    let ``a stream over a removed directory is at end-of-stream at once`` () : unit =
-        // Dots included, which is the whole of the choice recorded on
-        // `nextDirectoryEntry`: probed on both kernels, `opendir` then `rmdir`
-        // then `readdir` answers NULL without yielding either dot.
+    let ``a removed directory yields nothing: ENOENT on Linux, end-of-directory on Darwin`` () : unit =
+        // Dots included: measured one `getdents` call at a time on both
+        // kernels. glibc turns Linux's ENOENT into end-of-stream.
         for flavour in [ linux ; darwin ] do
             let _, _, _, system = withTree flavour
-            let id, system = openedStream system "/d/inner"
+            let fd, system = openedStream system "/d/inner"
 
             let system =
                 match UnixNamespace.unlink (statPath "/d/inner/t") system with
@@ -4392,22 +4372,14 @@ module TestUnixSystemStep =
                 | SyscallAnswer.Completed 0L, system -> system
                 | other -> failwith $"could not remove the directory: %O{other}"
 
-            drain id system |> fst |> shouldEqual []
+            let expected =
+                match SimulatedUnixPlatform.flavour flavour.Machine.UnixPlatform with
+                | SimulatedUnixFlavour.Linux -> ReadDirectoryAnswer.Failed UnixError.ENOENT
+                | SimulatedUnixFlavour.Darwin -> ReadDirectoryAnswer.EndOfDirectory
 
-    [<Test>]
-    let ``readdir refuses a stream this kernel never issued`` () : unit =
-        // A real libc calls this undefined behaviour rather than reporting an
-        // errno, so there is nothing to answer and inventing EBADF would be a
-        // plausible wrong answer.
-        let _, _, _, system = withTree linux
-
-        let exn =
-            Assert.Throws<exn> (fun () ->
-                UnixNamespace.readdir (DirectoryStreamId 99L) system
-                |> ignore<ReadDirAnswer * UnixSystem<int, string>>
-            )
-
-        exn.Message |> shouldContainText "not a directory stream this kernel issued"
+            match UnixNamespace.readDirectoryEntry fd system with
+            | Ok (answer, _) -> answer |> shouldEqual expected
+            | Error refusal -> failwith $"%A{refusal}"
 
     // ---- `readlink` --------------------------------------------------------
 
