@@ -212,6 +212,8 @@ module TestSocketFuzz =
         | FuzzOp.Add _ -> "add"
         | FuzzOp.Mod _ -> "mod"
         | FuzzOp.Del _ -> "del"
+        | FuzzOp.EpollAdd _ -> "eadd"
+        | FuzzOp.EpollMod _ -> "emod"
         | FuzzOp.Wait _ -> "wait"
         | FuzzOp.Poll _ -> "poll"
 
@@ -228,6 +230,8 @@ module TestSocketFuzz =
             "add"
             "mod"
             "del"
+            "eadd"
+            "emod"
             "wait"
             "poll"
         ]

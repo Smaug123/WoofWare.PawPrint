@@ -296,44 +296,85 @@ type FlockMode =
     /// shared or exclusive.
     | Exclusive
 
-/// Which readiness conditions one registration with a socket event port
-/// watches: the maskable part of the epoll interest set `epoll_ctl` stores.
+/// Linux's `<sys/epoll.h>` event bits: what `epoll_ctl(2)` reads in
+/// `struct epoll_event.events` and `epoll_wait(2)` writes back.
 ///
-/// `EPOLLERR` and `EPOLLHUP` have no field because they are not interest.
-/// `epoll_ctl` forces them into every stored mask, so a registration that
-/// asked for them and one that did not are the same registration — measured
-/// on Linux 6.18.5 through `/proc/self/fdinfo`, the only surface that shows a
-/// stored mask at all: interest 0 and `EPOLLHUP|EPOLLERR` both read back
-/// `events: 18`, and `EPOLLIN` and `EPOLLIN|EPOLLHUP|EPOLLERR` both read back
-/// `19` (`docs/plans/2026-08-23-posix-kernel-extraction/fdinfo.c`). The two
-/// conditions are still *reported*, which is `ReadinessLevel.reportedUnder`'s
-/// business rather than this record's.
-///
-/// Edge-triggering is likewise absent from the *interest*, because the port
-/// models edge-triggered registrations only: `SocketEventRegistrationChange`
-/// carries the trigger a caller asked for, and a level-triggered request is
-/// refused rather than reinterpreted.
-type SocketEventInterest =
-    {
-        /// Report `EPOLLIN` when it is present.
-        In : bool
-        /// Report `EPOLLOUT` when it is present.
-        Out : bool
-        /// Report `EPOLLRDHUP` when it is present.
-        RdHup : bool
-    }
+/// The readiness bits below 0x10000 are numbered as Linux's `<poll.h>` numbers
+/// the `POLL*` condition of the same name. The top four are not conditions but
+/// modes of the registration, which the kernel keeps in the same word.
+[<RequireQualifiedAccess>]
+module EpollEvents =
+    /// `EPOLLIN`.
+    [<Literal>]
+    let In : uint32 = 0x0001u
 
-/// The set of readiness conditions a descriptor presents right now, or the
-/// subset of one that a particular waiter reports, in epoll's terms.
+    /// `EPOLLPRI`.
+    [<Literal>]
+    let Pri : uint32 = 0x0002u
+
+    /// `EPOLLOUT`.
+    [<Literal>]
+    let Out : uint32 = 0x0004u
+
+    /// `EPOLLERR`. Reported whether or not a registration asked for it.
+    [<Literal>]
+    let Err : uint32 = 0x0008u
+
+    /// `EPOLLHUP`. Reported whether or not a registration asked for it.
+    [<Literal>]
+    let Hup : uint32 = 0x0010u
+
+    /// `EPOLLRDNORM`.
+    [<Literal>]
+    let RdNorm : uint32 = 0x0040u
+
+    /// `EPOLLRDBAND`.
+    [<Literal>]
+    let RdBand : uint32 = 0x0080u
+
+    /// `EPOLLWRNORM`.
+    [<Literal>]
+    let WrNorm : uint32 = 0x0100u
+
+    /// `EPOLLWRBAND`.
+    [<Literal>]
+    let WrBand : uint32 = 0x0200u
+
+    /// `EPOLLMSG`.
+    [<Literal>]
+    let Msg : uint32 = 0x0400u
+
+    /// `EPOLLRDHUP`.
+    [<Literal>]
+    let RdHup : uint32 = 0x2000u
+
+    /// `EPOLLEXCLUSIVE`: wake one of several ports registered on the same
+    /// target rather than all of them.
+    [<Literal>]
+    let Exclusive : uint32 = 0x10000000u
+
+    /// `EPOLLWAKEUP`: hold a wakeup source while an event is pending.
+    [<Literal>]
+    let WakeUp : uint32 = 0x20000000u
+
+    /// `EPOLLONESHOT`: disarm the registration once it has reported.
+    [<Literal>]
+    let OneShot : uint32 = 0x40000000u
+
+    /// `EPOLLET`: report readiness edges rather than a level.
+    [<Literal>]
+    let EdgeTriggered : uint32 = 0x80000000u
+
+/// The five readiness conditions a socket presents right now, before any
+/// waiter's request is applied.
 ///
 /// Shared by both waiters this kernel models, because on Linux they read the
 /// same thing: `poll(2)` and epoll's `ep_item_poll` both take their mask from
 /// the file's own `->poll` handler, and measurement agrees on every phase
-/// (docs/plans/2026-08-23-socket-poll). What differs between them is the
-/// *projection*, which is each waiter's own business: `reportedUnder` for an
-/// epoll registration, and `UnixPoll.poll` for `poll(2)`, which also reports
-/// the conditions an epoll interest here cannot ask for (`POLLRDNORM`,
-/// `POLLWRNORM`, `POLLWRBAND`).
+/// (docs/plans/2026-08-23-socket-poll, and `epoll-ctl.c` in
+/// docs/plans/2026-08-23-posix-kernel-extraction). The handler also sets
+/// `*NORM` and `*BAND` bits, which follow from these five and the socket's
+/// kind; `UnixPoll` states the full mask in Linux's numbering.
 type ReadinessLevel =
     {
         /// `EPOLLIN`.
@@ -361,37 +402,26 @@ module ReadinessLevel =
 
     let isEmpty (readiness : ReadinessLevel) : bool = readiness = none
 
-    /// The subset of `level` a registration with `interest` reports: `IN`,
-    /// `OUT` and `RDHUP` only when asked for, `ERR` and `HUP` always.
-    ///
-    /// That those two are unconditional is why `SocketEventInterest` has no
-    /// field for them: they are reported to a registration that could not have
-    /// asked (measured, a pending refusal registered with interest 0 still
-    /// reports `ERR|HUP`), and `epoll_ctl` does not keep the asking either.
-    let reportedUnder (interest : SocketEventInterest) (level : ReadinessLevel) : ReadinessLevel =
-        {
-            In = level.In && interest.In
-            Out = level.Out && interest.Out
-            RdHup = level.RdHup && interest.RdHup
-            Hup = level.Hup
-            Err = level.Err
-        }
-
 /// One registration held by a socket event port: what `epoll_ctl(2)` recorded
 /// for one target.
-type SocketEventRegistration =
+type EpollRegistration =
     {
-        /// Which conditions this registration watches. `EPOLLERR` and
-        /// `EPOLLHUP` are reported on top of these whatever the caller asked
-        /// for, so they are not among them.
-        Interest : SocketEventInterest
+        /// The event mask the kernel stores for this registration, in Linux's
+        /// `<sys/epoll.h>` numbering (`EpollEvents`): the caller's `events`
+        /// with `EPOLLERR` and `EPOLLHUP` added, because `epoll_ctl` forces
+        /// those two into every stored mask.
+        ///
+        /// What a wait reports for this registration is the target's readiness
+        /// masked by this, and a keyed wake queues the registration only when
+        /// the wake's key meets it.
+        Events : uint32
         /// The caller's `epoll_data`, delivered verbatim when an event fires.
         Data : uint64
         /// When this registration's ADD committed, as an ordinal from the
         /// kernel's counter. One signal can make several registrations of the
         /// same socket pending at once (they share the socket's wait queue),
         /// and the measured delivery order for that tie is newest-registered
-        /// first — the wait queue is LIFO. `Modify` preserves this: the wait
+        /// first — the wait queue is LIFO. A MOD preserves this: the wait
         /// queue entry the order comes from is created at ADD and untouched
         /// by MOD.
         RegisteredAt : int64
@@ -403,7 +433,7 @@ type SocketEventPortState =
     {
         /// The interest table, keyed exactly as epoll keys a registration:
         /// the (fd number, open file description) pair of the target.
-        Registrations : Map<int * OpenFileDescriptionId, SocketEventRegistration>
+        Registrations : Map<int * OpenFileDescriptionId, EpollRegistration>
         /// The registrations with an edge outstanding, in delivery order.
         /// A registration enters when the driver signals it and it is not
         /// already here, or when an ADD/MOD finds its target ready; delivery
@@ -637,78 +667,6 @@ type FlockRequest =
     | Acquire of mode : FlockMode
     /// `LOCK_UN`. Succeeds whether or not a lock was held, as `flock(2)` does.
     | Release
-
-/// How a registration reports: once per readiness *edge* (`EPOLLET`), or
-/// again on every wait while the readiness *level* holds (epoll's default).
-/// This port models the first only, since `drain` consumes every entry it
-/// walks and never re-arms a still-ready one; a level-triggered request is
-/// refused at registration (`SocketEventRegistrationRefusal.LevelTriggered`)
-/// rather than silently served as edge-triggered.
-[<RequireQualifiedAccess>]
-type SocketEventTrigger =
-    | EdgeTriggered
-    | LevelTriggered
-
-/// What `epoll_ctl(2)` was asked to do to a port: ADD, MOD or DEL. A caller
-/// may derive the op from *claims* of its own — for example, ADD when a
-/// claimed current set is empty, DEL when the new set is, and MOD otherwise. The claims are never checked against the table; the table's own
-/// answers (`AlreadyRegistered`, `NotRegistered`) are what happens when a
-/// caller lies.
-[<RequireQualifiedAccess>]
-type SocketEventRegistrationChange =
-    /// `EPOLL_CTL_ADD`: record a fresh registration.
-    | Add of trigger : SocketEventTrigger * interest : SocketEventInterest * data : uint64
-    /// `EPOLL_CTL_MOD`: replace an existing registration's interest *and*
-    /// data — the kernel rebuilds the whole `epoll_event` from the new call.
-    | Modify of trigger : SocketEventTrigger * interest : SocketEventInterest * data : uint64
-    /// `EPOLL_CTL_DEL`: remove a registration. Carries no payload; the real
-    /// wrapper's `data` is never consulted on this path.
-    | Remove
-
-/// Why `FileDescriptorRegistry.changeSocketEventRegistration` refused, in the
-/// order Linux's `epoll_ctl(2)` decides them — measured on 6.18.5, each
-/// adjacent pair pinned by an input that provokes exactly one of the two.
-[<RequireQualifiedAccess>]
-type SocketEventRegistrationError =
-    /// The port fd is not a live descriptor; `EBADF`. First of everything.
-    | BadPortFd
-    /// The target fd is not a live descriptor; `EBADF`. Ahead of the
-    /// not-a-port check: a dead target through a socket "port" is EBADF, not
-    /// EINVAL.
-    | BadTargetFd
-    /// The target is a regular file, which supports no poll; `EPERM`. Ahead of
-    /// the not-a-port check (a file as both port and target is EPERM, not
-    /// EINVAL) and of the per-op table checks (MOD and DEL of a file are
-    /// EPERM, not ENOENT).
-    | TargetNotPollable
-    /// The port is not a socket event port, or port and target name the same
-    /// open file *description* — one kernel test, `f.file == tf.file ||
-    /// !is_file_epoll(f.file)`, so one case; `EINVAL`. Description equality is
-    /// measured: a `dup` of the port as target answers this, not success.
-    | NotAnEventPort
-    /// `Add`, but the (fd, description) pair is already registered; `EEXIST`.
-    | AlreadyRegistered
-    /// `Modify` or `Remove`, but the pair is not registered; `ENOENT`.
-    | NotRegistered
-
-[<RequireQualifiedAccess>]
-module SocketEventRegistrationError =
-    /// The errno `epoll_ctl(2)` answers for this refusal.
-    ///
-    /// The mapping each case's docstring above states, as code rather than as
-    /// prose: it is the kernel's, so every client answers the same numbers, and
-    /// a client is left only with how it reports them.
-    ///
-    /// Note that two distinct refusals share `EBADF`, so this is not injective
-    /// and a client wanting to know *which* keeps the case.
-    let toErrno (error : SocketEventRegistrationError) : UnixError =
-        match error with
-        | SocketEventRegistrationError.BadPortFd
-        | SocketEventRegistrationError.BadTargetFd -> UnixError.EBADF
-        | SocketEventRegistrationError.TargetNotPollable -> UnixError.EPERM
-        | SocketEventRegistrationError.NotAnEventPort -> UnixError.EINVAL
-        | SocketEventRegistrationError.AlreadyRegistered -> UnixError.EEXIST
-        | SocketEventRegistrationError.NotRegistered -> UnixError.ENOENT
 
 [<RequireQualifiedAccess>]
 type FlockError =
@@ -1367,139 +1325,131 @@ module FileDescriptorRegistry =
                     registry.Descriptions
         }
 
-    /// Mirrors Linux's `epoll_ctl(2)`: apply `change` to the interest table of
-    /// the port `portFd` names, for the target `targetFd` names.
-    ///
-    /// The registration key is the (fd number, open file description) pair,
-    /// which is epoll's own key: an ADD through a `dup` of a registered target
-    /// creates a second registration, while a `dup` of the *port* operates on
-    /// the same table because the pair shares one description.
-    ///
-    /// This is Linux's mechanism, exactly as `flock` above is: kqueue registers
-    /// per-(ident, filter) with answers that differ on most rows, and
-    /// `UnixPoll.changeSocketEventRegistration` decides what a
-    /// Darwin-flavoured kernel does (it refuses, with
-    /// `SocketEventRegistrationRefusal.UnmodelledFlavour`).
-    ///
-    /// Refuses (a failwith, not an error) an `Add` whose target is another
-    /// socket event port: the simple case measures as success, but epoll's ADD
-    /// also runs whole-graph loop and reachable-path checks (`ELOOP`, a depth
-    /// cap) that are unmeasured, and recording the nested port would answer
-    /// success on cycle inputs where Linux refuses. No managed caller
-    /// registers a port. `Modify` and `Remove` of one flow through honestly:
-    /// the table cannot hold a port, so they answer `NotRegistered`, which is
-    /// what an unregistered target answers.
-    let changeSocketEventRegistration
-        (portFd : int)
-        (targetFd : int)
-        (registeredAt : int64)
-        (change : SocketEventRegistrationChange)
+    /// Rewrite the state of the socket event port `portId` names. Loudly
+    /// partial on a dead or non-port description: every caller resolved it as
+    /// a port moments ago, so either means it wrote against a different table
+    /// than the one it read. `operation` names the caller for that message.
+    let private mapSocketEventPort
+        (operation : string)
+        (portId : OpenFileDescriptionId)
+        (f : SocketEventPortState -> SocketEventPortState)
         (registry : FileDescriptorRegistry)
-        : Result<FileDescriptorRegistry, SocketEventRegistrationError>
+        : FileDescriptorRegistry
         =
-        match tryFindWithId portFd registry with
-        | None -> Error SocketEventRegistrationError.BadPortFd
-        | Some (portId, portDescription) ->
+        match Map.tryFind portId registry.Descriptions with
+        | None ->
+            failwith
+                $"%s{operation}: %O{portId} names no live open file description; the caller resolved it moments ago, so this is a bug in the caller of FileDescriptorRegistry.%s{operation}."
+        | Some description ->
 
-        match tryFindWithId targetFd registry with
-        | None -> Error SocketEventRegistrationError.BadTargetFd
-        | Some (targetId, targetDescription) ->
-
-        match targetDescription.Target with
-        | OpenFileTarget.File _ -> Error SocketEventRegistrationError.TargetNotPollable
-        | OpenFileTarget.StandardStream _
-        | OpenFileTarget.SocketEventPort _
-        | OpenFileTarget.Socket _ ->
-
-        if portId = targetId then
-            Error SocketEventRegistrationError.NotAnEventPort
-        else
-
-        match portDescription.Target with
+        match description.Target with
         | OpenFileTarget.StandardStream _
         | OpenFileTarget.File _
-        | OpenFileTarget.Socket _ -> Error SocketEventRegistrationError.NotAnEventPort
+        | OpenFileTarget.Socket _ ->
+            failwith
+                $"%s{operation}: %O{portId} is not a socket event port; the caller resolved it as one moments ago, so this is a bug in the caller of FileDescriptorRegistry.%s{operation}."
         | OpenFileTarget.SocketEventPort portState ->
 
-        let key = targetFd, targetId
+        { registry with
+            Descriptions =
+                Map.add
+                    portId
+                    { description with
+                        Target = OpenFileTarget.SocketEventPort (f portState)
+                    }
+                    registry.Descriptions
+        }
 
-        let withPortState (portState : SocketEventPortState) : FileDescriptorRegistry =
-            { registry with
-                Descriptions =
-                    Map.add
-                        portId
-                        { portDescription with
-                            Target = OpenFileTarget.SocketEventPort portState
-                        }
-                        registry.Descriptions
-            }
+    /// Record `registration` under `key` in the interest table of the port
+    /// `portId` names: the table half of a committed `EPOLL_CTL_ADD`.
+    ///
+    /// The key is epoll's own, the target's (fd number, open file description)
+    /// pair. Loudly partial on a key already registered, which `epoll_ctl`
+    /// answers `EEXIST` for before it reaches the table; that answer is the
+    /// caller's (`UnixPoll.epollCtl`).
+    let addEpollRegistration
+        (portId : OpenFileDescriptionId)
+        (key : int * OpenFileDescriptionId)
+        (registration : EpollRegistration)
+        (registry : FileDescriptorRegistry)
+        : FileDescriptorRegistry
+        =
+        registry
+        |> mapSocketEventPort
+            "addEpollRegistration"
+            portId
+            (fun portState ->
+                if Map.containsKey key portState.Registrations then
+                    failwith
+                        $"addEpollRegistration: %A{key} is already registered with port %O{portId}, which epoll_ctl answers EEXIST for (this is a bug in the caller of FileDescriptorRegistry.addEpollRegistration)."
 
-        match change with
-        | SocketEventRegistrationChange.Add (SocketEventTrigger.LevelTriggered, _, _)
-        | SocketEventRegistrationChange.Modify (SocketEventTrigger.LevelTriggered, _, _) ->
-            // The table records edge-triggered registrations only, and has no
-            // refusal to answer with: `UnixPoll.changeSocketEventRegistration`
-            // refuses a level-triggered request before it reaches here.
-            failwith
-                $"changeSocketEventRegistration: a level-triggered registration reached the table, which records edge-triggered ones only. UnixPoll.changeSocketEventRegistration refuses the request with SocketEventRegistrationRefusal.LevelTriggered before it gets here (this is a bug in the caller)."
-        | SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, interest, data) ->
-            match targetDescription.Target with
-            | OpenFileTarget.SocketEventPort _ ->
-                failwith
-                    $"changeSocketEventRegistration: fd %d{targetFd} is itself a socket event port. Registering one port with another passes epoll's loop and reachable-path checks (ELOOP, a depth cap), which are unmeasured, and recording it would answer success on cycle inputs where Linux refuses. Measure those rules before recording a nested port."
-            | OpenFileTarget.StandardStream _
-            | OpenFileTarget.File _
-            | OpenFileTarget.Socket _ ->
+                { portState with
+                    Registrations = Map.add key registration portState.Registrations
+                }
+            )
 
-            if Map.containsKey key portState.Registrations then
-                Error SocketEventRegistrationError.AlreadyRegistered
-            else
-                Ok (
-                    withPortState
-                        { portState with
-                            Registrations =
-                                Map.add
-                                    key
-                                    {
-                                        Interest = interest
-                                        Data = data
-                                        RegisteredAt = registeredAt
-                                    }
-                                    portState.Registrations
-                        }
-                )
-        | SocketEventRegistrationChange.Modify (SocketEventTrigger.EdgeTriggered, interest, data) ->
-            match Map.tryFind key portState.Registrations with
-            | Some existing ->
-                // `RegisteredAt` survives: same-signal tie order comes from
-                // the socket's wait queue, whose entry MOD does not touch.
-                // An entry already on the ready list keeps its place there
-                // too, which is likewise measured (`order3.c` row L).
-                Ok (
-                    withPortState
-                        { portState with
-                            Registrations =
-                                Map.add
-                                    key
-                                    { existing with
-                                        Interest = interest
-                                        Data = data
-                                    }
-                                    portState.Registrations
-                        }
-                )
-            | None -> Error SocketEventRegistrationError.NotRegistered
-        | SocketEventRegistrationChange.Remove ->
-            if Map.containsKey key portState.Registrations then
-                Ok (
-                    withPortState
-                        {
-                            Registrations = Map.remove key portState.Registrations
-                            Ready = portState.Ready |> List.filter (fun k -> k <> key)
-                        }
-                )
-            else
-                Error SocketEventRegistrationError.NotRegistered
+    /// Replace the stored event mask and data of the registration under `key`:
+    /// the table half of a committed `EPOLL_CTL_MOD`. The registration keeps
+    /// its `RegisteredAt`, and a pending entry keeps its place in the ready
+    /// list (measured, `order3.c` row L).
+    ///
+    /// Loudly partial on a key not registered, which `epoll_ctl` answers
+    /// `ENOENT` for before it reaches the table.
+    let modifyEpollRegistration
+        (portId : OpenFileDescriptionId)
+        (key : int * OpenFileDescriptionId)
+        (events : uint32)
+        (data : uint64)
+        (registry : FileDescriptorRegistry)
+        : FileDescriptorRegistry
+        =
+        registry
+        |> mapSocketEventPort
+            "modifyEpollRegistration"
+            portId
+            (fun portState ->
+                match Map.tryFind key portState.Registrations with
+                | None ->
+                    failwith
+                        $"modifyEpollRegistration: %A{key} is not registered with port %O{portId}, which epoll_ctl answers ENOENT for (this is a bug in the caller of FileDescriptorRegistry.modifyEpollRegistration)."
+                | Some existing ->
+                    { portState with
+                        Registrations =
+                            Map.add
+                                key
+                                { existing with
+                                    Events = events
+                                    Data = data
+                                }
+                                portState.Registrations
+                    }
+            )
+
+    /// Remove the registration under `key`, and its pending entry if it has
+    /// one: the table half of a committed `EPOLL_CTL_DEL`.
+    ///
+    /// Loudly partial on a key not registered, which `epoll_ctl` answers
+    /// `ENOENT` for before it reaches the table.
+    let removeEpollRegistration
+        (portId : OpenFileDescriptionId)
+        (key : int * OpenFileDescriptionId)
+        (registry : FileDescriptorRegistry)
+        : FileDescriptorRegistry
+        =
+        registry
+        |> mapSocketEventPort
+            "removeEpollRegistration"
+            portId
+            (fun portState ->
+                if not (Map.containsKey key portState.Registrations) then
+                    failwith
+                        $"removeEpollRegistration: %A{key} is not registered with port %O{portId}, which epoll_ctl answers ENOENT for (this is a bug in the caller of FileDescriptorRegistry.removeEpollRegistration)."
+
+                {
+                    Registrations = Map.remove key portState.Registrations
+                    Ready = portState.Ready |> List.filter (fun k -> k <> key)
+                }
+            )
 
     /// Append `key` to the ready list of the port `portId` names. The caller
     /// has decided the entry belongs there (an ADD/MOD found the target ready,
@@ -1601,17 +1551,19 @@ module FileDescriptorRegistry =
     /// The driver signalled every description in `naming` (all of one
     /// socket's descriptions): on every port, each registration targeting one
     /// of them becomes pending unless it already is. `wakeKey` is what the
-    /// waker carried, and the two kinds are both measured:
+    /// waker carried, in Linux's `<sys/epoll.h>` numbering, and the two kinds
+    /// are both measured:
     ///
-    ///   * a *data-ready* wake carries its condition as a key, and a
-    ///     registration whose interest misses it entirely is never queued
-    ///     (`order6.c`: an IN edge at a WRITE-only registration leaves no
-    ///     trace, and a later MOD to READ enqueues fresh at MOD time);
-    ///   * a *state-change* wake (a connect completing, a peer's FIN) is
-    ///     unkeyed and queues every registration regardless of interest —
-    ///     the entry keeps the wake's position through a later interest
-    ///     change, and delivery's re-poll is what filters (`order8.c`,
-    ///     `order9.c`).
+    ///   * a *keyed* wake queues only the registrations whose stored mask
+    ///     meets its key (`order6.c`: an IN edge at a WRITE-only registration
+    ///     leaves no trace, and a later MOD to READ enqueues fresh at MOD
+    ///     time). The key is the waker's, not the target's level: a data-ready
+    ///     wake queues a registration for `EPOLLPRI` alone, which a listener
+    ///     never reports (`epoll-ctl.c`'s WAKE section);
+    ///   * an *unkeyed* wake (a connect completing, a peer's FIN) queues every
+    ///     registration regardless of its mask — the entry keeps the wake's
+    ///     position through a later interest change, and delivery's re-poll is
+    ///     what filters (`order8.c`, `order9.c`).
     ///
     /// When one signal makes several registrations pending at once they enter
     /// newest-registered first — the socket's wait queue is LIFO (measured,
@@ -1619,7 +1571,7 @@ module FileDescriptorRegistry =
     /// (`order2.c` row H).
     let signalSocketEventPorts
         (naming : Set<OpenFileDescriptionId>)
-        (wakeKey : Lazy<ReadinessLevel> option)
+        (wakeKey : uint32 option)
         (registry : FileDescriptorRegistry)
         : FileDescriptorRegistry
         =
@@ -1640,12 +1592,7 @@ module FileDescriptorRegistry =
                             && (
                                 match wakeKey with
                                 | None -> true
-                                | Some level ->
-                                    not (
-                                        ReadinessLevel.isEmpty (
-                                            ReadinessLevel.reportedUnder registration.Interest level.Value
-                                        )
-                                    )
+                                | Some key -> key &&& registration.Events <> 0u
                             )
                         )
                         |> List.sortByDescending (fun (_, registration) -> registration.RegisteredAt)

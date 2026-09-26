@@ -18,63 +18,78 @@ type UserBufferCheck =
     /// a call that copies nothing never faults.
     | AtCopyTime
 
-/// Limits on the user half of the address space that real machines have been
-/// observed to impose, for a host picking one for a simulated machine.
+/// Limits on the user half of the address space that real Linux machines have
+/// been observed to impose, for a client picking one for a simulated machine.
 ///
-/// Every one of these is `TASK_SIZE_MAX` for some real configuration; the value
-/// is a property of the *machine* (its paging depth, its virtual-address width)
-/// rather than of the kernel or the distribution, which is why the simulated
-/// one is configuration rather than a constant derived from the platform.
+/// Every one of these is `TASK_SIZE_MAX` for some real configuration, and the
+/// value a machine has depends on its paging depth and virtual-address width as
+/// well as on its architecture, which is why the simulated one is configuration
+/// rather than a constant derived from the platform. A machine's limit must
+/// still be one its architecture has: see `architectureOf`.
 [<RequireQualifiedAccess>]
 module ObservedUserAddressLimit =
-    /// x86-64 with four-level paging: 2^47 less one page. Measured on a GitHub
-    /// `ubuntu-latest` runner.
+    /// x86-64 with four-level paging: 2^47 less one page.
     [<Literal>]
     let X64FourLevelPaging : uint64 = 0x0000_7FFF_FFFF_F000UL
 
-    /// x86-64 with five-level paging (LA57): 2^56 less one page. Measured on a
-    /// different `ubuntu-latest` runner in the same CI run as the above, which
-    /// is what shows this varies by machine rather than by kernel.
+    /// x86-64 with five-level paging (LA57): 2^56 less one page.
     [<Literal>]
     let X64FiveLevelPaging : uint64 = 0x00FF_FFFF_FFFF_F000UL
 
     /// arm64 with a 48-bit virtual address: 2^48 exactly, the one observed
-    /// value that is not a page short of a power of two. Measured on a Linux
-    /// guest under Apple's `container`.
+    /// value that is not a page short of a power of two.
     [<Literal>]
     let Arm64FortyEightBit : uint64 = 0x0001_0000_0000_0000UL
 
+    // Measured by bisecting the highest buffer address `read(2)` and
+    // `epoll_wait(2)` do not answer EFAULT for: the two x86-64 values on GitHub
+    // `ubuntu-latest` runners (two of them in one CI run disagreed, which is what
+    // shows this varies by machine rather than by kernel) and again on Debian's
+    // 6.12 kernel under QEMU with `-cpu qemu64` and `-cpu max`; the arm64 value
+    // on Linux 6.18.5 under Apple's `container`.
+    // (docs/plans/2026-08-23-posix-kernel-extraction/architecture-facts-linux.c)
+
+    /// The architecture of the machines observed to have `limit` as their
+    /// `TASK_SIZE_MAX`, or `None` for a value no machine has been observed to
+    /// have.
+    let architectureOf (limit : uint64) : SimulatedUnixArchitecture option =
+        match limit with
+        | X64FourLevelPaging
+        | X64FiveLevelPaging -> Some SimulatedUnixArchitecture.X64
+        | Arm64FortyEightBit -> Some SimulatedUnixArchitecture.Arm64
+        | _ -> None
+
 /// The two constants of Linux's `epoll_wait` that follow from
-/// `sizeof(struct epoll_event)`.
+/// `sizeof(struct epoll_event)`, which is an architecture's fact rather than
+/// the kernel source's: `linux/eventpoll.h` packs the struct on x86-64 alone.
 ///
-/// That size is an *architecture* fact, not a flavour one, so these are not
-/// derived from `SimulatedUnixPlatform`: `linux/eventpoll.h` defines
-/// `EPOLL_PACKED` as `__attribute__((packed))` under `#ifdef __x86_64__` and
-/// empty otherwise, over `{ __poll_t events; __u64 data; }`. The values here are
-/// x86-64's, which is right for `SimulatedUnixPlatform.linuxX64` — the only
-/// Linux platform this library presets. A linux-arm64
-/// preset would want 16 and 134_217_727, and this is the one place to teach.
-///
-/// Kept out of `SimulatedUnixPlatform` itself because every fact derived from
-/// that type is a total function of the flavour, and epoll has no Darwin answer:
-/// a wait on a kqueue reads neither of these.
+/// Darwin has no answer to either: a wait on a kqueue reads neither of these.
 [<RequireQualifiedAccess>]
 module LinuxEpollLimits =
-    /// `sizeof(struct epoll_event)`. The unit of the byte range `epoll_wait`
-    /// screens with `access_ok(events, maxevents * sizeof(struct epoll_event))`.
-    [<Literal>]
-    let EventSize : int = 12
+    /// `sizeof(struct epoll_event)` on `architecture`: the unit of the byte
+    /// range `epoll_wait` screens with
+    /// `access_ok(events, maxevents * sizeof(struct epoll_event))`.
+    let eventSize (architecture : SimulatedUnixArchitecture) : int =
+        // `{ __poll_t events; __u64 data; }`, which `EPOLL_PACKED` packs under
+        // `#ifdef __x86_64__` and leaves padded to 16 everywhere else. Measured
+        // three ways per architecture (the compiler's `sizeof`, the stride of the
+        // range `access_ok` screens, and the bytes one delivered event writes):
+        // 12 on x86-64 and 16 on aarch64, by
+        // docs/plans/2026-08-23-posix-kernel-extraction/architecture-facts-linux.c.
+        match architecture with
+        | SimulatedUnixArchitecture.X64 -> 12
+        | SimulatedUnixArchitecture.Arm64 -> 16
 
-    /// `EP_MAX_EVENTS`, which is `INT_MAX / sizeof(struct epoll_event)`
-    /// (fs/eventpoll.c). `epoll_wait` rejects a `maxevents` above this with
-    /// EINVAL, and the bound is what keeps `maxevents * EventSize` inside
-    /// `int32` for every count that gets past it — so a caller must consult it
-    /// before computing that product, not after.
-    ///
-    /// `TestLinuxEpollLimits` checks the arithmetic rather than trusting the
-    /// literal.
-    [<Literal>]
-    let MaxEvents : int = 178_956_970
+    /// `EP_MAX_EVENTS` on `architecture`, which is
+    /// `INT_MAX / sizeof(struct epoll_event)`. `epoll_wait` rejects a
+    /// `maxevents` above this with EINVAL, and the bound is what keeps
+    /// `maxevents * eventSize architecture` inside `int32` for every count that
+    /// gets past it, so a caller must consult it before computing that
+    /// product, not after.
+    let maxEvents (architecture : SimulatedUnixArchitecture) : int =
+        // Measured by bisection over [1, INT_MAX]: 178956970 on x86-64 and
+        // 134217727 on aarch64, each the quotient exactly.
+        System.Int32.MaxValue / eventSize architecture
 
 /// Where a buffer argument to a syscall is, as far as this kernel's own address
 /// check can see.

@@ -159,6 +159,11 @@ type UnixSystemDefect<'Task> =
     /// The machine's mount claims a filesystem type its flavour cannot report,
     /// so `fstatfs` on a file would answer a fact no such machine could tell.
     | FileSystemTypeNotReportable of flavour : SimulatedUnixFlavour * fileSystemType : EmulatedFileSystemType
+    /// The machine's buffer check is not one its platform can have: an up-front
+    /// screen on a platform that has none or the other way about, or a limit no
+    /// machine of the platform's architecture has been observed to have. See
+    /// `UnixMachineState.isUserBufferCheckOf`.
+    | UserBufferCheckNotOfPlatform of platform : SimulatedUnixPlatform * check : UserBufferCheck
 
 /// Why the directory a host named cannot be the one a simulated process starts
 /// in. `UnixSystem.withFileSystemAndCurrentDirectory` returns one instead of
@@ -296,7 +301,8 @@ module UnixSystem =
     /// against the descriptor table, the connection table against the sockets
     /// that reference it, the descriptor table against the filesystem, the
     /// current directory against both, each task's park against the descriptor
-    /// table, and the signal state against the task table.
+    /// table, the signal state against the task table, and the machine's
+    /// filesystem type and buffer check against its platform.
     ///
     /// Each table's own rules are elsewhere and are not repeated here:
     /// `FileDescriptorRegistry.checkInvariants` for the descriptor table, and
@@ -621,6 +627,17 @@ module UnixSystem =
                     UnixSystemDefect.FileSystemTypeNotReportable (flavour, system.Machine.FileSystemType)
                 ]
 
+        let userBufferCheck =
+            if UnixMachineState.isUserBufferCheckOf system.Machine.UnixPlatform system.Machine.UserBufferCheck then
+                []
+            else
+                [
+                    UnixSystemDefect.UserBufferCheckNotOfPlatform (
+                        system.Machine.UnixPlatform,
+                        system.Machine.UserBufferCheck
+                    )
+                ]
+
         dangling
         @ unreferenced
         @ freshness
@@ -639,6 +656,7 @@ module UnixSystem =
         @ bindings
         @ signals
         @ fileSystemType
+        @ userBufferCheck
 
     /// Logical-processor count a freshly-minted simulated process reports.
     /// One, because only single-processor behaviour has been exercised
@@ -649,10 +667,21 @@ module UnixSystem =
     [<Literal>]
     let defaultProcessorCount : int = 1
 
-    /// The commonest configuration a guest could be running on: x86-64 with
-    /// four-level paging. A client simulating a machine with a different
-    /// address-space width sets it with `UnixMachineState.withUserAddressLimit`.
-    let defaultUserAddressLimit : uint64 = ObservedUserAddressLimit.X64FourLevelPaging
+    /// The buffer check a freshly-minted machine on `platform` applies: none up
+    /// front where the platform screens nothing, and otherwise a screen at the
+    /// commonest `TASK_SIZE_MAX` of the platform's architecture, which is
+    /// four-level paging on x86-64 and a 48-bit virtual address on arm64. A client
+    /// simulating a machine with a different address-space width sets it with
+    /// `UnixMachineState.withUserAddressLimit`.
+    let defaultUserBufferCheck (platform : SimulatedUnixPlatform) : UserBufferCheck =
+        if SimulatedUnixPlatform.screensUserBufferUpFront platform then
+            match SimulatedUnixPlatform.architecture platform with
+            | SimulatedUnixArchitecture.X64 ->
+                UserBufferCheck.BeforeOperation ObservedUserAddressLimit.X64FourLevelPaging
+            | SimulatedUnixArchitecture.Arm64 ->
+                UserBufferCheck.BeforeOperation ObservedUserAddressLimit.Arm64FortyEightBit
+        else
+            UserBufferCheck.AtCopyTime
 
     /// Unix platform identity a freshly-minted simulated process reports:
     /// Linux/x64. A client chooses another by passing it to `initial`.
@@ -782,9 +811,9 @@ module UnixSystem =
     /// The ephemeral port range and the process identity are the flavour's
     /// shipped defaults too, though a host may set either: they are what a
     /// default machine of that flavour reports, not facts of its kernel image.
-    /// `UserAddressLimit` is the one field that looks derivable and is
-    /// deliberately not: it is a property of the machine's paging depth rather
-    /// than of its kernel. All of these are configuration a caller overrides
+    /// The buffer check is the platform's default too, though its limit is a
+    /// property of the machine's paging depth rather than of its kernel. All of
+    /// these are configuration a caller overrides
     /// by record-update or the setters, which is also how a caller supplies a
     /// non-empty filesystem or a different address list.
     let initial<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -819,7 +848,7 @@ module UnixSystem =
                     BootTime = UnixTimestamp.epoch
                     EntropyPool = EntropyPool.ofSeed defaultEntropySeed
                     ProcessorCount = defaultProcessorCount
-                    UserAddressLimit = defaultUserAddressLimit
+                    UserBufferCheck = defaultUserBufferCheck platform
                     UnixPlatform = platform
                     FileSystem = filesystem
                     FileSystemType = EmulatedFileSystemType.defaultFor flavour

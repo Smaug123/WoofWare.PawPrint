@@ -16,7 +16,7 @@ because three of them look alike from the call site.
 
 | home | the fact is… | examples |
 | --- | --- | --- |
-| `SimulatedUnixPlatform` | true of *this kernel's source*, the same on every machine running it | `sa_family_t` width, `AF_INET6`'s number, `sizeof(struct sockaddr_storage)`, `reportsBirthTime`, `setIdBitsOnTruncation`, `creatingOpenRules` |
+| `SimulatedUnixPlatform` | true of *this kernel's source*, the same on every machine running it | the architecture and page size the image was built for, `sa_family_t` width, `AF_INET6`'s number, `sizeof(struct sockaddr_storage)`, `reportsBirthTime`, `setIdBitsOnTruncation`, `creatingOpenRules` |
 | `KernelConfig` | true of *this machine or mount or process*, and a different admin could change it | `FileSystemType`, `UserAddressLimit`, `UserId`, `Umask`, `ProcessorCount`, `WallClockEpochMs` |
 | CoreLib flavour | not modelled at all — it decides which *guest* code path exists | `Environment.OSVersion`'s implementation, `Lock.ThreadId.InitializeForCurrentThread` |
 | the interpreter | an artefact of how PawPrint represents memory, which no real kernel has | `Int32.MaxValue / stride` limits on a native block |
