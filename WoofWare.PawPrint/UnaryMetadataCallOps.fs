@@ -953,6 +953,20 @@ module internal UnaryMetadataCallOps =
 
         go state receiver
 
+    /// A `callvirt` after its `constrained.` prefix, if any, has been applied (ECMA-335 III.2.1).
+    [<RequireQualifiedAccess>]
+    type private ConstrainedReceiver =
+        /// The receiver and arguments on the evaluation stack are what the call dispatches on, and
+        /// `method` is what it calls. `performInterfaceResolution` is false when the prefix has
+        /// already chosen the implementation.
+        | Ready of
+            IlMachineState *
+            method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+            performInterfaceResolution : bool
+        /// The prefix loads through its byref receiver, and that byref is null, so the instruction
+        /// faults. The call's arguments are popped and the program counter has not moved.
+        | NullDereference of IlMachineState
+
     let executeCallvirt (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
@@ -1202,9 +1216,9 @@ module internal UnaryMetadataCallOps =
         // The receiver lives beneath the N method arguments. Temporarily lift the args
         // off so the transformation always sees the receiver on top of the stack, then
         // push the args back in their original order.
-        let state, concretizedMethod, performInterfaceResolution =
+        let constrainedReceiver =
             match pendingConstrained with
-            | None -> state, concretizedMethod, true
+            | None -> ConstrainedReceiver.Ready (state, concretizedMethod, true)
             | Some tHandle ->
 
             let nArgs = MethodInfo.arity methodToCall
@@ -1223,26 +1237,32 @@ module internal UnaryMetadataCallOps =
             // dereferenced value. Shared by the reference-type and array paths.
             //
             // After the dereference the existing callvirt logic takes over, including
-            // virtual dispatch against the receiver's runtime type.
-            let applyCase1 (state : IlMachineState) : IlMachineState =
+            // virtual dispatch against the receiver's runtime type. A null byref faults on that
+            // dereference, before there is any object for `callvirt`'s own null check to see.
+            let applyCase1 (state : IlMachineState) : ConstrainedReceiver =
                 let ptr, state = IlMachineState.popEvalStack thread state
 
                 match ptr with
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> ConstrainedReceiver.NullDereference state
                 | EvalStackValue.ManagedPointer src ->
                     let deref =
                         IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed src)
 
-                    IlMachineState.pushToEvalStack deref thread state
+                    ConstrainedReceiver.Ready (
+                        IlMachineState.pushToEvalStack deref thread state,
+                        concretizedMethod,
+                        true
+                    )
                 | other ->
                     failwith $"constrained.callvirt: expected ManagedPointer receiver on the eval stack, got %O{other}"
 
-            let transformed, concretizedMethod, performInterfaceResolution =
+            let transformed =
                 match tHandle with
                 | ConcreteTypeHandle.OneDimArrayZero _
                 | ConcreteTypeHandle.Array _ ->
                     // Arrays are reference types: take ECMA case 1 without consulting the
                     // concrete-type mapping (which doesn't store structural wrappers).
-                    applyCase1 state, concretizedMethod, true
+                    applyCase1 state
                 | ConcreteTypeHandle.Byref _
                 | ConcreteTypeHandle.Pointer _
                 | ConcreteTypeHandle.FunctionPointer _ ->
@@ -1259,7 +1279,7 @@ module internal UnaryMetadataCallOps =
 
                 if not tIsValueType then
                     // Reference-type T: dereference the byref to the underlying ObjectRef.
-                    applyCase1 state, concretizedMethod, true
+                    applyCase1 state
                 else
                     // Value-type T. If T has its own implementation of the method, invoke it
                     // non-virtually with the managed pointer still serving as `this` (ECMA
@@ -1289,8 +1309,11 @@ module internal UnaryMetadataCallOps =
 
                     match directImplementation with
                     | Some directImplementation ->
+                        // The byref stays the callee's `this` without being dereferenced here, so
+                        // a null one is the callee's business: it faults if and when it reads it.
                         match state.ThreadState.[thread].MethodState.EvaluationStack |> EvalStack.Peek with
-                        | Some (EvalStackValue.ManagedPointer _) -> state, directImplementation, false
+                        | Some (EvalStackValue.ManagedPointer _) ->
+                            ConstrainedReceiver.Ready (state, directImplementation, false)
                         | Some other ->
                             failwith
                                 $"constrained.callvirt case 2: expected ManagedPointer receiver on the eval stack, got %O{other}"
@@ -1304,6 +1327,19 @@ module internal UnaryMetadataCallOps =
                             | other ->
                                 failwith
                                     $"constrained.callvirt (box case): expected ManagedPointer receiver on the eval stack, got %O{other}"
+
+                        match src with
+                        | ManagedPointerSource.Null when methodDeclTypeName = "Object" && methodToCall.Name = "GetType" ->
+                            // Measured on .NET 10: the optimising JIT folds `box T; GetType` into
+                            // T's type handle and answers `typeof(T)` without loading through the
+                            // byref, while the unoptimised JIT boxes and faults. Which one a guest
+                            // sees depends on the method's tier, so there is no answer to give.
+                            failwith
+                                $"refusing constrained.callvirt Object::GetType through a null byref to value type %s{tConcrete.Namespace}.%s{tConcrete.Name}: real .NET answers typeof(T) when the method is optimised and raises NullReferenceException when it is not"
+                        | ManagedPointerSource.Null ->
+                            // Boxing copies `*ptr`, and the copy faults on the null byref.
+                            ConstrainedReceiver.NullDereference state
+                        | src ->
 
                         let derefCli =
                             IlMachineState.readManagedByref
@@ -1320,19 +1356,31 @@ module internal UnaryMetadataCallOps =
                         let boxed, state =
                             Boxing.boxValue loggerFactory baseClassTypes tHandle derefEval state
 
-                        IlMachineState.pushToEvalStack' boxed thread state, concretizedMethod, true
+                        ConstrainedReceiver.Ready (
+                            IlMachineState.pushToEvalStack' boxed thread state,
+                            concretizedMethod,
+                            true
+                        )
                     | None ->
                         failwith
                             $"constrained.callvirt case 2: non-base method %s{methodToCall.Name} had no direct value-type implementation for type %s{tConcrete.Namespace}.%s{tConcrete.Name}"
 
-            // Restore the method arguments on top of the transformed receiver. argsBottomToTop
-            // has the bottom-most arg at the head; pushing left-to-right returns each arg to
-            // its original slot (with the top-most arg landing on top).
-            let state =
-                (transformed, argsBottomToTop)
-                ||> List.fold (fun state arg -> IlMachineState.pushToEvalStack' arg thread state)
+            match transformed with
+            | ConstrainedReceiver.NullDereference _ -> transformed
+            | ConstrainedReceiver.Ready (state, concretizedMethod, performInterfaceResolution) ->
+                // Restore the method arguments on top of the transformed receiver.
+                // argsBottomToTop has the bottom-most arg at the head; pushing left-to-right
+                // returns each arg to its original slot (with the top-most arg landing on top).
+                let state =
+                    (state, argsBottomToTop)
+                    ||> List.fold (fun state arg -> IlMachineState.pushToEvalStack' arg thread state)
 
-            state, concretizedMethod, performInterfaceResolution
+                ConstrainedReceiver.Ready (state, concretizedMethod, performInterfaceResolution)
+
+        match constrainedReceiver with
+        | ConstrainedReceiver.NullDereference state ->
+            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
+        | ConstrainedReceiver.Ready (state, concretizedMethod, performInterfaceResolution) ->
 
         // Callvirt always performs a null check on the receiver, even for non-virtual methods.
         if
