@@ -231,17 +231,17 @@ module EscapeAnalysis =
         : EscapeAnalysisState * bool
         =
         // Metadata could make a chain cyclic; CoreCLR would refuse to load it.
-        let rec go (state : EscapeAnalysisState) (current : ResolvedTypeIdentity) (depth : int) =
+        let rec go (state : EscapeAnalysisState) (current : ResolvedTypeIdentity) (seen : Set<ResolvedTypeIdentity>) =
             if current = ancestor then
                 state, true
-            elif depth > 256 then
-                failwith $"The base chain of %O{ty} is more than 256 types long, which suggests a cycle"
+            elif seen.Contains current then
+                failwith $"The base chain of %O{ty} reaches %O{current} twice"
             else
                 match baseOf state current with
-                | state, Some parent -> go state parent (depth + 1)
+                | state, Some parent -> go state parent (seen.Add current)
                 | state, None -> state, false
 
-        go state ty 0
+        go state ty Set.empty
 
     /// The type a `catch` clause names, when it is one this analysis can compare against: a TypeDef
     /// or TypeRef. A TypeSpec names an instantiation, and deciding whether an exception is one needs
@@ -773,6 +773,16 @@ module EscapeAnalysis =
             | state, None -> state, None, typeLoad ()
         | MetadataToken.TypeSpecification handle ->
             match spellingBinds state assembly assembly.TypeSpecs.[handle].Signature with
+            | state, true -> state, None, []
+            | state, false -> state, None, typeLoad ()
+        | MetadataToken.StandaloneSignature handle ->
+            // A `calli`'s call-site signature.
+            let signature =
+                (assembly.PeReader.GetMetadataReader().GetStandaloneSignature handle)
+                    .DecodeMethodSignature (TypeDefn.typeProvider assembly.Name, ())
+                |> TypeMethodSignature.make
+
+            match allBind state assembly (signatureTypes signature) with
             | state, true -> state, None, []
             | state, false -> state, None, typeLoad ()
         | _ -> state, None, []

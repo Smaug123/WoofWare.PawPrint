@@ -433,6 +433,8 @@ public class Parent
 public class GoneType { }
 
 public class GoneException : System.Exception { }
+
+public struct GoneStruct { }
 """
 
         let version2 =
@@ -473,6 +475,11 @@ public static class Uses
     }
     static void Accept(Provider.GoneType x) { }
     public static void PassGone() { Accept(null); }
+    public static unsafe int CallGoneIndirectly(delegate*<Provider.GoneStruct> f)
+    {
+        try { f(); return 0; }
+        catch (System.Exception) { return 1; }
+    }
     public static void PassGoneAsVararg() { Provider.Parent.Varargs(__arglist((Provider.GoneType)null)); }
     public static bool CaughtLocalOfGone()
     {
@@ -539,6 +546,8 @@ public static class Uses
                 "PassGone", "=System.TypeLoadException"
                 // Named only by a vararg call site's extra arguments, which no definition declares.
                 "PassGoneAsVararg", "=System.TypeLoadException"
+                // Named only by an indirect call's signature.
+                "CallGoneIndirectly", "=System.TypeLoadException"
             ] do
             let bound = against1 methodName
             let unbound = against2 methodName
@@ -548,6 +557,48 @@ public static class Uses
 
             if not (unbound.Contains failure) then
                 failwith $"%s{methodName} against the provider lacking what it uses: %A{Set.toList unbound}"
+
+    [<Test>]
+    let ``a catch absorbs an exception however deep its base chain`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let depth = 300
+
+        let classes =
+            [ 1..depth ]
+            |> List.map (fun i ->
+                let parent = if i = 1 then "System.Exception" else $"E%d{i - 1}"
+                $"public class E%d{i} : %s{parent} {{ }}"
+            )
+            |> String.concat "\n"
+
+        let source =
+            $"""
+namespace Deep;
+
+%s{classes}
+
+public static class Throws
+{{
+    public static void Caught()
+    {{
+        try {{ throw new E%d{depth}(); }}
+        catch (System.Exception) {{ }}
+    }}
+}}
+"""
+
+        let image =
+            Roslyn.compileAssembly "Deep" OutputKind.DynamicallyLinkedLibrary [] [ source ]
+
+        let assembly =
+            Assembly.read loggerFactory (Some "Deep.dll") (new MemoryStream (image))
+
+        let analysis = analysisOver [ assembly ] id
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes analysis (methodNamed assembly "Deep.Throws" "Caught")
+
+        render analysis escapes |> shouldNotContain $"=Deep.E%d{depth}"
 
     /// Loads each image of `images` by its simple name, so that one refers to another.
     type private ImagesContext (images : Map<string, byte[]>) =

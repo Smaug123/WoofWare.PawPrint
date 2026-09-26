@@ -19,7 +19,7 @@ method, a `rethrow`) may add more:
 * a `TypeInitializationException` from a type initializer is left out wherever the type a call
   touches has none;
 * every token a body names, the type of every local and `catch` clause it declares, and the
-  signature of every method it calls, is bound against the assemblies actually loaded, and a member
+  signature of every method it calls, directly or through `calli`, is bound against the assemblies actually loaded, and a member
   or type that is not there contributes the `MissingMethodException`, `MissingFieldException` or
   `TypeLoadException` the JIT would throw;
 * binding a token into another assembly that has a module initializer runs it, which may throw
