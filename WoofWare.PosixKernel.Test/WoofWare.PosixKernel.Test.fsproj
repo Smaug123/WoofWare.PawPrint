@@ -23,6 +23,7 @@
     <Compile Include="TestCredentials.fs" />
     <Compile Include="TestWakeCondition.fs" />
     <Compile Include="TestUnixWait.fs" />
+    <Compile Include="TestUnixTaskLifecycle.fs" />
     <Compile Include="TestUnixProcessState.fs" />
     <Compile Include="TestClock.fs" />
     <Compile Include="TestClockAgainstHost.fs" />
