@@ -1519,22 +1519,6 @@ module EmulatedKernel =
 
 
 
-    /// `UnixPoll.changeSocketEventRegistration` — `epoll_ctl(2)` past a
-    /// caller's own screens — through this kernel rather than through its POSIX
-    /// half.
-    ///
-    /// Here for the reason `connectSocket`'s and `acceptConnection`'s adapters
-    /// are: eleven fixtures call it holding an `EmulatedKernel`.
-    let changeSocketEventRegistration
-        (portFd : int)
-        (targetFd : int)
-        (change : SocketEventRegistrationChange)
-        (kernel : EmulatedKernel)
-        : Result<SocketEventRegistrationAnswer * EmulatedKernel, SocketEventRegistrationRefusal>
-        =
-        UnixPoll.changeSocketEventRegistration portFd targetFd change (unix kernel)
-        |> Result.map (fun (answer, system) -> answer, withUnix system kernel)
-
     /// `UnixSocket.createSocket` — allocate a fresh socket and a descriptor onto
     /// it — through this kernel rather than through its POSIX half.
     ///

@@ -7,8 +7,11 @@ open WoofWare.PosixKernel
 /// One operation of the socket/epoll differential fuzzer's op language
 /// (docs/plans/2026-08-22-socket-epoll-fuzzer.md). Slots name descriptors on
 /// both sides of the comparison; each side keeps its own slot-to-fd map, and
-/// raw fd numbers never appear in a transcript. Interest masks are the PAL's
-/// `SocketEvents` bits (0..0x1F), which translate 1:1 to epoll bits.
+/// raw fd numbers never appear in a transcript. `Add` and `Mod` carry the
+/// .NET shim's `SocketEvents` bits (0..0x1F), which both sides translate 1:1 to
+/// epoll bits and register edge-triggered, as the shim does; `EpollAdd` and
+/// `EpollMod` carry raw `<sys/epoll.h>` events, which reach both kernels
+/// unconverted.
 [<RequireQualifiedAccess>]
 type FuzzOp =
     | NewSocket of slot : int
@@ -22,6 +25,10 @@ type FuzzOp =
     | Add of port : int * target : int * mask : int
     | Mod of port : int * target : int * mask : int
     | Del of port : int * target : int
+    /// `EPOLL_CTL_ADD` with raw `<sys/epoll.h>` events, any 32-bit value.
+    | EpollAdd of port : int * target : int * events : uint32
+    /// `EPOLL_CTL_MOD` with raw `<sys/epoll.h>` events, any 32-bit value.
+    | EpollMod of port : int * target : int * events : uint32
     | Wait of port : int * maxEvents : int
     /// `poll(2)` over a single slot, with timeout 0. The `events` mask is
     /// Linux's own `<poll.h>` numbering, any value in 0..0xFFFF, and it reaches
@@ -46,13 +53,14 @@ type EmulatedRun =
 [<RequireQualifiedAccess>]
 module SocketFuzz =
 
-    /// The op language's interest mask, as a `SocketEventInterest`.
+    /// The op language's interest mask, as the events the .NET shim passes
+    /// `epoll_ctl`.
     ///
     /// The mirror of `harness.c`'s `interest_to_epoll`, which maps the same five
-    /// bits onto `EPOLLIN|EPOLLOUT|EPOLLRDHUP|EPOLLHUP|EPOLLERR`. Only three of
-    /// them can be *asked* for -- the last two are what epoll reports unasked --
-    /// so the top two bits reach an interest record that cannot hold them, which
-    /// is exactly the collapse the fuzzer wants to exercise.
+    /// bits onto `EPOLLIN|EPOLLOUT|EPOLLRDHUP|EPOLLHUP|EPOLLERR` and adds
+    /// `EPOLLET`. Only three of them can be *asked* for -- the last two are what
+    /// epoll reports unasked -- which is exactly the collapse the fuzzer wants
+    /// to exercise.
     ///
     /// Screens the mask rather than ignoring stray bits: a mask outside 0..0x1F
     /// is a generator bug, and a fuzzer that quietly accepted one would compare
@@ -63,16 +71,17 @@ module SocketFuzz =
     /// classifies on: without it the sequence would come back as
     /// `EmulatedRun.Refused`, which the live fuzzer *skips*, and a generator
     /// regression would be counted rather than reported.
-    let private interestOfMask (mask : int) : SocketEventInterest =
+    let private eventsOfMask (mask : int) : uint32 =
         if mask &&& ~~~0x1F <> 0 then
             failwith
                 $"INTERPRETER-DRIVER BUG: interest mask 0x%x{mask} has bits outside the five the op language defines (0x1F); the generator should never have produced it."
 
-        {
-            SocketEventInterest.In = mask &&& 0x01 <> 0
-            Out = mask &&& 0x02 <> 0
-            RdHup = mask &&& 0x04 <> 0
-        }
+        EpollEvents.EdgeTriggered
+        ||| (if mask &&& 0x01 <> 0 then EpollEvents.In else 0u)
+        ||| (if mask &&& 0x02 <> 0 then EpollEvents.Out else 0u)
+        ||| (if mask &&& 0x04 <> 0 then EpollEvents.RdHup else 0u)
+        ||| (if mask &&& 0x08 <> 0 then EpollEvents.Hup else 0u)
+        ||| (if mask &&& 0x10 <> 0 then EpollEvents.Err else 0u)
 
 
     /// The model refused an op, by its own refusal type rather than by a
@@ -101,6 +110,8 @@ module SocketFuzz =
         | FuzzOp.Add (p, t, m) -> $"add:%d{p}:%d{t}:%d{m}"
         | FuzzOp.Mod (p, t, m) -> $"mod:%d{p}:%d{t}:%d{m}"
         | FuzzOp.Del (p, t) -> $"del:%d{p}:%d{t}"
+        | FuzzOp.EpollAdd (p, t, e) -> $"eadd:%d{p}:%d{t}:%d{e}"
+        | FuzzOp.EpollMod (p, t, e) -> $"emod:%d{p}:%d{t}:%d{e}"
         | FuzzOp.Wait (p, n) -> $"wait:%d{p}:%d{n}"
         | FuzzOp.Poll (s, e) -> $"poll:%d{s}:%d{e}"
 
@@ -116,6 +127,12 @@ module SocketFuzz =
             | true, value -> value
             | false, _ -> failwith $"SocketFuzz.parseOp: op '%s{token}' has a non-integer argument."
 
+        let events (i : int) : uint32 =
+            match UInt32.TryParse parts.[i] with
+            | true, value -> value
+            | false, _ ->
+                failwith $"SocketFuzz.parseOp: op '%s{token}' has events that are not a 32-bit unsigned integer."
+
         match parts.[0], parts.Length with
         | "sock", 2 -> FuzzOp.NewSocket (arg 1)
         | "lstn", 2 -> FuzzOp.Listen (arg 1)
@@ -128,6 +145,8 @@ module SocketFuzz =
         | "add", 4 -> FuzzOp.Add (arg 1, arg 2, arg 3)
         | "mod", 4 -> FuzzOp.Mod (arg 1, arg 2, arg 3)
         | "del", 3 -> FuzzOp.Del (arg 1, arg 2)
+        | "eadd", 4 -> FuzzOp.EpollAdd (arg 1, arg 2, events 3)
+        | "emod", 4 -> FuzzOp.EpollMod (arg 1, arg 2, events 3)
         | "wait", 3 -> FuzzOp.Wait (arg 1, arg 2)
         | "poll", 3 -> FuzzOp.Poll (arg 1, arg 2)
         | _ -> failwith $"SocketFuzz.parseOp: unrecognised op '%s{token}'."
@@ -137,21 +156,35 @@ module SocketFuzz =
         |> Seq.map parseOp
         |> List.ofSeq
 
-    /// Canonical mask rendering, shared with the harness: bits in
-    /// IN,OUT,RDHUP,HUP,ERR order joined by '+'.
-    let private maskString (r : ReadinessLevel) : string =
+    /// `epoll_wait`'s reported events, in the order `harness.c`'s
+    /// `mask_string` prints them: the five conditions the .NET shim names
+    /// first, in the order the corpus has always printed them, then the rest
+    /// of Linux's named readiness bits.
+    let private epollBitNames : (uint32 * string) list =
         [
-            if r.In then
-                "IN"
-            if r.Out then
-                "OUT"
-            if r.RdHup then
-                "RDHUP"
-            if r.Hup then
-                "HUP"
-            if r.Err then
-                "ERR"
+            EpollEvents.In, "IN"
+            EpollEvents.Out, "OUT"
+            EpollEvents.RdHup, "RDHUP"
+            EpollEvents.Hup, "HUP"
+            EpollEvents.Err, "ERR"
+            EpollEvents.Pri, "PRI"
+            EpollEvents.RdNorm, "RDNORM"
+            EpollEvents.RdBand, "RDBAND"
+            EpollEvents.WrNorm, "WRNORM"
+            EpollEvents.WrBand, "WRBAND"
+            EpollEvents.Msg, "MSG"
         ]
+
+    /// Canonical mask rendering, shared with the harness. Refuses a bit with
+    /// no name rather than printing it, as the harness does.
+    let private maskString (events : uint32) : string =
+        let known = epollBitNames |> List.fold (fun acc (bit, _) -> acc ||| bit) 0u
+
+        if events &&& ~~~known <> 0u then
+            failwith $"INTERPRETER-DRIVER BUG: epoll_wait reported events 0x%08x{events}, outside Linux's named bits."
+
+        epollBitNames
+        |> List.choose (fun (bit, name) -> if events &&& bit <> 0u then Some name else None)
         |> String.concat "+"
 
     /// Linux's `<poll.h>` names, in the order `harness.c`'s
@@ -195,16 +228,8 @@ module SocketFuzz =
     /// harness's `strerrorname_np` prints — one vocabulary by construction.
     let private errName (e : UnixError) : string = $"%A{e}"
 
-    /// `SocketEventRegistrationError` back to the errno `epoll_ctl(2)` answers
-    /// (each case's docstring names it).
-    let private registrationErrName (e : SocketEventRegistrationError) : string =
-        match e with
-        | SocketEventRegistrationError.BadPortFd -> "EBADF"
-        | SocketEventRegistrationError.BadTargetFd -> "EBADF"
-        | SocketEventRegistrationError.TargetNotPollable -> "EPERM"
-        | SocketEventRegistrationError.NotAnEventPort -> "EINVAL"
-        | SocketEventRegistrationError.AlreadyRegistered -> "EEXIST"
-        | SocketEventRegistrationError.NotRegistered -> "ENOENT"
+    /// `EpollCtlError` back to the errno `epoll_ctl(2)` answers.
+    let private registrationErrName (e : EpollCtlError) : string = errName (EpollCtlError.toErrno e)
 
     /// The listener ports the emulated side assigns, in `Listen` op order.
     /// Fixed and below `UnixSystem.defaultEphemeralPortRange` (32768+),
@@ -245,6 +270,40 @@ module SocketFuzz =
         { state with
             SlotFd = Map.add slot fd state.SlotFd
         }
+
+    /// `epoll_ctl` of the target slot on the port slot, with `data` the target's
+    /// slot number, as the harness passes it.
+    ///
+    /// A refusal is a skip only for raw events, which may ask for modes the
+    /// model refuses. The `SocketEvents` ops register exactly what the .NET
+    /// shim registers, which the model answers in full, so a refusal of one is
+    /// a finding.
+    let private epollCtl
+        (rawEvents : bool)
+        (port : int)
+        (op : int)
+        (target : int)
+        (events : uint32)
+        (state : ExecState)
+        : string * ExecState
+        =
+        match
+            UnixPoll.epollCtl
+                (slotFd port state)
+                op
+                (slotFd target state)
+                (EpollEventArgument.Readable (events, uint64 target))
+                state.Kernel
+        with
+        | Ok (EpollCtlAnswer.Changed, kernel) ->
+            "ok",
+            { state with
+                Kernel = kernel
+            }
+        | Ok (EpollCtlAnswer.Failed reason, _) -> registrationErrName reason, state
+        | Error refusal when rawEvents ->
+            raise (ModelRefusal $"epoll_ctl refused: %s{EpollCtlRefusal.describe refusal}")
+        | Error refusal -> failwith $"INTERPRETER-DRIVER BUG: %s{EpollCtlRefusal.describe refusal}"
 
     /// One op against the emulated kernel: the transcript token, and the state
     /// after. Any `failwith` escaping this is the kernel refusing (or, if it
@@ -438,53 +497,11 @@ module SocketFuzz =
                                 }
                         }
                 }
-        | FuzzOp.Add (port, target, mask) ->
-            let change =
-                SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, interestOfMask mask, uint64 target)
-
-            match
-                UnixPoll.changeSocketEventRegistration (slotFd port state) (slotFd target state) change state.Kernel
-            with
-            | Ok (SocketEventRegistrationAnswer.Changed, kernel) ->
-                "ok",
-                { state with
-                    Kernel = kernel
-                }
-            | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> registrationErrName reason, state
-            | Error refusal -> failwith $"INTERPRETER-DRIVER BUG: %s{SocketEventRegistrationRefusal.describe refusal}"
-        | FuzzOp.Mod (port, target, mask) ->
-            let change =
-                SocketEventRegistrationChange.Modify (
-                    SocketEventTrigger.EdgeTriggered,
-                    interestOfMask mask,
-                    uint64 target
-                )
-
-            match
-                UnixPoll.changeSocketEventRegistration (slotFd port state) (slotFd target state) change state.Kernel
-            with
-            | Ok (SocketEventRegistrationAnswer.Changed, kernel) ->
-                "ok",
-                { state with
-                    Kernel = kernel
-                }
-            | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> registrationErrName reason, state
-            | Error refusal -> failwith $"INTERPRETER-DRIVER BUG: %s{SocketEventRegistrationRefusal.describe refusal}"
-        | FuzzOp.Del (port, target) ->
-            match
-                UnixPoll.changeSocketEventRegistration
-                    (slotFd port state)
-                    (slotFd target state)
-                    SocketEventRegistrationChange.Remove
-                    state.Kernel
-            with
-            | Ok (SocketEventRegistrationAnswer.Changed, kernel) ->
-                "ok",
-                { state with
-                    Kernel = kernel
-                }
-            | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> registrationErrName reason, state
-            | Error refusal -> failwith $"INTERPRETER-DRIVER BUG: %s{SocketEventRegistrationRefusal.describe refusal}"
+        | FuzzOp.Add (port, target, mask) -> epollCtl false port 1 target (eventsOfMask mask) state
+        | FuzzOp.Mod (port, target, mask) -> epollCtl false port 3 target (eventsOfMask mask) state
+        | FuzzOp.EpollAdd (port, target, events) -> epollCtl true port 1 target events state
+        | FuzzOp.EpollMod (port, target, events) -> epollCtl true port 3 target events state
+        | FuzzOp.Del (port, target) -> epollCtl false port 2 target 0u state
         | FuzzOp.Wait (port, maxEvents) ->
             let portId =
                 match FileDescriptorRegistry.tryFindId (slotFd port state) state.Kernel.Process.FileDescriptors with
@@ -650,6 +667,52 @@ module SocketFuzz =
         | 7 -> 0x05
         | 8 -> rng.Next 0x20 // anything, CLOSE/ERROR bits included
         | _ -> 0x1F
+
+    /// Raw `<sys/epoll.h>` events for `EpollAdd` and `EpollMod`: the readiness
+    /// bits the .NET shim never asks for, alone and together, and bits epoll
+    /// names nothing for, which it stores and never reports. Edge-triggered
+    /// but for one draw in 32, which asks for a mode the model refuses
+    /// (level-triggering, `EPOLLEXCLUSIVE`, `EPOLLONESHOT` or `EPOLLWAKEUP`),
+    /// so that the failures which precede a refusal are compared too.
+    let private randomEpollEvents (rng : Random) : uint32 =
+        let readiness =
+            [
+                EpollEvents.In
+                EpollEvents.Pri
+                EpollEvents.Out
+                EpollEvents.Err
+                EpollEvents.Hup
+                EpollEvents.RdNorm
+                EpollEvents.RdBand
+                EpollEvents.WrNorm
+                EpollEvents.WrBand
+                EpollEvents.Msg
+                EpollEvents.RdHup
+            ]
+
+        let body =
+            match rng.Next 8 with
+            | 0 -> 0u
+            | 1
+            | 2
+            | 3
+            | 4 -> pick rng readiness
+            | 5 -> readiness |> List.filter (fun _ -> rng.Next 2 = 0) |> List.fold (|||) 0u
+            | 6 -> uint32 (rng.Next 0x10000000)
+            | _ -> pick rng [ 0x20u ; 0x800u ; 0x1000u ; 0x4000u ; 0x8000u ; 0x100000u ; 0x8000000u ]
+
+        if rng.Next 32 = 0 then
+            body
+            ||| pick
+                    rng
+                    [
+                        0u
+                        EpollEvents.EdgeTriggered ||| EpollEvents.Exclusive
+                        EpollEvents.EdgeTriggered ||| EpollEvents.OneShot
+                        EpollEvents.EdgeTriggered ||| EpollEvents.WakeUp
+                    ]
+        else
+            body ||| EpollEvents.EdgeTriggered
 
     /// A `poll(2)` request mask, in Linux's own `<poll.h>` numbering.
     ///
@@ -912,7 +975,11 @@ module SocketFuzz =
                     (fun () ->
                         let port = pick rng ports
                         let target = pick rng allSockets
-                        ops.Add (FuzzOp.Add (port, target, randomMask rng))
+
+                        if rng.Next 3 = 0 then
+                            ops.Add (FuzzOp.EpollAdd (port, target, randomEpollEvents rng))
+                        else
+                            ops.Add (FuzzOp.Add (port, target, randomMask rng))
                         // A duplicate Add is the EEXIST row; the shadow set
                         // is unchanged either way.
                         state <-
@@ -931,7 +998,11 @@ module SocketFuzz =
                     wRegister
                     (fun () ->
                         let port, target = pick rng registered
-                        ops.Add (FuzzOp.Mod (port, target, randomMask rng))
+
+                        if rng.Next 3 = 0 then
+                            ops.Add (FuzzOp.EpollMod (port, target, randomEpollEvents rng))
+                        else
+                            ops.Add (FuzzOp.Mod (port, target, randomMask rng))
                     )
 
                 addWeighted
