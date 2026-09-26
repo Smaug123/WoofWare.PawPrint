@@ -225,13 +225,16 @@ module StackShapeOfMethod =
         | UnaryMetadataTokenIlOp.Call
         | UnaryMetadataTokenIlOp.Callvirt ->
             // An entry the instruction would refuse, or one PawPrint does not implement, is the
-            // instruction's own problem when it executes. So is a `callvirt` of a static callee,
-            // which real .NET refuses with MissingMethodException whatever the stack holds (a
-            // `callvirt` with none of the callee's arguments pushed is measured to raise it too):
-            // a shape here would have the analysis refuse the underflow first.
+            // instruction's own problem when it executes. So is a callee the instruction refuses
+            // whatever the stack holds: a `callvirt` of a static method is MissingMethodException,
+            // and a `call` of an abstract one BadImageFormatException, each measured with none of
+            // the callee's arguments pushed. A shape here would have the analysis refuse the
+            // underflow first.
+            let refusedCallee (callee : string) (exceptionName : string) : Result<TokenShape option, string> =
+                Error $"%s{operation} names %s{callee}, so the instruction raises %s{exceptionName} when it runs"
+
             let staticCallvirt (callee : string) : Result<TokenShape option, string> =
-                Error
-                    $"%s{operation} names %s{callee}, which is static, so the instruction raises MissingMethodException when it runs"
+                refusedCallee $"%s{callee}, which is static" "MissingMethodException"
 
             match DynamicScopeOperand.tryMethod baseClassTypes operation index state handle with
             | Error (ScopeEntryRefusal.GuestException (_, why))
@@ -240,13 +243,14 @@ module StackShapeOfMethod =
             | Ok (ScopeMethodResolution.NeedsMinting _) when op = UnaryMetadataTokenIlOp.Callvirt ->
                 staticCallvirt "a DynamicMethod"
             | Ok (ScopeMethodResolution.Resolved (MethodHandle.FromMetadata identity)) ->
-                if
-                    op = UnaryMetadataTokenIlOp.Callvirt
-                    && (MethodHandleResolution.methodInfoOfMetadataIdentity operation state identity).IsStatic
-                then
-                    staticCallvirt "a static reflected method"
-                else
-                    Ok (Some (reflectedCalleeShape state operation identity))
+                let definition =
+                    MethodHandleResolution.methodInfoOfMetadataIdentity operation state identity
+
+                match op, definition.Body with
+                | UnaryMetadataTokenIlOp.Callvirt, _ when definition.IsStatic -> staticCallvirt "a reflected method"
+                | UnaryMetadataTokenIlOp.Call, MethodBody.Abstract ->
+                    refusedCallee "an abstract reflected method" "BadImageFormatException"
+                | _ -> Ok (Some (reflectedCalleeShape state operation identity))
             | Ok (ScopeMethodResolution.Resolved (MethodHandle.FromDynamic callee)) ->
                 let definition =
                     MethodHandleRegistry.resolveDynamicMethod callee state.MethodHandles

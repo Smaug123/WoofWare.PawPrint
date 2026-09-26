@@ -229,6 +229,21 @@ public class Program
             }
         }
 
+        // Likewise before the receiver is looked at: with none pushed, it is still refused.
+        Action directFlushNoReceiver = (Action) Make(typeof(void), Type.EmptyTypes, il =>
+        {
+            il.Emit(OpCodes.Call, flush);
+            il.Emit(OpCodes.Ret);
+        }).CreateDelegate(typeof(Action));
+        try
+        {
+            directFlushNoReceiver();
+            return 24;
+        }
+        catch (BadImageFormatException)
+        {
+        }
+
         // `callvirt` of a static method is refused as a missing method.
         Func<int> virtualStatic = (Func<int>) Make(typeof(int), Type.EmptyTypes, il =>
         {
