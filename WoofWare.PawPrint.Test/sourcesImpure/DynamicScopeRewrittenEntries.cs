@@ -6,6 +6,8 @@ using System.Reflection.Emit;
 public class Gen<T>
 {
     public static string Name() => typeof(T).Name;
+
+    public static int Value() => typeof(T) == typeof(string) ? 77 : 88;
 }
 
 public class St<T>
@@ -207,6 +209,12 @@ public class Program
         if (CallWith(MethodInfoWrapper(helper.MethodHandle, default(RuntimeTypeHandle)), Replace)() != 7)
         {
             return 12;
+        }
+        // Including for a reference-type instantiation, whose code CoreCLR shares with every other:
+        // the handle alone still names `Gen<string>`.
+        if (CallWith(MethodInfoWrapper(typeof(Gen<string>).GetMethod("Value").MethodHandle, default(RuntimeTypeHandle)), Replace)() != 77)
+        {
+            return 15;
         }
         // An open context is an invalid program, however good the method.
         if (!Throws<InvalidProgramException>(CallWith(MethodInfoWrapper(helper.MethodHandle, typeof(Gen<>).TypeHandle), Replace), InvalidProgram))
