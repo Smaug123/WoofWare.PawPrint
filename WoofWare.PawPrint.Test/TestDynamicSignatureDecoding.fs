@@ -413,12 +413,22 @@ module TestDynamicSignatureDecoding =
     [<Test>]
     let ``refuses a run whose bytes are out of order`` () : unit =
         let run = internalRun 0
-        let swapped = [ run.[1] ; run.[0] ] @ List.skip 2 run
 
-        let exn =
-            Assert.Throws<Exception> (fun () -> decodeMethod (oneParameter swapped) |> ignore)
+        // The first byte out of place, and then two interior ones, which a check on the first byte
+        // alone would let through.
+        for first, second in [ 0, 1 ; 3, 4 ] do
+            let swapped =
+                run
+                |> List.mapi (fun i b ->
+                    if i = first then run.[second]
+                    elif i = second then run.[first]
+                    else b
+                )
 
-        exn.Message |> shouldContainText "ELEMENT_TYPE_INTERNAL"
+            let exn =
+                Assert.Throws<Exception> (fun () -> decodeMethod (oneParameter swapped) |> ignore)
+
+            exn.Message |> shouldContainText "ELEMENT_TYPE_INTERNAL"
 
     [<Test>]
     let ``refuses a run mixing two handles`` () : unit =

@@ -1,7 +1,8 @@
 # Running the expression interpreter's emitted thunk
 
-Status: plan, 2026-09-26, measured on `main` at 30a3051e. Tracking issue: #849. Motivated by the
-ASP.NET ladder's rung L (`docs/plans/2026-08-17-aspnet-critical-path.md` on `aspnet-ladder`).
+Status: stage 1 implemented (2026-09-26). Measured on `main` at 30a3051e, and each probe re-run
+after stage 1. Tracking issue: #849. Motivated by the ASP.NET ladder's rung L
+(`docs/plans/2026-08-17-aspnet-critical-path.md` on `aspnet-ladder`).
 
 ## The gap
 
@@ -84,6 +85,11 @@ PawPrint's; a `sourcesImpure` guest (switch overridden) with a `DynamicMethod` o
 user-defined struct, a generic instantiation and an enum. The three-parameter
 `Expression.Compile` guest goes into `sourcesPure` now, parked in `unimplemented`: it is a true
 differential case, because both runtimes emit the thunk regardless of the switch.
+
+Measured after stage 1: the owned-thunk probe gets past `ModuleHandle_GetDynamicMethod`'s
+signature and stops decoding the body, at the `callvirt` naming `Func<object[], object>::Invoke`
+(stage 2). The three-parameter guest still stops at `AssemblyNative_InitializeAssemblyLoadContext`
+(stage 3), as it must, since the anonymous hosting comes before the thunk is ever built.
 
 ### Stage 2: reflected methods in method position
 

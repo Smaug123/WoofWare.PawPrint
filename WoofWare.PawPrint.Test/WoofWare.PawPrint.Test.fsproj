@@ -163,6 +163,7 @@
     <Compile Include="TestNativeTypeParamInfo.fs" />
     <Compile Include="TestNativeMetadataImport.fs" />
     <Compile Include="TestDynamicSignatureDecoding.fs" />
+    <Compile Include="TestInternalSignatureTypeResolution.fs" />
     <Compile Include="TestPropertySignatureDecoding.fs" />
     <Compile Include="TestSignatureComparison.fs" />
     <Compile Include="TestNativeSignature.fs" />
