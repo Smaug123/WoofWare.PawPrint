@@ -47,6 +47,7 @@
         <Compile Include="RemovalRules.fs" />
         <Compile Include="RenameRules.fs" />
         <Compile Include="SimulatedUnixPlatform.fs" />
+        <Compile Include="PipeBuffer.fs" />
         <Compile Include="EntropyPool.fs" />
         <Compile Include="ProcessId.fs" />
         <Compile Include="UnixProcess.fs" />
