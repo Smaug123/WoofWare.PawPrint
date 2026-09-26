@@ -2,6 +2,7 @@ namespace WoofWare.PosixKernel.Test
 
 open System
 open System.Collections.Immutable
+open System.Runtime.InteropServices
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
@@ -127,7 +128,9 @@ module PipeBufferReference =
         else
             let size =
                 if n > s.Size - held then
-                    choose s.Size (held + n)
+                    // Saturating rather than wrapping: only whether the target
+                    // reaches each block size matters.
+                    choose s.Size (int (min (int64 held + int64 n) (int64 Int32.MaxValue)))
                 else
                     s.Size
 
@@ -589,3 +592,45 @@ module TestPipeBuffer =
         for platform in platforms do
             Assert.Throws<Exception> (fun () -> PipeBuffer.read -1 (PipeBuffer.empty platform) |> ignore)
             |> ignore
+
+    [<Test>]
+    let ``draining a full buffer a byte at a time copies only the bytes read`` () : unit =
+        // A read that leaves part of a chunk behind must not copy what it leaves:
+        // 65536 one-byte reads of one 64 KiB chunk would otherwise copy about
+        // 2 GiB. The bound is generous, and far below that.
+        for platform in platforms do
+            let _, full = PipeBuffer.write (payload 0 65536) (PipeBuffer.empty platform)
+            let mutable buffer = full
+            let before = GC.GetAllocatedBytesForCurrentThread ()
+
+            for _ in 1..65536 do
+                buffer <- snd (PipeBuffer.read 1 buffer)
+
+            let allocated = GC.GetAllocatedBytesForCurrentThread () - before
+
+            if allocated > 64L * 1024L * 1024L then
+                failwith $"%O{platform}: draining 64 KiB a byte at a time allocated %d{allocated} bytes"
+
+            PipeBuffer.held buffer |> shouldEqual 0
+
+    [<Test>]
+    let ``a write too large to add to what the buffer holds takes what fits`` () : unit =
+        // `pipe-buffer-huge-write.c`: with 512 bytes held, a count whose sum
+        // with them exceeds Int32.MaxValue takes exactly what a 65536- or
+        // 70000-byte count takes.
+        let huge =
+            ImmutableCollectionsMarshal.AsImmutableArray (Array.zeroCreate<byte> 2147483500)
+
+        for platform, expected in
+            [
+                SimulatedUnixPlatform.macOsArm64, 65024
+                SimulatedUnixPlatform.linuxX64, 61440
+                SimulatedUnixPlatform.linuxArm64, 61440
+            ] do
+            let _, buffer = PipeBuffer.write (payload 0 512) (PipeBuffer.empty platform)
+
+            (platform, fst (PipeBuffer.write huge buffer))
+            |> shouldEqual (platform, expected)
+
+            (platform, fst (PipeBuffer.write (payload 0 70000) buffer))
+            |> shouldEqual (platform, (if expected = 65024 then 65024 else 61808))

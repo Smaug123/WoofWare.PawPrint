@@ -8,9 +8,11 @@ open System.Collections.Immutable
 type internal ByteQueue =
     private
         {
-            /// The unread part of the oldest chunk; empty exactly when the
-            /// queue is.
+            /// The oldest chunk; empty exactly when the queue is.
             Head : ImmutableArray<byte>
+            /// How many of `Head`'s bytes have been taken already. Always less
+            /// than `Head`'s length unless the queue is empty.
+            HeadTaken : int
             /// The later chunks, oldest first, none of them empty.
             Rest : ImmutableQueue<ImmutableArray<byte>>
             Length : int
@@ -21,6 +23,7 @@ module internal ByteQueue =
     let empty : ByteQueue =
         {
             Head = ImmutableArray.Empty
+            HeadTaken = 0
             Rest = ImmutableQueue.Empty
             Length = 0
         }
@@ -33,6 +36,7 @@ module internal ByteQueue =
         elif queue.Length = 0 then
             {
                 Head = chunk
+                HeadTaken = 0
                 Rest = ImmutableQueue.Empty
                 Length = chunk.Length
             }
@@ -43,7 +47,7 @@ module internal ByteQueue =
             }
 
     /// The oldest `count` bytes, which must not be more than the queue holds,
-    /// and the queue without them.
+    /// and the queue without them. Copies the bytes returned and nothing else.
     let take (count : int) (queue : ByteQueue) : ImmutableArray<byte> * ByteQueue =
         if count < 0 || count > queue.Length then
             failwith
@@ -51,13 +55,17 @@ module internal ByteQueue =
 
         let taken = ImmutableArray.CreateBuilder<byte> count
         let mutable head = queue.Head
+        let mutable headTaken = queue.HeadTaken
         let mutable rest = queue.Rest
         let mutable remaining = count
 
         while remaining > 0 do
-            if head.Length <= remaining then
-                taken.AddRange head
-                remaining <- remaining - head.Length
+            let unread = head.Length - headTaken
+
+            if unread <= remaining then
+                taken.AddRange (head.AsSpan (headTaken, unread))
+                remaining <- remaining - unread
+                headTaken <- 0
 
                 if rest.IsEmpty then
                     head <- ImmutableArray.Empty
@@ -66,13 +74,14 @@ module internal ByteQueue =
                     rest <- rest.Dequeue &next
                     head <- next
             else
-                taken.AddRange (ImmutableArray.Create (head, 0, remaining))
-                head <- ImmutableArray.Create (head, remaining, head.Length - remaining)
+                taken.AddRange (head.AsSpan (headTaken, remaining))
+                headTaken <- headTaken + remaining
                 remaining <- 0
 
         taken.MoveToImmutable (),
         {
             Head = head
+            HeadTaken = headTaken
             Rest = rest
             Length = queue.Length - count
         }
@@ -136,11 +145,11 @@ module internal DarwinPipeBufferSize =
     /// `wanted` bytes: the smallest size strictly larger than both, or the
     /// largest size if none is. "Strictly" is measured: a buffer that must hold
     /// exactly 16384 grows past 16384 rather than to it.
-    let grownFor (current : DarwinPipeBufferSize) (wanted : int) : DarwinPipeBufferSize =
-        let target = max (bytes current) wanted
+    let grownFor (current : DarwinPipeBufferSize) (wanted : int64) : DarwinPipeBufferSize =
+        let target = max (int64 (bytes current)) wanted
 
         ascending
-        |> List.tryFind (fun size -> bytes size > target)
+        |> List.tryFind (fun size -> int64 (bytes size) > target)
         |> Option.defaultValue DarwinPipeBufferSize.B65536
 
 /// A Darwin pipe's buffer: the bytes it holds, and the size it has grown to.
@@ -310,7 +319,7 @@ module PipeBuffer =
 
             let size =
                 if n > DarwinPipeBufferSize.bytes darwin.Size - holding then
-                    DarwinPipeBufferSize.grownFor darwin.Size (holding + n)
+                    DarwinPipeBufferSize.grownFor darwin.Size (int64 holding + int64 n)
                 else
                     darwin.Size
 
