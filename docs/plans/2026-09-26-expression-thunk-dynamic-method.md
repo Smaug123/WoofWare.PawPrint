@@ -1,7 +1,7 @@
 # Running the expression interpreter's emitted thunk
 
-Status: stage 1 implemented (2026-09-26). Measured on `main` at 30a3051e, and each probe re-run
-after stage 1. Tracking issue: #849. Motivated by the ASP.NET ladder's rung L
+Status: stages 1 and 2 implemented (2026-09-26). Measured on `main` at 30a3051e, and each probe
+re-run after each stage. Tracking issue: #849. Motivated by the ASP.NET ladder's rung L
 (`docs/plans/2026-08-17-aspnet-critical-path.md` on `aspnet-ladder`).
 
 ## The gap
@@ -93,11 +93,29 @@ signature and stops decoding the body, at the `callvirt` naming `Func<object[], 
 
 ### Stage 2: reflected methods in method position
 
-Admit `RuntimeMethodHandle` and `GenericMethodInfo` scope entries for `call`, and admit
-`callvirt` for them (a `callvirt` naming a `DynamicMethod` stays refused: it is a
-`MissingMethodException` on real .NET). Resolution goes through the method handle registry, with
-`GenericMethodInfo`'s type handle supplying the declaring instantiation. Acceptance is the owned
-thunk probe, registered as a `sourcesImpure` case.
+`call` and `callvirt` accept `RuntimeMethodHandle` and `GenericMethodInfo` scope entries, resolved
+through the method handle registry to the method's metadata identity. That identity already carries
+the declaring instantiation, so `GenericMethodInfo`'s type handle is required to agree with it
+rather than used, as for `GenericFieldInfo`. The callee then takes the metadata path's own last
+steps, now shared between the two: `call` of an abstract method is "Bad IL format.", and `callvirt`
+checks its receiver for null and dispatches on it.
+
+As implemented, `callvirt` accepts a `DynamicMethod` entry as well, rather than refusing it: real
+.NET answers a `callvirt` of any static method with `MissingMethodException` ("Method not found:
+'?'."), and a `DynamicMethod` is always static, so one rule about the resolved callee covers both
+(both measured). Also measured, against controls that run: a method of an open generic type
+definition is an `InvalidProgramException`, and a generic method definition with no instantiation
+runs with its type parameters unbound (`Array.Empty<T>`'s definition throws
+`TypeInitializationException`), which PawPrint refuses rather than models. Real .NET makes no
+visibility check on a dynamic method's callee: a private method of an unrelated type runs, owned or
+anonymously hosted, without `restrictedSkipVisibility`. So PawPrint needs none.
+
+`ldftn`, `ldvirtftn` and `newobj` naming a reflected method stay refused; the thunk uses none of
+them. `sourcesImpure/DynamicMethodReflectedCalls.cs` is the acceptance case, and includes the owned
+thunk.
+
+Measured after stage 2: the owned-thunk probe answers 42. The three-parameter guest still stops at
+`AssemblyNative_InitializeAssemblyLoadContext` (stage 3).
 
 ### Stage 3: anonymous hosting
 
