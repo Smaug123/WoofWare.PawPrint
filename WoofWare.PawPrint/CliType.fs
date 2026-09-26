@@ -427,6 +427,10 @@ type CliType =
     /// `declaringType`'s zero value, and `field` one of the instance fields `declaringType` itself
     /// declares.
     ///
+    /// `declaringType` must be a value type or have no layout: a class with layout takes its
+    /// native layout from its base chain, which `CliValueType.TryComputeClassMarshalLayout`
+    /// computes, and it is a caller error to pass one here.
+    ///
     /// The errors classify as `TryComputeMarshalSize`'s do: `NotMarshalable` is CoreCLR's
     /// `ArgumentException` (`IDS_CANNOT_MARSHAL`), and `NotImplemented` a shape CoreCLR would
     /// answer but PawPrint cannot yet. A value type's offsets are its placements from
@@ -461,39 +465,47 @@ type CliType =
         | CliType.Char _
         | CliType.RuntimePointer _ -> Result.Ok 0
         | CliType.ObjectRef _ ->
-            MarshalSizeError.NotImplemented
-                $"%s{AllConcreteTypes.describe assemblies concreteTypes declaringType} is a class with [StructLayout], and PawPrint does not compute a class's native layout"
-            |> Result.Error
+            failwith
+                $"CliType.TryComputeMarshalFieldOffset: %s{AllConcreteTypes.describe assemblies concreteTypes declaringType} is a class; a class's native layout is its base chain's, from CliValueType.TryComputeClassMarshalLayout"
         | CliType.ValueType vt ->
             if vt.Declared <> declaringType then
                 failwith
                     $"CliType.TryComputeMarshalFieldOffset: the zero value passed is of %s{AllConcreteTypes.describe assemblies concreteTypes vt.Declared}, not of the declaring type %s{AllConcreteTypes.describe assemblies concreteTypes declaringType}"
 
             CliValueType.TryComputeMarshalLayout concreteTypes assemblies corelib vt
-            |> Result.map (fun (_, placements) ->
-                let matching =
-                    placements
-                    |> List.filter (fun placement ->
-                        match placement.Field.Id with
-                        | FieldId.Metadata (field = placedField) -> placedField = field
-                        // An inline array's later slots are storage, not fields: its one
-                        // declared field is slot 0, which is `FieldId.Metadata`.
-                        | FieldId.InlineArrayElement _
-                        | FieldId.Named _ -> false
-                    )
+            |> Result.map (fun (_, placements) -> CliType.MarshalFieldOffset declaringType field placements)
 
-                match matching with
-                | [ placement ] -> placement.NativeOffset
-                | [] ->
-                    // CoreCLR's managed wrapper has already found the field by reflection, so
-                    // its native layout always holds it (the `CONSISTENCY_CHECK` in
-                    // `MarshalNative_OffsetOf`).
-                    failwith
-                        $"CliType.TryComputeMarshalFieldOffset: %s{AllConcreteTypes.describe assemblies concreteTypes declaringType}'s native layout places no field %O{field}"
-                | _ ->
-                    failwith
-                        $"CliType.TryComputeMarshalFieldOffset: %s{AllConcreteTypes.describe assemblies concreteTypes declaringType}'s native layout places field %O{field} %d{matching.Length} times"
+    /// The native offset of the instance field `field`, which `declaringType` declares, among
+    /// `placements`: the placements of `declaringType`'s native layout.
+    static member MarshalFieldOffset
+        (declaringType : ConcreteTypeHandle)
+        (field : ComparableFieldDefinitionHandle)
+        (placements : MarshalFieldPlacement list)
+        : int
+        =
+        let matching =
+            placements
+            |> List.filter (fun placement ->
+                match placement.Field.Id with
+                | FieldId.Metadata (declaringType = placedIn ; field = placedField) ->
+                    placedIn = declaringType && placedField = field
+                // An inline array's later slots are storage, not fields: its one
+                // declared field is slot 0, which is `FieldId.Metadata`.
+                | FieldId.InlineArrayElement _
+                | FieldId.Named _ -> false
             )
+
+        match matching with
+        | [ placement ] -> placement.NativeOffset
+        | [] ->
+            // CoreCLR's managed wrapper has already found the field by reflection, so
+            // its native layout always holds it (the `CONSISTENCY_CHECK` in
+            // `MarshalNative_OffsetOf`).
+            failwith
+                $"CliType.MarshalFieldOffset: the native layout of %O{declaringType} places no field %O{field} declared by it"
+        | _ ->
+            failwith
+                $"CliType.MarshalFieldOffset: the native layout of %O{declaringType} places field %O{field} %d{matching.Length} times"
 
     static member ToBytes (t : CliType) : byte[] =
         match t with
@@ -1287,6 +1299,29 @@ and MarshalFieldNative =
                 Size = 1
                 Alignment = 1
             }
+
+/// What `Marshal.SizeOf` and `Marshal.OffsetOf` answer for a class with layout: see
+/// <see cref="CliValueType.TryComputeClassMarshalLayout"/>.
+and ClassMarshalLayout =
+    {
+        /// The class's size, or the reason PawPrint does not answer it although it answers the
+        /// placements.
+        Size : Result<SizeofResult, MarshalSizeError>
+        /// One per instance field of the class's base chain below `System.Object`, each where the
+        /// class declaring it places it.
+        Placements : MarshalFieldPlacement list
+    }
+
+/// What a class's native layout takes from its base class's (`FindParentNativeLayoutInfo`,
+/// classlayoutinfo.cpp): the base is laid out "as an initial member".
+and ParentNativeLayout =
+    {
+        /// Where the derived type's own fields start: the base's native size, but 0 for a base
+        /// that was bumped from a computed size of 0 up to 1, "ONLY for inheritance situations".
+        Start : int
+        /// The base's native alignment requirement, which a derived type's own `Pack` caps.
+        AlignmentRequirement : int
+    }
 
 /// A value type's native (marshalled) image: CoreCLR's `EEClassNativeLayoutInfo`, which a type
 /// with layout has whether or not it can be marshalled.
@@ -4103,37 +4138,73 @@ and CliValueType =
                     Placements = []
                 }
         | CliValueTypeStorage.Fields storage ->
-            CliValueType.ClassifyOwnFields concreteTypes assemblies corelib vt storage
-            |> CliValueType.LayOutClassified vt
+            CliValueType.ClassifyOwnFields concreteTypes assemblies corelib vt.CharSet (CliValueType.OwnFields storage)
+            |> CliValueType.LayOutClassified vt.Layout vt._NominalAlignment CliValueType.NoParentNativeLayout
+            |> Result.map CliValueType.BumpZeroSized
 
-    /// What each of `vt`'s own fields contributes to its native image, in declaration order, or
-    /// the reason PawPrint does not implement a field's native form.
+    /// A value type's own fields, as the native layout walk reads them: with the offset each one
+    /// declares, if any, rather than the one the managed layout placed it at.
+    static member private OwnFields (storage : CliFieldBackedStorage) : CliField list =
+        storage.Fields |> List.map CliConcreteField.ToCliField
+
+    /// What each of `fields` contributes to its declaring type's native image, in declaration
+    /// order, or the reason PawPrint does not implement a field's native form. `charSet` is the
+    /// declaring type's.
     static member private ClassifyOwnFields
         (concreteTypes : AllConcreteTypes)
         (assemblies : LoadedAssemblies)
         (corelib : BaseClassTypes<DumpedAssembly>)
-        (vt : CliValueType)
-        (storage : CliFieldBackedStorage)
-        : (CliConcreteField * Result<MarshalFieldNative, string>) list
+        (charSet : CharSet)
+        (fields : CliField list)
+        : (CliField * Result<MarshalFieldNative, string>) list
         =
-        storage.Fields
+        fields
         |> List.map (fun field ->
             field,
             CliValueType.TryFieldNative
                 concreteTypes
                 assemblies
                 corelib
-                vt.CharSet
+                charSet
                 field.MarshallingDescriptor
                 field.Type
                 field.Contents
         )
 
-    /// Lay out `vt`'s own fields, as `ClassifyOwnFields` classified them, into its native image;
-    /// `NotImplemented` for the first field PawPrint cannot classify.
+    /// What a type's native layout takes from its parent's when it has none: its fields start at
+    /// 0, and CoreCLR "pretend[s] that the parent alignment requirement is 1"
+    /// (`CollectNativeLayoutFieldMetadataThrowing`, classlayoutinfo.cpp).
+    static member private NoParentNativeLayout : ParentNativeLayout =
+        {
+            Start = 0
+            AlignmentRequirement = 1
+        }
+
+    /// CoreCLR's `CollectNativeLayoutFieldMetadataThrowing` bumps a computed native size of 0 to 1
+    /// so the type has a distinct native address (classlayoutinfo.cpp:984-988). This is universal
+    /// post-processing, whether the zero came from an empty field list or an explicit `Size = 0`;
+    /// only a derived type's view of its parent sees the size before it (`ParentNativeLayout`).
+    static member private BumpZeroSized (layout : NativeLayout) : NativeLayout =
+        if layout.Size.Size = 0 then
+            { layout with
+                Size =
+                    { layout.Size with
+                        Size = 1
+                    }
+            }
+        else
+            layout
+
+    /// Lay out one type's own fields, as `ClassifyOwnFields` classified them, into its native
+    /// image, after whatever `parent` contributes; `NotImplemented` for the first field PawPrint
+    /// cannot classify. `layout` and `nominalAlignment` are the declaring type's.
+    ///
+    /// The size is the computed one, *before* `BumpZeroSized`, which callers apply.
     static member private LayOutClassified
-        (vt : CliValueType)
-        (classified : (CliConcreteField * Result<MarshalFieldNative, string>) list)
+        (layout : Layout)
+        (nominalAlignment : int option)
+        (parent : ParentNativeLayout)
+        (classified : (CliField * Result<MarshalFieldNative, string>) list)
         : Result<NativeLayout, MarshalSizeError>
         =
         let sized =
@@ -4152,58 +4223,43 @@ and CliValueType =
         | Result.Ok sized ->
 
         let minimumSize, packingSize =
-            match vt.Layout with
+            match layout with
             | Layout.Custom (size = size ; packingSize = packing) ->
                 size, if packing = 0 then DEFAULT_PACKING_SIZE else packing
             | Layout.Default -> 0, DEFAULT_PACKING_SIZE
-
-        // CoreCLR's `EEClassNativeLayoutInfo::CollectNativeLayoutFieldMetadataThrowing`
-        // (classlayoutinfo.cpp:984-988) bumps a computed native layout size of 0 to 1
-        // so the type has a distinct native address. This is universal post-processing
-        // and applies whether the zero came from an empty field list, all fields
-        // eliding to nothing, or an explicit `Size = 0` on the `[StructLayout]`. Apply
-        // here so every concrete return path through the marshal-size walk respects
-        // the same invariant.
-        let bumpZeroSized (size : SizeofResult) : SizeofResult =
-            if size.Size = 0 then
-                { size with
-                    Size = 1
-                }
-            else
-                size
 
         // Native layout takes a declared `Size` by exactly the same rule the managed layout
         // does, through the same helper: `CollectNativeLayoutFieldMetadataThrowing` calls
         // `CalculateSizeWithMetadataSize` when the type `HasExplicitSize()` and `AlignSize`
         // otherwise (classlayoutinfo.cpp:939-977). So the floor and the rounding are
         // alternatives here too -- `Marshal.SizeOf` of `[Sequential, Size = 13] { long; int }`
-        // is 13, and of the same type with `Size = 4` is 12.
+        // is 13, and of the same type with `Size = 4` is 12. The declared size is the type's
+        // own part, and the parent's is added to it.
         let computeFinal (currentEnd : int) (maxAlign : int) : SizeofResult =
             let alignment = max maxAlign 1
 
             let totalSize =
                 if minimumSize > 0 then
-                    max minimumSize currentEnd
+                    max (minimumSize + parent.Start) currentEnd
                 else
                     roundUpToAlignment alignment currentEnd
 
-            bumpZeroSized
-                {
-                    Size = totalSize
-                    // The native layout takes a nominally-aligned type's managed alignment
-                    // too, stamped after the size has been computed from the fields
-                    // (classlayoutinfo.cpp:992), exactly as the managed layout does.
-                    Alignment = vt._NominalAlignment |> Option.defaultValue alignment
-                }
+            {
+                Size = totalSize
+                // The native layout takes a nominally-aligned type's managed alignment
+                // too, stamped after the size has been computed from the fields
+                // (classlayoutinfo.cpp:992), exactly as the managed layout does.
+                Alignment = nominalAlignment |> Option.defaultValue alignment
+            }
 
         let seqFields, nonSeqFields =
-            sized |> List.partition (fun (field, _) -> field.ConfiguredOffset.IsNone)
+            sized |> List.partition (fun (field, _) -> field.Offset.IsNone)
 
         // Accumulator for both folds: placements so far (reversed), the running
         // offset/extent, and the widest alignment seen. Placements are recorded by the same
         // step that consumes the offset, so the two can never drift apart.
         let placeField
-            ((field, native) : CliConcreteField * MarshalFieldNative)
+            ((field, native) : CliField * MarshalFieldNative)
             (offsetOf : int -> int -> int)
             ((placed, running, maxAlign) : MarshalFieldPlacement list * int * int)
             : MarshalFieldPlacement list * int * int
@@ -4214,7 +4270,7 @@ and CliValueType =
 
             let placement =
                 {
-                    Field = CliConcreteField.ToCliField field
+                    Field = field
                     NativeOffset = offset
                     Native = native
                 }
@@ -4230,20 +4286,13 @@ and CliValueType =
                 Placements = List.rev placed
             }
 
+        // The parent is "an initial member": this type's fields start where it ends, and its
+        // alignment requirement, capped by this type's `Pack`, is where this type's own starts.
+        let initial = [], parent.Start, min packingSize parent.AlignmentRequirement
+
         match seqFields, nonSeqFields with
-        | [], [] ->
-            Result.Ok
-                {
-                    Size =
-                        bumpZeroSized
-                            {
-                                Size = minimumSize
-                                Alignment = 1
-                            }
-                    Placements = []
-                }
-        | _ :: _, [] ->
-            (([], 0, 0), seqFields)
+        | _, [] ->
+            (initial, seqFields)
             ||> List.fold (fun acc sizedField ->
                 placeField
                     sizedField
@@ -4263,13 +4312,32 @@ and CliValueType =
             |> finish
             |> Result.Ok
         | [], _ :: _ ->
-            (([], 0, 0), nonSeqFields)
-            ||> List.fold (fun acc (field, native) -> placeField (field, native) (fun _ _ -> field.Offset) acc)
+            // A declared offset counts from the end of the parent (`ReadOffsetsForExplicitLayout`).
+            (initial, nonSeqFields)
+            ||> List.fold (fun acc (field, native) ->
+                placeField (field, native) (fun _ _ -> field.Offset.Value + parent.Start) acc
+            )
             |> finish
             |> Result.Ok
         | _ :: _, _ :: _ ->
             MarshalSizeError.NotMarshalable "unexpectedly mixed explicit and automatic field offsets"
             |> Result.Error
+
+    /// The first of `classified` whose native form CoreCLR refuses, as the `NotMarshalable` that
+    /// refusal makes of the type declaring it (`IsStructMarshalable`, fieldmarshaler.cpp:288).
+    static member private FirstIllegalField
+        (classified : (CliField * Result<MarshalFieldNative, string>) list)
+        : MarshalSizeError option
+        =
+        classified
+        |> List.tryPick (fun (field, native) ->
+            match native with
+            | Result.Ok (MarshalFieldNative.Illegal reason) ->
+                Some (MarshalSizeError.prefixField field.Name (MarshalSizeError.NotMarshalable reason))
+            | Result.Ok (MarshalFieldNative.Leaf _)
+            | Result.Ok (MarshalFieldNative.Nested _)
+            | Result.Error _ -> None
+        )
 
     /// Compute the unmanaged size of a value type as `Marshal.SizeOf` would, *and* where each
     /// declared field lands in that unmanaged image. See `TryComputeMarshalSize` for the
@@ -4295,23 +4363,22 @@ and CliValueType =
             match vt._Storage with
             | CliValueTypeStorage.Fields storage when not (CliValueType.IsAutoLayout concreteTypes assemblies vt) ->
                 let classified =
-                    CliValueType.ClassifyOwnFields concreteTypes assemblies corelib vt storage
+                    CliValueType.ClassifyOwnFields
+                        concreteTypes
+                        assemblies
+                        corelib
+                        vt.CharSet
+                        (CliValueType.OwnFields storage)
 
-                let firstIllegal =
-                    classified
-                    |> List.tryPick (fun (field, native) ->
-                        match native with
-                        | Result.Ok (MarshalFieldNative.Illegal reason) -> Some (field.Name, reason)
-                        | Result.Ok (MarshalFieldNative.Leaf _)
-                        | Result.Ok (MarshalFieldNative.Nested _)
-                        | Result.Error _ -> None
-                    )
-
-                match firstIllegal with
-                | Some (fieldName, reason) ->
-                    MarshalSizeError.prefixField fieldName (MarshalSizeError.NotMarshalable reason)
-                    |> Result.Error
-                | None -> CliValueType.LayOutClassified vt classified
+                match CliValueType.FirstIllegalField classified with
+                | Some err -> Result.Error err
+                | None ->
+                    CliValueType.LayOutClassified
+                        vt.Layout
+                        vt._NominalAlignment
+                        CliValueType.NoParentNativeLayout
+                        classified
+                    |> Result.map CliValueType.BumpZeroSized
             | CliValueTypeStorage.Fields _
             | CliValueTypeStorage.RawBytes _ -> CliValueType.TryComputeNativeLayout concreteTypes assemblies corelib vt
 
@@ -4330,6 +4397,134 @@ and CliValueType =
         =
         CliValueType.TryComputeMarshalLayout concreteTypes assemblies corelib vt
         |> Result.map fst
+
+    /// Compute a class's unmanaged size as `Marshal.SizeOf` would, and where each instance field of
+    /// its base chain lands in that image, as `Marshal.OffsetOf` would place it. `chain` is the
+    /// class's instance-field chain, base first and ending at the class, as
+    /// `collectInstanceFieldChain` builds it.
+    ///
+    /// A class with layout is its base's native image followed by its own fields, so an inherited
+    /// field's placement is the one the class declaring it gives it. `NotMarshalable` is CoreCLR's
+    /// `IsStructMarshalable` failing: the class has no layout, or a field anywhere in its chain is
+    /// illegal. `NotImplemented` is a shape PawPrint does not answer: a field it cannot classify, a
+    /// base with no layout under a class with it, or a chain of two or more classes with layout any
+    /// of which is explicit. The size of a lone explicit class is not answered either, although
+    /// its placements are.
+    static member TryComputeClassMarshalLayout
+        (concreteTypes : AllConcreteTypes)
+        (assemblies : LoadedAssemblies)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (chain : TypeLayoutLevel list)
+        : Result<ClassMarshalLayout, MarshalSizeError>
+        =
+        let outermost =
+            match List.tryLast chain with
+            | Some level -> level
+            | None -> failwith "CliValueType.TryComputeClassMarshalLayout: empty base chain"
+
+        if outermost.Facts.IsValueType then
+            failwith
+                $"CliValueType.TryComputeClassMarshalLayout: %O{outermost.Declared} is a value type, whose native layout is CliValueType.TryComputeMarshalLayout's"
+
+        match outermost.Facts.LayoutKind with
+        | TypeLayoutKind.Auto ->
+            MarshalSizeError.NotMarshalable "type has LayoutKind.Auto, so has no native layout"
+            |> Result.Error
+        | TypeLayoutKind.Sequential
+        | TypeLayoutKind.Explicit ->
+
+        // `System.Object` has no layout, and is no parent to a class with it
+        // (`FindParentNativeLayoutInfo`, classlayoutinfo.cpp).
+        let levels = chain |> List.filter (fun level -> not level.IsTrivialParent)
+
+        let isExplicit (level : TypeLayoutLevel) : bool =
+            match level.Facts.LayoutKind with
+            | TypeLayoutKind.Explicit -> true
+            | TypeLayoutKind.Sequential
+            | TypeLayoutKind.Auto -> false
+
+        match
+            levels
+            |> List.tryFind (fun level -> level.Facts.LayoutKind = TypeLayoutKind.Auto)
+        with
+        | Some ancestor ->
+            MarshalSizeError.NotImplemented
+                $"the class %O{outermost.Declared} has layout, but its base %O{ancestor.Declared} has none. CoreCLR refuses to load such a class (`HasLayoutMetadata`, methodtablebuilder.cpp), and PawPrint does not model that refusal"
+            |> Result.Error
+        | None ->
+
+        // `MarshalNative_OffsetOf` and `MarshalNative_SizeOfHelper` answer a *blittable* class
+        // from its managed layout, and only a non-blittable one from the native layout computed
+        // here. The two agree for a chain of sequential classes. Measured on real .NET, they
+        // differ for an explicit class: over a base, its declared offsets are biased by twice the
+        // base's size (see `CliValueType.LayoutLevel`); and even alone, its managed size is the
+        // extent of its fields, neither rounded to their alignment nor raised to a declared `Size`
+        // (`ValidateExplicitLayout`, methodtablebuilder.cpp). A sequential class over an explicit
+        // base is promoted to auto managed layout, which reorders its fields. PawPrint does not
+        // decide blittability, so it refuses each of these whether or not the class is blittable.
+        if levels.Length >= 2 && List.exists isExplicit levels then
+            MarshalSizeError.NotImplemented
+                $"the class %O{outermost.Declared} is one of a chain of %d{levels.Length} classes with layout, of which at least one is explicit. CoreCLR answers such a class from its managed layout if it is blittable and from its native layout otherwise, and the two differ in this shape; PawPrint computes only the native layout, and does not decide blittability"
+            |> Result.Error
+        else
+
+        let classified =
+            levels
+            |> List.map (fun level ->
+                level,
+                CliValueType.ClassifyOwnFields concreteTypes assemblies corelib level.Facts.CharSet level.OwnFields
+            )
+
+        // A derived class's native layout carries its base's field descriptors, so an illegal
+        // field anywhere in the chain makes the class unmarshalable
+        // (`CollectNativeLayoutFieldMetadataThrowing`, classlayoutinfo.cpp).
+        match
+            classified
+            |> List.tryPick (fun (_, fields) -> CliValueType.FirstIllegalField fields)
+        with
+        | Some err -> Result.Error err
+        | None ->
+
+        let laidOut =
+            ((Result.Ok (CliValueType.NoParentNativeLayout, [], None)), classified)
+            ||> List.fold (fun acc (level, fields) ->
+                acc
+                |> Result.bind (fun (parent, placements, _) ->
+                    CliValueType.LayOutClassified level.Facts.Layout level.Facts.NominalAlignment parent fields
+                    |> Result.map (fun (layout : NativeLayout) ->
+                        // A base's computed size is 0 exactly when CoreCLR calls it zero-sized, so
+                        // passing the size before `BumpZeroSized` is what makes such a base
+                        // contribute nothing.
+                        let parent =
+                            {
+                                Start = layout.Size.Size
+                                AlignmentRequirement = layout.Size.Alignment
+                            }
+
+                        parent, placements @ layout.Placements, Some layout
+                    )
+                )
+            )
+
+        match laidOut with
+        | Result.Error err -> Result.Error err
+        | Result.Ok (_, placements, Some layout) ->
+            let size =
+                if List.exists isExplicit levels then
+                    MarshalSizeError.NotImplemented
+                        $"the class %O{outermost.Declared} has explicit layout. CoreCLR sizes a blittable explicit class by the extent of its fields and a non-blittable one by its native layout; PawPrint computes only the native layout, and does not decide blittability"
+                    |> Result.Error
+                else
+                    Result.Ok (CliValueType.BumpZeroSized layout).Size
+
+            Result.Ok
+                {
+                    Size = size
+                    Placements = placements
+                }
+        | Result.Ok (_, _, None) ->
+            failwith
+                $"CliValueType.TryComputeClassMarshalLayout: %O{outermost.Declared}'s chain has no class with layout, although the class itself has one"
 
     /// Sets the value of the specified field, *without* touching any overlapping fields.
     /// `DereferenceField` handles resolving conflicts between overlapping fields.

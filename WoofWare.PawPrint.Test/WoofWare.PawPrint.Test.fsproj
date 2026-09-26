@@ -88,6 +88,7 @@
     <Compile Include="TestMarshalLayout.fs" />
     <Compile Include="TestMarshalEnumFieldLayout.fs" />
     <Compile Include="TestMarshalOffsetOf.fs" />
+    <Compile Include="TestMarshalLayoutClass.fs" />
     <Compile Include="TestMarshalBoolCharFields.fs" />
     <Compile Include="TestMarshalIllegalFieldNesting.fs" />
     <Compile Include="TestMarshalByValArrayLayout.fs" />
