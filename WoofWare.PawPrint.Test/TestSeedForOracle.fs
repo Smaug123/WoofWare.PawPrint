@@ -72,38 +72,72 @@ module TestSeedForOracle =
                 [
                     name "f", SeedEntry.file (bytes "hello")
                     name "d", SeedEntry.directory (Map.ofList [ name "g", SeedEntry.file (bytes "nested") ])
-                    name "lf", SeedEntry.Symlink (target "f")
-                    name "ld", SeedEntry.Symlink (target "d")
-                    name "dang", SeedEntry.Symlink (target "nx")
-                    name "cyc", SeedEntry.Symlink (target "cyc")
+                    name "lf", SeedEntry.Symlink (target "f", None)
+                    name "ld", SeedEntry.Symlink (target "d", None)
+                    name "dang", SeedEntry.Symlink (target "nx", None)
+                    name "cyc", SeedEntry.Symlink (target "cyc", None)
                 ])
+
+        // Any stated owner, at any depth and on any kind of entry: the host tree
+        // belongs to whoever runs the tests, whatever the seed says.
+        let someone : InodeOwner =
+            {
+                User = UserId.parseOrFail "test" 0u
+                Group = GroupId.parseOrFail "test" 0u
+            }
+
+        refused (
+            Map.ofList
+                [
+                    name "f", SeedEntry.File (bytes "x", SeedEntry.defaultPermsForRegularFile, Some someone)
+                ]
+        )
+        |> shouldContainText "the owner"
+
+        refused (Map.ofList [ name "l", SeedEntry.Symlink (target "f", Some someone) ])
+        |> shouldContainText "the owner"
+
+        refused (
+            Map.ofList
+                [
+                    name "d",
+                    SeedEntry.directory (
+                        Map.ofList
+                            [
+                                name "e",
+                                SeedEntry.Directory (Map.empty, SeedEntry.defaultPermsForDirectory, Some someone)
+                            ]
+                    )
+                ]
+        )
+        |> shouldContainText "the owner"
 
         // An absolute target: PawPrint resolves it against its own root, the
         // host against the real one.
-        refused (Map.ofList [ name "l", SeedEntry.Symlink (target "/etc/passwd") ])
+        refused (Map.ofList [ name "l", SeedEntry.Symlink (target "/etc/passwd", None) ])
         |> shouldContainText "is absolute"
 
         // Anything with more than one component, which is where deciding
         // whether the host would leave the scratch directory stops being
         // possible by inspection: "x" may itself be a symlink, and ".." on the
         // host does not clamp at the root the way PawPrint's does.
-        refused (Map.ofList [ name "l", SeedEntry.Symlink (target "../f") ])
+        refused (Map.ofList [ name "l", SeedEntry.Symlink (target "../f", None) ])
         |> shouldContainText "not a single path component"
 
-        refused (Map.ofList [ name "l", SeedEntry.Symlink (target "d/g") ])
+        refused (Map.ofList [ name "l", SeedEntry.Symlink (target "d/g", None) ])
         |> shouldContainText "not a single path component"
 
-        refused (Map.ofList [ name "l", SeedEntry.Symlink (target "x/../victim") ])
+        refused (Map.ofList [ name "l", SeedEntry.Symlink (target "x/../victim", None) ])
         |> shouldContainText "not a single path component"
 
         // "." and ".." are components too, so they are refused by the same
         // rule rather than by a special case.
-        refused (Map.ofList [ name "l", SeedEntry.Symlink (target ".") ])
+        refused (Map.ofList [ name "l", SeedEntry.Symlink (target ".", None) ])
         |> shouldContainText "not a single path component"
 
         // A target the seed does not declare is fine — the link dangles the
         // same way on both sides...
-        RealRuntime.validateSeedForOracle reserved (Map.ofList [ name "l", SeedEntry.Symlink (target "nx") ])
+        RealRuntime.validateSeedForOracle reserved (Map.ofList [ name "l", SeedEntry.Symlink (target "nx", None) ])
 
         // ...unless a case-insensitive host would resolve it anyway, which
         // PawPrint would not.
@@ -111,14 +145,14 @@ module TestSeedForOracle =
             Map.ofList
                 [
                     name "f", SeedEntry.file (bytes "a")
-                    name "l", SeedEntry.Symlink (target "F")
+                    name "l", SeedEntry.Symlink (target "F", None)
                 ]
         )
         |> shouldContainText "case-insensitive host would resolve it"
 
         // ...including onto the guest image, which the oracle writes and
         // PawPrint's filesystem does not contain at all.
-        refused (Map.ofList [ name "l", SeedEntry.Symlink (target "Guest.dll") ])
+        refused (Map.ofList [ name "l", SeedEntry.Symlink (target "Guest.dll", None) ])
         |> shouldContainText "case-insensitive host would resolve it"
 
         // Names differing only by case: one file on a stock macOS, two in
@@ -165,7 +199,7 @@ module TestSeedForOracle =
             Map.ofList
                 [
                     name "ss", SeedEntry.file (bytes "a")
-                    name "l", SeedEntry.Symlink (target "\u00DF")
+                    name "l", SeedEntry.Symlink (target "\u00DF", None)
                 ]
         )
         |> shouldContainText "case folding is unambiguous"
@@ -224,12 +258,12 @@ module TestSeedForOracle =
         // drop these, so PawPrint would report a bit the host did not have and
         // the comparison would be about the harness rather than the runtimes.
         for special in [ 0o4644 ; 0o2644 ; 0o1644 ] do
-            refused (Map.ofList [ name "f", SeedEntry.File (bytes "x", mode special) ])
+            refused (Map.ofList [ name "f", SeedEntry.File (bytes "x", mode special, None) ])
             |> shouldContainText "set-user-ID/set-group-ID/sticky"
 
         // ...on a directory too, where the sticky bit is the one that actually
         // has a common use.
-        refused (Map.ofList [ name "d", SeedEntry.Directory (Map.empty, mode 0o1755) ])
+        refused (Map.ofList [ name "d", SeedEntry.Directory (Map.empty, mode 0o1755, None) ])
         |> shouldContainText "set-user-ID/set-group-ID/sticky"
 
         // The ordinary twelve-bit modes are all fine, including ones the
@@ -238,7 +272,7 @@ module TestSeedForOracle =
         for ordinary in [ 0o000 ; 0o400 ; 0o600 ; 0o666 ; 0o777 ] do
             RealRuntime.validateSeedForOracle
                 reserved
-                (Map.ofList [ name "f", SeedEntry.File (bytes "x", mode ordinary) ])
+                (Map.ofList [ name "f", SeedEntry.File (bytes "x", mode ordinary, None) ])
 
     /// A seed name or symlink target that is not valid UTF-8 has no `string`
     /// for `System.IO` to create on the host. Such a seed is the test's mistake
@@ -284,7 +318,7 @@ module TestSeedForOracle =
         // rule: the message names the link and its target.
         for target in [ [ 0xFFuy ] ; [ byte 'd' ; byte '/' ; 0xFFuy ] ] do
             let message =
-                refused (Map.ofList [ name "l", SeedEntry.Symlink (targetOfBytes target) ])
+                refused (Map.ofList [ name "l", SeedEntry.Symlink (targetOfBytes target, None) ])
 
             message |> shouldContainText "not valid UTF-8"
             message |> shouldContainText "symlink /l"
@@ -298,5 +332,5 @@ module TestSeedForOracle =
         RealRuntime.canMaterialise (Map.ofList [ nameOfBytes [ 0xFFuy ], SeedEntry.file (bytes "x") ])
         |> shouldEqual true
 
-        RealRuntime.canMaterialise (Map.ofList [ name "l", SeedEntry.Symlink (targetOfBytes [ 0xFFuy ]) ])
+        RealRuntime.canMaterialise (Map.ofList [ name "l", SeedEntry.Symlink (targetOfBytes [ 0xFFuy ], None) ])
         |> shouldEqual true

@@ -42,7 +42,7 @@ module TestWithFileSystemAndCurrentDirectory =
                         [
                             name "inner", SeedEntry.directory FileSystemSeed.empty
                             name "file", SeedEntry.file noBytes
-                            name "lnk", SeedEntry.Symlink (target "inner")
+                            name "lnk", SeedEntry.Symlink (target "inner", None)
                         ]
                 )
             ]
@@ -72,7 +72,7 @@ module TestWithFileSystemAndCurrentDirectory =
         : Result<UnixSystem<int, string>, CurrentDirectoryFault>
         =
         UnixSystem.initial<int, string> platform
-        |> UnixSystem.withFileSystemAndCurrentDirectory createdAt entries (absolute dir)
+        |> UnixSystem.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault entries (absolute dir)
 
     /// A system booted on `seed`, standing at `dir`.
     let private booted (dir : string) : UnixSystem<int, string> =
@@ -138,7 +138,11 @@ module TestWithFileSystemAndCurrentDirectory =
         let replaced =
             match
                 system
-                |> UnixSystem.withFileSystemAndCurrentDirectory createdAt deeper (absolute "/outer/inner")
+                |> UnixSystem.withFileSystemAndCurrentDirectory
+                    createdAt
+                    Owners.linuxDefault
+                    deeper
+                    (absolute "/outer/inner")
             with
             | Ok replaced -> replaced
             | Error fault -> failwith $"the deeper seed did not boot: %O{fault}."
@@ -175,7 +179,7 @@ module TestWithFileSystemAndCurrentDirectory =
                 SimulatedUnixPlatform.macOsArm64, SimulatedUnixFlavour.Darwin
             ] do
             UnixSystem.initial<int, string> platform
-            |> UnixSystem.withFileSystemAndCurrentDirectory createdAt nested (absolute "/outer")
+            |> UnixSystem.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault nested (absolute "/outer")
             |> shouldEqual (Error (CurrentDirectoryFault.SeedNameTooLong (name overlong, flavour)))
 
         // 255 CJK characters: 765 bytes, past Linux's limit, and 255 code
@@ -185,12 +189,12 @@ module TestWithFileSystemAndCurrentDirectory =
         let wideSeed = Map.ofList [ name wide, SeedEntry.file noBytes ]
 
         UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
-        |> UnixSystem.withFileSystemAndCurrentDirectory createdAt wideSeed (absolute "/")
+        |> UnixSystem.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault wideSeed (absolute "/")
         |> shouldEqual (Error (CurrentDirectoryFault.SeedNameTooLong (name wide, SimulatedUnixFlavour.Linux)))
 
         match
             UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
-            |> UnixSystem.withFileSystemAndCurrentDirectory createdAt wideSeed (absolute "/")
+            |> UnixSystem.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault wideSeed (absolute "/")
         with
         | Ok _ -> ()
         | Error fault -> failwith $"Darwin admits a 255-code-unit name, but the seed answered %O{fault}."
@@ -201,7 +205,7 @@ module TestWithFileSystemAndCurrentDirectory =
         for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
             match
                 UnixSystem.initial<int, string> platform
-                |> UnixSystem.withFileSystemAndCurrentDirectory createdAt atLimit (absolute "/")
+                |> UnixSystem.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault atLimit (absolute "/")
             with
             | Ok _ -> ()
             | Error fault -> failwith $"a 255-byte name is within NAME_MAX, but the seed answered %O{fault}."
@@ -232,11 +236,11 @@ module TestWithFileSystemAndCurrentDirectory =
                 ]
 
         // A symlink's own name is bound like any other; its target is not a name.
-        let asLink = Map.ofList [ undecodable, SeedEntry.Symlink (target "outer") ]
+        let asLink = Map.ofList [ undecodable, SeedEntry.Symlink (target "outer", None) ]
 
         for entries in [ atRoot ; nested ; asLink ] do
             UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
-            |> UnixSystem.withFileSystemAndCurrentDirectory createdAt entries (absolute "/")
+            |> UnixSystem.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault entries (absolute "/")
             |> shouldEqual (
                 Error (CurrentDirectoryFault.SeedNameNotBindable (undecodable, SimulatedUnixFlavour.Darwin))
             )
@@ -244,7 +248,7 @@ module TestWithFileSystemAndCurrentDirectory =
             // Linux binds any NUL-free bytes, so the same seed is a filesystem it could hold.
             match
                 UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
-                |> UnixSystem.withFileSystemAndCurrentDirectory createdAt entries (absolute "/")
+                |> UnixSystem.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault entries (absolute "/")
             with
             | Ok _ -> ()
             | Error fault -> failwith $"Linux binds any bytes, but the seed answered %O{fault}."
@@ -259,7 +263,7 @@ module TestWithFileSystemAndCurrentDirectory =
 
         match
             UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
-            |> UnixSystem.withFileSystemAndCurrentDirectory createdAt nonCharacter (absolute "/")
+            |> UnixSystem.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault nonCharacter (absolute "/")
         with
         | Ok _ -> ()
         | Error fault -> failwith $"the model's Darwin binds U+FFFF, but the seed answered %O{fault}."
@@ -272,6 +276,7 @@ module TestWithFileSystemAndCurrentDirectory =
         UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
         |> UnixSystem.withFileSystemAndCurrentDirectory
             createdAt
+            Owners.linuxDefault
             (Map.ofList [ both, SeedEntry.file noBytes ])
             (absolute "/")
         |> shouldEqual (Error (CurrentDirectoryFault.SeedNameTooLong (both, SimulatedUnixFlavour.Darwin)))
@@ -286,7 +291,7 @@ module TestWithFileSystemAndCurrentDirectory =
         let exn =
             Assert.Throws<exn> (fun () ->
                 UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
-                |> UnixSystem.withFileSystemAndCurrentDirectory createdAt forged (absolute "/")
+                |> UnixSystem.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault forged (absolute "/")
                 |> ignore<Result<UnixSystem<int, string>, CurrentDirectoryFault>>
             )
 
@@ -335,14 +340,14 @@ module TestWithFileSystemAndCurrentDirectory =
         let path = "/" + wide
 
         UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
-        |> UnixSystem.withFileSystemAndCurrentDirectory createdAt entries (absolute path)
+        |> UnixSystem.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault entries (absolute path)
         |> shouldEqual (Error (CurrentDirectoryFault.SeedNameTooLong (name wide, SimulatedUnixFlavour.Linux)))
 
         // And the accepting direction, which a guard that simply refused
         // every wide name would pass the row above without.
         match
             UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
-            |> UnixSystem.withFileSystemAndCurrentDirectory createdAt entries (absolute path)
+            |> UnixSystem.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault entries (absolute path)
         with
         | Error fault -> failwith $"Darwin's NAME_MAX admits this name, but it answered %O{fault}."
         | Ok system ->
@@ -372,7 +377,7 @@ module TestWithFileSystemAndCurrentDirectory =
                 // hundred two-byte components, each within NAME_MAX.
                 startAt
                     SimulatedUnixPlatform.macOsArm64
-                    (Map.ofList [ name "l", SeedEntry.Symlink (target (String.replicate 400 "/ab")) ])
+                    (Map.ofList [ name "l", SeedEntry.Symlink (target (String.replicate 400 "/ab"), None) ])
                     "/l"
                 // A seed name no Darwin filesystem would bind.
                 startAt
@@ -413,7 +418,7 @@ module TestWithFileSystemAndCurrentDirectory =
         let deep = String.replicate 400 "/ab"
 
         let entries =
-            Map.ofList [ name "l", SeedEntry.Symlink (SymlinkTarget.parseOrFail "test" deep) ]
+            Map.ofList [ name "l", SeedEntry.Symlink (SymlinkTarget.parseOrFail "test" deep, None) ]
 
         startAt SimulatedUnixPlatform.macOsArm64 entries "/l"
         |> shouldEqual (Error (CurrentDirectoryFault.TooLong SimulatedUnixFlavour.Darwin))
@@ -441,6 +446,7 @@ module TestWithFileSystemAndCurrentDirectory =
             system
             |> UnixSystem.withFileSystemAndCurrentDirectory
                 createdAt
+                Owners.linuxDefault
                 (Map.ofList [ name "other", SeedEntry.directory FileSystemSeed.empty ])
                 (absolute "/")
         with

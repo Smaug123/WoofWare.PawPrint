@@ -356,10 +356,10 @@ module PathWalk =
         // ENAMETOOLONG, ELOOP or EISDIR the same call earns under a
         // searchable one.
         //
-        // Only the *owner* triple can ever apply, which is
-        // `PermissionBits.deniedTo`'s contract: `stat` reports the caller's
-        // effective user ID as every inode's `st_uid`, so the emulated process owns everything it
-        // can see. Measured, and a corpus of ordinary modes cannot show it: a
+        // Only the *owner* triple is consulted, which is
+        // `PermissionBits.deniedTo`'s contract, and which is exact only for a
+        // caller who owns the directory. Measured, and a corpus of ordinary
+        // modes cannot show it: a
         // 0o677 directory is EACCES to its owner though group and other may
         // search it, while 0o100 is searchable though nobody else may.
         let directoryContent =

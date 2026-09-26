@@ -340,7 +340,10 @@ module TestSocketTable =
             let steps = rng.Next (1, 30)
 
             let filesystem =
-                VirtualFileSystem.ofFileSystemSeed (UnixTimestamp.createOrFail "test" 1_700_000_000L 0) lifetimeSeed
+                VirtualFileSystem.ofFileSystemSeed
+                    (UnixTimestamp.createOrFail "test" 1_700_000_000L 0)
+                    Owners.linuxDefault
+                    lifetimeSeed
 
             let mutable kernel =
                 { initialSystem with

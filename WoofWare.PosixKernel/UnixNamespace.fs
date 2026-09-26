@@ -192,6 +192,28 @@ type RenameProgress<'Task, 'Handler when 'Task : comparison and 'Handler : equal
 [<RequireQualifiedAccess>]
 module UnixNamespace =
 
+    /// Who owns an inode the process is about to create in `directory`, which
+    /// the caller's walk has just established is a directory.
+    let private newInodeOwner<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (context : string)
+        (directory : InodeNumber)
+        (system : UnixSystem<'Task, 'Handler>)
+        : InodeOwner
+        =
+        match VirtualFileSystem.tryGet directory system.Machine.FileSystem with
+        | Some ({
+                    Content = InodeContent.Directory parent
+                } as entry) ->
+            InodeOwner.ofNewInode
+                (SimulatedUnixPlatform.newInodeGroupRule system.Machine.UnixPlatform)
+                system.Process.Credentials
+                entry.Owner
+                parent.Permissions
+        | Some _
+        | None ->
+            failwith
+                $"%s{context}: about to create an inode in inode %O{directory}, which the walk had established was a directory, but it is now absent or not a directory (this is a bug in this library)."
+
     /// `open(2)`: resolve `path`, apply every check a kernel makes, and return a
     /// descriptor onto what it names.
     ///
@@ -321,6 +343,7 @@ module UnixNamespace =
                     directory
                     name
                     permissions
+                    (newInodeOwner "UnixNamespace.openPath" directory system)
                     now
                     ImmutableArray<byte>.Empty
                     system.Machine.FileSystem
@@ -394,10 +417,8 @@ module UnixNamespace =
         //   0200   EACCES    ok        EACCES
         //   0000   EACCES    EACCES    EACCES
         //
-        // Only the owner triple is ever consulted, and that is exact rather than
-        // a simplification: `stat` reports the process's own `UserId` as *every*
-        // inode's `st_uid`, so the emulated process owns everything it can see
-        // and the group and other triples can never be the applicable ones.
+        // Only the owner triple is consulted (`PermissionBits.deniedTo`), which
+        // is exact only for a caller who owns the file.
         //
         // `O_TRUNC` adds the write bit to whatever the access mode already asked
         // for, and adds nothing else. Measured at uid 1000 on both:
@@ -677,7 +698,9 @@ module UnixNamespace =
 
         let now = UnixMachineState.realtime system.Machine
 
-        match VirtualFileSystem.createDirectory directory name permissions now system.Machine.FileSystem with
+        let owner = newInodeOwner "UnixNamespace.mkdir" directory system
+
+        match VirtualFileSystem.createDirectory directory name permissions owner now system.Machine.FileSystem with
         | Error error ->
             // `createDirectory` refuses a name the directory already holds, and a
             // parent that is not a directory. The walk has just established

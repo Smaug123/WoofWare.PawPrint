@@ -1143,8 +1143,16 @@ module EmulatedKernel =
     /// agree. A failure here is a host mistake with no honest errno — ENOENT
     /// would blame a guest path that does not exist yet — and there is nothing
     /// for the run to go on and do.
+    ///
+    /// `owner` owns every inode of the seed. A seed entry that states any other
+    /// owner is refused: a file the process does not own would reach
+    /// CoreLib's group-membership check (`FileStatus.IsModeReadOnlyCore`), whose
+    /// `SystemNative_GetEGid` and `GetGroups` are not implemented, and the
+    /// kernel's permission checks do not yet consult anything but the owner's
+    /// bits.
     let withFileSystemAndCurrentDirectory
         (createdAt : UnixTimestamp)
+        (owner : InodeOwner)
         (seed : Map<DirectoryEntryName, SeedEntry>)
         (directory : AbsoluteUnixPath)
         (kernel : EmulatedKernel)
@@ -1156,11 +1164,40 @@ module EmulatedKernel =
         let directory =
             AbsoluteUnixPath.assertValid "EmulatedKernel.CurrentDirectory" directory
 
+        let rec firstOwned
+            (path : DirectoryEntryName list)
+            (entries : Map<DirectoryEntryName, SeedEntry>)
+            : (DirectoryEntryName list * InodeOwner) option
+            =
+            entries
+            |> Map.toSeq
+            |> Seq.tryPick (fun (name, entry) ->
+                let stated =
+                    match entry with
+                    | SeedEntry.File (_, _, stated)
+                    | SeedEntry.Symlink (_, stated)
+                    | SeedEntry.Directory (_, _, stated) -> stated
+
+                match stated, entry with
+                | Some stated, _ when stated <> owner -> Some (List.rev (name :: path), stated)
+                | _, SeedEntry.Directory (children, _, _) -> firstOwned (name :: path) children
+                | _, SeedEntry.File _
+                | _, SeedEntry.Symlink _ -> None
+            )
+
+        match firstOwned [] seed with
+        | Some (path, stated) ->
+            let described = path |> List.map DirectoryEntryName.toEscaped |> String.concat "/"
+
+            failwith
+                $"EmulatedKernel.FileSystem: KernelConfig.FileSystem gives \"/%s{described}\" the owner %O{stated}, but PawPrint does not yet model a file owned by anyone but the configured user and group, %O{owner}. Leave the entry's owner as None, and it will belong to them."
+        | None ->
+
         let described = AbsoluteUnixPath.toEscaped directory
 
         match
             unix kernel
-            |> UnixSystem.withFileSystemAndCurrentDirectory createdAt seed directory
+            |> UnixSystem.withFileSystemAndCurrentDirectory createdAt owner seed directory
         with
         | Ok system -> withUnix system kernel
         | Error (CurrentDirectoryFault.DoesNotResolve error) ->
@@ -1851,13 +1888,13 @@ type KernelConfig =
         /// the same tree whatever the machine.
         FileSystem : Map<DirectoryEntryName, SeedEntry>
         /// User ID the simulated process runs as (its real, effective and saved
-        /// user IDs alike), observed as every inode's `st_uid`, or `None` for
+        /// user IDs alike), and the owner of every inode `FileSystem` seeds, or `None` for
         /// the flavour's first interactive user (1000 on Linux, 501 on Darwin).
         /// See `UnixSystem.defaultUserId` for why the default is not root.
         /// `(uid_t)-1` is refused: no process can hold it.
         UserId : uint32 option
         /// Group ID the simulated process runs as (its real, effective and saved
-        /// group IDs alike), observed as every inode's `st_gid`, or `None` for
+        /// group IDs alike), and the group of every inode `FileSystem` seeds, or `None` for
         /// the flavour's default (1000 on Linux, 20 on Darwin). `(gid_t)-1` is
         /// refused.
         GroupId : uint32 option
@@ -1984,6 +2021,17 @@ module KernelConfig =
 
         let flavour = SimulatedUnixPlatform.flavour platform
 
+        let credentials =
+            Credentials.ofIds
+                (config.UserId
+                 |> Option.map (UserId.parseOrFail "KernelConfig.UserId")
+                 |> Option.defaultValue (UnixSystem.defaultUserId flavour))
+                (config.GroupId
+                 |> Option.map (GroupId.parseOrFail "KernelConfig.GroupId")
+                 |> Option.defaultValue (UnixSystem.defaultGroupId flavour))
+                (config.SupplementaryGroups
+                 |> List.map (GroupId.parseOrFail "KernelConfig.SupplementaryGroups"))
+
         EmulatedKernel.create platform
         |> EmulatedKernel.withInheritedSignalIgnores "KernelConfig.InheritedSignalIgnores" config.InheritedSignalIgnores
         |> EmulatedKernel.mapProcess (UnixProcessState.withCoreDumps config.CoreDumps)
@@ -2000,23 +2048,14 @@ module KernelConfig =
         |> EmulatedKernel.withWallClockEpochMs config.WallClockEpochMs
         |> EmulatedKernel.mapMachine (UnixMachineState.withMount config.Mount)
         |> EmulatedKernel.mapProcess (UnixProcessState.withProcessPath "KernelConfig.ProcessPath" config.ProcessPath)
+        // The seed is owned by the configured user and group, named here rather
+        // than read back off the process, which only takes them below.
         |> EmulatedKernel.withFileSystemAndCurrentDirectory
             (UnixTimestamp.ofMillisecondsSinceEpoch config.WallClockEpochMs)
+            (InodeOwner.ofProcess credentials)
             config.FileSystem
             config.CurrentDirectory
-        |> EmulatedKernel.mapUnix (
-            UnixSystem.withCredentials
-                "KernelConfig"
-                (Credentials.ofIds
-                    (config.UserId
-                     |> Option.map (UserId.parseOrFail "KernelConfig.UserId")
-                     |> Option.defaultValue (UnixSystem.defaultUserId flavour))
-                    (config.GroupId
-                     |> Option.map (GroupId.parseOrFail "KernelConfig.GroupId")
-                     |> Option.defaultValue (UnixSystem.defaultGroupId flavour))
-                    (config.SupplementaryGroups
-                     |> List.map (GroupId.parseOrFail "KernelConfig.SupplementaryGroups")))
-        )
+        |> EmulatedKernel.mapUnix (UnixSystem.withCredentials "KernelConfig" credentials)
         |> EmulatedKernel.mapMachine (
             UnixMachineState.withEphemeralPortRange (
                 config.EphemeralPortRange

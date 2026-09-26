@@ -51,7 +51,8 @@ module TestVirtualFileSystem =
     let private buildTime : UnixTimestamp =
         UnixTimestamp.createOrFail "test" 1_700_000_000L 123_456_789
 
-    let private emptyFs : VirtualFileSystem = VirtualFileSystem.empty buildTime
+    let private emptyFs : VirtualFileSystem =
+        VirtualFileSystem.empty buildTime Owners.linuxDefault
 
     /// Build a filesystem from a script of operations, failing loudly if any
     /// step is rejected. Keeps the tests below readable.
@@ -59,17 +60,17 @@ module TestVirtualFileSystem =
         steps |> List.fold (fun vfs step -> step vfs) emptyFs
 
     let private mkdir (parent : InodeNumber) (n : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
-        VirtualFileSystem.createDirectory parent (name n) dirPerms buildTime vfs
+        VirtualFileSystem.createDirectory parent (name n) dirPerms Owners.linuxDefault buildTime vfs
         |> ok
         |> snd
 
     let private mkfile (parent : InodeNumber) (n : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
-        VirtualFileSystem.createFile parent (name n) filePerms buildTime noBytes vfs
+        VirtualFileSystem.createFile parent (name n) filePerms Owners.linuxDefault buildTime noBytes vfs
         |> ok
         |> snd
 
     let private mklink (parent : InodeNumber) (n : string) (t : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
-        VirtualFileSystem.createSymlink parent (name n) buildTime (target t) vfs
+        VirtualFileSystem.createSymlink parent (name n) Owners.linuxDefault buildTime (target t) vfs
         |> ok
         |> snd
 
@@ -79,6 +80,7 @@ module TestVirtualFileSystem =
         {
             Content = content
             Times = InodeTimes.createdAt buildTime
+            Owner = Owners.linuxDefault
         }
 
     let private regularFileInode : Inode =
@@ -837,13 +839,13 @@ module TestVirtualFileSystem =
             PathWalk.resolveExisting limits CallerPrivilege.Privileged root SymlinkPolicy.Follow (path "/d") vfs
             |> ok
 
-        VirtualFileSystem.createDirectory root (name "d") dirPerms buildTime vfs
+        VirtualFileSystem.createDirectory root (name "d") dirPerms Owners.linuxDefault buildTime vfs
         |> shouldEqual (Error UnixError.EEXIST)
 
-        VirtualFileSystem.createFile file (name "x") filePerms buildTime noBytes vfs
+        VirtualFileSystem.createFile file (name "x") filePerms Owners.linuxDefault buildTime noBytes vfs
         |> shouldEqual (Error UnixError.ENOTDIR)
 
-        VirtualFileSystem.createFile (InodeNumber 9999L) (name "x") filePerms buildTime noBytes vfs
+        VirtualFileSystem.createFile (InodeNumber 9999L) (name "x") filePerms Owners.linuxDefault buildTime noBytes vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
         // link(2) refuses to hard-link a directory: it would make the graph a
@@ -868,20 +870,20 @@ module TestVirtualFileSystem =
         let vfs = build [ mkdir (rootOf emptyFs) "d" ]
         let absent = VirtualFileSystem.nextInode vfs
 
-        VirtualFileSystem.createDirectory absent (name "x") dirPerms buildTime vfs
+        VirtualFileSystem.createDirectory absent (name "x") dirPerms Owners.linuxDefault buildTime vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
-        VirtualFileSystem.createFile absent (name "x") filePerms buildTime noBytes vfs
+        VirtualFileSystem.createFile absent (name "x") filePerms Owners.linuxDefault buildTime noBytes vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
-        VirtualFileSystem.createSymlink absent (name "x") buildTime (target "y") vfs
+        VirtualFileSystem.createSymlink absent (name "x") Owners.linuxDefault buildTime (target "y") vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
     [<Test>]
     let ``a rejected builder leaves the filesystem sound`` () : unit =
         let vfs = build [ mkdir (rootOf emptyFs) "d" ]
 
-        match VirtualFileSystem.createDirectory (rootOf vfs) (name "d") dirPerms buildTime vfs with
+        match VirtualFileSystem.createDirectory (rootOf vfs) (name "d") dirPerms Owners.linuxDefault buildTime vfs with
         | Ok _ -> failwith "expected EEXIST"
         | Error _ ->
             // The burnt inode number is unobservable, since numbers are never
@@ -894,7 +896,7 @@ module TestVirtualFileSystem =
         let before = VirtualFileSystem.nextInode vfs
 
         // A rejected creation still consumes a number.
-        VirtualFileSystem.createFile (InodeNumber 9999L) (name "x") filePerms buildTime noBytes vfs
+        VirtualFileSystem.createFile (InodeNumber 9999L) (name "x") filePerms Owners.linuxDefault buildTime noBytes vfs
         |> Result.isError
         |> shouldEqual true
 
@@ -1107,6 +1109,7 @@ module TestVirtualFileSystem =
                     (rootOf vfs)
                     Unchecked.defaultof<DirectoryEntryName>
                     filePerms
+                    Owners.linuxDefault
                     buildTime
                     noBytes
                     vfs
@@ -1120,6 +1123,7 @@ module TestVirtualFileSystem =
                 VirtualFileSystem.createSymlink
                     (rootOf vfs)
                     (name "l")
+                    Owners.linuxDefault
                     buildTime
                     Unchecked.defaultof<SymlinkTarget>
                     vfs
@@ -1136,6 +1140,7 @@ module TestVirtualFileSystem =
                     (rootOf vfs)
                     (name "f")
                     filePerms
+                    Owners.linuxDefault
                     buildTime
                     Unchecked.defaultof<ImmutableArray<byte>>
                     vfs
@@ -1145,7 +1150,14 @@ module TestVirtualFileSystem =
         forgedContents.Message |> shouldContainText "ImmutableArray<byte>.Empty"
 
         // ...and the genuinely empty file is still fine.
-        VirtualFileSystem.createFile (rootOf vfs) (name "f") filePerms buildTime ImmutableArray<byte>.Empty vfs
+        VirtualFileSystem.createFile
+            (rootOf vfs)
+            (name "f")
+            filePerms
+            Owners.linuxDefault
+            buildTime
+            ImmutableArray<byte>.Empty
+            vfs
         |> Result.isOk
         |> shouldEqual true
 
@@ -1154,15 +1166,15 @@ module TestVirtualFileSystem =
         for builder in
             [
                 (fun n ->
-                    VirtualFileSystem.createDirectory (rootOf vfs) n dirPerms buildTime vfs
+                    VirtualFileSystem.createDirectory (rootOf vfs) n dirPerms Owners.linuxDefault buildTime vfs
                     |> Result.map snd
                 )
                 (fun n ->
-                    VirtualFileSystem.createFile (rootOf vfs) n filePerms buildTime noBytes vfs
+                    VirtualFileSystem.createFile (rootOf vfs) n filePerms Owners.linuxDefault buildTime noBytes vfs
                     |> Result.map snd
                 )
                 (fun n ->
-                    VirtualFileSystem.createSymlink (rootOf vfs) n buildTime (target "x") vfs
+                    VirtualFileSystem.createSymlink (rootOf vfs) n Owners.linuxDefault buildTime (target "x") vfs
                     |> Result.map snd
                 )
             ] do
@@ -1241,13 +1253,13 @@ module TestVirtualFileSystem =
         let outcome =
             match step with
             | Step.MakeDirectory (p, n) ->
-                VirtualFileSystem.createDirectory (pick directories p) (name n) dirPerms now vfs
+                VirtualFileSystem.createDirectory (pick directories p) (name n) dirPerms Owners.linuxDefault now vfs
                 |> Result.map snd
             | Step.MakeFile (p, n) ->
-                VirtualFileSystem.createFile (pick directories p) (name n) filePerms now noBytes vfs
+                VirtualFileSystem.createFile (pick directories p) (name n) filePerms Owners.linuxDefault now noBytes vfs
                 |> Result.map snd
             | Step.MakeSymlink (p, n, t) ->
-                VirtualFileSystem.createSymlink (pick directories p) (name n) now (target t) vfs
+                VirtualFileSystem.createSymlink (pick directories p) (name n) Owners.linuxDefault now (target t) vfs
                 |> Result.map snd
             | Step.MakeHardLink (p, n, t) ->
                 if List.isEmpty files then
@@ -1520,7 +1532,7 @@ module TestVirtualFileSystem =
         let before = timesOf root emptyFs
 
         let vfs =
-            VirtualFileSystem.createFile root (name "f") filePerms later noBytes emptyFs
+            VirtualFileSystem.createFile root (name "f") filePerms Owners.linuxDefault later noBytes emptyFs
             |> ok
             |> snd
 
@@ -1624,6 +1636,7 @@ module TestVirtualFileSystem =
                     (rootOf emptyFs)
                     (name "s")
                     (PermissionBits.parseOrFail "test" start)
+                    Owners.linuxDefault
                     buildTime
                     noBytes
                     emptyFs
@@ -1749,7 +1762,14 @@ module TestVirtualFileSystem =
         let setuid = PermissionBits.parseOrFail "test" 0o4755
 
         let vfs =
-            VirtualFileSystem.createFile (rootOf emptyFs) (name "s") setuid buildTime noBytes emptyFs
+            VirtualFileSystem.createFile
+                (rootOf emptyFs)
+                (name "s")
+                setuid
+                Owners.linuxDefault
+                buildTime
+                noBytes
+                emptyFs
             |> ok
             |> snd
 
@@ -4173,7 +4193,7 @@ module TestCreatingOpenRules =
     /// A root holding a directory `d`, a file `f`, and a directory `locked`
     /// whose permission bits are given.
     let private treeWith (lockedBits : PermissionBits) : VirtualFileSystem =
-        let vfs = VirtualFileSystem.empty buildTime
+        let vfs = VirtualFileSystem.empty buildTime Owners.linuxDefault
         let root = VirtualFileSystem.root vfs
 
         let apply (result : Result<InodeNumber * VirtualFileSystem, UnixError>) : VirtualFileSystem =
@@ -4183,18 +4203,28 @@ module TestCreatingOpenRules =
 
         vfs
         |> fun vfs ->
-            apply (VirtualFileSystem.createDirectory root (name "d") SeedEntry.defaultPermsForDirectory buildTime vfs)
+            apply (
+                VirtualFileSystem.createDirectory
+                    root
+                    (name "d")
+                    SeedEntry.defaultPermsForDirectory
+                    Owners.linuxDefault
+                    buildTime
+                    vfs
+            )
         |> fun vfs ->
             apply (
                 VirtualFileSystem.createFile
                     root
                     (name "f")
                     SeedEntry.defaultPermsForRegularFile
+                    Owners.linuxDefault
                     buildTime
                     ImmutableArray<byte>.Empty
                     vfs
             )
-        |> fun vfs -> apply (VirtualFileSystem.createDirectory root (name "locked") lockedBits buildTime vfs)
+        |> fun vfs ->
+            apply (VirtualFileSystem.createDirectory root (name "locked") lockedBits Owners.linuxDefault buildTime vfs)
 
     let private tree : VirtualFileSystem = treeWith SeedEntry.defaultPermsForDirectory
 
@@ -4457,7 +4487,7 @@ module TestMkDirRules =
     /// `dang -> nx` and `cyc -> cyc`, plus a directory `locked` whose permission
     /// bits are given.
     let private treeWith (lockedBits : PermissionBits) : VirtualFileSystem =
-        let vfs = VirtualFileSystem.empty buildTime
+        let vfs = VirtualFileSystem.empty buildTime Owners.linuxDefault
         let root = VirtualFileSystem.root vfs
 
         let apply (result : Result<InodeNumber * VirtualFileSystem, UnixError>) : VirtualFileSystem =
@@ -4467,33 +4497,54 @@ module TestMkDirRules =
 
         vfs
         |> fun vfs ->
-            apply (VirtualFileSystem.createDirectory root (name "d") SeedEntry.defaultPermsForDirectory buildTime vfs)
+            apply (
+                VirtualFileSystem.createDirectory
+                    root
+                    (name "d")
+                    SeedEntry.defaultPermsForDirectory
+                    Owners.linuxDefault
+                    buildTime
+                    vfs
+            )
         |> fun vfs ->
             apply (
                 VirtualFileSystem.createFile
                     root
                     (name "f")
                     SeedEntry.defaultPermsForRegularFile
+                    Owners.linuxDefault
                     buildTime
                     ImmutableArray<byte>.Empty
                     vfs
             )
-        |> fun vfs -> apply (VirtualFileSystem.createSymlink root (name "lf") buildTime (target "f") vfs)
-        |> fun vfs -> apply (VirtualFileSystem.createSymlink root (name "ld") buildTime (target "d") vfs)
-        |> fun vfs -> apply (VirtualFileSystem.createSymlink root (name "dang") buildTime (target "nx") vfs)
-        |> fun vfs -> apply (VirtualFileSystem.createSymlink root (name "cyc") buildTime (target "cyc") vfs)
+        |> fun vfs ->
+            apply (VirtualFileSystem.createSymlink root (name "lf") Owners.linuxDefault buildTime (target "f") vfs)
+        |> fun vfs ->
+            apply (VirtualFileSystem.createSymlink root (name "ld") Owners.linuxDefault buildTime (target "d") vfs)
+        |> fun vfs ->
+            apply (VirtualFileSystem.createSymlink root (name "dang") Owners.linuxDefault buildTime (target "nx") vfs)
+        |> fun vfs ->
+            apply (VirtualFileSystem.createSymlink root (name "cyc") Owners.linuxDefault buildTime (target "cyc") vfs)
         |> fun vfs ->
             // `locked` holds a child, so that a row can ask what an *existing*
             // name inside an unreachable directory answers. The builder applies
             // no permission rule of its own — those live in the verdict — so a
             // 0o000 directory can still be given one here.
             let locked, vfs =
-                match VirtualFileSystem.createDirectory root (name "locked") lockedBits buildTime vfs with
+                match
+                    VirtualFileSystem.createDirectory root (name "locked") lockedBits Owners.linuxDefault buildTime vfs
+                with
                 | Ok (inode, vfs) -> inode, vfs
                 | Error error -> failwith $"could not build the tree: %O{error}"
 
             apply (
-                VirtualFileSystem.createDirectory locked (name "kid") SeedEntry.defaultPermsForDirectory buildTime vfs
+                VirtualFileSystem.createDirectory
+                    locked
+                    (name "kid")
+                    SeedEntry.defaultPermsForDirectory
+                    Owners.linuxDefault
+                    buildTime
+                    vfs
             )
 
     let private tree : VirtualFileSystem = treeWith SeedEntry.defaultPermsForDirectory
@@ -4658,7 +4709,15 @@ module TestMkDirRules =
         let locked = treeWith (mode 0o555)
 
         let locked =
-            match VirtualFileSystem.createDirectory (InodeNumber 1L) (name "unused") (mode 0o755) buildTime locked with
+            match
+                VirtualFileSystem.createDirectory
+                    (InodeNumber 1L)
+                    (name "unused")
+                    (mode 0o755)
+                    Owners.linuxDefault
+                    buildTime
+                    locked
+            with
             | Ok (_, vfs) -> vfs
             | Error error -> failwith $"could not extend the tree: %O{error}"
 
@@ -4795,11 +4854,11 @@ module TestWalkSearchPermission =
     /// and a cyclic symlink — plus, outside it, a link *into* `p` and a link to
     /// `p` itself.
     let private treeWith (bits : PermissionBits) : VirtualFileSystem =
-        let vfs = VirtualFileSystem.empty buildTime
+        let vfs = VirtualFileSystem.empty buildTime Owners.linuxDefault
         let root = VirtualFileSystem.root vfs
 
         let dir (parent : InodeNumber) (n : string) (bits : PermissionBits) (vfs : VirtualFileSystem) =
-            match VirtualFileSystem.createDirectory parent (name n) bits buildTime vfs with
+            match VirtualFileSystem.createDirectory parent (name n) bits Owners.linuxDefault buildTime vfs with
             | Ok (inode, vfs) -> inode, vfs
             | Error error -> failwith $"could not build the tree: %O{error}"
 
@@ -4813,6 +4872,7 @@ module TestWalkSearchPermission =
                     p
                     (name "f")
                     SeedEntry.defaultPermsForRegularFile
+                    Owners.linuxDefault
                     buildTime
                     ImmutableArray<byte>.Empty
                     vfs
@@ -4821,11 +4881,11 @@ module TestWalkSearchPermission =
             | Error error -> failwith $"could not build the tree: %O{error}"
 
         let vfs =
-            match VirtualFileSystem.createSymlink p (name "cyc") buildTime (target "cyc") vfs with
+            match VirtualFileSystem.createSymlink p (name "cyc") Owners.linuxDefault buildTime (target "cyc") vfs with
             | Ok (_, vfs) -> vfs
             | Error error -> failwith $"could not build the tree: %O{error}"
 
-        match VirtualFileSystem.createSymlink root (name "lp") buildTime (target "p") vfs with
+        match VirtualFileSystem.createSymlink root (name "lp") Owners.linuxDefault buildTime (target "p") vfs with
         | Ok (_, vfs) -> vfs
         | Error error -> failwith $"could not build the tree: %O{error}"
 

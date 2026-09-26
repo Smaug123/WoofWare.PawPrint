@@ -466,15 +466,27 @@ module TestPathCursor =
             | Ok value -> value
             | Error error -> failwith $"building the test filesystem: %O{error}"
 
-        let vfs = VirtualFileSystem.empty buildTime
+        let vfs = VirtualFileSystem.empty buildTime Owners.linuxDefault
         let root = VirtualFileSystem.root vfs
 
         let d1, vfs =
-            VirtualFileSystem.createDirectory root (name "d1") SeedEntry.defaultPermsForDirectory buildTime vfs
+            VirtualFileSystem.createDirectory
+                root
+                (name "d1")
+                SeedEntry.defaultPermsForDirectory
+                Owners.linuxDefault
+                buildTime
+                vfs
             |> ok
 
         let d2, vfs =
-            VirtualFileSystem.createDirectory d1 (name "d2") SeedEntry.defaultPermsForDirectory buildTime vfs
+            VirtualFileSystem.createDirectory
+                d1
+                (name "d2")
+                SeedEntry.defaultPermsForDirectory
+                Owners.linuxDefault
+                buildTime
+                vfs
             |> ok
 
         let _, vfs =
@@ -482,6 +494,7 @@ module TestPathCursor =
                 d2
                 (name "f")
                 SeedEntry.defaultPermsForRegularFile
+                Owners.linuxDefault
                 buildTime
                 ImmutableArray.Empty
                 vfs
@@ -492,13 +505,20 @@ module TestPathCursor =
                 root
                 (name "f1")
                 SeedEntry.defaultPermsForRegularFile
+                Owners.linuxDefault
                 buildTime
                 ImmutableArray.Empty
                 vfs
             |> ok
 
         let link (parent : InodeNumber) (n : string) (t : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
-            VirtualFileSystem.createSymlink parent (name n) buildTime (SymlinkTarget.parseOrFail "test" t) vfs
+            VirtualFileSystem.createSymlink
+                parent
+                (name n)
+                Owners.linuxDefault
+                buildTime
+                (SymlinkTarget.parseOrFail "test" t)
+                vfs
             |> ok
             |> snd
 

@@ -235,7 +235,7 @@ module TestFileSystemType =
     /// nothing; and `loop`, a link to itself.
     let private tree : Map<DirectoryEntryName, SeedEntry> =
         let link (target : string) =
-            SeedEntry.Symlink (SymlinkTarget.parseOrFail context target)
+            SeedEntry.Symlink (SymlinkTarget.parseOrFail context target, None)
 
         Map.ofList
             [
@@ -257,6 +257,7 @@ module TestFileSystemType =
         match
             UnixSystem.withFileSystemAndCurrentDirectory
                 (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
+                (InodeOwner.ofProcess (UnixSystem.defaultCredentials (SimulatedUnixPlatform.flavour platform)))
                 tree
                 AbsoluteUnixPath.root
                 system

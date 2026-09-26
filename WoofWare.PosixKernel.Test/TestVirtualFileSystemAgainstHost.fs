@@ -467,7 +467,7 @@ module TestVirtualFileSystemAgainstHost =
         UnixTimestamp.createOrFail "test" 1_700_000_000L 0
 
     let private buildModel () : VirtualFileSystem =
-        let mutable vfs = VirtualFileSystem.empty buildTime
+        let mutable vfs = VirtualFileSystem.empty buildTime Owners.linuxDefault
 
         let resolveDirectory (relative : string) : InodeNumber =
             match
@@ -512,7 +512,9 @@ module TestVirtualFileSystemAgainstHost =
                 | None -> SeedEntry.defaultPermsForDirectory
 
             let _, updated =
-                apply (VirtualFileSystem.createDirectory parent name permissions buildTime vfs) directory
+                apply
+                    (VirtualFileSystem.createDirectory parent name permissions Owners.linuxDefault buildTime vfs)
+                    directory
 
             vfs <- updated
 
@@ -525,6 +527,7 @@ module TestVirtualFileSystemAgainstHost =
                         parent
                         name
                         SeedEntry.defaultPermsForRegularFile
+                        Owners.linuxDefault
                         buildTime
                         ImmutableArray<byte>.Empty
                         vfs)
@@ -537,7 +540,13 @@ module TestVirtualFileSystemAgainstHost =
 
             let _, updated =
                 apply
-                    (VirtualFileSystem.createSymlink parent leaf buildTime (SymlinkTarget.parseOrFail "test" target) vfs)
+                    (VirtualFileSystem.createSymlink
+                        parent
+                        leaf
+                        Owners.linuxDefault
+                        buildTime
+                        (SymlinkTarget.parseOrFail "test" target)
+                        vfs)
                     name
 
             vfs <- updated
@@ -814,11 +823,12 @@ module TestVirtualFileSystemAgainstHost =
 
                         let vfs =
                             VirtualFileSystem.createSymlink
-                                (VirtualFileSystem.root (VirtualFileSystem.empty buildTime))
+                                (VirtualFileSystem.root (VirtualFileSystem.empty buildTime Owners.linuxDefault))
                                 (DirectoryEntryName.parseOrFail "test" linkName)
+                                Owners.linuxDefault
                                 buildTime
                                 (SymlinkTarget.parseOrFail "test" targetText)
-                                (VirtualFileSystem.empty buildTime)
+                                (VirtualFileSystem.empty buildTime Owners.linuxDefault)
                             |> function
                                 | Ok (_, vfs) -> vfs
                                 | Error error -> failwith $"building the model link: %O{error}"
@@ -2517,7 +2527,7 @@ module TestVirtualFileSystemAgainstHost =
                 failwith $"could not create symlink %s{name} -> %s{target}: errno %d{errno ()}"
 
     let private buildRenameModel () : VirtualFileSystem =
-        let mutable vfs = VirtualFileSystem.empty buildTime
+        let mutable vfs = VirtualFileSystem.empty buildTime Owners.linuxDefault
 
         let directoryOf (relative : string) : InodeNumber =
             match
@@ -2546,6 +2556,7 @@ module TestVirtualFileSystemAgainstHost =
                     (directoryOf parent)
                     leaf
                     SeedEntry.defaultPermsForDirectory
+                    Owners.linuxDefault
                     buildTime
                     vfs
                 |> function
@@ -2560,6 +2571,7 @@ module TestVirtualFileSystemAgainstHost =
                     (directoryOf parent)
                     leaf
                     SeedEntry.defaultPermsForRegularFile
+                    Owners.linuxDefault
                     buildTime
                     ImmutableArray<byte>.Empty
                     vfs
@@ -2574,6 +2586,7 @@ module TestVirtualFileSystemAgainstHost =
                 VirtualFileSystem.createSymlink
                     (directoryOf parent)
                     leaf
+                    Owners.linuxDefault
                     buildTime
                     (SymlinkTarget.parseOrFail "test" target)
                     vfs

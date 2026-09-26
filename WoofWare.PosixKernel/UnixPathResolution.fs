@@ -21,18 +21,10 @@ type FileStatus =
         /// <summary>
         /// <c>st_uid</c>.
         /// </summary>
-        /// <remarks>
-        /// This kernel currently stores no per-inode ownership, so every file is currently
-        /// owned by the caller's effective user ID. (Issue #1273 tracks this.)
-        /// </remarks>
         UserId : UserId
         /// <summary>
         /// <c>st_gid</c>.
         /// </summary>
-        /// <remarks>
-        /// This kernel currently stores no per-inode ownership, so every file is currently
-        /// owned by the caller's effective group ID. (Issue #1273 tracks this.)
-        /// </remarks>
         GroupId : GroupId
         /// <summary>
         /// <c>st_size</c>.
@@ -375,10 +367,8 @@ module UnixPathResolution =
             Ok
                 {
                     Mode = InodeContent.fileTypeBits entry.Content ||| PermissionBits.toInt permissions
-                    // The calling process's, this kernel storing no per-inode
-                    // ownership. See `FileStatus.UserId`.
-                    UserId = system.Process.Credentials.EffectiveUser
-                    GroupId = system.Process.Credentials.EffectiveGroup
+                    UserId = entry.Owner.User
+                    GroupId = entry.Owner.Group
                     Size = size
                     AccessTime = entry.Times.Access
                     ModificationTime = entry.Times.Modification

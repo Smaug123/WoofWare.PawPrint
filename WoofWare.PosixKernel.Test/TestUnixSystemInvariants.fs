@@ -250,6 +250,7 @@ module TestUnixSystemInvariants =
             UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
             |> UnixSystem.withFileSystemAndCurrentDirectory
                 epoch
+                Owners.linuxDefault
                 seed
                 (AbsoluteUnixPath.parseOrFail context "/outer/inner")
         with

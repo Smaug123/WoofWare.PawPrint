@@ -21,14 +21,22 @@ open System.Collections.Immutable
 /// A symlink has no mode field, and must not: Linux ignores a symlink's own
 /// mode entirely, `lchmod` is not portable, and `VirtualFileSystem` already
 /// models this with `InodePermissions.PlatformSymlinkDefault`.
+///
+/// Every entry has an optional owner. `None` means the owner the seed is
+/// realised with, which whoever realises it states explicitly
+/// (`VirtualFileSystem.ofFileSystemSeed`'s `defaultOwner`); it does not mean
+/// "the same owner as the directory holding this entry".
 [<RequireQualifiedAccess>]
 type SeedEntry =
-    | File of contents : ImmutableArray<byte> * permissions : PermissionBits
-    | Directory of entries : Map<DirectoryEntryName, SeedEntry> * permissions : PermissionBits
+    | File of contents : ImmutableArray<byte> * permissions : PermissionBits * owner : InodeOwner option
+    | Directory of
+        entries : Map<DirectoryEntryName, SeedEntry> *
+        permissions : PermissionBits *
+        owner : InodeOwner option
     /// Held verbatim, and *not* resolved when the seed is realised: a symlink's
     /// target is a string to the kernel, so it may dangle, may be absolute, and
     /// may point outside anything the seed declares.
-    | Symlink of target : SymlinkTarget
+    | Symlink of target : SymlinkTarget * owner : InodeOwner option
 
 [<RequireQualifiedAccess>]
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
@@ -51,14 +59,16 @@ module SeedEntry =
     let defaultPermsForDirectory : PermissionBits = PermissionBits (0o777 &&& ~~~0o022)
 
     /// A regular file with the mode a `umask 022` process's `open(O_CREAT)`
-    /// would have produced: 0666 &&& ~~~0o022.
+    /// would have produced: 0666 &&& ~~~0o022. It belongs to whatever owner the
+    /// seed is realised with.
     let file (contents : ImmutableArray<byte>) : SeedEntry =
-        SeedEntry.File (contents, defaultPermsForRegularFile)
+        SeedEntry.File (contents, defaultPermsForRegularFile, None)
 
     /// A directory with the mode a `umask 022` process's `mkdir` would have
-    /// produced: 0777 &&& ~~~0o022.
+    /// produced: 0777 &&& ~~~0o022. It belongs to whatever owner the seed is
+    /// realised with.
     let directory (entries : Map<DirectoryEntryName, SeedEntry>) : SeedEntry =
-        SeedEntry.Directory (entries, defaultPermsForDirectory)
+        SeedEntry.Directory (entries, defaultPermsForDirectory, None)
 
 [<RequireQualifiedAccess>]
 module FileSystemSeed =

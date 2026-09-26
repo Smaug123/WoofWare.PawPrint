@@ -2497,25 +2497,26 @@ module NativeSystemNative =
             // `uint32_t SystemNative_GetEUid(void)` (pal_uid.c:91) is
             // `return geteuid();` — infallible, as `geteuid(2)` is.
             //
-            // The same effective user ID `Stat`/`LStat` below report as every
-            // inode's `st_uid`: the kernel stores no per-inode owner yet, and no
-            // reachable syscall could give an inode one of its own
-            // (`SystemNative_ChOwn` is not in the interop surface at all), so
-            // there is nothing for a second source of truth to disagree with.
+            // The same user ID `Stat`/`LStat` below report as every inode's
+            // `st_uid`: every inode belongs to the configured user and group,
+            // because `EmulatedKernel.withFileSystemAndCurrentDirectory` refuses a
+            // seed entry owned by anyone else, and no reachable syscall could give
+            // an inode another owner (`SystemNative_ChOwn` is not in the interop
+            // surface at all).
             //
             // That equality is why its `GetEGid` and `GetGroups` neighbours are
             // *not* implemented here. Within CoreLib the only route to them is
             // `Interop.Sys.IsMemberOfGroup` — managed code, not an entry point —
             // whose sole caller is `FileStatus.IsModeReadOnlyCore` behind
             // `if (_fileCache.Uid == Interop.Sys.GetEUid())`
-            // (FileStatus.Unix.cs:106). While every inode reports the effective
+            // (FileStatus.Unix.cs:106). While every inode belongs to the effective
             // uid that guard always holds, so the group path is dead by
             // construction, and `KernelConfig.SupplementaryGroups` is state no
-            // guest can observe until inodes can have owners of their own.
+            // guest can observe until a seed can give an inode another owner.
             // Implementing `GetEGid` alone would be worse than either: it
             // short-circuits `IsMemberOfGroup` on `gid == GetEGid()`
-            // (Interop.IsMemberOfGroup.cs:13), which while every inode reports
-            // the effective IDs is also always true — so the branch would start *succeeding*, on the
+            // (Interop.IsMemberOfGroup.cs:13), which while every inode belongs
+            // to the effective IDs is also always true — so the branch would start *succeeding*, on the
             // strength of the very invariant that must have broken for it to be
             // reachable. Leaving them unimplemented means a guest that gets
             // there stops loudly instead, naming the entry point.

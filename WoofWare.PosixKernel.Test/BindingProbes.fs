@@ -43,10 +43,10 @@ module BindingProbes =
         Map.ofList
             [
                 name "d", SeedEntry.directory (Map.ofList [ name "f", file ])
-                name "ro", SeedEntry.Directory (Map.empty, mode 0o555)
-                name "rosrc", SeedEntry.Directory (Map.ofList [ name "f", file ], mode 0o555)
+                name "ro", SeedEntry.Directory (Map.empty, mode 0o555, None)
+                name "rosrc", SeedEntry.Directory (Map.ofList [ name "f", file ], mode 0o555, None)
                 name "a", SeedEntry.directory (Map.ofList [ name "b", SeedEntry.directory Map.empty ])
-                name "m", SeedEntry.Directory (Map.empty, mode 0o555)
+                name "m", SeedEntry.Directory (Map.empty, mode 0o555, None)
                 name "q", SeedEntry.directory Map.empty
             ]
 

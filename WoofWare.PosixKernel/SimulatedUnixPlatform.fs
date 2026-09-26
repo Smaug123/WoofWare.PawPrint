@@ -555,6 +555,17 @@ module SimulatedUnixPlatform =
                 ModeMask = PermissionBits.parseOrFail "SimulatedUnixPlatform.creatingOpenRules" 0o0777
             }
 
+    /// Where the group of an inode this platform's `open(O_CREAT)` or `mkdir(2)`
+    /// creates comes from. See `InodeOwner.ofNewInode` for the measurements.
+    ///
+    /// A mount fact as well as a kernel one on Linux, whose `grpid` mount
+    /// option makes every directory behave as if set-group-ID; this library
+    /// models no such mount.
+    let newInodeGroupRule (platform : SimulatedUnixPlatform) : NewInodeGroupRule =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> NewInodeGroupRule.CreatorsUnlessParentSetGroupId
+        | SimulatedUnixFlavour.Darwin -> NewInodeGroupRule.Parents
+
     /// Everything this platform's `mkdir(2)` does differently. See `MkDirRules`
     /// for the measurements; note in particular that `ModeMask` is not
     /// `creatingOpenRules`' one on Linux.

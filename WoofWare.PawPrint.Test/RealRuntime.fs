@@ -452,12 +452,27 @@ module RealRuntime =
                             $"The filesystem seed declares \"%s{name}\" at its root, which is also what this oracle must write there to run the guest at all (\"%s{clash}\"). Rename the seeded entry: silently overwriting the guest image would turn the test into a much more confusing failure."
                     | None -> ()
 
+                // The oracle writes every entry as whoever is running the tests,
+                // and cannot give one to anyone else without privileges it does
+                // not have, so a seeded owner would be compared against the
+                // host's answer for a file with a different owner.
                 match entry with
-                | SeedEntry.File (_, permissions) -> requireOraclePermissions $"%s{prefix}/%s{name}" false permissions
-                | SeedEntry.Directory (children, permissions) ->
+                | SeedEntry.File (_, _, Some owner)
+                | SeedEntry.Directory (_, _, Some owner)
+                | SeedEntry.Symlink (_, Some owner) ->
+                    failwith
+                        $"The filesystem seed gives %s{prefix}/%s{name} the owner %O{owner}, and this oracle can only create entries owned by the user running it. Leave the owner as None, or move the case to sourcesImpure, which materialises nothing."
+                | SeedEntry.File _
+                | SeedEntry.Directory _
+                | SeedEntry.Symlink _ -> ()
+
+                match entry with
+                | SeedEntry.File (_, permissions, _) ->
+                    requireOraclePermissions $"%s{prefix}/%s{name}" false permissions
+                | SeedEntry.Directory (children, permissions, _) ->
                     requireOraclePermissions $"%s{prefix}/%s{name}" true permissions
                     go (prefix + "/" + name) (depth + 1) children
-                | SeedEntry.Symlink target ->
+                | SeedEntry.Symlink (target, _) ->
                     // First, so that a target of several components is refused
                     // for the reason no rewrite of it could fix.
                     hostTarget $"%s{prefix}/%s{name}" target |> ignore<string>
@@ -571,9 +586,9 @@ module RealRuntime =
         seed
         |> Map.forall (fun _ entry ->
             match entry with
-            | SeedEntry.Symlink _ -> true
-            | SeedEntry.File (_, permissions) -> permissions = SeedEntry.defaultPermsForRegularFile
-            | SeedEntry.Directory (children, permissions) ->
+            | SeedEntry.Symlink (_, _) -> true
+            | SeedEntry.File (_, permissions, _) -> permissions = SeedEntry.defaultPermsForRegularFile
+            | SeedEntry.Directory (children, permissions, _) ->
                 permissions = SeedEntry.defaultPermsForDirectory && canMaterialise children
         )
 
@@ -615,14 +630,14 @@ module RealRuntime =
             let path = Path.Combine (directory, hostName directory name)
 
             match entry with
-            | SeedEntry.File (contents, permissions) ->
+            | SeedEntry.File (contents, permissions, _) ->
                 File.WriteAllBytes (path, Seq.toArray contents)
                 // After writing, not before: `File.WriteAllBytes` creates the
                 // file under the host's umask, so the mode it lands with is a
                 // property of the machine rather than of the seed.
                 if not (RuntimeInformation.IsOSPlatform OSPlatform.Windows) then
                     applyMode path permissions
-            | SeedEntry.Directory (children, permissions) ->
+            | SeedEntry.Directory (children, permissions, _) ->
                 Directory.CreateDirectory path |> ignore<DirectoryInfo>
                 // Children first, *then* the mode: a directory seeded without
                 // owner-write or owner-search could not have its own children
@@ -634,7 +649,7 @@ module RealRuntime =
             // Verbatim, and deliberately not checked for existence: a seeded
             // symlink may dangle, and `File.CreateSymbolicLink` is happy to
             // create one that does.
-            | SeedEntry.Symlink target ->
+            | SeedEntry.Symlink (target, _) ->
                 File.CreateSymbolicLink (path, hostTarget path target) |> ignore<FileSystemInfo>
 
     let private executeInScratch

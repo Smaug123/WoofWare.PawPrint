@@ -99,15 +99,15 @@ module TestBindingAgainstHost =
             let path = Path.Combine (directory, PathText.ofName name)
 
             match entry with
-            | SeedEntry.File (contents, permissions) ->
+            | SeedEntry.File (contents, permissions, _) ->
                 File.WriteAllBytes (path, Seq.toArray contents)
                 File.SetUnixFileMode (path, enum<UnixFileMode> (PermissionBits.toInt permissions))
-            | SeedEntry.Directory (children, permissions) ->
+            | SeedEntry.Directory (children, permissions, _) ->
                 Directory.CreateDirectory path |> ignore<DirectoryInfo>
                 // Children first: an unwritable directory could not be filled afterwards.
                 materialise path children
                 File.SetUnixFileMode (path, enum<UnixFileMode> (PermissionBits.toInt permissions))
-            | SeedEntry.Symlink _ -> failwith "the probe tree holds no symlinks"
+            | SeedEntry.Symlink (_, _) -> failwith "the probe tree holds no symlinks"
 
     /// Remove a probe tree through the host's own tools rather than `System.IO`:
     /// a row may have bound a name that is not UTF-8, which a `string` cannot
@@ -157,6 +157,7 @@ module TestBindingAgainstHost =
         match
             UnixSystem.withFileSystemAndCurrentDirectory
                 (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
+                Owners.linuxDefault
                 BindingProbes.tree
                 AbsoluteUnixPath.root
                 system

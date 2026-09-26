@@ -894,7 +894,10 @@ module UnixSystem =
 
         // Bound once so that `CurrentDirectoryInode` is the root of *this*
         // filesystem rather than of a second one that merely looks like it.
-        let filesystem = VirtualFileSystem.empty (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
+        let filesystem =
+            VirtualFileSystem.empty
+                (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
+                (InodeOwner.ofProcess (defaultCredentials flavour))
 
         {
             Machine =
@@ -1027,8 +1030,14 @@ module UnixSystem =
     /// it, which is what makes that path the physical one with every symlink
     /// resolved away — measured on both kernels, `chdir("outer/lnk")` with
     /// `lnk -> inner` is followed by `getcwd() == ".../outer/inner"`.
+    ///
+    /// `defaultOwner` owns the root and every seed entry that states no owner
+    /// of its own; see `VirtualFileSystem.ofFileSystemSeed`. It is an argument
+    /// rather than read off the process, so that the result does not depend on
+    /// whether the caller set the credentials before or after the filesystem.
     let withFileSystemAndCurrentDirectory<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (createdAt : UnixTimestamp)
+        (defaultOwner : InodeOwner)
         (seed : Map<DirectoryEntryName, SeedEntry>)
         (directory : AbsoluteUnixPath)
         (system : UnixSystem<'Task, 'Handler>)
@@ -1110,7 +1119,7 @@ module UnixSystem =
                     Some (CurrentDirectoryFault.SeedNameNotBindable (name, flavour))
                 else
                     match entry with
-                    | SeedEntry.Directory (children, _) -> firstImpossibleName children
+                    | SeedEntry.Directory (children, _, _) -> firstImpossibleName children
                     | SeedEntry.File _
                     | SeedEntry.Symlink _ -> None
             )
@@ -1119,7 +1128,7 @@ module UnixSystem =
         | Some fault -> Error fault
         | None ->
 
-        let filesystem = VirtualFileSystem.ofFileSystemSeed createdAt seed
+        let filesystem = VirtualFileSystem.ofFileSystemSeed createdAt defaultOwner seed
         let root = VirtualFileSystem.root filesystem
 
         let located =

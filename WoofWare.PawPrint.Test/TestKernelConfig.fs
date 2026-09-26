@@ -186,6 +186,99 @@ module TestKernelConfig =
         KernelConfig.Default.SupplementaryGroups |> shouldEqual []
 
     [<Test>]
+    let ``KernelConfig's seed belongs to the configured user and group`` () : unit =
+        let seed =
+            Map.ofList
+                [
+                    DirectoryEntryName.parseOrFail "test" "d",
+                    SeedEntry.directory (
+                        Map.ofList
+                            [
+                                DirectoryEntryName.parseOrFail "test" "f",
+                                SeedEntry.file System.Collections.Immutable.ImmutableArray.Empty
+                            ]
+                    )
+                ]
+
+        let configured : InodeOwner =
+            {
+                User = UserId.parseOrFail "test" 37u
+                Group = GroupId.parseOrFail "test" 38u
+            }
+
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            let kernel =
+                KernelConfig.toKernel
+                    { KernelConfig.Default with
+                        UnixPlatform = platform
+                        UserId = Some 37u
+                        GroupId = Some 38u
+                        FileSystem = seed
+                    }
+
+            kernel.Machine.FileSystem
+            |> VirtualFileSystem.inodes
+            |> Map.iter (fun _ inode -> inode.Owner |> shouldEqual configured)
+
+            // An owner that is the configured one is not foreign, so it is taken.
+            KernelConfig.toKernel
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                    UserId = Some 37u
+                    GroupId = Some 38u
+                    FileSystem =
+                        Map.ofList
+                            [
+                                DirectoryEntryName.parseOrFail "test" "g",
+                                SeedEntry.File (
+                                    System.Collections.Immutable.ImmutableArray.Empty,
+                                    SeedEntry.defaultPermsForRegularFile,
+                                    Some configured
+                                )
+                            ]
+                }
+            |> ignore<EmulatedKernel>
+
+    [<Test>]
+    let ``KernelConfig refuses a seed entry owned by anyone else, naming the entry`` () : unit =
+        let foreign : InodeOwner =
+            {
+                User = UserId.parseOrFail "test" 0u
+                Group = GroupId.parseOrFail "test" 1000u
+            }
+
+        let seed =
+            Map.ofList
+                [
+                    DirectoryEntryName.parseOrFail "test" "d",
+                    SeedEntry.directory (
+                        Map.ofList
+                            [
+                                DirectoryEntryName.parseOrFail "test" "f",
+                                SeedEntry.File (
+                                    System.Collections.Immutable.ImmutableArray.Empty,
+                                    SeedEntry.defaultPermsForRegularFile,
+                                    Some foreign
+                                )
+                            ]
+                    )
+                ]
+
+        let failure =
+            Assert.Throws<System.Exception> (fun () ->
+                KernelConfig.toKernel
+                    { KernelConfig.Default with
+                        FileSystem = seed
+                    }
+                |> ignore<EmulatedKernel>
+            )
+
+        failure.Message.StartsWith ("EmulatedKernel.FileSystem: ", System.StringComparison.Ordinal)
+        |> shouldEqual true
+
+        failure.Message |> shouldContainText "\"/d/f\""
+
+    [<Test>]
     let ``KernelConfig refuses credentials no process could hold, naming the knob`` () : unit =
         let refusal (config : KernelConfig) : string =
             (Assert.Throws<System.Exception> (fun () -> KernelConfig.toKernel config |> ignore<EmulatedKernel>)).Message
