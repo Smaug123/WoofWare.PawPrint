@@ -720,13 +720,16 @@ module TestDynamicSignatureDecoding =
 
     [<Test>]
     let ``refuses trailing bytes after a complete locals signature`` () : unit =
-        let exn =
-            Assert.Throws<Exception> (fun () ->
-                decodeLocals (verbatim (Array.append (encodeLocals [ typeof<int>, false ]) [| 0x08uy |]))
-                |> ignore
-            )
+        // A byte that is not ELEMENT_TYPE_END, and then more ENDs than the encoder ever writes: its
+        // own one, plus three.
+        for extra in [ [| 0x08uy |] ; [| 0x00uy ; 0x00uy ; 0x00uy |] ] do
+            let exn =
+                Assert.Throws<Exception> (fun () ->
+                    decodeLocals (verbatim (Array.append (encodeLocals [ typeof<int>, false ]) extra))
+                    |> ignore
+                )
 
-        exn.Message |> shouldContainText "left over"
+            exn.Message |> shouldContainText "left over"
 
     [<Test>]
     let ``refuses a truncated signature`` () : unit =
