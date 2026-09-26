@@ -17,7 +17,7 @@ module TestStatNfsDirectory =
     /// One five-byte file and one directory, on an NFS mount.
     let private nfs : KernelConfig =
         { KernelConfig.Default with
-            FileSystemType = Some EmulatedFileSystemType.Nfs
+            Mount = Some EmulatedMount.Nfs
             FileSystem =
                 let name (s : string) =
                     DirectoryEntryName.parseOrFail "test seed" s

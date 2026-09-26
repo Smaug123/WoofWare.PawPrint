@@ -6,7 +6,8 @@ open WoofWare.PosixKernel
 /// conversion `SystemNative_GetFileSystemType` performs into it.
 ///
 /// This is PawPrint's half of the `fstatfs` boundary. The library states the
-/// fields a kernel's `fstatfs(2)` fills in; the shim reduces them to one
+/// fields a kernel's `fstatfs(2)` fills in, among them the ones naming the
+/// filesystem's type (`FileSystemStatistics.typeFields`); the shim reduces those to one
 /// `uint32`, and does so differently per flavour (`pal_io.c`,
 /// `SystemNative_GetFileSystemType`):
 ///

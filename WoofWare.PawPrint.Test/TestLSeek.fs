@@ -230,7 +230,7 @@ class Program
 
         let nfs =
             { seed with
-                FileSystemType = Some EmulatedFileSystemType.Nfs
+                Mount = Some EmulatedMount.Nfs
             }
 
         let exn =

@@ -2959,30 +2959,27 @@ module NativeSystemNative =
             // stands between a guest and the BCL's commonest write API.
             // `File.Create` never arrives here: it is `FileShare.None`, and
             // `CanLockTheFile` answers `LOCK_EX` without consulting anything.
-            // So `KernelConfig.FileSystemType = Some Nfs` is the one
+            // So `KernelConfig.Mount = Some EmulatedMount.Nfs` is the one
             // configuration under which a `FileShare.Read` handle opened for
             // writing takes no `flock` at all.
             let operation = "SystemNative_GetFileSystemType"
             let fd = fdArgument operation instruction.Arguments.[0]
 
-            // One call into the table, which is shared with the unit tests and
-            // with the host-comparison oracle. Deliberately no per-descriptor
-            // arms here: a mutation swapping two rows would have somewhere to
-            // hide if the classification were re-done in the handler.
-            let answer =
-                FileDescriptorRegistry.tryFindObject fd state.Kernel.FileDescriptors
-                |> EmulatedFileSystemType.reportedFor
-                    (SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform)
-                    state.Kernel.FileSystemType
-
-            match answer with
-            | FileSystemTypeAnswer.Reported fields ->
+            // The library answers the whole of `fstatfs(2)`; the shim reads
+            // only the fields naming the filesystem's type, which the library
+            // always states. Deliberately no per-descriptor arms here: a
+            // mutation swapping two rows would have somewhere to hide if the
+            // classification were re-done in the handler.
+            match UnixPathResolution.fstatfs fd (EmulatedKernel.unix state.Kernel) with
+            | FileSystemStatisticsAnswer.Reported statistics ->
                 // errno untouched on success, as `fstatfs` leaves it.
+                let answer = FileSystemTypePal.ofFields (FileSystemStatistics.typeFields statistics)
+
                 state
-                |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 (FileSystemTypePal.ofFields fields)) ctx.Thread
+                |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 answer) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-            | FileSystemTypeAnswer.Failed error ->
+            | FileSystemStatisticsAnswer.Failed error ->
                 // CoreLib never reads this errno — its `LibraryImport` declares
                 // no `SetLastError`, so `TryGetFileSystemType` sees only the 0.
                 // A hand-rolled guest that does declare it would see the errno

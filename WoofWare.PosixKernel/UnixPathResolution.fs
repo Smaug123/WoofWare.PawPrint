@@ -346,7 +346,7 @@ module UnixPathResolution =
             // and a guest can see it through a file-length API.
             | InodeContent.Symlink target -> Ok (int64 (UnixByteString.length (SymlinkTarget.toByteString target)))
             | InodeContent.Directory directory ->
-                let fsType = system.Machine.FileSystemType
+                let fsType = EmulatedMount.fileSystemType system.Machine.Mount
 
                 match EmulatedFileSystemType.directorySize fsType directory.Entries.Count with
                 | Some size -> Ok size
@@ -446,6 +446,48 @@ module UnixPathResolution =
         | None ->
             failwith
                 $"UnixPathResolution.fstat: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink or rmdir removed a still-open file or directory; the open file description must keep it alive (this is a bug in this library)."
+
+    /// `statfs(2)`: report the filesystem the inode `path` names is on.
+    ///
+    /// A symbolic link in the final position is followed, as `statfs` always
+    /// does, so a dangling link is ENOENT. Every failure is the path
+    /// resolution's own, as for `stat(2)`.
+    ///
+    /// Changes nothing and returns no system. Refuses a machine whose platform
+    /// and mount do not describe one machine, whatever the path.
+    let statfs<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : UnixPath)
+        (system : UnixSystem<'Task, 'Handler>)
+        : FileSystemStatisticsAnswer
+        =
+        FileSystemStatistics.assertCoherent "UnixPathResolution.statfs" system.Machine.UnixPlatform system.Machine.Mount
+
+        match resolvePath SymlinkPolicy.Follow path system with
+        | Error error -> FileSystemStatisticsAnswer.Failed error
+        | Ok inode ->
+            FileSystemStatistics.ofObject system.Machine.UnixPlatform system.Machine.Mount (OpenFileObject.File inode)
+
+    /// `fstatfs(2)`: report the filesystem the object `fd` names is on.
+    ///
+    /// EBADF for a descriptor the process does not hold. A file or directory
+    /// is on the machine's one mount. Every other object is on one of Linux's
+    /// internal filesystems, and Darwin answers EINVAL for it.
+    ///
+    /// Changes nothing and returns no system. Refuses a machine whose platform
+    /// and mount do not describe one machine, whatever the descriptor.
+    let fstatfs<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : FileSystemStatisticsAnswer
+        =
+        FileSystemStatistics.assertCoherent
+            "UnixPathResolution.fstatfs"
+            system.Machine.UnixPlatform
+            system.Machine.Mount
+
+        match FileDescriptorRegistry.tryFindObject fd system.Process.FileDescriptors with
+        | None -> FileSystemStatisticsAnswer.Failed UnixError.EBADF
+        | Some target -> FileSystemStatistics.ofObject system.Machine.UnixPlatform system.Machine.Mount target
 
     /// <summary>
     /// The absolute path of this process's current working directory, or <c>None</c> if

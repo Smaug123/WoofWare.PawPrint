@@ -300,12 +300,12 @@ module VirtualFileSystem =
 
     /// The `st_dev` every inode in this filesystem reports.
     ///
-    /// One device for the whole tree, since this kernel models no mounts. The
-    /// value itself is unobservable beyond comparison — a runtime reads
-    /// `(st_dev, st_ino)` pairs to decide whether two paths name the same file,
-    /// and never interprets the device number — but it is *non-zero*: no mounted
-    /// filesystem reports 0, so a zero here would be indistinguishable from a
-    /// field nobody remembered to write.
+    /// One device for the whole tree, since this kernel models no mounts. A
+    /// runtime reads `(st_dev, st_ino)` pairs to decide whether two paths name
+    /// the same file, and Darwin's `statfs(2)` reports the same number as the
+    /// first word of `f_fsid`. It is *non-zero*: no mounted filesystem reports
+    /// 0, so a zero here would be indistinguishable from a field nobody
+    /// remembered to write.
     let deviceId : int64 = 0x1000001L
 
     /// A filesystem containing nothing but an empty root directory, created at

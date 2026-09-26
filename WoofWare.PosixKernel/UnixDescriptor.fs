@@ -525,7 +525,7 @@ module UnixDescriptor =
                     // 1, 5 and 37 entries for offsets INT64_MIN, -10000,
                     // -size-1, -size, -size+1, -1, 0, 1, 7, 2^40 and
                     // INT64_MAX-size-1 .. INT64_MAX.
-                    match system.Machine.FileSystemType with
+                    match EmulatedMount.fileSystemType system.Machine.Mount with
                     // Linux 6.18.5: EINVAL for every offset, leaving the
                     // position where it was. A tmpfs directory's `llseek`
                     // takes `SEEK_SET` and `SEEK_CUR` only.

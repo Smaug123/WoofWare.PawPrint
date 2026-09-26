@@ -805,7 +805,7 @@ type EmulatedKernel =
     member this.UserBufferCheck : UserBufferCheck = this.Machine.UserBufferCheck
     member this.UnixPlatform : SimulatedUnixPlatform = this.Machine.UnixPlatform
     member this.FileSystem : VirtualFileSystem = this.Machine.FileSystem
-    member this.FileSystemType : EmulatedFileSystemType = this.Machine.FileSystemType
+    member this.Mount : EmulatedMount = this.Machine.Mount
 
 /// A way this kernel's own tables disagree with the POSIX system underneath
 /// them — a state no kernel could be in, and which `EmulatedKernel` exists to
@@ -1844,7 +1844,7 @@ type KernelConfig =
         /// reports that this process has no executable path, which is what
         /// PawPrint modelling no `exec(2)` actually means, and which both Unix
         /// flavours express as a null return with errno `ENOENT`. Contrast
-        /// `FileSystemType` above, whose `None` asks `toKernel` to pick a value.
+        /// `Mount` below, whose `None` asks `toKernel` to pick a value.
         ///
         /// Not resolved against `FileSystem`: a host that wants
         /// `File.Exists(Environment.ProcessPath)` to hold — which is true on
@@ -1893,22 +1893,25 @@ type KernelConfig =
         /// The ID the guest observes via `Environment.ProcessId`. See
         /// `UnixSystem.defaultProcessId` for why the default is not 1.
         ProcessId : ProcessId
-        /// What `SystemNative_GetFileSystemType` reports for a file on
-        /// `FileSystem`; `None` takes whichever filesystem `UnixPlatform`'s
-        /// flavour would most honestly mount for an in-memory tree.
+        /// The mount `FileSystem` claims to be: its type, which is what
+        /// `SystemNative_GetFileSystemType` reports for a file on it, and what
+        /// `statfs(2)` reports about it besides (see `EmulatedMount`). `None`
+        /// takes whichever filesystem `UnixPlatform`'s flavour would most
+        /// honestly mount for an in-memory tree, with its default
+        /// configuration.
         ///
         /// This is configuration rather than something derived from the
         /// flavour because a flavour does not determine a mount's type — one
         /// Linux reports three different numbers for three directories in one
-        /// process. It does constrain it, so a value incoherent with
+        /// process. It does constrain it, so a mount incoherent with
         /// `UnixPlatform` is refused; see `EmulatedFileSystemType`.
         ///
-        /// Setting it changes what that one native answers and nothing else.
-        /// In particular the emulated filesystem's *behaviour* — its name and
-        /// path limits, its creating-open rules — stays the flavour's
-        /// throughout, so `Nfs` here buys a kernel that reports NFS, not one
-        /// that behaves like a remote filesystem.
-        FileSystemType : EmulatedFileSystemType option
+        /// Its type also decides a directory's `st_size` and where `SEEK_END`
+        /// lands on one. The filesystem's other behaviour — its name and path
+        /// limits, its creating-open rules — stays the flavour's throughout, so
+        /// `Nfs` here buys a kernel that reports NFS, not one that behaves like
+        /// a remote filesystem.
+        Mount : EmulatedMount option
         /// Range `bind(2)` draws an ephemeral port from, inclusive at both ends,
         /// or `None` for the flavour's default (32768-60999 on Linux,
         /// 49152-65535 on Darwin). See `UnixSystem.defaultEphemeralPortRange`; the low end must not
@@ -1951,7 +1954,7 @@ type KernelConfig =
             SupplementaryGroups = []
             Umask = UnixSystem.defaultUmask
             ProcessId = UnixSystem.defaultProcessId
-            FileSystemType = None
+            Mount = None
             EphemeralPortRange = None
             SoMaxConn = None
             LocalAddresses = UnixSystem.defaultLocalAddresses
@@ -1967,7 +1970,7 @@ module KernelConfig =
     /// configuration path.
     ///
     /// The platform is the constructor's argument rather than a setter's,
-    /// because the fields it fixes (`SoMaxConn`'s and `FileSystemType`'s
+    /// because the fields it fixes (`SoMaxConn`'s and `Mount`'s
     /// defaults, the limits the current directory is admitted under) would
     /// otherwise be stale for whichever platform was set last.
     let toKernel (config : KernelConfig) : EmulatedKernel =
@@ -1990,7 +1993,7 @@ module KernelConfig =
         |> EmulatedKernel.withClockJitter config.ClockJitter
         |> EmulatedKernel.withOptimalMaxSpinWaitsPerSpinIteration config.OptimalMaxSpinWaitsPerSpinIteration
         |> EmulatedKernel.withWallClockEpochMs config.WallClockEpochMs
-        |> EmulatedKernel.mapMachine (UnixMachineState.withFileSystemType config.FileSystemType)
+        |> EmulatedKernel.mapMachine (UnixMachineState.withMount config.Mount)
         |> EmulatedKernel.mapProcess (UnixProcessState.withProcessPath "KernelConfig.ProcessPath" config.ProcessPath)
         |> EmulatedKernel.withFileSystemAndCurrentDirectory
             (UnixTimestamp.ofMillisecondsSinceEpoch config.WallClockEpochMs)

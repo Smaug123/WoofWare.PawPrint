@@ -141,16 +141,16 @@ type UnixMachineState =
         /// a filesystem read from the host would make a replay depend on the
         /// machine that produced it, and programs branch on what they find.
         FileSystem : VirtualFileSystem
-        /// The filesystem `FileSystem` claims to be, which decides what
-        /// `fstatfs(2)` reports for a file on it (see
-        /// `EmulatedFileSystemType.reportedFor`), a directory's `st_size`, and
-        /// where `lseek(2)` with `SEEK_END` lands on a directory.
+        /// The mount `FileSystem` claims to be: its type and what `statfs(2)`
+        /// reports about it (see `FileSystemStatistics.ofMount`). Its type also
+        /// decides a directory's `st_size`, and where `lseek(2)` with
+        /// `SEEK_END` lands on a directory.
         ///
         /// Fixed for the run: this library models no `mount(2)`, so nothing
         /// a process does can change it. Derived from the flavour by
-        /// `UnixSystem.initial` and set only by `withFileSystemType`, which
-        /// refuses a type this machine's flavour cannot report.
-        FileSystemType : EmulatedFileSystemType
+        /// `UnixSystem.initial` and set only by `withMount`, which refuses a
+        /// type this machine's flavour cannot report.
+        Mount : EmulatedMount
     }
 
 /// What a socket is taking an ephemeral port for, which decides what stands
@@ -325,30 +325,28 @@ module UnixMachineState =
             LocalRoutes = routes
         }
 
-    /// Set the filesystem type the machine's mount claims to be. `None` takes
-    /// the flavour's own default; an explicit type this machine's flavour
-    /// could not mount is refused, because `fstatfs(2)` answers a *file* from
-    /// the type and every other descriptor from the flavour, so the pair must
+    /// Set the mount the machine's filesystem claims to be. `None` takes the
+    /// flavour's own default; a mount of a type this machine's flavour could
+    /// not mount is refused, because `fstatfs(2)` answers a *file* from the
+    /// mount and every other descriptor from the flavour, so the pair must
     /// describe one machine.
-    let withFileSystemType
-        (fileSystemType : EmulatedFileSystemType option)
-        (machine : UnixMachineState)
-        : UnixMachineState
-        =
+    let withMount (mount : EmulatedMount option) (machine : UnixMachineState) : UnixMachineState =
         let flavour = SimulatedUnixPlatform.flavour machine.UnixPlatform
 
         let resolved =
-            match fileSystemType with
-            | None -> EmulatedFileSystemType.defaultFor flavour
+            match mount with
+            | None -> EmulatedMount.defaultFor flavour
             | Some requested ->
-                if not (EmulatedFileSystemType.isReportableUnder flavour requested) then
+                let fsType = EmulatedMount.fileSystemType requested
+
+                if not (EmulatedFileSystemType.isReportableUnder flavour fsType) then
                     failwith
-                        $"UnixMachineState.FileSystemType: a %O{flavour} kernel cannot report %O{requested}, so a process asking `fstatfs` would learn a fact no such system could tell it. Pass None to take %O{flavour}'s own default, or pick a type that flavour mounts."
+                        $"UnixMachineState.Mount: a %O{flavour} kernel cannot report %O{fsType}, so a process asking `fstatfs` would learn a fact no such system could tell it. Pass None to take %O{flavour}'s own default, or pick a type that flavour mounts."
 
                 requested
 
         { machine with
-            FileSystemType = resolved
+            Mount = resolved
         }
 
     /// Whether, and where, this machine's kernel screens a read or write buffer
