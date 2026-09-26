@@ -297,3 +297,77 @@ unsafe class Program
                                                        _) -> method.Name |> shouldEqual "TypeOf"
                 | other -> failwith $"expected the constrained callvirt's read of hasValue, got %O{other}"
             )
+
+    [<Test>]
+    let ``Reading an unwritten byte of a local through a byte pointer gives that byte's undefined value`` () : unit =
+        let source =
+            """
+using System.Runtime.CompilerServices;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    static int Main(string[] args)
+    {
+        byte* bytes = stackalloc byte[4];
+        bytes[0] = 42;
+        int local = *(int*)bytes;
+        // Byte 0 of `local` is defined; byte 2 is not.
+        if (*(byte*)&local != 42) return 1;
+        return *((byte*)&local + 2) == 0 ? 0 : 2;
+    }
+}
+"""
+
+        run
+            "UndefinedLocalByte.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.UInt8
+                stackOrigins observation.Value |> shouldEqual [ 2 ]
+            )
+
+    [<Test>]
+    let ``An int read across byte array elements, one of them undefined, is undefined in that byte`` () : unit =
+        let source =
+            """
+using System;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    static int Main(string[] args)
+    {
+        byte* unwritten = stackalloc byte[4];
+        byte[] bytes = new byte[4];
+        bytes[0] = 1;
+        bytes[1] = unwritten[3];
+        bytes[2] = 3;
+        bytes[3] = 4;
+        // Four elements read as one int: only the second is undefined.
+        int whole = MemoryMarshal.Read<int>(bytes);
+        return whole > 0 ? 0 : 1;
+    }
+}
+"""
+
+        run
+            "UndefinedAcrossArrayElements.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.Int32
+                stackOrigins observation.Value |> shouldEqual [ 3 ]
+
+                observation.Value.Bytes
+                |> shouldEqual
+                    [
+                        ValueByte.Defined 1uy
+                        observation.Value.Bytes.[1]
+                        ValueByte.Defined 3uy
+                        ValueByte.Defined 4uy
+                    ]
+            )

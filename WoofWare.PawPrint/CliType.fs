@@ -195,6 +195,20 @@ type CliByteAddressabilityRejection =
             $"value type containing non-byte-addressable field %O{field}: %s{rejection.Description}"
         | CliByteAddressabilityRejection.UndefinedByte origin -> $"undefined byte, descended from %O{origin}"
 
+    /// The never-written byte this obstruction is, through any fields it is nested in, or `None`
+    /// for an obstruction that is not an undefined byte.
+    member this.UndefinedOrigin : UninitialisedByte option =
+        match this with
+        | CliByteAddressabilityRejection.UndefinedByte origin -> Some origin
+        | CliByteAddressabilityRejection.ValueTypeContainsNonByteAddressableField (_, _, inner) -> inner.UndefinedOrigin
+        | CliByteAddressabilityRejection.ObjectReference
+        | CliByteAddressabilityRejection.RuntimePointer
+        | CliByteAddressabilityRejection.NativeIntSourceNotByteAddressable _
+        | CliByteAddressabilityRejection.UInt8SourceNotByteAddressable _
+        | CliByteAddressabilityRejection.Int64SourceNotByteAddressable _
+        | CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _
+        | CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers _ -> None
+
 type CliByteAddressability =
     | ByteAddressable
     /// Every byte of this value can be *named*, but at least one of them is a byte of a native
@@ -884,6 +898,111 @@ type CliType =
         match firstObstruction with
         | Some rejection -> Error rejection
         | None -> Ok bytes
+
+    /// Whether some leaf of `value` is undefined. Not a member of the module below because the byte
+    /// helpers here need it.
+    static member internal HasUndefinedLeaf (value : CliType) : bool =
+        match value with
+        | CliType.Undefined _ -> true
+        | CliType.ValueType vt ->
+            CliValueType.TryAllFields vt
+            |> List.exists (fun f -> CliType.HasUndefinedLeaf (CliConcreteField.ToCliField f).Contents)
+        | CliType.Numeric _
+        | CliType.Bool _
+        | CliType.Char _
+        | CliType.ObjectRef _
+        | CliType.RuntimePointer _ -> false
+
+    /// The bytes of `[offset, offset + count)`, each a number or undefined. Refuses a range reaching
+    /// a byte with neither: inside a reference, a runtime pointer, or a native int PawPrint models
+    /// as an identity. A range outside the value is a caller bug and fails.
+    static member ValueBytesAt (offset : int) (count : int) (value : CliType) : ValueByte[] =
+        CliType.ByteImageAt offset count value
+        |> Array.mapi (fun i b ->
+            match b with
+            | Ok b -> ValueByte.Defined b
+            | Error rejection ->
+                match rejection.UndefinedOrigin with
+                | Some origin -> ValueByte.Undefined origin
+                | None ->
+                    failwith
+                        $"CliType.ValueBytesAt: byte %d{offset + i} of %O{value} is a %s{rejection.Description}, which is neither a number nor undefined. Value layout:\n%s{CliType.DescribeByteLayout None value}"
+        )
+
+    /// `ValueBytesAt` over the whole of `value`.
+    static member ValueBytesOf (value : CliType) : ValueByte[] =
+        CliType.ValueBytesAt 0 (CliType.SizeOf(value).Size) value
+
+    /// The bytes of `[offset, offset + count)` as a read of a typed value needs them: exactly
+    /// `SymbolicBytesAt`'s answer when every byte has content, and each byte as a number or
+    /// undefined when one is undefined. Refuses what `SymbolicBytesAt` refuses, and a range holding
+    /// an undefined byte beside a byte that is not a number.
+    static member ImageBytesAt (offset : int) (count : int) (value : CliType) : ImageBytes =
+        if not (CliType.HasUndefinedLeaf value) then
+            CliType.SymbolicBytesAt offset count value |> ImageBytes.Defined
+        else
+
+        let bytes = CliType.ValueBytesAt offset count value
+
+        let anyUndefined =
+            bytes
+            |> Array.exists (fun b ->
+                match b with
+                | ValueByte.Undefined _ -> true
+                | ValueByte.Defined _ -> false
+            )
+
+        if anyUndefined then
+            ImageBytes.SomeUndefined bytes
+        else
+            bytes
+            |> Array.map (fun b ->
+                match b with
+                | ValueByte.Defined b -> UInt8Source.Verbatim b
+                | ValueByte.Undefined _ -> failwith "unreachable: every byte was just checked to be defined"
+            )
+            |> ImageBytes.Defined
+
+    /// A value of `template`'s shape from bytes `ImageBytesAt` or a block read gave.
+    static member OfImageBytesLike (template : CliType) (bytes : ImageBytes) : CliType =
+        match bytes with
+        | ImageBytes.Defined bytes -> CliType.OfSymbolicBytesLike template bytes
+        | ImageBytes.SomeUndefined bytes -> CliType.OfValueBytesLike template bytes
+
+    /// `value` with the bytes at `offset` replaced by `bytes`, or `None` if that changes nothing.
+    ///
+    /// Where neither the value nor the bytes written holds anything undefined this is
+    /// `WithBytesAtIfChanged`. Otherwise the value is rebuilt from its image with the bytes spliced
+    /// in: a leaf is undefined afterwards exactly when one of its bytes is, so defined bytes written
+    /// over undefined ones define them, and an undefined byte written anywhere undefines its leaf.
+    /// Refuses a value with a byte that is neither a number nor undefined.
+    static member WithValueBytesAtIfChanged (offset : int) (bytes : ValueByte[]) (value : CliType) : CliType option =
+        let definedBytes =
+            bytes
+            |> Array.map (fun b ->
+                match b with
+                | ValueByte.Defined b -> Some b
+                | ValueByte.Undefined _ -> None
+            )
+
+        if not (CliType.HasUndefinedLeaf value) && Array.forall Option.isSome definedBytes then
+            CliType.WithBytesAtIfChanged offset (Array.map Option.get definedBytes) value
+        else
+
+        let size = CliType.SizeOf(value).Size
+        let image = CliType.ValueBytesAt 0 size value
+
+        if offset < 0 || bytes.Length > size - offset then
+            failwith
+                $"CliType.WithValueBytesAtIfChanged: range of %d{bytes.Length} byte(s) at offset %d{offset} is outside the %d{size}-byte %O{value}"
+
+        let updated = Array.copy image
+        Array.blit bytes 0 updated offset bytes.Length
+
+        if updated = image then
+            None
+        else
+            Some (CliType.OfValueBytesLike value updated)
 
     /// The bytes of `[offset, offset + count)`, where a byte covered by a native int PawPrint
     /// models as an identity rather than as an address is *named* rather than materialised.
