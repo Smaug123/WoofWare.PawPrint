@@ -120,7 +120,7 @@ type DynamicMethodDefinition =
     private
         {
             Name : string
-            Signature : ImmutableArray<byte>
+            Signature : TypeMethodSignature<TypeDefn>
             ScopeAssemblyFullName : string
             Resolver : ManagedHeapAddress option
             Body : MintedDynamicMethodBody
@@ -131,7 +131,9 @@ type DynamicMethodDefinition =
         }
 
     member this.GetName () : string = this.Name
-    member this.GetSignature () : ImmutableArray<byte> = this.Signature
+    /// The signature `SignatureHelper` wrote, decoded when the method was minted. Its types are
+    /// still to be concretised against the scope assembly.
+    member this.GetSignature () : TypeMethodSignature<TypeDefn> = this.Signature
     member this.GetScopeAssemblyFullName () : string = this.ScopeAssemblyFullName
     member this.GetResolver () : ManagedHeapAddress option = this.Resolver
 
@@ -692,7 +694,7 @@ module MethodHandleRegistry =
         (allocState : 'allocState)
         (allocate : CliValueType -> 'allocState -> ManagedHeapAddress * 'allocState)
         (name : string)
-        (signature : ImmutableArray<byte>)
+        (signature : TypeMethodSignature<TypeDefn>)
         (scopeAssemblyFullName : string)
         (resolver : ManagedHeapAddress option)
         (body : MintedDynamicMethodBody)

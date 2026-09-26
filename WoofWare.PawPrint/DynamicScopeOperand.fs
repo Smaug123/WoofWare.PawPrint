@@ -991,7 +991,7 @@ module internal DynamicScopeOperand =
             baseClassTypes
             None // not initialising a type
             ConstructionState.NotConstructing
-            false // no interface resolution: GetMethodDescriptor is a non-virtual instance method
+            IlMachineStateExecution.CallDispatch.Direct // GetMethodDescriptor is a non-virtual instance method
             false // not a class constructor
             false // do NOT advance the caller's PC: the naming instruction has to run again
             concretized.Generics

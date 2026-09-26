@@ -1010,17 +1010,7 @@ module NativeDelegate =
                         failwith $"%s{operation}: the scope assembly %s{scopeAssemblyFullName} is not loaded"
                     )
 
-                // The blob `ModuleHandle_GetDynamicMethod` recorded verbatim. `SignatureHelper`
-                // spells any type that is not a primitive, string or object as
-                // `ELEMENT_TYPE_INTERNAL`, which the decoder refuses by name, so a dynamic method
-                // with a `MyClass` or enum parameter dies at this line rather than being declared
-                // incompatible -- a separate gap from the compatibility rules below.
-                let targetSignature =
-                    MethodSignatureDecoding.decode
-                        scopeAssembly.Name
-                        (scopeAssembly.PeReader.GetMetadataReader ())
-                        (definition.GetSignature () |> Seq.toArray)
-                    |> TypeMethodSignature.make
+                let targetSignature = definition.GetSignature ()
 
                 let state, targetSignature =
                     targetSignature

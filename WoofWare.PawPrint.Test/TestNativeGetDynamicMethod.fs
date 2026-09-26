@@ -477,12 +477,15 @@ public static class Entry
         | Some result -> failwith $"unexpected GetImplAttributes execution result: %O{result}"
         | None -> failwith "GetImplAttributes did not match any native handler"
 
-    /// A signature blob deliberately containing interior zero bytes. A real method signature does:
-    /// `void` is `ELEMENT_TYPE_VOID` = 0x01, but `ELEMENT_TYPE_END` is 0x00 and padded blobs and
-    /// nested type tokens routinely carry zeroes, so a handler that read `sig` with a
-    /// null-terminated scan rather than the supplied length would truncate here.
-    let private signatureWithInteriorNuls =
-        [| 0x00uy ; 0x01uy ; 0x00uy ; 0x01uy ; 0x00uy |]
+    /// A signature blob containing interior zero bytes, as real ones do: `static void ()` is the
+    /// DEFAULT calling convention (0x00), a parameter count of zero, and `ELEMENT_TYPE_VOID`, and
+    /// `DynamicMethod` appends `ELEMENT_TYPE_END` (0x00). A handler that read `sig` with a
+    /// null-terminated scan rather than the supplied length would read nothing at all.
+    let private signatureWithInteriorNuls = [| 0x00uy ; 0x00uy ; 0x01uy ; 0x00uy |]
+
+    /// The shortest valid method signature, `static void ()`, for tests that need a signature but
+    /// not any particular one.
+    let private minimalSignature = [| 0x00uy ; 0x00uy ; 0x01uy |]
 
     /// The `RuntimeMethodHandleInternal` in the `m_value` field of the `RuntimeMethodInfoStub` the
     /// QCall wrote back — i.e. what the managed caller would hand on as an `IRuntimeMethodInfo`.
@@ -1140,17 +1143,17 @@ public static class Entry
 
         definition.GetName () |> shouldEqual "Probe"
 
-        // Counted, not terminated: reading to the first NUL would yield an empty array here.
-        definition.GetSignature ()
-        |> Seq.toArray
-        |> shouldEqual signatureWithInteriorNuls
+        // Counted, not terminated: reading to the first NUL would yield no signature at all.
+        let signature = definition.GetSignature ()
+        signature.ParameterTypes |> shouldEqual []
+        signature.ReturnType |> shouldEqual (MethodReturnType.Void)
 
     [<Test>]
     let ``the scope is the module's assembly`` () : unit =
         let loggerFactory, prepared, state = loadFixture ()
 
         let stubAddress, _, state =
-            mintOne loggerFactory prepared "Probe" [| 0x01uy |] doublingBody state
+            mintOne loggerFactory prepared "Probe" minimalSignature doublingBody state
 
         let _, definition = definitionBehindStub state stubAddress
 
@@ -1162,7 +1165,7 @@ public static class Entry
         let loggerFactory, prepared, state = loadFixture ()
 
         let stubAddress, resolverObj, state =
-            mintOne loggerFactory prepared "Probe" [| 0x01uy |] doublingBody state
+            mintOne loggerFactory prepared "Probe" minimalSignature doublingBody state
 
         let _, definition = definitionBehindStub state stubAddress
 
@@ -1223,7 +1226,7 @@ public static class Entry
         =
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                mintOne loggerFactory prepared "Probe" [| 0x01uy |] body state
+                mintOne loggerFactory prepared "Probe" minimalSignature body state
                 |> ignore<ManagedHeapAddress * ManagedHeapAddress * IlMachineState>
             )
 
@@ -1239,7 +1242,7 @@ public static class Entry
         let loggerFactory, prepared, state = loadFixture ()
 
         let stubAddress, _, state =
-            mintOne loggerFactory prepared "Probe" [| 0x01uy |] doublingBody state
+            mintOne loggerFactory prepared "Probe" minimalSignature doublingBody state
 
         let _, definition = definitionBehindStub state stubAddress
         let instructions = definition.GetBody ()
@@ -1295,7 +1298,7 @@ public static class Entry
             }
 
         let stubAddress, _, state =
-            mintOne loggerFactory prepared "Probe" [| 0x01uy |] body state
+            mintOne loggerFactory prepared "Probe" minimalSignature body state
 
         let _, definition = definitionBehindStub state stubAddress
         definition.GetPreparation () |> shouldEqual None
@@ -2125,7 +2128,7 @@ public static class Entry
             }
 
         let stubAddress, _, state =
-            mintOne loggerFactory prepared "Probe" [| 0x01uy |] body state
+            mintOne loggerFactory prepared "Probe" minimalSignature body state
 
         let _, definition = definitionBehindStub state stubAddress
         (definition.GetBody ()).ExceptionRegions |> Seq.toList
@@ -2449,7 +2452,7 @@ public static class Entry
             }
 
         let stubAddress, _, state =
-            mintOne loggerFactory prepared "Probe" [| 0x01uy |] body state
+            mintOne loggerFactory prepared "Probe" minimalSignature body state
 
         let _, definition = definitionBehindStub state stubAddress
         (definition.GetBody ()).ExceptionRegions |> Seq.toList |> shouldEqual []
@@ -2488,7 +2491,7 @@ public static class Entry
             qCallModuleValue loggerFactory baseClassTypes state.EntryAssembly.FullName state
 
         let namePtr, state = utf8StringPointer baseClassTypes "Probe" state
-        let sigPtr, state = bytePointer baseClassTypes [| 0x01uy |] state
+        let sigPtr, state = bytePointer baseClassTypes minimalSignature state
 
         let resolverHandle, _, state =
             objectHandleOnStackValue loggerFactory baseClassTypes (Some notAResolver) state
@@ -2507,7 +2510,7 @@ public static class Entry
                         qCallModule
                         namePtr
                         sigPtr
-                        CliType.Numeric (CliNumericType.Int32 1)
+                        CliType.Numeric (CliNumericType.Int32 minimalSignature.Length)
                         resolverHandle
                         resultHandle
                     ]
@@ -2532,7 +2535,7 @@ public static class Entry
             }
 
         let stubAddress, _, state =
-            mintOne loggerFactory prepared "Probe" [| 0x01uy |] body state
+            mintOne loggerFactory prepared "Probe" minimalSignature body state
 
         let _, definition = definitionBehindStub state stubAddress
 
@@ -2588,7 +2591,7 @@ public static class Entry
             }
 
         let stubAddress, _, state =
-            mintOne loggerFactory prepared "Probe" [| 0x01uy |] body state
+            mintOne loggerFactory prepared "Probe" minimalSignature body state
 
         let _, definition = definitionBehindStub state stubAddress
 
@@ -2654,7 +2657,7 @@ public static class Entry
         let loggerFactory, prepared, state = loadFixture ()
 
         let stubAddress, _, state =
-            mintOne loggerFactory prepared "Probe" [| 0x01uy |] doublingBody state
+            mintOne loggerFactory prepared "Probe" minimalSignature doublingBody state
 
         let expected =
             RuntimeTypeHandleTarget.DynamicMethodsClass state.EntryAssembly.FullName
@@ -2680,7 +2683,7 @@ public static class Entry
         let loggerFactory, prepared, state = loadFixture ()
 
         let stubAddress, _, state =
-            mintOne loggerFactory prepared "Probe" [| 0x01uy |] doublingBody state
+            mintOne loggerFactory prepared "Probe" minimalSignature doublingBody state
 
         invokeGetMethodDef loggerFactory prepared (internalHandleOfStub state stubAddress) state
         |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim NativeRuntimeMethodHandle.mdMethodDefNil))
@@ -2708,7 +2711,7 @@ public static class Entry
         let loggerFactory, prepared, state = loadFixture ()
 
         let stubAddress, _, state =
-            mintOne loggerFactory prepared "Probe" [| 0x01uy |] doublingBody state
+            mintOne loggerFactory prepared "Probe" minimalSignature doublingBody state
 
         invokeGetImplAttributes loggerFactory prepared (CliType.ObjectRef (Some stubAddress)) state
         |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
@@ -2761,7 +2764,7 @@ public static class Entry
         let loggerFactory, prepared, state = loadFixture ()
 
         let firstStub, _, state =
-            mintOne loggerFactory prepared "First" [| 0x01uy |] doublingBody state
+            mintOne loggerFactory prepared "First" minimalSignature doublingBody state
 
         let secondStub, _, state =
             mintOne loggerFactory prepared "Second" signatureWithInteriorNuls doublingBody state

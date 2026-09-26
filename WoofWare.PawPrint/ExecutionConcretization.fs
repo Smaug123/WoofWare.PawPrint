@@ -71,11 +71,7 @@ module ExecutionConcretization =
                 typeDefn
 
         let state, signature =
-            MethodSignatureDecoding.decode
-                scopeAssembly.Name
-                (scopeAssembly.PeReader.GetMetadataReader ())
-                (definition.GetSignature () |> Seq.toArray)
-            |> TypeMethodSignature.make
+            definition.GetSignature ()
             |> IlMachineState.concretizeMethodSignature
                 loggerFactory
                 baseClassTypes
@@ -87,8 +83,7 @@ module ExecutionConcretization =
         let body =
             definition.GetBody () |> MintedDynamicMethodBody.withLocalsInit localsInit
 
-        // The locals were decoded at mint time by `LocalSignatureDecoding`, in the same token
-        // universe as the signature; concretise them the same way. `None` means the method
+        // The locals were decoded at mint time, like the signature; concretise them the same way. `None` means the method
         // declared none, which is distinct from declaring zero of them only in that the frame has
         // no locals array to build.
         let state, localVars =
