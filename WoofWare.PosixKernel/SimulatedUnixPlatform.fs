@@ -62,7 +62,7 @@ type SimulatedUnixPlatform =
 /// Only reachable since `rmdir` could orphan a current directory. Measured on
 /// both with the cwd removed out from under the process, sweeping the size from
 /// 1 past the length of the path that used to be there: a zero-length buffer is
-/// EINVAL everywhere (the shim's own guard, before `getcwd` is called at all),
+/// EINVAL everywhere (libc's own `getcwd(3)` guard, before the kernel is asked),
 /// and everything else splits on the *first byte* only.
 [<RequireQualifiedAccess>]
 type GetCwdOrphanAnswer =
@@ -286,10 +286,10 @@ module SimulatedUnixPlatform =
     ///
     /// Same shape as `rawErrnoNumbering`, and needed for the same reason: a
     /// signo says nothing until something names the Unix that assigned it.
-    /// 17 is `SIGCHLD` on Linux and `SIGSTOP` on Darwin, so a guest that
-    /// registers for `PosixSignal.SIGCHLD` must be handed 17 on the one and 20
-    /// on the other, and one that hands 17 back must be told it cannot catch
-    /// it on Darwin alone. `Signal.toRawSignoUnder` and its siblings take the
+    /// 17 is `SIGCHLD` on Linux and `SIGSTOP` on Darwin, so a client that
+    /// asks for `SIGCHLD` must be handed 17 on the one and 20 on the other,
+    /// and one that hands 17 back must be told it cannot catch it on Darwin
+    /// alone. `Signal.toRawSignoUnder` and its siblings take the
     /// answer.
     let signalNumbering (platform : SimulatedUnixPlatform) : SignalNumbering =
         match flavour platform with

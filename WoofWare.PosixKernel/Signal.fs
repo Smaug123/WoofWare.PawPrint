@@ -54,8 +54,8 @@ type Signal =
     | Other of rawSignal : int
 
 /// <summary>
-/// The kernel-level default action for a POSIX signal when no managed
-/// handler claims it.
+/// The kernel-level default action for a POSIX signal when no handler claims
+/// it.
 /// </summary>
 /// <remarks>
 /// Mirrors the POSIX 1003.1 categories.

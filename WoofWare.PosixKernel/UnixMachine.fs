@@ -64,8 +64,7 @@ type UnixMachineState =
         ///
         /// Monotonic, and never reused: no syscall reports a
         /// `SocketId`, but a replay trace does, and reuse would make two
-        /// distinct sockets indistinguishable in it. `NextLowLevelMonitorId`
-        /// is stored beside its table for the same reason.
+        /// distinct sockets indistinguishable in it.
         NextSocketId : SocketId
         /// Time since this machine booted, in nanoseconds: what its monotonic
         /// clocks read. Never negative.

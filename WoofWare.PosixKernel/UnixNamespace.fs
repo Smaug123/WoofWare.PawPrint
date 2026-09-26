@@ -5,20 +5,18 @@ open System.Collections.Immutable
 /// What a caller asked `open(2)` for, as facts about the open rather than as a
 /// bit pattern.
 ///
-/// Parsed rather than raw, unlike `mkdir`'s `mode`, and the reason is not only
-/// that `Interop.Sys.OpenFlags` is a PAL enum whose numbering would have to
-/// cross with it. It is that a bit pattern lets this kernel *guess*: given an
-/// `int`, a flag it does not model is indistinguishable from one it does, and
-/// it would silently do something the caller did not ask for. A record has
+/// Parsed rather than raw, unlike `mkdir`'s `mode`, because a bit pattern
+/// lets this kernel *guess*: given an `int`, a flag it does not model is
+/// indistinguishable from one it does, and it would silently do something the
+/// caller did not ask for. A record has
 /// exactly the fields this kernel acts on, so a caller can see what is
 /// supported, and a flag that is not here is one the client had to decide about
 /// before calling. An `int -> OpenFlags` decoder can be added later if a caller
 /// wants one; it cannot be taken away once the surface is a number.
 ///
-/// The client also owns the two rejections the C shim makes before any kernel
-/// sees the call — an unrecognised bit, and an access mode that is none of the
-/// three — because neither is expressible once the flags are parsed, and
-/// neither is a kernel's decision.
+/// A caller holding a raw flag word answers two cases itself before calling,
+/// an unrecognised bit and an access mode that is none of the three, because
+/// neither is expressible once the flags are parsed.
 type OpenFlags =
     {
         /// `O_RDONLY`, `O_WRONLY` or `O_RDWR`. A real `open` takes these as the
@@ -297,9 +295,7 @@ module UnixNamespace =
             // Only reachable under `O_NOFOLLOW`, which is what `NoFollowFinal`
             // above selects: without it the resolver would have followed the link
             // (or failed ENOENT on a dangling one). ELOOP rather than anything
-            // more specific is what both Unixes answer, and is what
-            // `SafeFileHandle.OpenNoFollowSymlink` reads back to decide a path
-            // was a symlink without racing.
+            // more specific is what both Unixes answer.
             SyscallAnswer.Failed UnixError.ELOOP, system
         | InodeContent.Directory _ when FileAccessMode.permitsWrite flags.Access || flags.Truncate ->
             // Measured on both flavours, for `O_WRONLY` and `O_RDWR` alike, and
@@ -443,12 +439,8 @@ module UnixNamespace =
                 $"UnixNamespace.readlink: resolution returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
         | Some (InodeContent.Directory _)
         | Some (InodeContent.RegularFile _) ->
-            // Not a link. It must be EINVAL and no other errno:
-            // `FileSystem.ResolveLinkTarget` answers *null* for EINVAL and
-            // rethrows every other errno as an exception, so this single choice
-            // is the difference between `File.ResolveLinkTarget` reporting "not
-            // a link" and it throwing.
-            //
+            // Not a link: EINVAL, which is what distinguishes "not a link" from
+            // a failure to read one.
             // Decided before the destination is looked at, which is what a real
             // kernel does -- `vfs_readlink` refuses on the inode's operations
             // before it copies anything out. Measured on the host:

@@ -73,7 +73,7 @@ type FLockRefusal =
 [<RequireQualifiedAccess>]
 module FLockRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
-    /// its own half — which entry point, and which managed caller could have
+    /// its own half — which entry point, and which of its callers could have
     /// reached it.
     let describe (refusal : FLockRefusal) : string =
         match refusal with
@@ -381,9 +381,7 @@ module UnixDescriptor =
             | Some (OpenFileTarget.StandardStream _) ->
                 // Not seekable: this kernel models the standard streams as
                 // pipes, and `lseek` on a pipe is ESPIPE on both platforms
-                // whichever end it is. This is the answer `SafeFileHandle` reads
-                // back to decide `CanSeek`, so it is on the BCL's own path
-                // rather than a corner.
+                // whichever end it is.
                 Some DescriptorFault.NotSeekable
             | Some (OpenFileTarget.SocketEventPort _) ->
                 // The one target whose *seekability* depends on the platform,
