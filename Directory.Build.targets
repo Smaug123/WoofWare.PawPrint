@@ -1,0 +1,10 @@
+<Project>
+  <!-- Replaces Nerdbank.GitVersioning's target of the same name, which on GitHub Actions
+       appends GitBuildVersion and friends to $GITHUB_ENV once per project. Parallel MSBuild
+       nodes append to that file without O_APPEND (.NET's FileMode.Append on Unix seeks to
+       the end and then writes), so two nodes can write at the same offset and leave the torn
+       tail of a longer line behind, which fails the step with "Invalid format '2'". Nothing
+       reads those variables, and with one version per package they would be meaningless
+       anyway. This file is imported after NuGet packages' targets, so this definition wins. -->
+  <Target Name="SetCloudBuildVersionVars" />
+</Project>
