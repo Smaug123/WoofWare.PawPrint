@@ -3069,7 +3069,7 @@ module TestUnixSystemStep =
         let _, parkedIn = UnixDescriptor.flock waiterTask second 2 held |> parked
         let released = UnixDescriptor.flock holderTask first 8 parkedIn |> granted
 
-        // Beaten: the record stands, so the task can be woken again later.
+        // Beaten: the task is parked on the same record, so it can be woken again later.
         let taken = UnixDescriptor.flock thirdTask another 2 released |> granted
         let _, beaten = UnixDescriptor.flockAcquire waiterTask taken |> parked
 
@@ -3084,6 +3084,35 @@ module TestUnixSystemStep =
         UnixDescriptor.flock waiterTask second 8 finished
         |> granted
         |> ignore<UnixSystem<int, string>>
+
+    [<Test>]
+    let ``a beaten resume goes to the back of park order`` () : unit =
+        // A real kernel re-queues a waiter that lost the race behind the waiters already
+        // there, so the order in which beaten waiters resume decides the next wake's order.
+        let first, second, system = withTwoDescriptions linux
+        let another, system = withAnotherDescription first system
+
+        let held = UnixDescriptor.flock holderTask first 2 system |> granted
+        let _, parkedIn = UnixDescriptor.flock waiterTask second 2 held |> parked
+        let _, parkedIn = UnixDescriptor.flock thirdTask another 2 parkedIn |> parked
+
+        let retaken =
+            UnixDescriptor.flock holderTask first 8 parkedIn
+            |> granted
+            |> UnixDescriptor.flock holderTask first 2
+            |> granted
+
+        // Resumed in the opposite order to the one they parked in, and both beaten.
+        let _, beaten = UnixDescriptor.flockAcquire thirdTask retaken |> parked
+        let _, beaten = UnixDescriptor.flockAcquire waiterTask beaten |> parked
+
+        let freed = UnixDescriptor.flock holderTask first 8 beaten |> granted
+
+        let firedFor (fd : int) : Set<WakePrimitive> =
+            Set.singleton (WakePrimitive.FlockGrantable (descriptionOf fd freed, FlockMode.Exclusive))
+
+        UnixWait.wakes (Set.ofList [ waiterTask ; thirdTask ]) freed
+        |> shouldEqual (Ok [ thirdTask, firedFor another ; waiterTask, firedFor second ])
 
     [<Test>]
     let ``flockAcquire for a task that is not parked in an flock is refused`` () : unit =

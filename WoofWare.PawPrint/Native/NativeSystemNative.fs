@@ -3186,7 +3186,8 @@ module NativeSystemNative =
                     // Woken and beaten: a release wakes every waiter and they
                     // race, so all but one of them find the lock gone. Park
                     // again on the same condition, which is the ordinary case
-                    // rather than an edge one; the record stands.
+                    // rather than an edge one; the kernel has re-parked the task on
+                    // the same record, behind every other waiter.
                     park system
                 | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed _), system) ->
                     // The grant cleared the record.

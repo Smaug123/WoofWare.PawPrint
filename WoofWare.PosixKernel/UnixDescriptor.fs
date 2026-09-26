@@ -929,8 +929,8 @@ module UnixDescriptor =
     /// holds the file. `task` must be parked in an `flock`.
     ///
     /// A grant clears the park record. `WouldBlock`, with the same condition
-    /// and the record left standing, is the answer when the lock has been
-    /// taken since the waiter was woken. That is the ordinary case rather than
+    /// and the task re-parked on the same record behind every other park, is
+    /// the answer when the lock has been taken since the waiter was woken. That is the ordinary case rather than
     /// an edge one: a release wakes every waiter and they race, so all but one
     /// of them find it gone.
     ///
@@ -991,10 +991,16 @@ module UnixDescriptor =
             failwith
                 $"UnixDescriptor.flockAcquire: acquiring on open file description %O{requester} reported EBADF, which only a descriptor lookup can produce (this is a bug in this library)."
         | Some FlockError.WouldBlock ->
-            Ok (
-                SyscallOutcome.WouldBlock (WakeCondition.Primitive (WakePrimitive.FlockGrantable (requester, mode))),
-                advanced
-            )
+            // Beaten: the waiter sleeps again on the same record, re-queued behind
+            // every park already made, as a real kernel re-queues it.
+            let parked =
+                ParkedSyscall.Flock
+                    {
+                        ParkedFlock.Requester = requester
+                        Mode = mode
+                    }
+
+            Ok (SyscallOutcome.WouldBlock (WakeCondition.ofPark parked), UnixWait.park task parked advanced)
         | None ->
             let granted =
                 { advanced with
