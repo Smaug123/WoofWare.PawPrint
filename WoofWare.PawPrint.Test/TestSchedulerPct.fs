@@ -7,6 +7,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// Pins the contract of the PCT scheduling policy.
 ///
@@ -157,6 +158,18 @@ module TestSchedulerPct =
             Name = None
         }
 
+    /// Each thread's task, as the thread-allocation paths register one: a thread's exit
+    /// removes its task, so a stub thread with none could not terminate.
+    let private withTasks (threads : ThreadId list) (state : IlMachineState) : IlMachineState =
+        (state, threads)
+        ||> List.fold (fun state tid ->
+            state.MapKernel (
+                EmulatedKernel.mapTasks (
+                    UnixTaskTable.register tid (CpuId 0) (EmulatedKernel.osThreadId state.Kernel.Process.ProcessId tid)
+                )
+            )
+        )
+
     let private withThreads (threads : (ThreadId * ThreadStatus) list) (state : IlMachineState) : IlMachineState =
         let threadMap =
             threads
@@ -166,6 +179,7 @@ module TestSchedulerPct =
         { state with
             ThreadState = threadMap
         }
+        |> withTasks (List.map fst threads)
 
     [<Test>]
     let ``Pct chooseNext with no Runnable threads returns the input state and None`` () : unit =

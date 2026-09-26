@@ -241,14 +241,75 @@ module TestTaskState =
 
     [<TestCaseSource(nameof parks)>]
     let ``a park record on a thread that cannot be waiting is refused`` (parked : ParkedSyscall) : unit =
+        // A thread that has not started, which has a task (it was registered at construction)
+        // but cannot be in a syscall.
         let recorded, thread = threadParkedIn parked
-        let statuses = threads recorded |> Map.add thread ThreadStatus.Terminated
+        let statuses = threads recorded |> Map.add thread ThreadStatus.NotStarted
 
         EmulatedKernel.checkTaskInvariants statuses recorded.Kernel
         |> shouldEqual
             [
-                EmulatedKernelDefect.SyscallRecordWithoutWaiter (thread, ThreadStatus.Terminated)
+                EmulatedKernelDefect.SyscallRecordWithoutWaiter (thread, ThreadStatus.NotStarted)
             ]
+
+    [<Test>]
+    let ``a terminated thread that still has a task is refused`` () : unit =
+        // A thread's exit removes its task, so a terminated thread holding one is a thread whose
+        // exit the kernel was never told of.
+        let state, thread =
+            machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
+
+        let statuses = threads state |> Map.add thread ThreadStatus.Terminated
+
+        EmulatedKernel.checkTaskInvariants statuses state.Kernel
+        |> shouldEqual [ EmulatedKernelDefect.TaskWithoutThread thread ]
+
+    [<Test>]
+    let ``a terminated worker leaves no task behind`` () : unit =
+        // Two workers, so that the one terminating is not the kernel's last task, and so that
+        // "removes the terminated thread's task" is told apart from "removes every task".
+        let state = machine ()
+
+        let state, first =
+            IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1) state
+
+        let state, second =
+            IlMachineState.allocateUnstartedThread (ManagedHeapAddress 2) state
+
+        let before = state.Kernel.Tasks
+        let state = Scheduler.onThreadTerminated first state
+
+        state.ThreadState.[first].Status |> shouldEqual ThreadStatus.Terminated
+        state.Kernel.Tasks |> shouldEqual (Map.remove first before)
+
+        UnixTaskTable.cpuOf second state.Kernel.Tasks
+        |> shouldEqual (UnixTaskTable.cpuOf second before)
+
+        agrees state
+        EmulatedKernel.checkInvariants state.Kernel |> shouldBeEmpty
+
+    [<Test>]
+    let ``a terminated worker's signal mask goes with it`` () : unit =
+        // A second thread, so that the worker is not the kernel's last task.
+        let state, _ =
+            machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
+
+        let state, worker =
+            IlMachineState.allocateUnstartedThread (ManagedHeapAddress 2) state
+
+        let state =
+            state.MapKernel (
+                EmulatedKernel.mapProcess (fun proc ->
+                    { proc with
+                        Signals = SignalState.block worker Signal.SIGUSR1 proc.Signals
+                    }
+                )
+            )
+
+        let state = Scheduler.onThreadTerminated worker state
+
+        SignalState.blockedTasks state.Kernel.Process.Signals |> shouldBeEmpty
+        EmulatedKernel.checkInvariants state.Kernel |> shouldBeEmpty
 
     [<TestCaseSource(nameof parks)>]
     let ``a woken waiter keeps its record`` (parked : ParkedSyscall) : unit =
