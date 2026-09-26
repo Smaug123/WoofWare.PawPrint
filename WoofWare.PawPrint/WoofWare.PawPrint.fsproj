@@ -38,6 +38,7 @@
     <Compile Include="PointerHashSynthesis.fs" />
     <Compile Include="NativeIntSourceComparison.fs" />
     <Compile Include="CliNumericType.fs" />
+    <Compile Include="DynamicSignatureDecoding.fs" />
     <Compile Include="DeclaredTypeFacts.fs" />
     <Compile Include="CliType.fs" />
     <Compile Include="FieldIdentity.fs" />
@@ -117,6 +118,7 @@
     <Compile Include="DelegateRepresentation.fs" />
     <Compile Include="NullaryIlOp.fs" />
     <Compile Include="DynamicScopeOperand.fs" />
+    <Compile Include="InternalSignatureTypeResolution.fs" />
     <Compile Include="DynamicMethodBody.fs" />
     <Compile Include="DynamicMethodExecution.fs" />
     <Compile Include="UnaryMetadataIlOpContext.fs" />

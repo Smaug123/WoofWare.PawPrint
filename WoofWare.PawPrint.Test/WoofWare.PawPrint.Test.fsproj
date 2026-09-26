@@ -162,8 +162,7 @@
     <Compile Include="TestDelegateLayout.fs" />
     <Compile Include="TestNativeTypeParamInfo.fs" />
     <Compile Include="TestNativeMetadataImport.fs" />
-    <Compile Include="TestLocalSignatureDecoding.fs" />
-    <Compile Include="TestMethodSignatureDecoding.fs" />
+    <Compile Include="TestDynamicSignatureDecoding.fs" />
     <Compile Include="TestPropertySignatureDecoding.fs" />
     <Compile Include="TestSignatureComparison.fs" />
     <Compile Include="TestNativeSignature.fs" />
