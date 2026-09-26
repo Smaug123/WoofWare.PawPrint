@@ -126,7 +126,10 @@ module ManagedPointerByteView =
             |> Option.bind (fun handle -> AllConcreteTypes.lookup handle state.ConcreteTypes)
 
         match ptr with
-        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, _), []) ->
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.ArrayElement (arr, _)
+                                         Projections = []
+                                     } ->
             let handle =
                 arrayElementHandleOfShape (ManagedHeap.getArrayShape arr state.ManagedHeap)
 
@@ -173,7 +176,10 @@ module ManagedPointerByteView =
             | ConcreteTypeHandle.Byref _
             | ConcreteTypeHandle.Pointer _
             | ConcreteTypeHandle.FunctionPointer _ -> ptr
-        | ManagedPointerSource.Byref (ByrefRoot.StringCharAt _, []) ->
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.StringCharAt _
+                                         Projections = []
+                                     } ->
             // Anchor with `System.Char` so that the C#
             // `fixed (char* p = &MemoryMarshal.GetReference(span))` pattern,
             // followed by a byte-stride `Unsafe.Add<byte>`, takes the
@@ -213,7 +219,10 @@ module ManagedPointerByteView =
         : ManagedPointerSource
         =
         match ptr with
-        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement _, []) ->
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.ArrayElement _
+                                         Projections = []
+                                     } ->
             let byteType =
                 AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Byte.Identity
                 |> Option.bind (fun handle -> AllConcreteTypes.lookup handle state.ConcreteTypes)

@@ -350,7 +350,11 @@ module TestUserBufferCheck =
         classify (
             CliType.RuntimePointer (
                 CliRuntimePointer.Managed (
-                    ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 1), [])
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 1)
+                            Projections = []
+                        }
                 )
             )
         )

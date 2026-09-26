@@ -274,7 +274,10 @@ module internal IntrinsicHelpers =
 
         let ptr : EvalStackValue =
             match src with
-            | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs)) ->
+            | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref {
+                                                                            Root = ByrefRoot.ArrayElement (arr, i)
+                                                                            Projections = projs
+                                                                        }) ->
                 // The array's own stride, for an empty array as much as a populated one:
                 // substituting `sizeof(T)` for an empty array would make the
                 // `tSize <> arrElementSize` test below trivially false, silently choosing
@@ -324,7 +327,13 @@ module internal IntrinsicHelpers =
                     && (trailingIsByteOffset || (tSize <> arrElementSize && trailingIsReinterpretAs))
                 then
                     let byteDelta = byteDelta ()
-                    let baseSrc = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs)
+
+                    let baseSrc =
+                        ManagedPointerSource.Byref
+                            {
+                                Root = ByrefRoot.ArrayElement (arr, i)
+                                Projections = projs
+                            }
 
                     // Zero here would mean "do not normalise" (the fold guards on
                     // `cellSize > 0`), leaving an empty array with a raw byte cursor where a
@@ -345,12 +354,16 @@ module internal IntrinsicHelpers =
                         | ByrefProjection.ReinterpretAs _ -> ()
                         | _ -> failwith $"TODO: byref element offset on byref with non-ReinterpretAs projection: %O{p}"
 
-                    ManagedPointerSource.Byref (
-                        ByrefRoot.ArrayElement (arr, offsetIndex "array element index" i),
-                        projs
-                    )
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.ArrayElement (arr, offsetIndex "array element index" i)
+                            Projections = projs
+                        }
                     |> EvalStackValue.ManagedPointer
-            | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, i), projs) as src) ->
+            | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref {
+                                                                            Root = ByrefRoot.StringCharAt (str, i)
+                                                                            Projections = projs
+                                                                        } as src) ->
                 let stringCharSize = 2
 
                 let trailingIsByteOffset =
@@ -393,31 +406,47 @@ module internal IntrinsicHelpers =
                             failwith
                                 $"TODO: byref element offset on string byref with non-ReinterpretAs projection: %O{p}"
 
-                    ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, offsetIndex "string char index" i), projs)
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.StringCharAt (str, offsetIndex "string char index" i)
+                            Projections = projs
+                        }
                     |> EvalStackValue.ManagedPointer
-            | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread,
-                                                                                                    frame,
-                                                                                                    block,
-                                                                                                    byteOffset),
-                                                                         [])) ->
-                ManagedPointerSource.Byref (
-                    ByrefRoot.StackMemoryByte (
-                        thread,
-                        frame,
-                        block,
-                        offsetByteOffset "stack memory byte offset" byteOffset
-                    ),
-                    []
-                )
+            | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref {
+                                                                            Root = ByrefRoot.StackMemoryByte (thread,
+                                                                                                              frame,
+                                                                                                              block,
+                                                                                                              byteOffset)
+                                                                            Projections = []
+                                                                        }) ->
+                ManagedPointerSource.Byref
+                    {
+                        Root =
+                            ByrefRoot.StackMemoryByte (
+                                thread,
+                                frame,
+                                block,
+                                offsetByteOffset "stack memory byte offset" byteOffset
+                            )
+                        Projections = []
+                    }
                 |> EvalStackValue.ManagedPointer
-            | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset),
-                                                                         [])) ->
-                ManagedPointerSource.Byref (
-                    ByrefRoot.NativeMemoryByte (block, offsetByteOffset "native memory byte offset" byteOffset),
-                    []
-                )
+            | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref {
+                                                                            Root = ByrefRoot.NativeMemoryByte (block,
+                                                                                                               byteOffset)
+                                                                            Projections = []
+                                                                        }) ->
+                ManagedPointerSource.Byref
+                    {
+                        Root =
+                            ByrefRoot.NativeMemoryByte (block, offsetByteOffset "native memory byte offset" byteOffset)
+                        Projections = []
+                    }
                 |> EvalStackValue.ManagedPointer
-            | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (_, projs) as src) ->
+            | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref {
+                                                                            Root = _
+                                                                            Projections = projs
+                                                                        } as src) ->
                 let projectionsAreByteViewCompatible =
                     projs
                     |> List.forall (fun p ->
@@ -506,7 +535,10 @@ module internal IntrinsicHelpers =
         match src with
         | ManagedPointerSource.Null -> ValueNone
         | ManagedPointerSource.NativeIntPlaceholder _ -> ValueNone
-        | ManagedPointerSource.Byref (root, projs) ->
+        | ManagedPointerSource.Byref {
+                                         Root = root
+                                         Projections = projs
+                                     } ->
             match List.rev projs with
             | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs _ :: revPrefix ->
                 ValueSome (root, List.rev revPrefix, n)
@@ -547,7 +579,10 @@ module internal IntrinsicHelpers =
         | ManagedPointerSource.NativeIntPlaceholder bits ->
             failwith
                 $"%s{operation}: cannot read fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
-        | ManagedPointerSource.Byref (root, projs) ->
+        | ManagedPointerSource.Byref {
+                                         Root = root
+                                         Projections = projs
+                                     } ->
             match splitTrailingByteView src with
             | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
                 match byteViewRoot, prefixProjs with
@@ -557,7 +592,13 @@ module internal IntrinsicHelpers =
                 | ByrefRoot.PeByteRange _, []
                 | ByrefRoot.StringCharAt _, [] -> readPrimitiveByteView ()
                 | _ ->
-                    let basePtr = ManagedPointerSource.Byref (byteViewRoot, prefixProjs)
+                    let basePtr =
+                        ManagedPointerSource.Byref
+                            {
+                                Root = byteViewRoot
+                                Projections = prefixProjs
+                            }
+
                     let value = IlMachineState.readManagedByref baseClassTypes state basePtr
 
                     match value with
@@ -565,7 +606,14 @@ module internal IntrinsicHelpers =
                     | _ -> readPrimitiveByteView ()
             | ValueNone ->
                 let value =
-                    IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.Byref (root, projs))
+                    IlMachineState.readManagedByref
+                        baseClassTypes
+                        state
+                        (ManagedPointerSource.Byref
+                            {
+                                Root = root
+                                Projections = projs
+                            })
 
                 byteAtOffset operation src 0 value
 

@@ -1692,10 +1692,11 @@ module TestNullaryIlOp =
     /// A byref into a native-heap block. `NativeMemoryByte` is the one root whose
     /// offset comes from `tryStableAddressBits` alone, so these tests need no heap.
     let private nativeBlockByref (byteOffset : int) : ManagedPointerSource =
-        ManagedPointerSource.Byref (
-            ByrefRoot.NativeMemoryByte (NativeMemoryBlockId.NativeMemoryBlockId 0, byteOffset),
-            []
-        )
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.NativeMemoryByte (NativeMemoryBlockId.NativeMemoryBlockId 0, byteOffset)
+                Projections = []
+            }
 
     let private narrowed (byteOffset : int) : EvalStackValue =
         EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer (nativeBlockByref byteOffset))
@@ -1780,7 +1781,11 @@ module TestNullaryIlOp =
     // `charIndex * 2` with no stride to look up.
 
     let private stringByref (charIndex : int) : ManagedPointerSource =
-        ManagedPointerSource.Byref (ByrefRoot.StringCharAt (ManagedHeapAddress.ManagedHeapAddress 1, charIndex), [])
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.StringCharAt (ManagedHeapAddress.ManagedHeapAddress 1, charIndex)
+                Projections = []
+            }
 
     /// The three widths managed code writes an alignment mask in. `and` must give
     /// the same answer for all three: the cast the guest used to reach the integer
@@ -1921,7 +1926,11 @@ module TestNullaryIlOp =
                 ]
             )
 
-        ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (NativeMemoryBlockId.NativeMemoryBlockId 0, 6), cursors)
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.NativeMemoryByte (NativeMemoryBlockId.NativeMemoryBlockId 0, 6)
+                Projections = cursors
+            }
         |> ManagedPointerSource.tryStableAddressBits
         |> shouldEqual (Some 4294967302L)
 
@@ -1957,7 +1966,11 @@ module TestNullaryIlOp =
         // decision procedure that refused them would be refusing something it could
         // have answered.
         let fieldByref =
-            ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 1), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 1)
+                    Projections = []
+                }
 
         let narrowedField =
             EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer fieldByref)
@@ -1979,16 +1992,18 @@ module TestNullaryIlOp =
             exn.Message |> shouldContainText "claims no alignment"
 
     let private peByteRangeByref (source : PeByteRangePointerSource) (rva : int) : ManagedPointerSource =
-        ManagedPointerSource.Byref (
-            ByrefRoot.PeByteRange
-                {
-                    AssemblyFullName = "TestAssembly"
-                    Source = source
-                    RelativeVirtualAddress = rva
-                    Size = 16
-                },
-            []
-        )
+        ManagedPointerSource.Byref
+            {
+                Root =
+                    ByrefRoot.PeByteRange
+                        {
+                            AssemblyFullName = "TestAssembly"
+                            Source = source
+                            RelativeVirtualAddress = rva
+                            Size = 16
+                        }
+                Projections = []
+            }
 
     [<Test>]
     let ``a method signature blob makes no alignment claim`` () : unit =
@@ -2267,7 +2282,12 @@ module TestNullaryIlOp =
         let frame = state.ThreadState.[thread].ActiveMethodState
         let _, state = IlMachineState.popEvalStack thread state
 
-        let ptr = ManagedPointerSource.Byref (ByrefRoot.Argument (thread, frame, 0us), [])
+        let ptr =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.Argument (thread, frame, 0us)
+                    Projections = []
+                }
 
         let state =
             state
@@ -2487,7 +2507,11 @@ module TestNullaryIlOp =
                     IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero handle) (fun () -> zero) len state
 
                 let ptr =
-                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), [])
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.ArrayElement (arr, index)
+                            Projections = []
+                        }
                     |> EvalStackValue.ManagedPointer
 
                 state, ptr, nativeConst 7L

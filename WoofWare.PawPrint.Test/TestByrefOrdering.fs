@@ -116,7 +116,11 @@ module TestByrefOrdering =
     /// so that whole-element cursors fold into the index exactly as they do for a guest.
     let private build (state : IlMachineState) (arr : ManagedHeapAddress) (shape : Shape) : ManagedPointerSource =
         let element =
-            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, shape.Index), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arr, shape.Index)
+                    Projections = []
+                }
 
         let selected =
             match shape.Field with
@@ -164,7 +168,10 @@ module TestByrefOrdering =
         let state, arr = stateWithPairArray 3
 
         match build state arr crossing with
-        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (root, 0), _) -> root |> shouldEqual arr
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.ArrayElement (root, 0)
+                                         Projections = _
+                                     } -> root |> shouldEqual arr
         | other -> failwith $"expected the crossing byref to keep element 0 as its root, got %O{other}"
 
     [<Test>]
@@ -191,13 +198,15 @@ module TestByrefOrdering =
         let state, arr = stateWithPairArray 3
 
         let underReinterpret =
-            ManagedPointerSource.Byref (
-                ByrefRoot.ArrayElement (arr, 0),
-                [
-                    ByrefProjection.ReinterpretAs int32Type
-                    ByrefProjection.Field (FieldId.named "X")
-                ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arr, 0)
+                    Projections =
+                        [
+                            ByrefProjection.ReinterpretAs int32Type
+                            ByrefProjection.Field (FieldId.named "X")
+                        ]
+                }
 
         let bare = build state arr element1
 

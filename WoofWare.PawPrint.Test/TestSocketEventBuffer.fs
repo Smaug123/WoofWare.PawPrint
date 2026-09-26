@@ -122,9 +122,11 @@ class Program
                 (ComparableFieldDefinitionHandle.Make field.Handle)
                 state
         with
-        | Some (CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (blockId,
-                                                                                                                           0),
-                                                                                               [])))) -> blockId
+        | Some (CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Byref {
+                                                                                                  Root = ByrefRoot.NativeMemoryByte (blockId,
+                                                                                                                                     0)
+                                                                                                  Projections = []
+                                                                                              }))) -> blockId
         | other -> failwith $"expected `Probe.Buffer` to hold a pointer to byte 0 of a native-heap block, got %O{other}"
 
     let private blockWidth (platform : SimulatedUnixPlatform) (count : int) : int =

@@ -984,7 +984,12 @@ module IlMachineThreadState =
 
         let state = setFrame thread frameId frame state
 
-        ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frameId, blockId, 0), []), state
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.StackMemoryByte (thread, frameId, blockId, 0)
+                Projections = []
+            },
+        state
 
     let getStackMemoryPool (thread : ThreadId) (frameId : FrameId) (state : IlMachineState) : StackMemoryPool =
         (getFrame thread frameId state).StackMemoryPool
@@ -1024,7 +1029,12 @@ module IlMachineThreadState =
                 }
             )
 
-        ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (blockId, 0), []), state
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.NativeMemoryByte (blockId, 0)
+                Projections = []
+            },
+        state
 
     /// Free a previously-allocated native-heap block. Throws on double free.
     /// Use-after-free is caught later by whichever `NativeMemoryPool` accessor the

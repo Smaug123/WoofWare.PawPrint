@@ -37,7 +37,10 @@ module HostStartupCall =
 
         let blockId =
             match ptr with
-            | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (blockId, 0), []) -> blockId
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.NativeMemoryByte (blockId, 0)
+                                             Projections = []
+                                         } -> blockId
             | other ->
                 failwith
                     $"logic error: allocateNativeMemory returned %O{other} rather than a byref to byte 0 of a fresh native block"
@@ -70,7 +73,10 @@ module HostStartupCall =
 
         let blockId =
             match ptr with
-            | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (blockId, 0), []) -> blockId
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.NativeMemoryByte (blockId, 0)
+                                             Projections = []
+                                         } -> blockId
             | other ->
                 failwith
                     $"logic error: allocateNativeMemory returned %O{other} rather than a byref to byte 0 of a fresh native block"

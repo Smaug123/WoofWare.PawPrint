@@ -103,7 +103,12 @@ module TestStructLeadingByteView =
         let arr, state =
             IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero int32Handle) (fun () -> element) 1 state
 
-        state, ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, 0), [])
+        state,
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.ArrayElement (arr, 0)
+                Projections = []
+            }
 
     [<Test>]
     let ``a one-byte template over an eight-byte-field struct reads the leading byte`` () : unit =

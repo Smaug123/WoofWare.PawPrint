@@ -44,14 +44,20 @@ module NullaryIlOp =
             | ManagedPointerSource.Null -> failwith "unreachable: tryStableAddressBits handles null managed pointers"
             | ManagedPointerSource.NativeIntPlaceholder _ ->
                 failwith "unreachable: tryStableAddressBits handles NativeIntPlaceholder managed pointers"
-            | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), projs) ->
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.ArrayElement (arr, index)
+                                             Projections = projs
+                                         } ->
                 // The stride is recorded on the array at allocation, so it is available even
                 // for `Array.Empty<T>()`, which has no cell to measure.
                 let elementSize = ManagedHeap.getArrayElementStride arr state.ManagedHeap
 
                 projectionByteOffset projs
                 |> Option.map (fun byteOffset -> int64<int> index * int64<int> elementSize + byteOffset)
-            | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (_, charIndex), projs) ->
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.StringCharAt (_, charIndex)
+                                             Projections = projs
+                                         } ->
                 projectionByteOffset projs
                 |> Option.map (fun byteOffset -> int64<int> charIndex * cliCharSizeBytes + byteOffset)
             | ManagedPointerSource.Byref _ -> None
@@ -410,14 +416,20 @@ module NullaryIlOp =
 
     let private isStackMemoryPointer (src : ManagedPointerSource) : bool =
         match src with
-        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte _, _) -> true
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.StackMemoryByte _
+                                         Projections = _
+                                     } -> true
         | ManagedPointerSource.Null
         | ManagedPointerSource.NativeIntPlaceholder _
         | ManagedPointerSource.Byref _ -> false
 
     let private isNativeMemoryPointer (src : ManagedPointerSource) : bool =
         match src with
-        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte _, _) -> true
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.NativeMemoryByte _
+                                         Projections = _
+                                     } -> true
         | ManagedPointerSource.Null
         | ManagedPointerSource.NativeIntPlaceholder _
         | ManagedPointerSource.Byref _ -> false
@@ -426,7 +438,10 @@ module NullaryIlOp =
         match src with
         | ManagedPointerSource.Null -> false
         | ManagedPointerSource.NativeIntPlaceholder _ -> false
-        | ManagedPointerSource.Byref (_, projs) ->
+        | ManagedPointerSource.Byref {
+                                         Root = _
+                                         Projections = projs
+                                     } ->
             match List.rev projs with
             | ByrefProjection.ByteOffset _ :: ByrefProjection.ReinterpretAs _ :: _
             | ByrefProjection.ReinterpretAs _ :: _ -> true

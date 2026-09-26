@@ -320,7 +320,11 @@ module TestStorageLocationResolve =
         addr
 
     let private fieldByref (addr : ManagedHeapAddress) (name : string) : ManagedPointerSource =
-        ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, FieldId.Named name), [])
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.HeapObjectField (addr, FieldId.Named name)
+                Projections = []
+            }
 
     [<Test>]
     let ``two field roots on one object share one storage container at their layout offsets`` () : unit =
@@ -386,10 +390,11 @@ module TestStorageLocationResolve =
         // path is driven directly here rather than through a guest that would be
         // vacuous.
         let degraded =
-            ManagedPointerSource.Byref (
-                ByrefRoot.HeapObjectField (addr, FieldId.Named "A"),
-                [ ByrefProjection.Field (FieldId.Named "NoSuchField") ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapObjectField (addr, FieldId.Named "A")
+                    Projections = [ ByrefProjection.Field (FieldId.Named "NoSuchField") ]
+                }
 
         let resolvedDegraded = StorageLocation.resolve baseClassTypes state degraded
         let resolvedB = StorageLocation.resolve baseClassTypes state (fieldByref addr "B")
@@ -470,13 +475,15 @@ module TestStorageLocationResolve =
         let state, addr = allocateAdjacentByteFieldObject (freshState ())
 
         let displaced (name : string) (byteOffset : int) : ManagedPointerSource =
-            ManagedPointerSource.Byref (
-                ByrefRoot.HeapObjectField (addr, FieldId.Named name),
-                [
-                    ByrefProjection.ReinterpretAs byteType
-                    ByrefProjection.ByteOffset byteOffset
-                ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapObjectField (addr, FieldId.Named name)
+                    Projections =
+                        [
+                            ByrefProjection.ReinterpretAs byteType
+                            ByrefProjection.ByteOffset byteOffset
+                        ]
+                }
 
         let resolvedA =
             StorageLocation.resolve baseClassTypes state (displaced "A" System.Int32.MinValue)
@@ -514,20 +521,26 @@ module TestStorageLocationResolve =
         let state, addr = allocateAdjacentByteFieldObject (freshState ())
 
         let source =
-            ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, FieldId.Named "A"), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapObjectField (addr, FieldId.Named "A")
+                    Projections = []
+                }
 
         let destination =
-            ManagedPointerSource.Byref (
-                ByrefRoot.HeapObjectField (addr, FieldId.Named "A"),
-                [
-                    ByrefProjection.ReinterpretAs byteType
-                    ByrefProjection.ByteOffset System.Int32.MaxValue
-                    ByrefProjection.ReinterpretAs byteType
-                    ByrefProjection.ByteOffset System.Int32.MaxValue
-                    ByrefProjection.ReinterpretAs byteType
-                    ByrefProjection.ByteOffset 4
-                ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapObjectField (addr, FieldId.Named "A")
+                    Projections =
+                        [
+                            ByrefProjection.ReinterpretAs byteType
+                            ByrefProjection.ByteOffset System.Int32.MaxValue
+                            ByrefProjection.ReinterpretAs byteType
+                            ByrefProjection.ByteOffset System.Int32.MaxValue
+                            ByrefProjection.ReinterpretAs byteType
+                            ByrefProjection.ByteOffset 4
+                        ]
+                }
 
         let resolvedSource = StorageLocation.resolve baseClassTypes state source
 

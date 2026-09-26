@@ -137,7 +137,13 @@ public sealed class TypeAttribute : System.Attribute
         let arrayAddr, state =
             IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero objectHandle) (fun () -> value) 1 state
 
-        arrayAddr, ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+        arrayAddr,
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                Projections = []
+            },
+        state
 
     /// Constructs a `QCallModule` value for the guest assembly's manifest module, as
     /// `QCallModule(ref RuntimeModule)` would: `_module` is the module's `ModuleHandle` tag and
@@ -278,7 +284,13 @@ public sealed class TypeAttribute : System.Attribute
 
         let cursorStart =
             CliType.RuntimePointer (
-                CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (blobArr, cursorIdx), []))
+                CliRuntimePointer.Managed (
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.ArrayElement (blobArr, cursorIdx)
+                            Projections = []
+                        }
+                )
             )
 
         let state = IlMachineState.setArrayValue intPtrArr cursorStart 0 state
@@ -485,13 +497,23 @@ public sealed class TypeAttribute : System.Attribute
 
         let ppBlob =
             CliType.RuntimePointer (
-                CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (intPtrArr, 0), []))
+                CliRuntimePointer.Managed (
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.ArrayElement (intPtrArr, 0)
+                            Projections = []
+                        }
+                )
             )
 
         let pEndBlob =
             CliType.RuntimePointer (
                 CliRuntimePointer.Managed (
-                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (blobArr, blob.Length), [])
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.ArrayElement (blobArr, blob.Length)
+                            Projections = []
+                        }
                 )
             )
 
@@ -499,7 +521,13 @@ public sealed class TypeAttribute : System.Attribute
 
         let pcNamedArgs =
             CliType.RuntimePointer (
-                CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (namedArgsArr, 0), []))
+                CliRuntimePointer.Managed (
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.ArrayElement (namedArgsArr, 0)
+                            Projections = []
+                        }
+                )
             )
 
         // The `instance` ObjectHandleOnStack receives the allocated attribute. Start it null.
@@ -576,9 +604,11 @@ public sealed class TypeAttribute : System.Attribute
         // The blob cursor cell now points one-past-end of the blob: fixed-args consumed
         // 12 bytes, then the named-arg count uint16 added 2 more.
         match IlMachineState.getArrayValue prep.IntPtrArr 0 state with
-        | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr,
-                                                                                                                 idx),
-                                                                                         []))) ->
+        | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Byref {
+                                                                                            Root = ByrefRoot.ArrayElement (arr,
+                                                                                                                           idx)
+                                                                                            Projections = []
+                                                                                        })) ->
             arr |> shouldEqual prep.BlobArr
             idx |> shouldEqual blobBytes.Length
         | other -> failwithf "Expected ppBlob cell to hold an advanced ArrayElement byref, got %A" other
@@ -692,9 +722,11 @@ public sealed class TypeAttribute : System.Attribute
 
         // The blob cursor cell must still be the starting byref into cell 0 of the blob.
         match IlMachineState.getArrayValue prep.IntPtrArr 0 state with
-        | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr,
-                                                                                                                 idx),
-                                                                                         []))) ->
+        | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Byref {
+                                                                                            Root = ByrefRoot.ArrayElement (arr,
+                                                                                                                           idx)
+                                                                                            Projections = []
+                                                                                        })) ->
             arr |> shouldEqual prep.BlobArr
             idx |> shouldEqual 0
         | other -> failwithf "Expected ppBlob cell to still point at blob[0] after suspension, got %A" other
@@ -726,9 +758,11 @@ public sealed class TypeAttribute : System.Attribute
         : unit
         =
         match IlMachineState.getArrayValue prep.IntPtrArr 0 state with
-        | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr,
-                                                                                                                 idx),
-                                                                                         []))) ->
+        | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Byref {
+                                                                                            Root = ByrefRoot.ArrayElement (arr,
+                                                                                                                           idx)
+                                                                                            Projections = []
+                                                                                        })) ->
             arr |> shouldEqual prep.BlobArr
             idx |> shouldEqual 0
         | other -> failwithf "Expected ppBlob cell to still point at blob[0], got %A" other
@@ -828,9 +862,11 @@ public sealed class TypeAttribute : System.Attribute
 
         // Committed: the cursor is past the whole blob and the named-arg count is written.
         match IlMachineState.getArrayValue prep.IntPtrArr 0 state with
-        | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr,
-                                                                                                                 idx),
-                                                                                         []))) ->
+        | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Byref {
+                                                                                            Root = ByrefRoot.ArrayElement (arr,
+                                                                                                                           idx)
+                                                                                            Projections = []
+                                                                                        })) ->
             arr |> shouldEqual prep.BlobArr
             idx |> shouldEqual typeBlobBytes.Length
         | other -> failwithf "Expected ppBlob cell to hold an advanced ArrayElement byref, got %A" other
@@ -933,13 +969,23 @@ public sealed class TypeAttribute : System.Attribute
 
         let ppBlobStart =
             CliType.RuntimePointer (
-                CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (intPtrArr, 0), []))
+                CliRuntimePointer.Managed (
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.ArrayElement (intPtrArr, 0)
+                            Projections = []
+                        }
+                )
             )
 
         let pBlobEnd =
             CliType.RuntimePointer (
                 CliRuntimePointer.Managed (
-                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (blobArr, blob.Length), [])
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.ArrayElement (blobArr, blob.Length)
+                            Projections = []
+                        }
                 )
             )
 
@@ -952,7 +998,13 @@ public sealed class TypeAttribute : System.Attribute
 
         let pbIsProperty =
             CliType.RuntimePointer (
-                CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (isPropertyArr, 0), []))
+                CliRuntimePointer.Managed (
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.ArrayElement (isPropertyArr, 0)
+                            Projections = []
+                        }
+                )
             )
 
         let typeArr, typeSlot, state =
@@ -1034,8 +1086,11 @@ public sealed class TypeAttribute : System.Attribute
 
     let private readCursorIndex (arr : ManagedHeapAddress) (state : IlMachineState) : ManagedHeapAddress * int =
         match IlMachineState.getArrayValue arr 0 state with
-        | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (a, idx),
-                                                                                         []))) -> a, idx
+        | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Byref {
+                                                                                            Root = ByrefRoot.ArrayElement (a,
+                                                                                                                           idx)
+                                                                                            Projections = []
+                                                                                        })) -> a, idx
         | other -> failwithf "expected the cursor cell to hold an ArrayElement byref, got %A" other
 
     let private readObjectSlot (arr : ManagedHeapAddress) (state : IlMachineState) : ManagedHeapAddress option =

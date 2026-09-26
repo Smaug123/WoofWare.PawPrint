@@ -354,10 +354,11 @@ module TestPointerStructByteViewCells =
                 Gen.choose (1, 1000000) |> Gen.map (int64<int> >> CliRuntimePointer.Verbatim)
                 Gen.choose (0, 5)
                 |> Gen.map (fun slot ->
-                    ManagedPointerSource.Byref (
-                        ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId 0, uint16<int> slot),
-                        []
-                    )
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId 0, uint16<int> slot)
+                            Projections = []
+                        }
                     |> CliRuntimePointer.Managed
                 )
             ]
@@ -560,11 +561,18 @@ module TestPointerStructByteViewCells =
 
             let block =
                 match ptr with
-                | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, 0), []) -> block
+                | ManagedPointerSource.Byref {
+                                                 Root = ByrefRoot.NativeMemoryByte (block, 0)
+                                                 Projections = []
+                                             } -> block
                 | other -> failwith $"expected a byref to byte 0 of a fresh block, got %O{other}"
 
             let atByte (offset : int) =
-                ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, offset), [])
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.NativeMemoryByte (block, offset)
+                        Projections = []
+                    }
 
             populate atByte state, atByte (rootOffset case)
         | RootKind.Stack ->
@@ -580,16 +588,29 @@ module TestPointerStructByteViewCells =
 
             let atByte =
                 match ptr with
-                | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, 0), []) ->
+                | ManagedPointerSource.Byref {
+                                                 Root = ByrefRoot.StackMemoryByte (thread, frame, block, 0)
+                                                 Projections = []
+                                             } ->
                     fun (offset : int) ->
-                        ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, offset), [])
+                        ManagedPointerSource.Byref
+                            {
+                                Root = ByrefRoot.StackMemoryByte (thread, frame, block, offset)
+                                Projections = []
+                            }
                 | other -> failwith $"expected a byref to byte 0 of a fresh block, got %O{other}"
 
             populate atByte state, atByte (rootOffset case)
         | RootKind.Argument ->
             let state, thread = methodFrame (ImmutableArray.Create rootValue) state
             let frame = state.ThreadState.[thread].ActiveMethodState
-            state, ManagedPointerSource.Byref (ByrefRoot.Argument (thread, frame, 0us), [])
+
+            state,
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.Argument (thread, frame, 0us)
+                    Projections = []
+                }
         | RootKind.ArrayElement ->
             let values = case.Cells |> List.map toCliType
 
@@ -604,7 +625,12 @@ module TestPointerStructByteViewCells =
                 (state, List.indexed values)
                 ||> List.fold (fun state (index, value) -> IlMachineState.setArrayValue arr value index state)
 
-            state, ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, case.RootCell), [])
+            state,
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arr, case.RootCell)
+                    Projections = []
+                }
         | RootKind.Boxed ->
             let contents =
                 match rootValue with
@@ -612,7 +638,13 @@ module TestPointerStructByteViewCells =
                 | other -> failwith $"an Outer is a value type, got %O{other}"
 
             let addr, state = IlMachineState.allocateManagedObject outerDeclared contents state
-            state, ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
+
+            state,
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue addr
+                    Projections = []
+                }
 
     /// `Unsafe.Add(ref Unsafe.As<_, View>(ref root.Path), steps)`, spelt as `spelling` says.
     let private build
@@ -669,7 +701,10 @@ module TestPointerStructByteViewCells =
     let private readBack (case : Case) (atRoot : ManagedPointerSource) (state : IlMachineState) : Observed list =
         let root =
             match atRoot with
-            | ManagedPointerSource.Byref (root, []) -> root
+            | ManagedPointerSource.Byref {
+                                             Root = root
+                                             Projections = []
+                                         } -> root
             | other -> failwith $"expected a bare root, got %O{other}"
 
         let cellRoot (index : int) (offset : int) : ManagedPointerSource =
@@ -684,7 +719,11 @@ module TestPointerStructByteViewCells =
                 | other when delta = 0 -> other
                 | other -> failwith $"%O{other} holds one cell, so nothing is at %d{offset}"
 
-            ManagedPointerSource.Byref (root, [])
+            ManagedPointerSource.Byref
+                {
+                    Root = root
+                    Projections = []
+                }
 
         List.zip (cellOffsets case.Cells) case.Cells
         |> List.indexed
@@ -837,10 +876,11 @@ module TestPointerStructByteViewCells =
         let outerCell (slot : int) =
             ModelCell.Outer (
                 [| 67673 ; 57698 ; -91588 ; -68716 ; -42320 ; -94121 |],
-                ManagedPointerSource.Byref (
-                    ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId 0, uint16<int> slot),
-                    []
-                )
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId 0, uint16<int> slot)
+                        Projections = []
+                    }
                 |> CliRuntimePointer.Managed
             )
 

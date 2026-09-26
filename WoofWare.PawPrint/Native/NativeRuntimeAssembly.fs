@@ -1192,7 +1192,10 @@ module NativeRuntimeAssembly =
             // from there, and guessing which frame was meant would be worse than stopping.
             let markFrame =
                 match markPtr with
-                | ManagedPointerSource.Byref (ByrefRoot.LocalVariable (sourceThread, markFrame, _), []) ->
+                | ManagedPointerSource.Byref {
+                                                 Root = ByrefRoot.LocalVariable (sourceThread, markFrame, _)
+                                                 Projections = []
+                                             } ->
                     if sourceThread <> ctx.Thread then
                         failwith
                             $"%s{operation}: the stack-crawl mark is stored in a frame of %O{sourceThread}, but the QCall is executing on %O{ctx.Thread}. A stack crawl can only answer about the crawling thread."

@@ -117,14 +117,16 @@ module TestByteViewCrossesContainer =
             IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero int32Handle) (fun () -> element) 3 state
 
         let ptr =
-            ManagedPointerSource.Byref (
-                ByrefRoot.ArrayElement (arr, index),
-                [
-                    ByrefProjection.Field (FieldId.named "Y")
-                    ByrefProjection.ReinterpretAs byteType
-                    ByrefProjection.ByteOffset 4
-                ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arr, index)
+                    Projections =
+                        [
+                            ByrefProjection.Field (FieldId.named "Y")
+                            ByrefProjection.ReinterpretAs byteType
+                            ByrefProjection.ByteOffset 4
+                        ]
+                }
 
         state, arr, ptr
 
@@ -230,13 +232,15 @@ module TestByteViewCrossesContainer =
         let addr, state = IlMachineState.allocateManagedObject int32Handle contents state
 
         let ptr =
-            ManagedPointerSource.Byref (
-                ByrefRoot.HeapObjectField (addr, FieldId.named "A"),
-                [
-                    ByrefProjection.ReinterpretAs byteType
-                    ByrefProjection.ByteOffset byteOffset
-                ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapObjectField (addr, FieldId.named "A")
+                    Projections =
+                        [
+                            ByrefProjection.ReinterpretAs byteType
+                            ByrefProjection.ByteOffset byteOffset
+                        ]
+                }
 
         state, ptr
 

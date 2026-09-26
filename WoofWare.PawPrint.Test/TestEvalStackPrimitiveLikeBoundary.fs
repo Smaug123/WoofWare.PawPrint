@@ -112,7 +112,11 @@ module TestEvalStackPrimitiveLikeBoundary =
         match bct.ByReference with
         | Some byReference when byReference.Generics.IsEmpty ->
             let ptr =
-                ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress 707), [])
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.HeapValue (ManagedHeapAddress 707)
+                        Projections = []
+                    }
 
             baseCases
             @ [
@@ -260,7 +264,11 @@ module TestEvalStackPrimitiveLikeBoundary =
                 "boundary fixture currently constructs only the non-generic System.ByReference storage form"
         | Some byReference ->
             let src =
-                ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress 23), [])
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.HeapValue (ManagedHeapAddress 23)
+                        Projections = []
+                    }
 
             let wrapped =
                 wrapSingleField byReference (CliType.RuntimePointer (CliRuntimePointer.Managed src))

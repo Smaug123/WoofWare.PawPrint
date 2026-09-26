@@ -23,7 +23,11 @@ module TestNativeHeapFree =
     let private blockB : NativeMemoryBlockId = NativeMemoryBlockId.NativeMemoryBlockId 8
 
     let private baseOf (block : NativeMemoryBlockId) : ManagedPointerSource =
-        ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, 0), [])
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.NativeMemoryByte (block, 0)
+                Projections = []
+            }
 
     let private expectRefused (ptr : ManagedPointerSource) : string =
         match NativeCall.tryResolveNativeHeapFreeTarget ptr with
@@ -53,7 +57,11 @@ module TestNativeHeapFree =
         // is what `NativeMemoryAllocFree.cs` relies on when it writes through a
         // typed view and then frees the original pointer.
         let ptr =
-            ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (blockA, 0), [ ByrefProjection.ByteOffset 0 ])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.NativeMemoryByte (blockA, 0)
+                    Projections = [ ByrefProjection.ByteOffset 0 ]
+                }
 
         NativeCall.tryResolveNativeHeapFreeTarget ptr |> shouldEqual (Ok (Some blockA))
 
@@ -65,11 +73,21 @@ module TestNativeHeapFree =
         // Both spellings of "advanced": the offset baked into the root, and the
         // offset accumulated as a projection. A classifier that folded only one
         // would accept the other.
-        expectRefused (ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (blockA, 4), []))
+        expectRefused (
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.NativeMemoryByte (blockA, 4)
+                    Projections = []
+                }
+        )
         |> shouldContainText "interior"
 
         expectRefused (
-            ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (blockA, 0), [ ByrefProjection.ByteOffset 4 ])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.NativeMemoryByte (blockA, 0)
+                    Projections = [ ByrefProjection.ByteOffset 4 ]
+                }
         )
         |> shouldContainText "interior"
 
@@ -77,7 +95,11 @@ module TestNativeHeapFree =
         // classifier that checked the root and the projections separately would
         // get right only by accident.
         expectRefused (
-            ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (blockA, 2), [ ByrefProjection.ByteOffset 2 ])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.NativeMemoryByte (blockA, 2)
+                    Projections = [ ByrefProjection.ByteOffset 2 ]
+                }
         )
         |> shouldContainText "interior"
 
@@ -87,7 +109,11 @@ module TestNativeHeapFree =
         // address, not about whether any arithmetic happened. A guest that walked
         // forward and back is pointing at the base.
         let ptr =
-            ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (blockA, 8), [ ByrefProjection.ByteOffset -8 ])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.NativeMemoryByte (blockA, 8)
+                    Projections = [ ByrefProjection.ByteOffset -8 ]
+                }
 
         NativeCall.tryResolveNativeHeapFreeTarget ptr |> shouldEqual (Ok (Some blockA))
 
@@ -98,10 +124,11 @@ module TestNativeHeapFree =
         // answer; guessing "probably the base" would free a live block from an
         // interior address.
         let ptr =
-            ManagedPointerSource.Byref (
-                ByrefRoot.NativeMemoryByte (blockA, 0),
-                [ ByrefProjection.Field (FieldId.Named "X") ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.NativeMemoryByte (blockA, 0)
+                    Projections = [ ByrefProjection.Field (FieldId.Named "X") ]
+                }
 
         expectRefused ptr |> shouldContainText "projection"
 
@@ -113,7 +140,13 @@ module TestNativeHeapFree =
         // `NativeCall.allocateBlobByteArray` hands back, and freeing one would be
         // nonsense — which is exactly why entry points modelled on a function
         // returning `malloc`'d memory must use `allocateNativeHeapBlob` instead.
-        expectRefused (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (ManagedHeapAddress 1, 0), []))
+        expectRefused (
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (ManagedHeapAddress 1, 0)
+                    Projections = []
+                }
+        )
         |> shouldContainText "native-heap"
 
         // A bare bit pattern carried through a managed reference names no storage
@@ -141,10 +174,11 @@ module TestNativeHeapFree =
         int64 rootOffset + int64 projectionOffset |> shouldEqual -4294967296L
 
         let ptr =
-            ManagedPointerSource.Byref (
-                ByrefRoot.NativeMemoryByte (blockA, rootOffset),
-                [ ByrefProjection.ByteOffset projectionOffset ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.NativeMemoryByte (blockA, rootOffset)
+                    Projections = [ ByrefProjection.ByteOffset projectionOffset ]
+                }
 
         expectRefused ptr |> shouldContainText "interior"
 
@@ -157,10 +191,11 @@ module TestNativeHeapFree =
                 System.Int32.MaxValue, 1
                 System.Int32.MinValue, -1
             ] do
-            ManagedPointerSource.Byref (
-                ByrefRoot.NativeMemoryByte (blockA, root),
-                [ ByrefProjection.ByteOffset projection ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.NativeMemoryByte (blockA, root)
+                    Projections = [ ByrefProjection.ByteOffset projection ]
+                }
             |> expectRefused
             |> shouldContainText "interior"
 
@@ -199,10 +234,11 @@ module TestNativeHeapFree =
 
         let property (rootOffset : int, projectionOffset : int) : unit =
             let ptr =
-                ManagedPointerSource.Byref (
-                    ByrefRoot.NativeMemoryByte (blockA, rootOffset),
-                    [ ByrefProjection.ByteOffset projectionOffset ]
-                )
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.NativeMemoryByte (blockA, rootOffset)
+                        Projections = [ ByrefProjection.ByteOffset projectionOffset ]
+                    }
 
             // The oracle is int64 arithmetic done here, independently of the
             // fold under test: the address is the base iff the true sum is zero,

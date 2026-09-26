@@ -211,7 +211,12 @@ public static class Entry
         for i = 0 to value.Length - 1 do
             state <- IlMachineState.setArrayValue arrayAddr (CliType.ofChar value.[i]) i state
 
-        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                Projections = []
+            },
+        state
 
     let private allocateUInt32Out
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -228,7 +233,12 @@ public static class Entry
                 1
                 state
 
-        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                Projections = []
+            },
+        state
 
     let private readUInt32Out
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

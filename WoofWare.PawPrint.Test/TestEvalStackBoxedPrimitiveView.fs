@@ -311,7 +311,11 @@ module TestEvalStackBoxedPrimitiveView =
         // shared byte-level projector — which would have to refuse, since `CliType.ToBytes`
         // declines to express a pointer as bytes. This pins that difference as deliberate.
         let src =
-            ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 31), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 31)
+                    Projections = []
+                }
 
         let vt = leadingField (CliType.RuntimePointer (CliRuntimePointer.Managed src))
 
@@ -400,7 +404,11 @@ module TestEvalStackBoxedPrimitiveView =
         let int64Handle = handleFor bct.Int64
 
         let src =
-            ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 44), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 44)
+                    Projections = []
+                }
 
         let asLong : CliField =
             {

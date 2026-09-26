@@ -451,7 +451,12 @@ public static class Entry
         let state =
             IlMachineState.setArrayValue arrayAddr (CliType.ObjectRef contents) 0 state
 
-        let target = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
+        let target =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                    Projections = []
+                }
 
         let handleType =
             requiredTopLevelType baseClassTypes.Corelib "System.Runtime.CompilerServices" "ObjectHandleOnStack"

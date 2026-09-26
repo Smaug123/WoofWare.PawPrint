@@ -351,10 +351,11 @@ module TestFaultHandlers =
         let narrowedByref =
             EvalStackValue.Int32 (
                 Int32Source.NarrowedManagedPointer (
-                    ManagedPointerSource.Byref (
-                        ByrefRoot.NativeMemoryByte (NativeMemoryBlockId.NativeMemoryBlockId 0, 4),
-                        []
-                    )
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.NativeMemoryByte (NativeMemoryBlockId.NativeMemoryBlockId 0, 4)
+                            Projections = []
+                        }
                 )
             )
 

@@ -240,7 +240,12 @@ public static class Entry
                 1
                 state
 
-        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                Projections = []
+            },
+        state
 
     let private readObjectOut
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

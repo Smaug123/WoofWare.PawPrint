@@ -573,12 +573,22 @@ type ByrefProjection =
     /// list is a bug.
     | ByteOffset of byteOffset : int
 
+/// A managed pointer that addresses storage: the root it starts from and the navigation applied
+/// to it. Unlike a `ManagedPointerSource`, it is never null and never a bit-pattern placeholder,
+/// so it can always be dereferenced.
+[<NoComparison>]
+type AddressedByref =
+    {
+        Root : ByrefRoot
+        Projections : ByrefProjection list
+    }
+
 /// A managed pointer (byref / CLI `&` type).
 /// Points at a storage location, not at an object.
 [<NoComparison>]
 type ManagedPointerSource =
     | Null
-    | Byref of root : ByrefRoot * projections : ByrefProjection list
+    | Byref of AddressedByref
     /// A fake non-null managed reference whose only meaningful content is the
     /// raw `int64` bit pattern that produced it. BCL code in
     /// `MemoryMarshal.GetNonNullPinnableReference` synthesises one of these
@@ -603,7 +613,10 @@ type ManagedPointerSource =
         match this with
         | ManagedPointerSource.Null -> "<null managed pointer>"
         | ManagedPointerSource.NativeIntPlaceholder bits -> $"<fake non-null byref @ 0x%x{bits}>"
-        | ManagedPointerSource.Byref (root, projs) ->
+        | ManagedPointerSource.Byref {
+                                         Root = root
+                                         Projections = projs
+                                     } ->
             let rootStr =
                 match root with
                 | ByrefRoot.LocalVariable (source, method, var) ->
@@ -757,7 +770,10 @@ module ManagedPointerSource =
 
     let internal tryGetArrayRoot (src : ManagedPointerSource) : ManagedHeapAddress option =
         match src with
-        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (array, _), _) -> Some array
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.ArrayElement (array, _)
+                                         Projections = _
+                                     } -> Some array
         | _ -> None
 
     /// If both byrefs reach the same storage modulo a byte cursor — i.e. they
@@ -783,7 +799,14 @@ module ManagedPointerSource =
         match src1, src2 with
         | ManagedPointerSource.Null, ManagedPointerSource.Null -> Some 0L
         | ManagedPointerSource.NativeIntPlaceholder b1, ManagedPointerSource.NativeIntPlaceholder b2 -> Some (b2 - b1)
-        | ManagedPointerSource.Byref (root1, projs1), ManagedPointerSource.Byref (root2, projs2) when root1 = root2 ->
+        | ManagedPointerSource.Byref {
+                                         Root = root1
+                                         Projections = projs1
+                                     },
+          ManagedPointerSource.Byref {
+                                         Root = root2
+                                         Projections = projs2
+                                     } when root1 = root2 ->
             match splitTrailingByteCursor projs1, splitTrailingByteCursor projs2 with
             | Some (prefix1, offset1), Some (prefix2, offset2) when prefix1 = prefix2 -> Some (offset2 - offset1)
             | _ -> None
@@ -888,8 +911,14 @@ module ManagedPointerSource =
             // comparison does not carry: a chain that may have left its cell, or two chains
             // into one cell that differ by more than a byte cursor (equal indices reach here
             // only for those, `tryByteOffsetWithinSameRoot` having answered for the rest).
-            | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr1, idx1), projs1),
-              ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr2, idx2), projs2) when arr1 = arr2 ->
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.ArrayElement (arr1, idx1)
+                                             Projections = projs1
+                                         },
+              ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.ArrayElement (arr2, idx2)
+                                             Projections = projs2
+                                         } when arr1 = arr2 ->
                 validateByrefProjectionsAreCanonical src1 projs1
                 validateByrefProjectionsAreCanonical src2 projs2
 
@@ -921,10 +950,14 @@ module ManagedPointerSource =
             // and refusing loudly beats inventing one. This arm exists because
             // `EventSource`'s manifest handling compares a byref to the start of
             // a name against one part-way into that same string.
-            | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str1, idx1), projs1),
-              ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str2, idx2), projs2) when
-                str1 = str2 && idx1 <> idx2 && projs1 = projs2
-                ->
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.StringCharAt (str1, idx1)
+                                             Projections = projs1
+                                         },
+              ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.StringCharAt (str2, idx2)
+                                             Projections = projs2
+                                         } when str1 = str2 && idx1 <> idx2 && projs1 = projs2 ->
                 validateByrefProjectionsAreCanonical src1 projs1
                 validateByrefProjectionsAreCanonical src2 projs2
                 ByteAddressDeltaSign.Decided (compare idx2 idx1)
@@ -938,8 +971,14 @@ module ManagedPointerSource =
             // `(rootOffset2 + cursor2) - (rootOffset1 + cursor1)` is the
             // sign of the byte address delta. Cross-block comparisons fall through
             // to the deferral — those have no defensible ordering.
-            | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block1, rootOffset1), projs1),
-              ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block2, rootOffset2), projs2) when block1 = block2 ->
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.NativeMemoryByte (block1, rootOffset1)
+                                             Projections = projs1
+                                         },
+              ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.NativeMemoryByte (block2, rootOffset2)
+                                             Projections = projs2
+                                         } when block1 = block2 ->
                 match splitTrailingByteCursor projs1, splitTrailingByteCursor projs2 with
                 | Some (prefix1, cursor1), Some (prefix2, cursor2) when prefix1 = prefix2 ->
                     let addr1 = int64 rootOffset1 + cursor1
@@ -968,15 +1007,22 @@ module ManagedPointerSource =
         match src with
         | ManagedPointerSource.Null -> Some 0L
         | ManagedPointerSource.NativeIntPlaceholder bits -> Some bits
-        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (_, _, _, rootByteOffset), projs) ->
-            foldCursor (int64<int> rootByteOffset) projs
-        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (_, rootByteOffset), projs) ->
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.StackMemoryByte (_, _, _, rootByteOffset)
+                                         Projections = projs
+                                     } -> foldCursor (int64<int> rootByteOffset) projs
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.NativeMemoryByte (_, rootByteOffset)
+                                         Projections = projs
+                                     } ->
             // Native-heap blocks are modelled as being allocated at unknown
             // (but well-aligned) base addresses; only the in-block byte offset
             // contributes to the low bits visible to alignment masks.
             foldCursor (int64<int> rootByteOffset) projs
-        | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, projs) ->
-            foldCursor (int64<int> peByteRange.RelativeVirtualAddress) projs
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.PeByteRange peByteRange
+                                         Projections = projs
+                                     } -> foldCursor (int64<int> peByteRange.RelativeVirtualAddress) projs
         | ManagedPointerSource.Byref _ -> None
 
     /// The base a byref's address is measured from, for the roots whose container
@@ -1009,7 +1055,10 @@ module ManagedPointerSource =
         // The GC allocates objects 8-byte aligned on 64-bit, and an SZARRAY's
         // element data begins after a 16-byte header (`MethodTable*` plus a 4-byte
         // component count and 4 bytes of padding).
-        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement _, _) ->
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.ArrayElement _
+                                         Projections = _
+                                     } ->
             {
                 AlignmentBits = 3
                 HeaderBytes = 16L
@@ -1018,7 +1067,10 @@ module ManagedPointerSource =
         // A string's character data begins at object + 12 (`MethodTable*` plus a
         // 4-byte length). This is the one container whose data start is not itself
         // 8-byte aligned.
-        | ManagedPointerSource.Byref (ByrefRoot.StringCharAt _, _) ->
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.StringCharAt _
+                                         Projections = _
+                                     } ->
             {
                 AlignmentBits = 3
                 HeaderBytes = 12L
@@ -1028,7 +1080,10 @@ module ManagedPointerSource =
         // JIT rounds a `localloc` up to the stack alignment, so a localloc block
         // starts at least 8-byte aligned. The block's first byte is its base, so
         // there is no header.
-        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte _, _) ->
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.StackMemoryByte _
+                                         Projections = _
+                                     } ->
             {
                 AlignmentBits = 3
                 HeaderBytes = 0L
@@ -1037,7 +1092,10 @@ module ManagedPointerSource =
         // `NativeMemory.Alloc` / `Marshal.AllocHGlobal` bottom out in `malloc`,
         // which returns storage aligned for any fundamental type — 16 bytes on
         // 64-bit targets.
-        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte _, _) ->
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.NativeMemoryByte _
+                                         Projections = _
+                                     } ->
             {
                 AlignmentBits = 3
                 HeaderBytes = 0L
@@ -1049,7 +1107,10 @@ module ManagedPointerSource =
         // in the metadata `#Blob` heap at an address PawPrint does not track, and
         // fix `RelativeVirtualAddress` at 0 as a placeholder, so their "low bits"
         // are the byte cursor alone and belong to no address at all.
-        | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, _) ->
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.PeByteRange peByteRange
+                                         Projections = _
+                                     } ->
             match peByteRange.Source with
             | PeByteRangePointerSource.FieldRva _
             | PeByteRangePointerSource.ManagedResource _ ->
@@ -1074,7 +1135,10 @@ module ManagedPointerSource =
         | ManagedPointerSource.Null -> failwith "cannot project from null managed pointer"
         | ManagedPointerSource.NativeIntPlaceholder bits ->
             failwith $"cannot project from fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
-        | ManagedPointerSource.Byref (root, projs) ->
+        | ManagedPointerSource.Byref {
+                                         Root = root
+                                         Projections = projs
+                                     } ->
             // ReinterpretAs is address-preserving: it changes only the type view, not the byte offset.
             // So consecutive ReinterpretAs projections collapse to the most recent one; any trailing
             // ByteOffset (an accumulated cursor under a prior reinterpret) is reset along with the
@@ -1119,7 +1183,11 @@ module ManagedPointerSource =
                         $"cannot append ByteOffset %d{n} to projection list without a trailing ReinterpretAs: %O{src}"
                 | _ -> projs @ [ projection ]
 
-            ManagedPointerSource.Byref (root, newProjs)
+            ManagedPointerSource.Byref
+                {
+                    Root = root
+                    Projections = newProjs
+                }
 
     /// Apply an address-preserving change of type view to a managed pointer.
     /// `Unsafe.As<TFrom, TTo>` never dereferences its argument, so unlike the
@@ -1171,7 +1239,10 @@ module ManagedPointerSource =
         match src with
         | ManagedPointerSource.Null -> src
         | ManagedPointerSource.NativeIntPlaceholder _ -> src
-        | ManagedPointerSource.Byref (root, projs) ->
+        | ManagedPointerSource.Byref {
+                                         Root = root
+                                         Projections = projs
+                                     } ->
             // Under `PerByte` the root's offset is where the structural prefix's first `Field` is
             // resolved, so it must stay put while any `Field` precedes the first `ReinterpretAs`;
             // the trailing cursor then stays relative to the field, which is what the readers and
@@ -1214,7 +1285,11 @@ module ManagedPointerSource =
                         else
                             [ ByrefProjection.ReinterpretAs ty ; ByrefProjection.ByteOffset newOffset ]
 
-                    ManagedPointerSource.Byref (newRoot, prefix @ tail)
+                    ManagedPointerSource.Byref
+                        {
+                            Root = newRoot
+                            Projections = prefix @ tail
+                        }
             | _ -> src
 
     /// Fold whole-cell byte offsets of an array-rooted byref into the cell
@@ -1350,10 +1425,27 @@ module ManagedPointerSource =
             match src with
             | ManagedPointerSource.Null -> src
             | ManagedPointerSource.NativeIntPlaceholder _ -> src
-            | ManagedPointerSource.Byref (root, projs) ->
+            | ManagedPointerSource.Byref {
+                                             Root = root
+                                             Projections = projs
+                                         } ->
                 match List.rev projs with
-                | ByrefProjection.ByteOffset 0 :: revRest -> go (ManagedPointerSource.Byref (root, List.rev revRest))
-                | ByrefProjection.ReinterpretAs _ :: revRest -> go (ManagedPointerSource.Byref (root, List.rev revRest))
+                | ByrefProjection.ByteOffset 0 :: revRest ->
+                    go (
+                        ManagedPointerSource.Byref
+                            {
+                                Root = root
+                                Projections = List.rev revRest
+                            }
+                    )
+                | ByrefProjection.ReinterpretAs _ :: revRest ->
+                    go (
+                        ManagedPointerSource.Byref
+                            {
+                                Root = root
+                                Projections = List.rev revRest
+                            }
+                    )
                 | _ -> src
 
         go src
@@ -1382,7 +1474,10 @@ module ManagedPointerSource =
         match src with
         | ManagedPointerSource.Null -> false
         | ManagedPointerSource.NativeIntPlaceholder _ -> false
-        | ManagedPointerSource.Byref (_, projs) ->
+        | ManagedPointerSource.Byref {
+                                         Root = _
+                                         Projections = projs
+                                     } ->
             let stripped =
                 projs
                 |> List.rev
@@ -1621,7 +1716,14 @@ module ManagedPointerSource =
         let stripped2 = stripTrailingReinterprets p2
 
         match stripped1, stripped2 with
-        | ManagedPointerSource.Byref (root1, projs1), ManagedPointerSource.Byref (root2, projs2) when root1 = root2 ->
+        | ManagedPointerSource.Byref {
+                                         Root = root1
+                                         Projections = projs1
+                                     },
+          ManagedPointerSource.Byref {
+                                         Root = root2
+                                         Projections = projs2
+                                     } when root1 = root2 ->
             let rest1, rest2 = stripCommonProjectionPrefix projs1 projs2
 
             match tryDecideResiduals rest1 rest2 with
@@ -1632,9 +1734,14 @@ module ManagedPointerSource =
                     raw2,
                     $"TODO (CEQ): %s{context} compares byrefs whose projection chains differ by field steps, so whether they alias depends on field offsets within their declaring types — layout that byref comparison does not carry. Got %O{raw1} vs %O{raw2}"
                 )
-        | ManagedPointerSource.Byref (root1, projs1), ManagedPointerSource.Byref (root2, projs2) when
-            mayLeaveRootExtent root1 projs1 || mayLeaveRootExtent root2 projs2
-            ->
+        | ManagedPointerSource.Byref {
+                                         Root = root1
+                                         Projections = projs1
+                                     },
+          ManagedPointerSource.Byref {
+                                         Root = root2
+                                         Projections = projs2
+                                     } when mayLeaveRootExtent root1 projs1 || mayLeaveRootExtent root2 projs2 ->
             // Distinct roots, but at least one byref has been displaced by an amount this
             // comparison cannot evaluate, so it may have walked clean out of its own root's
             // extent and into the other's. Measured: for `struct Pair { int X; int Y }` and
@@ -1650,7 +1757,14 @@ module ManagedPointerSource =
                 raw2,
                 $"TODO (CEQ): %s{context} compares byrefs on different roots where at least one carries a byte cursor this comparison cannot place within its root, so it may have left that root's extent; deciding that needs layout this comparison does not carry. Got %O{raw1} vs %O{raw2}"
             )
-        | ManagedPointerSource.Byref (root1, projs1), ManagedPointerSource.Byref (root2, projs2) when
+        | ManagedPointerSource.Byref {
+                                         Root = root1
+                                         Projections = projs1
+                                     },
+          ManagedPointerSource.Byref {
+                                         Root = root2
+                                         Projections = projs2
+                                     } when
             rootsIndexOneRawBlock root1 root2
             && projs1 <> projs2
             && (containsField projs1 || containsField projs2)
@@ -1666,8 +1780,14 @@ module ManagedPointerSource =
                 raw2,
                 $"TODO (CEQ): %s{context} compares byrefs off two bytes of one localloc or native-heap block, at least one through a `Field` step, which moves it from its byte by the field's offset in its declaring type — layout that byref comparison does not carry. Got %O{raw1} vs %O{raw2}"
             )
-        | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (obj1, field1), _),
-          ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (obj2, field2), _) when obj1 = obj2 && field1 <> field2 ->
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.HeapObjectField (obj1, field1)
+                                         Projections = _
+                                     },
+          ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.HeapObjectField (obj2, field2)
+                                         Projections = _
+                                     } when obj1 = obj2 && field1 <> field2 ->
             // Undisplaced, but two fields of one heap object are still *different roots* here
             // — again a statement about how each byref was built, not about where it points.
             // Under `[StructLayout(LayoutKind.Explicit)]` on a class, two fields share an

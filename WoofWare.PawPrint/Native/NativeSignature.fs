@@ -29,10 +29,14 @@ module NativeSignature =
         | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) -> None
-        | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange,
-                                                                                         _)))
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange,
-                                                                                                                 _)))) ->
+        | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Byref {
+                                                                                            Root = ByrefRoot.PeByteRange peByteRange
+                                                                                            Projections = _
+                                                                                        }))
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer (ManagedPointerSource.Byref {
+                                                                                                                    Root = ByrefRoot.PeByteRange peByteRange
+                                                                                                                    Projections = _
+                                                                                                                }))) ->
             Some peByteRange
         | other ->
             failwith

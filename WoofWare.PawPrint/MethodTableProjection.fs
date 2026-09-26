@@ -1374,7 +1374,11 @@ module internal MethodTableProjection =
                         IlMachineRuntimeMetadata.getOrAllocateType loggerFactory baseClassTypes methodTableFor state
 
                     let ptr =
-                        ManagedPointerSource.Byref (ByrefRoot.ExposedClassObject methodTableFor, [])
+                        ManagedPointerSource.Byref
+                            {
+                                Root = ByrefRoot.ExposedClassObject methodTableFor
+                                Projections = []
+                            }
 
                     Some (ptr, state)
                 | RuntimeTypeHandleTarget.GenericParameter _
@@ -1417,5 +1421,12 @@ module internal MethodTableProjection =
             let _addr, state =
                 IlMachineRuntimeMetadata.getOrAllocateType loggerFactory baseClassTypes typeDescFor state
 
-            Some (ManagedPointerSource.Byref (ByrefRoot.ExposedClassObject typeDescFor, []), state)
+            Some (
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.ExposedClassObject typeDescFor
+                        Projections = []
+                    },
+                state
+            )
         | _ -> None

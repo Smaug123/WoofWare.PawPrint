@@ -611,7 +611,13 @@ module NativeCall =
         : ManagedPointerSource * IlMachineState
         =
         let arrayAddr, state = allocateManagedByteArray baseClassTypes storage state
-        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.ArrayElement (arrayAddr, 0)
+                Projections = []
+            },
+        state
 
     /// Allocate a block on the simulated process's native heap (the pool that backs
     /// <c>malloc</c> / <c>Marshal.AllocHGlobal</c>), fill it with <paramref name="bytes"/>, and
@@ -637,7 +643,10 @@ module NativeCall =
 
         let blockId =
             match ptr with
-            | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (blockId, 0), []) -> blockId
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.NativeMemoryByte (blockId, 0)
+                                             Projections = []
+                                         } -> blockId
             | other ->
                 failwith
                     $"%s{operation}: allocateNativeMemory returned an unexpected pointer shape (%O{other}); this is an interpreter bug"
@@ -673,7 +682,10 @@ module NativeCall =
 
         match ptr with
         | ManagedPointerSource.Null -> Ok None
-        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, rootByteOffset), projs) ->
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.NativeMemoryByte (block, rootByteOffset)
+                                         Projections = projs
+                                     } ->
             match projectionByteOffset (int64<int> rootByteOffset) projs with
             | Ok 0L -> Ok (Some block)
             | Ok offset ->

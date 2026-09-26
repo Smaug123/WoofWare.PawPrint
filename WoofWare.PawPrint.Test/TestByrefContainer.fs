@@ -253,7 +253,16 @@ module TestByrefContainer =
         let state, addr = stateWithPairObject ()
 
         let resolve (root : ByrefRoot) (projs : ByrefProjection list) : ByteStorageIdentity * int64 =
-            match StorageLocation.resolve baseClassTypes state (ManagedPointerSource.Byref (root, projs)) with
+            match
+                StorageLocation.resolve
+                    baseClassTypes
+                    state
+                    (ManagedPointerSource.Byref
+                        {
+                            Root = root
+                            Projections = projs
+                        })
+            with
             | StorageLocation.LocationResolution.Located (_, Some precise) -> precise
             | other -> failwith $"expected a precise coordinate, got %O{other}"
 

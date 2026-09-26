@@ -370,7 +370,7 @@ module internal NativeReflectionInvocation =
         // A value-type receiver the *caller* supplied needs no handling here: CoreCLR forms `this`
         // as `gc.target->UnBox()` (reflectioninvocation.cpp:502), a pointer into the payload of the
         // box the caller passed, and `callMethodWithCommitment` already converts an `ObjectRef`
-        // receiver for a value-type method into exactly that — `Byref (ByrefRoot.HeapValue addr, [])`
+        // receiver for a value-type method into exactly that — `Byref { Root = HeapValue addr ; Projections = [] }`
         // (IlMachineStateExecution.fs:2074). So a mutating struct method writes through to the
         // caller's box, as it does on CoreCLR.
         //
@@ -582,7 +582,7 @@ module internal NativeReflectionInvocation =
                         // Both of CoreCLR's constructor receiver branches
                         // (reflectioninvocation.cpp:466-475) come out of this one push:
                         // `callMethodWithCommitment`'s `NotConstructing` receiver path converts an
-                        // `ObjectRef` into `Byref (ByrefRoot.HeapValue addr, [])` exactly when the
+                        // `ObjectRef` into `Byref { Root = HeapValue addr ; Projections = [] }` exactly when the
                         // declaring type is a value type (IlMachineStateExecution.fs:2074), which
                         // is `gc.retVal->GetData()`, and leaves it alone otherwise.
                         Some (CliType.ObjectRef (Some addr))

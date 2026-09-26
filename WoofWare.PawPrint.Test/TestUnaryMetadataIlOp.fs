@@ -205,10 +205,11 @@ module TestUnaryMetadataIlOp =
         let sourceAddress = ManagedHeapAddress 987
 
         let source =
-            ManagedPointerSource.Byref (
-                ByrefRoot.Argument (thread, frame, 0us),
-                [ ByrefProjection.ReinterpretAs volatileObjectConcrete ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.Argument (thread, frame, 0us)
+                    Projections = [ ByrefProjection.ReinterpretAs volatileObjectConcrete ]
+                }
 
         let state =
             state

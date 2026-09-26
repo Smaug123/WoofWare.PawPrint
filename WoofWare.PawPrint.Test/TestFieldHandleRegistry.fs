@@ -746,13 +746,24 @@ public class GenericHolder<T>
 
         let ptr =
             match ptr with
-            | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, baseIndex), []) ->
-                ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, baseIndex + index), [])
-            | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), []) ->
-                ManagedPointerSource.Byref (
-                    ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset + (index * nativeIntSize)),
-                    []
-                )
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.ArrayElement (arr, baseIndex)
+                                             Projections = []
+                                         } ->
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.ArrayElement (arr, baseIndex + index)
+                        Projections = []
+                    }
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset)
+                                             Projections = []
+                                         } ->
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset + (index * nativeIntSize))
+                        Projections = []
+                    }
             | _ when index = 0 -> ptr
             | _ -> failwith $"Expected native int buffer pointer, got %O{ptr}"
 
@@ -781,7 +792,11 @@ public class GenericHolder<T>
                 state
 
         let resultBuffer =
-            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (resultBufferAddr, 0), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (resultBufferAddr, 0)
+                    Projections = []
+                }
 
         let int32Handle =
             AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.Int32
@@ -794,7 +809,11 @@ public class GenericHolder<T>
                 state
 
         let countPtr =
-            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (countAddr, 0), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.ArrayElement (countAddr, 0)
+                    Projections = []
+                }
 
         let state =
             IlMachineState.setArrayValue countAddr (CliType.Numeric (CliNumericType.Int32 capacity)) 0 state

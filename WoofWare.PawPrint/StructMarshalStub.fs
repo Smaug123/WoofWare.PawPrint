@@ -745,7 +745,10 @@ module StructMarshalStub =
         : CliType
         =
         match source with
-        | ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, projections) when addressesWholeValue projections ->
+        | ManagedPointerSource.Byref {
+                                         Root = ByrefRoot.HeapValue addr
+                                         Projections = projections
+                                     } when addressesWholeValue projections ->
             CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
         | _ ->
             let template, _ = IlMachineState.cliTypeZeroOfHandle state baseClassTypes typeHandle
@@ -1014,10 +1017,10 @@ module StructMarshalStub =
             // never from the box's current contents.
             let box =
                 match managed with
-                | ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, projections) when
-                    addressesWholeValue projections
-                    ->
-                    addr
+                | ManagedPointerSource.Byref {
+                                                 Root = ByrefRoot.HeapValue addr
+                                                 Projections = projections
+                                             } when addressesWholeValue projections -> addr
                 | other ->
                     failwith
                         $"%s{operation}: expected the managed struct reference to address a whole box, which is what `RuntimeHelpers.GetRawData` produces, but got %O{other}"
@@ -1034,7 +1037,11 @@ module StructMarshalStub =
             let steps = Array.ofList plan.Steps
 
             let homeOf (step : StructMarshalStep) : ManagedPointerSource =
-                ManagedPointerSource.Byref (ByrefRoot.HeapValue box, [ ByrefProjection.Field step.Placement.Field.Id ])
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.HeapValue box
+                        Projections = [ ByrefProjection.Field step.Placement.Field.Id ]
+                    }
 
             let rec unmarshalFrom (index : int) (state : IlMachineState) : ExecutionResult =
                 if index = steps.Length then

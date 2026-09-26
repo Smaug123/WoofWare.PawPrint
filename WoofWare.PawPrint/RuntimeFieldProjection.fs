@@ -34,7 +34,12 @@ module internal RuntimeFieldProjection =
         : ManagedPointerSource option
         =
         if isStringFirstChar baseClassTypes field then
-            ManagedPointerSource.Byref (ByrefRoot.StringCharAt (addr, 0), []) |> Some
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.StringCharAt (addr, 0)
+                    Projections = []
+                }
+            |> Some
         else
             None
 
@@ -164,10 +169,11 @@ module internal RuntimeFieldProjection =
                     // the projection and surface the layout mismatch.
                     match arr.ConcreteType with
                     | ConcreteTypeHandle.OneDimArrayZero _ ->
-                        ManagedPointerSource.Byref (
-                            ByrefRoot.ArrayElement (addr, 0),
-                            [ byteView ; ByrefProjection.ByteOffset (-nativeIntSize) ]
-                        )
+                        ManagedPointerSource.Byref
+                            {
+                                Root = ByrefRoot.ArrayElement (addr, 0)
+                                Projections = [ byteView ; ByrefProjection.ByteOffset (-nativeIntSize) ]
+                            }
                         |> Some
                     | ConcreteTypeHandle.Array (_, rank) ->
                         failwith
@@ -179,7 +185,12 @@ module internal RuntimeFieldProjection =
                     // Non-array heap object: byref to the start of instance data.
                     // Payload byte-view safety, including object-reference and layout
                     // checks, is enforced when the byref is read or written.
-                    ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [ byteView ]) |> Some
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.HeapValue addr
+                            Projections = [ byteView ]
+                        }
+                    |> Some
             | _ ->
                 failwith
                     $"TODO: RawData field address projection for System.Runtime.CompilerServices.RawData::{field.Name}"

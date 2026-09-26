@@ -79,10 +79,12 @@ module TestPointerFieldByteView =
                 let! slot = Gen.choose (0, 5)
 
                 return
-                    ManagedPointerSource.Byref (
-                        ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId frame, uint16<int> slot),
-                        []
-                    )
+                    ManagedPointerSource.Byref
+                        {
+                            Root =
+                                ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId frame, uint16<int> slot)
+                            Projections = []
+                        }
                     |> CliRuntimePointer.Managed
             }
 
@@ -184,7 +186,12 @@ module TestPointerFieldByteView =
             ]
 
         let src =
-            (ManagedPointerSource.Byref (byrefRoot, []), projections)
+            (ManagedPointerSource.Byref
+                {
+                    Root = byrefRoot
+                    Projections = []
+                },
+             projections)
             ||> List.fold (fun src proj -> ManagedPointerSource.appendProjection proj src)
 
         state, src

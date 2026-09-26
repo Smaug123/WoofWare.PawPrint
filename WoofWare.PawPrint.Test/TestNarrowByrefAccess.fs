@@ -135,7 +135,11 @@ module TestNarrowByrefAccess =
         |> CliType.ValueType
 
     let private somewhere (n : int) : ManagedPointerSource =
-        ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress n), [])
+        ManagedPointerSource.Byref
+            {
+                Root = ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress n)
+                Projections = []
+            }
 
     /// Allocate `contents` on the heap; a byref rooted there names its first byte.
     let private storageAt (contents : CliValueType) : IlMachineState * ManagedHeapAddress =
@@ -174,7 +178,13 @@ module TestNarrowByrefAccess =
         let state, addr =
             storageAt (pointerSlots [ for _ in 1..4 -> ManagedPointerSource.Null ])
 
-        let destination = ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
+        let destination =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue addr
+                    Projections = []
+                }
+
         let payload = somewhere 42
 
         let state =
@@ -203,10 +213,11 @@ module TestNarrowByrefAccess =
             storageAt (pointerSlots [ for _ in 1..4 -> ManagedPointerSource.Null ])
 
         let destination =
-            ManagedPointerSource.Byref (
-                ByrefRoot.HeapValue addr,
-                [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset 8 ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue addr
+                    Projections = [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset 8 ]
+                }
 
         let payload = somewhere 43
 
@@ -233,7 +244,12 @@ module TestNarrowByrefAccess =
         let state, addr =
             storageAt (pointerSlots [ for _ in 1..4 -> ManagedPointerSource.Null ])
 
-        let destination = ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
+        let destination =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue addr
+                    Projections = []
+                }
 
         let state =
             IlMachineState.writeManagedByrefWithBase baseClassTypes state destination (byReferenceTo (somewhere 44))
@@ -257,13 +273,19 @@ module TestNarrowByrefAccess =
 
         let template = byReferenceTo ManagedPointerSource.Null
 
-        let bare = ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
+        let bare =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue addr
+                    Projections = []
+                }
 
         let cursor =
-            ManagedPointerSource.Byref (
-                ByrefRoot.HeapValue addr,
-                [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset 8 ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue addr
+                    Projections = [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset 8 ]
+                }
 
         let readPointer (src : ManagedPointerSource) : ManagedPointerSource =
             match IlMachineState.readManagedByrefAs baseClassTypes state template src with
@@ -279,7 +301,11 @@ module TestNarrowByrefAccess =
         // answer — and it has to be the former, because a `System.ByReference` is read out of
         // exactly this: a slot declared `ref byte`, holding what the wrapper wraps.
         let namedCell =
-            ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [ ByrefProjection.Field (FieldId.named "_arg1") ])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue addr
+                    Projections = [ ByrefProjection.Field (FieldId.named "_arg1") ]
+                }
 
         readPointer bare |> shouldEqual first
         readPointer cursor |> shouldEqual second
@@ -291,7 +317,14 @@ module TestNarrowByrefAccess =
     [<Test>]
     let ``an equal-size write through a bare byref still replaces the whole slot`` () : unit =
         let state, addr = storageAt (pointerSlots [ ManagedPointerSource.Null ])
-        let destination = ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
+
+        let destination =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue addr
+                    Projections = []
+                }
+
         let replacement = byReferenceTo (somewhere 47)
 
         let state =
@@ -305,7 +338,14 @@ module TestNarrowByrefAccess =
     [<Test>]
     let ``a write wider than the slot fails loudly`` () : unit =
         let state, addr = storageAt (pointerSlots [ ManagedPointerSource.Null ])
-        let destination = ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
+
+        let destination =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue addr
+                    Projections = []
+                }
+
         let tooWide = CliType.ValueType (pointerSlots [ somewhere 48 ; somewhere 49 ])
 
         let outcome =
@@ -356,7 +396,14 @@ module TestNarrowByrefAccess =
                 |> structOf int64Handle
 
             let state, addr = storageAt wide
-            let destination = ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
+
+            let destination =
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.HeapValue addr
+                        Projections = []
+                    }
+
             let before = CliType.ToBytes (CliType.ValueType wide)
             let payload = CliType.ToBytes (CliType.ValueType narrow)
 
@@ -397,7 +444,12 @@ module TestNarrowByrefAccess =
     let ``a byte-view read through several cursors reads the byte they total to`` () : unit =
         let state, addr = storageAt (twoWords ())
 
-        let src = ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, cursors [ 6 ; -2 ])
+        let src =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue addr
+                    Projections = cursors [ 6 ; -2 ]
+                }
 
         IlMachineState.readManagedByrefBytesAs baseClassTypes state src (CliType.Numeric (CliNumericType.Int32 0))
         |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0x22222222))
@@ -414,10 +466,11 @@ module TestNarrowByrefAccess =
         let state, addr = storageAt (twoWords ())
 
         let src =
-            ManagedPointerSource.Byref (
-                ByrefRoot.HeapValue addr,
-                cursors [ System.Int32.MaxValue ; System.Int32.MaxValue ; 2 ]
-            )
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.HeapValue addr
+                    Projections = cursors [ System.Int32.MaxValue ; System.Int32.MaxValue ; 2 ]
+                }
 
         let exn =
             Assert.Throws (fun () ->

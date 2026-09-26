@@ -265,10 +265,11 @@ public unsafe struct Nest
                 Gen.choose (1, 1000000) |> Gen.map (int64<int> >> CliRuntimePointer.Verbatim)
                 Gen.choose (0, 5)
                 |> Gen.map (fun slot ->
-                    ManagedPointerSource.Byref (
-                        ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId 0, uint16<int> slot),
-                        []
-                    )
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId 0, uint16<int> slot)
+                            Projections = []
+                        }
                     |> CliRuntimePointer.Managed
                 )
             ]
@@ -549,10 +550,24 @@ public unsafe struct Nest
 
         let atByte (offset : int) : ManagedPointerSource =
             match blockStart with
-            | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, 0), []) ->
-                ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, offset), [])
-            | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, 0), []) ->
-                ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, offset), [])
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.NativeMemoryByte (block, 0)
+                                             Projections = []
+                                         } ->
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.NativeMemoryByte (block, offset)
+                        Projections = []
+                    }
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.StackMemoryByte (thread, frame, block, 0)
+                                             Projections = []
+                                         } ->
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.StackMemoryByte (thread, frame, block, offset)
+                        Projections = []
+                    }
             | other -> failwith $"expected a byref to byte 0 of a fresh block, got %O{other}"
 
         state, atByte
@@ -1102,7 +1117,11 @@ public unsafe struct Nest
         let state, atByte = allocate (if native then RootKind.Native else RootKind.Stack)
 
         let tagged =
-            ManagedPointerSource.Byref (ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId 0, 3us), [])
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId 0, 3us)
+                    Projections = []
+                }
             |> NativeIntSource.ManagedPointer
             |> CliNumericType.NativeInt
             |> CliType.Numeric
@@ -1303,8 +1322,11 @@ public unsafe struct Nest
 
             let state =
                 match case.Root, atByte 0 with
-                | AddressRoot.FreedNative, ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, _), _) ->
-                    IlMachineState.freeNativeMemory block state
+                | AddressRoot.FreedNative,
+                  ManagedPointerSource.Byref {
+                                                 Root = ByrefRoot.NativeMemoryByte (block, _)
+                                                 Projections = _
+                                             } -> IlMachineState.freeNativeMemory block state
                 | _ -> state
 
             let a1 = int64<int> (addressOf case.Left)

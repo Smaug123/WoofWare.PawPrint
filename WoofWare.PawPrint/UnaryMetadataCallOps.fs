@@ -353,7 +353,11 @@ module internal UnaryMetadataCallOps =
 
         let buildResult (state : IlMachineState) : IlMachineState * WhatWeDid =
             let result =
-                ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrAddr, flat), [])
+                ManagedPointerSource.Byref
+                    {
+                        Root = ByrefRoot.ArrayElement (arrAddr, flat)
+                        Projections = []
+                    }
                 |> EvalStackValue.ManagedPointer
 
             let state =
@@ -1706,7 +1710,13 @@ module internal UnaryMetadataCallOps =
 
         let state =
             IlMachineState.pushToEvalStack'
-                (EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])))
+                (EvalStackValue.ManagedPointer (
+                    ManagedPointerSource.Byref
+                        {
+                            Root = ByrefRoot.HeapValue addr
+                            Projections = []
+                        }
+                ))
                 thread
                 state
 

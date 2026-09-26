@@ -87,8 +87,14 @@ module internal UnaryMetadataMemoryOps =
             let coerced = EvalStackValue.toCliTypeCoerced targetZero valueToStore
 
             match src with
-            | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte _, _)
-            | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte _, _) ->
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.StackMemoryByte _
+                                             Projections = _
+                                         }
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.NativeMemoryByte _
+                                             Projections = _
+                                         } ->
                 IlMachineState.writeManagedByrefBytesOrTypedCell baseClassTypes state src coerced
             | ManagedPointerSource.Byref _ -> IlMachineState.writeManagedByrefWithBase baseClassTypes state src coerced
             | ManagedPointerSource.Null -> failwith "unreachable: null Stobj target handled above"
