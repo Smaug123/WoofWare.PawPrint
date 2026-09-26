@@ -300,6 +300,14 @@ module TestImpureCases =
         methodNames |> List.contains "Thrower" |> shouldEqual true
         methodNames |> List.contains "Main" |> shouldEqual true
 
+    /// The signals whose disposition is System.Native's handler.
+    let private caughtBySystemNative (state : IlMachineState) : Set<Signal> =
+        SignalState.dispositions state.Kernel.Signals
+        |> Map.filter (fun _ disposition -> disposition = SignalDisposition.Catch NativeSignalHandler.SystemNative)
+        |> Map.toSeq
+        |> Seq.map fst
+        |> Set.ofSeq
+
     /// The seed both write-wiring guests read: one file per mode shape, each
     /// holding the same five bytes, so a row's answer turns on its mode alone.
     let private writeModeSeed : Map<DirectoryEntryName, SeedEntry> =
@@ -3067,13 +3075,11 @@ module TestImpureCases =
                 ExpectsUnhandledException = false
                 AssertTerminalState =
                     Some (fun state ->
-                        let enabled = SignalState.enabled state.Kernel.Signals
                         // SIGINFO and SIGIO took the PAL's default arm, which
                         // restored SIG_DFL: no later occurrence reaches
-                        // managed code, which the model records as the
-                        // enable bit cleared. SIGURG has an explicit arm and
-                        // keeps its handler.
-                        enabled |> shouldEqual (Set.ofList [ Signal.SIGURG ])
+                        // managed code. SIGURG has an explicit arm and keeps
+                        // System.Native's handler.
+                        caughtBySystemNative state |> shouldEqual (Set.ofList [ Signal.SIGURG ])
                     )
             }
             {
@@ -3094,7 +3100,7 @@ module TestImpureCases =
                         // PAL's switch, so handling them leaves their
                         // handlers installed; SIGRTMAX was disabled by the
                         // guest itself.
-                        SignalState.enabled state.Kernel.Signals
+                        caughtBySystemNative state
                         |> shouldEqual (Set.ofList [ Signal.SIGCHLD ; Signal.SIGURG ])
                     )
             }
@@ -3313,7 +3319,8 @@ module TestImpureCases =
                 | RunOutcome.Aborted (_, _, fatal) ->
                     let m = fatal.Message |> Option.defaultValue "<no message>"
                     failwith $"Guest aborted (%O{fatal.Code}): %s{m}"
-                | RunOutcome.SignalTerminated (_, signal) -> failwith $"Guest was terminated by POSIX signal %O{signal}"
+                | RunOutcome.SignalTerminated (_, signal, _) ->
+                    failwith $"Guest was terminated by POSIX signal %O{signal}"
                 | RunOutcome.NormalExit (state, _) -> state
                 | RunOutcome.ProcessExit (state, _) -> state
 

@@ -100,17 +100,29 @@ class Program
         exn.Message |> shouldContainText reason
 
     [<Test>]
-    let ``SIGPIPE, which the runtime ignores from startup, is refused under Linux`` () : unit =
-        refused SimulatedUnixPlatform.linuxX64 13 "catches or ignores SIGPIPE from startup"
+    let ``SIGPIPE, which the runtime ignores from startup, is discarded under either flavour`` () : unit =
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            match run platform 13 with
+            | RunOutcome.NormalExit (state, _) -> state.LatchedExitCode |> shouldEqual 42
+            | other -> failwith $"expected kill(self, SIGPIPE) to be answered and the guest to exit 42, got %O{other}"
 
     [<Test>]
     let ``30 is Darwin's SIGUSR1, the runtime's activation signal, and is refused there`` () : unit =
-        refused SimulatedUnixPlatform.macOsArm64 30 "catches or ignores SIGUSR1 from startup"
+        refused SimulatedUnixPlatform.macOsArm64 30 "runs a handler of CoreCLR's PAL for SIGUSR1"
+
+    [<Test>]
+    let ``11 is SIGSEGV, which the runtime catches, and is refused under either flavour`` () : unit =
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            refused platform 11 "runs a handler of CoreCLR's PAL"
+
+    [<Test>]
+    let ``33 is glibc's SIGSETXID, which glibc catches, and is refused under Linux`` () : unit =
+        refused SimulatedUnixPlatform.linuxX64 33 "runs glibc's own SIGSETXID handler"
 
     [<Test>]
     let ``30 is Linux's SIGPWR, which terminates a real process, and PawPrint's`` () : unit =
         match run SimulatedUnixPlatform.linuxX64 30 with
-        | RunOutcome.SignalTerminated (_, signal) -> signal |> shouldEqual (Signal.Other 30)
+        | RunOutcome.SignalTerminated (_, signal, _) -> signal |> shouldEqual (Signal.Other 30)
         | other -> failwith $"expected termination by signal 30, got %O{other}"
 
     [<Test>]

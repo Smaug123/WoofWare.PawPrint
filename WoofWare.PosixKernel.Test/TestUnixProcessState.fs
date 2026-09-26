@@ -46,7 +46,8 @@ module TestUnixProcessState =
             Credentials = Credentials.ofIds (UserId.parseOrFail context 1000u) (GroupId.parseOrFail context 1000u) []
             Umask = PermissionBits.parseOrFail context 0o022
             ProcessId = ProcessId.parseOrFail context 4242
-            Signals = SignalState.initial SignalNumbering.Linux
+            Signals = SignalState.initial SignalNumbering.Linux Set.empty
+            CoreDumps = CoreDumps.Suppressed
         }
 
     [<Test>]

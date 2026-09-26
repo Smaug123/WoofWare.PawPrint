@@ -578,14 +578,17 @@ module TestUnixSystemInvariants =
     let ``a signal mask for a task the table does not hold is a defect`` () : unit =
         system
         |> withTask None
-        |> withSignals (SignalState.initial SignalNumbering.Linux |> SignalState.block 42 Signal.SIGINT)
+        |> withSignals (
+            SignalState.initial SignalNumbering.Linux Set.empty
+            |> SignalState.block 42 Signal.SIGINT
+        )
         |> UnixSystem.checkInvariants
         |> shouldEqual [ UnixSystemDefect.SignalMaskWithoutTask 42 ]
 
         system
         |> withTask None
         |> withSignals (
-            SignalState.initial SignalNumbering.Linux
+            SignalState.initial SignalNumbering.Linux Set.empty
             |> SignalState.block task Signal.SIGINT
         )
         |> UnixSystem.checkInvariants
@@ -594,7 +597,7 @@ module TestUnixSystemInvariants =
     [<Test>]
     let ``a pending signal directed at a task the table does not hold is a defect`` () : unit =
         let directedAt (target : int voption) : SignalState<int, string> =
-            SignalState.initial SignalNumbering.Linux
+            SignalState.initial SignalNumbering.Linux Set.empty
             |> SignalState.enqueue
                 {
                     Signal = Signal.SIGCHLD
@@ -625,7 +628,7 @@ module TestUnixSystemInvariants =
         // Reachable only by assembling the state by hand: `initial` derives
         // the signal state's numbering from the platform it is given.
         system
-        |> withSignals (SignalState.initial SignalNumbering.Darwin)
+        |> withSignals (SignalState.initial SignalNumbering.Darwin Set.empty)
         |> UnixSystem.checkInvariants
         |> shouldEqual
             [
@@ -634,7 +637,7 @@ module TestUnixSystemInvariants =
 
         // The control: the numbering `initial` derived is sound.
         system
-        |> withSignals (SignalState.initial SignalNumbering.Linux)
+        |> withSignals (SignalState.initial SignalNumbering.Linux Set.empty)
         |> UnixSystem.checkInvariants
         |> shouldEqual []
 

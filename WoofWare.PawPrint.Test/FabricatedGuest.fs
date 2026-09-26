@@ -82,7 +82,7 @@ module FabricatedGuest =
             | RunOutcome.Aborted (_, _, fatal) ->
                 let message = fatal.Message |> Option.defaultValue "<none>"
                 failwith $"guest aborted (%O{fatal.Code}): %s{message}"
-            | RunOutcome.SignalTerminated (_, signal) -> failwith $"guest was signalled: %O{signal}"
+            | RunOutcome.SignalTerminated (_, signal, _) -> failwith $"guest was signalled: %O{signal}"
         with e ->
             for message in messages () do
                 Console.Error.WriteLine $"{message}"

@@ -792,6 +792,13 @@ module UnixSystem =
     let defaultUmask : PermissionBits =
         PermissionBits.parseOrFail "UnixSystem.defaultUmask" 0o022
 
+    /// Whether a freshly-minted simulated process writes a core dump when a
+    /// signal kills it: never, as under an `RLIMIT_CORE` of 0. A dump is a
+    /// file the simulated process would leave behind, which a client has to
+    /// ask for. A client chooses otherwise with
+    /// `UnixProcessState.withCoreDumps`.
+    let defaultCoreDumps : CoreDumps = CoreDumps.Suppressed
+
     /// Process ID a freshly-minted simulated process reports: 4242.
     ///
     /// Not 1, which is the ID of a PID namespace's init process. A kernel
@@ -887,7 +894,8 @@ module UnixSystem =
                     Credentials = defaultCredentials flavour
                     Umask = defaultUmask
                     ProcessId = defaultProcessId
-                    Signals = SignalState.initial (SimulatedUnixPlatform.signalNumbering platform)
+                    Signals = SignalState.initial (SimulatedUnixPlatform.signalNumbering platform) Set.empty
+                    CoreDumps = defaultCoreDumps
                 }
             Tasks = Map.empty
         }

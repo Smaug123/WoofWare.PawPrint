@@ -901,8 +901,8 @@ module Program =
                 ProgramStepOutcome.Completed (RunOutcome.ProcessExit (state, exitingThread))
             | ExecutionResult.Aborted (state, abortingThread, message) ->
                 ProgramStepOutcome.Completed (RunOutcome.Aborted (state, abortingThread, message))
-            | ExecutionResult.SignalTerminated (state, signal) ->
-                ProgramStepOutcome.Completed (RunOutcome.SignalTerminated (state, signal))
+            | ExecutionResult.SignalTerminated (state, signal, coreDumped) ->
+                ProgramStepOutcome.Completed (RunOutcome.SignalTerminated (state, signal, coreDumped))
             | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
                 ProgramStepOutcome.Completed (RunOutcome.GuestUnhandledException (state, terminatingThread, exn))
             | ExecutionResult.Stepped (state, whatWeDid, effect) ->
@@ -1534,7 +1534,11 @@ module Program =
         | RunOutcome.Aborted (_, thread, fatal) ->
             let message = fatal.Message |> Option.defaultValue "<no message>"
             $"aborted on %O{thread} with %O{fatal.Code}: %s{message}"
-        | RunOutcome.SignalTerminated (_, signal) -> $"was terminated by signal %O{signal}"
+        | RunOutcome.SignalTerminated (_, signal, coreDumped) ->
+            if coreDumped then
+                $"was terminated by signal %O{signal} (core dumped)"
+            else
+                $"was terminated by signal %O{signal}"
         | RunOutcome.GuestUnhandledException (finalState, thread, exn) ->
             $"threw an unhandled exception on %O{thread}:\n%s{UnhandledExceptionReport.describe finalState exn}"
 

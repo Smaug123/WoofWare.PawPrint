@@ -222,5 +222,5 @@ module FrameworkUnderTest =
         | RunOutcome.NormalExit (state, _)
         | RunOutcome.ProcessExit (state, _)
         | RunOutcome.Aborted (state, _, _)
-        | RunOutcome.SignalTerminated (state, _)
+        | RunOutcome.SignalTerminated (state, _, _)
         | RunOutcome.GuestUnhandledException (state, _, _) -> assertServes state

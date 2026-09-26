@@ -10,8 +10,8 @@ open WoofWare.PosixKernel.Test
 
 /// `StartupSignalDispositions` against the real runtime this test host runs:
 /// a program that sends itself each signal in turn must end as the kernel's
-/// default says for every signal the table does not name, and must not end
-/// that way for any signal it does.
+/// default says for every signal the table leaves at its default, and must not
+/// end that way for any signal the table catches or ignores.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestStartupSignalDispositions =
@@ -100,6 +100,9 @@ class Program
                 | ValueSome signal -> signal
                 | ValueNone -> failwith $"%d{signo} is not a signal under %O{numbering}"
 
+            let startup : SignalState<int, NativeSignalHandler> =
+                StartupSignalDispositions.initial numbering Set.empty
+
             // A stop signal would stop the child until the oracle's timeout
             // kills it, so those are left out; the model refuses them anyway.
             let signos =
@@ -112,8 +115,7 @@ class Program
             let claimOf (signo : int) : Claim =
                 let signal = signalOf signo
 
-                let overridden =
-                    StartupSignalDispositions.overridesTerminatingDefault numbering signal
+                let overridden = SignalState.disposition signal startup <> SignalDisposition.Default
 
                 let terminatesByDefault =
                     Signal.defaultDispositionUnder numbering signal = DefaultDisposition.Terminate

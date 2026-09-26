@@ -369,7 +369,7 @@ public class TestBulkMoveCellAccessSweep
         | RunOutcome.Aborted (_, _, fatal) ->
             let message = fatal.Message |> Option.defaultValue "<no message>"
             failwith $"%s{sourceName}: guest aborted (%O{fatal.Code}): %s{message}"
-        | RunOutcome.SignalTerminated (_, signal) ->
+        | RunOutcome.SignalTerminated (_, signal, _) ->
             failwith $"%s{sourceName}: guest was terminated by POSIX signal %O{signal}"
 
     /// A same-width copy whose two ends are differently *typed* — `long` cells into `double` cells,

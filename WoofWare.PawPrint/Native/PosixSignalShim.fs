@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint
 
+open WoofWare.PosixKernel
+
 /// Whether System.Native's signal handling has been initialised, and if so
 /// which thread is its dispatcher. The first
 /// `SystemNative_InitializeTerminalAndSignalHandling` starts the shim's
@@ -25,12 +27,14 @@ type SignalInitState =
 
 /// What System.Native's signal code keeps in its own globals rather than
 /// asking the kernel for: whether signal handling is initialised, with the
-/// dispatcher thread that initialisation started, and the managed callback
+/// dispatcher thread that initialisation started, the managed callback
 /// installed by `SystemNative_SetPosixSignalHandler` (the shim's
-/// `g_posixSignalHandler`).
+/// `g_posixSignalHandler`), and the disposition each signal had when the shim
+/// last looked, which it restores when it gives the signal up
+/// (`g_origSigHandler`).
 ///
-/// The kernel's half of signal handling (which signals have a handler, what
-/// is pending, what each thread blocks) is `SignalState`, on the process.
+/// The kernel's half of signal handling (each signal's disposition, what is
+/// pending, what each thread blocks) is `SignalState`, on the process.
 /// `EmulatedKernel.checkInvariants` refuses a dispatcher that is not one of
 /// the kernel's tasks.
 type PosixSignalShim =
@@ -38,15 +42,21 @@ type PosixSignalShim =
         {
             Init : SignalInitState
             Handler : SignalHandler option
+            /// Never holds `SignalDisposition.Default`: the shim allocates the
+            /// array zeroed, which is `SIG_DFL`, so an absent key is the
+            /// default.
+            Originals : Map<Signal, SignalDisposition<NativeSignalHandler>>
         }
 
 [<RequireQualifiedAccess>]
 module PosixSignalShim =
-    /// The shim as a process starts it: not initialised, no callback.
+    /// The shim as a process starts it: not initialised, no callback, and
+    /// every saved disposition the default.
     let initial : PosixSignalShim =
         {
             Init = SignalInitState.NotInitialized
             Handler = None
+            Originals = Map.empty
         }
 
     /// Whether `SystemNative_InitializeTerminalAndSignalHandling` has run.
@@ -95,3 +105,88 @@ module PosixSignalShim =
         { state with
             Handler = Some handler
         }
+
+    /// The disposition the shim saved for `signal` when it last installed its
+    /// handler for it, which is what it restores when it gives the signal up,
+    /// and which its handler runs first (see `chainsToNativeHandler`). The
+    /// default if it never has.
+    let original
+        (numbering : SignalNumbering)
+        (signal : Signal)
+        (state : PosixSignalShim)
+        : SignalDisposition<NativeSignalHandler>
+        =
+        match Map.tryFind (Signal.canonicalUnder numbering signal) state.Originals with
+        | Some disposition -> disposition
+        | None -> SignalDisposition.Default
+
+    /// The signals whose default the shim treats as a termination a managed
+    /// handler may cancel (`IsCancelableTerminationSignal`): its handler
+    /// does not run the disposition it replaced for these.
+    let isCancelableTermination (numbering : SignalNumbering) (signal : Signal) : bool =
+        match Signal.canonicalUnder numbering signal with
+        | Signal.SIGINT
+        | Signal.SIGQUIT
+        | Signal.SIGTERM -> true
+        | _ -> false
+
+    /// The disposition System.Native's handler for `signal` runs before it
+    /// hands the signal to the dispatcher: the one it replaced, if that was a
+    /// handler and `signal` is not a cancellable termination. `None` if it
+    /// runs nothing first.
+    let chainsToNativeHandler
+        (numbering : SignalNumbering)
+        (signal : Signal)
+        (state : PosixSignalShim)
+        : NativeSignalHandler option
+        =
+        match original numbering signal state with
+        | SignalDisposition.Catch handler when not (isCancelableTermination numbering signal) -> Some handler
+        | SignalDisposition.Catch _
+        | SignalDisposition.Default
+        | SignalDisposition.Ignore -> None
+
+    /// `InstallSignalHandler`: install System.Native's handler for `signal`,
+    /// saving the disposition it replaces. The shim respects an ignored
+    /// signal, and leaves it ignored (saving that too); and it installs its
+    /// handler only once, so a signal it already handles is left alone.
+    ///
+    /// `signal` must be one `sigaction` accepts; the caller screens it.
+    let installHandler<'Task when 'Task : comparison>
+        (numbering : SignalNumbering)
+        (signal : Signal)
+        (signals : SignalState<'Task, NativeSignalHandler>)
+        (state : PosixSignalShim)
+        : SignalState<'Task, NativeSignalHandler> * PosixSignalShim
+        =
+        let signal = Signal.canonicalUnder numbering signal
+
+        let save (disposition : SignalDisposition<NativeSignalHandler>) : PosixSignalShim =
+            match disposition with
+            | SignalDisposition.Default ->
+                { state with
+                    Originals = Map.remove signal state.Originals
+                }
+            | SignalDisposition.Ignore
+            | SignalDisposition.Catch _ ->
+                { state with
+                    Originals = Map.add signal disposition state.Originals
+                }
+
+        match SignalState.disposition signal signals with
+        | SignalDisposition.Catch NativeSignalHandler.SystemNative -> signals, state
+        | SignalDisposition.Ignore -> signals, save SignalDisposition.Ignore
+        | current ->
+            SignalState.setDisposition signal (SignalDisposition.Catch NativeSignalHandler.SystemNative) signals,
+            save current
+
+    /// `RestoreSignalHandler`: put back the disposition the shim saved for
+    /// `signal`, which is the default if it never installed a handler for it.
+    let restoreHandler<'Task when 'Task : comparison>
+        (numbering : SignalNumbering)
+        (signal : Signal)
+        (signals : SignalState<'Task, NativeSignalHandler>)
+        (state : PosixSignalShim)
+        : SignalState<'Task, NativeSignalHandler>
+        =
+        SignalState.setDisposition signal (original numbering signal state) signals

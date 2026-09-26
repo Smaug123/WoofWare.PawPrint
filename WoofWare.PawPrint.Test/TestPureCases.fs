@@ -508,7 +508,7 @@ module TestPureCases =
             | RunOutcome.NormalExit (state, _)
             | RunOutcome.ProcessExit (state, _)
             | RunOutcome.Aborted (state, _, _)
-            | RunOutcome.SignalTerminated (state, _)
+            | RunOutcome.SignalTerminated (state, _, _)
             | RunOutcome.GuestUnhandledException (state, _, _) -> state
 
         EmulatedKernel.checkTaskInvariants (state.ThreadState |> Map.map (fun _ ts -> ts.Status)) state.Kernel
@@ -780,7 +780,7 @@ class Program
                 | RunOutcome.Aborted (_, _, fatal) ->
                     let m = fatal.Message |> Option.defaultValue "<no message>"
                     failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
-                | RunOutcome.SignalTerminated (_, signal) ->
+                | RunOutcome.SignalTerminated (_, signal, _) ->
                     failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
                 | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
                     failwith $"guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
@@ -841,7 +841,7 @@ class Program
                 | RunOutcome.Aborted (_, _, fatal) ->
                     let m = fatal.Message |> Option.defaultValue "<no message>"
                     failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
-                | RunOutcome.SignalTerminated (_, signal) ->
+                | RunOutcome.SignalTerminated (_, signal, _) ->
                     failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
                 | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
                     failwith $"guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
@@ -896,7 +896,7 @@ class Program
                 | RunOutcome.Aborted (_, _, fatal) ->
                     let m = fatal.Message |> Option.defaultValue "<no message>"
                     failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
-                | RunOutcome.SignalTerminated (_, signal) ->
+                | RunOutcome.SignalTerminated (_, signal, _) ->
                     failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
                 | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
                     failwith $"guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
@@ -938,7 +938,7 @@ class Program
                 | RunOutcome.Aborted (_, _, fatal) ->
                     let m = fatal.Message |> Option.defaultValue "<no message>"
                     failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
-                | RunOutcome.SignalTerminated (_, signal) ->
+                | RunOutcome.SignalTerminated (_, signal, _) ->
                     failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
                 | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
                     failwith $"guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
@@ -971,7 +971,7 @@ class Program
                     fatal.Message |> shouldEqual (Some "boom")
                 | RunOutcome.NormalExit _ -> failwith "expected FailFast, got normal exit"
                 | RunOutcome.ProcessExit _ -> failwith "expected FailFast, got process exit"
-                | RunOutcome.SignalTerminated (_, signal) ->
+                | RunOutcome.SignalTerminated (_, signal, _) ->
                     failwith $"expected FailFast, got POSIX signal termination: %O{signal}"
                 | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
                     failwith
@@ -1101,7 +1101,7 @@ class Program
         | RunOutcome.Aborted (_, _, fatal) ->
             let m = fatal.Message |> Option.defaultValue "<no message>"
             failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
-        | RunOutcome.SignalTerminated (_, signal) ->
+        | RunOutcome.SignalTerminated (_, signal, _) ->
             failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
         | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
             failwith $"guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"

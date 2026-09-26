@@ -126,6 +126,11 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// signal disposition is process-wide; the per-thread piece lives
         /// inside `SignalState.Blocked`.
         Signals : SignalState<'Task, 'Handler>
+        /// Whether the process writes a core dump when a signal whose default
+        /// action dumps core kills it. Fixed for the whole run: this library
+        /// models no `setrlimit(2)`; a client sets it once with
+        /// `UnixProcessState.withCoreDumps`.
+        CoreDumps : CoreDumps
     }
 
 [<RequireQualifiedAccess>]
@@ -176,6 +181,17 @@ module UnixProcessState =
         =
         { proc with
             ProcessId = ProcessId.assertValid context pid
+        }
+
+    /// Set whether the process writes a core dump when a signal whose default
+    /// action dumps core kills it. See `UnixProcessState.CoreDumps`.
+    let withCoreDumps<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (coreDumps : CoreDumps)
+        (proc : UnixProcessState<'Task, 'Handler>)
+        : UnixProcessState<'Task, 'Handler>
+        =
+        { proc with
+            CoreDumps = coreDumps
         }
 
     /// Whether the simulated process is exempt from the permission rules a kernel

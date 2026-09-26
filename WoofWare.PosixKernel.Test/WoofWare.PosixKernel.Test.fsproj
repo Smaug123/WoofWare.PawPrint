@@ -58,6 +58,7 @@
     <Compile Include="TestSignalAgainstHost.fs" />
     <Compile Include="TestSignalMaskAgainstHost.fs" />
     <Compile Include="TestSignalState.fs" />
+    <Compile Include="TestSignalDispositions.fs" />
     <Compile Include="TestUnixSignal.fs" />
     <Compile Include="TestDirectoryEnumeration.fs" />
     <Compile Include="TestDirectoryDescription.fs" />

@@ -82,7 +82,7 @@ module TestScheduleFork =
         | RunOutcome.Aborted (_, _, fatal) ->
             let message = fatal.Message |> Option.defaultValue "<none>"
             $"aborted %O{fatal.Code} %s{message}"
-        | RunOutcome.SignalTerminated (_, signal) -> $"signal %O{signal}"
+        | RunOutcome.SignalTerminated (_, signal, _) -> $"signal %O{signal}"
         | RunOutcome.GuestUnhandledException (_, _, _) -> "unhandled exception"
 
     let private terminalStateOf (outcome : RunOutcome) : IlMachineState =
@@ -90,7 +90,7 @@ module TestScheduleFork =
         | RunOutcome.NormalExit (state, _)
         | RunOutcome.ProcessExit (state, _)
         | RunOutcome.Aborted (state, _, _)
-        | RunOutcome.SignalTerminated (state, _)
+        | RunOutcome.SignalTerminated (state, _, _)
         | RunOutcome.GuestUnhandledException (state, _, _) -> state
 
     let private bytesOf (role : FileDescriptorRole) (state : IlMachineState) : byte list =

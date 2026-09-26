@@ -129,7 +129,7 @@ module TestUnmanagedCallersOnlyEntry =
         | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
             failwith
                 $"%s{sourceName}: PawPrint let the refusal become a catchable exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
-        | RunOutcome.SignalTerminated (_, signal) ->
+        | RunOutcome.SignalTerminated (_, signal, _) ->
             failwith $"%s{sourceName}: PawPrint terminated the guest by POSIX signal %O{signal}"
 
     /// The refusal precedes the callee's class initialiser, which is what says the gate sits ahead

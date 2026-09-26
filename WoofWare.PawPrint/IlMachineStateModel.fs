@@ -578,19 +578,16 @@ type ExecutionResult =
     /// CoreCLR's fatal errors this is, and a runtime-raised one carries a different HRESULT,
     /// banner and Windows exit code.
     | Aborted of IlMachineState * abortingThread : ThreadId * fatal : FatalError
-    /// A non-cancelled signal handler reached the kernel-default
-    /// `Terminate` disposition, so the simulated process exits with the
-    /// signal's identity. Mirrors `pal_signal.c`'s
-    /// `SystemNative_HandleNonCanceledPosixSignal` Terminate branch,
-    /// where the native code restores the original `sigaction` and calls
-    /// `kill(g_pid, signalCode)` to let the kernel terminate the process
-    /// with the signal-default exit status (POSIX convention: exit code
-    /// `128 + signo`). Carries no `ThreadId` because POSIX
-    /// `kill(pid, sig)` is process-global; there is no single owning
-    /// thread for this termination. The App layer derives the exit code
-    /// from `Signal.toRawSignoUnder` under the simulated platform's
-    /// numbering.
-    | SignalTerminated of IlMachineState * signal : Signal
+    /// The simulated process was killed by `signal`, whose disposition was the
+    /// kernel default of terminating the process: a guest's own `kill(2)`, or
+    /// System.Native's handling of a signal its registered handlers did not
+    /// cancel. A parent's `wait` would report the process as killed by the
+    /// signal, with the core flag set iff `coreDumped`. Carries no `ThreadId`
+    /// because the whole process dies, not one thread. The App layer derives
+    /// its exit code, `128 + signo` as a shell and .NET's `Process.ExitCode`
+    /// render such a death, from `Signal.toRawSignoUnder` under the simulated
+    /// platform's numbering.
+    | SignalTerminated of IlMachineState * signal : Signal * coreDumped : bool
     | Stepped of IlMachineState * WhatWeDid * StepEffect
     | UnhandledException of
         IlMachineState *
@@ -781,17 +778,11 @@ type RunOutcome =
     /// because an abort is not a clean exit — finalizers do not run on real CoreCLR, and the host
     /// reports a non-zero/abort exit.
     | Aborted of IlMachineState * abortingThread : ThreadId * fatal : FatalError
-    /// The simulation was terminated by a POSIX signal whose
-    /// registered handler(s) did not cancel the default disposition,
-    /// and whose kernel default is `Terminate`. Carries the originating
-    /// `Signal` so the host can compute the POSIX-conventional exit
-    /// code `128 + signo`, with the signo read under the simulated
-    /// platform's numbering, and surface the cause
-    /// for diagnostics. No `ThreadId` because process-level signal
-    /// termination is not attributable to a single thread (the real
-    /// native code calls `kill(g_pid, signalCode)`, which tears down
-    /// the whole process).
-    | SignalTerminated of IlMachineState * signal : Signal
+    /// The simulated process was killed by `signal`, whose disposition was
+    /// the kernel default of terminating the process; a parent's `wait`
+    /// would report the core flag iff `coreDumped`. See
+    /// `ExecutionResult.SignalTerminated`.
+    | SignalTerminated of IlMachineState * signal : Signal * coreDumped : bool
     | GuestUnhandledException of
         IlMachineState *
         terminatingThread : ThreadId *
@@ -853,7 +844,8 @@ module ExecutionResult =
         | ExecutionResult.ProcessExit (state, exitingThread) -> ExecutionResult.ProcessExit (f state, exitingThread)
         | ExecutionResult.Aborted (state, abortingThread, fatal) ->
             ExecutionResult.Aborted (f state, abortingThread, fatal)
-        | ExecutionResult.SignalTerminated (state, signal) -> ExecutionResult.SignalTerminated (f state, signal)
+        | ExecutionResult.SignalTerminated (state, signal, coreDumped) ->
+            ExecutionResult.SignalTerminated (f state, signal, coreDumped)
         | ExecutionResult.Stepped (state, whatWeDid, effect) -> ExecutionResult.Stepped (f state, whatWeDid, effect)
         | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
             ExecutionResult.UnhandledException (f state, terminatingThread, exn)
