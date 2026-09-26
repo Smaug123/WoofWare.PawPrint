@@ -41,11 +41,12 @@ type internal LocalFacts =
         Opaque : (int * Opacity) list
         Calls : (int * MethodKey) list
         Regions : ExceptionRegion list
-        /// What binding the tokens the body names, the types of its locals and of its `catch`
-        /// clauses can throw: a member or type the assembly it is looked for in does not have, or
-        /// a module initializer that fails. The JIT binds them before the body runs, so none of
-        /// the body's own handlers can catch these.
-        BindingFailures : Set<ThrownType>
+        /// What can be raised on entry, before the body runs, so that none of its own handlers
+        /// can catch it: what binding the tokens the body names and the types of its locals and
+        /// `catch` clauses throws (a member or type the assembly it is looked for in does not
+        /// have, or a module initializer that fails), and what taking a synchronized method's
+        /// monitor throws.
+        OnEntry : Set<ThrownType>
     }
 
 /// What a call instruction's token names.
@@ -642,7 +643,7 @@ module EscapeAnalysis =
 
         let state, named = spelled state token
 
-        // Every base type, from each type named.
+        // Every base type, from each type named, and every type argument a base type spells.
         let rec withBases
             (state : EscapeAnalysisState)
             (pending : ResolvedTypeIdentity list)
@@ -652,9 +653,17 @@ module EscapeAnalysis =
             | [] -> state, seen
             | identity :: rest when seen.Contains identity -> withBases state rest seen
             | identity :: rest ->
+                let definingAssembly, ty = definitionOf state identity
+
+                let state, arguments =
+                    match ty.BaseType with
+                    | Some (BaseTypeInfo.TypeSpec handle) ->
+                        namedIdentities state definingAssembly definingAssembly.TypeSpecs.[handle].Signature
+                    | _ -> state, []
+
                 match baseOf state identity with
-                | state, Some parent -> withBases state (parent :: rest) (seen.Add identity)
-                | state, None -> withBases state rest (seen.Add identity)
+                | state, Some parent -> withBases state (parent :: arguments @ rest) (seen.Add identity)
+                | state, None -> withBases state (arguments @ rest) (seen.Add identity)
 
         let state, all = withBases state named Set.empty
         state, Set.toList all
@@ -772,7 +781,7 @@ module EscapeAnalysis =
             Opaque = [ 0, reason ]
             Calls = []
             Regions = []
-            BindingFailures = Set.empty
+            OnEntry = Set.empty
         }
 
     /// What one body does by itself.
@@ -1037,6 +1046,21 @@ module EscapeAnalysis =
                 | _ -> state, failures
             )
 
+        // A synchronized method takes a monitor on entry, and a wait for it that is interrupted
+        // throws.
+        let localFailures =
+            let synchronized =
+                match method with
+                | MethodInfo.Metadata (_, facts) -> facts.ImplAttributes.HasFlag MethodImplAttributes.Synchronized
+                | MethodInfo.Synthesised _ -> false
+
+            if synchronized then
+                Set.add
+                    (ThrownType.Exactly (corelibType state "System.Threading" "ThreadInterruptedException"))
+                    localFailures
+            else
+                localFailures
+
         let state, raises, opaque, calls, bindingFailures =
             ((state, [], [], [], localFailures), [ 0 .. ops.Length - 1 ])
             ||> List.fold folder
@@ -1047,7 +1071,7 @@ module EscapeAnalysis =
             Opaque = List.rev opaque
             Calls = List.rev calls
             Regions = List.ofSeq body.ExceptionRegions
-            BindingFailures = bindingFailures
+            OnEntry = bindingFailures
         }
 
     /// The full name of a type the analysis has loaded, for reporting.
@@ -1094,9 +1118,9 @@ module EscapeAnalysis =
         let seedOf (state : EscapeAnalysisState) (key : MethodKey) : EscapeAnalysisState * Escapes =
             let facts = state.Facts.[key]
 
-            // Binding failures happen before the body runs, so none of its handlers apply.
+            // What is raised on entry happens before the body runs, so none of its handlers apply.
             let state, types =
-                ((state, facts.BindingFailures), facts.Raises)
+                ((state, facts.OnEntry), facts.Raises)
                 ||> List.fold (fun (state, types) (offset, thrown) ->
                     match escapesAt state key offset (Some thrown) with
                     | state, true -> state, Set.add thrown types

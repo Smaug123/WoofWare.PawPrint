@@ -57,6 +57,18 @@ public static class Cases
 
     public static void PropagatesOneHop() { UnrelatedCatch(); }
 
+    // Entering it takes a monitor, which an interrupted wait abandons before any IL runs.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.Synchronized)]
+    public static void Synchronised() { }
+
+    public static void Unsynchronised() { }
+
+    public static void CatchesInterruption()
+    {
+        try { Synchronised(); }
+        catch (System.Threading.ThreadInterruptedException) { }
+    }
+
     public static void TwoSources(bool b)
     {
         if (b) { ThrowsDirectly(); }
@@ -237,6 +249,15 @@ public class NullReferenceException : Exception { }
             }
             { expect "Fixture.Cases" "PropagatesOneHop" with
                 Contains = [ ioe ]
+            }
+            { expect "Fixture.Cases" "Synchronised" with
+                Contains = [ "=System.Threading.ThreadInterruptedException" ]
+            }
+            { expect "Fixture.Cases" "Unsynchronised" with
+                Excludes = [ "=System.Threading.ThreadInterruptedException" ]
+            }
+            { expect "Fixture.Cases" "CatchesInterruption" with
+                Excludes = [ "=System.Threading.ThreadInterruptedException" ]
             }
             { expect "Fixture.Cases" "TwoSources" with
                 Contains = [ ioe ; "=System.FormatException" ]
@@ -559,6 +580,8 @@ public static class P
 }
 
 public class Base { }
+
+public class Foreign { }
 """
 
         let client =
@@ -566,6 +589,13 @@ public class Base { }
 namespace Client;
 
 public class Derived : Provider.Base
+{
+    public static void Static() { }
+}
+
+public class Local<T> { }
+
+public class DerivedOfForeign : Local<Provider.Foreign>
 {
     public static void Static() { }
 }
@@ -582,6 +612,7 @@ public static class Uses
     public static object NewDerived() => new Derived();
     public static System.Type TypeOfDerived() => typeof(Derived);
     public static void CallDerivedStatic() { Derived.Static(); }
+    public static void CallDerivedOfForeignStatic() { DerivedOfForeign.Static(); }
     public static int Local() => 1;
 }
 """
@@ -647,6 +678,8 @@ public static class Uses
                 // Provider is reached only through Derived's base type.
                 "TypeOfDerived"
                 "CallDerivedStatic"
+                // Provider is reached only through an argument of that base type.
+                "CallDerivedOfForeignStatic"
             ] do
             escapesOnRealRuntime methodName |> shouldEqual true
 
