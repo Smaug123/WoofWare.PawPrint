@@ -32,6 +32,7 @@
         <Compile Include="MethodTableLayout.fs" />
         <Compile Include="MemberReferenceParent.fs" />
         <Compile Include="MethodReferenceResolution.fs" />
+        <Compile Include="FieldReferenceResolution.fs" />
         <EmbeddedResource Include="version.json" />
     </ItemGroup>
 
