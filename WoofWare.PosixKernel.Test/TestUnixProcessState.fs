@@ -209,7 +209,6 @@ module TestUnixProcessState =
                             {
                                 Fd = streamFd
                                 Inode = streamInode
-                                Cursor = DirectoryCursor.Start
                             }
                         ]
             }

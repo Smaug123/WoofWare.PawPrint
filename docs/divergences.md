@@ -1132,19 +1132,29 @@ than one compiled from C#:
   CoreCLR's behaviour for such an image is unmeasured — which is why nothing is asserted here
   rather than a guess being encoded.
 
-## A directory stream sees mutations by name, where a real kernel's answer depends on its buffer
+## A directory stream sees mutations by name, where each real filesystem has a rule of its own
 
 **CoreCLR (and any Unix)**: POSIX leaves it unspecified whether an entry added to or removed from a
-directory after `opendir(3)` is returned by a subsequent `readdir(3)`. Both modelled kernels were
-measured, and their answers are artefacts of when `getdents` happened to run rather than rules:
-removing the whole directory *before* the first `readdir` gives end-of-stream at once, with no `.`
-or `..`, while reading one entry *first* and then removing it yields the entire listing, dots
-included. The same shape governs individual names.
+directory after `opendir(3)` is returned by a subsequent `readdir(3)`. Each real filesystem
+nonetheless answers by an exact rule, which shows once the syscall is called one record at a time
+(`getdents64` on Linux, `__getdirentries64` on Darwin) rather than through libc. Measured over 1280
+random mutation scripts per filesystem, with every one of the model's predictions below matching:
 
-What both kernels *do* guarantee in practice is that an entry already returned can be removed
-without disturbing the ones after it: measured at 5000 entries — well past glibc's 32 KB `readdir`
-buffer — deleting each name as it is returned skips nothing and leaves the directory empty. That is
-a stable per-entry cookie, not a position.
+| filesystem | order | what a mutation part-way through does |
+| --- | --- | --- |
+| tmpfs, Linux 6.18.5 | `.`, `..`, then the newest link first | Each link takes an offset from a per-directory counter; a rename takes a fresh one, and a rename over an existing name inherits the target's. The position names the *next* entry's offset, and a read resumes at the entry with the greatest offset at or below it. With none, it **restarts from the newest entry**, re-yielding names already returned: 79 of the 1280 scripts did so |
+| APFS, Darwin 27 | `.`, `..`, then by a 22-bit hash of the case-folded, decomposed name | A name is seen if its key sorts after the last one returned. Once a call has returned the last entry, end-of-directory is sticky, and a name created afterwards is never seen |
+
+Through libc, a caller sees these rules only when libc refills its buffer: glibc reads 32 KiB at a
+time and Darwin's libc 8 KiB, so a small directory is in effect a snapshot taken at the first
+`readdir`. A directory `rmdir` has removed yields nothing from any position on either kernel (Linux
+answers ENOENT, which glibc turns into end-of-stream; Darwin answers 0). But through libc, entries
+already buffered still come out, which is why reading one entry first and then removing the directory
+yields the whole listing.
+
+What both kernels guarantee is that an entry already returned can be removed without disturbing the
+ones after it. Measured at 3000 entries, at every buffer size from one record to 64 KiB, deleting each
+name as it is returned skips nothing and leaves the directory empty.
 
 **PawPrint**: the stream remembers the last *name* it returned, and each `readdir` yields the least
 name strictly greater than it in the directory's current state. So a name removed after being
@@ -1153,15 +1163,17 @@ ahead of the cursor appears, and one added behind it does not. A stream over a d
 since removed is at end-of-stream at once, dots included, whatever the cursor had reached.
 
 **Spec status**: unspecified by POSIX, so this is a lawful implementation rather than a divergence
-from a rule. It is written down because it is a *choice*, and because two of its consequences —
-insertion visibility, and the orphan answering end-of-stream from any cursor position — are places
-where a real kernel might legitimately answer otherwise.
+from a rule. It is written down because it is a *choice*: insertion visibility and resumption differ
+from both real filesystems' rules above. The orphan answering end-of-stream from any cursor position
+is not among the differences, being both kernels' own rule.
 
 **Why we chose this**: among the lawful models it is the least convenient one that a guest could
 actually meet on a real kernel, which is the standing preference here: relying on unspecified
 behaviour is almost always a bug in the workload, and a model that hides mutations would let such a
 bug pass under PawPrint and fail in production. The two rejected alternatives fail that test in
-opposite directions. A *position*-indexed cursor is less forgiving than either real kernel and
+opposite directions. Modelling each filesystem's own rule is possible, since both are reproducible
+from state the model could keep, but it would make the order a per-filesystem index, and tmpfs's rule
+is one kernel version's. A *position*-indexed cursor is less forgiving than either real kernel and
 breaks correct code: CoreLib's own `FileSystem.RemoveDirectoryRecursive` deletes each child inside
 the `foreach` over the live enumerator and then `rmdir`s the parent, so an enumeration that skipped
 entries would make `Directory.Delete(recursive: true)` throw ENOTEMPTY. A *snapshot* taken at
@@ -1182,8 +1194,8 @@ foreach (string entry in Directory.EnumerateFileSystemEntries("d"))
 }
 
 // PawPrint: a subsequent step of the same enumeration yields "d/c" and never "d/a".
-// A real kernel: unspecified; in practice it depends on whether the directory
-// still fit in the buffer readdir had already filled.
+// A real kernel, through libc: neither, since ". .. b" fitted in the first buffer
+// readdir filled. One getdents call at a time, each filesystem's rule above.
 ```
 
 **Where this lives in code**: `VirtualFileSystem.nextDirectoryEntry` and the `DirectoryCursor` type
@@ -1194,8 +1206,10 @@ the property that deleting each name as it is returned always empties the direct
 
 **CoreCLR (and any Unix)**: the order `readdir(3)` returns names in is arbitrary and machine-
 specific, and *no* entry has a fixed position — the dots included. Measured, the same seven names
-come back as `z é a sub ls C b` on APFS and `b a C é z sub ls` on a Linux overlay; and a directory
-holding the single name `z` enumerates as:
+come back as `z é a sub ls C b` on APFS and `b a C é z sub ls` on a Linux overlay. On the two
+filesystems this library models, the order is an exact rule nonetheless: tmpfs yields the newest link
+first and APFS orders by a hash of the name (the table in the section above), and both put the dots
+first. A directory holding the single name `z` enumerates as:
 
 | machine | order |
 | --- | --- |
@@ -1231,9 +1245,10 @@ is what an ext4 htree hash order effectively does, was also considered and rejec
 lawful, it catches only the additional assumption that the dots are *adjacent*, and it costs a
 cursor that must track which dots it has already emitted alongside which name it stopped at.
 
-*The order among the names* has no such argument, because no real order can be reproduced — there
-are several and they disagree — so the criteria are determinism and cost, and the map's own order is
-free. That order is unsigned byte order, because a name *is* its bytes: `UnixByteString`'s
+*The order among the names* has no such argument, because the real orders disagree with one another:
+tmpfs's follows the directory's link history, APFS's a hash of each name, and ext4's the individual
+filesystem. Any one of the first two could be reproduced, but none is *the* order, so the criteria are
+determinism and cost, and the map's own order is free. That order is unsigned byte order, because a name *is* its bytes: `UnixByteString`'s
 comparison, lexicographic with a proper prefix first.
 
 **Where this lives in code**: `VirtualFileSystem.nextDirectoryEntry`. Every test that compares a
@@ -1293,12 +1308,20 @@ either side is noticed. A faithful model would be a new `BindableEntryNames.Appl
 `StrictUtf8`, and those two tests are the ones it would flip. The probes and the full measurement are in
 `docs/plans/2026-09-20-unix-path-bytes.md` §1.1 and its sibling directory.
 
-## A directory stream's descriptor keeps an offset of zero
+## A directory descriptor's position is not reported part of the way through a scan
 
-**CoreCLR (and any Unix)**: `opendir(3)` consumes a file descriptor, and `readdir(3)` advances that
-descriptor's offset — so `lseek(dirfd, 0, SEEK_CUR)` answers non-zero once enumeration has begun.
-The value is a *cookie*, not a count, and it is not derivable from anything PawPrint models.
-Measured on both, one entry at a time through libc:
+**CoreCLR (and any Unix)**: `opendir(3)` consumes a file descriptor, and each `getdents` call moves
+that descriptor's open file description's position, which `lseek(dirfd, 0, SEEK_CUR)` reports. The
+position is shared by a `dup` of the descriptor, and `lseek(dirfd, 0, SEEK_SET)` rewinds it. Its value
+is the filesystem's own cookie, measured one call at a time:
+
+| filesystem | after a partial read | at the end |
+| --- | --- | --- |
+| tmpfs, Linux 6.18.5 | the offset of the next entry to be yielded, from a per-directory counter that starts at 3 | `0x7FFFFFFF` |
+| APFS, Darwin 27 | a per-directory sequence number, advanced by every call that stops part of the way through, in the high 32 bits, and the count of entries returned in the low 32 | `0x7FFFFFFF` |
+
+Through libc the position moves once per buffer refill, and then not at all as the guest consumes
+entries out of that buffer:
 
 | directory | after `readdir` #1 | #2 | #3 |
 | --- | --- | --- | --- |
@@ -1307,36 +1330,32 @@ Measured on both, one entry at a time through libc:
 | 3 entries, macOS/APFS | `2147483647` | `2147483647` | `2147483647` |
 | 300 entries, macOS/APFS | `4294967551` | `4294967551` | `4294967551` |
 
-Two things that table settles. The offset moves **once**, when libc's `getdents` buffer is filled,
-and then not at all as the guest consumes entries out of that buffer — so it does not track
-enumeration progress even in shape. And its value is the filesystem's own cookie scheme: a block
-boundary on ext4, something else entirely on APFS.
+Both kernels accept `lseek(dirfd, v, SEEK_SET)` for any `v >= 0` and report it back, with a regular
+file's arithmetic for `SEEK_CUR`. What the next read yields from an arbitrary `v` is again the
+filesystem's own: tmpfs resumes at the entry with the greatest offset at or below it, and APFS skips `v`
+entries or answers EAGAIN, depending on the high word.
 
-**PawPrint**: the descriptor `opendir` opens is an ordinary `OpenFileTarget.File`, and its offset
-stays at zero for the stream's whole life. The enumeration position lives beside it, in
-`EmulatedKernel.DirectoryStreams`, as a *name* rather than an offset.
+**PawPrint**: the position lives on the open file description, as on both kernels, so a `dup` shares
+it and `lseek(dirfd, 0, SEEK_SET)` rewinds. But it is a *name* (see the two sections above), not a
+number. So `SEEK_CUR` is answered at the start of the directory (0) and wherever an `lseek` put the
+description, and is refused part of the way through a scan. `SEEK_SET` to a nonzero offset is
+answered, and the next read from there is refused.
 
 **Spec status**: POSIX specifies neither the value nor that `readdir` moves the offset at all; it
 gives `telldir`/`seekdir` as the portable interface and says their values are meaningful only to
 `seekdir` on the same stream.
 
 **Why we chose this**: there is no value to give. An entry index is a number neither kernel
-produces and whose shape is wrong besides — it would move on every `readdir`, where a real one moves
-once. A block boundary would be inventing ext4's scheme on a filesystem that has no blocks. The
-alternative to inventing is refusing, and refusing costs more than it buys here: `lseek` on a
-directory descriptor is otherwise a legal operation that PawPrint answers correctly (it is zero at
-`opendir` on both kernels, which PawPrint matches), and refusing it would break the correct case to
-avoid a wrong answer in a case no managed code reaches.
+produces, and a link counter or a sequence number would be inventing one filesystem's scheme on a
+filesystem that has neither. Refusing costs nothing a managed caller can reach: nothing in CoreLib or
+the PAL calls `dirfd(3)`, `telldir(3)` or `lseek` on a directory. A guest can only reach the descriptor
+by *inferring* its number (descriptors are handed out lowest-free, so an `open` immediately after an
+`opendir` returns one above it). `WoofWare.PawPrint.Test/sourcesImpure/EnumerateClosedFdSeeded.cs`
+does that deliberately, to check that the interpreter's own bookkeeping survives a guest closing it,
+and that a `readdir` through the closed descriptor answers EBADF as a real libc's does.
 
-Nothing in CoreLib or the PAL calls `dirfd(3)`, so no managed caller can obtain this descriptor at
-all. A guest can only reach it by *inferring* the number — descriptors are handed out lowest-free,
-so an `open` immediately after an `opendir` returns one above it — which
-`WoofWare.PawPrint.Test/sourcesImpure/EnumerateClosedFdSeeded.cs` does deliberately, to check that
-the interpreter's own bookkeeping survives a guest closing it.
-
-**Where this lives in code**: the `SystemNative_OpenDir` arm of `Native/NativeSystemNative.fs`
-opens the descriptor; `SystemNative_ReadDir` advances `DirectoryStream.Cursor` and deliberately
-leaves the descriptor's offset alone.
+**Where this lives in code**: the directory arm of `UnixDescriptor.lseek` (`LSeekRefusal.DirectoryPosition`),
+and `UnixNamespace.readDirectoryEntry` (`ReadDirectoryRefusal.UnenumerablePosition`).
 
 ## A failing `getcwd` leaves the caller's buffer untouched
 

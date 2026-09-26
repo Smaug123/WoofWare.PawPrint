@@ -78,6 +78,12 @@ type UnixSystemDefect<'Task> =
     /// rule, so a `VirtualFileSystem.forget` that fires too late is caught there
     /// and one that fires too early is caught here.
     | DanglingOpenInode of description : OpenFileDescriptionId * inode : InodeNumber
+    /// A description names an inode as the wrong kind of object: a
+    /// `OpenFileTarget.File` onto a directory, or an `OpenFileTarget.Directory`
+    /// onto anything else. `open` chooses the target by what it opened, so a
+    /// directory's position is always a place in its entries and never a byte
+    /// offset.
+    | DescriptionKindMismatch of description : OpenFileDescriptionId * inode : InodeNumber
     /// An open directory stream names an inode the filesystem no longer holds.
     ///
     /// Unreachable by construction — `UnixProcessState.heldInodes` counts a stream's inode
@@ -324,7 +330,8 @@ module UnixSystem =
                 match description.Target with
                 | OpenFileTarget.StandardStream _
                 | OpenFileTarget.SocketEventPort _
-                | OpenFileTarget.File _ -> None
+                | OpenFileTarget.File _
+                | OpenFileTarget.Directory _ -> None
                 | OpenFileTarget.Socket socketId -> Some (id, socketId)
             )
 
@@ -359,10 +366,17 @@ module UnixSystem =
             |> List.choose (fun (id, description) ->
                 match description.Target with
                 | OpenFileTarget.File (inode, _) ->
-                    if (VirtualFileSystem.tryGet inode system.Machine.FileSystem).IsNone then
-                        Some (UnixSystemDefect.DanglingOpenInode (id, inode))
-                    else
-                        None
+                    match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
+                    | None -> Some (UnixSystemDefect.DanglingOpenInode (id, inode))
+                    | Some (InodeContent.Directory _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
+                    | Some (InodeContent.RegularFile _)
+                    | Some (InodeContent.Symlink _) -> None
+                | OpenFileTarget.Directory (inode, _) ->
+                    match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
+                    | None -> Some (UnixSystemDefect.DanglingOpenInode (id, inode))
+                    | Some (InodeContent.Directory _) -> None
+                    | Some (InodeContent.RegularFile _)
+                    | Some (InodeContent.Symlink _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
                 | OpenFileTarget.StandardStream _
                 | OpenFileTarget.SocketEventPort _
                 | OpenFileTarget.Socket _ -> None
@@ -481,6 +495,7 @@ module UnixSystem =
                 match description.Target with
                 | OpenFileTarget.StandardStream _
                 | OpenFileTarget.File _
+                | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _ -> []
                 | OpenFileTarget.SocketEventPort portState ->
                     portState.Registrations
@@ -531,6 +546,7 @@ module UnixSystem =
                         | OpenFileTarget.SocketEventPort _ -> []
                         | OpenFileTarget.StandardStream _
                         | OpenFileTarget.File _
+                        | OpenFileTarget.Directory _
                         | OpenFileTarget.Socket _ ->
                             [
                                 UnixSystemDefect.ParkedSocketWaitOnNonPort (task, wait.Port, description.Target)
@@ -956,7 +972,8 @@ module UnixSystem =
             |> Map.toList
             |> List.choose (fun (id, description) ->
                 match description.Target with
-                | OpenFileTarget.File (inode, _) -> Some $"description %O{id} onto %O{inode}"
+                | OpenFileTarget.File (inode, _)
+                | OpenFileTarget.Directory (inode, _) -> Some $"description %O{id} onto %O{inode}"
                 | OpenFileTarget.StandardStream _
                 | OpenFileTarget.SocketEventPort _
                 | OpenFileTarget.Socket _ -> None

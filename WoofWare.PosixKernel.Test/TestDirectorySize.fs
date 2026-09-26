@@ -272,6 +272,7 @@ module TestDirectorySize =
             NoFollow = false
             CloseOnExec = false
             Synchronous = false
+            Directory = false
         }
 
     let private reading : OpenFlags =
