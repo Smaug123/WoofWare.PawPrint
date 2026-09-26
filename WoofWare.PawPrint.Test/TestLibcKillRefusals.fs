@@ -99,6 +99,37 @@ class Program
 }
 """
 
+    /// Holds System.Native's dispatcher in a SIGWINCH handler while SIGCHLD
+    /// (`args[0]`), registered, is sent and then unregistered: the SIGCHLD is
+    /// still waiting for the dispatcher when its default is restored.
+    let private queuedThenUnregisteredGuest : string =
+        """
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+class Program
+{
+    [DllImport("libc", EntryPoint = "kill", SetLastError = true)]
+    static extern int Kill(int pid, int sig);
+
+    static int Main(string[] args)
+    {
+        int pid = Environment.ProcessId;
+        using var release = new ManualResetEventSlim(false);
+        using var busy = PosixSignalRegistration.Create(PosixSignal.SIGWINCH, _ => release.Wait());
+        var child = PosixSignalRegistration.Create(PosixSignal.SIGCHLD, _ => { });
+
+        if (Kill(pid, 28) != 0) return 1;
+        if (Kill(pid, int.Parse(args[0])) != 0) return 2;
+        child.Dispose();
+
+        release.Set();
+        return 42;
+    }
+}
+"""
+
     let private runSourceWith (source : string) (platform : SimulatedUnixPlatform) (argv : string list) : RunOutcome =
         let arguments = String.concat " " argv
         let description = $"kill(self, %s{arguments})"
@@ -192,3 +223,17 @@ class Program
             )
 
         exn.Message |> shouldContainText "would discard the pending SIGTSTP"
+
+    [<Test>]
+    let ``unregistering a signal queued for the dispatcher is refused`` () : unit =
+        // On the real runtime the queued SIGCHLD still reaches the callback;
+        // restoring SIGCHLD's default would discard it from PawPrint's
+        // pending set. SIGCHLD is 17 under Linux's numbering.
+        let exn =
+            Assert.Catch<exn> (fun () ->
+                runSourceWith queuedThenUnregisteredGuest SimulatedUnixPlatform.linuxX64 [ "17" ]
+                |> ignore<RunOutcome>
+            )
+
+        exn.Message |> shouldContainText "SystemNative_DisablePosixSignalHandling"
+        exn.Message |> shouldContainText "still queued"

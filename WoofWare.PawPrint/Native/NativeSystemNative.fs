@@ -213,6 +213,49 @@ module NativeSystemNative =
 
         Signal.ofRawSignoUnder numbering signo
 
+    /// `RestoreSignalHandler` for `signal`: the kernel's disposition becomes the
+    /// one System.Native saved when it installed its handler (see
+    /// `PosixSignalShim.restoreHandler`).
+    ///
+    /// Fails, naming `operation`, if that would discard a pending instance of a
+    /// signal System.Native's handler catches. On a real process the native
+    /// handler has already passed such an instance to the dispatcher, which
+    /// still runs the managed callback for it; PawPrint's pending set does not
+    /// hold the dispatcher's queue apart from the kernel's.
+    let private restoreSignalHandler
+        (operation : string)
+        (numbering : SignalNumbering)
+        (signal : Signal)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let before = state.Kernel.Signals
+
+        let after =
+            PosixSignalShim.restoreHandler numbering signal before state.Kernel.PosixSignalShim
+
+        let remaining = SignalState.pending after
+
+        match
+            SignalState.pending before
+            |> List.tryFind (fun entry ->
+                SignalState.disposition entry.Signal before = SignalDisposition.Catch NativeSignalHandler.SystemNative
+                && not (List.contains entry remaining)
+            )
+        with
+        | Some entry ->
+            failwith
+                $"%s{operation}: restoring the saved disposition of %O{signal} under the %O{numbering} numbering would discard the pending %O{entry.Signal}, which a real process has still queued for System.Native's dispatcher; PawPrint's pending set does not represent the shim's queue separately."
+        | None ->
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    Process =
+                        { kernel.Process with
+                            Signals = after
+                        }
+                }
+            )
+
     /// Write back the system a syscall answered from, having neither failed nor
     /// been refused. Errno is left alone, as a successful syscall leaves it.
     let private withAnswered
@@ -5934,18 +5977,6 @@ module NativeSystemNative =
                 // with an invented continuation.
                 failwith
                     $"%s{operation}: signo %d{signo} (%O{signal} under the %O{numbering} numbering) reaches the shim's default arm, which would restore the kernel's disposition and re-raise it; the kernel would then stop or continue the process, which PawPrint does not model. Only a guest bypassing PosixSignalRegistration can reach this."
-            | DefaultDisposition.Ignore when
-                SignalState.pending state.Kernel.Signals
-                |> List.exists (fun pending -> pending.Signal = signal)
-                ->
-                // Darwin's SIGIO and SIGINFO. An instance still pending
-                // here is one the real shim's native handler has already
-                // written to its pipe, and since the registration bit
-                // stays set, it still reaches the callback. Restoring the
-                // default would make the model discard it as ignored
-                // instead, so that is refused.
-                failwith
-                    $"%s{operation}: %O{signal} under the %O{numbering} numbering has an instance still queued. The real shim restores the kernel's default but keeps the registration that sends the queued instance to the callback; PawPrint's pending set would discard it as ignored, and does not represent the shim's queue separately."
             | DefaultDisposition.Ignore
             | DefaultDisposition.Terminate ->
                 // `RestoreSignalHandler`, then `kill(g_pid, signalCode)`.
@@ -5958,20 +5989,28 @@ module NativeSystemNative =
                 // `EnablePosixSignalHandling` — which the BCL sends only
                 // once every token is unregistered — reinstalls the
                 // handler.
+                //
+                // An instance still pending here is one a real process's
+                // native handler has already passed to the dispatcher, and
+                // since the registration bit stays set, it still reaches the
+                // callback; `restoreSignalHandler` refuses to discard it.
+                //
+                // `sigaction` refuses the restore for SIGKILL, SIGSTOP and
+                // glibc's 32 and 33, which the shim does not check: it
+                // re-raises the signal under whatever disposition it has.
                 let restored =
-                    state.MapKernel (fun kernel ->
-                        { kernel with
-                            Process =
-                                { kernel.Process with
-                                    Signals =
-                                        PosixSignalShim.restoreHandler
-                                            numbering
-                                            signal
-                                            kernel.Signals
-                                            kernel.PosixSignalShim
-                                }
-                        }
-                    )
+                    if Signal.isUncatchableUnder numbering signal then
+                        state
+                    else
+                        restoreSignalHandler operation numbering signal state
+
+                match SignalState.disposition signal restored.Kernel.Signals with
+                | SignalDisposition.Catch handler ->
+                    // Linux's 33, whose handler is glibc's own.
+                    failwith
+                        $"%s{operation}: re-raising %O{signal} under the %O{numbering} numbering would run its handler (%O{handler}), native code PawPrint does not model."
+                | SignalDisposition.Default
+                | SignalDisposition.Ignore -> ()
 
                 let system = EmulatedKernel.unix restored.Kernel
 
@@ -6032,19 +6071,7 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
             | ValueSome signal ->
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        Process =
-                            { kernel.Process with
-                                Signals =
-                                    PosixSignalShim.restoreHandler
-                                        numbering
-                                        signal
-                                        kernel.Signals
-                                        kernel.PosixSignalShim
-                            }
-                    }
-                )
+                restoreSignalHandler operation numbering signal state
                 |> NativeHandlerResult.completed
                 |> Some
         | _ -> None
