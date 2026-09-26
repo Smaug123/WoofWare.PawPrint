@@ -154,7 +154,18 @@ module TestEnvironmentEntryInvariant =
             |> List.map UnixByteString.tryToString
             |> shouldEqual (List.map Some expected)
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 300, Prop.forAll (Arb.fromGen (Gen.listOf genEntry)) property)
+        // Three of the ten entries name the default, so a list keeps it with probability 0.7^n in
+        // its length n. `Gen.listOf` alone grows lists long enough that only ~35 of 300 keep it,
+        // so the `kept > 20` check below would fail about once in 3000 runs. Half the lists are
+        // short, which keeps both classes well populated (fewest kept in 3000 runs: 54).
+        let genEntries : Gen<string list> =
+            Gen.oneof
+                [
+                    Gen.choose (0, 6) |> Gen.bind (fun n -> Gen.listOfLength n genEntry)
+                    Gen.listOf genEntry
+                ]
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 300, Prop.forAll (Arb.fromGen genEntries) property)
 
         displaced > 20 |> shouldEqual true
         kept > 20 |> shouldEqual true
