@@ -66,6 +66,7 @@ Use bounded operations. Do not call an unbounded run loop against a suspected in
 curl -s -H 'Authorization: Bearer TOKEN' http://127.0.0.1:PORT/state
 curl -s -H 'Authorization: Bearer TOKEN' -X POST -d '' 'http://127.0.0.1:PORT/step?count=1'
 curl -s -H 'Authorization: Bearer TOKEN' -X POST -d '' 'http://127.0.0.1:PORT/run?maxSteps=10000'
+curl -s -H 'Authorization: Bearer TOKEN' -X POST -d '' 'http://127.0.0.1:PORT/trace?maxSteps=10000&values=active'
 curl -s -H 'Authorization: Bearer TOKEN' http://127.0.0.1:PORT/thread/0
 curl -s -H 'Authorization: Bearer TOKEN' 'http://127.0.0.1:PORT/thread/0/stack-summary?edgeFrames=12&topMethods=8'
 curl -s -H 'Authorization: Bearer TOKEN' 'http://127.0.0.1:PORT/thread/0/active-method/il?context=8'
@@ -80,6 +81,7 @@ Endpoint summary:
 - `GET /state`: session status, step count, loaded assemblies, thread summaries, heap counts.
 - `POST /step?count=N`: execute up to `N` scheduler steps and return each event plus the new summary. An event's `output` is `null`, or `{ stream, bytesBase64 }` for the one write that step made to stdout or stderr.
 - `POST /run?maxSteps=N`: execute at most `N` steps and return recent events. Use this to move forward safely, not to prove termination. If `/stop` cancels an active run, the response includes `cancelled: true`.
+- `POST /trace?maxSteps=N&maxBytes=B&values=none|active`: execute up to `N` steps (default 10000, max 100000) and return one page recording every step, for a client that wants the whole run rather than its end. `maxBytes` (max 32 MiB) ends the page early; `stoppedBecause` says which bound ended it (`stepLimit`, `byteBudget`, `cancelled`, `sessionEnded`, `hostFailure`). Repeat to page on. See below for the format.
 - `GET /thread/{id}`: full frame list for a thread, including active frame, IL offset, current instruction, source location, eval stack, args, and locals. Each value has a human-readable `value` string and a `structured` tagged object (`kind` = `int`, `float`, `objectRef`, `managedPointer`, `valueType`, ...); the kinds are documented on `DebuggerValueJson` in `WoofWare.PawPrint.App/DebuggerValueJson.fs`.
 - `GET /thread/{id}/stack-summary`: compact stack summary for deep stacks. Optional query parameters: `edgeFrames` (default 12, max 100) and `topMethods` (default 8, max 100).
 - `GET /thread/{id}/active-method/il`: IL for the thread's active frame, including resolved metadata-token text, the active instruction, and each local's type as both its handle (`type`) and `typeDescription`. Optional query parameter: `context` instructions before/after the active offset (omitted means full method, max 500).
@@ -91,6 +93,12 @@ Endpoint summary:
 - `POST /stop`: stop the server cleanly.
 
 `typeDescription` is `AllConcreteTypes.describe`'s rendering, such as `System.Object#3 [System.Private.CoreLib]`: the `#3` is the concrete-type handle and the bracket the assembly, which is what tells two same-named types apart. Handle numbers depend on the order types were first concretised, so do not compare them across runs.
+
+### Traces
+
+A `/trace` page is `base`, the state before its first step, then `steps`, where `steps[i]` is step `firstStep + i + 1`. Each step records its event (`e`), its output (`o`), heap counts when they changed (`hp`), and a delta for each thread that changed (`th`): status, active assembly and frame, frames popped or pushed, retained frames whose offset or location changed, and with `values=active` the active frame's evaluation stack, arguments and locals. Repeated strings and rendered objects are indices into the page's tables (`strings`, `statuses`, `locations`, `events`, `frameValues`), whose entries are exactly what `/step` and `/thread/{id}` render. `deadlock` is null, or a step-shaped record applied after the last step, when this page found the guest deadlocked. The full grammar is the docstring on `writeTracePageProperties` in `WoofWare.PawPrint.App/DebuggerServer.fs`.
+
+Pages are self-contained: each page's `base` equals the state the previous page ended in, and indices refer only to that page's tables, so a `/step`, `/run` or `/reset` between pages cannot desynchronise a client.
 
 ### Source locations
 
