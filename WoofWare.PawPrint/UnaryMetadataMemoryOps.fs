@@ -39,6 +39,11 @@ module internal UnaryMetadataMemoryOps =
         let zeroOfType, state =
             IlMachineState.cliTypeZeroOfHandle state baseClassTypes concreteTypeHandle
 
+        match popped with
+        | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
+        | _ ->
+
         let state =
             match popped with
             | EvalStackValue.Int32 _
@@ -47,12 +52,13 @@ module internal UnaryMetadataMemoryOps =
             | EvalStackValue.Float _ -> failwith "unexpectedly not an address"
             | EvalStackValue.NullObjectRef
             | EvalStackValue.ObjectRef _ -> failwith "TODO: Initobj requires a managed pointer"
-            | EvalStackValue.ManagedPointer src ->
-                IlMachineState.writeManagedByrefWithBase
-                    baseClassTypes
-                    state
-                    (ManagedPointerSource.requireAddressed src)
-                    zeroOfType
+            | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+                failwith "unreachable: null managed pointer handled above"
+            | EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
+                failwith
+                    $"initobj: cannot write through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
+            | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref addressed) ->
+                IlMachineState.writeManagedByrefWithBase baseClassTypes state addressed zeroOfType
             | EvalStackValue.UserDefinedValueType evalStackValueUserType -> failwith "todo"
 
         state

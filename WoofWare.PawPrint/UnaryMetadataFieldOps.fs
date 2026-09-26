@@ -309,7 +309,8 @@ module internal UnaryMetadataFieldOps =
         let valueToStore = EvalStackValue.toCliTypeCoerced zero valueToStore
 
         match currentObj with
-        | EvalStackValue.NullObjectRef ->
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
             IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
         | _ ->
 
@@ -335,20 +336,21 @@ module internal UnaryMetadataFieldOps =
                     { state with
                         ManagedHeap = ManagedHeap.setFieldById addr fieldId valueToStore state.ManagedHeap
                     }
-            | EvalStackValue.ManagedPointer src ->
+            | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+                failwith "unreachable: null managed pointer handled above"
+            | EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
+                failwith
+                    $"stfld: cannot write through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
+            | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref addressed as src) ->
                 let relationship, state = classifyFieldThroughByref baseClassTypes fieldId src state
 
                 let dest =
                     match relationship with
                     | FieldThroughByref.Projected ->
-                        ManagedPointerSource.appendProjection (ByrefProjection.Field fieldId) src
-                    | FieldThroughByref.IsContainer _ -> src
+                        AddressedByref.appendProjection (ByrefProjection.Field fieldId) addressed
+                    | FieldThroughByref.IsContainer _ -> addressed
 
-                IlMachineState.writeManagedByrefWithBase
-                    baseClassTypes
-                    state
-                    (ManagedPointerSource.requireAddressed dest)
-                    valueToStore
+                IlMachineState.writeManagedByrefWithBase baseClassTypes state dest valueToStore
             | EvalStackValue.UserDefinedValueType _ -> failwith "todo"
 
         state
@@ -448,7 +450,8 @@ module internal UnaryMetadataFieldOps =
         let fieldId = FieldId.metadata declaringTypeHandle field.Handle field.Name
 
         match currentObj with
-        | EvalStackValue.NullObjectRef ->
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
             IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
         | _ ->
 
@@ -503,23 +506,20 @@ module internal UnaryMetadataFieldOps =
                             (ManagedHeap.get managedHeapAddress state.ManagedHeap))
                         thread
                         state
-            | EvalStackValue.ManagedPointer src ->
+            | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+                failwith "unreachable: null managed pointer handled above"
+            | EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
+                failwith
+                    $"ldfld: cannot read through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
+            | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref addressed as src) ->
                 let relationship, state = classifyFieldThroughByref baseClassTypes fieldId src state
 
                 let currentValue =
                     match relationship with
                     | FieldThroughByref.Projected ->
-                        IlMachineState.readManagedByrefField
-                            baseClassTypes
-                            state
-                            (ManagedPointerSource.requireAddressed src)
-                            fieldId
+                        IlMachineState.readManagedByrefField baseClassTypes state addressed fieldId
                     | FieldThroughByref.IsContainer fieldZero ->
-                        IlMachineState.readManagedByrefAs
-                            baseClassTypes
-                            state
-                            fieldZero
-                            (ManagedPointerSource.requireAddressed src)
+                        IlMachineState.readManagedByrefAs baseClassTypes state fieldZero addressed
 
                 IlMachineState.pushToEvalStack currentValue thread state
             | EvalStackValue.UserDefinedValueType vt ->
@@ -584,12 +584,18 @@ module internal UnaryMetadataFieldOps =
         | NativeInt nativeIntSource ->
             failwith
                 $"TODO: %s{opName} {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through native pointer %O{nativeIntSource}"
-        | ManagedPointer src ->
+        | ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
+            failwith
+                $"%s{opName} {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name}: cannot project from fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
+        | ManagedPointer (ManagedPointerSource.Byref addressed as src) ->
             match classifyFieldThroughByref baseClassTypes fieldId src state with
             | FieldThroughByref.Projected, state ->
-                state, ManagedPointerSource.appendProjection (ByrefProjection.Field fieldId) src
+                state,
+                AddressedByref.appendProjection (ByrefProjection.Field fieldId) addressed
+                |> ManagedPointerSource.Byref
             | FieldThroughByref.IsContainer _, state -> state, src
-        | NullObjectRef ->
+        | NullObjectRef
+        | ManagedPointer ManagedPointerSource.Null ->
             failwith
                 $"BUG: %s{opName} reached instanceFieldAddress with a null receiver for {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name}; the caller must raise NullReferenceException itself"
         | ObjectRef addr ->
@@ -627,7 +633,8 @@ module internal UnaryMetadataFieldOps =
         let fieldId = FieldId.metadata declaringTypeHandle field.Handle field.Name
 
         match ptr with
-        | NullObjectRef ->
+        | NullObjectRef
+        | ManagedPointer ManagedPointerSource.Null ->
             IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
         | _ ->
 
