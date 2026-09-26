@@ -41,23 +41,40 @@ module TestSignalDispatcherThread =
         }
 
     [<Test>]
-    let ``empty SignalState has no signal thread`` () : unit =
-        let empty : SignalState<ThreadId, SignalHandler> =
-            SignalState.initial SignalNumbering.Linux
-
-        empty |> SignalState.signalThread |> shouldEqual None
+    let ``the initial shim has no signal thread`` () : unit =
+        PosixSignalShim.initial |> PosixSignalShim.signalThread |> shouldEqual None
 
     [<Test>]
     let ``markInitialized records the dispatcher ThreadId`` () : unit =
         let dispatcher = ThreadId 7
 
-        let empty : SignalState<ThreadId, SignalHandler> =
-            SignalState.initial SignalNumbering.Linux
-
-        empty
-        |> SignalState.markInitialized dispatcher
-        |> SignalState.signalThread
+        PosixSignalShim.initial
+        |> PosixSignalShim.markInitialized dispatcher
+        |> PosixSignalShim.signalThread
         |> shouldEqual (Some dispatcher)
+
+    [<Test>]
+    let ``a dispatcher that is not a task is a defect`` () : unit =
+        let state, dispatcher = baseState () |> IlMachineState.allocateParkedThread
+
+        state.Kernel
+        |> fun kernel ->
+            { kernel with
+                PosixSignalShim = PosixSignalShim.markInitialized dispatcher kernel.PosixSignalShim
+            }
+        |> EmulatedKernel.checkInvariants
+        |> shouldEqual []
+
+        let ghost = ThreadId 77
+        state.Kernel.Tasks |> Map.containsKey ghost |> shouldEqual false
+
+        state.Kernel
+        |> fun kernel ->
+            { kernel with
+                PosixSignalShim = PosixSignalShim.markInitialized ghost kernel.PosixSignalShim
+            }
+        |> EmulatedKernel.checkInvariants
+        |> shouldEqual [ EmulatedKernelDefect.SignalDispatcherWithoutTask ghost ]
 
     [<Test>]
     let ``allocateParkedThread mints a Parked, frameless thread`` () : unit =

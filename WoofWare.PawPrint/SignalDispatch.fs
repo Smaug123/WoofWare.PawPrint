@@ -143,7 +143,7 @@ module SignalDispatch =
     /// the next tick try again", matching the long-poll cadence of the real
     /// `SignalHandlerLoop`.
     let trySpawnHandler (baseClassTypes : BaseClassTypes<DumpedAssembly>) (state : IlMachineState) : IlMachineState =
-        match SignalState.signalThread state.Kernel.Signals with
+        match PosixSignalShim.signalThread state.Kernel.PosixSignalShim with
         | None ->
             // Signal handling has not been initialised; there is no
             // dispatcher to wake, so anything in `Pending` (there shouldn't
@@ -211,7 +211,18 @@ module SignalDispatch =
             // rather than half-modelled.
             failwith
                 $"SignalDispatch.trySpawnHandler: pending %O{signal} has no enabled handler and its kernel default is not Ignore; applying a default disposition at delivery rather than at generation is not modelled."
-        | Some (SignalDelivery.RunHandler (entry, _receiver, handler)) ->
+        | Some (SignalDelivery.RunHandler (entry, _receiver)) ->
+
+        let handler =
+            match PosixSignalShim.handler state.Kernel.PosixSignalShim with
+            | Some handler -> handler
+            | None ->
+                // The shim's `SignalHandlerLoop` asserts `g_posixSignalHandler
+                // != NULL` before calling through it, and a build without
+                // asserts calls a null function pointer: there is no
+                // behaviour here to model.
+                failwith
+                    $"SignalDispatch.trySpawnHandler: %O{entry.Signal} is enabled and due for delivery, but no handler has been installed with SystemNative_SetPosixSignalHandler; the real shim asserts one has."
 
         let mi = SignalHandler.methodInfo handler
         validateHandlerSignature state.ConcreteTypes mi

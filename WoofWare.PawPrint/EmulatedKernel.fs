@@ -605,6 +605,10 @@ type EmulatedKernel =
         /// the pool too, so a fresh process's two streams do not start with the
         /// same bytes.
         NonCryptoRandomState : uint64
+        /// System.Native's own signal state: see `PosixSignalShim`. Userspace
+        /// state rather than kernel state, like `NonCryptoRandomState`: the
+        /// shim keeps it in its own globals, and no syscall reports it.
+        PosixSignalShim : PosixSignalShim
         /// Every task the kernel knows about, by the thread that is it.
         ///
         /// Exactly the live threads: `IlMachineState.checkInvariants` refuses a
@@ -846,6 +850,9 @@ type EmulatedKernelDefect =
     /// stream out from under the others. Two `opendir`s owe the guest
     /// independent cursors, so this is never a state a stream table should hold.
     | DirectoryStreamNamedTwice of stream : DirectoryStreamId * blocks : NativeMemoryBlockId list
+    /// The signal dispatcher is not a task in the table, so no delivery can
+    /// wake it.
+    | SignalDispatcherWithoutTask of thread : ThreadId
 
 [<RequireQualifiedAccess>]
 module EmulatedKernel =
@@ -1029,6 +1036,7 @@ module EmulatedKernel =
             LastSystemError = Map.empty
             NativeMemoryPool = NativeMemoryPool.empty
             NonCryptoRandomState = NonCryptoRandom.initialState
+            PosixSignalShim = PosixSignalShim.initial
             DirectoryStreamBlocks = Map.empty
             Tasks = Map.empty
             LowLevelMonitors = Map.empty
@@ -1729,8 +1737,16 @@ module EmulatedKernel =
 
             dangling @ unreachable @ namedTwice
 
+        let dispatcher =
+            match PosixSignalShim.signalThread kernel.PosixSignalShim with
+            | Some thread when not (Map.containsKey thread kernel.Tasks) ->
+                [ EmulatedKernelDefect.SignalDispatcherWithoutTask thread ]
+            | Some _
+            | None -> []
+
         (UnixSystem.checkInvariants (unix kernel) |> List.map EmulatedKernelDefect.System)
         @ directoryStreamBlocks
+        @ dispatcher
 
 /// Host-supplied configuration for the simulated process's kernel, applied by
 /// `Program.prepare` before any guest code runs.

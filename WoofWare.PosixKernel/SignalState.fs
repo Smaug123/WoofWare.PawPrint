@@ -13,31 +13,6 @@ type PendingSignal<'Task> =
         Target : 'Task voption
     }
 
-/// Initialisation state of the simulator's signal subsystem. Mirrors
-/// real CoreCLR's lazy setup: the C side spins up a dedicated
-/// `SignalHandlerLoop` pthread the first time
-/// its signal handling is initialised. A client mirrors that contract by
-/// allocating a single parked dispatcher
-/// task at the same moment and stashing it here. Encoding the
-/// pair as a DU rather than `Initialized : bool + DispatcherTask :
-/// 'Task option` makes the invariant — "the dispatcher
-/// task exists iff signal handling is initialised" — unrepresentable
-/// to violate. Idempotent re-initialisation is a transition this DU
-/// observes (the existing dispatcher is preserved); the QCall site
-/// must check `isInitialized` before allocating a thread, otherwise a
-/// second init call would mint a dead second dispatcher.
-[<RequireQualifiedAccess>]
-type SignalInitState<'Task> =
-    /// Signal handling has not yet been set up; no dispatcher thread
-    /// exists. `SignalState.initial` starts here.
-    | NotInitialized
-    /// The client has initialised signal handling at least once;
-    /// `dispatcher` identifies the client's signal-dispatch task,
-    /// allocated at that moment. What that task *is* is the client's
-    /// business — this type only records which one it was, so that the
-    /// "exists iff initialised" invariant has somewhere to live.
-    | Initialized of dispatcher : 'Task
-
 /// What the kernel does with the next receivable pending signal, as decided
 /// by `SignalState.nextDelivery`: hand it to the client's installed handler
 /// on a chosen receiver thread, or apply the signal's kernel default. The
@@ -50,7 +25,7 @@ type SignalDelivery<'Task, 'Handler> =
     /// all run on a dedicated dispatcher task (as CoreCLR's do) may ignore
     /// it today, but it is the thread a `pthread_kill`-style branch would
     /// interrupt.
-    | RunHandler of entry : PendingSignal<'Task> * receiver : 'Task * handler : 'Handler
+    | RunHandler of entry : PendingSignal<'Task> * receiver : 'Task
     /// No handler claims the signal and its kernel default is to terminate
     /// the process. A parent's `wait` then reports the process as killed by
     /// the signal (`WIFSIGNALED`, `WTERMSIG`); `128 + signo` is only how a
@@ -84,10 +59,6 @@ type SignalGeneration =
 /// Pure, deterministic model of the simulator's signal-handling state.
 ///
 /// The shape is deliberately small:
-///   * `Init` — has the client initialised signal handling yet, and
-///     which task is the dispatcher? Several console paths gate
-///     work behind initialisation, and read the dispatcher off this
-///     field.
 ///   * `Enabled` — the set of signals the client has asked to have
 ///     delivered to it. This mirrors the enable bits a real signal shim
 ///     keeps; the mapping from a signal to whatever the client runs for it
@@ -97,12 +68,6 @@ type SignalGeneration =
 ///   * `Blocked` — per-thread sigprocmask. A signal in a thread's set is
 ///     blocked for that thread and cannot be delivered to it.
 ///   * `Pending` — FIFO queue of generated signals waiting for dispatch.
-///   * `Handler` — the client's dispatch callback, whatever identifies one
-///     to it. `None` until the client installs one; a real signal shim
-///     likewise leaves its global handler pointer NULL until the first
-///     registration and ignores delivered signals while it remains so, and
-///     `nextDelivery` leaves enabled pending entries queued while this is
-///     `None`.
 ///
 /// One instance of this type belongs to each simulated process. A client
 /// polls it for deliverable signals and dispatches out of it; the data shape
@@ -125,7 +90,6 @@ type SignalState<'Task, 'Handler when 'Task : comparison and 'Handler : equality
             /// SIGCHLD on Linux and SIGSTOP on Darwin, so no operation on this
             /// state is meaningful without it.
             Numbering : SignalNumbering
-            Init : SignalInitState<'Task>
             Enabled : Set<Signal>
             Blocked : Map<'Task, Set<Signal>>
             /// Pending entries in FIFO order (head = next candidate for
@@ -137,7 +101,6 @@ type SignalState<'Task, 'Handler when 'Task : comparison and 'Handler : equality
             /// 0–3 entries), and this model trades performance for determinism
             /// throughout.
             Pending : PendingSignal<'Task> list
-            Handler : 'Handler option
         }
 
 [<RequireQualifiedAccess>]
@@ -150,11 +113,9 @@ module SignalState =
     let initial (numbering : SignalNumbering) : SignalState<'Task, 'Handler> =
         {
             Numbering = numbering
-            Init = SignalInitState.NotInitialized
             Enabled = Set.empty
             Blocked = Map.empty
             Pending = []
-            Handler = None
         }
 
     /// The numbering every signal in this state is read under, as given to
@@ -178,55 +139,6 @@ module SignalState =
                 failwith
                     $"SignalState.%s{operation}: %d{rawSignal} is not a signal under the %O{state.Numbering} numbering (signos run 1..%d{Signal.highestSignoUnder state.Numbering}); a raw signo should have been refused at the caller's own boundary, via Signal.ofRawSignoUnder."
         | named -> named
-
-    let isInitialized (state : SignalState<'Task, 'Handler>) : bool =
-        match state.Init with
-        | SignalInitState.NotInitialized -> false
-        | SignalInitState.Initialized _ -> true
-
-    /// `Some dispatcher` once signal handling has been initialised, where
-    /// `dispatcher` identifies the client's signal-dispatch task, spawned at
-    /// that moment. `None` until the client first initialises signal
-    /// handling.
-    /// Mirrors real CoreCLR's `SignalHandlerLoop` pthread, which is
-    /// created at the same point in startup.
-    let signalThread (state : SignalState<'Task, 'Handler>) : 'Task option =
-        match state.Init with
-        | SignalInitState.NotInitialized -> None
-        | SignalInitState.Initialized dispatcher -> Some dispatcher
-
-    /// Idempotent: a second call preserves the existing dispatcher and
-    /// does *not* swap in the caller-supplied one. The
-    /// caller is expected to guard with `isInitialized` and skip thread
-    /// allocation entirely on the second call; the idempotency here is a
-    /// defence in depth so a defensive caller does not accidentally
-    /// orphan an already-allocated dispatcher task. Mirrors the usual
-    /// client shape, where an `EnsureInitialized` may run more than once but
-    /// the underlying signal apparatus is set up exactly once.
-    let markInitialized (dispatcher : 'Task) (state : SignalState<'Task, 'Handler>) : SignalState<'Task, 'Handler> =
-        match state.Init with
-        | SignalInitState.Initialized _ -> state
-        | SignalInitState.NotInitialized ->
-            { state with
-                Init = SignalInitState.Initialized dispatcher
-            }
-
-    /// The currently-installed dispatch callback, or `None` if the client has
-    /// not yet registered one. A consumer reads it at the moment of dispatch.
-    let handler (state : SignalState<'Task, 'Handler>) : 'Handler option = state.Handler
-
-    /// Install (or replace) the client's signal-dispatch callback.
-    /// A real signal shim stores the pointer into its global handler slot
-    /// unconditionally, overwriting any prior value, so the contract is "last
-    /// writer wins". Note the consequence for a client whose handler identity
-    /// is a wrapper it re-constructs: two installs of the same handler are
-    /// equal, so the state transition is idempotent, which is what lets a
-    /// caller re-register without perturbing a state that is compared for
-    /// equality.
-    let setHandler (handler : 'Handler) (state : SignalState<'Task, 'Handler>) : SignalState<'Task, 'Handler> =
-        { state with
-            Handler = Some handler
-        }
 
     let isEnabled (signal : Signal) (state : SignalState<'Task, 'Handler>) : bool =
         Set.contains (parse "isEnabled" state signal) state.Enabled
@@ -515,9 +427,7 @@ module SignalState =
     ///
     /// What happens to a receivable entry is its signal's disposition *now*,
     /// not at generation:
-    ///   * enabled, and a handler is installed — `RunHandler`;
-    ///   * enabled, but no handler installed yet — stays queued, which is the
-    ///     real shim's behaviour while `g_posixSignalHandler` is NULL;
+    ///   * enabled — `RunHandler`;
     ///   * not enabled — the kernel default applies: `Terminate` and `Stop`
     ///     surface as their cases for the client to act on, and Ignore is
     ///     discarded silently, the scan continuing past it. That discard is
@@ -553,11 +463,7 @@ module SignalState =
             if Set.contains head.Signal state.Enabled then
                 match pickReceiver head with
                 | None -> scan (head :: skipped) tail
-                | Some receiver ->
-
-                match state.Handler with
-                | None -> scan (head :: skipped) tail
-                | Some handler -> Some (SignalDelivery.RunHandler (head, receiver, handler)), remaining ()
+                | Some receiver -> Some (SignalDelivery.RunHandler (head, receiver)), remaining ()
             else
                 match Signal.defaultDispositionUnder state.Numbering head.Signal with
                 | DefaultDisposition.Continue ->

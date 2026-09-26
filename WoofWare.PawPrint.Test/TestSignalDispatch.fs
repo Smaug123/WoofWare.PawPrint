@@ -109,10 +109,7 @@ module TestSignalDispatch =
         let state =
             state.MapKernel (fun kernel ->
                 { kernel with
-                    Process =
-                        { kernel.Process with
-                            Signals = kernel.Signals |> SignalState.markInitialized dispatcher
-                        }
+                    PosixSignalShim = kernel.PosixSignalShim |> PosixSignalShim.markInitialized dispatcher
                 }
             )
 
@@ -121,10 +118,7 @@ module TestSignalDispatch =
         let state =
             state.MapKernel (fun kernel ->
                 { kernel with
-                    Process =
-                        { kernel.Process with
-                            Signals = kernel.Signals |> SignalState.setHandler handler
-                        }
+                    PosixSignalShim = kernel.PosixSignalShim |> PosixSignalShim.setHandler handler
                 }
             )
 
@@ -153,28 +147,38 @@ module TestSignalDispatch =
         let state' = SignalDispatch.trySpawnHandler baseClassTypes state
 
         state'.Kernel.Signals |> shouldEqual state.Kernel.Signals
+        state'.Kernel.PosixSignalShim |> shouldEqual state.Kernel.PosixSignalShim
 
         let keysBefore = state.ThreadState |> Map.toList |> List.map fst
         let keysAfter = state'.ThreadState |> Map.toList |> List.map fst
         keysAfter |> shouldEqual keysBefore
 
     [<Test>]
-    let ``trySpawnHandler is a no-op when no handler is installed`` () : unit =
-        // Dispatcher initialised but `SetPosixSignalHandler` never called.
-        // The pending queue might still grow (a process-startup signal could
-        // already be queued), but with no handler to dispatch to we mirror
-        // real CoreCLR's "ignore until handler installed" behaviour.
+    let ``trySpawnHandler refuses to deliver an enabled signal while no handler is installed`` () : unit =
+        // Dispatcher initialised and a signal enabled, but `SetPosixSignalHandler`
+        // never called, and a thread that could receive the signal. The real
+        // shim's `SignalHandlerLoop` asserts `g_posixSignalHandler != NULL` before
+        // calling through it, so there is no behaviour to model: a release build
+        // would call a null function pointer. The poll must refuse rather than
+        // leave the entry queued.
         let state = baseState ()
         let state, dispatcher = IlMachineState.allocateParkedThread state
 
         let state =
+            { state with
+                ThreadState =
+                    state.ThreadState
+                    |> Map.add (ThreadId 99) (stubThreadState ThreadStatus.Runnable)
+            }
+
+        let state =
             state.MapKernel (fun kernel ->
                 { kernel with
+                    PosixSignalShim = kernel.PosixSignalShim |> PosixSignalShim.markInitialized dispatcher
                     Process =
                         { kernel.Process with
                             Signals =
                                 kernel.Signals
-                                |> SignalState.markInitialized dispatcher
                                 |> SignalState.enable Signal.SIGINT
                                 |> SignalState.enqueue
                                     {
@@ -185,22 +189,10 @@ module TestSignalDispatch =
                 }
             )
 
-        let state' = SignalDispatch.trySpawnHandler baseClassTypes state
+        let exn =
+            Assert.Throws (fun () -> SignalDispatch.trySpawnHandler baseClassTypes state |> ignore<IlMachineState>)
 
-        let dispatcherTs = state'.ThreadState |> Map.find dispatcher
-        dispatcherTs.Status |> shouldEqual ThreadStatus.Parked
-        dispatcherTs.MethodStates.Count |> shouldEqual 0
-        // Pending entry is *not* consumed: a later `setHandler` should still
-        // be able to drain it.
-        state'.Kernel.Signals
-        |> SignalState.pending
-        |> shouldEqual
-            [
-                {
-                    Signal = Signal.SIGINT
-                    Target = ValueNone
-                }
-            ]
+        exn.Message |> shouldContainText "no handler"
 
     [<Test>]
     let ``trySpawnHandler is a no-op when there is no pending signal`` () : unit =
@@ -594,10 +586,7 @@ module TestSignalDispatch =
         let state =
             state.MapKernel (fun kernel ->
                 { kernel with
-                    Process =
-                        { kernel.Process with
-                            Signals = kernel.Signals |> SignalState.markInitialized dispatcher
-                        }
+                    PosixSignalShim = kernel.PosixSignalShim |> PosixSignalShim.markInitialized dispatcher
                 }
             )
 
@@ -617,11 +606,11 @@ module TestSignalDispatch =
         let state =
             state.MapKernel (fun kernel ->
                 { kernel with
+                    PosixSignalShim = kernel.PosixSignalShim |> PosixSignalShim.setHandler handler
                     Process =
                         { kernel.Process with
                             Signals =
                                 kernel.Signals
-                                |> SignalState.setHandler handler
                                 |> SignalState.enable Signal.SIGINT
                                 |> SignalState.enqueue
                                     {

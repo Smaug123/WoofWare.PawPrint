@@ -142,9 +142,6 @@ type UnixSystemDefect<'Task> =
     /// an unlocked port is half-bound at `address:0`, which is measured and
     /// is what a later `bind` or `connect` completes.
     | BoundToPortZero of socket : SocketId
-    /// The signal dispatcher is not a task in the table, so no delivery can
-    /// wake it.
-    | SignalDispatcherWithoutTask of task : 'Task
     /// A per-task signal mask names a task the table does not hold.
     | SignalMaskWithoutTask of task : 'Task
     /// A pending signal is directed at a task the table does not hold, so it
@@ -592,13 +589,6 @@ module UnixSystem =
                 else
                     [ UnixSystemDefect.SignalNumberingMismatch (stateNumbering, platformNumbering) ]
 
-            let dispatcher =
-                match SignalState.signalThread signals with
-                | Some task when not (Map.containsKey task system.Tasks) ->
-                    [ UnixSystemDefect.SignalDispatcherWithoutTask task ]
-                | Some _
-                | None -> []
-
             let masks =
                 SignalState.blockedTasks signals
                 |> Set.toList
@@ -615,7 +605,7 @@ module UnixSystem =
                     | ValueNone -> None
                 )
 
-            numberings @ dispatcher @ masks @ targets
+            numberings @ masks @ targets
 
         let fileSystemType =
             let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform

@@ -5739,17 +5739,14 @@ module NativeSystemNative =
             // process); PawPrint always reports success because there is no
             // underlying syscall that could fail.
             let state =
-                if SignalState.isInitialized state.Kernel.Signals then
+                if PosixSignalShim.isInitialized state.Kernel.PosixSignalShim then
                     state
                 else
                     let state, dispatcher = IlMachineState.allocateParkedThread state
 
                     state.MapKernel (fun kernel ->
                         { kernel with
-                            Process =
-                                { kernel.Process with
-                                    Signals = SignalState.markInitialized dispatcher kernel.Signals
-                                }
+                            PosixSignalShim = PosixSignalShim.markInitialized dispatcher kernel.PosixSignalShim
                         }
                     )
 
@@ -5847,10 +5844,7 @@ module NativeSystemNative =
 
             state.MapKernel (fun kernel ->
                 { kernel with
-                    Process =
-                        { kernel.Process with
-                            Signals = SignalState.setHandler (SignalHandler.ofMethodInfo mi) kernel.Signals
-                        }
+                    PosixSignalShim = PosixSignalShim.setHandler (SignalHandler.ofMethodInfo mi) kernel.PosixSignalShim
                 }
             )
             |> NativeHandlerResult.completed
