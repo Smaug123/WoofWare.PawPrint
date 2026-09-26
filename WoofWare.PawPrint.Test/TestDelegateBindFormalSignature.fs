@@ -326,6 +326,56 @@ public static class Program
         |> CrossAssemblyHarness.runTestWithout [ "FormalMissing.Lib" ]
 
     [<Test>]
+    let ``a binding that reaches the return comparison loads the target's return type`` () : unit =
+        // CoreCLR loads the target's return type whenever it comes to compare the returns, even
+        // against a delegate returning void, so a missing assembly surfaces there as real .NET's
+        // `FileNotFoundException`, not as a bind failure. PawPrint does not raise that exception
+        // for a missing assembly, but must not answer `ArgumentException` instead.
+        {
+            Assemblies =
+                [
+                    CrossAssemblySpec.library "FormalMissingReturn.Lib" [] [ "public class Missing { }" ]
+                    CrossAssemblySpec.entryPoint
+                        "FormalMissingReturn.Entry"
+                        [ "FormalMissingReturn.Lib" ]
+                        [
+                            """
+using System;
+using System.IO;
+
+public class G<T>
+{
+    public static Missing ReturnsMissing() { return null; }
+}
+
+public static class Program
+{
+    public static int Main()
+    {
+        try
+        {
+            typeof(G<>).GetMethod("ReturnsMissing").CreateDelegate(typeof(Action));
+            return 1;
+        }
+        catch (FileNotFoundException)
+        {
+            return 0;
+        }
+        catch (ArgumentException)
+        {
+            return 2;
+        }
+    }
+}
+"""
+                        ]
+                ]
+            EntryAssemblyName = "FormalMissingReturn.Entry"
+            ExpectedReturnCode = 0
+        }
+        |> CrossAssemblyHarness.runTestExpectingRefusal [ "FormalMissingReturn.Lib" ] [ "FormalMissingReturn.Lib" ] []
+
+    [<Test>]
     let ``virtualising onto a default interface method is refused`` () : unit =
         // Real .NET binds the definition's own default body here, where dispatching through the
         // closed instantiation finds `IChild`'s override: see

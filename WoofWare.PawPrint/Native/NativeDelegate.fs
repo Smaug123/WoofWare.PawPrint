@@ -641,8 +641,12 @@ module NativeDelegate =
         let state, returnMatches =
             match targetSignature.ReturnType, invokeSignature.ReturnType with
             | MethodReturnType.Void, MethodReturnType.Void -> state, true
-            | MethodReturnType.Void, MethodReturnType.Returns _
-            | MethodReturnType.Returns _, MethodReturnType.Void -> state, false
+            | MethodReturnType.Void, MethodReturnType.Returns _ -> state, false
+            | MethodReturnType.Returns targetReturn, MethodReturnType.Void ->
+                // `GetRetTypeHandleThrowing` loads the target's return type before comparing, so
+                // a type that cannot be loaded fails here even against a void delegate.
+                let state, _ = resolveTargetType state targetReturn
+                state, false
             | MethodReturnType.Returns targetReturn, MethodReturnType.Returns invokeReturn ->
                 let state, targetReturn = resolveTargetType state targetReturn
 
