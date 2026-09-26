@@ -161,15 +161,10 @@ module TestUnixEntropy =
     /// pieces are the draw, so its last bytes stand in for the rest.
     [<Test>]
     let ``getrandom transfers at most the most one call can`` () : unit =
-        let limit = int UnixEntropy.getRandomMaxTransfer
+        let maxTransfer = UnixEntropy.getRandomMaxTransfer SimulatedUnixPlatform.linuxX64
+        let limit = int maxTransfer
 
-        for count in
-            [
-                UnixEntropy.getRandomMaxTransfer + 1UL
-                1UL <<< 31
-                1UL <<< 40
-                UInt64.MaxValue
-            ] do
+        for count in [ maxTransfer + 1UL ; 1UL <<< 31 ; 1UL <<< 40 ; UInt64.MaxValue ] do
             let system = linux ()
             let pool = system.Machine.EntropyPool
 
@@ -187,7 +182,7 @@ module TestUnixEntropy =
             | other -> failwith $"%d{count} bytes: expected a short transfer, got %O{other}"
 
         // At the limit itself nothing is cut short.
-        match UnixEntropy.getRandom UserBuffer.Mapped UnixEntropy.getRandomMaxTransfer 0u (linux ()) with
+        match UnixEntropy.getRandom UserBuffer.Mapped maxTransfer 0u (linux ()) with
         | Ok (GetRandomAnswer.Completed draw, _) -> EntropyDraw.count draw |> shouldEqual limit
         | other -> failwith $"expected the whole request, got %O{other}"
 

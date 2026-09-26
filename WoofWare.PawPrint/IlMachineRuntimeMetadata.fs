@@ -2359,7 +2359,7 @@ module IlMachineRuntimeMetadata =
     /// CoreCLR's `CorTypeInfo::IsObjRef` of a target's element type, for every target that is not a
     /// type variable: whether values of it are object references. A type variable's answer is
     /// `TypeVarTypeDesc::ConstrainedAsObjRef`, which needs its constraints, so it is refused here.
-    let private isObjRefTarget
+    let isObjRefTarget
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (target : RuntimeTypeHandleTarget)
@@ -2460,6 +2460,71 @@ module IlMachineRuntimeMetadata =
 
         state, List.rev interfaces
 
+    /// CoreCLR's `TypeVarTypeDesc::ConstrainedAsObjRef` (typedesc.cpp:1006): whether the type
+    /// variable `variable` is guaranteed to be instantiated at a reference type, by its `class`
+    /// flag or by a declared constraint that is a class other than `Object`, `ValueType` and
+    /// `Enum`, or a variable itself so constrained.
+    let typeVariableConstrainedAsObjRef
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (variable : RuntimeTypeHandleTarget)
+        : IlMachineState * bool
+        =
+        let typeVariableFacts
+            (state : IlMachineState)
+            (variable : RuntimeTypeHandleTarget)
+            : IlMachineState * GenericParamMetadata * RuntimeTypeHandleTarget list
+            =
+            ReflectedTypeTarget.declaredConstraintTargets
+                loggerFactory
+                baseClassTypes
+                "typeVariableConstrainedAsObjRef"
+                state
+                variable
+
+        let isTypeVariable (target : RuntimeTypeHandleTarget) : bool =
+            match target with
+            | RuntimeTypeHandleTarget.GenericParameter _
+            | RuntimeTypeHandleTarget.MethodGenericParameter _ -> true
+            | _ -> false
+
+        // `TypeVarTypeDesc::ConstrainedAsObjRefHelper` (typedesc.cpp:1036): some declared
+        // constraint is a class other than Object, ValueType and Enum, or is itself a variable so
+        // constrained. The `class` flag is deliberately not consulted here: it does not propagate
+        // through a variable-to-variable constraint.
+        let rec constrainedAsObjRefByConstraints
+            (state : IlMachineState)
+            (variable : RuntimeTypeHandleTarget)
+            : IlMachineState * bool
+            =
+            let state, _, constraints = typeVariableFacts state variable
+
+            ((state, false), constraints)
+            ||> List.fold (fun (state, found) constraintTarget ->
+                if found then
+                    state, true
+                elif isTypeVariable constraintTarget then
+                    constrainedAsObjRefByConstraints state constraintTarget
+                elif
+                    not (isInterfaceTarget state constraintTarget)
+                    && isObjRefTarget baseClassTypes state constraintTarget
+                    && not (isClosedNonGeneric state baseClassTypes.Object constraintTarget)
+                    && not (isClosedNonGeneric state baseClassTypes.ValueType constraintTarget)
+                    && not (isClosedNonGeneric state baseClassTypes.Enum constraintTarget)
+                then
+                    state, true
+                else
+                    state, false
+            )
+
+        let state, metadata, _ = typeVariableFacts state variable
+
+        if metadata.Constraint = Some GenericConstraint.Reference then
+            state, true
+        else
+            constrainedAsObjRefByConstraints state variable
+
     /// CoreCLR's `TypeHandle::CanCastTo` over the full `RuntimeTypeHandleTarget` DU: whether a
     /// value of type `source` can be treated as one of type `target`, where either may mention
     /// type variables. This is the relation both the `TypeHandle_CanCastTo_NoCacheLookup` QCall
@@ -2512,43 +2577,9 @@ module IlMachineRuntimeMetadata =
             | RuntimeTypeHandleTarget.MethodGenericParameter _ -> true
             | _ -> false
 
-        // `TypeVarTypeDesc::ConstrainedAsObjRefHelper` (typedesc.cpp:1036): some declared
-        // constraint is a class other than Object, ValueType and Enum, or is itself a variable so
-        // constrained. The `class` flag is deliberately not consulted here: it does not propagate
-        // through a variable-to-variable constraint.
-        let rec constrainedAsObjRefByConstraints
-            (state : IlMachineState)
-            (variable : RuntimeTypeHandleTarget)
-            : IlMachineState * bool
-            =
-            let state, _, constraints = typeVariableFacts state variable
-
-            ((state, false), constraints)
-            ||> List.fold (fun (state, found) constraintTarget ->
-                if found then
-                    state, true
-                elif isTypeVariable constraintTarget then
-                    constrainedAsObjRefByConstraints state constraintTarget
-                elif
-                    not (isInterfaceTarget state constraintTarget)
-                    && isObjRefTarget baseClassTypes state constraintTarget
-                    && not (isObject state constraintTarget)
-                    && not (isClosedNonGeneric state baseClassTypes.ValueType constraintTarget)
-                    && not (isClosedNonGeneric state baseClassTypes.Enum constraintTarget)
-                then
-                    state, true
-                else
-                    state, false
-            )
-
         // `TypeVarTypeDesc::ConstrainedAsObjRef` (typedesc.cpp:1006).
         let constrainedAsObjRef (state : IlMachineState) (variable : RuntimeTypeHandleTarget) : IlMachineState * bool =
-            let state, metadata, _ = typeVariableFacts state variable
-
-            if metadata.Constraint = Some GenericConstraint.Reference then
-                state, true
-            else
-                constrainedAsObjRefByConstraints state variable
+            typeVariableConstrainedAsObjRef loggerFactory baseClassTypes state variable
 
         // `where T : U, U : T` makes the constraint walk below loop, and CoreCLR refuses such a
         // declaration when it loads the type (`TypeVarTypeDesc::LoadConstraints` rejects circular

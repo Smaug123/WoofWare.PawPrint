@@ -11,7 +11,7 @@
  *
  * A transcript is one space-separated token per op: "ok", an errno name, or
  * for wait a batch "[data/IN+OUT,...]" in ready-list order with mask bits in
- * canonical IN,OUT,RDHUP,HUP,ERR order.
+ * mask_string's order.
  *
  * Determinism convention: the emulated kernel signals synchronously at the
  * producing op, so after every op with asynchronous effects (connect, close,
@@ -120,32 +120,37 @@ static uint32_t interest_to_epoll(int mask)
     return ev;
 }
 
+/* epoll_wait's events, in the order SocketFuzz.fs prints them: the five
+ * conditions the .NET shim names, then the rest of Linux's named readiness
+ * bits. */
 static void mask_string(uint32_t events, char *buf, size_t cap)
 {
+    static const struct
+    {
+        uint32_t bit;
+        const char *name;
+    } rows[] = {
+        {EPOLLIN, "IN"},         {EPOLLOUT, "OUT"},       {EPOLLRDHUP, "RDHUP"},   {EPOLLHUP, "HUP"},
+        {EPOLLERR, "ERR"},       {EPOLLPRI, "PRI"},       {EPOLLRDNORM, "RDNORM"}, {EPOLLRDBAND, "RDBAND"},
+        {EPOLLWRNORM, "WRNORM"}, {EPOLLWRBAND, "WRBAND"}, {EPOLLMSG, "MSG"},
+    };
     buf[0] = '\0';
-    const char *parts[5];
+    uint32_t known = 0;
     size_t count = 0;
-    if (events & EPOLLIN)
-        parts[count++] = "IN";
-    if (events & EPOLLOUT)
-        parts[count++] = "OUT";
-    if (events & EPOLLRDHUP)
-        parts[count++] = "RDHUP";
-    if (events & EPOLLHUP)
-        parts[count++] = "HUP";
-    if (events & EPOLLERR)
-        parts[count++] = "ERR";
-    uint32_t known = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLHUP | EPOLLERR;
+    for (size_t i = 0; i < sizeof rows / sizeof *rows; i++)
+    {
+        known |= rows[i].bit;
+        if (events & rows[i].bit)
+        {
+            if (count++ > 0)
+                strncat(buf, "+", cap - strlen(buf) - 1);
+            strncat(buf, rows[i].name, cap - strlen(buf) - 1);
+        }
+    }
     if (events & ~known)
     {
-        fprintf(stderr, "epoll_wait reported bits 0x%x outside IN|OUT|RDHUP|HUP|ERR\n", events);
+        fprintf(stderr, "epoll_wait reported bits 0x%x outside Linux's named readiness bits\n", events);
         _exit(1);
-    }
-    for (size_t i = 0; i < count; i++)
-    {
-        if (i > 0)
-            strncat(buf, "+", cap - strlen(buf) - 1);
-        strncat(buf, parts[i], cap - strlen(buf) - 1);
     }
 }
 
@@ -192,6 +197,7 @@ static struct sockaddr_in loopback(uint16_t port)
 static void run_op(const char *op)
 {
     int a, b, c;
+    unsigned u;
     if (sscanf(op, "sock:%d", &a) == 1 && strchr(op + 5, ':') == NULL)
     {
         int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
@@ -310,6 +316,27 @@ static void run_op(const char *op)
     {
         struct epoll_event ev;
         ev.events = interest_to_epoll(c);
+        ev.data.u64 = (uint64_t)b;
+        if (epoll_ctl(slot_fd(a), EPOLL_CTL_MOD, slot_fd(b), &ev) < 0)
+            emit_errno();
+        else
+            emit("ok");
+    }
+    else if (sscanf(op, "eadd:%d:%d:%u", &a, &b, &u) == 3)
+    {
+        /* Raw <sys/epoll.h> events: passed through unconverted. */
+        struct epoll_event ev;
+        ev.events = u;
+        ev.data.u64 = (uint64_t)b;
+        if (epoll_ctl(slot_fd(a), EPOLL_CTL_ADD, slot_fd(b), &ev) < 0)
+            emit_errno();
+        else
+            emit("ok");
+    }
+    else if (sscanf(op, "emod:%d:%d:%u", &a, &b, &u) == 3)
+    {
+        struct epoll_event ev;
+        ev.events = u;
         ev.data.u64 = (uint64_t)b;
         if (epoll_ctl(slot_fd(a), EPOLL_CTL_MOD, slot_fd(b), &ev) < 0)
             emit_errno();

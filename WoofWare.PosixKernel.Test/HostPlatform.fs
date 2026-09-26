@@ -40,3 +40,39 @@ module HostPlatform =
         match flavour () with
         | None -> Assert.Ignore $"no Unix host to measure (%s{RuntimeInformation.OSDescription})"
         | Some flavour -> action flavour
+
+    /// This host process's architecture, or `None` for one the library does not
+    /// model.
+    let architecture () : SimulatedUnixArchitecture option =
+        match RuntimeInformation.ProcessArchitecture with
+        | Architecture.X64 -> Some SimulatedUnixArchitecture.X64
+        | Architecture.Arm64 -> Some SimulatedUnixArchitecture.Arm64
+        | _ -> None
+
+    /// The preset built for this flavour and architecture, or `None` where the
+    /// library has none.
+    let presetFor
+        (flavour : SimulatedUnixFlavour)
+        (architecture : SimulatedUnixArchitecture)
+        : SimulatedUnixPlatform option
+        =
+        match flavour, architecture with
+        | SimulatedUnixFlavour.Linux, SimulatedUnixArchitecture.X64 -> Some SimulatedUnixPlatform.linuxX64
+        | SimulatedUnixFlavour.Linux, SimulatedUnixArchitecture.Arm64 -> Some SimulatedUnixPlatform.linuxArm64
+        | SimulatedUnixFlavour.Darwin, SimulatedUnixArchitecture.Arm64 -> Some SimulatedUnixPlatform.macOsArm64
+        | SimulatedUnixFlavour.Darwin, SimulatedUnixArchitecture.X64 -> None
+
+    /// Run `action` against the preset for this host's flavour and architecture,
+    /// for tests that measure a fact the architecture decides. Skips where the
+    /// library models no such host; whether the host's *page size* is the
+    /// preset's is `TestArchitectureAgainstHost`'s question, not a reason to skip.
+    let onUnixHostPreset (action : SimulatedUnixPlatform -> unit) : unit =
+        onUnixHost (fun flavour ->
+            match architecture () with
+            | None -> Assert.Ignore $"no architecture the library models (%O{RuntimeInformation.ProcessArchitecture})"
+            | Some architecture ->
+
+            match presetFor flavour architecture with
+            | None -> Assert.Ignore $"the library has no %O{flavour} %O{architecture} platform to compare against"
+            | Some platform -> action platform
+        )

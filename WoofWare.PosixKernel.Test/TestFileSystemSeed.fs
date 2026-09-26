@@ -382,7 +382,12 @@ module TestFileSystemSeed =
         // ...and a custom release answers them from its flavour, rather than
         // declining to answer at all.
         let custom =
-            SimulatedUnixPlatform.createOrFail "test" SimulatedUnixFlavour.Linux "5.4.0-1234-custom"
+            SimulatedUnixPlatform.createOrFail
+                "test"
+                SimulatedUnixFlavour.Linux
+                SimulatedUnixArchitecture.X64
+                SimulatedPageSize.FourKiB
+                "5.4.0-1234-custom"
 
         SimulatedUnixPlatform.unixRelease custom |> shouldEqual "5.4.0-1234-custom"
         SimulatedUnixPlatform.reportsBirthTime custom |> shouldEqual false
@@ -394,12 +399,22 @@ module TestFileSystemSeed =
         |> PermissionBits.toInt
         |> shouldEqual 0o777
 
-        // The presets are exactly their flavour plus their release, so a custom
-        // platform that restates one *is* it.
-        SimulatedUnixPlatform.createOrFail "test" SimulatedUnixFlavour.Linux "6.17.0-1022-azure"
+        // The presets are exactly their flavour, architecture, page size and
+        // release, so a custom platform that restates one *is* it.
+        SimulatedUnixPlatform.createOrFail
+            "test"
+            SimulatedUnixFlavour.Linux
+            SimulatedUnixArchitecture.X64
+            SimulatedPageSize.FourKiB
+            "6.17.0-1022-azure"
         |> shouldEqual linux
 
-        SimulatedUnixPlatform.createOrFail "test" SimulatedUnixFlavour.Darwin "27.0.0"
+        SimulatedUnixPlatform.createOrFail
+            "test"
+            SimulatedUnixFlavour.Darwin
+            SimulatedUnixArchitecture.Arm64
+            SimulatedPageSize.SixteenKiB
+            "27.0.0"
         |> shouldEqual darwin
 
     [<Test>]
@@ -408,8 +423,20 @@ module TestFileSystemSeed =
         // is what makes every accessor total — and means a host sees the
         // complaint next to the knob it set, rather than at the guest's first
         // `Environment.OSVersion`.
+        //
+        // The release is checked for every combination of the other three,
+        // measured or not, so these errors are the release's alone.
         let create (release : string) =
-            SimulatedUnixPlatform.create SimulatedUnixFlavour.Linux release
+            SimulatedUnixPlatform.create
+                SimulatedUnixFlavour.Linux
+                SimulatedUnixArchitecture.X64
+                SimulatedPageSize.FourKiB
+                release
+            |> Result.mapError (fun error ->
+                match error with
+                | SimulatedUnixPlatformError.Release error -> error
+                | SimulatedUnixPlatformError.UnmeasuredKernel _ -> failwith $"expected a release error, got %O{error}"
+            )
 
         create "" |> shouldEqual (Error SimulatedUnixReleaseError.Empty)
         create null |> shouldEqual (Error SimulatedUnixReleaseError.Empty)

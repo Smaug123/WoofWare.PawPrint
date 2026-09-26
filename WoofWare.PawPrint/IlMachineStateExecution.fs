@@ -1311,6 +1311,20 @@ module IlMachineStateExecution =
 
         state, visited, ownEntries @ baseEntries
 
+    /// The interfaces in `receiverType`'s interface map, its base types' included, in the order
+    /// CoreCLR's interface map lists them.
+    let interfaceMapHandles
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (receiverType : ConcreteTypeHandle)
+        : IlMachineState * ConcreteTypeHandle list
+        =
+        let state, _, entries =
+            collectInterfaceMap loggerFactory baseClassTypes true state Set.empty receiverType
+
+        state, entries |> List.map _.Handle
+
     /// ECMA-335 §I.8.7 lets a call site name a variance-compatible instantiation of an interface
     /// the receiver never declares: `ISink<in T>` implemented at `ISink<object>` is dispatched
     /// through `ISink<string>`. A class implementation reached that way is found by the dispatch

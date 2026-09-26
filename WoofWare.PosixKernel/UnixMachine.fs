@@ -99,20 +99,24 @@ type UnixMachineState =
         /// different value with `UnixMachineState.withProcessorCount`, which
         /// refuses anything below 1, since programs divide by it.
         ProcessorCount : int
-        /// Greatest value `address + length` may take for a user buffer the
-        /// kernel will accept — the machine's `TASK_SIZE_MAX`. Consulted only
-        /// where `SimulatedUnixPlatform.screensUserBufferUpFront` says the
-        /// kernel screens before performing the operation, but a real fact
-        /// about every machine regardless.
+        /// Whether this machine's kernel screens a read or write buffer before
+        /// it performs the operation, and if so the greatest value
+        /// `address + length` may take: the machine's `TASK_SIZE_MAX`.
         ///
-        /// Configuration rather than a constant derived from the platform
-        /// because it varies by *machine*: 2^47 less a page with four-level
-        /// paging on x86-64, 2^56 less a page with five-level, 2^48 on a
-        /// 48-bit-VA arm64. Two GitHub runners of the same image were measured
-        /// disagreeing, so no value derived from the flavour or the kernel
-        /// release could be right everywhere. See `ObservedUserAddressLimit`
-        /// for the values real machines have been seen to have.
-        UserAddressLimit : uint64
+        /// Whether it screens is the platform's
+        /// `SimulatedUnixPlatform.screensUserBufferUpFront`. The limit is
+        /// configuration rather than a constant derived from the platform,
+        /// because it varies by *machine* as well as by architecture: 2^47 less
+        /// a page with four-level paging on x86-64, 2^56 less a page with
+        /// five-level, 2^48 on a 48-bit-VA arm64. Two GitHub runners of the same
+        /// image were measured disagreeing, so no value derived from the kernel
+        /// could be right everywhere.
+        ///
+        /// `UnixSystem.initial` sets the platform's default, and
+        /// `UnixMachineState.withUserAddressLimit` another limit the platform's
+        /// architecture has. `UnixSystem.checkInvariants` reports a check that
+        /// disagrees with the platform (`UnixSystemDefect.UserBufferCheckNotOfPlatform`).
+        UserBufferCheck : UserBufferCheck
         /// Unix-shaped platform identity the simulated process reports, as
         /// observed through `uname(2)`, and the flavour every other
         /// platform-dependent answer follows.
@@ -163,14 +167,42 @@ type EphemeralPortUse =
 [<RequireQualifiedAccess>]
 module UnixMachineState =
 
-    /// Set the greatest range end a user buffer may reach. Rejects zero, which
-    /// leaves no address usable as a buffer and so describes no machine.
+    /// Whether `check` is one a machine on `platform` can have: an up-front
+    /// screen exactly where the platform screens, at a limit that machines of the
+    /// platform's architecture have been observed to have.
+    let isUserBufferCheckOf (platform : SimulatedUnixPlatform) (check : UserBufferCheck) : bool =
+        match check with
+        | UserBufferCheck.AtCopyTime -> not (SimulatedUnixPlatform.screensUserBufferUpFront platform)
+        | UserBufferCheck.BeforeOperation limit ->
+            SimulatedUnixPlatform.screensUserBufferUpFront platform
+            && ObservedUserAddressLimit.architectureOf limit = Some (SimulatedUnixPlatform.architecture platform)
+
+    /// Set the greatest range end a user buffer may reach: the machine's
+    /// `TASK_SIZE_MAX`.
+    ///
+    /// Refused on a platform that screens no buffer up front, which has no such
+    /// limit to set, and for a limit no machine of the platform's architecture
+    /// has been observed to have (see `ObservedUserAddressLimit`).
     let withUserAddressLimit (limit : uint64) (machine : UnixMachineState) : UnixMachineState =
-        if limit = 0UL then
-            failwith "UserAddressLimit must be positive; got 0, which is a machine with no user address space"
+        let platform = machine.UnixPlatform
+
+        if not (SimulatedUnixPlatform.screensUserBufferUpFront platform) then
+            failwith
+                $"UnixMachineState.withUserAddressLimit: a %O{SimulatedUnixPlatform.flavour platform} kernel screens no buffer before performing an operation, so it has no user address limit to set; got 0x%x{limit}."
+
+        let architecture = SimulatedUnixPlatform.architecture platform
+
+        match ObservedUserAddressLimit.architectureOf limit with
+        | Some observed when observed = architecture -> ()
+        | Some observed ->
+            failwith
+                $"UnixMachineState.withUserAddressLimit: 0x%x{limit} is the TASK_SIZE_MAX of an %O{observed} machine, but this platform is %O{architecture}."
+        | None ->
+            failwith
+                $"UnixMachineState.withUserAddressLimit: no %O{architecture} machine has been observed with a TASK_SIZE_MAX of 0x%x{limit}; ObservedUserAddressLimit lists those that have."
 
         { machine with
-            UserAddressLimit = limit
+            UserBufferCheck = UserBufferCheck.BeforeOperation limit
         }
 
     /// Set the logical-processor count the simulated process reports. Rejects
@@ -312,14 +344,9 @@ module UnixMachineState =
             FileSystemType = resolved
         }
 
-    /// Whether, and where, this machine's machine screens a read or write buffer
-    /// before performing the operation: the flavour decides whether, the
-    /// machine's address-space limit decides where.
-    let userBufferCheck (machine : UnixMachineState) : UserBufferCheck =
-        if SimulatedUnixPlatform.screensUserBufferUpFront machine.UnixPlatform then
-            UserBufferCheck.BeforeOperation machine.UserAddressLimit
-        else
-            UserBufferCheck.AtCopyTime
+    /// Whether, and where, this machine's kernel screens a read or write buffer
+    /// before performing the operation. See `UnixMachineState.UserBufferCheck`.
+    let userBufferCheck (machine : UnixMachineState) : UserBufferCheck = machine.UserBufferCheck
 
     /// The socket `socketId` names.
     ///
@@ -355,7 +382,7 @@ module UnixMachineState =
     ///
     /// Darwin has no measured rows and needs none: both waiters refuse that
     /// flavour before reaching here — epoll at registration
-    /// (`UnixPoll.changeSocketEventRegistration`; kqueue is structurally
+    /// (`UnixPoll.epollCtl`; kqueue is structurally
     /// different) and `UnixPoll.poll` — so neither asks a readiness question of
     /// a Darwin-flavoured machine.
     let socketReadinessLevel (socketId : SocketId) (machine : UnixMachineState) : ReadinessLevel =
@@ -383,7 +410,7 @@ module UnixMachineState =
             | SocketKind.Raw
             | SocketKind.SeqPacket ->
                 failwith
-                    $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is %O{target.Kind}, whose readiness is measured for poll but not for epoll. Both kinds are reachable only in the AF_UNIX domain, and two callers arrive here: an epoll ADD through `UnixPoll.changeSocketEventRegistration` (the registration screen rejects only regular files, so a socket of any kind is admitted) and `UnixPoll.poll` (which needs no registration at all). On Linux `poll(2)` reports OUT|WRNORM|WRBAND for a fresh SOCK_RAW and OUT|HUP|WRNORM|WRBAND for a fresh SOCK_SEQPACKET (docs/plans/2026-08-23-socket-poll/pollgaps.c, and docs/plans/2026-08-23-posix-kernel-extraction/poll-alphabet.c for the WRNORM and WRBAND bits). Those two rows are the whole answer only while `listen`, `connect` and `accept` keep refusing these kinds (their `UnmeasuredKind` refusals), which is what confines such a socket to `Idle` — the real kernel does accept connections on SOCK_SEQPACKET, so measuring those operations reopens every other phase for it. They are still refused because what `epoll_wait` reports is only *inferred* from the two waiters sharing one poll handler, and every other row in this function is measured through both. Take an epoll measurement (an et.c-style probe on an AF_UNIX raw and seqpacket socket) before answering, since answering here makes epoll delivery answer too."
+                    $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is %O{target.Kind}, whose readiness is measured for poll but not for epoll. Both kinds are reachable only in the AF_UNIX domain, and two callers arrive here: an epoll ADD through `UnixPoll.epollCtl` (the registration screen rejects only regular files and directories, so a socket of any kind is admitted) and `UnixPoll.poll` (which needs no registration at all). On Linux `poll(2)` reports OUT|WRNORM|WRBAND for a fresh SOCK_RAW and OUT|HUP|WRNORM|WRBAND for a fresh SOCK_SEQPACKET (docs/plans/2026-08-23-socket-poll/pollgaps.c, and docs/plans/2026-08-23-posix-kernel-extraction/poll-alphabet.c for the WRNORM and WRBAND bits). Those two rows are the whole answer only while `listen`, `connect` and `accept` keep refusing these kinds (their `UnmeasuredKind` refusals), which is what confines such a socket to `Idle` — the real kernel does accept connections on SOCK_SEQPACKET, so measuring those operations reopens every other phase for it. They are still refused because what `epoll_wait` reports is only *inferred* from the two waiters sharing one poll handler, and every other row in this function is measured through both. Take an epoll measurement (an et.c-style probe on an AF_UNIX raw and seqpacket socket) before answering, since answering here makes epoll delivery answer too."
         | SocketPhase.EstablishedPendingReport connectionId
         | SocketPhase.Established connectionId ->
             // With the peer alive and no receive path modelled, both ends
@@ -432,7 +459,7 @@ module UnixMachineState =
             }
         | SocketPhase.Dead ->
             failwith
-                $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is in the Darwin-only Dead phase. Both of this library's waiters refuse the Darwin flavour before any level is computed — `UnixPoll.changeSocketEventRegistration` because kqueue is structurally different, and `UnixPoll.poll` because Darwin's poll is a kqueue filter per group of requested bits rather than a masked level — so reaching here means a caller asked for a Darwin socket's level directly, or is a bug in this library. Darwin polls this phase IN|PRI|HUP (docs/plans/2026-08-23-socket-poll/pollmulti.c) if that changes."
+                $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is in the Darwin-only Dead phase. Both of this library's waiters refuse the Darwin flavour before any level is computed — `UnixPoll.epollCtl` because kqueue is structurally different, and `UnixPoll.poll` because Darwin's poll is a kqueue filter per group of requested bits rather than a masked level — so reaching here means a caller asked for a Darwin socket's level directly, or is a bug in this library. Darwin polls this phase IN|PRI|HUP (docs/plans/2026-08-23-socket-poll/pollmulti.c) if that changes."
 
     /// Whether any *other* socket's binding conflicts with `candidate`, taken
     /// on behalf of `socket`.

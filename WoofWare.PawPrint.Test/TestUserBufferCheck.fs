@@ -146,46 +146,81 @@ module TestUserBufferCheck =
         |> EmulatedKernel.mapMachine (UnixMachineState.withUserAddressLimit limit)
 
     /// macOS performs no up-front check at all: measured, every address at
-    /// every size reads 0 from a descriptor with nothing to transfer. The
-    /// machine's address-space limit is not consulted, so setting it to
-    /// something absurd changes nothing.
+    /// every size reads 0 from a descriptor with nothing to transfer. So a
+    /// Darwin machine has no address-space limit to set, and setting one is
+    /// refused rather than silently ignored.
     [<Test>]
     let ``Darwin checks at copy time`` () : unit =
-        for limit in [ 1UL ; ObservedUserAddressLimit.X64FourLevelPaging ; UInt64.MaxValue ] do
-            UnixMachineState.userBufferCheck (kernelOn SimulatedUnixPlatform.macOsArm64 limit).Machine
-            |> shouldEqual UserBufferCheck.AtCopyTime
+        UnixMachineState.userBufferCheck (EmulatedKernel.create SimulatedUnixPlatform.macOsArm64).Machine
+        |> shouldEqual UserBufferCheck.AtCopyTime
+
+        for limit in [ 1UL ; ObservedUserAddressLimit.Arm64FortyEightBit ; UInt64.MaxValue ] do
+            Assert.Throws<exn> (fun () -> kernelOn SimulatedUnixPlatform.macOsArm64 limit |> ignore<EmulatedKernel>)
+            |> fun e -> e.Message |> shouldContainText "screens no buffer"
 
     /// The limit is the *machine's*, not the flavour's: the same Linux platform
-    /// screens at whichever address space its host was configured with. Two
-    /// GitHub runners of one image were measured disagreeing, which is why this
-    /// is configuration rather than a constant.
+    /// screens at whichever address space its host was configured with, among
+    /// those its architecture has. Two GitHub runners of one image were measured
+    /// disagreeing, which is why this is configuration rather than a constant.
     [<Test>]
     let ``Linux screens at the machine's limit`` () : unit =
         let observed =
             [
-                ObservedUserAddressLimit.X64FourLevelPaging
-                ObservedUserAddressLimit.X64FiveLevelPaging
-                ObservedUserAddressLimit.Arm64FortyEightBit
+                SimulatedUnixPlatform.linuxX64, ObservedUserAddressLimit.X64FourLevelPaging
+                SimulatedUnixPlatform.linuxX64, ObservedUserAddressLimit.X64FiveLevelPaging
+                SimulatedUnixPlatform.linuxArm64, ObservedUserAddressLimit.Arm64FortyEightBit
             ]
 
-        for limit in observed do
-            UnixMachineState.userBufferCheck (kernelOn SimulatedUnixPlatform.linuxX64 limit).Machine
+        for platform, limit in observed do
+            UnixMachineState.userBufferCheck (kernelOn platform limit).Machine
             |> shouldEqual (UserBufferCheck.BeforeOperation limit)
 
         // Every observed value is a real `TASK_SIZE_MAX`, so each is either a
         // power of two or one page below one. A typo in any of them shows here.
-        for limit in observed do
+        for _, limit in observed do
             let isPowerOfTwo (value : uint64) =
                 value <> 0UL && value &&& (value - 1UL) = 0UL
 
             (isPowerOfTwo limit || isPowerOfTwo (limit + 4096UL)) |> shouldEqual true
 
-        // A machine with no user address space is not a machine.
-        Assert.Throws<exn> (fun () ->
-            EmulatedKernel.mapMachine (UnixMachineState.withUserAddressLimit 0UL) EmulatedKernel.initial
-            |> ignore<EmulatedKernel>
-        )
-        |> ignore<exn>
+        // A machine with no user address space is not a machine, and one
+        // architecture's limit is not another's.
+        for platform, limit in
+            [
+                SimulatedUnixPlatform.linuxX64, 0UL
+                SimulatedUnixPlatform.linuxX64, ObservedUserAddressLimit.Arm64FortyEightBit
+                SimulatedUnixPlatform.linuxArm64, ObservedUserAddressLimit.X64FourLevelPaging
+            ] do
+            Assert.Throws<exn> (fun () -> kernelOn platform limit |> ignore<EmulatedKernel>)
+            |> ignore<exn>
+
+    /// A host configuration that says nothing about the limit gets its
+    /// platform's own, so changing only the platform never pairs one
+    /// architecture's limit with another's.
+    [<Test>]
+    let ``an unconfigured limit is the platform's own`` () : unit =
+        let checkOn (platform : SimulatedUnixPlatform) : UserBufferCheck =
+            { KernelConfig.Default with
+                UnixPlatform = platform
+            }
+            |> KernelConfig.toKernel
+            |> fun kernel -> UnixMachineState.userBufferCheck kernel.Machine
+
+        checkOn SimulatedUnixPlatform.linuxX64
+        |> shouldEqual (UserBufferCheck.BeforeOperation ObservedUserAddressLimit.X64FourLevelPaging)
+
+        checkOn SimulatedUnixPlatform.linuxArm64
+        |> shouldEqual (UserBufferCheck.BeforeOperation ObservedUserAddressLimit.Arm64FortyEightBit)
+
+        checkOn SimulatedUnixPlatform.macOsArm64
+        |> shouldEqual UserBufferCheck.AtCopyTime
+
+        { KernelConfig.Default with
+            UserAddressLimit = Some ObservedUserAddressLimit.X64FiveLevelPaging
+        }
+        |> KernelConfig.toKernel
+        |> fun kernel -> UnixMachineState.userBufferCheck kernel.Machine
+        |> shouldEqual (UserBufferCheck.BeforeOperation ObservedUserAddressLimit.X64FiveLevelPaging)
 
     /// The rows that separate x86-64's `TASK_SIZE_MAX` from arm64's. Getting
     /// this wrong in either direction is invisible to any test that only asks
@@ -276,10 +311,9 @@ module TestUserBufferCheck =
         classify (CliType.RuntimePointer (CliRuntimePointer.Verbatim -1L))
         |> shouldEqual (BufferPointer.RawAddress UInt64.MaxValue)
 
-    /// A kernel of the given flavour on the commonest x86-64 machine. Only the
-    /// screening behaviour is under test here, so the limit is arbitrary.
-    let private kernelFor (platform : SimulatedUnixPlatform) : EmulatedKernel =
-        kernelOn platform ObservedUserAddressLimit.X64FourLevelPaging
+    /// A kernel on the given platform with its default buffer check. Only the
+    /// screening behaviour is under test here, so the limit is incidental.
+    let private kernelFor (platform : SimulatedUnixPlatform) : EmulatedKernel = EmulatedKernel.create platform
 
     let private storage : BufferPointer =
         BufferPointer.Storage (ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 1), [])

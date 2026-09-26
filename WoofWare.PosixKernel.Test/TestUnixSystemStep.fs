@@ -3256,12 +3256,11 @@ module TestUnixSystemStep =
     /// A port with the standard input descriptor registered on it and pending.
     ///
     /// Built out of a standard stream rather than a socket, which is what makes
-    /// it constructible here at all: `SocketEventPort.epollReadinessOfDescription`
-    /// reports `EPOLLHUP` for stdin unconditionally — the launcher closed the
-    /// pipe's write end — and `ReadinessLevel.reportedUnder` passes `Hup`
-    /// through whatever the registration asked for. So the interest below asks
-    /// for *nothing at all* and the port is still deliverable, with no socket
-    /// phase to arrange.
+    /// it constructible here at all: `LinuxReadiness.ofDescription` reports
+    /// `EPOLLHUP` for stdin unconditionally — the launcher closed the pipe's
+    /// write end — and every stored mask carries `EPOLLHUP`. So the
+    /// registration below asks for *nothing at all* and the port is still
+    /// deliverable, with no socket phase to arrange.
     let private withPendingPort (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         let stdin = 0
         let stdinId = descriptionOf stdin system
@@ -3269,24 +3268,15 @@ module TestUnixSystemStep =
         let portId = descriptionOf portFd system
 
         let registry =
-            match
-                FileDescriptorRegistry.changeSocketEventRegistration
-                    portFd
-                    stdin
-                    0L
-                    (SocketEventRegistrationChange.Add (
-                        SocketEventTrigger.EdgeTriggered,
-                        {
-                            SocketEventInterest.In = false
-                            Out = false
-                            RdHup = false
-                        },
-                        0xBEEFUL
-                    ))
-                    system.Process.FileDescriptors
-            with
-            | Ok registry -> registry
-            | Error error -> failwith $"expected the registration to succeed, got %O{error}"
+            FileDescriptorRegistry.addEpollRegistration
+                portId
+                (stdin, stdinId)
+                {
+                    Events = EpollEvents.EdgeTriggered ||| EpollEvents.Err ||| EpollEvents.Hup
+                    Data = 0xBEEFUL
+                    RegisteredAt = 0L
+                }
+                system.Process.FileDescriptors
 
         portFd,
         { system with
@@ -3312,14 +3302,7 @@ module TestUnixSystemStep =
 
         let delivered, drained = SocketEventPort.drain portId 8 system
 
-        delivered
-        |> shouldEqual
-            [
-                0xBEEFUL,
-                { ReadinessLevel.none with
-                    Hup = true
-                }
-            ]
+        delivered |> shouldEqual [ 0xBEEFUL, EpollEvents.Hup ]
 
         SocketEventPort.hasDeliverableEvent portId drained |> shouldEqual false
 
