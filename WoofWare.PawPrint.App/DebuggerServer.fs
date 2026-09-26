@@ -75,9 +75,10 @@ module DebuggerServer =
     /// `task` is the emulated kernel's record for this thread, which is where a syscall park
     /// keeps both which syscall it is in and what it is waiting for: `BlockedInSyscall`
     /// carries neither, so a renderer handed only the status could say that a thread is
-    /// parked and nothing else. `None` — a thread with no task at all — is an interpreter
-    /// bug that `EmulatedKernel.checkTaskInvariants` names; this reports it rather than
-    /// raising, because a debugger is most wanted when the machine is already wrong.
+    /// parked and nothing else. `None` is what a terminated thread has, since its exit
+    /// removed its task; for any other thread it is an interpreter bug that
+    /// `EmulatedKernel.checkTaskInvariants` names, and this reports it rather than raising,
+    /// because a debugger is most wanted when the machine is already wrong.
     let private writeThreadStatus
         (writer : Utf8JsonWriter)
         (task : UnixTaskState option)
