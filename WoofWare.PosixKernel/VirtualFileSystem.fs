@@ -472,7 +472,9 @@ module VirtualFileSystem =
         contents.CopyTo result
         bytes.CopyTo (0, result, int offset, bytes.Length)
 
-        Ok (ImmutableArray.CreateRange result)
+        // Wrapped rather than copied: nothing else holds `result`, and a file can
+        // be two gigabytes long.
+        Ok (System.Runtime.InteropServices.ImmutableCollectionsMarshal.AsImmutableArray result)
 
     /// The length a regular file becomes when truncated to `length`, or the
     /// refusal if that is more than this model can hold.

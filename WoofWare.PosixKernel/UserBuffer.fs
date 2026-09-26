@@ -110,8 +110,11 @@ type UserBuffer =
     /// kernel's answer is EFAULT — at whichever step it first looks, which is
     /// not necessarily the first step of the syscall.
     | Unmapped of address : uint64
-    /// Real storage. The kernel never learns where: an address is what a range
-    /// check needs, and `Mapped` is in range by construction.
+    /// Real storage. The kernel never learns where, so a platform that screens
+    /// a buffer's range up front can only decide the ranges no placement fits:
+    /// one longer than the whole user address space faults wherever it starts.
+    /// Any shorter range is taken to fit, which is exact while the count is
+    /// within the storage and an assumption once it reaches past it.
     | Mapped
     /// A real user address whose bytes the client cannot produce.
     ///
@@ -182,9 +185,10 @@ module UserBufferCheck =
     /// pass a platform that screens nothing, and both still have no answer at
     /// the transfer.
     ///
-    /// `length` is the count the caller asked for, not the storage's size. A
-    /// kernel bounds a range against the address space, never against the
-    /// caller's own allocation.
+    /// `length` is the count the syscall screens, which for `read(2)` and
+    /// `write(2)` is the whole count the caller asked for, and never the
+    /// storage's size. A kernel bounds a range against the address space, never
+    /// against the caller's own allocation.
     let faultsBeforeOperationFor
         (check : UserBufferCheck)
         (buffer : UserBuffer)
@@ -192,13 +196,13 @@ module UserBufferCheck =
         : Result<bool, BufferRefusal>
         =
         match buffer with
-        // In range by construction: real storage is inside the user address
-        // space of every platform this library models, so the check is not
-        // performed rather than performed and passed.
-        | UserBuffer.Mapped -> Ok false
-        // Real mapped memory, so it too is in range; it runs out of answer only
-        // where bytes are wanted.
-        | UserBuffer.Opaque -> Ok false
+        // Real memory at an address this kernel never learns, screened as
+        // though it began at address 0, the placement every other one fits
+        // inside: a range that faults from there faults wherever the storage
+        // is. Measured on Linux 6.18.5 aarch64, a count of 2^48 + 1 faults even
+        // through NULL.
+        | UserBuffer.Mapped
+        | UserBuffer.Opaque -> Ok (faultsBeforeOperation check 0UL length)
         | UserBuffer.Unmapped address -> Ok (faultsBeforeOperation check address length)
         | UserBuffer.Addressless ->
             match check with

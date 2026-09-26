@@ -41,10 +41,12 @@ module ReadRefusal =
 /// What `write(2)` did, for a request this kernel could answer.
 [<RequireQualifiedAccess>]
 type WriteAnswer =
-    /// How many bytes moved, which the entry point returns. Never short: this
-    /// kernel has nothing that could push back on a write, and its filesystem
-    /// cannot run out of space.
-    | Completed of written : int
+    /// How many bytes moved, which the entry point returns: every one asked
+    /// for, unless that was more than the platform moves in one call (see
+    /// `TransferCountLimit` and `WriteAdmission.Transfer`). Nothing else makes
+    /// a write short here: this kernel has nothing that could push back on one,
+    /// and its filesystem cannot run out of space.
+    | Completed of written : int64
     /// The entry point returns -1 and the caller stores `error` wherever its
     /// libc keeps errno.
     | Failed of error : UnixError
@@ -64,7 +66,9 @@ type WriteAdmission =
     /// no-op.
     | Answered of answer : WriteAnswer
     /// The copy is reached: extract exactly `count` bytes and pass them to
-    /// `write`.
+    /// `write`. That is the count asked for, or one call's worth of it if it was
+    /// more (see `TransferCountLimit`), so it is never more than
+    /// `Int32.MaxValue`.
     | Transfer of count : int
 
 /// Why this kernel will not answer a `write`.
@@ -161,6 +165,56 @@ type private WriteTarget =
 [<RequireQualifiedAccess>]
 module UnixReadWrite =
 
+    /// Whether this platform refuses `count` outright, as EINVAL, before it
+    /// looks at anything else about the call. See `TransferCountLimit.Refused`.
+    let private countRefused (platform : SimulatedUnixPlatform) (count : uint64) : bool =
+        match SimulatedUnixPlatform.transferCountLimit platform with
+        | TransferCountLimit.Refused maxTransfer -> count > uint64 maxTransfer
+        | TransferCountLimit.Shortened _ -> false
+
+    /// Whether this platform refuses, as EINVAL, a transfer of `count` bytes at
+    /// file position `position` because it would carry the position past
+    /// `INT64_MAX`. `count` is the whole count asked for. Only an object with a
+    /// position is asked: a pipe or a socket has none.
+    let private positionOverflows (platform : SimulatedUnixPlatform) (position : int64) (count : uint64) : bool =
+        System.Diagnostics.Debug.Assert (position >= 0L, "positionOverflows: a file position is never negative")
+
+        // Measured by transfer-counts-position.c in
+        // docs/plans/2026-08-23-posix-kernel-extraction/: Linux checks after the
+        // buffer screen and before anything the object does (a directory's
+        // EISDIR, end-of-file's 0, the copy), over the count as asked rather
+        // than as shortened, for read and write at the description's position as
+        // for pread and pwrite at the argument. Darwin has no such check: a read
+        // there past end-of-file is 0 at every position.
+        match SimulatedUnixPlatform.flavour platform with
+        | SimulatedUnixFlavour.Linux -> count > uint64 (System.Int64.MaxValue - position)
+        | SimulatedUnixFlavour.Darwin -> false
+
+    /// The count the object's own operation sees: at most one call's worth.
+    /// Where the platform refuses a longer count instead, that refusal has
+    /// already been made, so this is the count itself.
+    let private oneCallsWorth (platform : SimulatedUnixPlatform) (count : uint64) : int =
+        let maxTransfer =
+            TransferCountLimit.maxTransfer (SimulatedUnixPlatform.transferCountLimit platform)
+
+        int (min count (uint64 maxTransfer))
+
+    /// `write` and `pwrite` take the bytes their admission said to extract,
+    /// which is at most one call's worth; more is a caller that skipped the
+    /// admission.
+    let private assertOneCallsWorth
+        (syscall : string)
+        (platform : SimulatedUnixPlatform)
+        (bytes : ImmutableArray<byte>)
+        : unit
+        =
+        let maxTransfer =
+            TransferCountLimit.maxTransfer (SimulatedUnixPlatform.transferCountLimit platform)
+
+        if bytes.Length > maxTransfer then
+            failwith
+                $"UnixReadWrite.%s{syscall}: given %d{bytes.Length} bytes, more than the %d{maxTransfer} one call moves on this platform. Pass the bytes the admission said to transfer, whose count is already one call's worth (this is a bug in the caller)."
+
     /// The object's own read operation on a regular file, which `read` and
     /// `pread` reach identically: the transfer window, the shortcut that touches
     /// no buffer at all, and the one point at which the buffer must hold bytes.
@@ -218,32 +272,33 @@ module UnixReadWrite =
         | UserBuffer.Addressless -> Error BufferRefusal.AddresslessAtTransfer
         | UserBuffer.Mapped ->
 
-        // Indexed rather than `Seq.skip`, which would enumerate the whole prefix
-        // on every read and make reading a file quadratic in its length.
-        ImmutableArray.CreateRange (seq { for i in 0 .. transfer - 1 -> contents.[int offset + i] })
+        // A range copy rather than an enumeration: one call can move nearly two
+        // gigabytes.
+        ImmutableArray.Create (contents, int offset, transfer)
         |> ReadAnswer.Completed
         |> Ok
 
     /// `read(2)`: move up to `count` bytes from `fd`'s current offset into the
     /// caller's buffer, and advance the offset by what actually moved.
     ///
-    /// `count` must not be negative. The kernel's `count` is a `size_t`, so a
-    /// negative one is an artefact of a narrower type in whatever layer the
-    /// caller speaks through, and that layer must answer it before asking
-    /// here.
+    /// `count` is the `size_t` the caller asked for. A count longer than one
+    /// call moves is refused or shortened as the platform's
+    /// `TransferCountLimit` says.
     ///
     /// The buffer is consulted at three points and *not* consulted at three
     /// others, and both sets are measured; see the comments inline.
     let read<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (buffer : UserBuffer)
-        (count : int)
+        (count : uint64)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<ReadAnswer * UnixSystem<'Task, 'Handler>, ReadRefusal>
         =
-        if count < 0 then
-            failwith
-                $"UnixReadWrite.read: a count of %d{count} is not a request a kernel ever sees — the foreign-function layer that produced it answers a negative count itself, before it looks at the descriptor. Reject it there."
+        let platform = system.Machine.UnixPlatform
+
+        if countRefused platform count then
+            Ok (ReadAnswer.Failed UnixError.EINVAL, system)
+        else
 
         // The descriptor's access mode, which Linux's `vfs_read` decides before
         // it screens the buffer: measured on both platforms,
@@ -298,10 +353,7 @@ module UnixReadWrite =
         // fault even for a zero-length request. Darwin screens nothing here, so
         // its answers come from the operation itself.
         match
-            UserBufferCheck.faultsBeforeOperationFor
-                (UnixMachineState.userBufferCheck system.Machine)
-                buffer
-                (uint64 count)
+            UserBufferCheck.faultsBeforeOperationFor (UnixMachineState.userBufferCheck system.Machine) buffer count
         with
         | Error refusal -> Error (ReadRefusal.Buffer refusal)
         | Ok true -> Ok (ReadAnswer.Failed UnixError.EFAULT, system)
@@ -340,7 +392,7 @@ module UnixReadWrite =
             // and is answered above: measured, `read(port, buf, 0)` is EINVAL on
             // Linux like every other length.
             match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform, count with
-            | SimulatedUnixFlavour.Linux, 0 -> Ok (ReadAnswer.Completed ImmutableArray.Empty, system)
+            | SimulatedUnixFlavour.Linux, 0UL -> Ok (ReadAnswer.Completed ImmutableArray.Empty, system)
             | SimulatedUnixFlavour.Linux, _
             | SimulatedUnixFlavour.Darwin, _ ->
                 let socket = UnixMachineState.socket socketId system.Machine
@@ -365,10 +417,14 @@ module UnixReadWrite =
             Ok (ReadAnswer.Completed ImmutableArray.Empty, system)
         | ReadTarget.File (inode, offset) ->
 
+        if positionOverflows platform offset count then
+            Ok (ReadAnswer.Failed UnixError.EINVAL, system)
+        else
+
         // The window is computed from the description's own offset, which is the
         // whole of what `pread` does differently; everything after it is the
         // same operation, so the two share it.
-        match readFileAt "read" fd inode offset buffer count system with
+        match readFileAt "read" fd inode offset buffer (oneCallsWorth platform count) system with
         | Error refusal -> Error (ReadRefusal.Buffer refusal)
         | Ok (ReadAnswer.Failed error) -> Ok (ReadAnswer.Failed error, system)
         | Ok (ReadAnswer.Completed bytes) ->
@@ -401,10 +457,7 @@ module UnixReadWrite =
     /// into the caller's buffer, without consulting or moving the description's
     /// own file offset.
     ///
-    /// `count` must not be negative, for the reason `read`'s must not: a kernel
-    /// never sees one, so whichever foreign-function layer produced it must
-    /// answer it. That answer need not be `read`'s — a shim is free to validate
-    /// one of the two and cast the other — which is why neither is given here.
+    /// `count` is the `size_t` the caller asked for, treated as `read`'s is.
     ///
     /// A negative `offset`, by contrast, *is* a request a kernel sees, and is
     /// EINVAL. Where in the order it is answered differs between the flavours,
@@ -415,16 +468,18 @@ module UnixReadWrite =
     let pread<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (buffer : UserBuffer)
-        (count : int)
+        (count : uint64)
         (offset : int64)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<ReadAnswer, BufferRefusal>
         =
-        if count < 0 then
-            failwith
-                $"UnixReadWrite.pread: a count of %d{count} is not a request a kernel ever sees — the foreign-function layer that produced it decides what a negative count means, before it looks at the descriptor. Reject it there."
+        let platform = system.Machine.UnixPlatform
 
-        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+        if countRefused platform count then
+            Ok (ReadAnswer.Failed UnixError.EINVAL)
+        else
+
+        let flavour = SimulatedUnixPlatform.flavour platform
 
         let offsetInvalid = offset < 0L
 
@@ -553,16 +608,17 @@ module UnixReadWrite =
         // request. The unscreened flavour discovers a bad address at the copy
         // instead.
         match
-            UserBufferCheck.faultsBeforeOperationFor
-                (UnixMachineState.userBufferCheck system.Machine)
-                buffer
-                (uint64 count)
+            UserBufferCheck.faultsBeforeOperationFor (UnixMachineState.userBufferCheck system.Machine) buffer count
         with
         | Error refusal -> Error refusal
         | Ok true -> Ok (ReadAnswer.Failed UnixError.EFAULT)
         | Ok false ->
 
-        readFileAt "pread" fd inode offset buffer count system
+        if positionOverflows platform offset count then
+            Ok (ReadAnswer.Failed UnixError.EINVAL)
+        else
+
+        readFileAt "pread" fd inode offset buffer (oneCallsWorth platform count) system
 
     /// What a `write` will operate on, once the descriptor's access mode has
     /// been checked: a file at its description's own offset, or a standard
@@ -616,13 +672,15 @@ module UnixReadWrite =
     let admitWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (buffer : UserBuffer)
-        (count : int)
+        (count : uint64)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<WriteAdmission, WriteRefusal>
         =
-        if count < 0 then
-            failwith
-                $"UnixReadWrite.admitWrite: a count of %d{count} is not a request a kernel ever sees — the foreign-function layer that produced it answers a negative count itself, before it looks at the descriptor. Reject it there."
+        let platform = system.Machine.UnixPlatform
+
+        if countRefused platform count then
+            Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EINVAL))
+        else
 
         match writeTarget fd system with
         | Error error -> Ok (WriteAdmission.Answered (WriteAnswer.Failed error))
@@ -632,10 +690,7 @@ module UnixReadWrite =
         // file operation, so on Linux this beats the zero-size no-op below:
         // measured, `write(1, (void*)-1, 0)` is EFAULT there and 0 on macOS.
         match
-            UserBufferCheck.faultsBeforeOperationFor
-                (UnixMachineState.userBufferCheck system.Machine)
-                buffer
-                (uint64 count)
+            UserBufferCheck.faultsBeforeOperationFor (UnixMachineState.userBufferCheck system.Machine) buffer count
         with
         | Error refusal -> Error (WriteRefusal.Buffer refusal)
         | Ok true -> Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EFAULT))
@@ -658,8 +713,12 @@ module UnixReadWrite =
         | WriteTarget.Socket socketId ->
             let socket = UnixMachineState.socket socketId system.Machine
             Error (WriteRefusal.SocketConnectionState (socketId, socket.Domain, socket.Kind))
+        | WriteTarget.File (_, offset) when positionOverflows platform offset count ->
+            Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EINVAL))
         | WriteTarget.File _
         | WriteTarget.StandardStream _ ->
+
+        let count = oneCallsWorth platform count
 
         if count = 0 then
             // A no-op on both platforms, and specifically one that moves no
@@ -667,7 +726,7 @@ module UnixReadWrite =
             // `ctime` where they were and does not extend the file, even at an
             // offset past its end. The buffer is not resolved: any address that
             // got past the screen is permitted, because it is not dereferenced.
-            Ok (WriteAdmission.Answered (WriteAnswer.Completed 0))
+            Ok (WriteAdmission.Answered (WriteAnswer.Completed 0L))
         else
 
         match buffer with
@@ -687,6 +746,10 @@ module UnixReadWrite =
     /// Still answers the descriptor questions itself, so a caller that skipped
     /// the admission gets a kernel's answer rather than an inconsistent one.
     ///
+    /// `bytes` is at most one call's worth, as the admission's
+    /// `WriteAdmission.Transfer` says; a longer array is refused as the
+    /// caller's mistake.
+    ///
     /// Never short and never `EINTR`: this kernel has nothing that could push
     /// back on a write, and its filesystem cannot run out of space.
     let write<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -698,6 +761,8 @@ module UnixReadWrite =
         if bytes.IsDefault then
             failwith
                 "UnixReadWrite.write: bytes is the default ImmutableArray, whose underlying array is null. That is not an empty write; pass ImmutableArray<byte>.Empty."
+
+        assertOneCallsWorth "write" system.Machine.UnixPlatform bytes
 
         match writeTarget fd system with
         | Error error -> Ok (WriteAnswer.Failed error, system)
@@ -721,10 +786,14 @@ module UnixReadWrite =
             //
             // After the descriptor checks, not before: `write(rdonlyFd, buf, 0)`
             // is EBADF rather than 0, measured on both.
-            Ok (WriteAnswer.Completed 0, system)
+            Ok (WriteAnswer.Completed 0L, system)
+        | Ok (WriteTarget.File (_, offset)) when
+            positionOverflows system.Machine.UnixPlatform offset (uint64 bytes.Length)
+            ->
+            Ok (WriteAnswer.Failed UnixError.EINVAL, system)
         | Ok (WriteTarget.StandardStream role) ->
             Ok (
-                WriteAnswer.Completed bytes.Length,
+                WriteAnswer.Completed (int64 bytes.Length),
                 { system with
                     Process =
                         { system.Process with
@@ -760,7 +829,7 @@ module UnixReadWrite =
         // would carry the offset past what the model can represent has already
         // been refused there.
         Ok (
-            WriteAnswer.Completed bytes.Length,
+            WriteAnswer.Completed (int64 bytes.Length),
             { system with
                 Machine =
                     { system.Machine with
@@ -892,14 +961,16 @@ module UnixReadWrite =
     let admitPWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (buffer : UserBuffer)
-        (count : int)
+        (count : uint64)
         (offset : int64)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<WriteAdmission, PWriteRefusal>
         =
-        if count < 0 then
-            failwith
-                $"UnixReadWrite.admitPWrite: a count of %d{count} is not a request a kernel ever sees — the foreign-function layer that produced it decides what a negative count means, before it looks at the descriptor. Reject it there."
+        let platform = system.Machine.UnixPlatform
+
+        if countRefused platform count then
+            Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EINVAL))
+        else
 
         match pwriteTarget fd offset system with
         | Error error -> Ok (WriteAdmission.Answered (WriteAnswer.Failed error))
@@ -910,14 +981,17 @@ module UnixReadWrite =
         // below: measured, `pwrite(f, (void*)-1, 0, 0)` is EFAULT on Linux and 0
         // on Darwin.
         match
-            UserBufferCheck.faultsBeforeOperationFor
-                (UnixMachineState.userBufferCheck system.Machine)
-                buffer
-                (uint64 count)
+            UserBufferCheck.faultsBeforeOperationFor (UnixMachineState.userBufferCheck system.Machine) buffer count
         with
         | Error refusal -> Error (PWriteRefusal.Buffer refusal)
         | Ok true -> Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EFAULT))
         | Ok false ->
+
+        if positionOverflows platform offset count then
+            Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EINVAL))
+        else
+
+        let count = oneCallsWorth platform count
 
         if count = 0 then
             // A no-op on both flavours, and specifically one that moves no
@@ -927,7 +1001,7 @@ module UnixReadWrite =
             // nothing is read through it — a null pointer is an ordinary user
             // address, so it reaches here rather than being screened above, and
             // `pwrite(f, NULL, 0, 0)` is 0 on both.
-            Ok (WriteAdmission.Answered (WriteAnswer.Completed 0))
+            Ok (WriteAdmission.Answered (WriteAnswer.Completed 0L))
         else
 
         match buffer with
@@ -954,6 +1028,10 @@ module UnixReadWrite =
     /// A system comes back, unlike `pread`'s: the offset does not move, but the
     /// file's contents and timestamps do.
     ///
+    /// `bytes` is at most one call's worth, as the admission's
+    /// `WriteAdmission.Transfer` says; a longer array is refused as the
+    /// caller's mistake.
+    ///
     /// Never short and never `EINTR`: this kernel has nothing that could push
     /// back on a write, and its filesystem cannot run out of space.
     let pwrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -967,6 +1045,8 @@ module UnixReadWrite =
             failwith
                 "UnixReadWrite.pwrite: bytes is the default ImmutableArray, whose underlying array is null. That is not an empty write; pass ImmutableArray<byte>.Empty."
 
+        assertOneCallsWorth "pwrite" system.Machine.UnixPlatform bytes
+
         match pwriteTarget fd offset system with
         | Error error -> Ok (WriteAnswer.Failed error, system)
         | Ok inode ->
@@ -979,7 +1059,9 @@ module UnixReadWrite =
             // same answer, and `VirtualFileSystem.writeFile` below asserts a
             // non-empty write precisely because it would otherwise restamp the
             // inode.
-            Ok (WriteAnswer.Completed 0, system)
+            Ok (WriteAnswer.Completed 0L, system)
+        elif positionOverflows system.Machine.UnixPlatform offset (uint64 bytes.Length) then
+            Ok (WriteAnswer.Failed UnixError.EINVAL, system)
         else
 
         let now = UnixMachineState.realtime system.Machine
@@ -998,7 +1080,7 @@ module UnixReadWrite =
         // The description is left exactly where it was — the whole of what
         // `pwrite` does differently from `write`, and measured on both flavours.
         Ok (
-            WriteAnswer.Completed bytes.Length,
+            WriteAnswer.Completed (int64 bytes.Length),
             { system with
                 Machine =
                     { system.Machine with

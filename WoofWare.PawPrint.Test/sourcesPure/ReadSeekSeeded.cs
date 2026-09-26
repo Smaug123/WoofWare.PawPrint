@@ -366,6 +366,24 @@ class Program
         check = 81;
         if (LSeek(d, 0, SEEK_SET) != 0) return check;
 
+        // --- the largest size the shim can pass ---
+
+        // `int.MaxValue` is a count every kernel takes: under Darwin's own limit
+        // of INT_MAX, and Linux's screen of address + count stays inside the
+        // address space from 8. So it is answered as any other count would be:
+        // 0 at end-of-file with nothing touched, and the descriptor's own
+        // errors otherwise.
+        check = 82;
+        if (LSeek(f, 5, SEEK_SET) != 5) return check;
+        check = 83;
+        if (Read(f, bogus, int.MaxValue) != 0) return check;
+        check = 84;
+        if (Read(f, (byte*)0, int.MaxValue) != 0) return check;
+        check = 85;
+        if (!ReadRejected(new IntPtr(4242), bogus, int.MaxValue, EBADF)) return check;
+        check = 86;
+        if (!ReadRejected(d, bogus, int.MaxValue, EISDIR)) return check;
+
         return 0;
     }
 }

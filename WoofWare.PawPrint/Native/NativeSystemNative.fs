@@ -238,6 +238,19 @@ module NativeSystemNative =
 
         $"%s{operation}: fd %d{fd}: %s{CloseRefusal.describe refusal} %s{remedy}"
 
+    /// The `int32_t` a shim's transfer entry point returns for a kernel answer
+    /// of `written` bytes, when it was asked to move `bufferSize`.
+    ///
+    /// The shim casts the kernel's `ssize_t` straight to `int32_t`, asserting
+    /// that it is at most the size it asked for; a kernel never moves more than
+    /// it was asked to, so anything else is a bug here or in the library.
+    let private shimTransferCount (operation : string) (bufferSize : int) (written : int64) : int =
+        if written < 0L || written > int64 bufferSize then
+            failwith
+                $"%s{operation}: the kernel reported moving %d{written} bytes of the %d{bufferSize} it was asked for. A kernel never moves more than it was asked to, nor a negative number of bytes (this is an interpreter bug)."
+
+        int written
+
     /// Decode an `nint`-shaped Unix file-descriptor argument. CoreLib passes
     /// fds across the SystemNative boundary as plain `IntPtr` values (the low
     /// 32 bits of `SafeFileHandle.handle`); PawPrint represents these as
@@ -2337,12 +2350,11 @@ module NativeSystemNative =
                 | BufferPointer.Unstatable _ -> false
 
             if bufferSize < 0 then
-                // The shim's own guard, and the reason `UnixPathResolution.getcwd`
-                // refuses a negative capacity rather than answering one: no
-                // `getcwd(3)` sees a negative size, its argument being a
-                // `size_t`. It *also* `assert`s this, so a checked native build
-                // would abort instead; EINVAL is what a guest running against a
-                // retail runtime can observe, and it is the only one of the two
+                // The shim's own guard, ahead of `getcwd(3)`, which takes a
+                // `size_t` and so never sees a negative size. It *also*
+                // `assert`s this, so a checked native build would abort
+                // instead; EINVAL is what a guest running against a retail
+                // runtime can observe, and it is the only one of the two
                 // behaviours we can reproduce.
                 fail UnixError.EINVAL state
             elif bufferIsNull then
@@ -2363,7 +2375,7 @@ module NativeSystemNative =
             match
                 UnixPathResolution.getcwd
                     (BufferPointer.toUserBuffer bufferPointer)
-                    bufferSize
+                    (uint64 bufferSize)
                     (EmulatedKernel.unix state.Kernel)
             with
             | Error (GetCwdRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage bufferPointer refusal)
@@ -3260,7 +3272,7 @@ module NativeSystemNative =
                 UnixReadWrite.pread
                     fd
                     (BufferPointer.toUserBuffer buffer)
-                    bufferSize
+                    (uint64 bufferSize)
                     fileOffset
                     (EmulatedKernel.unix state.Kernel)
             with
@@ -3342,7 +3354,7 @@ module NativeSystemNative =
                 UnixReadWrite.admitPWrite
                     fd
                     (BufferPointer.toUserBuffer buffer)
-                    bufferSize
+                    (uint64 bufferSize)
                     fileOffset
                     (EmulatedKernel.unix state.Kernel)
             with
@@ -3355,6 +3367,8 @@ module NativeSystemNative =
             | Ok (WriteAdmission.Answered (WriteAnswer.Completed written)) ->
                 // The zero-length no-op, which changes nothing at all — so there
                 // is no system to write back, and the buffer was never resolved.
+                let written = shimTransferCount operation bufferSize written
+
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim written)) ctx.Thread
                 |> NativeHandlerResult.completed
@@ -3382,6 +3396,8 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
             | Ok (WriteAnswer.Completed written, system) ->
+                let written = shimTransferCount operation bufferSize written
+
                 withAnswered system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim written)) ctx.Thread
                 |> NativeHandlerResult.completed
@@ -3428,8 +3444,8 @@ module NativeSystemNative =
             // the C returns before `ToFileDescriptor` is ever evaluated, so
             // `Read(badfd, buf, -1)` is EINVAL rather than EBADF. That ordering
             // is a fact about the shim rather than about any kernel, which is
-            // why it is answered here rather than passed on — `UnixReadWrite.read`
-            // refuses a negative count outright.
+            // why it is answered here: `UnixReadWrite.read` takes the kernel's
+            // `size_t`, which no negative size ever becomes.
             //
             // EINVAL, not ERANGE: `Common_Write` answers ERANGE for the same
             // mistake, and the asymmetry is upstream's rather than a typo here
@@ -3444,7 +3460,11 @@ module NativeSystemNative =
             let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 
             match
-                UnixReadWrite.read fd (BufferPointer.toUserBuffer buffer) bufferSize (EmulatedKernel.unix state.Kernel)
+                UnixReadWrite.read
+                    fd
+                    (BufferPointer.toUserBuffer buffer)
+                    (uint64 bufferSize)
+                    (EmulatedKernel.unix state.Kernel)
             with
             | Error (ReadRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
             | Error (ReadRefusal.SocketConnectionState _ as refusal) ->
@@ -5554,7 +5574,8 @@ module NativeSystemNative =
                 =
                 match answer with
                 | WriteAnswer.Failed error -> -1, withErrno ctx error system state
-                | WriteAnswer.Completed written -> written, withAnswered system state
+                | WriteAnswer.Completed written ->
+                    shimTransferCount operation bufferSize written, withAnswered system state
 
             let result, effect, state =
                 if bufferSize < 0 then
@@ -5583,7 +5604,7 @@ module NativeSystemNative =
                     UnixReadWrite.admitWrite
                         fd
                         (BufferPointer.toUserBuffer buffer)
-                        bufferSize
+                        (uint64 bufferSize)
                         (EmulatedKernel.unix state.Kernel)
                 with
                 | Error (WriteRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)

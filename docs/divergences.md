@@ -1449,3 +1449,23 @@ caller only when the call succeeded.
 
 **Where this lives in code**: `UnixSocket.getsockname` in `WoofWare.PosixKernel/UnixSystem.fs`; the
 length divergence is recorded on `GetSockNameFaultLength` in `SimulatedUnixPlatform.fs`.
+
+## A guest buffer is taken to fit the address space for any count that could fit it
+
+**Linux** checks the range a `read(2)` or `write(2)` names — the buffer's address plus the whole count —
+against the top of the user address space before it does anything else with the buffer, so a count
+that runs past the top faults even when the file has nothing to give. Where the buffer is decides
+this: measured on Linux 6.18.5 aarch64, an ordinary `mmap`'d page at `0xffff840f8000` faults for any
+count above `0x7bf08000`, about 1.9 GiB, and a stack buffer is closer to the top still.
+
+**PawPrint** has no numeric address for guest storage, so it cannot make this comparison for a
+buffer that names storage. It answers the one part that does not depend on the address — a count
+longer than the whole address space faults wherever the buffer is — and takes every shorter range to
+fit. That is exact whenever the count is within the guest's storage, which is every call the BCL
+makes, since its counts are span lengths. A hand-rolled P/Invoke that passes a count far past the end
+of its buffer, on a file with too little in it to reach the end, gets an answer where a real Linux
+kernel might say EFAULT. Darwin checks no range up front, so it is unaffected.
+
+**Where this lives in code**: `UserBufferCheck.faultsBeforeOperationFor` in
+`WoofWare.PosixKernel/UserBuffer.fs`; the probe is
+`docs/plans/2026-08-23-posix-kernel-extraction/transfer-counts.c`.

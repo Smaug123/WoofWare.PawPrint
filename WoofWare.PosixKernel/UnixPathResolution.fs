@@ -474,14 +474,14 @@ module UnixPathResolution =
     /// Where the kernel writes the result.
     /// </param>
     /// <param name="capacity">
-    /// The caller's buffer size. Must not be negative; the C library takes <c>size_t</c>.
+    /// The caller's buffer size, as the <c>size_t</c> it is.
     /// </param>
     /// <param name="system">
     /// The state of the kernel we're reading data out of.
     /// </param>
     let getcwd<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (destination : UserBuffer)
-        (capacity : int)
+        (capacity : uint64)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<GetCwdAnswer, GetCwdRefusal>
         =
@@ -489,10 +489,6 @@ module UnixPathResolution =
         // classification is consulted last on both flavours — a too-small buffer is
         // ERANGE whatever the destination is, and a removed current directory
         // outranks even that on Linux.
-
-        if capacity < 0 then
-            failwith
-                $"UnixPathResolution.getcwd: capacity %d{capacity} is negative, which no `getcwd(3)` can be asked for -- its size argument is a `size_t`. Screen this in the client, where the signature that admits a negative number lives (this is a bug in the caller)."
 
         /// The destination is about to be written. Every caller of this has
         /// already decided that the bytes are wanted, so a destination that
@@ -526,9 +522,9 @@ module UnixPathResolution =
 
         // Measured first on both, and it beats the removed-directory case below:
         // with the current directory gone, `getcwd(buf, 0)` is still EINVAL.
-        if capacity = 0 then
+        if capacity = 0UL then
             Ok (GetCwdAnswer.Failed UnixError.EINVAL)
-        elif capacity >= 2 && storeWouldBeFatal then
+        elif capacity >= 2UL && storeWouldBeFatal then
             // From capacity 2 up, such a flavour may have stored *before* it
             // decides which answer to give, so a destination it cannot write
             // kills the process on paths that would otherwise be ERANGE or
@@ -562,7 +558,7 @@ module UnixPathResolution =
                 // writes before it starts climbing. Two bytes, not the length of
                 // the path that used to be here -- and below two it writes
                 // nothing at all, which is why the refusal above starts at two.
-                if capacity < 2 then
+                if capacity < 2UL then
                     Ok (GetCwdAnswer.Failed UnixError.ERANGE)
                 else
                     Ok (GetCwdAnswer.Failed UnixError.ENOENT)
@@ -574,7 +570,7 @@ module UnixPathResolution =
         let terminated : ImmutableArray<byte> =
             (UnixByteString.toBytes (AbsoluteUnixPath.toByteString path)).Add 0uy
 
-        if capacity < terminated.Length then
+        if capacity < uint64 terminated.Length then
             // `getcwd` needs room for the path *and* its NUL, which is why a
             // buffer of the path's own length is one byte short rather than an
             // exact fit. Measured with an unwritable destination too: on the

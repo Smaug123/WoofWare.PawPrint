@@ -59,7 +59,7 @@ module TestUnixPathBytes =
             |> UnixPathResolution.chdir (pathOf directory)
             |> completed
 
-        match UnixPathResolution.getcwd UserBuffer.Mapped 4096 system with
+        match UnixPathResolution.getcwd UserBuffer.Mapped 4096UL system with
         | Ok (GetCwdAnswer.Reported bytes) -> List.ofSeq bytes |> shouldEqual (directory @ [ 0uy ])
         | other -> failwith $"expected a path, got %A{other}"
 
