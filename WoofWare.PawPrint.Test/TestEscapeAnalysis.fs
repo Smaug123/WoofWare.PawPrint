@@ -858,6 +858,212 @@ public static class Uses
         withoutBounds |> shouldNotContain "=System.ArgumentOutOfRangeException"
         withoutBounds |> shouldContain "=System.OverflowException"
 
+    /// `ldvirtftn` of an interface method, on an object implementing `IDynamicInterfaceCastable`,
+    /// asks that object's `GetInterfaceImplementation`, which may throw anything; of a class's
+    /// virtual method, it runs nothing. C# spells neither without a delegate constructor after it,
+    /// so the instructions are emitted directly.
+    [<Test>]
+    let ``resolving an interface method's pointer may run the receiver's code`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let metadata = MetadataBuilder ()
+        let ilStream = BlobBuilder ()
+        let bodies = MethodBodyStreamEncoder ilStream
+
+        metadata.AddModule (
+            0,
+            metadata.GetOrAddString "Pointers.dll",
+            metadata.GetOrAddGuid (Guid "8e2b4d6f-1a3c-4e5f-9b7d-2c4e6a8b0d1f"),
+            Unchecked.defaultof<GuidHandle>,
+            Unchecked.defaultof<GuidHandle>
+        )
+        |> ignore<ModuleDefinitionHandle>
+
+        metadata.AddAssembly (
+            metadata.GetOrAddString "Pointers",
+            Version (1, 0, 0, 0),
+            Unchecked.defaultof<StringHandle>,
+            Unchecked.defaultof<BlobHandle>,
+            Unchecked.defaultof<AssemblyFlags>,
+            AssemblyHashAlgorithm.None
+        )
+        |> ignore<AssemblyDefinitionHandle>
+
+        let corelibName = typeof<obj>.Assembly.GetName ()
+
+        let corelibRef =
+            metadata.AddAssemblyReference (
+                metadata.GetOrAddString corelibName.Name,
+                corelibName.Version,
+                Unchecked.defaultof<StringHandle>,
+                metadata.GetOrAddBlob (corelibName.GetPublicKeyToken ()),
+                Unchecked.defaultof<AssemblyFlags>,
+                Unchecked.defaultof<BlobHandle>
+            )
+
+        let objectRef =
+            metadata.AddTypeReference (
+                (AssemblyReferenceHandle.op_Implicit corelibRef : EntityHandle),
+                metadata.GetOrAddString "System",
+                metadata.GetOrAddString "Object"
+            )
+
+        // Type definitions are numbered in the order they are added: `<Module>`, `IFoo`, `Base`,
+        // `Resolves`; methods likewise: `IFoo.M`, `Base.M`, then `Resolve` and `ResolveBase`.
+        let interfaceType = MetadataTokens.TypeDefinitionHandle 2
+        let baseType = MetadataTokens.TypeDefinitionHandle 3
+        let interfaceMethod = MetadataTokens.MethodDefinitionHandle 1
+        let baseMethod = MetadataTokens.MethodDefinitionHandle 2
+
+        let instanceInt32 =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature(isInstanceMethod = true)
+                .Parameters (0, (fun returnType -> returnType.Type().Int32 ()), ignore<ParametersEncoder>)
+
+            metadata.GetOrAddBlob blob
+
+        let staticTaking (parameterType : TypeDefinitionHandle) =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature()
+                .Parameters (
+                    1,
+                    (fun returnType -> returnType.Void ()),
+                    (fun parameters ->
+                        parameters
+                            .AddParameter()
+                            .Type()
+                            .Type ((TypeDefinitionHandle.op_Implicit parameterType : EntityHandle), false)
+                    )
+                )
+
+            metadata.GetOrAddBlob blob
+
+        let virtualMethod =
+            MethodAttributes.Public
+            ||| MethodAttributes.Virtual
+            ||| MethodAttributes.NewSlot
+            ||| MethodAttributes.HideBySig
+
+        metadata.AddMethodDefinition (
+            virtualMethod ||| MethodAttributes.Abstract,
+            MethodImplAttributes.IL,
+            metadata.GetOrAddString "M",
+            instanceInt32,
+            -1,
+            MetadataTokens.ParameterHandle 1
+        )
+        |> ignore<MethodDefinitionHandle>
+
+        let returnZero =
+            let code = InstructionEncoder (BlobBuilder ())
+            code.LoadConstantI4 0
+            code.OpCode ILOpCode.Ret
+            bodies.AddMethodBody code
+
+        metadata.AddMethodDefinition (
+            virtualMethod,
+            MethodImplAttributes.IL,
+            metadata.GetOrAddString "M",
+            instanceInt32,
+            returnZero,
+            MetadataTokens.ParameterHandle 1
+        )
+        |> ignore<MethodDefinitionHandle>
+
+        let resolving (target : MethodDefinitionHandle) =
+            let code = InstructionEncoder (BlobBuilder ())
+            code.LoadArgument 0
+            code.OpCode ILOpCode.Ldvirtftn
+            code.Token (MethodDefinitionHandle.op_Implicit target : EntityHandle)
+            code.OpCode ILOpCode.Pop
+            code.OpCode ILOpCode.Ret
+            bodies.AddMethodBody code
+
+        for name, parameterType, target in
+            [
+                "Resolve", interfaceType, interfaceMethod
+                "ResolveBase", baseType, baseMethod
+            ] do
+            metadata.AddMethodDefinition (
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                MethodImplAttributes.IL,
+                metadata.GetOrAddString name,
+                staticTaking parameterType,
+                resolving target,
+                MetadataTokens.ParameterHandle 1
+            )
+            |> ignore<MethodDefinitionHandle>
+
+        metadata.AddTypeDefinition (
+            TypeAttributes.Class,
+            Unchecked.defaultof<StringHandle>,
+            metadata.GetOrAddString "<Module>",
+            Unchecked.defaultof<EntityHandle>,
+            MetadataTokens.FieldDefinitionHandle 1,
+            interfaceMethod
+        )
+        |> ignore<TypeDefinitionHandle>
+
+        metadata.AddTypeDefinition (
+            TypeAttributes.Public ||| TypeAttributes.Interface ||| TypeAttributes.Abstract,
+            metadata.GetOrAddString "W",
+            metadata.GetOrAddString "IFoo",
+            Unchecked.defaultof<EntityHandle>,
+            MetadataTokens.FieldDefinitionHandle 1,
+            interfaceMethod
+        )
+        |> ignore<TypeDefinitionHandle>
+
+        metadata.AddTypeDefinition (
+            TypeAttributes.Public ||| TypeAttributes.Class,
+            metadata.GetOrAddString "W",
+            metadata.GetOrAddString "Base",
+            (TypeReferenceHandle.op_Implicit objectRef : EntityHandle),
+            MetadataTokens.FieldDefinitionHandle 1,
+            baseMethod
+        )
+        |> ignore<TypeDefinitionHandle>
+
+        metadata.AddTypeDefinition (
+            TypeAttributes.Public
+            ||| TypeAttributes.Class
+            ||| TypeAttributes.Abstract
+            ||| TypeAttributes.Sealed,
+            metadata.GetOrAddString "W",
+            metadata.GetOrAddString "Resolves",
+            (TypeReferenceHandle.op_Implicit objectRef : EntityHandle),
+            MetadataTokens.FieldDefinitionHandle 1,
+            MetadataTokens.MethodDefinitionHandle 3
+        )
+        |> ignore<TypeDefinitionHandle>
+
+        let peBuilder =
+            ManagedPEBuilder (
+                PEHeaderBuilder (imageCharacteristics = Characteristics.Dll),
+                MetadataRootBuilder metadata,
+                ilStream
+            )
+
+        let image = BlobBuilder ()
+        peBuilder.Serialize image |> ignore<BlobContentId>
+
+        let assembly =
+            Assembly.read loggerFactory (Some "Pointers.dll") (new MemoryStream (image.ToArray ()))
+
+        let analysis = analysisOver [ assembly ] id
+
+        let _, throughInterface =
+            EscapeAnalysis.escapes analysis (methodNamed assembly "W.Resolves" "Resolve")
+
+        let _, throughClass =
+            EscapeAnalysis.escapes analysis (methodNamed assembly "W.Resolves" "ResolveBase")
+
+        throughInterface.Unknown |> shouldEqual true
+        throughClass.Unknown |> shouldEqual false
+
     /// Where the object a `throw` raises comes from, in an emitted method.
     [<RequireQualifiedAccess>]
     type private Raise =

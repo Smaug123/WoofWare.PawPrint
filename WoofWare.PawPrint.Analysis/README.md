@@ -37,7 +37,9 @@ One callback is assumed to behave as documented rather than analysed. Casting an
 interface, or storing it in an array (whose element type may be an interface), calls
 `IDynamicInterfaceCastable.IsInterfaceImplemented` if the object's class implements that interface.
 The analysis assumes that throws nothing but the `InvalidCastException` its documentation asks for;
-an implementation that throws anything else can let that escape unreported.
+an implementation that throws anything else can let that escape unreported. The interface's other
+callback, `GetInterfaceImplementation`, is reached only by an interface call or an interface
+`ldvirtftn`, both of which the analysis already counts as opaque.
 
 That holds for a set of assemblies that agree with each other. When one has changed since another
 was compiled against it, a missing member or type is reported as above, and says that the set

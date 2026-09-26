@@ -16,6 +16,9 @@ type Opacity =
     | VirtualCall
     /// <c>calli</c>, or a call through a dynamic method's scope: no metadata names the target.
     | IndirectCall
+    /// <c>ldvirtftn</c> of an interface method, which on an object implementing
+    /// <c>IDynamicInterfaceCastable</c> asks that object's <c>GetInterfaceImplementation</c>.
+    | InterfaceMethodPointer
     /// The method is <c>InternalCall</c>, <c>PInvoke</c> or runtime-provided: its behaviour is not IL.
     | NativeBody
     /// The method is abstract.
@@ -992,6 +995,18 @@ module EscapeAnalysis =
                 match op with
                 | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Calli, _) ->
                     state, raises, (offset, Opacity.IndirectCall) :: opaque, calls
+                | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldvirtftn, MetadataOperand.FromMetadata _) ->
+                    let onInterface =
+                        match methodTarget with
+                        | Some (CallTarget.Method target) ->
+                            let _, declaring = definitionOf state (declaringTypeOf state target)
+                            declaring.TypeAttributes.HasFlag TypeAttributes.Interface
+                        | _ -> false
+
+                    if onInterface then
+                        state, raises, (offset, Opacity.InterfaceMethodPointer) :: opaque, calls
+                    else
+                        state, raises, opaque, calls
                 | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Call | UnaryMetadataTokenIlOp.Callvirt | UnaryMetadataTokenIlOp.Newobj | UnaryMetadataTokenIlOp.Jmp) as call,
                                            operand) ->
                     match operand, methodTarget with
