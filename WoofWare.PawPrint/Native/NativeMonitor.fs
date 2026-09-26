@@ -75,7 +75,8 @@ module NativeMonitor =
         =
         let ptr = NativeCall.objectHandleOnStackTarget operation state "obj" arg
 
-        let value = IlMachineState.readManagedByref baseClassTypes state ptr
+        let value =
+            IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed ptr)
 
         match value with
         | CliType.ObjectRef (Some addr) -> addr

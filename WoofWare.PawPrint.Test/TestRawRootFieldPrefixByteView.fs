@@ -386,7 +386,11 @@ module TestRawRootFieldPrefixByteView =
                 | View.Int32 -> CliType.Numeric (CliNumericType.Int32 (BitConverter.ToInt32 (image, address)))
                 | View.Byte -> CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim image.[address]))
 
-            IlMachineState.readManagedByrefBytesAs bct state ptr (viewTemplate case.View)
+            IlMachineState.readManagedByrefBytesAs
+                bct
+                state
+                (ManagedPointerSource.requireAddressed ptr)
+                (viewTemplate case.View)
             |> shouldEqual expected
 
         Check.One (config, Prop.forAll (Arb.fromGen caseGen) property)
@@ -420,7 +424,7 @@ module TestRawRootFieldPrefixByteView =
                             IlMachineState.readManagedByrefBytesAs
                                 bct
                                 state
-                                (atByte offset blockStart)
+                                (ManagedPointerSource.requireAddressed (atByte offset blockStart))
                                 (viewTemplate View.Byte)
                         with
                         | CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim b)) -> b

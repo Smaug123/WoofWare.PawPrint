@@ -497,7 +497,7 @@ module NativeSystemNative =
                 IlMachineState.readManagedByrefBytesAs
                     ctx.BaseClassTypes
                     state
-                    src
+                    (ManagedPointerSource.requireAddressed src)
                     (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
 
             match cell with

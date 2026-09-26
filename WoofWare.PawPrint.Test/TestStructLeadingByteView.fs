@@ -120,7 +120,7 @@ module TestStructLeadingByteView =
         IlMachineManagedByref.readManagedByrefBytesAs
             baseClassTypes
             state
-            ptr
+            (ManagedPointerSource.requireAddressed ptr)
             (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
         |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 1uy)))
 
@@ -134,7 +134,7 @@ module TestStructLeadingByteView =
         IlMachineManagedByref.readManagedByrefBytesAs
             baseClassTypes
             state
-            ptr
+            (ManagedPointerSource.requireAddressed ptr)
             (CliType.Numeric (CliNumericType.Int32 0))
         |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0x04030201))
 
@@ -148,6 +148,6 @@ module TestStructLeadingByteView =
         IlMachineManagedByref.readManagedByrefBytesAs
             baseClassTypes
             state
-            ptr
+            (ManagedPointerSource.requireAddressed ptr)
             (CliType.Numeric (CliNumericType.Int32 0))
         |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0x78563412))

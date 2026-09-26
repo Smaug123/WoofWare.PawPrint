@@ -753,7 +753,11 @@ module StructMarshalStub =
         | _ ->
             let template, _ = IlMachineState.cliTypeZeroOfHandle state baseClassTypes typeHandle
 
-            IlMachineState.readManagedByrefBytesAs baseClassTypes state source template
+            IlMachineState.readManagedByrefBytesAs
+                baseClassTypes
+                state
+                (ManagedPointerSource.requireAddressed source)
+                template
 
     /// Run (or resume) a struct-marshal stub frame.
     ///
@@ -972,7 +976,11 @@ module StructMarshalStub =
             (state : IlMachineState)
             : CliType
             =
-            IlMachineState.readManagedByrefAs baseClassTypes state (nativeZero step) native
+            IlMachineState.readManagedByrefAs
+                baseClassTypes
+                state
+                (nativeZero step)
+                (ManagedPointerSource.requireAddressed native)
 
         match op with
         | Operation.Cleanup ->
@@ -1063,7 +1071,11 @@ module StructMarshalStub =
                     let template = CliType.ZeroLike step.Placement.Field.Contents
 
                     let value =
-                        IlMachineState.readManagedByrefAs baseClassTypes state template native
+                        IlMachineState.readManagedByrefAs
+                            baseClassTypes
+                            state
+                            template
+                            (ManagedPointerSource.requireAddressed native)
                         |> EvalStackValue.ofCliType
                         |> EvalStackValue.toCliTypeCoerced template
 
@@ -1077,7 +1089,7 @@ module StructMarshalStub =
                             baseClassTypes
                             state
                             (CliType.Numeric (CliNumericType.Float64 0.0))
-                            native
+                            (ManagedPointerSource.requireAddressed native)
 
                     let state, convertToManaged =
                         stubHelperMethod

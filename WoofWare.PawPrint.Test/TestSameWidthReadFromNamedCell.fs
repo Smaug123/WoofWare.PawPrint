@@ -317,8 +317,10 @@ module TestSameWidthReadFromNamedCell =
         : CliType
         =
         match shape with
-        | Shape.Ldind template -> IlMachineState.readManagedByrefBytesAs bct state src template
-        | Shape.Ldobj -> IlMachineState.readManagedByrefAs bct state ldobjTemplate src
+        | Shape.Ldind template ->
+            IlMachineState.readManagedByrefBytesAs bct state (ManagedPointerSource.requireAddressed src) template
+        | Shape.Ldobj ->
+            IlMachineState.readManagedByrefAs bct state ldobjTemplate (ManagedPointerSource.requireAddressed src)
 
     /// The read yields the cell's bits decoded as the requested type, whatever route reaches the
     /// cell and whether or not the storage has a byte image.
@@ -403,7 +405,13 @@ module TestSameWidthReadFromNamedCell =
 
                 let state, src = viewAs intPtrKind
 
-                let got = IlMachineState.readManagedByrefBytesAs bct state src nativeIntTemplate
+                let got =
+                    IlMachineState.readManagedByrefBytesAs
+                        bct
+                        state
+                        (ManagedPointerSource.requireAddressed src)
+                        nativeIntTemplate
+
                 Assert.That (got, Is.EqualTo pointer)
 
                 for view, template in [ int64Kind, int64Kind.Zero ; doubleKind, doubleKind.Zero ] do

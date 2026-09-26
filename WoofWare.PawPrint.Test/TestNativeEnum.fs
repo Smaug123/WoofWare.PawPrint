@@ -253,7 +253,7 @@ public static class Entry
         (ptr : ManagedPointerSource)
         : ManagedHeapAddress option
         =
-        match IlMachineState.readManagedByref baseClassTypes state ptr with
+        match IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed ptr) with
         | CliType.ObjectRef maybeAddr -> maybeAddr
         | other -> failwith $"expected ObjectHandleOnStack target to contain object ref, got %O{other}"
 

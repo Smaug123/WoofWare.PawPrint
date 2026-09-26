@@ -737,14 +737,19 @@ module TestPointerStructByteViewCells =
                             IlMachineState.readManagedByrefBytesAs
                                 bct
                                 state
-                                (cellRoot index (offset + i))
+                                (ManagedPointerSource.requireAddressed (cellRoot index (offset + i)))
                                 (viewTemplate View.Byte)
                         with
                         | CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim b)) -> b
                         | other -> failwith $"byte %d{offset + i} read back as %O{other}"
                     )
                 |> Observed.Bytes
-            | _ -> IlMachineState.readManagedByref bct state (cellRoot index offset) |> observe
+            | _ ->
+                IlMachineState.readManagedByref
+                    bct
+                    state
+                    (ManagedPointerSource.requireAddressed (cellRoot index offset))
+                |> observe
         )
 
     let private expectedObserved (cell : ModelCell) : Observed =
@@ -818,7 +823,11 @@ module TestPointerStructByteViewCells =
             let address = accessAddress case
 
             let read () =
-                IlMachineState.readManagedByrefBytesAs bct state ptr (viewTemplate case.View)
+                IlMachineState.readManagedByrefBytesAs
+                    bct
+                    state
+                    (ManagedPointerSource.requireAddressed ptr)
+                    (viewTemplate case.View)
 
             match loadOutcome case with
             | Outcome.Served ->

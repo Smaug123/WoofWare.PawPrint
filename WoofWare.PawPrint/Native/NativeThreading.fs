@@ -276,7 +276,11 @@ module NativeThreading =
             let threadPtr =
                 NativeCall.objectHandleOnStackTarget operation state "thread" instruction.Arguments.[0]
 
-            let threadValue = IlMachineState.readManagedByref ctx.BaseClassTypes state threadPtr
+            let threadValue =
+                IlMachineState.readManagedByref
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed threadPtr)
 
             let threadAddr =
                 match threadValue with
@@ -312,7 +316,11 @@ module NativeThreading =
             let threadPtr =
                 NativeCall.objectHandleOnStackTarget operation state "thread" instruction.Arguments.[0]
 
-            let threadValue = IlMachineState.readManagedByref ctx.BaseClassTypes state threadPtr
+            let threadValue =
+                IlMachineState.readManagedByref
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed threadPtr)
 
             let threadAddr =
                 match threadValue with

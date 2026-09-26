@@ -92,22 +92,16 @@ module internal StorageLocation =
         match ptr with
         | ManagedPointerSource.Null -> None
         | ManagedPointerSource.NativeIntPlaceholder _ -> None
-        | ManagedPointerSource.Byref {
-                                         Root = root
-                                         Projections = projs
-                                     } ->
+        | ManagedPointerSource.Byref addressed ->
             let templateFor (ty : ConcreteType<ConcreteTypeHandle>) : CliType =
                 IlMachineManagedByref.zeroForConcreteType baseClassTypes state ty
 
-            let root, projs =
-                match IlMachineManagedByref.tryAnchorRawRootFieldPrefixToLayout state ptr with
-                | ValueSome (ManagedPointerSource.Byref {
-                                                            Root = root
-                                                            Projections = projs
-                                                        }) -> root, projs
-                | ValueSome other ->
-                    failwith $"interpreter bug: anchoring the byref %O{ptr} produced the non-byref %O{other}"
-                | ValueNone -> root, projs
+            let {
+                    Root = root
+                    Projections = projs
+                } =
+                IlMachineManagedByref.tryAnchorRawRootFieldPrefixToLayout state addressed
+                |> ValueOption.defaultValue addressed
 
             let rootTemplateThunk () = rootTemplate state root
 

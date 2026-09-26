@@ -741,6 +741,7 @@ module NativeDelegate =
 
             let readObjectHandle (argIndex : int) (argName : string) : ManagedHeapAddress option =
                 NativeCall.objectHandleOnStackTarget operation state argName instruction.Arguments.[argIndex]
+                |> ManagedPointerSource.requireAddressed
                 |> IlMachineState.readManagedByref ctx.BaseClassTypes state
                 |> CliType.unwrapPrimitiveLikeDeep
                 |> function
@@ -1194,6 +1195,7 @@ module NativeDelegate =
 
             let delegateAddr =
                 NativeCall.objectHandleOnStackTarget operation state "d" instruction.Arguments.[0]
+                |> ManagedPointerSource.requireAddressed
                 |> IlMachineState.readManagedByref ctx.BaseClassTypes state
                 |> CliType.unwrapPrimitiveLikeDeep
                 |> function
@@ -1278,6 +1280,7 @@ module NativeDelegate =
 
             let readDelegate (argIndex : int) (argName : string) : ManagedHeapAddress =
                 NativeCall.objectHandleOnStackTarget operation state argName instruction.Arguments.[argIndex]
+                |> ManagedPointerSource.requireAddressed
                 |> IlMachineState.readManagedByref ctx.BaseClassTypes state
                 |> CliType.unwrapPrimitiveLikeDeep
                 |> function

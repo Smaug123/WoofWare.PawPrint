@@ -1336,7 +1336,10 @@ module NativeRuntimeMethodHandle =
             // either leaves that object in place or replaces it, so a mismatch would hand the guest
             // back a method it never asked about.
             let current =
-                IlMachineState.readManagedByref ctx.BaseClassTypes state refMethod
+                IlMachineState.readManagedByref
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed refMethod)
                 |> resolveMethodHandleFromMethodInfoObject operation state
 
             if current <> original then

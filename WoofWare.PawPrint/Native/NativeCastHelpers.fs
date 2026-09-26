@@ -243,7 +243,9 @@ module NativeCastHelpers =
                 let ptr =
                     NativeCall.objectHandleOnStackTarget operation state "obj" instruction.Arguments.[2]
 
-                match IlMachineState.readManagedByref ctx.BaseClassTypes state ptr with
+                match
+                    IlMachineState.readManagedByref ctx.BaseClassTypes state (ManagedPointerSource.requireAddressed ptr)
+                with
                 | CliType.ObjectRef (Some addr) -> addr
                 | CliType.ObjectRef None ->
                     // `ObjIsInstanceOfCore` has `PRECONDITION(CheckPointer(pObject))` and

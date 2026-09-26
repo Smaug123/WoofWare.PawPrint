@@ -288,7 +288,13 @@ module TestNarrowByrefAccess =
                 }
 
         let readPointer (src : ManagedPointerSource) : ManagedPointerSource =
-            match IlMachineState.readManagedByrefAs baseClassTypes state template src with
+            match
+                IlMachineState.readManagedByrefAs
+                    baseClassTypes
+                    state
+                    template
+                    (ManagedPointerSource.requireAddressed src)
+            with
             | CliType.RuntimePointer (CliRuntimePointer.Managed p) -> p
             | CliType.ValueType vt ->
                 match CliValueType.DereferenceField "Value" vt with
@@ -451,7 +457,11 @@ module TestNarrowByrefAccess =
                     Projections = cursors [ 6 ; -2 ]
                 }
 
-        IlMachineState.readManagedByrefBytesAs baseClassTypes state src (CliType.Numeric (CliNumericType.Int32 0))
+        IlMachineState.readManagedByrefBytesAs
+            baseClassTypes
+            state
+            (ManagedPointerSource.requireAddressed src)
+            (CliType.Numeric (CliNumericType.Int32 0))
         |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0x22222222))
 
     /// Issue #993 on the read path, and the sharpest form of it: a coordinate of exactly 2^32.
@@ -477,7 +487,7 @@ module TestNarrowByrefAccess =
                 IlMachineState.readManagedByrefBytesAs
                     baseClassTypes
                     state
-                    src
+                    (ManagedPointerSource.requireAddressed src)
                     (CliType.Numeric (CliNumericType.Int32 0))
                 |> ignore
             )

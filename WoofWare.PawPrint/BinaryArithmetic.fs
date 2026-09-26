@@ -136,7 +136,7 @@ module private ArithmeticTarget =
                 | None ->
                     failwith
                         $"field %O{field} names declaring type %O{declaringHandle}, which is not in the concrete-type registry, so its layout in %O{container} cannot be read"
-            | _ -> IlMachineState.readManagedByref baseClassTypes state ptr
+            | _ -> IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed ptr)
 
 /// Whether an arithmetic operation wraps on overflow (`add`, `sub`) or traps
 /// (`add.ovf`, `sub.ovf`). This is only observable in the pointer helpers at

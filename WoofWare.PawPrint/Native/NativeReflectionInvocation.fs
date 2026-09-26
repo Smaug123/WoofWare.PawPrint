@@ -42,7 +42,9 @@ module internal NativeReflectionInvocation =
         // ObjectHandleOnStack carries a managed byref to a slot holding an object reference, so
         // this needs the object-aware reader rather than the byte-view variant.
         let signatureAddr =
-            match IlMachineState.readManagedByref ctx.BaseClassTypes state sigPtr with
+            match
+                IlMachineState.readManagedByref ctx.BaseClassTypes state (ManagedPointerSource.requireAddressed sigPtr)
+            with
             | CliType.ObjectRef (Some addr) -> addr
             | CliType.ObjectRef None -> failwith $"%s{operation}: pSig ObjectHandleOnStack held a null Signature"
             | other -> failwith $"%s{operation}: expected ObjectRef in pSig ObjectHandleOnStack, got %O{other}"
@@ -231,7 +233,11 @@ module internal NativeReflectionInvocation =
         // cursor, whose view is one byte. The width belongs to the buffer's element type, which is
         // something this boundary knows and the pointer does not.
         let byref =
-            IlMachineState.readManagedByrefAs ctx.BaseClassTypes state byReferenceZero slot
+            IlMachineState.readManagedByrefAs
+                ctx.BaseClassTypes
+                state
+                byReferenceZero
+                (ManagedPointerSource.requireAddressed slot)
             |> NativeCall.managedPointerOfPointerArgument operation $"args[%d{index}]"
 
         if byref = ManagedPointerSource.Null then
@@ -278,6 +284,7 @@ module internal NativeReflectionInvocation =
 
             let value =
                 argumentByref ctx operation state byReferenceZero buffer index storage
+                |> ManagedPointerSource.requireAddressed
                 |> IlMachineState.readManagedByref ctx.BaseClassTypes state
 
             match storage with
@@ -594,7 +601,12 @@ module internal NativeReflectionInvocation =
                         let targetPtr =
                             NativeCall.objectHandleOnStackTarget operation state "target" instruction.Arguments.[0]
 
-                        match IlMachineState.readManagedByref ctx.BaseClassTypes state targetPtr with
+                        match
+                            IlMachineState.readManagedByref
+                                ctx.BaseClassTypes
+                                state
+                                (ManagedPointerSource.requireAddressed targetPtr)
+                        with
                         | CliType.ObjectRef (Some addr) -> Some (CliType.ObjectRef (Some addr))
                         | CliType.ObjectRef None ->
                             // `MethodBaseInvoker.ValidateInvokeTarget` throws TargetException for a

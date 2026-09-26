@@ -18,7 +18,7 @@ module NativeCustomAttribute =
         =
         let ptr = NativeCall.objectHandleOnStackTarget operation state argName arg
 
-        match IlMachineState.readManagedByref baseClassTypes state ptr with
+        match IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed ptr) with
         | CliType.ObjectRef (Some addr) -> addr
         | CliType.ObjectRef None ->
             failwith $"%s{operation}: ObjectHandleOnStack(%s{argName}) pointed at a null reference"
@@ -337,7 +337,10 @@ module NativeCustomAttribute =
                     NativeCall.managedPointerOfPointerArgument operation "ppBlob" instruction.Arguments.[3]
 
                 let blobCursorIntPtr =
-                    IlMachineState.readManagedByref ctx.BaseClassTypes state blobCursorSlot
+                    IlMachineState.readManagedByref
+                        ctx.BaseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed blobCursorSlot)
 
                 let blobCursorPtr =
                     NativeCall.managedPointerOfPointerArgument operation "*ppBlob" blobCursorIntPtr
@@ -810,7 +813,10 @@ module NativeCustomAttribute =
                 NativeCall.managedPointerOfPointerArgument operation "ppBlobStart" instruction.Arguments.[1]
 
             let blobCursorIntPtr =
-                IlMachineState.readManagedByref ctx.BaseClassTypes state blobCursorSlot
+                IlMachineState.readManagedByref
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed blobCursorSlot)
 
             let blobCursorPtr =
                 NativeCall.managedPointerOfPointerArgument operation "*ppBlobStart" blobCursorIntPtr

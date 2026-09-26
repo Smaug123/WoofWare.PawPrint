@@ -52,7 +52,11 @@ module NativeRuntimeTypeHelpers =
         : int
         =
         match
-            IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr (CliType.Numeric (CliNumericType.Int32 0))
+            IlMachineState.readManagedByrefBytesAs
+                baseClassTypes
+                state
+                (ManagedPointerSource.requireAddressed ptr)
+                (CliType.Numeric (CliNumericType.Int32 0))
         with
         | CliType.Numeric (CliNumericType.Int32 i) -> i
         | other -> failwith $"%s{operation}: expected Int32 at pointer, got %O{other}"
@@ -1151,7 +1155,7 @@ module NativeRuntimeTypeHelpers =
         let ptr = nativeIntElementPointer operation baseClassTypes state buffer index
 
         match
-            IlMachineState.readManagedByref baseClassTypes state ptr
+            IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed ptr)
             |> CliType.unwrapPrimitiveLikeDeep
         with
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed handle))) ->
@@ -2281,7 +2285,7 @@ module NativeRuntimeTypeHelpers =
         (source : ManagedPointerSource)
         : RuntimeTypeHandleTarget list option
         =
-        match IlMachineState.readManagedByref baseClassTypes state source with
+        match IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed source) with
         | CliType.ObjectRef None -> None
         | CliType.ObjectRef (Some arrayAddr) ->
             let array =

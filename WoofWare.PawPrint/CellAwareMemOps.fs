@@ -54,7 +54,13 @@ module internal CellAwareMemOps =
         (ptr : ManagedPointerSource)
         : byte
         =
-        match IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr byteTemplate with
+        match
+            IlMachineState.readManagedByrefBytesAs
+                baseClassTypes
+                state
+                (ManagedPointerSource.requireAddressed ptr)
+                byteTemplate
+        with
         // A byte naming a native int rather than holding a number is refused here rather than
         // moved. A bulk copy could carry one across intact, and reconstructing the native int
         // from the eight bytes at the far end would make `memcpy` of a pointer-containing struct
@@ -279,8 +285,12 @@ module internal CellAwareMemOps =
 
         match inCellOffsetAndStripByteView src, inCellOffsetAndStripByteView dest with
         | Some (srcPlain, srcInCell), Some (destPlain, destInCell) ->
-            let srcCell = IlMachineState.readManagedByref baseClassTypes state srcPlain
-            let destCell = IlMachineState.readManagedByref baseClassTypes state destPlain
+            let srcCell =
+                IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed srcPlain)
+
+            let destCell =
+                IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed destPlain)
+
             let srcCellSize = CliType.sizeOf srcCell
             let destCellSize = CliType.sizeOf destCell
 
@@ -456,8 +466,11 @@ module internal CellAwareMemOps =
 
         match inCellOffsetAndStripByteView src, inCellOffsetAndStripByteView dest with
         | Some (srcPlain, srcInCell), Some (destPlain, destInCell) ->
-            let srcCell = IlMachineState.readManagedByref baseClassTypes state srcPlain
-            let destCell = IlMachineState.readManagedByref baseClassTypes state destPlain
+            let srcCell =
+                IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed srcPlain)
+
+            let destCell =
+                IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed destPlain)
 
             match CliType.TryPaddingRunAt srcInCell srcCell, CliType.TryPaddingRunAt destInCell destCell with
             | Some (srcStart, srcLength), Some (destStart, destLength) ->
@@ -556,7 +569,9 @@ module internal CellAwareMemOps =
 
         match inCellOffsetAndStripByteView dest with
         | Some (destPlain, 0) ->
-            let cell = IlMachineState.readManagedByref baseClassTypes state destPlain
+            let cell =
+                IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed destPlain)
+
             let cellSize = CliType.sizeOf cell
 
             // `cellSize <= 0` is rejected for the same reason as on the copy

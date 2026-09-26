@@ -402,7 +402,8 @@ public class Detection
                         Projections = []
                     }
 
-            IlMachineState.readManagedByref bct state ptr |> shouldEqual (value targetIndex)
+            IlMachineState.readManagedByref bct state (ManagedPointerSource.requireAddressed ptr)
+            |> shouldEqual (value targetIndex)
 
         let gen =
             gen {
@@ -476,7 +477,7 @@ public class Detection
 
         // Dereferenced later, with no reference to thread B's context - and the answer is
         // still A's slot.
-        IlMachineState.readManagedByref bct state capturedOnA
+        IlMachineState.readManagedByref bct state (ManagedPointerSource.requireAddressed capturedOnA)
         |> shouldEqual (value 12345)
 
         let after = IlMachineState.writeManagedByref state capturedOnA (value 999)

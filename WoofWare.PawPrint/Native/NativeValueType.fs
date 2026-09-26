@@ -283,7 +283,12 @@ module NativeValueType =
             // null; PawPrint reads its `CliValueType` structurally instead of byte-poking it,
             // which answers the same question without needing a byte view of an object reference.
             let receiver =
-                match IlMachineState.readManagedByref ctx.BaseClassTypes state receiverPointer with
+                match
+                    IlMachineState.readManagedByref
+                        ctx.BaseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed receiverPointer)
+                with
                 | CliType.ObjectRef (Some addr) -> addr
                 | CliType.ObjectRef None ->
                     failwith

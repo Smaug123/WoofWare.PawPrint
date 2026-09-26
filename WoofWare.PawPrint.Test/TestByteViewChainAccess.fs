@@ -408,7 +408,10 @@ module TestByteViewChainAccess =
     let ``reading through a chain reads the cell it names`` () : unit =
         let property (case : Case) : bool =
             let state, _, src = rooted case
-            let read = IlMachineState.readManagedByref bct state src
+
+            let read =
+                IlMachineState.readManagedByref bct state (ManagedPointerSource.requireAddressed src)
+
             let expected = CliType.getCellAtPath case.Path (CliType.ValueType case.Storage)
             leaves [] read = leaves [] expected
 
@@ -422,7 +425,9 @@ module TestByteViewChainAccess =
             | None -> true
             | Some field ->
                 let state, _, src = rooted case
-                let read = IlMachineState.readManagedByrefField bct state src field.Id
+
+                let read =
+                    IlMachineState.readManagedByrefField bct state (ManagedPointerSource.requireAddressed src) field.Id
 
                 let expected =
                     CliType.getCellAtPath (case.Path @ [ field.Id ]) (CliType.ValueType case.Storage)

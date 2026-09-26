@@ -340,6 +340,7 @@ module NativeModuleHandle =
 
             let resolver =
                 NativeCall.objectHandleOnStackTarget operation state "resolver" instruction.Arguments.[4]
+                |> ManagedPointerSource.requireAddressed
                 |> IlMachineState.readManagedByref ctx.BaseClassTypes state
                 |> fun value ->
                     match CliType.unwrapPrimitiveLikeDeep value with

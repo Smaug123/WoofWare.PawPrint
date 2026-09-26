@@ -102,7 +102,12 @@ module NativeException =
                 NativeCall.objectHandleOnStackTarget operation state "exception" instruction.Arguments.[0]
 
             let exceptionAddr =
-                match IlMachineState.readManagedByref ctx.BaseClassTypes state exceptionPtr with
+                match
+                    IlMachineState.readManagedByref
+                        ctx.BaseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed exceptionPtr)
+                with
                 | CliType.ObjectRef (Some addr) -> addr
                 | CliType.ObjectRef None ->
                     failwith $"%s{operation}: ObjectHandleOnStack pointed to a null Exception reference"

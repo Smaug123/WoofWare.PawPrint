@@ -172,7 +172,12 @@ module NativeStackTrace =
                 NativeCall.objectHandleOnStackTarget operation state "stackFrameHelper" instruction.Arguments.[0]
 
             let helperAddr =
-                match IlMachineState.readManagedByref ctx.BaseClassTypes state helperPtr with
+                match
+                    IlMachineState.readManagedByref
+                        ctx.BaseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed helperPtr)
+                with
                 | CliType.ObjectRef (Some addr) -> addr
                 | CliType.ObjectRef None ->
                     // CoreCLR would dereference a null `STACKFRAMEHELPERREF`. Every managed caller
@@ -188,7 +193,12 @@ module NativeStackTrace =
             // Null is the current-thread request, not an error: `new StackTrace()` and
             // `Environment.StackTrace` both pass it (CaptureStackTrace's `e` parameter).
             let exceptionAddr =
-                match IlMachineState.readManagedByref ctx.BaseClassTypes state exceptionPtr with
+                match
+                    IlMachineState.readManagedByref
+                        ctx.BaseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed exceptionPtr)
+                with
                 | CliType.ObjectRef addr -> addr
                 | other ->
                     failwith $"%s{operation}: expected ObjectRef in the exception ObjectHandleOnStack, got %O{other}"

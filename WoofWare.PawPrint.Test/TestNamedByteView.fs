@@ -97,7 +97,11 @@ module TestNamedByteView =
             IlMachineState.allocateManagedObject intPtrHandle (intPtrHolding handleSource) (state ())
 
         for offset in 0..7 do
-            IlMachineState.readManagedByrefBytesAs baseClassTypes st (byteCursor addr offset) byteTemplate
+            IlMachineState.readManagedByrefBytesAs
+                baseClassTypes
+                st
+                (ManagedPointerSource.requireAddressed (byteCursor addr offset))
+                byteTemplate
             |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.NativeIntByte (handleSource, offset))))
 
     [<Test>]
@@ -112,7 +116,11 @@ module TestNamedByteView =
             IlMachineState.allocateManagedObject intPtrHandle (intPtrHolding otherHandleSource) st
 
         let readAt (addr : ManagedHeapAddress) (offset : int) : CliType =
-            IlMachineState.readManagedByrefBytesAs baseClassTypes st (byteCursor addr offset) byteTemplate
+            IlMachineState.readManagedByrefBytesAs
+                baseClassTypes
+                st
+                (ManagedPointerSource.requireAddressed (byteCursor addr offset))
+                byteTemplate
 
         readAt addrA 3
         |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.NativeIntByte (handleSource, 3))))
@@ -137,7 +145,7 @@ module TestNamedByteView =
                     Projections = [ ByrefProjection.Field (FieldId.named "_value") ]
                 }
 
-        IlMachineState.readManagedByref baseClassTypes st wholeCell
+        IlMachineState.readManagedByref baseClassTypes st (ManagedPointerSource.requireAddressed wholeCell)
         |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt handleSource))
 
     [<Test>]
@@ -244,7 +252,11 @@ module TestNamedByteView =
                         ]
                 }
 
-        IlMachineState.readManagedByrefBytesAs baseClassTypes st cursor byteTemplate
+        IlMachineState.readManagedByrefBytesAs
+            baseClassTypes
+            st
+            (ManagedPointerSource.requireAddressed cursor)
+            byteTemplate
         |> shouldEqual named
 
         // The cells either side are untouched ordinary zero bytes, so the array is not wholly
@@ -260,10 +272,18 @@ module TestNamedByteView =
                         ]
                 }
 
-        IlMachineState.readManagedByrefBytesAs baseClassTypes st (plainCursor 1) byteTemplate
+        IlMachineState.readManagedByrefBytesAs
+            baseClassTypes
+            st
+            (ManagedPointerSource.requireAddressed (plainCursor 1))
+            byteTemplate
         |> shouldEqual byteTemplate
 
-        IlMachineState.readManagedByrefBytesAs baseClassTypes st (plainCursor 3) byteTemplate
+        IlMachineState.readManagedByrefBytesAs
+            baseClassTypes
+            st
+            (ManagedPointerSource.requireAddressed (plainCursor 3))
+            byteTemplate
         |> shouldEqual byteTemplate
 
     [<Test>]
@@ -299,7 +319,7 @@ module TestNamedByteView =
         IlMachineState.readManagedByrefBytesAs
             baseClassTypes
             st
-            wholeCellCursor
+            (ManagedPointerSource.requireAddressed wholeCellCursor)
             (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
         |> shouldEqual cell
 
@@ -338,6 +358,6 @@ module TestNamedByteView =
         IlMachineState.readManagedByrefBytesAs
             baseClassTypes
             st
-            cursor
+            (ManagedPointerSource.requireAddressed cursor)
             (CliType.ValueType (intPtrHolding (NativeIntSource.Verbatim 0L)))
         |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt handleSource))

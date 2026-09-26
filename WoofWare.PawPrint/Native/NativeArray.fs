@@ -45,7 +45,7 @@ module NativeArray =
             let ptr =
                 ManagedPointerByteView.addByteOffset state int32ConcreteType (index * sizeof<int32>) buffer
 
-            IlMachineState.readManagedByref baseClassTypes state ptr
+            IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed ptr)
             |> int32OfCliType operation $"%s{argName}[%d{index}]"
 
     /// CoreCLR's `MAX_RANK` (vm/array.h): the most dimensions an array type can have.

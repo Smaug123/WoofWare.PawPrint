@@ -344,7 +344,7 @@ public interface IOpenInterface<T>
                 IlMachineState.readManagedByrefBytesAs
                     bct
                     state
-                    ptr
+                    (ManagedPointerSource.requireAddressed ptr)
                     (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
                 |> ignore
             )
@@ -1736,7 +1736,11 @@ public unsafe struct PointerWrapper
 
         updated |> shouldEqual expectedBytes
 
-        IlMachineState.readManagedByrefBytesAs bct state ptrAtOffset (CliType.Numeric (CliNumericType.UInt16 0us))
+        IlMachineState.readManagedByrefBytesAs
+            bct
+            state
+            (ManagedPointerSource.requireAddressed ptrAtOffset)
+            (CliType.Numeric (CliNumericType.UInt16 0us))
         |> shouldEqual (CliType.Numeric (CliNumericType.UInt16 0xBEEFus))
 
     [<Test>]
@@ -1748,7 +1752,11 @@ public unsafe struct PointerWrapper
             projectRawDataDataPointer boxedAddr state
             |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 2)
 
-        IlMachineState.readManagedByrefBytesAs bct state ptrAtOffset (CliType.Numeric (CliNumericType.UInt16 0us))
+        IlMachineState.readManagedByrefBytesAs
+            bct
+            state
+            (ManagedPointerSource.requireAddressed ptrAtOffset)
+            (CliType.Numeric (CliNumericType.UInt16 0us))
         |> shouldEqual (CliType.Numeric (CliNumericType.UInt16 0x0506us))
 
     [<Test>]
@@ -1774,7 +1782,11 @@ public unsafe struct PointerWrapper
 
             boxedPayloadBytes boxedAddr state |> shouldEqual expectedBytes
 
-            IlMachineState.readManagedByrefBytesAs bct state ptrAtOffset (CliType.Numeric (CliNumericType.UInt16 0us))
+            IlMachineState.readManagedByrefBytesAs
+                bct
+                state
+                (ManagedPointerSource.requireAddressed ptrAtOffset)
+                (CliType.Numeric (CliNumericType.UInt16 0us))
             |> shouldEqual (CliType.Numeric (CliNumericType.UInt16 sample.Payload))
 
         Check.One (rawDataPropertyConfig, Prop.forAll (Arb.fromGen genRawDataWriteCase) property)
@@ -1913,7 +1925,11 @@ public unsafe struct PointerWrapper
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                IlMachineState.readManagedByrefField bct state ptr types.PointerWrapperPtrField
+                IlMachineState.readManagedByrefField
+                    bct
+                    state
+                    (ManagedPointerSource.requireAddressed ptr)
+                    types.PointerWrapperPtrField
                 |> ignore
             )
 
@@ -2034,7 +2050,11 @@ public unsafe struct PointerWrapper
 
         boxedPayloadBytes boxedAddr state |> shouldEqual initialBytes
 
-        IlMachineState.readManagedByrefBytesAs bct state ptr (CliType.Numeric (CliNumericType.UInt16 0us))
+        IlMachineState.readManagedByrefBytesAs
+            bct
+            state
+            (ManagedPointerSource.requireAddressed ptr)
+            (CliType.Numeric (CliNumericType.UInt16 0us))
         |> shouldEqual (CliType.Numeric (CliNumericType.UInt16 0x0708us))
 
         let state =
@@ -2046,7 +2066,11 @@ public unsafe struct PointerWrapper
 
         boxedPayloadBytes boxedAddr state |> shouldEqual expectedBytes
 
-        IlMachineState.readManagedByrefBytesAs bct state ptr (CliType.Numeric (CliNumericType.Int32 0))
+        IlMachineState.readManagedByrefBytesAs
+            bct
+            state
+            (ManagedPointerSource.requireAddressed ptr)
+            (CliType.Numeric (CliNumericType.Int32 0))
         |> shouldEqual (CliType.Numeric (CliNumericType.Int32 replacement))
 
     [<Test>]
@@ -2255,7 +2279,11 @@ public unsafe struct PointerWrapper
             let state = IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr written
 
             let actual =
-                IlMachineState.readManagedByrefBytesAs bct state ptr (CliType.Numeric (CliNumericType.Float64 0.0))
+                IlMachineState.readManagedByrefBytesAs
+                    bct
+                    state
+                    (ManagedPointerSource.requireAddressed ptr)
+                    (CliType.Numeric (CliNumericType.Float64 0.0))
 
             CliType.ToBytes actual |> shouldEqual (CliType.ToBytes written)
 
@@ -2344,7 +2372,8 @@ public unsafe struct PointerWrapper
         let updated = CliType.Numeric (CliNumericType.Float32 0.0f)
         let state = IlMachineState.writeManagedByref state ptr updated
 
-        IlMachineState.readManagedByref bct state ptr |> shouldEqual updated
+        IlMachineState.readManagedByref bct state (ManagedPointerSource.requireAddressed ptr)
+        |> shouldEqual updated
 
     [<Test>]
     let ``Local memory typed cell write evicts intersecting byte overlay`` () : unit =
@@ -2429,7 +2458,7 @@ public unsafe struct PointerWrapper
             IlMachineState.readManagedByrefBytesAs
                 bct
                 state
-                int32ToFloat32Ptr
+                (ManagedPointerSource.requireAddressed int32ToFloat32Ptr)
                 (CliType.Numeric (CliNumericType.Float32 0.0f))
 
         match actual with
@@ -2449,7 +2478,11 @@ public unsafe struct PointerWrapper
                 float32ToInt32Ptr
                 (CliType.Numeric (CliNumericType.Float32 float32Initial))
 
-        IlMachineState.readManagedByrefBytesAs bct state float32ToInt32Ptr (CliType.Numeric (CliNumericType.Int32 0))
+        IlMachineState.readManagedByrefBytesAs
+            bct
+            state
+            (ManagedPointerSource.requireAddressed float32ToInt32Ptr)
+            (CliType.Numeric (CliNumericType.Int32 0))
         |> shouldEqual (CliType.Numeric (CliNumericType.Int32 (System.BitConverter.SingleToInt32Bits float32Initial)))
 
         let int64ToFloat64Ptr, state =
@@ -2465,7 +2498,7 @@ public unsafe struct PointerWrapper
             IlMachineState.readManagedByrefBytesAs
                 bct
                 state
-                int64ToFloat64Ptr
+                (ManagedPointerSource.requireAddressed int64ToFloat64Ptr)
                 (CliType.Numeric (CliNumericType.Float64 0.0))
 
         match actual with
@@ -2486,7 +2519,7 @@ public unsafe struct PointerWrapper
         IlMachineState.readManagedByrefBytesAs
             bct
             state
-            float64ToInt64Ptr
+            (ManagedPointerSource.requireAddressed float64ToInt64Ptr)
             (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L)))
         |> shouldEqual (
             CliType.Numeric (
@@ -2513,7 +2546,8 @@ public unsafe struct PointerWrapper
 
         let stateAfter = IlMachineState.writeManagedByref state ptr handle
 
-        IlMachineState.readManagedByref bct stateAfter ptr |> shouldEqual handle
+        IlMachineState.readManagedByref bct stateAfter (ManagedPointerSource.requireAddressed ptr)
+        |> shouldEqual handle
 
     [<Test>]
     let ``Typed write into the middle of an existing cell fails visibly`` () : unit =
@@ -2584,7 +2618,8 @@ public unsafe struct PointerWrapper
         let stateAfter =
             IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr handle
 
-        IlMachineState.readManagedByref bct stateAfter ptr |> shouldEqual handle
+        IlMachineState.readManagedByref bct stateAfter (ManagedPointerSource.requireAddressed ptr)
+        |> shouldEqual handle
 
     [<Test>]
     let ``Stind-shaped store of tagged native-int over an identical-shape cell still preserves provenance`` () : unit =
@@ -2614,7 +2649,8 @@ public unsafe struct PointerWrapper
         let state =
             IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr secondHandle
 
-        IlMachineState.readManagedByref bct state ptr |> shouldEqual secondHandle
+        IlMachineState.readManagedByref bct state (ManagedPointerSource.requireAddressed ptr)
+        |> shouldEqual secondHandle
 
     [<Test>]
     let ``Stind-shaped partial overwrite of a tagged native-int cell refuses to silently lose provenance`` () : unit =
@@ -2643,7 +2679,8 @@ public unsafe struct PointerWrapper
         |> ignore
 
         // The original tagged cell should still be intact.
-        IlMachineState.readManagedByref bct state ptr |> shouldEqual handle
+        IlMachineState.readManagedByref bct state (ManagedPointerSource.requireAddressed ptr)
+        |> shouldEqual handle
 
     [<Test>]
     let ``Stind_I through bare local-memory byte view reports provenance preservation failure`` () : unit =
@@ -2681,7 +2718,7 @@ public unsafe struct PointerWrapper
 
         ex.Message |> shouldContainText "<field ID 1234>"
 
-        IlMachineState.readManagedByref bct state ptr
+        IlMachineState.readManagedByref bct state (ManagedPointerSource.requireAddressed ptr)
         |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0x11223344))
 
     [<Test>]
@@ -2734,7 +2771,7 @@ public unsafe struct PointerWrapper
         // Reading the Int32 cell should reflect the byte overlay: the second
         // little-endian byte of 0x11223344 (0x33) becomes 0xAA, giving
         // 0x1122AA44.
-        match IlMachineState.readManagedByref bct state ptr with
+        match IlMachineState.readManagedByref bct state (ManagedPointerSource.requireAddressed ptr) with
         | CliType.Numeric (CliNumericType.Int32 v) -> v |> shouldEqual 0x1122AA44
         | other -> failwith $"Expected Int32, got %O{other}"
 
@@ -2759,7 +2796,8 @@ public unsafe struct PointerWrapper
 
         let stateAfter = IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr zero
 
-        IlMachineState.readManagedByref bct stateAfter ptr |> shouldEqual zero
+        IlMachineState.readManagedByref bct stateAfter (ManagedPointerSource.requireAddressed ptr)
+        |> shouldEqual zero
 
     [<Test>]
     let ``Stind-shaped overwrite of a tagged cell with a byte-renderable value succeeds`` () : unit =
@@ -2786,7 +2824,8 @@ public unsafe struct PointerWrapper
 
         let state = IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr verbatim
 
-        IlMachineState.readManagedByref bct state ptr |> shouldEqual verbatim
+        IlMachineState.readManagedByref bct state (ManagedPointerSource.requireAddressed ptr)
+        |> shouldEqual verbatim
 
     [<Test>]
     let ``Stind_I1 via EvalStackValue.ManagedPointer over local-memory Int32 cell scatters one byte`` () : unit =
@@ -2824,7 +2863,11 @@ public unsafe struct PointerWrapper
             | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
             | other -> failwith $"Expected Stind_I1 to step, got %O{other}"
 
-        IlMachineState.readManagedByrefBytesAs bct state ptr (CliType.Numeric (CliNumericType.Int32 0))
+        IlMachineState.readManagedByrefBytesAs
+            bct
+            state
+            (ManagedPointerSource.requireAddressed ptr)
+            (CliType.Numeric (CliNumericType.Int32 0))
         |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0x112233AA))
 
     [<Test>]
@@ -2899,7 +2942,7 @@ public unsafe struct PointerWrapper
             | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
             | other -> failwith $"Expected Stind_I to step, got %O{other}"
 
-        IlMachineState.readManagedByref bct state ptr
+        IlMachineState.readManagedByref bct state (ManagedPointerSource.requireAddressed ptr)
         |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt secondHandle))
 
     [<Test>]
@@ -2962,7 +3005,7 @@ public unsafe struct PointerWrapper
                 | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
                 | other -> failwith $"Expected Stind_I to step, got %O{other}"
 
-            IlMachineState.readManagedByref bct state ptr
+            IlMachineState.readManagedByref bct state (ManagedPointerSource.requireAddressed ptr)
             |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt source))
 
         Check.One (
@@ -3009,7 +3052,7 @@ public unsafe struct PointerWrapper
             bareLocallocPtr
             |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs (concreteTypeFor bct.IntPtr))
 
-        IlMachineState.readManagedByref bct state reinterpretedPtr
+        IlMachineState.readManagedByref bct state (ManagedPointerSource.requireAddressed reinterpretedPtr)
         |> CliType.unwrapPrimitiveLikeDeep
         |> shouldEqual taggedHandle
 
@@ -3054,7 +3097,11 @@ public unsafe struct PointerWrapper
         | CliType.ValueType vt when vt.PrimitiveLikeKind.IsSome -> ()
         | other -> failwith $"expected cliTypeZeroOfHandle for IntPtr to return a primitive-like wrapper; got %O{other}"
 
-        IlMachineState.readManagedByrefBytesAs bct state bareLocallocPtr wrappedIntPtrTemplate
+        IlMachineState.readManagedByrefBytesAs
+            bct
+            state
+            (ManagedPointerSource.requireAddressed bareLocallocPtr)
+            wrappedIntPtrTemplate
         |> CliType.unwrapPrimitiveLikeDeep
         |> shouldEqual taggedHandle
 
@@ -3096,7 +3143,12 @@ public unsafe struct PointerWrapper
         | CliType.ValueType vt when vt.PrimitiveLikeKind.IsNone -> ()
         | other -> failwith $"expected FourBytes to be a non-primitive-like value type; got %O{other}"
 
-        let result = IlMachineState.readManagedByrefBytesAs bct state ptr fourBytesTemplate
+        let result =
+            IlMachineState.readManagedByrefBytesAs
+                bct
+                state
+                (ManagedPointerSource.requireAddressed ptr)
+                fourBytesTemplate
 
         match result with
         | CliType.ValueType vt ->
@@ -3239,7 +3291,7 @@ public unsafe struct PointerWrapper
                 | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
                 | other -> failwith $"Expected Stind_I8 to step, got %O{other}"
 
-            IlMachineState.readManagedByref bct state ptr
+            IlMachineState.readManagedByref bct state (ManagedPointerSource.requireAddressed ptr)
             |> shouldEqual (CliType.Numeric (CliNumericType.Int64 source))
 
         Check.One (rawDataPropertyConfig.WithMaxTest 500, Prop.forAll (Arb.fromGen genTaggedInt64StindCase) property)
@@ -3354,7 +3406,7 @@ public unsafe struct PointerWrapper
             | other -> failwith $"Expected Stind_I to step, got %O{other}"
 
         // The tag survives: a byte scatter could not have represented it at all.
-        IlMachineState.readManagedByref bct stateAfter ptr
+        IlMachineState.readManagedByref bct stateAfter (ManagedPointerSource.requireAddressed ptr)
         |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt handle))
 
     [<Test>]
@@ -3479,7 +3531,7 @@ public unsafe struct PointerWrapper
             | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
             | other -> failwith $"Expected Stind_I to step, got %O{other}"
 
-        IlMachineState.readManagedByref bct stateAfter ptr
+        IlMachineState.readManagedByref bct stateAfter (ManagedPointerSource.requireAddressed ptr)
         |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
 
     [<Test>]
@@ -3517,7 +3569,7 @@ public unsafe struct PointerWrapper
             | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
             | other -> failwith $"Expected Stind_I to step, got %O{other}"
 
-        IlMachineState.readManagedByref bct stateAfter ptr
+        IlMachineState.readManagedByref bct stateAfter (ManagedPointerSource.requireAddressed ptr)
         |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
 
     [<Test>]
@@ -3553,7 +3605,7 @@ public unsafe struct PointerWrapper
             | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
             | other -> failwith $"Expected Stind_I to step, got %O{other}"
 
-        IlMachineState.readManagedByref bct stateAfter ptr
+        IlMachineState.readManagedByref bct stateAfter (ManagedPointerSource.requireAddressed ptr)
         |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
 
     [<Test>]
@@ -3673,7 +3725,7 @@ public unsafe struct PointerWrapper
             | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
             | other -> failwith $"Expected Stind_I8 to step, got %O{other}"
 
-        IlMachineState.readManagedByref bct stateAfter ptr
+        IlMachineState.readManagedByref bct stateAfter (ManagedPointerSource.requireAddressed ptr)
         |> shouldEqual (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L)))
 
     [<Test>]
@@ -3761,7 +3813,7 @@ public unsafe struct PointerWrapper
             let stateAfter =
                 IlMachineState.writeManagedByrefBytesOrTypedCell bct state destPtr (CliType.ValueType replacement)
 
-            IlMachineState.readManagedByref bct stateAfter ptr
+            IlMachineState.readManagedByref bct stateAfter (ManagedPointerSource.requireAddressed ptr)
             |> shouldEqual (CliType.ValueType replacement)
 
         assertAccepted false
@@ -3840,7 +3892,7 @@ public unsafe struct PointerWrapper
             | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
             | other -> failwith $"Expected Stind_I to step, got %O{other}"
 
-        IlMachineState.readManagedByref bct stateAfter ptr
+        IlMachineState.readManagedByref bct stateAfter (ManagedPointerSource.requireAddressed ptr)
         |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt handle))
 
     [<Test>]
@@ -4257,7 +4309,11 @@ public unsafe struct PointerWrapper
             projectRawDataDataPointer containerAddr state
             |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 0)
 
-        IlMachineState.readManagedByrefBytesAs bct state ptr (CliType.ObjectRef None)
+        IlMachineState.readManagedByrefBytesAs
+            bct
+            state
+            (ManagedPointerSource.requireAddressed ptr)
+            (CliType.ObjectRef None)
         |> shouldEqual (CliType.ObjectRef (Some storedAddr))
 
     [<Test>]
@@ -4273,7 +4329,11 @@ public unsafe struct PointerWrapper
         let state =
             IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr (CliType.ObjectRef (Some replacementAddr))
 
-        IlMachineState.readManagedByrefBytesAs bct state ptr (CliType.ObjectRef None)
+        IlMachineState.readManagedByrefBytesAs
+            bct
+            state
+            (ManagedPointerSource.requireAddressed ptr)
+            (CliType.ObjectRef None)
         |> shouldEqual (CliType.ObjectRef (Some replacementAddr))
 
         // Field-precise writes must update the typed field cell, not just produce a byte image
@@ -4295,7 +4355,11 @@ public unsafe struct PointerWrapper
         let state =
             IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr (CliType.ObjectRef None)
 
-        IlMachineState.readManagedByrefBytesAs bct state ptr (CliType.ObjectRef None)
+        IlMachineState.readManagedByrefBytesAs
+            bct
+            state
+            (ManagedPointerSource.requireAddressed ptr)
+            (CliType.ObjectRef None)
         |> shouldEqual (CliType.ObjectRef None)
 
         ManagedHeap.get containerAddr state.ManagedHeap
@@ -4320,7 +4384,7 @@ public unsafe struct PointerWrapper
                 IlMachineState.readManagedByrefBytesAs
                     bct
                     state
-                    ptr
+                    (ManagedPointerSource.requireAddressed ptr)
                     (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
                 |> ignore
             )
@@ -4341,7 +4405,11 @@ public unsafe struct PointerWrapper
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                IlMachineState.readManagedByrefBytesAs bct state ptr (CliType.ObjectRef None)
+                IlMachineState.readManagedByrefBytesAs
+                    bct
+                    state
+                    (ManagedPointerSource.requireAddressed ptr)
+                    (CliType.ObjectRef None)
                 |> ignore
             )
 
@@ -4368,7 +4436,7 @@ public unsafe struct PointerWrapper
             |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 0)
             |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs objectType)
 
-        IlMachineState.readManagedByref bct state ptr
+        IlMachineState.readManagedByref bct state (ManagedPointerSource.requireAddressed ptr)
         |> shouldEqual (CliType.ObjectRef (Some storedAddr))
 
     [<Test>]
@@ -4393,7 +4461,7 @@ public unsafe struct PointerWrapper
                     Projections = [ ByrefProjection.ReinterpretAs stringType ]
                 }
 
-        IlMachineState.readManagedByref bct state ptr
+        IlMachineState.readManagedByref bct state (ManagedPointerSource.requireAddressed ptr)
         |> shouldEqual (CliType.ObjectRef (Some storedAddr))
 
     [<Test>]
@@ -4416,7 +4484,10 @@ public unsafe struct PointerWrapper
                 }
 
         let ex =
-            Assert.Throws<System.Exception> (fun () -> IlMachineState.readManagedByref bct state ptr |> ignore)
+            Assert.Throws<System.Exception> (fun () ->
+                IlMachineState.readManagedByref bct state (ManagedPointerSource.requireAddressed ptr)
+                |> ignore
+            )
 
         ex.Message |> shouldContainText "refusing byte view"
 
@@ -4481,13 +4552,21 @@ public unsafe struct PointerWrapper
             projectRawDataDataPointer containerAddr state
             |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 0)
 
-        IlMachineState.readManagedByrefBytesAs bct state readPtr (CliType.Numeric (CliNumericType.Int32 0))
+        IlMachineState.readManagedByrefBytesAs
+            bct
+            state
+            (ManagedPointerSource.requireAddressed readPtr)
+            (CliType.Numeric (CliNumericType.Int32 0))
         |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0xCAFE1111))
 
         // The Int16 byte-view read of B must also recover 0xCAFE through the byte-walk path:
         // because B is byte-addressable, field-precise dispatch defers to `BytesAt`, which
         // observes the canonical overlay rather than B's tracked cell.
-        IlMachineState.readManagedByrefBytesAs bct state writePtr (CliType.Numeric (CliNumericType.Int16 0s))
+        IlMachineState.readManagedByrefBytesAs
+            bct
+            state
+            (ManagedPointerSource.requireAddressed writePtr)
+            (CliType.Numeric (CliNumericType.Int16 0s))
         |> shouldEqual (CliType.Numeric (CliNumericType.Int16 0xCAFEs))
 
     [<Test>]
@@ -4504,7 +4583,7 @@ public unsafe struct PointerWrapper
                 IlMachineState.readManagedByrefBytesAs
                     bct
                     state
-                    ptrAtOffset
+                    (ManagedPointerSource.requireAddressed ptrAtOffset)
                     (CliType.Numeric (CliNumericType.UInt16 0us))
                 |> ignore
             )
@@ -4520,7 +4599,7 @@ public unsafe struct PointerWrapper
                 IlMachineState.readManagedByrefBytesAs
                     bct
                     state
-                    negativePtr
+                    (ManagedPointerSource.requireAddressed negativePtr)
                     (CliType.Numeric (CliNumericType.UInt16 0us))
                 |> ignore
             )
@@ -4583,7 +4662,7 @@ public unsafe struct PointerWrapper
         IlMachineState.readManagedByrefBytesAs
             bct
             state
-            ptr
+            (ManagedPointerSource.requireAddressed ptr)
             (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
         |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0xAAuy)))
 
@@ -4605,7 +4684,7 @@ public unsafe struct PointerWrapper
             IlMachineState.readManagedByrefBytesAs
                 bct
                 state
-                readPtr
+                (ManagedPointerSource.requireAddressed readPtr)
                 (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
 
         readAt 0
@@ -4728,5 +4807,5 @@ public unsafe struct PointerWrapper
                         Projections = []
                     }
 
-            IlMachineState.readManagedByrefBytesAs bct state cursor byteTemplate
+            IlMachineState.readManagedByrefBytesAs bct state (ManagedPointerSource.requireAddressed cursor) byteTemplate
             |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.NativeIntByte (handleSource, offset))))

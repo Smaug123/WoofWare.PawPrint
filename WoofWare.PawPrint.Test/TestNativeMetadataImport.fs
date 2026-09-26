@@ -630,7 +630,7 @@ public class MarshalShapes
         : int32
         =
         match
-            IlMachineState.readManagedByref baseClassTypes state ptr
+            IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed ptr)
             |> CliType.unwrapPrimitiveLikeDeep
         with
         | CliType.Numeric (CliNumericType.Int32 value) -> value
@@ -800,7 +800,12 @@ public class MarshalShapes
         let length = readInt32Out fixture.BaseClassTypes state lengthOut
 
         let tokens, storage =
-            match IlMachineState.readManagedByref fixture.BaseClassTypes state longResult with
+            match
+                IlMachineState.readManagedByref
+                    fixture.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed longResult)
+            with
             | CliType.ObjectRef (Some arrayAddr) ->
                 let tokens =
                     [ 0 .. int length - 1 ]
@@ -947,7 +952,8 @@ public class MarshalShapes
         (ptr : ManagedPointerSource)
         : int32 * byte array * ManagedPointerSource
         =
-        let cli = IlMachineState.readManagedByref fixture.BaseClassTypes state ptr
+        let cli =
+            IlMachineState.readManagedByref fixture.BaseClassTypes state (ManagedPointerSource.requireAddressed ptr)
 
         let valueType =
             match cli with
@@ -2529,7 +2535,7 @@ public class MarshalShapes
 
         let readString (ptr : ManagedPointerSource) : string option =
             match
-                IlMachineState.readManagedByref fixture.BaseClassTypes state ptr
+                IlMachineState.readManagedByref fixture.BaseClassTypes state (ManagedPointerSource.requireAddressed ptr)
                 |> CliType.unwrapPrimitiveLikeDeep
             with
             | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null) -> None
@@ -2615,7 +2621,7 @@ public class MarshalShapes
 
         for out in outs do
             match
-                IlMachineState.readManagedByref fixture.BaseClassTypes state out
+                IlMachineState.readManagedByref fixture.BaseClassTypes state (ManagedPointerSource.requireAddressed out)
                 |> CliType.unwrapPrimitiveLikeDeep
             with
             | CliType.Numeric (CliNumericType.Int32 0x5A5A5A5A)
@@ -2757,7 +2763,10 @@ public class MarshalShapes
 
         let value =
             match
-                IlMachineState.readManagedByref fixture.BaseClassTypes state valueOut
+                IlMachineState.readManagedByref
+                    fixture.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed valueOut)
                 |> CliType.unwrapPrimitiveLikeDeep
             with
             | CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim v)) -> v
@@ -2765,7 +2774,10 @@ public class MarshalShapes
 
         let stringPointer =
             match
-                IlMachineState.readManagedByref fixture.BaseClassTypes state stringValueOut
+                IlMachineState.readManagedByref
+                    fixture.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed stringValueOut)
                 |> CliType.unwrapPrimitiveLikeDeep
             with
             | CliType.RuntimePointer (CliRuntimePointer.Managed ptr) -> ptr
@@ -3081,7 +3093,10 @@ public class MarshalShapes
 
         let namePtr =
             match
-                IlMachineState.readManagedByref fixture.BaseClassTypes state nameOut
+                IlMachineState.readManagedByref
+                    fixture.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed nameOut)
                 |> CliType.unwrapPrimitiveLikeDeep
             with
             | CliType.RuntimePointer (CliRuntimePointer.Managed ptr) -> ptr
@@ -3291,7 +3306,10 @@ public class MarshalShapes
 
         let namePtr =
             match
-                IlMachineState.readManagedByref fixture.BaseClassTypes state nameOut
+                IlMachineState.readManagedByref
+                    fixture.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed nameOut)
                 |> CliType.unwrapPrimitiveLikeDeep
             with
             | CliType.RuntimePointer (CliRuntimePointer.Managed ptr) -> ptr
