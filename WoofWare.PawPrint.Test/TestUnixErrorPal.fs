@@ -2,6 +2,7 @@ namespace WoofWare.PawPrint.Test
 
 open System
 open System.IO
+open System.Runtime.InteropServices
 open System.Text.RegularExpressions
 open FsUnitTyped
 open NUnit.Framework
@@ -96,6 +97,15 @@ module TestUnixErrorPal =
             )
             literals
 
+    /// The `Interop.Error` members that are no errno: success, the two
+    /// failures the shim synthesises beyond the kernel, and `EWOULDBLOCK`, the
+    /// enum's second spelling of `EAGAIN` (which `UnixError` spells once).
+    let private notAnErrno : Set<string> =
+        Set.ofList [ "SUCCESS" ; "EHOSTNOTFOUND" ; "ESOCKETERROR" ; "EWOULDBLOCK" ]
+
+    /// A case the enum names has that value. Any other case is an errno the
+    /// shim's `ConvertErrorPlatformToPal` has no `case` for, so it falls through
+    /// to `ENONSTANDARD`.
     [<Test>]
     let ``PAL values agree with the pinned Interop.Errors.cs`` () : unit =
         let pinned = pinnedPalValues ()
@@ -104,23 +114,44 @@ module TestUnixErrorPal =
         // passing vacuously.
         pinned |> Map.count |> shouldBeGreaterThan 50
 
-        for error in UnixError.all do
-            let name = caseName error
+        let mutable unnamed = 0
 
-            match Map.tryFind name pinned with
-            | None ->
-                failwith
-                    $"TestUnixErrorPal: UnixError.%s{name} has no counterpart in the pinned Interop.Error enum, so PawPrint would be reporting a PAL value CoreLib never switches on."
+        for error in UnixError.all do
+            match Map.tryFind (caseName error) pinned with
             | Some expected -> UnixErrorPal.toPal error |> shouldEqual expected
+            | None ->
+                unnamed <- unnamed + 1
+                UnixErrorPal.toPal error |> shouldEqual UnixErrorPal.palNonStandard
+
+        // Every one-flavour error (Linux's forty-four, Darwin's nineteen) and
+        // seven both have: `ENOTBLK`, `EREMOTE`, `EUSERS`, `ETOOMANYREFS` and
+        // the STREAMS trio `ENOSTR`, `ENOSR`, `ETIME`. Counted, so neither arm
+        // is vacuous.
+        unnamed |> shouldEqual 70
+
+    /// The converse: `toPal` can produce every errno the enum names. A member
+    /// with no case would be a PAL value no conversion here can reach.
+    [<Test>]
+    let ``every Interop.Error errno is some case's PAL value`` () : unit =
+        let cases = UnixError.all |> List.map caseName |> Set.ofList
+
+        let missing =
+            pinnedPalValues ()
+            |> Map.keys
+            |> Seq.filter (fun name -> not (Set.contains name notAnErrno) && not (Set.contains name cases))
+            |> Seq.toList
+
+        missing |> shouldEqual []
 
     [<Test>]
-    let ``PAL numbering is injective, up to the enum's own alias`` () : unit =
+    let ``PAL numbering is injective, up to the enum's own alias and ENONSTANDARD`` () : unit =
         // `Interop.Error` defines `EOPNOTSUPP = ENOTSUP`, so those two are one
-        // value by the enum's own declaration; any other collision is ours.
+        // value by the enum's own declaration, and every case the enum does
+        // not name shares `ENONSTANDARD`; any other collision is ours.
         let collisions =
             UnixError.all
             |> List.groupBy UnixErrorPal.toPal
-            |> List.filter (fun (_, errors) -> List.length errors > 1)
+            |> List.filter (fun (pal, errors) -> List.length errors > 1 && pal <> UnixErrorPal.palNonStandard)
             |> List.filter (fun (_, errors) ->
                 Set.ofList errors <> Set.ofList [ UnixError.EOPNOTSUPP ; UnixError.ENOTSUP ]
             )
@@ -142,7 +173,9 @@ module TestUnixErrorPal =
     let ``ofRawErrno inverts toRawErrno wherever toRawErrno answers`` () : unit =
         for error in UnixError.all do
             match UnixError.rawNumbering error with
-            | RawErrnoPortability.PlatformDependent _ ->
+            | RawErrnoPortability.PlatformDependent _
+            | RawErrnoPortability.LinuxOnly _
+            | RawErrnoPortability.DarwinOnly _ ->
                 // Not invertible, and deliberately so: see the refusal test
                 // below, which drives both of ELOOP's candidate numbers.
                 ()
@@ -204,10 +237,244 @@ module TestUnixErrorPal =
         UnixErrorPal.ofRawErrnoUnder RawErrnoNumbering.Darwin 40
         |> shouldEqual (UnixErrorPal.toPal UnixError.EMSGSIZE)
 
-        // A number the table has no entry for on the named platform still
-        // fails rather than answering ENONSTANDARD: raw 72 under Linux is
-        // EMULTIHOP, which is not modelled.
-        let exn =
-            Assert.Throws<Exception> (fun () -> UnixErrorPal.ofRawErrnoUnder RawErrnoNumbering.Linux 72 |> ignore<int>)
+        // A number that is a different error on each platform, and is named
+        // by the enum on one only: Linux's 72 is EMULTIHOP, Darwin's EBADRPC.
+        UnixErrorPal.ofRawErrnoUnder RawErrnoNumbering.Linux 72
+        |> shouldEqual (UnixErrorPal.toPal UnixError.EMULTIHOP)
 
-        exn.Message |> shouldContainText "no entry for it on this platform"
+        UnixErrorPal.ofRawErrnoUnder RawErrnoNumbering.Darwin 72
+        |> shouldEqual UnixErrorPal.palNonStandard
+
+    // ---------------------------------------------------------------------
+    // ofRawErrnoUnder, against the shim itself.
+    // ---------------------------------------------------------------------
+
+    /// What the real shim's `SystemNative_ConvertErrorPlatformToPal` answered
+    /// for every raw number in [-300, 4096] and at `Int32.MinValue`,
+    /// `Int32.MaxValue`, -0x20001 and -0x20002, listing only the answers that
+    /// were not `ENONSTANDARD`. Measured with
+    /// `docs/plans/2026-08-23-posix-kernel-extraction/errno-table.sh` against
+    /// the shim of .NET 10.0.11 (Linux aarch64) and 10.0.12 (Linux x86-64
+    /// under Rosetta), which answered identically, and of 10.0.7 on Darwin
+    /// 27.0.0 arm64.
+    let private measuredShim (numbering : RawErrnoNumbering) : Map<int, int> =
+        match numbering with
+        | RawErrnoNumbering.Linux ->
+            Map.ofList
+                [
+                    1, 0x10042
+                    2, 0x1002D
+                    3, 0x1004A
+                    4, 0x1001B
+                    5, 0x1001D
+                    6, 0x1003F
+                    7, 0x10001
+                    8, 0x1002E
+                    9, 0x10008
+                    10, 0x1000C
+                    11, 0x10006
+                    12, 0x10031
+                    13, 0x10002
+                    14, 0x10015
+                    16, 0x1000A
+                    17, 0x10014
+                    18, 0x1004F
+                    19, 0x1002C
+                    20, 0x10039
+                    21, 0x1001F
+                    22, 0x1001C
+                    23, 0x10029
+                    24, 0x10021
+                    25, 0x1003E
+                    26, 0x1004E
+                    27, 0x10016
+                    28, 0x10034
+                    29, 0x10049
+                    30, 0x10048
+                    31, 0x10022
+                    32, 0x10043
+                    33, 0x10012
+                    34, 0x10047
+                    35, 0x10010
+                    36, 0x10025
+                    37, 0x1002F
+                    38, 0x10037
+                    39, 0x1003A
+                    40, 0x10020
+                    42, 0x10032
+                    43, 0x10018
+                    61, 0x10071
+                    67, 0x10030
+                    71, 0x10044
+                    72, 0x10024
+                    74, 0x10009
+                    75, 0x10040
+                    84, 0x10019
+                    88, 0x1003C
+                    89, 0x10011
+                    90, 0x10023
+                    91, 0x10046
+                    92, 0x10033
+                    93, 0x10045
+                    94, 0x1005E
+                    95, 0x1003D
+                    96, 0x10060
+                    97, 0x10005
+                    98, 0x10003
+                    99, 0x10004
+                    100, 0x10026
+                    101, 0x10028
+                    102, 0x10027
+                    103, 0x1000D
+                    104, 0x1000F
+                    105, 0x1002A
+                    106, 0x1001E
+                    107, 0x10038
+                    108, 0x1006C
+                    110, 0x1004D
+                    111, 0x1000E
+                    112, 0x10070
+                    113, 0x10017
+                    114, 0x10007
+                    115, 0x1001A
+                    116, 0x1004B
+                    122, 0x10013
+                    125, 0x1000B
+                    130, 0x10041
+                    131, 0x1003B
+                ]
+        | RawErrnoNumbering.Darwin ->
+            Map.ofList
+                [
+                    1, 0x10042
+                    2, 0x1002D
+                    3, 0x1004A
+                    4, 0x1001B
+                    5, 0x1001D
+                    6, 0x1003F
+                    7, 0x10001
+                    8, 0x1002E
+                    9, 0x10008
+                    10, 0x1000C
+                    11, 0x10010
+                    12, 0x10031
+                    13, 0x10002
+                    14, 0x10015
+                    16, 0x1000A
+                    17, 0x10014
+                    18, 0x1004F
+                    19, 0x1002C
+                    20, 0x10039
+                    21, 0x1001F
+                    22, 0x1001C
+                    23, 0x10029
+                    24, 0x10021
+                    25, 0x1003E
+                    26, 0x1004E
+                    27, 0x10016
+                    28, 0x10034
+                    29, 0x10049
+                    30, 0x10048
+                    31, 0x10022
+                    32, 0x10043
+                    33, 0x10012
+                    34, 0x10047
+                    35, 0x10006
+                    36, 0x1001A
+                    37, 0x10007
+                    38, 0x1003C
+                    39, 0x10011
+                    40, 0x10023
+                    41, 0x10046
+                    42, 0x10033
+                    43, 0x10045
+                    44, 0x1005E
+                    45, 0x1003D
+                    46, 0x10060
+                    47, 0x10005
+                    48, 0x10003
+                    49, 0x10004
+                    50, 0x10026
+                    51, 0x10028
+                    52, 0x10027
+                    53, 0x1000D
+                    54, 0x1000F
+                    55, 0x1002A
+                    56, 0x1001E
+                    57, 0x10038
+                    58, 0x1006C
+                    60, 0x1004D
+                    61, 0x1000E
+                    62, 0x10020
+                    63, 0x10025
+                    64, 0x10070
+                    65, 0x10017
+                    66, 0x1003A
+                    69, 0x10013
+                    70, 0x1004B
+                    77, 0x1002F
+                    78, 0x10037
+                    84, 0x10040
+                    89, 0x1000B
+                    90, 0x10018
+                    91, 0x10032
+                    92, 0x10019
+                    94, 0x10009
+                    95, 0x10024
+                    96, 0x10071
+                    97, 0x10030
+                    100, 0x10044
+                    102, 0x1003D
+                    104, 0x1003B
+                    105, 0x10041
+                ]
+
+    let private sweep : int list =
+        [ Int32.MinValue ; -0x20002 ; -0x20001 ; Int32.MaxValue ] @ [ -300 .. 4096 ]
+
+    [<Test>]
+    let ``ofRawErrnoUnder answers what each flavour's shim was measured to`` () : unit =
+        for numbering in [ RawErrnoNumbering.Linux ; RawErrnoNumbering.Darwin ] do
+            let measured = measuredShim numbering
+
+            for raw in sweep do
+                let expected =
+                    if raw = 0 then
+                        UnixErrorPal.palSuccess
+                    else
+                        Map.tryFind raw measured |> Option.defaultValue UnixErrorPal.palNonStandard
+
+                let actual = UnixErrorPal.ofRawErrnoUnder numbering raw
+
+                if actual <> expected then
+                    failwith
+                        $"TestUnixErrorPal: under %O{numbering}, raw %d{raw} converts to 0x%X{actual}, but the shim was measured answering 0x%X{expected}."
+
+    /// The shim this test host runs against. Pure: a switch over the
+    /// `<errno.h>` constants it was compiled with.
+    [<DllImport("libSystem.Native", EntryPoint = "SystemNative_ConvertErrorPlatformToPal")>]
+    extern int private hostConvertErrorPlatformToPal(int platformErrno)
+
+    /// The measurement above, repeated against whatever shim this host has:
+    /// the Darwin half on a dev box, the Linux half in CI.
+    [<Test>]
+    let ``ofRawErrnoUnder answers what this host's shim does`` () : unit =
+        let numbering =
+            if RuntimeInformation.IsOSPlatform OSPlatform.OSX then
+                Some RawErrnoNumbering.Darwin
+            elif RuntimeInformation.IsOSPlatform OSPlatform.Linux then
+                Some RawErrnoNumbering.Linux
+            else
+                None
+
+        match numbering with
+        | None -> Assert.Ignore $"no modelled Unix to measure (%s{RuntimeInformation.OSDescription})"
+        | Some numbering ->
+
+        for raw in sweep do
+            let expected = hostConvertErrorPlatformToPal raw
+            let actual = UnixErrorPal.ofRawErrnoUnder numbering raw
+
+            if actual <> expected then
+                failwith
+                    $"TestUnixErrorPal: under %O{numbering}, raw %d{raw} converts to 0x%X{actual}, but this host's shim answers 0x%X{expected}."
