@@ -485,13 +485,11 @@ module internal UnaryMetadataTokenOps =
             IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
         // ECMA-335 III.4.18 types the popped operand `O`, and PawPrint spells every such receiver
         // — a boxed value type included — as an `ObjectRef`. Anything else is malformed IL rather
-        // than a shape to reinterpret, so the arm below says so instead of letting `getTypeOfObj`
-        // fail with a message that never mentions the instruction.
-        | Some (EvalStackValue.ObjectRef _) ->
-            let receiver, state = IlMachineState.popEvalStack thread state
+        // than a shape to reinterpret, and the arm after this one says so.
+        | Some (EvalStackValue.ObjectRef receiver) ->
+            let _, state = IlMachineState.popEvalStack thread state
 
-            let state, receiverType =
-                IlMachineStateExecution.getTypeOfObj loggerFactory baseClassTypes state receiver
+            let receiverType = ManagedHeap.getObjectConcreteType receiver state.ManagedHeap
 
             // Exactly `callvirt`'s dispatch: same resolver, same `walkBaseTypes = true`, same
             // method-generic context. `None` means no override exists, in which case the call
