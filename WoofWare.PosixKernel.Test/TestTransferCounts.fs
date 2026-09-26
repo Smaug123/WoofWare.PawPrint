@@ -561,6 +561,36 @@ module TestTransferCounts =
         Set.difference (Set.add "Moved true" everyRule) writeRules
         |> shouldEqual Set.empty
 
+    /// `write` and `pwrite` answer the position check themselves, so a caller
+    /// that skipped the admission still gets a kernel's answer: EINVAL on Linux
+    /// once position + count passes INT64_MAX, and one byte fewer reaches the
+    /// file, whose length this kernel cannot represent. Darwin has no such
+    /// check, and every one of these reaches the file.
+    [<Test>]
+    let ``write and pwrite check the position themselves`` () : unit =
+        let nearTop = Int64.MaxValue - 10L
+
+        let outcome (result : Result<WriteAnswer * UnixSystem<int, string>, 'refusal>) : string =
+            match result with
+            | Ok (WriteAnswer.Failed error, _) -> $"%O{error}"
+            | Ok (WriteAnswer.Completed written, _) -> $"moved %d{written}"
+            | Error _ -> "unrepresentable"
+
+        for machine, eleven in
+            [
+                (SimulatedUnixPlatform.linuxX64, None), "EINVAL"
+                (SimulatedUnixPlatform.macOsArm64, None), "unrepresentable"
+            ] do
+            for length, expected in [ 11, eleven ; 10, "unrepresentable" ] do
+                let bytes = ImmutableArray.CreateRange (contentOf length)
+                let fd, system = withFile ImmutableArray.Empty nearTop (systemOn machine)
+
+                (machine, length, "write", outcome (UnixReadWrite.write fd bytes system))
+                |> shouldEqual (machine, length, "write", expected)
+
+                (machine, length, "pwrite", outcome (UnixReadWrite.pwrite fd bytes nearTop system))
+                |> shouldEqual (machine, length, "pwrite", expected)
+
     // ------------------------------------------------------- one call's limit
 
     /// A file longer than one Linux call moves, read in one call: 0x7FFFF000
