@@ -26,9 +26,15 @@
 // though both clamp to 0x7FFFF000.
 //
 // Darwin has no such check: a read or pread past end-of-file is 0 at every
-// position, and a write or pwrite at 2^62 or beyond is EFBIG. Two answers there
-// that no count explains: a zero-length write at INT64_MAX is EFBIG, and a
-// directory read or pread at position INT64_MAX is 0 rather than EISDIR.
+// position, and a write or pwrite at 2^62 or beyond is EFBIG. At INT64_MAX
+// itself, and at no position below it, Darwin answers from the position alone:
+// a write or pwrite is EFBIG at every count up to INT_MAX, zero included, and
+// whatever the buffer; a directory read or pread is 0 rather than EISDIR. A
+// count past INT_MAX is still EINVAL, so that check comes first.
+//
+// Rerun on an HFS+ disk image (`hdiutil create -fs HFS+`), the INT64_MAX
+// answers are the same, so they are the platform's rather than APFS's. Below
+// it they are not: a one-byte write at 2^62 is ENOSPC on HFS+.
 //
 // GETCWD: nothing new at large capacities. Every capacity from the path's
 // length + 1 to SIZE_MAX reports the path on both, and an unmapped destination

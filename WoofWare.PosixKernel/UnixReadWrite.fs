@@ -28,8 +28,9 @@ type ReadRefusal =
     | SocketConnectionState of socket : SocketId * domain : SocketDomain * kind : SocketKind
     /// A directory this description has read part of the way through, on a
     /// filesystem whose position there this kernel cannot bound, and a count
-    /// for which the answer depends on that position: EINVAL if position +
-    /// count passes `INT64_MAX`, EISDIR otherwise.
+    /// for which the answer depends on that position. On Linux that is EINVAL
+    /// if position + count passes `INT64_MAX`; on Darwin, 0 if the position is
+    /// `INT64_MAX`; EISDIR otherwise.
     | ScannedDirectoryPosition of inode : InodeNumber * fileSystem : EmulatedFileSystemType
 
 [<RequireQualifiedAccess>]
@@ -43,7 +44,7 @@ module ReadRefusal =
         | ReadRefusal.SocketConnectionState (socket, domain, kind) ->
             $"the descriptor is socket %O{socket} (%O{domain}, %O{kind}). This kernel models no socket connection state, and `read(2)` on a socket is an answer about exactly that: measured on an unconnected socket it is ENOTCONN for a TCP socket, EINVAL on Linux against ENOTCONN on Darwin for a Unix-domain stream socket, and a block with no wake source for a datagram socket. Any constant here would become a lie the moment connection state is modelled."
         | ReadRefusal.ScannedDirectoryPosition (inode, fileSystem) ->
-            $"the descriptor is directory %O{inode} on %O{fileSystem}, which this description has read part of the way through. Linux answers EINVAL when position + count passes INT64_MAX, ahead of a directory's EISDIR, and the position after a partial scan is %O{fileSystem}'s own cookie (on an NFS mount, whatever the server chose, up to INT64_MAX), which is not a number this kernel's position corresponds to. So whether this read is EINVAL or EISDIR is unknown here."
+            $"the descriptor is directory %O{inode} on %O{fileSystem}, which this description has read part of the way through. Ahead of a directory's EISDIR, Linux answers EINVAL when position + count passes INT64_MAX and Darwin answers 0 when the position is INT64_MAX, and the position after a partial scan is %O{fileSystem}'s own cookie (on an NFS mount, whatever the server chose, up to INT64_MAX), which is not a number this kernel's position corresponds to. So whether this read is EISDIR or the position's answer is unknown here."
 
 /// What `write(2)` did, for a request this kernel could answer.
 [<RequireQualifiedAccess>]
@@ -187,60 +188,115 @@ module UnixReadWrite =
         | TransferCountLimit.Refused maxTransfer -> count > uint64 maxTransfer
         | TransferCountLimit.Shortened _ -> false
 
-    /// Whether this platform refuses, as EINVAL, a transfer of `count` bytes at
-    /// file position `position` because it would carry the position past
-    /// `INT64_MAX`. `count` is the whole count asked for. Only an object with a
-    /// position is asked: a pipe or a socket has none.
-    let private positionOverflows (platform : SimulatedUnixPlatform) (position : int64) (count : uint64) : bool =
-        System.Diagnostics.Debug.Assert (position >= 0L, "positionOverflows: a file position is never negative")
+    /// What a platform answers of a transfer's position alone, ahead of the
+    /// object's own operation. Only an object with a position is asked: a pipe
+    /// or a socket has none.
+    [<RequireQualifiedAccess>]
+    type private PositionCheck =
+        /// The object's own operation answers.
+        | Passes
+        /// Linux: position + count passes `INT64_MAX`. EINVAL.
+        | Overflows
+        /// Darwin: the position is `INT64_MAX` itself. A read there is
+        /// end-of-file, a directory's included, and a write is EFBIG.
+        | AtMaximum
+
+    /// What this platform answers of a transfer of `count` bytes at file
+    /// position `position`, from the position alone. `count` is the whole count
+    /// asked for.
+    let private positionCheck (platform : SimulatedUnixPlatform) (position : int64) (count : uint64) : PositionCheck =
+        System.Diagnostics.Debug.Assert (position >= 0L, "positionCheck: a file position is never negative")
 
         // Measured by transfer-counts-position.c in
-        // docs/plans/2026-08-23-posix-kernel-extraction/: Linux checks after the
-        // buffer screen and before anything the object does (a directory's
-        // EISDIR, end-of-file's 0, the copy), over the count as asked rather
-        // than as shortened, for read and write at the description's position as
-        // for pread and pwrite at the argument. Darwin has no such check: a read
-        // there past end-of-file is 0 at every position.
+        // docs/plans/2026-08-23-posix-kernel-extraction/, for read and write at
+        // the description's position as for pread and pwrite at the argument.
+        //
+        // Linux checks after the buffer screen and before anything the object
+        // does (a directory's EISDIR, end-of-file's 0, the copy), over the count
+        // as asked rather than as shortened. A count of zero never passes.
+        //
+        // Darwin checks no sum: a read past end-of-file is 0 at every position.
+        // But at INT64_MAX itself, and nowhere below it, a directory read is 0
+        // rather than EISDIR, and a write to a regular file is EFBIG for every
+        // count its count check admits, zero included, and whatever the buffer.
+        // The same on APFS and on HFS+, so it is the platform's rather than a
+        // filesystem's. Darwin screens no buffer, so nothing orders this
+        // against a screen.
         match SimulatedUnixPlatform.flavour platform with
-        | SimulatedUnixFlavour.Linux -> count > uint64 (System.Int64.MaxValue - position)
-        | SimulatedUnixFlavour.Darwin -> false
+        | SimulatedUnixFlavour.Linux ->
+            if count > uint64 (System.Int64.MaxValue - position) then
+                PositionCheck.Overflows
+            else
+                PositionCheck.Passes
+        | SimulatedUnixFlavour.Darwin ->
+            if position = System.Int64.MaxValue then
+                PositionCheck.AtMaximum
+            else
+                PositionCheck.Passes
 
-    /// `positionOverflows` for a directory description at `position`. `Error`
+    /// `positionCheck` for a directory description at `position`. `Error`
     /// where the answer depends on a position this kernel cannot state: the
     /// filesystem's own cookie partway through a scan.
-    let private directoryPositionOverflows
+    let private directoryPositionCheck
         (platform : SimulatedUnixPlatform)
         (fileSystem : EmulatedFileSystemType)
         (position : DirectoryPosition)
         (count : uint64)
-        : Result<bool, unit>
+        : Result<PositionCheck, unit>
         =
         match position with
-        | DirectoryPosition.Cursor DirectoryCursor.Start -> Ok (positionOverflows platform 0L count)
-        | DirectoryPosition.Unenumerable offset -> Ok (positionOverflows platform offset count)
+        | DirectoryPosition.Cursor DirectoryCursor.Start -> Ok (positionCheck platform 0L count)
+        | DirectoryPosition.Unenumerable offset -> Ok (positionCheck platform offset count)
         | DirectoryPosition.Cursor (DirectoryCursor.After _)
         | DirectoryPosition.Cursor DirectoryCursor.ReturnedDotDot
         | DirectoryPosition.Cursor DirectoryCursor.ReturnedDot ->
             // The largest position a description partway through a scan can
-            // hold. On tmpfs, measured on Linux 6.18.5 aarch64 by
-            // docs/plans/2026-08-23-posix-kernel-extraction/transfer-counts-directory.c:
-            // each entry's own small offset partway through, and INT_MAX once
-            // the scan is done. An NFS position is the server's cookie, which
-            // can be anything up to INT64_MAX (ext4's 64-bit hash cookies end
-            // at it). APFS is never mounted where the check exists, so it is
-            // given no bound either.
+            // hold, each measured by a probe in
+            // docs/plans/2026-08-23-posix-kernel-extraction/.
+            // - tmpfs, on Linux 6.18.5 aarch64 (transfer-counts-directory.c):
+            //   each entry's own small offset partway through, and INT_MAX once
+            //   the scan is done.
+            // - APFS, on Darwin 27.0.0 arm64
+            //   (transfer-counts-darwin-directory.c): INT_MAX once the scan is
+            //   done, and partway through the number of getdirentries calls made
+            //   in the high 32 bits and the entries returned so far in the low
+            //   ones. INT64_MAX would take 2^31 - 1 calls that returned 2^32 - 1
+            //   entries between them, so the bound is one below it.
+            // - NFS: the server's cookie, which can be anything up to INT64_MAX
+            //   (ext4's 64-bit hash cookies end at it).
             let largest =
                 match fileSystem with
                 | EmulatedFileSystemType.Tmpfs -> int64 System.Int32.MaxValue
-                | EmulatedFileSystemType.Nfs
-                | EmulatedFileSystemType.Apfs -> System.Int64.MaxValue
+                | EmulatedFileSystemType.Apfs -> System.Int64.MaxValue - 1L
+                | EmulatedFileSystemType.Nfs -> System.Int64.MaxValue
 
-            // The position is somewhere in [0, largest], and the check is
-            // monotone in it, so the two ends decide it whenever they agree.
-            match positionOverflows platform 0L count, positionOverflows platform largest count with
-            | true, _ -> Ok true
-            | false, false -> Ok false
-            | false, true -> Error ()
+            // The position is somewhere in [0, largest]. Each flavour's check is
+            // monotone in it (Linux's sum passes INT64_MAX from some position
+            // on, and Darwin's position is INT64_MAX at the top end alone), so
+            // the two ends decide it whenever they agree.
+            let atStart = positionCheck platform 0L count
+
+            if atStart = positionCheck platform largest count then
+                Ok atStart
+            else
+                Error ()
+
+    /// What a read answers from its position alone, or `None` where the object
+    /// answers. The end-of-file answer moves nothing, so a description's
+    /// position stays where it was.
+    let private readAnsweredByPosition (check : PositionCheck) : ReadAnswer option =
+        match check with
+        | PositionCheck.Passes -> None
+        | PositionCheck.Overflows -> Some (ReadAnswer.Failed UnixError.EINVAL)
+        | PositionCheck.AtMaximum -> Some (ReadAnswer.Completed ImmutableArray.Empty)
+
+    /// What a write to a regular file answers from its position alone, or
+    /// `None` where the file answers.
+    let private writeFailedByPosition (check : PositionCheck) : UnixError option =
+        match check with
+        | PositionCheck.Passes -> None
+        | PositionCheck.Overflows -> Some UnixError.EINVAL
+        | PositionCheck.AtMaximum -> Some UnixError.EFBIG
 
     /// The count the object's own operation sees: at most one call's worth.
     /// Where the platform refuses a longer count instead, that refusal has
@@ -450,14 +506,17 @@ module UnixReadWrite =
                 let socket = UnixMachineState.socket socketId system.Machine
                 Error (ReadRefusal.SocketConnectionState (socketId, socket.Domain, socket.Kind))
         | ReadTarget.Directory (inode, position) ->
-            // A directory has a position too, and Linux checks position + count
-            // against it ahead of EISDIR, exactly as for a file.
+            // A directory has a position too, and each flavour's position rule
+            // answers ahead of EISDIR, exactly as for a file.
             let fileSystem = EmulatedMount.fileSystemType system.Machine.Mount
 
-            match directoryPositionOverflows platform fileSystem position count with
+            match directoryPositionCheck platform fileSystem position count with
             | Error () -> Error (ReadRefusal.ScannedDirectoryPosition (inode, fileSystem))
-            | Ok true -> Ok (ReadAnswer.Failed UnixError.EINVAL, system)
-            | Ok false ->
+            | Ok check ->
+
+            match readAnsweredByPosition check with
+            | Some answer -> Ok (answer, system)
+            | None ->
                 // EISDIR on both, and behind the buffer screen rather than ahead
                 // of it: measured, `read(dir, NULL, 5)` is EISDIR while
                 // `read(dir, (void*)-1, 5)` is EFAULT under a screening flavour.
@@ -480,9 +539,9 @@ module UnixReadWrite =
             Ok (ReadAnswer.Completed ImmutableArray.Empty, system)
         | ReadTarget.File (inode, offset) ->
 
-        if positionOverflows platform offset count then
-            Ok (ReadAnswer.Failed UnixError.EINVAL, system)
-        else
+        match readAnsweredByPosition (positionCheck platform offset count) with
+        | Some answer -> Ok (answer, system)
+        | None ->
 
         // The window is computed from the description's own offset, which is the
         // whole of what `pread` does differently; everything after it is the
@@ -677,9 +736,9 @@ module UnixReadWrite =
         | Ok true -> Ok (ReadAnswer.Failed UnixError.EFAULT)
         | Ok false ->
 
-        if positionOverflows platform offset count then
-            Ok (ReadAnswer.Failed UnixError.EINVAL)
-        else
+        match readAnsweredByPosition (positionCheck platform offset count) with
+        | Some answer -> Ok answer
+        | None ->
 
         readFileAt "pread" fd inode offset buffer (oneCallsWorth platform count) system
 
@@ -776,10 +835,21 @@ module UnixReadWrite =
         | WriteTarget.Socket socketId ->
             let socket = UnixMachineState.socket socketId system.Machine
             Error (WriteRefusal.SocketConnectionState (socketId, socket.Domain, socket.Kind))
-        | WriteTarget.File (_, offset) when positionOverflows platform offset count ->
-            Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EINVAL))
         | WriteTarget.File _
         | WriteTarget.StandardStream _ ->
+
+        // Ahead of the zero-length no-op below: Darwin's EFBIG at INT64_MAX
+        // answers a count of zero too, measured.
+        let positionError =
+            match target with
+            | WriteTarget.File (_, offset) -> writeFailedByPosition (positionCheck platform offset count)
+            // Neither has a position.
+            | WriteTarget.StandardStream _
+            | WriteTarget.Socket _ -> None
+
+        match positionError with
+        | Some error -> Ok (WriteAdmission.Answered (WriteAnswer.Failed error))
+        | None ->
 
         let count = oneCallsWorth platform count
 
@@ -837,23 +907,11 @@ module UnixReadWrite =
             // first.
             let socket = UnixMachineState.socket socketId system.Machine
             Error (WriteRefusal.SocketConnectionState (socketId, socket.Domain, socket.Kind))
-        | Ok _ when bytes.IsEmpty ->
-            // A no-op on both platforms, and specifically one that changes
-            // nothing: measured, a zero-length write leaves `mtime` and `ctime`
-            // where they were, does not extend the file, and does not strip the
-            // set-ID bits. `admitWrite` answers this too, so the arm is
-            // unreachable for a caller that used the pair — but a caller that
-            // did not must get the same answer, and `VirtualFileSystem.writeFile`
-            // below asserts a non-empty write precisely because it would
-            // otherwise restamp the inode.
-            //
-            // After the descriptor checks, not before: `write(rdonlyFd, buf, 0)`
-            // is EBADF rather than 0, measured on both.
+        | Ok (WriteTarget.StandardStream _) when bytes.IsEmpty ->
+            // A no-op, as it is for a file below. After the descriptor checks,
+            // not before: `write(rdonlyFd, buf, 0)` is EBADF rather than 0,
+            // measured on both.
             Ok (WriteAnswer.Completed 0L, system)
-        | Ok (WriteTarget.File (_, offset)) when
-            positionOverflows system.Machine.UnixPlatform offset (uint64 bytes.Length)
-            ->
-            Ok (WriteAnswer.Failed UnixError.EINVAL, system)
         | Ok (WriteTarget.StandardStream (role, nonBlocking)) ->
             // This kernel's output streams are pipes whose reader takes every
             // byte as it arrives, so each write finds its pipe empty. A
@@ -887,6 +945,27 @@ module UnixReadWrite =
                     }
                 )
         | Ok (WriteTarget.File (inode, offset)) ->
+
+        // Ahead of the zero-length no-op: Darwin's EFBIG at INT64_MAX answers
+        // a count of zero too, measured.
+        match writeFailedByPosition (positionCheck system.Machine.UnixPlatform offset (uint64 bytes.Length)) with
+        | Some error -> Ok (WriteAnswer.Failed error, system)
+        | None ->
+
+        if bytes.IsEmpty then
+            // A no-op on both platforms, and specifically one that changes
+            // nothing: measured, a zero-length write leaves `mtime` and `ctime`
+            // where they were, does not extend the file, and does not strip the
+            // set-ID bits. `admitWrite` answers this too, so the arm is
+            // unreachable for a caller that used the pair — but a caller that
+            // did not must get the same answer, and `VirtualFileSystem.writeFile`
+            // below asserts a non-empty write precisely because it would
+            // otherwise restamp the inode.
+            //
+            // After the descriptor checks, not before: `write(rdonlyFd, buf, 0)`
+            // is EBADF rather than 0, measured on both.
+            Ok (WriteAnswer.Completed 0L, system)
+        else
 
         let now = UnixMachineState.realtime system.Machine
 
@@ -1067,9 +1146,11 @@ module UnixReadWrite =
         | Ok true -> Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EFAULT))
         | Ok false ->
 
-        if positionOverflows platform offset count then
-            Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EINVAL))
-        else
+        // Ahead of the zero-length no-op below: Darwin's EFBIG at INT64_MAX
+        // answers a count of zero too, measured.
+        match writeFailedByPosition (positionCheck platform offset count) with
+        | Some error -> Ok (WriteAdmission.Answered (WriteAnswer.Failed error))
+        | None ->
 
         let count = oneCallsWorth platform count
 
@@ -1131,6 +1212,12 @@ module UnixReadWrite =
         | Error error -> Ok (WriteAnswer.Failed error, system)
         | Ok inode ->
 
+        // Ahead of the zero-length no-op: Darwin's EFBIG at INT64_MAX answers
+        // a count of zero too, measured.
+        match writeFailedByPosition (positionCheck system.Machine.UnixPlatform offset (uint64 bytes.Length)) with
+        | Some error -> Ok (WriteAnswer.Failed error, system)
+        | None ->
+
         if bytes.IsEmpty then
             // A no-op that changes nothing, and *after* the descriptor checks:
             // measured, `pwrite(rdonlyFd, buf, 0, 0)` is EBADF rather than 0.
@@ -1140,8 +1227,6 @@ module UnixReadWrite =
             // non-empty write precisely because it would otherwise restamp the
             // inode.
             Ok (WriteAnswer.Completed 0L, system)
-        elif positionOverflows system.Machine.UnixPlatform offset (uint64 bytes.Length) then
-            Ok (WriteAnswer.Failed UnixError.EINVAL, system)
         else
 
         let now = UnixMachineState.realtime system.Machine

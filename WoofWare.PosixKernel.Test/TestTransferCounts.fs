@@ -11,7 +11,8 @@ open WoofWare.PosixKernel
 
 /// What `read`, `pread`, `write` and `pwrite` do with the count they are given,
 /// which is a `size_t`: the per-call limit, the buffer screen over the whole
-/// count, and Linux's check of position + count. The rules are those measured by
+/// count, Linux's check of position + count, and Darwin's answer at position
+/// `INT64_MAX`. The rules are those measured by
 /// docs/plans/2026-08-23-posix-kernel-extraction/transfer-counts.c and
 /// transfer-counts-position.c, on Linux 6.18.5 aarch64 and Darwin 27.0.0 arm64.
 ///
@@ -133,6 +134,7 @@ module TestTransferCounts =
         | Screened
         | ScreenRefused
         | PositionOverflow
+        | AtMaximum
         | NegativeOffset
         | NothingToMove
         | FaultAtCopy
@@ -147,6 +149,9 @@ module TestTransferCounts =
     /// The steps every call shares ahead of its object's own operation, stated
     /// in arbitrary precision so that the reference cannot share an overflow
     /// with the implementation. `Ok n` is the count the operation then sees.
+    ///
+    /// `Rule.AtMaximum` carries a write's answer, EFBIG. A read there is
+    /// end-of-file instead, which `expectedRead` states.
     let private sharedSteps
         (platform : SimulatedUnixPlatform)
         (limit : uint64 option)
@@ -178,6 +183,8 @@ module TestTransferCounts =
         match position with
         | Some position when isLinux platform && bigint position + bigint count > bigint Int64.MaxValue ->
             Error (Rule.PositionOverflow, Ok UnixError.EINVAL)
+        | Some position when not (isLinux platform) && position = Int64.MaxValue ->
+            Error (Rule.AtMaximum, Ok UnixError.EFBIG)
         | _ ->
             Ok (
                 if isLinux platform then
@@ -198,6 +205,7 @@ module TestTransferCounts =
         : Rule * Result<ReadAnswer * int64, BufferRefusal>
         =
         match sharedSteps platform limit buffer (Some position) count with
+        | Error (Rule.AtMaximum, _) -> Rule.AtMaximum, Ok (ReadAnswer.Completed ImmutableArray.Empty, position)
         | Error (rule, Ok error) -> rule, Ok (ReadAnswer.Failed error, position)
         | Error (rule, Error refusal) -> rule, Error refusal
         | Ok moved ->
@@ -534,6 +542,7 @@ module TestTransferCounts =
                     "Screened"
                     "ScreenRefused"
                     "PositionOverflow"
+                    "AtMaximum"
                     "NothingToMove"
                     "FaultAtCopy"
                     "RefusedAtCopy"
@@ -566,7 +575,9 @@ module TestTransferCounts =
     /// that skipped the admission still gets a kernel's answer: EINVAL on Linux
     /// once position + count passes INT64_MAX, and one byte fewer reaches the
     /// file, whose length this kernel cannot represent. Darwin has no such
-    /// check, and every one of these reaches the file.
+    /// check, and every one of these reaches the file. At `INT64_MAX` itself
+    /// Darwin answers EFBIG, for every count and ahead of the zero-length no-op;
+    /// Linux's check never counts a zero-length write as passing it.
     [<Test>]
     let ``write and pwrite check the position themselves`` () : unit =
         let nearTop = Int64.MaxValue - 10L
@@ -591,6 +602,22 @@ module TestTransferCounts =
 
                 (machine, length, "pwrite", outcome (UnixReadWrite.pwrite fd bytes nearTop system))
                 |> shouldEqual (machine, length, "pwrite", expected)
+
+        for machine, length, expected in
+            [
+                (SimulatedUnixPlatform.linuxX64, None), 0, "moved 0"
+                (SimulatedUnixPlatform.linuxX64, None), 1, "EINVAL"
+                (SimulatedUnixPlatform.macOsArm64, None), 0, "EFBIG"
+                (SimulatedUnixPlatform.macOsArm64, None), 1, "EFBIG"
+            ] do
+            let bytes = ImmutableArray.CreateRange (contentOf length)
+            let fd, system = withFile ImmutableArray.Empty Int64.MaxValue (systemOn machine)
+
+            (machine, length, "write", outcome (UnixReadWrite.write fd bytes system))
+            |> shouldEqual (machine, length, "write", expected)
+
+            (machine, length, "pwrite", outcome (UnixReadWrite.pwrite fd bytes Int64.MaxValue system))
+            |> shouldEqual (machine, length, "pwrite", expected)
 
     // --------------------------------------- the descriptors, as measured
 
@@ -824,7 +851,12 @@ module TestTransferCounts =
     /// filesystem's own: on tmpfs at most INT_MAX, measured
     /// (transfer-counts-directory.c), so no count the buffer screen admits can
     /// carry it past INT64_MAX; on NFS the server's cookie, which could be
-    /// anything, so a nonzero count is refused. Darwin checks no position.
+    /// anything, so a nonzero count is refused. Darwin checks no sum, but a
+    /// read at exactly `INT64_MAX` is 0 there rather than EISDIR, measured on
+    /// APFS and HFS+ alike (transfer-counts-position.c). A scan never leaves an
+    /// APFS description there (transfer-counts-darwin-directory.c), but an NFS
+    /// cookie could be, so Darwin refuses a read partway through an NFS scan
+    /// too.
     [<Test>]
     let ``a directory read checks the position its description holds`` () : unit =
         let nearTop = Int64.MaxValue - 10L
@@ -894,14 +926,73 @@ module TestTransferCounts =
                 linux, EmulatedFileSystemType.Nfs, finished, 1UL, Seen.Refused
                 // The screen still comes first.
                 linux, EmulatedFileSystemType.Nfs, finished, UInt64.MaxValue, efault
-                // Darwin has no position check to depend on the cookie.
-                darwin, EmulatedFileSystemType.Nfs, finished, 5UL, eisdir
+                // Linux never counts a zero-length read as passing INT64_MAX.
+                linux, EmulatedFileSystemType.Tmpfs, DirectoryPosition.Unenumerable Int64.MaxValue, 0UL, eisdir
+                linux, EmulatedFileSystemType.Tmpfs, DirectoryPosition.Unenumerable Int64.MaxValue, 1UL, einval
+                // Darwin: end-of-file at INT64_MAX and nowhere else, for every
+                // count its count check admits.
+                darwin, EmulatedFileSystemType.Apfs, DirectoryPosition.Unenumerable Int64.MaxValue, 0UL, Seen.Moved 0
+                darwin, EmulatedFileSystemType.Apfs, DirectoryPosition.Unenumerable Int64.MaxValue, IntMax, Seen.Moved 0
+                darwin, EmulatedFileSystemType.Apfs, DirectoryPosition.Unenumerable Int64.MaxValue, IntMax + 1UL, einval
+                darwin, EmulatedFileSystemType.Apfs, DirectoryPosition.Unenumerable (Int64.MaxValue - 1L), 1UL, eisdir
+                // A scanned APFS description is never at INT64_MAX...
                 darwin, EmulatedFileSystemType.Apfs, scanned, IntMax, eisdir
+                darwin, EmulatedFileSystemType.Apfs, finished, 0UL, eisdir
+                // ...but an NFS one could be, whatever the count.
+                darwin, EmulatedFileSystemType.Nfs, start, 5UL, eisdir
+                darwin, EmulatedFileSystemType.Nfs, finished, 0UL, Seen.Refused
+                darwin, EmulatedFileSystemType.Nfs, finished, 5UL, Seen.Refused
+                darwin, EmulatedFileSystemType.Nfs, finished, IntMax + 1UL, einval
             ]
 
         for platform, fileSystem, position, count, expected in rows do
             (platform, fileSystem, position, count, seenAt platform fileSystem position count)
             |> shouldEqual (platform, fileSystem, position, count, expected)
+
+    /// `pread` of a directory takes its position as an argument, and meets the
+    /// same position rules `read` does: Linux's check of the sum ahead of
+    /// EISDIR, and Darwin's end-of-file at exactly `INT64_MAX`.
+    [<Test>]
+    let ``a directory pread answers the position rules at its offset`` () : unit =
+        let seenAt (platform : SimulatedUnixPlatform) (offset : int64) (count : uint64) : Seen =
+            let system = systemOn (platform, None)
+
+            let fd, registry =
+                FileDescriptorRegistry.openDirectory rootInode system.Process.FileDescriptors
+
+            let system =
+                { system with
+                    Process =
+                        { system.Process with
+                            FileDescriptors = registry
+                        }
+                }
+
+            match UnixReadWrite.pread fd UserBuffer.Mapped count offset system with
+            | Ok (ReadAnswer.Failed error) -> Seen.Errno error
+            | Ok (ReadAnswer.Completed bytes) -> Seen.Moved bytes.Length
+            | Error other -> failwith $"unexpected refusal %A{other}"
+
+        let eisdir = Seen.Errno UnixError.EISDIR
+        let einval = Seen.Errno UnixError.EINVAL
+        let linux = SimulatedUnixPlatform.linuxArm64
+        let darwin = SimulatedUnixPlatform.macOsArm64
+
+        let rows =
+            [
+                linux, Int64.MaxValue - 1L, 1UL, eisdir
+                linux, Int64.MaxValue - 1L, 2UL, einval
+                linux, Int64.MaxValue, 0UL, eisdir
+                linux, Int64.MaxValue, 1UL, einval
+                darwin, Int64.MaxValue - 1L, 2UL, eisdir
+                darwin, Int64.MaxValue, 0UL, Seen.Moved 0
+                darwin, Int64.MaxValue, IntMax, Seen.Moved 0
+                darwin, Int64.MaxValue, IntMax + 1UL, einval
+            ]
+
+        for platform, offset, count, expected in rows do
+            (platform, offset, count, seenAt platform offset count)
+            |> shouldEqual (platform, offset, count, expected)
 
     // ---------------------------------------------------------------- getcwd
 
