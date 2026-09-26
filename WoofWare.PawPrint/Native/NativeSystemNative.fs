@@ -1915,13 +1915,11 @@ module NativeSystemNative =
             // PawPrint's raw errno vocabulary becomes something the BCL can
             // branch on.
             //
-            // `UnixErrorPal.ofRawErrno` refuses errnos whose meaning is
-            // platform-dependent rather than answering `ENONSTANDARD` as the C
-            // does; see its doc comment for why that divergence is the honest
-            // one. In practice the only raw values reaching this are ones
-            // PawPrint itself stored via `UnixError.toRawErrno` (which admits
-            // only portable errnos) or ones a guest planted with
-            // `Marshal.SetLastSystemError`.
+            // The raw values reaching this are ones PawPrint's own syscalls
+            // stored, under the configured flavour's numbering, or ones a guest
+            // planted with `Marshal.SetLastSystemError`. Either way the answer
+            // is the one the shim compiled for that flavour gives, including
+            // `ENONSTANDARD` for a number it has no `case` for.
             let raw =
                 NativeCall.int32Argument "SystemNative_ConvertErrorPlatformToPal" instruction.Arguments.[0]
 
@@ -1930,7 +1928,7 @@ module NativeSystemNative =
             // own syscalls stored, so a `stat` that failed with ELOOP puts raw
             // 40 here on Linux and CoreLib must get `Interop.Error.ELOOP` back.
             // Converting it without the platform is exactly the round trip the
-            // bare `palOfRawErrno` refuses to complete.
+            // bare `UnixErrorPal.ofRawErrno` refuses to complete.
             let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
             pushInt32 (UnixErrorPal.ofRawErrnoUnder numbering raw) ctx |> Some

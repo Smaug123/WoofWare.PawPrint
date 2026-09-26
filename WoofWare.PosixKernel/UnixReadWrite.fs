@@ -647,8 +647,8 @@ module UnixReadWrite =
         // `n` including 0: the screen answers and the socket is never consulted.
         // Darwin screens nothing, so the same call reaches the socket and earns
         // a connection-state answer (ENOTCONN for a stream socket,
-        // EDESTADDRREQ for a datagram one), which is what this kernel cannot
-        // give.
+        // EDESTADDRREQ for a datagram one). This kernel models no write on a
+        // socket, so it refuses rather than answering either.
         //
         // And the no-op does *not* precede it: measured on both for an
         // unconnected socket, `write(socket, buf, 0)` is the socket's own
@@ -703,7 +703,8 @@ module UnixReadWrite =
         | Error error -> Ok (WriteAnswer.Failed error, system)
         | Ok (WriteTarget.Socket socketId) ->
             // There is no buffer here to screen, so the socket's own answer is
-            // all there is — and this kernel cannot give it. A caller that used
+            // all there is — and this kernel models no write on a socket, so it
+            // refuses rather than giving one. A caller that used
             // `admitWrite` never reaches this: that call refused or answered
             // first.
             let socket = UnixMachineState.socket socketId system.Machine

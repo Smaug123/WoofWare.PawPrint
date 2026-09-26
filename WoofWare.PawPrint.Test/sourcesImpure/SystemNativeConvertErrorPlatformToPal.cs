@@ -67,6 +67,15 @@ class Program
         // rather than echoing the input back.
         if (ConvertToPalInt(9) == 9) return 7;
 
+        // Past the portable range, under the Linux numbering this test is
+        // registered with: 72 is EMULTIHOP, which Interop.Error names; 126 is
+        // ENOKEY, which it does not; and 41 is no errno at all. The shim
+        // answers ENONSTANDARD (0x1FFFF) for the last two, as its switch has no
+        // case for either.
+        if (ConvertToPalInt(72) != 0x10024) return 8;
+        if (ConvertToPalInt(126) != 0x1FFFF) return 9;
+        if (ConvertToPalInt(41) != 0x1FFFF) return 10;
+
         return 0;
     }
 }
