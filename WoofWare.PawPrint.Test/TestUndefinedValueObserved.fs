@@ -255,3 +255,45 @@ unsafe class Program
                     ()
                 | other -> failwith $"expected the box's read of hasValue, got %O{other}"
             )
+
+    [<Test>]
+    let ``A constrained call that would box a Nullable whose hasValue nothing wrote ends the run at the call``
+        ()
+        : unit
+        =
+        let source =
+            """
+using System;
+using System.Runtime.CompilerServices;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    // `value.GetType()` on a `ref T` is `constrained. !!T callvirt Object::GetType`, which boxes
+    // the Nullable it points at, and so reads its hasValue.
+    static Type TypeOf<T>(ref T value) => value.GetType();
+
+    static int Main(string[] args)
+    {
+        byte?* slots = stackalloc byte?[1];
+        byte? copy = slots[0];
+        return TypeOf(ref copy) == typeof(byte) ? 0 : 1;
+    }
+}
+"""
+
+        run
+            "UndefinedNullableConstrained.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.Bool
+                stackOrigins observation.Value |> shouldEqual [ 0 ]
+
+                match observation.Use with
+                | UndefinedValueUse.InstructionDetail (method,
+                                                       _,
+                                                       IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Callvirt, _),
+                                                       _) -> method.Name |> shouldEqual "TypeOf"
+                | other -> failwith $"expected the constrained callvirt's read of hasValue, got %O{other}"
+            )
