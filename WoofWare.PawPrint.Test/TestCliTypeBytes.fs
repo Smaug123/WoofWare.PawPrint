@@ -25,7 +25,7 @@ module TestCliTypeBytes =
         let _, loggerFactory = LoggerFactory.makeTest ()
         Assembly.readFile loggerFactory corelibPath
 
-    let private bct : BaseClassTypes<DumpedAssembly> = Corelib.getBaseTypes corelib
+    let private bct : BaseClassTypes<DumpedAssembly> = BaseClassTypes.ofCorelib corelib
 
     let private loaded : LoadedAssemblies = LoadedAssemblies.ofAssemblies [ corelib ]
 

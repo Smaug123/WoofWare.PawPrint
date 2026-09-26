@@ -20,7 +20,7 @@ module TestUnaryConstIlOp =
         Assembly.readFile loggerFactory corelibPath
 
     let private baseClassTypes : BaseClassTypes<DumpedAssembly> =
-        Corelib.getBaseTypes corelib
+        BaseClassTypes.ofCorelib corelib
 
     let private loadedAssemblies : LoadedAssemblies =
         LoadedAssemblies.ofAssemblies [ corelib ]

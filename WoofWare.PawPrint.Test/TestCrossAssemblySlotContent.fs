@@ -94,7 +94,7 @@ public static class Driver
     let private library : DumpedAssembly = readImage "SlotLib"
     let private application : DumpedAssembly = readImage "SlotApp"
 
-    let private bct : BaseClassTypes<DumpedAssembly> = Corelib.getBaseTypes corelib
+    let private bct : BaseClassTypes<DumpedAssembly> = BaseClassTypes.ofCorelib corelib
 
     let private loaded : LoadedAssemblies =
         LoadedAssemblies.ofAssemblies [ corelib ; library ; application ]

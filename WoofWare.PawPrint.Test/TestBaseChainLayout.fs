@@ -35,7 +35,7 @@ module TestBaseChainLayout =
     let private corelibPath : string = typeof<obj>.Assembly.Location
     let private runtimeDir : string = Path.GetDirectoryName corelibPath
     let private corelib : DumpedAssembly = Assembly.readFile loggerFactory corelibPath
-    let private bct : BaseClassTypes<DumpedAssembly> = Corelib.getBaseTypes corelib
+    let private bct : BaseClassTypes<DumpedAssembly> = BaseClassTypes.ofCorelib corelib
 
     /// Every field is named for the type that declares it, so a name-keyed lookup over the whole
     /// flattened storage list is unambiguous even where a base and a derived type would otherwise

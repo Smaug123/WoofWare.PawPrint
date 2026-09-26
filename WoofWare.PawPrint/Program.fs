@@ -1149,13 +1149,13 @@ module Program =
                 continueWithGeneric state baseType currentAssembly
             | BaseTypeInfo.TypeSpec _ -> failwith "Type specs not yet supported in base type traversal"
 
-        // Admission precedes `getBaseTypes`: a CoreLib from an unsupported major may lack a type
-        // that `getBaseTypes` demands, and that failure would hide the reason the CoreLib is
+        // Admission precedes `BaseClassTypes.ofCorelib`: a CoreLib from an unsupported major may lack a type
+        // that `BaseClassTypes.ofCorelib` demands, and that failure would hide the reason the CoreLib is
         // unusable.
         let coreLibBaseTypes (corelib : DumpedAssembly) : BaseClassTypes<DumpedAssembly> =
             match EmulatedRuntime.classify corelib with
             | Error unsupported -> raise (UnsupportedRuntimeException (unsupported, dotnetRuntimeDirs))
-            | Ok _ -> Corelib.getBaseTypes corelib
+            | Ok _ -> BaseClassTypes.ofCorelib corelib
 
         let rec findCoreLibraryAssemblyFromGeneric
             (state : IlMachineState)

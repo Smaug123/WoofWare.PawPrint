@@ -61,7 +61,7 @@ namespace PawPrint.MethodAtSlot
     let private corelibPath : string = typeof<obj>.Assembly.Location
     let private runtimeDir : string = Path.GetDirectoryName corelibPath
     let private corelib : DumpedAssembly = Assembly.readFile loggerFactory corelibPath
-    let private bct : BaseClassTypes<DumpedAssembly> = Corelib.getBaseTypes corelib
+    let private bct : BaseClassTypes<DumpedAssembly> = BaseClassTypes.ofCorelib corelib
 
     let private corpusBytes : byte array =
         Roslyn.compileAssembly

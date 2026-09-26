@@ -40,7 +40,7 @@ module TestRawRootFieldLayoutDisplacement =
 
     let private corelib : DumpedAssembly = Assembly.readFile loggerFactory corelibPath
 
-    let private bct : BaseClassTypes<DumpedAssembly> = Corelib.getBaseTypes corelib
+    let private bct : BaseClassTypes<DumpedAssembly> = BaseClassTypes.ofCorelib corelib
 
     let private corpusSource : string =
         """
