@@ -15,6 +15,12 @@ class Holder
     public int Field;
 }
 
+struct Pair
+{
+    public int Partly;
+    public int Whole;
+}
+
 unsafe class Program
 {
     static int Main(string[] args)
@@ -68,6 +74,15 @@ unsafe class Program
         // An object's field, read through a reinterpreting byref.
         var holder = new Holder { Field = *(int*)source };
         if (Unsafe.As<int, byte>(ref holder.Field) != 42) return 7;
+
+        // A boxed struct with a partly defined field, read a byte at a time through the box.
+        Pair pair;
+        pair.Partly = *(int*)source;
+        pair.Whole = 5;
+        object boxed = pair;
+        ref byte boxedBytes = ref Unsafe.As<Pair, byte>(ref Unsafe.Unbox<Pair>(boxed));
+        if (boxedBytes != 42) return 9;
+        if (Unsafe.Add(ref boxedBytes, 4) != 5) return 10;
 
         // A byte-wise copy out of the local carries the unwritten bytes along; only the written
         // one is read back.
