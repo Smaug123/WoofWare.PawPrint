@@ -274,6 +274,42 @@ public class Program
             }
         }
 
+        // The refusal comes before the arguments are looked at: a `callvirt` of a static method
+        // with none of its arguments pushed is still MissingMethodException, not an invalid
+        // program, for a reflected method and for a DynamicMethod alike.
+        Func<int> virtualStaticNoArguments = (Func<int>) Make(typeof(int), Type.EmptyTypes, il =>
+        {
+            il.Emit(OpCodes.Callvirt, max);
+            il.Emit(OpCodes.Ret);
+        }).CreateDelegate(typeof(Func<int>));
+        try
+        {
+            virtualStaticNoArguments();
+            return 22;
+        }
+        catch (MissingMethodException)
+        {
+        }
+
+        DynamicMethod takesInt = Make(typeof(int), new Type[] { typeof(int) }, il =>
+        {
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Ret);
+        });
+        Func<int> virtualDynamicNoArguments = (Func<int>) Make(typeof(int), Type.EmptyTypes, il =>
+        {
+            il.Emit(OpCodes.Callvirt, takesInt);
+            il.Emit(OpCodes.Ret);
+        }).CreateDelegate(typeof(Func<int>));
+        try
+        {
+            virtualDynamicNoArguments();
+            return 23;
+        }
+        catch (MissingMethodException)
+        {
+        }
+
         // A reflected constructor, called as an ordinary instance method on an existing object.
         Action<Base> constructorCall = (Action<Base>) Make(typeof(void), new Type[] { typeof(Base) }, il =>
         {

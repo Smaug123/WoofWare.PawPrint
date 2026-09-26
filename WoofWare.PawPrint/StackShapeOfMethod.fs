@@ -226,12 +226,27 @@ module StackShapeOfMethod =
         | UnaryMetadataTokenIlOp.Callvirt ->
             // An entry the instruction would refuse, or one PawPrint does not implement, is the
             // instruction's own problem when it executes. So is a `callvirt` of a static callee,
-            // which raises before it pops anything: the shape given it here is never applied.
+            // which real .NET refuses with MissingMethodException whatever the stack holds (a
+            // `callvirt` with none of the callee's arguments pushed is measured to raise it too):
+            // a shape here would have the analysis refuse the underflow first.
+            let staticCallvirt (callee : string) : Result<TokenShape option, string> =
+                Error
+                    $"%s{operation} names %s{callee}, which is static, so the instruction raises MissingMethodException when it runs"
+
             match DynamicScopeOperand.tryMethod baseClassTypes operation index state handle with
             | Error (ScopeEntryRefusal.GuestException (_, why))
             | Error (ScopeEntryRefusal.Unsupported why) -> Error why
+            | Ok (ScopeMethodResolution.Resolved (MethodHandle.FromDynamic _))
+            | Ok (ScopeMethodResolution.NeedsMinting _) when op = UnaryMetadataTokenIlOp.Callvirt ->
+                staticCallvirt "a DynamicMethod"
             | Ok (ScopeMethodResolution.Resolved (MethodHandle.FromMetadata identity)) ->
-                Ok (Some (reflectedCalleeShape state operation identity))
+                if
+                    op = UnaryMetadataTokenIlOp.Callvirt
+                    && (MethodHandleResolution.methodInfoOfMetadataIdentity operation state identity).IsStatic
+                then
+                    staticCallvirt "a static reflected method"
+                else
+                    Ok (Some (reflectedCalleeShape state operation identity))
             | Ok (ScopeMethodResolution.Resolved (MethodHandle.FromDynamic callee)) ->
                 let definition =
                     MethodHandleRegistry.resolveDynamicMethod callee state.MethodHandles
