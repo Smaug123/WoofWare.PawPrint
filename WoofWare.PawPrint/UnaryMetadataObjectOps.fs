@@ -328,7 +328,7 @@ module internal UnaryMetadataObjectOps =
                 baseClassTypes
                 None
                 ConstructionState.NotConstructing
-                false
+                IlMachineStateExecution.CallDispatch.Direct
                 false
                 advanceProgramCounterOfCaller
                 concretizedCtorImplementation.Generics
@@ -374,7 +374,7 @@ module internal UnaryMetadataObjectOps =
             baseClassTypes
             None
             (ConstructionState.Constructing allocatedAddr)
-            false
+            IlMachineStateExecution.CallDispatch.Direct
             false
             advanceProgramCounterOfCaller
             concretizedCtor.Generics

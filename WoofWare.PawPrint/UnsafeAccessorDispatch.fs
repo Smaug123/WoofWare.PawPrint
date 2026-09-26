@@ -1412,7 +1412,7 @@ module internal UnsafeAccessorDispatch =
         let callTarget
             (target : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
             (firstArgument : int)
-            (virtualDispatch : bool)
+            (dispatch : IlMachineStateExecution.CallDispatch)
             (state : IlMachineState)
             : ExecutionResult
             =
@@ -1425,7 +1425,7 @@ module internal UnsafeAccessorDispatch =
                     baseClassTypes
                     None
                     ConstructionState.NotConstructing
-                    virtualDispatch
+                    dispatch
                     false
                     false // `markDispatched` has already moved this frame's program counter
                     IlMachineStateExecution.CallSiteTransition.StaysCooperative
@@ -1497,7 +1497,7 @@ module internal UnsafeAccessorDispatch =
         | StateLoadResult.NothingToDo state ->
 
         match plan with
-        | UnsafeAccessorPlan.CallStatic target -> callTarget target 1 false state
+        | UnsafeAccessorPlan.CallStatic target -> callTarget target 1 IlMachineStateExecution.CallDispatch.Direct state
         | UnsafeAccessorPlan.ConstructArray ctor ->
             let arguments =
                 instruction.Arguments
@@ -1545,7 +1545,13 @@ module internal UnsafeAccessorDispatch =
             if receiverIsNull (EvalStackValue.ofCliType instruction.Arguments.[0]) then
                 raiseFromAccessor baseClassTypes.NullReferenceException None state
             else
-                callTarget target 0 true state
+                let dispatch =
+                    IlMachineStateExecution.dispatchOnReceiver
+                        describe
+                        target
+                        (EvalStackValue.ofCliType instruction.Arguments.[0])
+
+                callTarget target 0 dispatch state
         | UnsafeAccessorPlan.InstanceFieldAddress (field, declaringType) ->
             let receiver = EvalStackValue.ofCliType instruction.Arguments.[0]
 

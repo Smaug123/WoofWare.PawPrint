@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint
 
+open Microsoft.Extensions.Logging
+
 [<RequireQualifiedAccess>]
 module NativeMarshal =
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
@@ -65,6 +67,51 @@ module NativeMarshal =
                 $"Type '%s{name}' cannot be marshaled as an unmanaged structure; no meaningful size or offset can be computed.")
             state
 
+    /// The native layout `Marshal.SizeOf` and `Marshal.OffsetOf` answer from for the class
+    /// `classHandle`: its size, and where each instance field of its base chain lands. See
+    /// `CliValueType.TryComputeClassMarshalLayout` for what each error means.
+    let classMarshalLayout
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (classHandle : ConcreteTypeHandle)
+        : IlMachineState * Result<ClassMarshalLayout, MarshalSizeError>
+        =
+        // `System.Object`, `System.String` and every class without `[StructLayout]` stop here,
+        // without their chains being built.
+        if CliValueType.IsAutoLayoutHandle state.ConcreteTypes state._LoadedAssemblies classHandle then
+            state,
+            MarshalSizeError.NotMarshalable "type has LayoutKind.Auto, so has no native layout"
+            |> Result.Error
+        else
+
+        let state, chain =
+            IlMachineState.collectInstanceFieldChain loggerFactory baseClassTypes state classHandle
+
+        for level in chain do
+            let shared =
+                match AllConcreteTypes.lookup level.Declared state.ConcreteTypes with
+                | None ->
+                    failwith
+                        $"NativeMarshal.classMarshalLayout: %O{level.Declared}, in the base chain of %O{classHandle}, is not a registered concrete type"
+                | Some concrete ->
+                    concrete.Generics
+                    |> Seq.exists (
+                        IlMachineRuntimeMetadata.isSharedTypeArgument
+                            baseClassTypes
+                            state
+                            $"NativeMarshal.classMarshalLayout: %s{AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes level.Declared}"
+                    )
+
+            // CoreCLR keeps a native layout per `EEClass`, which every instantiation sharing a
+            // canonical form shares, so such a base's layout is its canonical form's.
+            if shared then
+                failwith
+                    $"TODO: NativeMarshal.classMarshalLayout: %s{AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes level.Declared}, in the base chain of %s{AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes classHandle}, is an instantiation shared over System.__Canon, whose native layout CoreCLR computes for the canonical form; PawPrint does not model canonical forms"
+
+        state,
+        CliValueType.TryComputeClassMarshalLayout state.ConcreteTypes state._LoadedAssemblies baseClassTypes chain
+
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -101,7 +148,23 @@ module NativeMarshal =
                 | EvalStackValue.Int32 (Int32Source.Verbatim _) -> true
                 | other -> failwith $"%s{operation}: expected throwIfNotMarshalable as Int32, got %O{other}"
 
-            match CliType.TryComputeMarshalSize state.ConcreteTypes state._LoadedAssemblies ctx.BaseClassTypes zero with
+            let state, size =
+                match zero, typeHandle with
+                | CliType.ObjectRef _, ConcreteTypeHandle.Concrete _ ->
+                    let state, layout =
+                        classMarshalLayout ctx.LoggerFactory ctx.BaseClassTypes state typeHandle
+
+                    state, layout |> Result.bind _.Size
+                | CliType.ObjectRef _, ConcreteTypeHandle.OneDimArrayZero _
+                | CliType.ObjectRef _, ConcreteTypeHandle.Array _ ->
+                    // `IsStructMarshalable` refuses an array outright, even one of a blittable
+                    // element type, which `IsBlittable` would otherwise let through.
+                    state, MarshalSizeError.NotMarshalable "an array is not a structure" |> Result.Error
+                | _ ->
+                    state,
+                    CliType.TryComputeMarshalSize state.ConcreteTypes state._LoadedAssemblies ctx.BaseClassTypes zero
+
+            match size with
             | Result.Error (MarshalSizeError.NotMarshalable _) when throwIfNotMarshalable ->
                 // CoreCLR's `MarshalNative_SizeOfHelper` (marshalnative.cpp:150) throws
                 // `ArgumentException` (resource `IDS_CANNOT_MARSHAL`) for types it can't
@@ -185,15 +248,28 @@ module NativeMarshal =
                 let zero, state =
                     IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes declaringType
 
-                match
-                    CliType.TryComputeMarshalFieldOffset
-                        state.ConcreteTypes
-                        state._LoadedAssemblies
-                        ctx.BaseClassTypes
-                        declaringType
-                        zero
-                        (fieldHandle.GetFieldDefinitionHandle ())
-                with
+                let field = fieldHandle.GetFieldDefinitionHandle ()
+
+                let state, offset =
+                    match zero with
+                    | CliType.ObjectRef _ ->
+                        let state, layout =
+                            classMarshalLayout ctx.LoggerFactory ctx.BaseClassTypes state declaringType
+
+                        state,
+                        layout
+                        |> Result.map (fun layout -> CliType.MarshalFieldOffset declaringType field layout.Placements)
+                    | _ ->
+                        state,
+                        CliType.TryComputeMarshalFieldOffset
+                            state.ConcreteTypes
+                            state._LoadedAssemblies
+                            ctx.BaseClassTypes
+                            declaringType
+                            zero
+                            field
+
+                match offset with
                 | Result.Error (MarshalSizeError.NotMarshalable _) ->
                     raiseCannotMarshal operation ctx (RuntimeTypeHandleTarget.Closed declaringType) state
                     |> Some
