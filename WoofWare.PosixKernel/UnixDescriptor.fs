@@ -658,11 +658,13 @@ module UnixDescriptor =
     /// leaves the system exactly as it arrived. That is why no system comes
     /// back.
     ///
-    /// The rows this implements are measured on Linux 6.18.5, on x86-64 and
-    /// aarch64, by `docs/probes/fadvise/fadvise.py`; the two architectures agree
-    /// row for row. Two rows contradict what "not seekable" would predict: a
-    /// socket and an epoll instance both succeed, and only a pipe answers
-    /// ESPIPE.
+    /// The rows this implements are measured on Linux 6.18.5 aarch64 by
+    /// `docs/probes/fadvise/fadvise.py`. The path they exercise
+    /// (`ksys_fadvise64_64` and `generic_fadvise`) is architecture-independent,
+    /// and the advice numbering is `<linux/fadvise.h>`'s on both; x86-64 is not
+    /// separately measured. Two rows contradict what "not seekable" would
+    /// predict: a socket and an epoll instance both succeed, and only a pipe
+    /// answers ESPIPE.
     let posixFadvise<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (offset : int64)
