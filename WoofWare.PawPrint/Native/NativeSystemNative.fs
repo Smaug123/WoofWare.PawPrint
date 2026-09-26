@@ -3064,8 +3064,11 @@ module NativeSystemNative =
                 let length = NativeCall.int64Argument operation instruction.Arguments.[2]
 
                 match UnixDescriptor.posixFadvise fd offset length advice (EmulatedKernel.unix state.Kernel) with
-                | FileAdviceAnswer.Completed -> 0
-                | FileAdviceAnswer.Failed error -> UnixError.toRawErrnoUnder numbering error
+                | Ok FileAdviceAnswer.Completed -> 0
+                | Ok (FileAdviceAnswer.Failed error) -> UnixError.toRawErrnoUnder numbering error
+                | Error PosixFadviseRefusal.NotProvided ->
+                    failwith
+                        $"%s{operation}: the library refused posix_fadvise as not provided on %O{state.Kernel.UnixPlatform}, but this handler answered that platform's missing call itself (ENOTSUP) before asking. The two disagree about which platforms provide it; this is a bug in PawPrint."
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim returned)) ctx.Thread
@@ -4988,62 +4991,55 @@ module NativeSystemNative =
                     Error
                         $"%s{operation}: `data` is %O{other}, which is not a verbatim bit pattern. The stored value is delivered back verbatim in SocketEvent.Data when an event fires, and PawPrint cannot materialise a provenance-tracked value to the eight bytes a real kernel would hold. Pass an integer-valued IntPtr."
 
-            // The op is derived from the caller's *claims*, not from the
-            // table: ADD iff the claimed current set is NONE, DEL iff the new
-            // set is NONE, MOD otherwise. (Both NONE cannot reach here — the
-            // equal-mask screen took it.) An undecodable `data` flows in as a
-            // zero placeholder: it can never be stored, because the commit
-            // path below aborts on `Error` before the new table escapes.
-            let change =
-                if newEvents = 0 then
-                    SocketEventRegistrationChange.Remove
-                else
-                    let interest = SocketEventsPal.toInterest operation newEvents
+            // An undecodable `data` flows in as a zero placeholder: it can
+            // never be stored, because the commit path below aborts on `Error`
+            // before the new table escapes.
+            let placeholder =
+                match data with
+                | Ok value -> value
+                | Error _ -> 0UL
 
-                    let placeholder =
-                        match data with
-                        | Ok value -> value
-                        | Error _ -> 0UL
-
-                    // Edge-triggered unconditionally: the shim ORs EPOLLET into
-                    // every registration it makes (pal_networking.c), and the
-                    // PAL's SocketEvents carry no trigger for a caller to choose.
-                    if currentEvents = 0 then
-                        SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, interest, placeholder)
-                    else
-                        SocketEventRegistrationChange.Modify (SocketEventTrigger.EdgeTriggered, interest, placeholder)
-
-            match EmulatedKernel.changeSocketEventRegistration portFd targetFd change state.Kernel with
+            match
+                SocketEventsPal.tryChangeSocketEventRegistration
+                    portFd
+                    targetFd
+                    currentEvents
+                    newEvents
+                    placeholder
+                    (EmulatedKernel.unix state.Kernel)
+            with
             | Error refusal ->
                 // The library says why no kernel answer exists; PawPrint says
                 // which entry point asked. `SystemNative_FLock` refuses the same
                 // flavour for the same shape of reason.
-                failwith $"%s{operation}: %s{SocketEventRegistrationRefusal.describe refusal}"
-            | Ok (SocketEventRegistrationAnswer.Failed reason, _) ->
-                // The syscall failed, so it set errno on the way past. All five
-                // numbers are portable, but only Linux reaches here anyway.
-                let unixError = SocketEventRegistrationError.toErrno reason
+                failwith $"%s{operation}: %s{EpollCtlRefusal.describe refusal}"
+            | Ok (EpollCtlAnswer.Failed reason, _) ->
+                // The syscall failed, so it set errno on the way past. Every
+                // number is portable, but only Linux reaches here anyway.
+                let unixError = EpollCtlError.toErrno reason
 
                 state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno unixError))
                 |> complete (UnixErrorPal.toPal unixError)
-            | Ok (SocketEventRegistrationAnswer.Changed, kernel) ->
-                match change, data with
-                | SocketEventRegistrationChange.Add _, Error message
-                | SocketEventRegistrationChange.Modify _, Error message ->
-                    // The registration would commit, so the real kernel would
-                    // now store the caller's bits; this is the first point at
-                    // which the value matters, and the zero placeholder above
-                    // must not survive into the table.
+            | Ok (EpollCtlAnswer.Changed, system) ->
+                match data with
+                | Error message when newEvents <> 0 ->
+                    // A non-empty new mask made this an ADD or a MOD (the
+                    // equal-mask screen rules out both masks being empty),
+                    // and it committed, so the real
+                    // kernel would now store the caller's bits; this is the
+                    // first point at which the value matters, and the zero
+                    // placeholder above must not survive into the table.
                     failwith message
-                | SocketEventRegistrationChange.Remove, Error _
-                | _, Ok _ ->
+                | Error _
+                | Ok _ ->
 
                 // A successful `epoll_ctl` leaves errno alone. An ADD or MOD
                 // of an already-ready target has made the registration
                 // pending inside the kernel change, and if a waiter is
                 // parked on the port, `Program`'s readiness sweep wakes it
                 // before the next scheduling decision.
-                state.MapKernel (fun _ -> kernel) |> complete UnixErrorPal.palSuccess
+                state.MapKernel (EmulatedKernel.withUnix system)
+                |> complete UnixErrorPal.palSuccess
         | Some "SystemNative_WaitForSocketEvents",
           [ ConcreteIntPtr state.ConcreteTypes
             ConcretePointer _
@@ -5191,11 +5187,7 @@ module NativeSystemNative =
             // `requestedCount` events from the port's ready list and convert
             // each to the PAL's `SocketEvent` shape, which is
             // `SocketEventsPal.delivered`.
-            let deliver
-                (delivered : (uint64 * ReadinessLevel) list)
-                (kernel : EmulatedKernel)
-                : NativeHandlerResult option
-                =
+            let deliver (delivered : (uint64 * uint32) list) (kernel : EmulatedKernel) : NativeHandlerResult option =
                 let bufferPointer =
                     match BufferPointer.dereferenceable buffer with
                     | Some pointer -> pointer

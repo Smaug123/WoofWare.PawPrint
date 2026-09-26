@@ -162,32 +162,33 @@ module TestEntropyAgainstHost =
 
     [<Test>]
     let ``getrandom agrees with this kernel`` () : unit =
-        match HostPlatform.flavour () with
-        | Some SimulatedUnixFlavour.Linux -> ()
-        | _ -> Assert.Ignore "getrandom(2) is a Linux system call"
+        HostPlatform.onUnixHostPreset (fun platform ->
+            match SimulatedUnixPlatform.flavour platform with
+            | SimulatedUnixFlavour.Linux -> ()
+            | SimulatedUnixFlavour.Darwin -> Assert.Ignore "getrandom(2) is a Linux system call"
 
-        let system : UnixSystem<int, string> =
-            UnixSystem.initial SimulatedUnixPlatform.linuxX64
+            let system : UnixSystem<int, string> = UnixSystem.initial platform
 
-        let flagsToTry : uint32 list = [ 0u .. 16u ] @ [ 0x8000_0000u ; UInt32.MaxValue ]
+            let flagsToTry : uint32 list = [ 0u .. 16u ] @ [ 0x8000_0000u ; UInt32.MaxValue ]
 
-        withStorage (fun storage ->
-            for where in everywhere do
-                for count in [ 0UL ; 5UL ; 16UL ; uint64 StorageBytes ] do
-                    for flags in flagsToTry do
-                        let measured =
-                            hostAnswer (int64 (getrandom (address storage where, unativeint count, flags)))
+            withStorage (fun storage ->
+                for where in everywhere do
+                    for count in [ 0UL ; 5UL ; 16UL ; uint64 StorageBytes ] do
+                        for flags in flagsToTry do
+                            let measured =
+                                hostAnswer (int64 (getrandom (address storage where, unativeint count, flags)))
 
-                        let modelled =
-                            match UnixEntropy.getRandom (classify where) count flags system with
-                            | Ok (GetRandomAnswer.Completed draw, _) -> Ok (int64 (EntropyDraw.count draw))
-                            | Ok (GetRandomAnswer.Failed error, _) -> Error (UnixError.toRawErrno error)
-                            | Error refusal ->
-                                failwith $"%A{where}, %d{count} bytes, flags 0x%x{flags}: refused, %O{refusal}"
+                            let modelled =
+                                match UnixEntropy.getRandom (classify where) count flags system with
+                                | Ok (GetRandomAnswer.Completed draw, _) -> Ok (int64 (EntropyDraw.count draw))
+                                | Ok (GetRandomAnswer.Failed error, _) -> Error (UnixError.toRawErrno error)
+                                | Error refusal ->
+                                    failwith $"%A{where}, %d{count} bytes, flags 0x%x{flags}: refused, %O{refusal}"
 
-                        if measured <> modelled then
-                            failwith
-                                $"getrandom into %A{where}, %d{count} bytes, flags 0x%x{flags}: this kernel answered %O{measured} (a count, or an errno), the model %O{modelled}."
+                            if measured <> modelled then
+                                failwith
+                                    $"getrandom into %A{where}, %d{count} bytes, flags 0x%x{flags}: this kernel answered %O{measured} (a count, or an errno), the model %O{modelled}."
+            )
         )
 
     /// However much is asked for, one call moves at most this much. Measured
@@ -195,48 +196,54 @@ module TestEntropyAgainstHost =
     /// backed by only `AliasedChunkBytes` of memory, mapped over and over.
     [<Test>]
     let ``getrandom's largest transfer is this kernel's`` () : unit =
-        match HostPlatform.flavour () with
-        | Some SimulatedUnixFlavour.Linux -> ()
-        | _ -> Assert.Ignore "getrandom(2) is a Linux system call"
+        HostPlatform.onUnixHostPreset (fun platform ->
+            match SimulatedUnixPlatform.flavour platform with
+            | SimulatedUnixFlavour.Linux -> ()
+            | SimulatedUnixFlavour.Darwin -> Assert.Ignore "getrandom(2) is a Linux system call"
 
-        // The limit is a whole number of pages, and the model states it for the
-        // x86-64 page size. A host with larger pages has a different limit and
-        // says nothing about this one.
-        if Environment.SystemPageSize <> 4096 then
-            Assert.Ignore
-                $"this host's pages are %d{Environment.SystemPageSize} bytes; the modelled limit is for 4096-byte pages"
+            // The limit is a whole number of pages. A host whose pages are not the
+            // preset's has a different limit and says nothing about this one;
+            // `TestArchitectureAgainstHost` reports the page size itself.
+            let pageBytes = SimulatedPageSize.bytes (SimulatedUnixPlatform.pageSize platform)
 
-        // A page beyond the largest transfer, so that a kernel that moved more
-        // would still be writing into storage rather than faulting.
-        let size = UnixEntropy.getRandomMaxTransfer + 4096UL
-        let storage = mapAliased size
+            if Environment.SystemPageSize <> pageBytes then
+                Assert.Ignore
+                    $"this host's pages are %d{Environment.SystemPageSize} bytes; the %O{platform} preset's are %d{pageBytes}"
 
-        try
-            // A signal arriving mid-copy ends the call early with however much
-            // had moved (or EINTR), and the runtime hosting this test signals
-            // its own threads. So a short answer is retried, a bounded number of
-            // times, and the claim is only that some attempt moves exactly the
-            // limit and none moves more.
-            let attempts = 5
+            let maxTransfer = UnixEntropy.getRandomMaxTransfer platform
 
-            let rec measure (remaining : int) (seen : Result<int64, int> list) : unit =
-                if remaining = 0 then
-                    failwith
-                        $"getrandom of UInt64.MaxValue bytes never moved the modelled %d{UnixEntropy.getRandomMaxTransfer} bytes in %d{attempts} attempts; this kernel answered %A{List.rev seen} (counts, or errnos). A short count is what an interrupted call returns, so persistent short counts suggest a different limit."
-                else
+            // A page beyond the largest transfer, so that a kernel that moved more
+            // would still be writing into storage rather than faulting.
+            let size = maxTransfer + uint64 pageBytes
+            let storage = mapAliased size
 
-                match hostAnswer (int64 (getrandom (storage, unativeint UInt64.MaxValue, 0u))) with
-                | Ok moved when uint64 moved = UnixEntropy.getRandomMaxTransfer -> ()
-                | Ok moved when uint64 moved > UnixEntropy.getRandomMaxTransfer ->
-                    failwith
-                        $"getrandom of UInt64.MaxValue bytes moved %d{moved}, more than the modelled %d{UnixEntropy.getRandomMaxTransfer}."
-                | Error errno when errno <> EINTR ->
-                    failwith $"getrandom of UInt64.MaxValue bytes failed with errno %d{errno}."
-                | interrupted -> measure (remaining - 1) (interrupted :: seen)
+            try
+                // A signal arriving mid-copy ends the call early with however much
+                // had moved (or EINTR), and the runtime hosting this test signals
+                // its own threads. So a short answer is retried, a bounded number of
+                // times, and the claim is only that some attempt moves exactly the
+                // limit and none moves more.
+                let attempts = 5
 
-            measure attempts []
-        finally
-            linuxMunmap (storage, unativeint size) |> ignore<int>
+                let rec measure (remaining : int) (seen : Result<int64, int> list) : unit =
+                    if remaining = 0 then
+                        failwith
+                            $"getrandom of UInt64.MaxValue bytes never moved the modelled %d{maxTransfer} bytes in %d{attempts} attempts; this kernel answered %A{List.rev seen} (counts, or errnos). A short count is what an interrupted call returns, so persistent short counts suggest a different limit."
+                    else
+
+                    match hostAnswer (int64 (getrandom (storage, unativeint UInt64.MaxValue, 0u))) with
+                    | Ok moved when uint64 moved = maxTransfer -> ()
+                    | Ok moved when uint64 moved > maxTransfer ->
+                        failwith
+                            $"getrandom of UInt64.MaxValue bytes moved %d{moved}, more than the modelled %d{maxTransfer}."
+                    | Error errno when errno <> EINTR ->
+                        failwith $"getrandom of UInt64.MaxValue bytes failed with errno %d{errno}."
+                    | interrupted -> measure (remaining - 1) (interrupted :: seen)
+
+                measure attempts []
+            finally
+                linuxMunmap (storage, unativeint size) |> ignore<int>
+        )
 
     [<Test>]
     let ``getentropy agrees with this kernel`` () : unit =

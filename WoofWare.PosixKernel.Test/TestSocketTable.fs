@@ -51,7 +51,7 @@ module TestSocketTable =
         (portId : OpenFileDescriptionId)
         (maxCount : int)
         (kernel : UnixSystem<int, string>)
-        : (uint64 * ReadinessLevel) list * UnixSystem<int, string>
+        : (uint64 * uint32) list * UnixSystem<int, string>
         =
         let predicted = SocketEventPort.hasDeliverableEvent portId kernel
         let delivered, system = SocketEventPort.drain portId maxCount kernel
@@ -65,12 +65,8 @@ module TestSocketTable =
     let private hasDeliverableSocketEvents (portId : OpenFileDescriptionId) (kernel : UnixSystem<int, string>) : bool =
         SocketEventPort.hasDeliverableEvent portId kernel
 
-    let private epollReadinessOfDescription
-        (targetId : OpenFileDescriptionId)
-        (kernel : UnixSystem<int, string>)
-        : ReadinessLevel
-        =
-        SocketEventPort.epollReadinessOfDescription targetId kernel
+    let private linuxReadiness (targetId : OpenFileDescriptionId) (kernel : UnixSystem<int, string>) : uint32 =
+        LinuxReadiness.ofDescription targetId kernel
 
     /// A kernel whose socket table and descriptor table are built by hand, so
     /// that `checkInvariants` has something unsound to reject. Every operation
@@ -668,10 +664,10 @@ module TestSocketTable =
             }
 
     /// A pending refusal presents everything (measured, `masks.c` row 10:
-    /// 0x201d), and the interest filter keeps ERR and HUP whatever the mask
-    /// asks for (rows 16-17).
+    /// 0x201d). What a narrowed registration reports of it is
+    /// `TestEpollCtl`'s business.
     [<Test>]
-    let ``a pending refusal presents every condition and survives a narrowed interest`` () : unit =
+    let ``a pending refusal presents every condition`` () : unit =
         let kernel =
             forge
                 [ 3, OpenFileDescriptionId 10L, OpenFileTarget.Socket (SocketId 0L) ]
@@ -683,43 +679,12 @@ module TestSocketTable =
                 ]
                 1L
 
-        let level = UnixMachineState.socketReadinessLevel (SocketId 0L) kernel.Machine
-
-        level
+        UnixMachineState.socketReadinessLevel (SocketId 0L) kernel.Machine
         |> shouldEqual
             {
                 In = true
                 Out = true
                 RdHup = true
-                Hup = true
-                Err = true
-            }
-
-        level
-        |> ReadinessLevel.reportedUnder (
-            {
-                SocketEventInterest.In = false
-                Out = false
-                RdHup = false
-            }
-        )
-        |> shouldEqual
-            { ReadinessLevel.none with
-                Hup = true
-                Err = true
-            }
-
-        level
-        |> ReadinessLevel.reportedUnder (
-            {
-                SocketEventInterest.In = true
-                Out = false
-                RdHup = false
-            }
-        )
-        |> shouldEqual
-            { ReadinessLevel.none with
-                In = true
                 Hup = true
                 Err = true
             }
@@ -730,18 +695,12 @@ module TestSocketTable =
     /// `initial`'s standard streams.
     [<Test>]
     let ``the standard streams present their pipe-end levels`` () : unit =
-        epollReadinessOfDescription (OpenFileDescriptionId 0L) initialSystem
-        |> shouldEqual
-            { ReadinessLevel.none with
-                Hup = true
-            }
+        linuxReadiness (OpenFileDescriptionId 0L) initialSystem
+        |> shouldEqual EpollEvents.Hup
 
         for id in 1L .. 2L do
-            epollReadinessOfDescription (OpenFileDescriptionId id) initialSystem
-            |> shouldEqual
-                { ReadinessLevel.none with
-                    Out = true
-                }
+            linuxReadiness (OpenFileDescriptionId id) initialSystem
+            |> shouldEqual (EpollEvents.Out ||| EpollEvents.WrNorm)
 
     /// Registrations reference live descriptions (`close` sweeps), so a
     /// dangling id must be reported as the interpreter bug it is rather than
@@ -750,7 +709,7 @@ module TestSocketTable =
     let ``a dangling readiness target crashes rather than answering`` () : unit =
         let exc =
             Assert.Throws<System.Exception> (fun () ->
-                epollReadinessOfDescription (OpenFileDescriptionId 99L) initialSystem |> ignore
+                linuxReadiness (OpenFileDescriptionId 99L) initialSystem |> ignore
             )
 
         exc.Message |> shouldContainText "names no live open file description"
@@ -1057,12 +1016,12 @@ module TestSocketTable =
     let ``connect onto a registered listener makes the registration pending and deliverable`` () : unit =
         let registration =
             {
-                Interest =
-                    {
-                        SocketEventInterest.In = true
-                        Out = true
-                        RdHup = false
-                    }
+                Events =
+                    EpollEvents.In
+                    ||| EpollEvents.Out
+                    ||| EpollEvents.Err
+                    ||| EpollEvents.Hup
+                    ||| EpollEvents.EdgeTriggered
                 Data = 0xBEEFUL
                 RegisteredAt = 0L
             }
@@ -1121,14 +1080,7 @@ module TestSocketTable =
 
         let delivered, kernel = deliverSocketEvents (OpenFileDescriptionId 50L) 8 kernel
 
-        delivered
-        |> shouldEqual
-            [
-                0xBEEFUL,
-                { ReadinessLevel.none with
-                    In = true
-                }
-            ]
+        delivered |> shouldEqual [ 0xBEEFUL, EpollEvents.In ]
 
         // Consumed: nothing further until the next edge.
         hasDeliverableSocketEvents (OpenFileDescriptionId 50L) kernel

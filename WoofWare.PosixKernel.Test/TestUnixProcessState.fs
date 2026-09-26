@@ -21,12 +21,17 @@ module TestUnixProcessState =
 
     let private context : string = "TestUnixProcessState"
 
-    /// A registration watching `EPOLLIN` alone.
-    let private readInterest : SocketEventInterest =
+    /// A registration watching `EPOLLIN` alone, edge-triggered, as the kernel
+    /// stores it: with `EPOLLERR` and `EPOLLHUP` added.
+    let private readInterest : EpollRegistration =
         {
-            In = true
-            Out = false
-            RdHup = false
+            Events =
+                EpollEvents.In
+                ||| EpollEvents.EdgeTriggered
+                ||| EpollEvents.Err
+                ||| EpollEvents.Hup
+            Data = 0UL
+            RegisteredAt = 0L
         }
 
     /// A process holding nothing but its current directory: the least a client
@@ -244,16 +249,13 @@ module TestUnixProcessState =
 
         let portFd, registry = FileDescriptorRegistry.createSocketEventPort registry
 
+        let idOf (fd : int) : OpenFileDescriptionId =
+            match FileDescriptorRegistry.tryFindId fd registry with
+            | Some id -> id
+            | None -> failwith $"fd %d{fd} is not live"
+
         let registry =
-            FileDescriptorRegistry.changeSocketEventRegistration
-                portFd
-                watchedFd
-                0L
-                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, readInterest, 0UL))
-                registry
-            |> function
-                | Ok registry -> registry
-                | Error error -> failwith $"could not register: %O{error}"
+            FileDescriptorRegistry.addEpollRegistration (idOf portFd) (watchedFd, idOf watchedFd) readInterest registry
 
         let ready (proc : UnixProcessState<int, string>) : (int * OpenFileDescriptionId) list =
             FileDescriptorRegistry.descriptions proc.FileDescriptors

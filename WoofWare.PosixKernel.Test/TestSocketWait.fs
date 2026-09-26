@@ -35,7 +35,25 @@ module TestSocketWait =
 
 
     let private platforms : SimulatedUnixPlatform list =
-        [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ]
+        [
+            SimulatedUnixPlatform.linuxX64
+            SimulatedUnixPlatform.linuxArm64
+            SimulatedUnixPlatform.macOsArm64
+        ]
+
+    /// Each Linux preset with the `epoll_wait` facts measured on its
+    /// architecture: `sizeof(struct epoll_event)`, the largest `maxevents` that
+    /// is not EINVAL, and the machine's default `TASK_SIZE_MAX`. Literals, so
+    /// that a derivation that went wrong in the library cannot also go wrong here.
+    let private linuxEpollRows : (SimulatedUnixPlatform * int * int * uint64) list =
+        [
+            SimulatedUnixPlatform.linuxX64, 12, 178_956_970, 0x0000_7FFF_FFFF_F000UL
+            SimulatedUnixPlatform.linuxArm64, 16, 134_217_727, 0x0001_0000_0000_0000UL
+        ]
+
+    let private linuxEpollCases : TestCaseData list =
+        linuxEpollRows
+        |> List.map (fun (platform, size, cap, limit) -> TestCaseData (platform, size, cap, limit))
 
     /// A system with an event port open, and the descriptor onto it.
     let private withPort (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
@@ -162,23 +180,32 @@ module TestSocketWait =
         admit darwinFd 0 UserBuffer.Mapped darwin
         |> shouldEqual SocketWaitAdmission.NoEvents
 
-    /// `EP_MAX_EVENTS` is `INT_MAX / EventSize`, and it is what keeps the
-    /// `maxevents * EventSize` product below inside `int32`. Darwin caps
-    /// nothing.
-    [<Test>]
-    let ``epoll caps the event count and kqueue does not`` () : unit =
-        let linuxFd, linux = withPort (systemOn SimulatedUnixPlatform.linuxX64)
+    /// `EP_MAX_EVENTS` is `INT_MAX / sizeof(struct epoll_event)`, so it is the
+    /// platform's architecture that sets it, and it is what keeps the
+    /// `maxevents * sizeof` product below inside `int32`.
+    [<TestCaseSource(nameof linuxEpollCases)>]
+    let ``epoll caps the event count at its architecture's bound``
+        (platform : SimulatedUnixPlatform, _size : int, cap : int, _limit : uint64)
+        : unit
+        =
+        let fd, linux = withPort (systemOn platform)
 
-        admit linuxFd LinuxEpollLimits.MaxEvents UserBuffer.Mapped linux
-        |> shouldEqual (SocketWaitAdmission.DeliverOrWait (OpenFileDescriptionId 3L, LinuxEpollLimits.MaxEvents))
+        admit fd cap UserBuffer.Mapped linux
+        |> shouldEqual (SocketWaitAdmission.DeliverOrWait (OpenFileDescriptionId 3L, cap))
 
-        admit linuxFd (LinuxEpollLimits.MaxEvents + 1) UserBuffer.Mapped linux
+        admit fd (cap + 1) UserBuffer.Mapped linux
         |> shouldEqual (SocketWaitAdmission.Failed UnixError.EINVAL)
 
+    /// kqueue caps nothing: every count past either architecture's epoll bound,
+    /// up to `INT_MAX`, is admitted. Measured on Darwin 27.0.0 over a stride of
+    /// 65521 across [1, INT_MAX].
+    [<Test>]
+    let ``kqueue does not cap the event count`` () : unit =
         let darwinFd, darwin = withPort (systemOn SimulatedUnixPlatform.macOsArm64)
 
-        admit darwinFd (LinuxEpollLimits.MaxEvents + 1) UserBuffer.Mapped darwin
-        |> shouldEqual (SocketWaitAdmission.DeliverOrWait (OpenFileDescriptionId 3L, LinuxEpollLimits.MaxEvents + 1))
+        for count in [ 134_217_728 ; 178_956_971 ; System.Int32.MaxValue ] do
+            admit darwinFd count UserBuffer.Mapped darwin
+            |> shouldEqual (SocketWaitAdmission.DeliverOrWait (OpenFileDescriptionId 3L, count))
 
     [<TestCaseSource(nameof platforms)>]
     let ``a negative event count is a caller bug`` (platform : SimulatedUnixPlatform) : unit =
@@ -235,22 +262,37 @@ module TestSocketWait =
         admit socketFd 8 UserBuffer.Mapped system
         |> shouldEqual (SocketWaitAdmission.Failed UnixError.EINVAL)
 
-    /// The extent screened is `maxevents * EventSize`, not one element: a count
-    /// that puts the *end* of the range past the limit faults even though its
-    /// base address does not.
-    [<Test>]
-    let ``the screened extent is the whole event array`` () : unit =
-        let fd, linux = withPort (systemOn SimulatedUnixPlatform.linuxX64)
-        let limit = ObservedUserAddressLimit.X64FourLevelPaging
+    /// The extent screened is `maxevents * sizeof(struct epoll_event)`, not one
+    /// element: a count that puts the *end* of the range past the limit faults
+    /// even though its base address does not. And the element is the
+    /// architecture's: a base twelve bytes below the limit holds one packed
+    /// x86-64 event but not one padded arm64 event, which is the row an
+    /// architecture mix-up lands on.
+    [<TestCaseSource(nameof linuxEpollCases)>]
+    let ``the screened extent is the whole event array``
+        (platform : SimulatedUnixPlatform, size : int, _cap : int, limit : uint64)
+        : unit
+        =
+        let fd, linux = withPort (systemOn platform)
 
         // A base one element below the limit: room for one event, not for two.
-        let base' = limit - uint64 LinuxEpollLimits.EventSize
+        let base' = limit - uint64 size
 
         admit fd 1 (UserBuffer.Unmapped base') linux
         |> shouldEqual (SocketWaitAdmission.DeliverOrWait (OpenFileDescriptionId 3L, 1))
 
         admit fd 2 (UserBuffer.Unmapped base') linux
         |> shouldEqual (SocketWaitAdmission.Failed UnixError.EFAULT)
+
+        let packed = limit - 12UL
+
+        admit fd 1 (UserBuffer.Unmapped packed) linux
+        |> shouldEqual (
+            if size = 12 then
+                SocketWaitAdmission.DeliverOrWait (OpenFileDescriptionId 3L, 1)
+            else
+                SocketWaitAdmission.Failed UnixError.EFAULT
+        )
 
     /// A buffer with no address at all reaches the screen with nothing to
     /// compare, so the flavour that screens refuses and the flavour that does

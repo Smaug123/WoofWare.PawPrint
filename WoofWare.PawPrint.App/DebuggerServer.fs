@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System
+open System.Buffers
 open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
@@ -208,6 +209,24 @@ module DebuggerServer =
         | ThreadStatus.Parked -> writer.WriteStringValue "parked"
         | ThreadStatus.WaitingForForegroundThreads -> writer.WriteStringValue "waitingForForegroundThreads"
 
+    /// `location` as the span resolved at `sourceIlOffset`.
+    let private writeSourceLocationValue
+        (writer : Utf8JsonWriter)
+        (sourceIlOffset : int)
+        (location : SourceLocation)
+        : unit
+        =
+        writer.WriteStartObject ()
+        writer.WriteNumber ("ilOffset", sourceIlOffset)
+        // Exactly as the PDB records it — an absolute path on whichever machine built the
+        // assembly. Deliberately not resolved against this filesystem; see `SourceLocation`.
+        writer.WriteString ("documentPath", location.DocumentPath)
+        writer.WriteNumber ("startLine", location.StartLine)
+        writer.WriteNumber ("startColumn", location.StartColumn)
+        writer.WriteNumber ("endLine", location.EndLine)
+        writer.WriteNumber ("endColumn", location.EndColumn)
+        writer.WriteEndObject ()
+
     /// The source span the compiler attributed to `sourceIlOffset` in `frame`, or `null`.
     ///
     /// `null` is ordinary: the shared framework ships without PDBs, a synthesised stub has no
@@ -226,17 +245,7 @@ module DebuggerServer =
 
         match GuestLocation.trySourceOf state frame.ExecutingMethod sourceIlOffset with
         | None -> writer.WriteNullValue ()
-        | Some location ->
-            writer.WriteStartObject ()
-            writer.WriteNumber ("ilOffset", sourceIlOffset)
-            // Exactly as the PDB records it — an absolute path on whichever machine built the
-            // assembly. Deliberately not resolved against this filesystem; see `SourceLocation`.
-            writer.WriteString ("documentPath", location.DocumentPath)
-            writer.WriteNumber ("startLine", location.StartLine)
-            writer.WriteNumber ("startColumn", location.StartColumn)
-            writer.WriteNumber ("endLine", location.EndLine)
-            writer.WriteNumber ("endColumn", location.EndColumn)
-            writer.WriteEndObject ()
+        | Some location -> writeSourceLocationValue writer sourceIlOffset location
 
     let private writeFrameProperties
         (writer : Utf8JsonWriter)
@@ -328,9 +337,16 @@ module DebuggerServer =
 
         writer.WriteEndArray ()
 
-    let private writeEvalStackValue (writer : Utf8JsonWriter) (value : EvalStackValue) : unit =
+    let private writeEvalStackValue
+        (writer : Utf8JsonWriter)
+        (context : DebuggerValueContext)
+        (value : EvalStackValue)
+        : unit
+        =
         writer.WriteStartObject ()
         writer.WriteString ("value", string value)
+        writer.WritePropertyName "structured"
+        DebuggerValueJson.writeEvalStackValue writer context value
 
         match value with
         | EvalStackValue.ObjectRef address -> writer.WriteNumber ("objectAddress", heapAddressValue address)
@@ -344,9 +360,11 @@ module DebuggerServer =
 
         writer.WriteEndObject ()
 
-    let private writeCliType (writer : Utf8JsonWriter) (value : CliType) : unit =
+    let private writeCliType (writer : Utf8JsonWriter) (context : DebuggerValueContext) (value : CliType) : unit =
         writer.WriteStartObject ()
         writer.WriteString ("value", string value)
+        writer.WritePropertyName "structured"
+        DebuggerValueJson.writeCliType writer context value
 
         match value with
         | CliType.ObjectRef address -> writeOptionalHeapAddress writer "objectAddress" address
@@ -367,11 +385,18 @@ module DebuggerServer =
         (frame : MethodState)
         : unit
         =
+        let context = DebuggerValueJson.ofState state
         writer.WriteStartObject ()
         writeFrameProperties writer state sourceIlOffset true activeFrame frameId frame
-        writeValueArray writer "evalStack" frame.EvaluationStack.Values writeEvalStackValue
-        writeValueArray writer "arguments" frame.Arguments writeCliType
-        writeValueArray writer "locals" frame.LocalVariables writeCliType
+
+        writeValueArray
+            writer
+            "evalStack"
+            frame.EvaluationStack.Values
+            (fun writer value -> writeEvalStackValue writer context value)
+
+        writeValueArray writer "arguments" frame.Arguments (fun writer value -> writeCliType writer context value)
+        writeValueArray writer "locals" frame.LocalVariables (fun writer value -> writeCliType writer context value)
         writer.WriteEndObject ()
 
     let private writeRunOutcome (writer : Utf8JsonWriter) (outcome : RunOutcome) : unit =
@@ -590,9 +615,8 @@ module DebuggerServer =
         writer.WriteBase64String ("bytesBase64", bytes.AsSpan ())
         writer.WriteEndObject ()
 
-    let private writeEvent (writer : Utf8JsonWriter) (event : DebugEvent) : unit =
-        writer.WriteStartObject ()
-        writer.WriteNumber ("step", event.StepNumber)
+    /// What happened in a step, as opposed to when (its number) or what it wrote (its output).
+    let private writeEventProperties (writer : Utf8JsonWriter) (event : DebugEvent) : unit =
         writer.WriteString ("kind", event.Kind)
         writeOptionalInt writer "thread" event.Thread
         writer.WriteString ("detail", event.Detail)
@@ -600,6 +624,11 @@ module DebuggerServer =
         match event.BlockedOnClassInitThread with
         | Some blocker -> writer.WriteNumber ("blockedOnClassInitThread", blocker)
         | None -> ()
+
+    let private writeEvent (writer : Utf8JsonWriter) (event : DebugEvent) : unit =
+        writer.WriteStartObject ()
+        writer.WriteNumber ("step", event.StepNumber)
+        writeEventProperties writer event
 
         writer.WritePropertyName "output"
 
@@ -984,6 +1013,264 @@ module DebuggerServer =
         let state = sessionState session
         state.ThreadState |> Map.containsKey threadId
 
+    /// The heap objects an object refers to directly, as `references`: each address once, in
+    /// ascending order.
+    let private writeReferences (writer : Utf8JsonWriter) (references : ManagedHeapAddress list) : unit =
+        writeValueArray
+            writer
+            "references"
+            (references |> List.distinct |> List.sort)
+            (fun writer address -> writer.WriteNumberValue (heapAddressValue address))
+
+    /// How many UTF-16 code units of a string the heap listing shows.
+    let internal stringPreviewLength : int = 256
+
+    /// Whether `text` can be written as a JSON string: `Utf8JsonWriter` refuses a lone surrogate,
+    /// which a guest string is free to contain.
+    let private isWellFormedUtf16 (text : string) : bool =
+        let mutable ok = true
+        let mutable i = 0
+
+        while ok && i < text.Length do
+            if Char.IsHighSurrogate text.[i] then
+                if i + 1 < text.Length && Char.IsLowSurrogate text.[i + 1] then
+                    i <- i + 2
+                else
+                    ok <- false
+            elif Char.IsLowSurrogate text.[i] then
+                ok <- false
+            else
+                i <- i + 1
+
+        ok
+
+    /// The heap listing's preview of a string, and whether it is shorter than the string. The
+    /// preview is the string's first `stringPreviewLength` code units, one fewer if the last of
+    /// those is a high surrogate (so a pair is never split); it is `None` if that prefix holds a
+    /// lone surrogate, which `Utf8JsonWriter` cannot write.
+    let internal stringPreview (text : string) : string option * bool =
+        let truncated = text.Length > stringPreviewLength
+
+        let prefix =
+            if not truncated then
+                text
+            elif Char.IsHighSurrogate text.[stringPreviewLength - 1] then
+                text.Substring (0, stringPreviewLength - 1)
+            else
+                text.Substring (0, stringPreviewLength)
+
+        (if isWellFormedUtf16 prefix then Some prefix else None), truncated
+
+    let private writeHeapListingEntry
+        (writer : Utf8JsonWriter)
+        (state : IlMachineState)
+        (address : ManagedHeapAddress)
+        : unit
+        =
+        writer.WriteStartObject ()
+        writer.WriteNumber ("address", heapAddressValue address)
+
+        let concreteType =
+            match HeapObserver.tryGetNonArrayObject address state.ManagedHeap with
+            | Some object ->
+                writer.WriteString ("kind", "object")
+                writer.WriteNull "length"
+                object.ConcreteType
+            | None ->
+                match HeapObserver.tryGetArray address state.ManagedHeap with
+                | Some array ->
+                    writer.WriteString ("kind", "array")
+                    writer.WriteNumber ("length", array.Shape.Length)
+                    array.Shape.ConcreteType
+                | None -> failwith $"heap listing: live address %d{heapAddressValue address} has no payload"
+
+        writer.WriteString ("type", typeDescription state concreteType)
+
+        match HeapObserver.getStringContents address state.ManagedHeap with
+        | None ->
+            writer.WriteNull "string"
+            writer.WriteNull "stringLength"
+            writer.WriteBoolean ("stringTruncated", false)
+        | Some text ->
+            let preview, truncated = stringPreview text
+
+            match preview with
+            | Some preview -> writer.WriteString ("string", preview)
+            | None -> writer.WriteNull "string"
+
+            writer.WriteNumber ("stringLength", text.Length)
+            writer.WriteBoolean ("stringTruncated", truncated)
+
+        writer.WriteEndObject ()
+
+    /// One page of the live heap in ascending address order: up to `limit` objects with addresses
+    /// above `after`. `nextAfter` is the `after` that fetches the next page, or null on the last.
+    /// Addresses are never reused, so paging stays consistent while the guest allocates.
+    let private writeHeapListingResponse
+        (writer : Utf8JsonWriter)
+        (session : SessionState)
+        (after : ManagedHeapAddress option)
+        (limit : int)
+        : unit
+        =
+        let state = sessionState session
+        let live = HeapObserver.liveAddresses state.ManagedHeap
+
+        let candidates =
+            match after with
+            | None -> live :> seq<ManagedHeapAddress>
+            | Some after -> live |> Seq.filter (fun address -> address > after)
+
+        let page = candidates |> Seq.truncate (limit + 1) |> Seq.toList
+        let hasMore = page.Length > limit
+        let page = page |> List.truncate limit
+
+        writer.WriteStartObject ()
+        writer.WriteNumber ("liveCount", live.Count)
+        writer.WriteNumber ("limit", limit)
+        writeValueArray writer "objects" page (fun writer address -> writeHeapListingEntry writer state address)
+
+        match hasMore, List.tryLast page with
+        | true, Some last -> writer.WriteNumber ("nextAfter", heapAddressValue last)
+        | true, None
+        | false, _ -> writer.WriteNull "nextAfter"
+
+        writer.WriteEndObject ()
+
+    let private writeTypeInitState (writer : Utf8JsonWriter) (initState : TypeInitState option) : unit =
+        writer.WritePropertyName "initState"
+
+        match initState with
+        | None -> writer.WriteNullValue ()
+        | Some initState ->
+            writer.WriteStartObject ()
+
+            match initState with
+            | TypeInitState.Initialized -> writer.WriteString ("kind", "initialized")
+            | TypeInitState.InProgress thread ->
+                writer.WriteString ("kind", "inProgress")
+                writer.WriteNumber ("thread", threadIdValue thread)
+            | TypeInitState.Failed (exceptionAddress, _) ->
+                writer.WriteString ("kind", "failed")
+                writer.WriteNumber ("exception", heapAddressValue exceptionAddress)
+
+            writer.WriteEndObject ()
+
+    /// The static fields of every type that has begun initialisation or has a written static
+    /// slot. Each field lists its written slots; a field with none holds its type's zero in every
+    /// slot, except an RVA-backed one, whose contents live in the PE image and are not reported.
+    /// `const` fields have no storage and are omitted.
+    let private writeStaticsResponse (writer : Utf8JsonWriter) (session : SessionState) : unit =
+        let state = sessionState session
+        let context = DebuggerValueJson.ofState state
+
+        let writtenByType =
+            StaticStorageObserver.writtenSlots state.Statics
+            |> List.groupBy (fun (_, ty, _, _) -> ty)
+            |> Map.ofList
+
+        let types =
+            Set.union
+                (state.TypeInitTable |> Seq.map (fun kvp -> kvp.Key) |> Set.ofSeq)
+                (writtenByType |> Map.keys |> Set.ofSeq)
+
+        let writeSlots (slots : (StaticOwner * CliType) list) : unit =
+            writeValueArray
+                writer
+                "slots"
+                slots
+                (fun writer (owner, value) ->
+                    writer.WriteStartObject ()
+                    writer.WritePropertyName "owner"
+                    writer.WriteStartObject ()
+
+                    match owner with
+                    | StaticOwner.Shared -> writer.WriteString ("kind", "shared")
+                    | StaticOwner.OwnedBy thread ->
+                        writer.WriteString ("kind", "thread")
+                        writer.WriteNumber ("thread", threadIdValue thread)
+
+                    writer.WriteEndObject ()
+                    writer.WritePropertyName "value"
+                    DebuggerValueJson.writeCliType writer context value
+                    writer.WriteEndObject ()
+                )
+
+        writer.WriteStartObject ()
+
+        writeValueArray
+            writer
+            "types"
+            types
+            (fun writer ty ->
+                let written =
+                    writtenByType
+                    |> Map.tryFind ty
+                    |> Option.defaultValue []
+                    |> List.map (fun (owner, _, field, value) -> field, (owner, value))
+
+                let slotsOf (field : ComparableFieldDefinitionHandle) : (StaticOwner * CliType) list =
+                    written |> List.filter (fun (f, _) -> f = field) |> List.map snd
+
+                let declared =
+                    match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes ty with
+                    | None -> []
+                    | Some (_, typeInfo) ->
+                        typeInfo.Fields
+                        |> List.filter (fun field ->
+                            field.IsStatic
+                            && not (field.Attributes.HasFlag System.Reflection.FieldAttributes.Literal)
+                        )
+
+                let declaredHandles =
+                    declared
+                    |> List.map (fun field -> ComparableFieldDefinitionHandle.Make field.Handle)
+                    |> Set.ofList
+
+                // A written slot for a field the type does not declare would be an interpreter
+                // bug; it is reported rather than hidden.
+                let undeclared =
+                    written
+                    |> List.map fst
+                    |> List.distinct
+                    |> List.filter (fun field -> not (declaredHandles.Contains field))
+
+                writer.WriteStartObject ()
+                writer.WriteString ("type", string ty)
+                writer.WriteString ("typeDescription", typeDescription state ty)
+                writeTypeInitState writer (TypeInitTable.tryGet ty state.TypeInitTable)
+                writer.WriteStartArray "fields"
+
+                for field in declared do
+                    let handle = ComparableFieldDefinitionHandle.Make field.Handle
+                    writer.WriteStartObject ()
+                    writer.WriteString ("name", field.Name)
+                    writer.WriteString ("token", string handle)
+
+                    writer.WriteString (
+                        "storage",
+                        if field.HasFieldRVA then "rva"
+                        elif field.IsThreadStatic then "threadStatic"
+                        else "shared"
+                    )
+
+                    writeSlots (slotsOf handle)
+                    writer.WriteEndObject ()
+
+                for handle in undeclared do
+                    writer.WriteStartObject ()
+                    writer.WriteNull "name"
+                    writer.WriteString ("token", string handle)
+                    writer.WriteNull "storage"
+                    writeSlots (slotsOf handle)
+                    writer.WriteEndObject ()
+
+                writer.WriteEndArray ()
+                writer.WriteEndObject ()
+            )
+
+        writer.WriteEndObject ()
+
     let private writeHeapObjectResponse
         (writer : Utf8JsonWriter)
         (session : SessionState)
@@ -994,12 +1281,16 @@ module DebuggerServer =
         writer.WriteStartObject ()
         writer.WriteNumber ("address", heapAddressValue address)
 
+        let context = DebuggerValueJson.ofState state
+
         match HeapObserver.tryGetNonArrayObject address state.ManagedHeap with
         | Some object ->
             writer.WriteString ("kind", "object")
             writer.WriteString ("concreteType", string object.ConcreteType)
             writer.WriteString ("typeDescription", typeDescription state object.ConcreteType)
             writer.WriteString ("contents", string object.Contents)
+            DebuggerValueJson.writeValueTypeFields writer context object.Contents
+            writeReferences writer (DebuggerValueJson.referencesOfValueType object.Contents)
             writeOptionalString writer "string" (HeapObserver.getStringContents address state.ManagedHeap)
             writer.WriteString ("syncBlock", string (HeapObserver.getSyncBlock address state.ManagedHeap))
         | None ->
@@ -1009,7 +1300,14 @@ module DebuggerServer =
                 writer.WriteString ("concreteType", string array.Shape.ConcreteType)
                 writer.WriteString ("typeDescription", typeDescription state array.Shape.ConcreteType)
                 writer.WriteNumber ("length", array.Shape.Length)
-                writeValueArray writer "elements" array.Elements writeCliType
+
+                writeValueArray writer "elements" array.Elements (fun writer value -> writeCliType writer context value)
+
+                writeReferences
+                    writer
+                    (array.Elements
+                     |> Seq.collect DebuggerValueJson.referencesOfCliType
+                     |> Seq.toList)
                 // Arrays carry an object header exactly like any other heap object, so a
                 // `lock (array)` is visible here too.
                 writer.WriteString ("syncBlock", string (HeapObserver.getSyncBlock address state.ManagedHeap))
@@ -1039,11 +1337,13 @@ module DebuggerServer =
             ReleaseActiveStepRequestAfterResponse : bool
         }
 
-    let private jsonResponse (statusCode : int) (write : Utf8JsonWriter -> unit) : DebuggerHttpResponse =
+    let private jsonResponseWith
+        (options : JsonWriterOptions)
+        (statusCode : int)
+        (write : Utf8JsonWriter -> unit)
+        : DebuggerHttpResponse
+        =
         use stream = new MemoryStream ()
-
-        let options = JsonWriterOptions (Indented = true)
-
         use writer = new Utf8JsonWriter (stream, options)
         write writer
         writer.Flush ()
@@ -1055,6 +1355,9 @@ module DebuggerServer =
             ExtraHeaders = []
         }
 
+    let private jsonResponse (statusCode : int) (write : Utf8JsonWriter -> unit) : DebuggerHttpResponse =
+        jsonResponseWith (JsonWriterOptions (Indented = true)) statusCode write
+
     let private textResponse (statusCode : int) (text : string) : DebuggerHttpResponse =
         {
             StatusCode = statusCode
@@ -1063,14 +1366,17 @@ module DebuggerServer =
             ExtraHeaders = []
         }
 
+    let private writeFailureProperties (writer : Utf8JsonWriter) (operation : string) (ex : exn) : unit =
+        writer.WriteString ("operation", operation)
+        writer.WriteString ("error", ex.Message)
+        writer.WriteString ("exceptionType", ex.GetType().FullName)
+
     let private requestFailureResponse (operation : string) (ex : exn) (session : SessionState) : DebuggerHttpResponse =
         jsonResponse
             500
             (fun writer ->
                 writer.WriteStartObject ()
-                writer.WriteString ("operation", operation)
-                writer.WriteString ("error", ex.Message)
-                writer.WriteString ("exceptionType", ex.GetType().FullName)
+                writeFailureProperties writer operation ex
                 writeSessionSummary writer session
                 writer.WriteEndObject ()
             )
@@ -1184,6 +1490,826 @@ module DebuggerServer =
             Cancelled = cancellationToken.IsCancellationRequested && keepGoing && stepsRun < maxSteps
         }
 
+    /// How much of each thread's active frame a trace records.
+    [<RequireQualifiedAccess>]
+    type private TraceValues =
+        /// The stack's shape only. The values stay available through `/thread/{id}`, but only for
+        /// the step the session is at.
+        | Omitted
+        /// The active frame's evaluation stack, arguments and locals, as `/thread/{id}` renders them.
+        | ActiveFrame
+
+    type private TraceRequest =
+        {
+            MaxSteps : int
+            MaxBytes : int
+            Values : TraceValues
+        }
+
+    let private traceDefaultMaxSteps : int = 10000
+    let private traceStepCap : int = 100000
+    let private traceByteCap : int = 32 * 1024 * 1024
+
+    /// A request above a cap is clamped to it, as `/run` does; one that is not a positive integer,
+    /// or names an unknown values mode, is refused rather than silently defaulted.
+    let private parseTraceRequest (query : IQueryCollection) : Result<TraceRequest, string> =
+        let positive (name : string) (defaultValue : int) (cap : int) : Result<int, string> =
+            match query.TryGetValue name with
+            | false, _ -> Ok defaultValue
+            | true, raw ->
+                match Int64.TryParse (raw.ToString ()) with
+                | true, value when value > 0L -> Ok (int (min value (int64 cap)))
+                | _ -> Error $"%s{name} must be a positive integer, not '%s{raw.ToString ()}'"
+
+        let values =
+            match query.TryGetValue "values" with
+            | false, _ -> Ok TraceValues.Omitted
+            | true, raw ->
+                match raw.ToString () with
+                | "none" -> Ok TraceValues.Omitted
+                | "active" -> Ok TraceValues.ActiveFrame
+                | other -> Error $"values must be 'none' or 'active', not '%s{other}'"
+
+        match
+            positive "maxSteps" traceDefaultMaxSteps traceStepCap, positive "maxBytes" traceByteCap traceByteCap, values
+        with
+        | Ok maxSteps, Ok maxBytes, Ok values ->
+            Ok
+                {
+                    MaxSteps = maxSteps
+                    MaxBytes = maxBytes
+                    Values = values
+                }
+        | Error e, _, _
+        | _, Error e, _
+        | _, _, Error e -> Error e
+
+    /// Numbers distinct strings in order of first appearance, so that a trace page names each once
+    /// in a table and thereafter by its index.
+    type private Interner () =
+        let indices = Dictionary<string, int> (StringComparer.Ordinal)
+        let items = ResizeArray<string> ()
+        let mutable characters = 0L
+
+        member _.Intern (item : string) : int =
+            match indices.TryGetValue item with
+            | true, index -> index
+            | false, _ ->
+                let index = items.Count
+                indices.Add (item, index)
+                items.Add item
+                characters <- characters + int64 item.Length
+                index
+
+        member _.Items : IReadOnlyList<string> = items :> IReadOnlyList<string>
+
+        /// The total length of the distinct strings, which approximates the table's size as JSON.
+        member _.Characters : int64 = characters
+
+    /// Renders one JSON value at a time to compact text, which is how the tables of rendered values
+    /// are keyed.
+    type private JsonRenderer () =
+        let buffer = ArrayBufferWriter<byte> ()
+        let writer = new Utf8JsonWriter (buffer :> IBufferWriter<byte>)
+
+        member _.Render (write : Utf8JsonWriter -> unit) : string =
+            buffer.Clear ()
+            writer.Reset (buffer :> IBufferWriter<byte>)
+            write writer
+            writer.Flush ()
+            Encoding.UTF8.GetString buffer.WrittenSpan
+
+        interface IDisposable with
+            member _.Dispose () = writer.Dispose ()
+
+    type private TraceTables =
+        {
+            /// Method and assembly names.
+            Strings : Interner
+            /// `writeThreadStatus`'s renderings.
+            Statuses : Interner
+            /// `writeSourceLocationValue`'s renderings.
+            Locations : Interner
+            /// Step events without their step number or output.
+            Events : Interner
+            /// `writeEvalStackValue`'s and `writeCliType`'s renderings.
+            Values : Interner
+        }
+
+        static member Empty () : TraceTables =
+            {
+                Strings = Interner ()
+                Statuses = Interner ()
+                Locations = Interner ()
+                Events = Interner ()
+                Values = Interner ()
+            }
+
+        member this.Characters : int64 =
+            this.Strings.Characters
+            + this.Statuses.Characters
+            + this.Locations.Characters
+            + this.Events.Characters
+            + this.Values.Characters
+
+    /// One frame as a trace reports it, with its strings replaced by table indices.
+    type private TracedFrame =
+        {
+            Id : int
+            /// The state this was projected from. The state is immutable, so a frame whose state
+            /// and attribution offset are the same objects as at the last step projects the same.
+            Frame : MethodState
+            AttributionOffset : int
+            Method : int
+            IlOffset : int
+            Location : int option
+        }
+
+    type private TracedValues =
+        {
+            EvalStack : int array
+            Arguments : int array
+            Locals : int array
+            /// The collections these were projected from. They are immutable, and besides the value a
+            /// rendering reads only facts that never change once they hold (a heap object's type,
+            /// since nothing is freed, and a concrete type's description, since types are only
+            /// added), so an unchanged collection projects the same.
+            EvalStackSource : EvalStack
+            ArgumentsSource : CliType ImmutableArray
+            LocalsSource : CliType ImmutableArray
+        }
+
+    /// One thread as a trace reports it, with its strings replaced by table indices.
+    type private TracedThread =
+        {
+            /// The state this was projected from, which as for `TracedFrame.Frame` lets an
+            /// unchanged thread skip projection.
+            Thread : ThreadState
+            /// The kernel's record for the thread, which a `BlockedInSyscall` status is rendered
+            /// from and which can change while the thread's own state does not.
+            Task : UnixTaskState option
+            Status : int
+            Assembly : int option
+            ActiveFrame : int option
+            Frames : TracedFrame array
+            /// `None` exactly when values were not asked for or there is no active frame.
+            Values : TracedValues option
+        }
+
+    let private sameTask (a : UnixTaskState option) (b : UnixTaskState option) : bool =
+        match a, b with
+        | None, None -> true
+        | Some a, Some b -> Object.ReferenceEquals (a, b)
+        | Some _, None
+        | None, Some _ -> false
+
+    let private projectFrame
+        (renderer : JsonRenderer)
+        (tables : TraceTables)
+        (state : IlMachineState)
+        (frameId : FrameId)
+        (attributionOffset : int)
+        (frame : MethodState)
+        : TracedFrame
+        =
+        {
+            Id = frameIdValue frameId
+            Frame = frame
+            AttributionOffset = attributionOffset
+            Method = tables.Strings.Intern (string frame.ExecutingMethod)
+            IlOffset = frame.IlOpIndex
+            Location =
+                GuestLocation.trySourceOf state frame.ExecutingMethod attributionOffset
+                |> Option.map (fun location ->
+                    renderer.Render (fun writer -> writeSourceLocationValue writer attributionOffset location)
+                    |> tables.Locations.Intern
+                )
+        }
+
+    /// `previous` is the thread's values at the step before, whose parts are reused wherever the
+    /// collection they were projected from is unchanged.
+    let private projectValues
+        (renderer : JsonRenderer)
+        (tables : TraceTables)
+        (context : DebuggerValueContext)
+        (previous : TracedValues option)
+        (frame : MethodState)
+        : TracedValues
+        =
+        let evalStackValue (value : EvalStackValue) : int =
+            renderer.Render (fun writer -> writeEvalStackValue writer context value)
+            |> tables.Values.Intern
+
+        let cliValues (previous : (CliType ImmutableArray * int array) option) (values : CliType ImmutableArray) =
+            match previous with
+            // `ImmutableArray.Equals` compares the underlying arrays by reference.
+            | Some (source, indices) when source.Equals values -> indices
+            | Some _
+            | None ->
+                values
+                |> Seq.map (fun value ->
+                    renderer.Render (fun writer -> writeCliType writer context value)
+                    |> tables.Values.Intern
+                )
+                |> Seq.toArray
+
+        {
+            EvalStack =
+                match previous with
+                | Some previous when Object.ReferenceEquals (previous.EvalStackSource, frame.EvaluationStack) ->
+                    previous.EvalStack
+                | Some _
+                | None -> frame.EvaluationStack.Values |> Seq.map evalStackValue |> Seq.toArray
+            Arguments =
+                cliValues
+                    (previous
+                     |> Option.map (fun previous -> previous.ArgumentsSource, previous.Arguments))
+                    frame.Arguments
+            Locals =
+                cliValues
+                    (previous |> Option.map (fun previous -> previous.LocalsSource, previous.Locals))
+                    frame.LocalVariables
+            EvalStackSource = frame.EvaluationStack
+            ArgumentsSource = frame.Arguments
+            LocalsSource = frame.LocalVariables
+        }
+
+    /// `previous` is this thread's projection at the step before, whose parts are reused wherever
+    /// the state they were projected from is unchanged.
+    let private projectThread
+        (renderer : JsonRenderer)
+        (tables : TraceTables)
+        (values : TraceValues)
+        (state : IlMachineState)
+        (previous : TracedThread option)
+        (threadId : ThreadId)
+        (thread : ThreadState)
+        : TracedThread
+        =
+        let task = state.Kernel.Tasks |> Map.tryFind threadId
+
+        let unchangedThread =
+            match previous with
+            | Some previous -> Object.ReferenceEquals (previous.Thread, thread)
+            | None -> false
+
+        match previous with
+        | Some previous when unchangedThread && sameTask previous.Task task -> previous
+        | _ ->
+
+        let status =
+            renderer.Render (fun writer -> writeThreadStatus writer task thread.Status)
+            |> tables.Statuses.Intern
+
+        match previous with
+        | Some previous when unchangedThread ->
+            { previous with
+                Task = task
+                Status = status
+            }
+        | _ ->
+
+        let reusable = Dictionary<int, TracedFrame> ()
+
+        match previous with
+        | Some previous ->
+            for frame in previous.Frames do
+                reusable.[frame.Id] <- frame
+        | None -> ()
+
+        let offsets = GuestLocation.attributionOffsets thread
+
+        let frames =
+            thread.MethodStates
+            |> Seq.map (fun (KeyValue (frameId, frame)) ->
+                let offset = Map.find frameId offsets
+
+                match reusable.TryGetValue (frameIdValue frameId) with
+                | true, traced when
+                    Object.ReferenceEquals (traced.Frame, frame)
+                    && traced.AttributionOffset = offset
+                    ->
+                    traced
+                | _ -> projectFrame renderer tables state frameId offset frame
+            )
+            |> Seq.toArray
+
+        let hasActiveFrame = not (ThreadStatus.hasNoActiveFrame thread.Status)
+
+        {
+            Thread = thread
+            Task = task
+            Status = status
+            Assembly =
+                if hasActiveFrame then
+                    Some (tables.Strings.Intern thread.ActiveAssemblyFullName)
+                else
+                    None
+            ActiveFrame =
+                if hasActiveFrame then
+                    Some (frameIdValue thread.ActiveMethodState)
+                else
+                    None
+            Frames = frames
+            Values =
+                match values with
+                | TraceValues.ActiveFrame when hasActiveFrame ->
+                    let previousValues = previous |> Option.bind (fun previous -> previous.Values)
+
+                    Some (
+                        projectValues
+                            renderer
+                            tables
+                            (DebuggerValueJson.ofState state)
+                            previousValues
+                            thread.MethodState
+                    )
+                | TraceValues.ActiveFrame
+                | TraceValues.Omitted -> None
+        }
+
+    [<RequireQualifiedAccess>]
+    type private Change<'a> =
+        | Unchanged
+        | ChangedTo of 'a
+
+    let private change<'a when 'a : equality> (previous : 'a option) (next : 'a) : Change<'a> =
+        match previous with
+        | Some previous when previous = next -> Change.Unchanged
+        | Some _
+        | None -> Change.ChangedTo next
+
+    /// What changed about one thread between two steps (or, from no previous projection, what it
+    /// is). See `writeTracePageProperties` for how a client applies it.
+    type private ThreadDelta =
+        {
+            Thread : int
+            Status : Change<int>
+            Assembly : Change<int option>
+            ActiveFrame : Change<int option>
+            Pop : int
+            Set : TracedFrame list
+            Push : TracedFrame list
+            EvalStack : Change<int array>
+            Arguments : Change<int array>
+            Locals : Change<int array>
+        }
+
+        member this.IsEmpty : bool =
+            this.Status = Change.Unchanged
+            && this.Assembly = Change.Unchanged
+            && this.ActiveFrame = Change.Unchanged
+            && this.Pop = 0
+            && this.Set.IsEmpty
+            && this.Push.IsEmpty
+            && this.EvalStack = Change.Unchanged
+            && this.Arguments = Change.Unchanged
+            && this.Locals = Change.Unchanged
+
+    let private threadDelta (threadId : ThreadId) (previous : TracedThread option) (next : TracedThread) : ThreadDelta =
+        let previousFrames =
+            match previous with
+            | Some previous -> previous.Frames
+            | None -> Array.empty
+
+        // Frames are identified by id and method together. Ids are never reused within a thread, so
+        // the method is only a guard: a retained frame is then updated in place, never replaced.
+        let retained =
+            Seq.zip previousFrames next.Frames
+            |> Seq.takeWhile (fun (before, after) -> before.Id = after.Id && before.Method = after.Method)
+            |> Seq.length
+
+        let activeFrame =
+            change (previous |> Option.map (fun previous -> previous.ActiveFrame)) next.ActiveFrame
+
+        // A new active frame's values are stated in full, so a client need not remember any frame's
+        // values but the active one's.
+        let valuesBefore =
+            match activeFrame, previous with
+            | Change.Unchanged, Some previous -> previous.Values
+            | Change.Unchanged, None
+            | Change.ChangedTo _, _ -> None
+
+        let valuesPart (select : TracedValues -> int array) : Change<int array> =
+            match next.Values with
+            | None -> Change.Unchanged
+            | Some values -> change (valuesBefore |> Option.map select) (select values)
+
+        {
+            Thread = threadIdValue threadId
+            Status = change (previous |> Option.map (fun previous -> previous.Status)) next.Status
+            Assembly = change (previous |> Option.map (fun previous -> previous.Assembly)) next.Assembly
+            ActiveFrame = activeFrame
+            Pop = previousFrames.Length - retained
+            Set =
+                [
+                    for i in 0 .. retained - 1 do
+                        let before = previousFrames.[i]
+                        let after = next.Frames.[i]
+
+                        if before.IlOffset <> after.IlOffset || before.Location <> after.Location then
+                            yield after
+                ]
+            Push = next.Frames |> Array.skip retained |> Array.toList
+            EvalStack = valuesPart (fun values -> values.EvalStack)
+            Arguments = valuesPart (fun values -> values.Arguments)
+            Locals = valuesPart (fun values -> values.Locals)
+        }
+
+    let private writeOptionalNumberValue (writer : Utf8JsonWriter) (value : int option) : unit =
+        match value with
+        | Some value -> writer.WriteNumberValue value
+        | None -> writer.WriteNullValue ()
+
+    let private writeChange<'a>
+        (writer : Utf8JsonWriter)
+        (name : string)
+        (write : Utf8JsonWriter -> 'a -> unit)
+        (value : Change<'a>)
+        : unit
+        =
+        match value with
+        | Change.Unchanged -> ()
+        | Change.ChangedTo value ->
+            writer.WritePropertyName name
+            write writer value
+
+    let private writeIndices (writer : Utf8JsonWriter) (indices : int array) : unit =
+        writer.WriteStartArray ()
+
+        for index in indices do
+            writer.WriteNumberValue index
+
+        writer.WriteEndArray ()
+
+    let private writeThreadDelta (writer : Utf8JsonWriter) (delta : ThreadDelta) : unit =
+        writer.WriteStartObject ()
+        writer.WriteNumber ("id", delta.Thread)
+        writeChange writer "s" (fun writer (status : int) -> writer.WriteNumberValue status) delta.Status
+        writeChange writer "a" writeOptionalNumberValue delta.Assembly
+        writeChange writer "f" writeOptionalNumberValue delta.ActiveFrame
+
+        if delta.Pop > 0 then
+            writer.WriteNumber ("pop", delta.Pop)
+
+        if not delta.Set.IsEmpty then
+            writer.WriteStartArray "set"
+
+            for frame in delta.Set do
+                writer.WriteStartArray ()
+                writer.WriteNumberValue frame.Id
+                writer.WriteNumberValue frame.IlOffset
+                writeOptionalNumberValue writer frame.Location
+                writer.WriteEndArray ()
+
+            writer.WriteEndArray ()
+
+        if not delta.Push.IsEmpty then
+            writer.WriteStartArray "push"
+
+            for frame in delta.Push do
+                writer.WriteStartArray ()
+                writer.WriteNumberValue frame.Id
+                writer.WriteNumberValue frame.Method
+                writer.WriteNumberValue frame.IlOffset
+                writeOptionalNumberValue writer frame.Location
+                writer.WriteEndArray ()
+
+            writer.WriteEndArray ()
+
+        match delta.EvalStack, delta.Arguments, delta.Locals with
+        | Change.Unchanged, Change.Unchanged, Change.Unchanged -> ()
+        | _ ->
+            writer.WriteStartObject "v"
+            writeChange writer "e" writeIndices delta.EvalStack
+            writeChange writer "a" writeIndices delta.Arguments
+            writeChange writer "l" writeIndices delta.Locals
+            writer.WriteEndObject ()
+
+        writer.WriteEndObject ()
+
+    /// Writes the `th` and `gone` properties taking a client from `previous` to `next`, or nothing
+    /// if no thread changed.
+    let private writeThreadDeltas
+        (writer : Utf8JsonWriter)
+        (previous : Map<ThreadId, TracedThread>)
+        (next : Map<ThreadId, TracedThread>)
+        : unit
+        =
+        let deltas =
+            next
+            |> Map.toSeq
+            |> Seq.map (fun (threadId, thread) -> threadDelta threadId (Map.tryFind threadId previous) thread)
+            |> Seq.filter (fun delta -> not delta.IsEmpty)
+            |> Seq.toList
+
+        if not deltas.IsEmpty then
+            writeValueArray writer "th" deltas writeThreadDelta
+
+        let gone =
+            previous
+            |> Map.toSeq
+            |> Seq.map fst
+            |> Seq.filter (fun threadId -> not (Map.containsKey threadId next))
+            |> Seq.toList
+
+        if not gone.IsEmpty then
+            writeValueArray writer "gone" gone (fun writer threadId -> writer.WriteNumberValue (threadIdValue threadId))
+
+    type private HeapCounts = int * int * int
+
+    let private heapCounts (heap : ManagedHeap) : HeapCounts =
+        HeapObserver.nonArrayObjectCount heap, HeapObserver.arrayCount heap, HeapObserver.stringContentCount heap
+
+    let private writeHeapCounts (writer : Utf8JsonWriter) (nonArrayObjects : int, arrays : int, strings : int) : unit =
+        writer.WriteStartArray "hp"
+        writer.WriteNumberValue nonArrayObjects
+        writer.WriteNumberValue arrays
+        writer.WriteNumberValue strings
+        writer.WriteEndArray ()
+
+    let private stepsExecuted (session : SessionState) : int64 =
+        match session with
+        | SessionState.Running (_, steps)
+        | SessionState.Finished (_, steps)
+        | SessionState.Deadlocked (_, _, steps) -> steps
+
+    /// Why a trace page ended.
+    [<RequireQualifiedAccess>]
+    type private TraceStop =
+        | StepLimit
+        /// The page reached its byte budget. A page takes at least one step whatever its budget, so
+        /// that paging always makes progress.
+        | ByteBudget
+        | Cancelled
+        /// The session is finished or deadlocked, so no further page will take a step.
+        | SessionEnded
+        /// A step threw. The session is left before that step, as `/run` leaves it.
+        | HostFailure of exn
+
+    type private TracePage =
+        {
+            Request : TraceRequest
+            FirstStep : int64
+            StepsRun : int
+            Stop : TraceStop
+            Session : SessionState
+            /// The JSON of the base record.
+            Base : byte[]
+            /// The JSON of the array of step records.
+            Steps : byte[]
+            /// The JSON of the record of what discovering a deadlock changed, if this page did.
+            Deadlock : byte[] option
+            Tables : TraceTables
+        }
+
+    /// Where a trace has got to: the session and the projection its next step's deltas are
+    /// relative to.
+    type private TraceCursor =
+        {
+            Session : SessionState
+            StepsRun : int
+            Threads : Map<ThreadId, TracedThread>
+            Heap : ManagedHeap
+            HeapCounts : HeapCounts
+        }
+
+    /// Advances the session by up to `request.MaxSteps` steps, recording each as a delta, and
+    /// committing the session after each as `runSteps` does.
+    let private recordTrace
+        (loggerFactory : ILoggerFactory)
+        (logger : ILogger)
+        (cancellationToken : System.Threading.CancellationToken)
+        (request : TraceRequest)
+        (commitSession : SessionState -> unit)
+        (session : SessionState)
+        : TracePage
+        =
+        use renderer = new JsonRenderer ()
+        let tables = TraceTables.Empty ()
+        let baseBuffer = ArrayBufferWriter<byte> ()
+        let stepsBuffer = ArrayBufferWriter<byte> ()
+        use baseWriter = new Utf8JsonWriter (baseBuffer :> IBufferWriter<byte>)
+        use stepsWriter = new Utf8JsonWriter (stepsBuffer :> IBufferWriter<byte>)
+
+        let project (previous : Map<ThreadId, TracedThread>) (state : IlMachineState) : Map<ThreadId, TracedThread> =
+            state.ThreadState
+            |> Map.map (fun threadId thread ->
+                projectThread renderer tables request.Values state (Map.tryFind threadId previous) threadId thread
+            )
+
+        let initialState = sessionState session
+
+        let start =
+            {
+                Session = session
+                StepsRun = 0
+                Threads = project Map.empty initialState
+                Heap = initialState.ManagedHeap
+                HeapCounts = heapCounts initialState.ManagedHeap
+            }
+
+        baseWriter.WriteStartObject ()
+        writeHeapCounts baseWriter start.HeapCounts
+        writeThreadDeltas baseWriter Map.empty start.Threads
+        baseWriter.WriteEndObject ()
+        baseWriter.Flush ()
+
+        stepsWriter.WriteStartArray ()
+
+        let pageBytes () : int64 =
+            int64 baseBuffer.WrittenCount
+            + stepsWriter.BytesCommitted
+            + int64 stepsWriter.BytesPending
+            + tables.Characters
+
+        /// Writes the record taking a client from `cursor` to `session`, which `event` produced.
+        let writeRecord
+            (writer : Utf8JsonWriter)
+            (cursor : TraceCursor)
+            (session : SessionState)
+            (event : DebugEvent)
+            : TraceCursor
+            =
+            let state = sessionState session
+            writer.WriteStartObject ()
+
+            let eventIndex =
+                renderer.Render (fun writer ->
+                    writer.WriteStartObject ()
+                    writeEventProperties writer event
+                    writer.WriteEndObject ()
+                )
+                |> tables.Events.Intern
+
+            writer.WriteNumber ("e", eventIndex)
+
+            match event.Effect with
+            | StepEffect.NoEffect -> ()
+            | StepEffect.WroteToFd (role, bytes) ->
+                writer.WritePropertyName "o"
+                writeOutputEntry writer role bytes
+
+            let counts =
+                if Object.ReferenceEquals (cursor.Heap, state.ManagedHeap) then
+                    cursor.HeapCounts
+                else
+                    heapCounts state.ManagedHeap
+
+            if counts <> cursor.HeapCounts then
+                writeHeapCounts writer counts
+
+            let threads = project cursor.Threads state
+            writeThreadDeltas writer cursor.Threads threads
+            writer.WriteEndObject ()
+
+            {
+                Session = session
+                StepsRun = cursor.StepsRun
+                Threads = threads
+                Heap = state.ManagedHeap
+                HeapCounts = counts
+            }
+
+        let deadlockBuffer = ArrayBufferWriter<byte> ()
+        use deadlockWriter = new Utf8JsonWriter (deadlockBuffer :> IBufferWriter<byte>)
+
+        let rec advance (cursor : TraceCursor) : TraceCursor * TraceStop =
+            match cursor.Session with
+            | SessionState.Finished _
+            | SessionState.Deadlocked _ -> cursor, TraceStop.SessionEnded
+            | SessionState.Running _ ->
+
+            if cursor.StepsRun >= request.MaxSteps then
+                cursor, TraceStop.StepLimit
+            elif cursor.StepsRun > 0 && pageBytes () >= int64 request.MaxBytes then
+                cursor, TraceStop.ByteBudget
+            elif cancellationToken.IsCancellationRequested then
+                cursor, TraceStop.Cancelled
+            else
+
+            let stepped =
+                try
+                    Ok (stepSession loggerFactory logger cursor.Session)
+                with ex ->
+                    Error ex
+
+            match stepped with
+            | Error ex -> cursor, TraceStop.HostFailure ex
+            | Ok (session, event, countedStep) ->
+                commitSession session
+
+                if countedStep then
+                    let cursor = writeRecord stepsWriter cursor session event
+
+                    advance
+                        { cursor with
+                            StepsRun = cursor.StepsRun + 1
+                        }
+                else
+                    // Only the discovery of a deadlock is not a step. It executed no instruction,
+                    // but looking for one can still change state — a timed wait that expires moves
+                    // its thread on to reacquiring the lock — so it gets a record of its own.
+                    advance (writeRecord deadlockWriter cursor session event)
+
+        let finish, stop = advance start
+
+        stepsWriter.WriteEndArray ()
+        stepsWriter.Flush ()
+        deadlockWriter.Flush ()
+
+        {
+            Request = request
+            FirstStep = stepsExecuted session
+            StepsRun = finish.StepsRun
+            Stop = stop
+            Session = finish.Session
+            Base = baseBuffer.WrittenSpan.ToArray ()
+            Steps = stepsBuffer.WrittenSpan.ToArray ()
+            Deadlock =
+                if deadlockBuffer.WrittenCount = 0 then
+                    None
+                else
+                    Some (deadlockBuffer.WrittenSpan.ToArray ())
+            Tables = tables
+        }
+
+    /// A trace page's properties, for the caller to wrap in an object, beside a failure's if the
+    /// page ended in one.
+    ///
+    /// A page is self-contained: `base` is the state before its first step, stated as deltas from
+    /// nothing, and every index refers to this page's own tables. Replaying pages one after another
+    /// therefore gives the same states as one page covering the same steps, whatever the page
+    /// boundaries; each page's `base` equals the state its predecessor ended in.
+    ///
+    /// `steps[i]` is step `firstStep + i + 1`, and records the state after it:
+    /// - `e`: index into `events`, what the step did (`kind`, `thread`, `detail`, as `/step` reports);
+    /// - `o`: what the step wrote, as `/step`'s `output`; absent if nothing;
+    /// - `hp`: `[nonArrayObjects, arrays, stringContents]`, present in `base` and when it changed;
+    /// - `th`: a delta for each thread that changed, which a client applies to its copy of that thread;
+    /// - `gone`: ids of threads that no longer exist.
+    ///
+    /// `deadlock` is null unless this page discovered that the guest is deadlocked, in which case it
+    /// is a record of the same shape, applied after the last step. It is not a step and does not
+    /// count towards `stepsRun`: it executed no instruction, but the scheduler looking for one can
+    /// still change state, as when a timed wait expires into reacquiring a lock that is held.
+    ///
+    /// A thread delta has `id`, and then only what changed, in this order:
+    /// - `s`: index into `statuses`; `a`: index into `strings` of the active assembly, or null;
+    ///   `f`: the active frame's id, or null. A thread's first delta carries all three.
+    /// - `pop`: how many frames to remove from the top (the end of the list);
+    /// - `set`: `[id, ilOffset, location]` for retained frames whose offset or location changed;
+    /// - `push`: `[id, method, ilOffset, location]` frames to append, `method` indexing `strings`.
+    ///   A `location` is an index into `locations`, or null. Frames are listed outermost first, as
+    ///   `/thread/{id}` lists them.
+    /// - `v`, with `values=active` only: the active frame's `e`valuation stack, `a`rguments and
+    ///   `l`ocals, each an array of indices into `frameValues`, and each present only if it changed —
+    ///   except that all three are present whenever `f` is.
+    let private writeTracePageProperties (writer : Utf8JsonWriter) (page : TracePage) : unit =
+        writer.WriteNumber ("maxSteps", page.Request.MaxSteps)
+        writer.WriteNumber ("maxBytes", page.Request.MaxBytes)
+
+        writer.WriteString (
+            "values",
+            match page.Request.Values with
+            | TraceValues.Omitted -> "none"
+            | TraceValues.ActiveFrame -> "active"
+        )
+
+        writer.WriteNumber ("firstStep", page.FirstStep)
+        writer.WriteNumber ("stepsRun", page.StepsRun)
+
+        writer.WriteString (
+            "stoppedBecause",
+            match page.Stop with
+            | TraceStop.StepLimit -> "stepLimit"
+            | TraceStop.ByteBudget -> "byteBudget"
+            | TraceStop.Cancelled -> "cancelled"
+            | TraceStop.SessionEnded -> "sessionEnded"
+            | TraceStop.HostFailure _ -> "hostFailure"
+        )
+
+        writer.WritePropertyName "base"
+        writer.WriteRawValue (ReadOnlySpan<byte> page.Base, true)
+        writer.WritePropertyName "steps"
+        writer.WriteRawValue (ReadOnlySpan<byte> page.Steps, true)
+        writer.WritePropertyName "deadlock"
+
+        match page.Deadlock with
+        | Some deadlock -> writer.WriteRawValue (ReadOnlySpan<byte> deadlock, true)
+        | None -> writer.WriteNullValue ()
+
+        writeValueArray writer "strings" page.Tables.Strings.Items (fun writer s -> writer.WriteStringValue s)
+
+        let writeRenderedTable (name : string) (table : Interner) : unit =
+            writeValueArray writer name table.Items (fun writer (json : string) -> writer.WriteRawValue (json, true))
+
+        writeRenderedTable "statuses" page.Tables.Statuses
+        writeRenderedTable "locations" page.Tables.Locations
+        writeRenderedTable "events" page.Tables.Events
+        writeRenderedTable "frameValues" page.Tables.Values
+        writeSessionSummary writer page.Session
+
     let private helpText (baseUrl : string) : string =
         String.concat
             Environment.NewLine
@@ -1192,10 +2318,14 @@ module DebuggerServer =
                 "GET  /state"
                 "POST /step?count=1"
                 "POST /run?maxSteps=10000"
+                $"POST /trace?maxSteps=%d{traceDefaultMaxSteps}&maxBytes=%d{traceByteCap}&values=none|active"
+                $"     (at most %d{traceStepCap} steps and about %d{traceByteCap} bytes a page; repeat to page on)"
                 "GET  /thread/{id}"
                 "GET  /thread/{id}/stack-summary"
                 "GET  /thread/{id}/active-method/il"
+                "GET  /heap?after=<address>&limit=200"
                 "GET  /heap/{address}"
+                "GET  /statics"
                 "GET  /output"
                 "POST /reset"
                 "POST /stop"
@@ -1430,6 +2560,68 @@ module DebuggerServer =
                                             if not releaseAfterResponse then
                                                 System.Threading.Interlocked.Decrement (&activeStepRequests)
                                                 |> ignore<int>
+                                    | "POST", [ "trace" ] ->
+                                        match parseTraceRequest context.Request.Query with
+                                        | Error message -> responseOnly (textResponse 400 message)
+                                        | Ok request ->
+                                            System.Threading.Interlocked.Increment (&activeStepRequests)
+                                            |> ignore<int>
+
+                                            let mutable releaseAfterResponse = false
+
+                                            try
+                                                try
+                                                    let page =
+                                                        recordTrace
+                                                            loggerFactory
+                                                            logger
+                                                            stopCts.Token
+                                                            request
+                                                            (fun nextSession -> session <- nextSession)
+                                                            session
+
+                                                    session <- page.Session
+
+                                                    let compact = JsonWriterOptions ()
+
+                                                    let response =
+                                                        match page.Stop with
+                                                        | TraceStop.HostFailure ex ->
+                                                            logger.LogError (ex, "Debugger trace request failed")
+
+                                                            jsonResponseWith
+                                                                compact
+                                                                500
+                                                                (fun writer ->
+                                                                    writer.WriteStartObject ()
+                                                                    writeFailureProperties writer "trace" ex
+                                                                    writeTracePageProperties writer page
+                                                                    writer.WriteEndObject ()
+                                                                )
+                                                        | TraceStop.StepLimit
+                                                        | TraceStop.ByteBudget
+                                                        | TraceStop.Cancelled
+                                                        | TraceStop.SessionEnded ->
+                                                            jsonResponseWith
+                                                                compact
+                                                                200
+                                                                (fun writer ->
+                                                                    writer.WriteStartObject ()
+                                                                    writeTracePageProperties writer page
+                                                                    writer.WriteEndObject ()
+                                                                )
+
+                                                    releaseAfterResponse <- true
+                                                    stepResponse response
+                                                with ex ->
+                                                    logger.LogError (ex, "Debugger trace request failed")
+                                                    let response = requestFailureResponse "trace" ex session
+                                                    releaseAfterResponse <- true
+                                                    stepResponse response
+                                            finally
+                                                if not releaseAfterResponse then
+                                                    System.Threading.Interlocked.Decrement (&activeStepRequests)
+                                                    |> ignore<int>
                                     | "GET", [ "thread" ; rawThread ; "stack-summary" ] ->
                                         match Int32.TryParse rawThread with
                                         | true, thread ->
@@ -1484,6 +2676,32 @@ module DebuggerServer =
                                                 (fun writer -> writeThreadResponse writer session threadId)
                                             |> responseOnly
                                         | _ -> responseOnly (textResponse 400 $"Invalid thread id: %s{rawThread}")
+                                    | "GET", [ "heap" ] ->
+                                        let limit = parsePositiveInt "limit" 200 2000 context.Request.Query
+                                        let rawAfter = context.Request.Query.["after"].ToString ()
+
+                                        if String.IsNullOrWhiteSpace rawAfter then
+                                            jsonResponse
+                                                200
+                                                (fun writer -> writeHeapListingResponse writer session None limit)
+                                            |> responseOnly
+                                        else
+                                            match Int32.TryParse rawAfter with
+                                            | true, after ->
+                                                let after = Some (ManagedHeapAddress.ManagedHeapAddress after)
+
+                                                jsonResponse
+                                                    200
+                                                    (fun writer ->
+                                                        writeHeapListingResponse writer session after limit
+                                                    )
+                                                |> responseOnly
+                                            | false, _ ->
+                                                responseOnly (textResponse 400 $"Invalid heap address: %s{rawAfter}")
+                                    | "GET", [ "statics" ] ->
+                                        responseOnly (
+                                            jsonResponse 200 (fun writer -> writeStaticsResponse writer session)
+                                        )
                                     | "GET", [ "heap" ; rawAddress ] ->
                                         match Int32.TryParse rawAddress with
                                         | true, address ->

@@ -16,11 +16,13 @@ open WoofWare.PosixKernel
 /// socket and an epoll port both answer *success*, where "not seekable" would
 /// predict ESPIPE, and only a pipe answers ESPIPE.
 ///
-/// Every row drives a Linux system, `UnixDescriptor.posixFadvise` modelling only
-/// the platform that has the call. What Darwin does about not having it is not
-/// that function's to say: the two rows at the bottom pin the guard callers
-/// consult instead, and `sourcesImpure/PosixFAdviseWiringDarwinSeeded.cs` pins
-/// what PawPrint's own shim answers once it has.
+/// The advice is Linux's raw `POSIX_FADV_*` number (0 to 5 on x86-64 and on
+/// aarch64 alike), screened where the kernel screens it: after the descriptor.
+/// The Linux rows were measured on aarch64 (`measured-fadvise-linux.txt`); the
+/// kernel path is architecture-independent, and x86-64 is not separately
+/// measured.
+/// Darwin's libc has no such call, and `posixFadvise` refuses there rather than
+/// answer for a call no program could have made.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestPosixFadvise =
@@ -100,16 +102,19 @@ module TestPosixFadvise =
     let private socket (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp system
 
-    /// Every advice value, so that no row silently exercises only the default.
-    let private everyAdvice : FileAccessAdvice list =
-        [
-            FileAccessAdvice.Normal
-            FileAccessAdvice.Random
-            FileAccessAdvice.Sequential
-            FileAccessAdvice.WillNeed
-            FileAccessAdvice.DontNeed
-            FileAccessAdvice.NoReuse
-        ]
+    /// Linux's `POSIX_FADV_*` numbers for the advice values the rows use.
+    [<RequireQualifiedAccess>]
+    module private Advice =
+        [<Literal>]
+        let Normal = 0
+
+        [<Literal>]
+        let Sequential = 2
+
+    /// Every advice value Linux accepts, `POSIX_FADV_NORMAL` (0) to
+    /// `POSIX_FADV_NOREUSE` (5), so that no row silently exercises only the
+    /// default.
+    let private everyAdvice : int list = [ 0..5 ]
 
     // ------------------------------------------------------- descriptor kinds
 
@@ -121,7 +126,7 @@ module TestPosixFadvise =
 
         for advice in everyAdvice do
             UnixDescriptor.posixFadvise fd 0L 0L advice system
-            |> shouldEqual FileAdviceAnswer.Completed
+            |> shouldEqual (Ok FileAdviceAnswer.Completed)
 
     [<Test>]
     let ``a read-only descriptor succeeds too`` () : unit =
@@ -131,8 +136,8 @@ module TestPosixFadvise =
             systemOn SimulatedUnixPlatform.linuxX64
             |> openedAt "/dir/file" FileAccessMode.ReadOnly
 
-        UnixDescriptor.posixFadvise fd 0L 0L FileAccessAdvice.Sequential system
-        |> shouldEqual FileAdviceAnswer.Completed
+        UnixDescriptor.posixFadvise fd 0L 0L Advice.Sequential system
+        |> shouldEqual (Ok FileAdviceAnswer.Completed)
 
     [<Test>]
     let ``a directory succeeds`` () : unit =
@@ -142,7 +147,7 @@ module TestPosixFadvise =
 
         for advice in everyAdvice do
             UnixDescriptor.posixFadvise fd 0L 0L advice system
-            |> shouldEqual FileAdviceAnswer.Completed
+            |> shouldEqual (Ok FileAdviceAnswer.Completed)
 
     [<Test>]
     let ``a socket succeeds`` () : unit =
@@ -152,7 +157,7 @@ module TestPosixFadvise =
 
         for advice in everyAdvice do
             UnixDescriptor.posixFadvise fd 0L 0L advice system
-            |> shouldEqual FileAdviceAnswer.Completed
+            |> shouldEqual (Ok FileAdviceAnswer.Completed)
 
     [<Test>]
     let ``a socket event port succeeds`` () : unit =
@@ -162,7 +167,7 @@ module TestPosixFadvise =
 
         for advice in everyAdvice do
             UnixDescriptor.posixFadvise fd 0L 0L advice system
-            |> shouldEqual FileAdviceAnswer.Completed
+            |> shouldEqual (Ok FileAdviceAnswer.Completed)
 
     [<TestCase 0>]
     [<TestCase 1>]
@@ -175,7 +180,7 @@ module TestPosixFadvise =
 
         for advice in everyAdvice do
             UnixDescriptor.posixFadvise fd 0L 0L advice system
-            |> shouldEqual (FileAdviceAnswer.Failed UnixError.ESPIPE)
+            |> shouldEqual (Ok (FileAdviceAnswer.Failed UnixError.ESPIPE))
 
     [<Test>]
     let ``an unopened descriptor is EBADF`` () : unit =
@@ -183,7 +188,7 @@ module TestPosixFadvise =
 
         for advice in everyAdvice do
             UnixDescriptor.posixFadvise 99 0L 0L advice system
-            |> shouldEqual (FileAdviceAnswer.Failed UnixError.EBADF)
+            |> shouldEqual (Ok (FileAdviceAnswer.Failed UnixError.EBADF))
 
     // -------------------------------------------------------- offset and length
 
@@ -194,8 +199,8 @@ module TestPosixFadvise =
             systemOn SimulatedUnixPlatform.linuxX64
             |> openedAt "/dir/file" FileAccessMode.ReadWrite
 
-        UnixDescriptor.posixFadvise fd 0L length FileAccessAdvice.Normal system
-        |> shouldEqual (FileAdviceAnswer.Failed UnixError.EINVAL)
+        UnixDescriptor.posixFadvise fd 0L length Advice.Normal system
+        |> shouldEqual (Ok (FileAdviceAnswer.Failed UnixError.EINVAL))
 
     [<TestCase(-1L, 0L)>]
     [<TestCase(-1L, 4096L)>]
@@ -210,8 +215,8 @@ module TestPosixFadvise =
             systemOn SimulatedUnixPlatform.linuxX64
             |> openedAt "/dir/file" FileAccessMode.ReadWrite
 
-        UnixDescriptor.posixFadvise fd offset length FileAccessAdvice.Normal system
-        |> shouldEqual FileAdviceAnswer.Completed
+        UnixDescriptor.posixFadvise fd offset length Advice.Normal system
+        |> shouldEqual (Ok FileAdviceAnswer.Completed)
 
     // ------------------------------------------------------------------ ordering
 
@@ -219,8 +224,8 @@ module TestPosixFadvise =
     let ``a bad descriptor beats a bad length`` () : unit =
         let system = systemOn SimulatedUnixPlatform.linuxX64
 
-        UnixDescriptor.posixFadvise 99 0L -1L FileAccessAdvice.Normal system
-        |> shouldEqual (FileAdviceAnswer.Failed UnixError.EBADF)
+        UnixDescriptor.posixFadvise 99 0L -1L Advice.Normal system
+        |> shouldEqual (Ok (FileAdviceAnswer.Failed UnixError.EBADF))
 
     [<Test>]
     let ``ESPIPE beats a bad length`` () : unit =
@@ -228,10 +233,82 @@ module TestPosixFadvise =
         // range check the generic path makes.
         let system = systemOn SimulatedUnixPlatform.linuxX64
 
-        UnixDescriptor.posixFadvise 0 0L -1L FileAccessAdvice.Normal system
-        |> shouldEqual (FileAdviceAnswer.Failed UnixError.ESPIPE)
+        UnixDescriptor.posixFadvise 0 0L -1L Advice.Normal system
+        |> shouldEqual (Ok (FileAdviceAnswer.Failed UnixError.ESPIPE))
+
+    [<Test>]
+    let ``an advice Linux does not know is EINVAL, after the descriptor`` () : unit =
+        // Measured: 6 and -1 are EINVAL on every descriptor that reaches the
+        // generic path, EBADF on a closed one and ESPIPE on a pipe, so the
+        // advice is screened after both.
+        let fd, system =
+            systemOn SimulatedUnixPlatform.linuxX64
+            |> openedAt "/dir/file" FileAccessMode.ReadWrite
+
+        for advice in [ 6 ; 7 ; -1 ; Int32.MaxValue ; Int32.MinValue ] do
+            UnixDescriptor.posixFadvise fd 0L 0L advice system
+            |> shouldEqual (Ok (FileAdviceAnswer.Failed UnixError.EINVAL))
+
+            UnixDescriptor.posixFadvise 99 0L 0L advice system
+            |> shouldEqual (Ok (FileAdviceAnswer.Failed UnixError.EBADF))
+
+            UnixDescriptor.posixFadvise 0 0L 0L advice system
+            |> shouldEqual (Ok (FileAdviceAnswer.Failed UnixError.ESPIPE))
+
+    /// The measured rule, restated independently of the implementation: the
+    /// descriptor first (EBADF, then ESPIPE for a pipe), then the length and
+    /// the advice, which both answer EINVAL.
+    let private oracle (kind : string) (length : int64) (advice : int) : FileAdviceAnswer =
+        match kind with
+        | "closed" -> FileAdviceAnswer.Failed UnixError.EBADF
+        | "pipe" -> FileAdviceAnswer.Failed UnixError.ESPIPE
+        | _ when length < 0L || advice < 0 || advice > 5 -> FileAdviceAnswer.Failed UnixError.EINVAL
+        | _ -> FileAdviceAnswer.Completed
+
+    [<Test>]
+    let ``every descriptor kind, advice and length answers as measured`` () : unit =
+        let file, system =
+            systemOn SimulatedUnixPlatform.linuxX64
+            |> openedAt "/dir/file" FileAccessMode.ReadWrite
+
+        let directory, system = system |> openedAt "/dir" FileAccessMode.ReadOnly
+        let sock, system = socket system
+        let port, system = eventPort system
+
+        let kinds =
+            [
+                "closed", 99
+                "pipe", 1
+                "file", file
+                "directory", directory
+                "socket", sock
+                "port", port
+            ]
+
+        let property (kindIndex : int) (offset : int64) (length : int64) (advice : int) : bool =
+            let kind, fd = kinds.[abs (kindIndex % kinds.Length)]
+            UnixDescriptor.posixFadvise fd offset length advice system = Ok (oracle kind length advice)
+
+        FsCheck.Check.One (FsCheck.Config.QuickThrowOnFailure.WithMaxTest 2000, property)
+
+        // The boundary itself, which random ints rarely land on.
+        for kind, fd in kinds do
+            for advice in -2 .. 8 do
+                for length in [ -1L ; 0L ; 1L ] do
+                    UnixDescriptor.posixFadvise fd 0L length advice system
+                    |> shouldEqual (Ok (oracle kind length advice))
 
     // ---------------------------------------------------- platform availability
+
+    [<Test>]
+    let ``Darwin has no posix_fadvise, so the call is refused rather than answered`` () : unit =
+        let system = systemOn SimulatedUnixPlatform.macOsArm64
+
+        for fd in [ 0 ; 99 ] do
+            for advice in [ 0 ; 6 ] do
+                UnixDescriptor.posixFadvise fd 0L 0L advice system
+                |> shouldEqual (Error PosixFadviseRefusal.NotProvided)
+
 
     [<Test>]
     let ``the platform states which flavour provides the call`` () : unit =

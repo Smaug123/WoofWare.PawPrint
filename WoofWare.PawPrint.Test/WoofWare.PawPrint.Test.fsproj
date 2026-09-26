@@ -190,6 +190,8 @@
     <Compile Include="TestNativeGetDynamicMethod.fs" />
     <Compile Include="TestMethodReturnType.fs" />
     <Compile Include="TestMethodSignatureComparison.fs" />
+    <Compile Include="TestMethodReferenceResolution.fs" />
+    <Compile Include="TestMethodReferenceResolutionGenerated.fs" />
     <Compile Include="TestFunctionPointerConcretization.fs" />
     <Compile Include="Netstandard21FSharpCore.fs" />
     <Compile Include="TestZeroOfBaseAssemblies.fs" />
@@ -252,6 +254,9 @@
     <Compile Include="TestDebuggerState.fs" />
     <Compile Include="TestProgramDebugger.fs" />
     <Compile Include="TestDebuggerServer.fs" />
+    <Compile Include="TestDebuggerServerTrace.fs" />
+    <Compile Include="TestDebuggerValueJson.fs" />
+    <Compile Include="TestDebuggerStringPreview.fs" />
     <Compile Include="TestBclIntrinsicStaticFields.fs" />
     <Compile Include="TestThreadStatics.fs" />
     <Compile Include="TestLowLevelMonitor.fs" />

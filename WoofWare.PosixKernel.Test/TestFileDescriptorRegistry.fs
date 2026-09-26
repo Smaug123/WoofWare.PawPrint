@@ -1720,141 +1720,6 @@ module TestFileDescriptorRegistry =
         let registry = FileDescriptorRegistry.setNonBlocking portFd false registry
         nonBlockingOf portFd registry |> shouldEqual false
 
-    // --- what a registration reports ---
-
-    /// Every `ReadinessLevel` there is: five booleans, so 32 of them.
-    let private allLevels : ReadinessLevel list =
-        [
-            for bits in 0..31 ->
-                {
-                    In = bits &&& 0x01 <> 0
-                    Out = bits &&& 0x02 <> 0
-                    RdHup = bits &&& 0x04 <> 0
-                    Hup = bits &&& 0x08 <> 0
-                    Err = bits &&& 0x10 <> 0
-                }
-        ]
-
-    /// Every `SocketEventInterest` there is: three booleans, so eight.
-    let private allInterests : SocketEventInterest list =
-        [
-            for bits in 0..7 ->
-                {
-                    In = bits &&& 0x01 <> 0
-                    Out = bits &&& 0x02 <> 0
-                    RdHup = bits &&& 0x04 <> 0
-                }
-        ]
-
-    /// The two ends of `reportedUnder`. Asking for everything reports the level
-    /// itself; asking for nothing still reports `HUP` and `ERR`, which is what
-    /// makes them not interest and why the record has no field for them
-    /// (measured, a pending refusal registered with interest 0 reports 0x18).
-    [<Test>]
-    let ``a full interest reports the level, and an empty one reports HUP and ERR`` () : unit =
-        let everything : SocketEventInterest =
-            {
-                In = true
-                Out = true
-                RdHup = true
-            }
-
-        let nothing : SocketEventInterest =
-            {
-                In = false
-                Out = false
-                RdHup = false
-            }
-
-        for level in allLevels do
-            ReadinessLevel.reportedUnder everything level |> shouldEqual level
-
-            ReadinessLevel.reportedUnder nothing level
-            |> shouldEqual
-                { ReadinessLevel.none with
-                    Hup = level.Hup
-                    Err = level.Err
-                }
-
-    /// A report never invents readiness, and widening what was asked for never
-    /// withdraws any.
-    [<Test>]
-    let ``a report is a sub-level, and grows with the interest`` () : unit =
-        let subLevel (small : ReadinessLevel) (big : ReadinessLevel) : bool =
-            (not small.In || big.In)
-            && (not small.Out || big.Out)
-            && (not small.RdHup || big.RdHup)
-            && (not small.Hup || big.Hup)
-            && (not small.Err || big.Err)
-
-        for level in allLevels do
-            for interest in allInterests do
-                let reported = ReadinessLevel.reportedUnder interest level
-
-                if not (subLevel reported level) then
-                    failwith $"reportedUnder %O{interest} %O{level} = %O{reported}, which is not a sub-level of it"
-
-                let widened =
-                    { interest with
-                        In = true
-                    }
-
-                if not (subLevel reported (ReadinessLevel.reportedUnder widened level)) then
-                    failwith $"widening %O{interest} to %O{widened} withdrew part of %O{reported}"
-
-    /// Which field each interest bit gates, pinned one bit at a time: clearing
-    /// exactly one of them may change exactly its own condition, and nothing
-    /// else. This is what a swapped pair of fields fails.
-    [<Test>]
-    let ``each interest bit gates its own condition alone`` () : unit =
-        let clearings
-            : (string * (SocketEventInterest -> SocketEventInterest) * (ReadinessLevel -> ReadinessLevel)) list =
-            [
-                "In",
-                (fun i ->
-                    { i with
-                        In = false
-                    }
-                ),
-                (fun r ->
-                    { r with
-                        In = false
-                    }
-                )
-                "Out",
-                (fun i ->
-                    { i with
-                        Out = false
-                    }
-                ),
-                (fun r ->
-                    { r with
-                        Out = false
-                    }
-                )
-                "RdHup",
-                (fun i ->
-                    { i with
-                        RdHup = false
-                    }
-                ),
-                (fun r ->
-                    { r with
-                        RdHup = false
-                    }
-                )
-            ]
-
-        for level in allLevels do
-            for interest in allInterests do
-                for name, clearInterest, clearReport in clearings do
-                    let before = ReadinessLevel.reportedUnder interest level
-                    let after = ReadinessLevel.reportedUnder (clearInterest interest) level
-
-                    if after <> clearReport before then
-                        failwith
-                            $"clearing %s{name} from %O{interest} took %O{level} from %O{before} to %O{after}, which is not %O{before} with %s{name} cleared"
-
     // --- socket event registrations ---
 
     /// The interest table of the port `portFd` names. Fails on anything else, so
@@ -1862,145 +1727,176 @@ module TestFileDescriptorRegistry =
     let private registrationsOf
         (portFd : int)
         (registry : FileDescriptorRegistry)
-        : Map<int * OpenFileDescriptionId, SocketEventRegistration>
+        : Map<int * OpenFileDescriptionId, EpollRegistration>
         =
         match FileDescriptorRegistry.tryFindTarget portFd registry with
         | Some (OpenFileTarget.SocketEventPort portState) -> portState.Registrations
         | other -> failwith $"fd %d{portFd} is not a socket event port: %O{other}"
 
-    let private readWrite : SocketEventInterest =
+    let private readyOf (portFd : int) (registry : FileDescriptorRegistry) : (int * OpenFileDescriptionId) list =
+        match FileDescriptorRegistry.tryFindTarget portFd registry with
+        | Some (OpenFileTarget.SocketEventPort portState) -> portState.Ready
+        | other -> failwith $"fd %d{portFd} is not a socket event port: %O{other}"
+
+    let private idOf (fd : int) (registry : FileDescriptorRegistry) : OpenFileDescriptionId =
+        match FileDescriptorRegistry.tryFindId fd registry with
+        | Some id -> id
+        | None -> failwith $"fd %d{fd} not live"
+
+    /// `EPOLLIN|EPOLLOUT`, edge-triggered, as the kernel stores it.
+    let private readWrite : uint32 =
+        EpollEvents.In
+        ||| EpollEvents.Out
+        ||| EpollEvents.Err
+        ||| EpollEvents.Hup
+        ||| EpollEvents.EdgeTriggered
+
+    let private registration (data : uint64) : EpollRegistration =
         {
-            In = true
-            Out = true
-            RdHup = false
+            Events = readWrite
+            Data = data
+            RegisteredAt = 0L
         }
 
-    let private change
+    /// Register the target `targetFd` names with the port `portFd` names,
+    /// keyed as epoll keys it.
+    let private add
         (portFd : int)
         (targetFd : int)
-        (change : SocketEventRegistrationChange)
+        (data : uint64)
         (registry : FileDescriptorRegistry)
         : FileDescriptorRegistry
         =
-        match FileDescriptorRegistry.changeSocketEventRegistration portFd targetFd 0L change registry with
-        | Ok registry -> registry
-        | Error error -> failwith $"changeSocketEventRegistration failed: %O{error}"
+        FileDescriptorRegistry.addEpollRegistration
+            (idOf portFd registry)
+            (targetFd, idOf targetFd registry)
+            (registration data)
+            registry
 
-    /// No guest can observe the stored *values* yet — delivering them is the
-    /// readiness wake, which has no producer until `SystemNative_Connect`
-    /// lands — so the write-back is pinned here: a handler recording zeroes
-    /// would survive every guest row (their observers are only EEXIST/ENOENT,
-    /// i.e. presence) and fail this.
+    /// The stored values are what delivery reports, so a table that recorded
+    /// zeroes would survive every row whose observer is only presence (EEXIST,
+    /// ENOENT) and fail this.
     [<Test>]
-    let ``a registration records the interest and data it was given, and Modify replaces both`` () : unit =
+    let ``a registration records what it was given, and Modify replaces events and data but not the ordinal``
+        ()
+        : unit
+        =
         let portFd, registry =
             FileDescriptorRegistry.createSocketEventPort FileDescriptorRegistry.initial
 
         let sockFd, registry = FileDescriptorRegistry.createSocket (SocketId 0L) registry
-
-        let sockId =
-            match FileDescriptorRegistry.tryFindId sockFd registry with
-            | Some id -> id
-            | None -> failwith "socket fd not live"
+        let portId = idOf portFd registry
+        let key = sockFd, idOf sockFd registry
 
         let registry =
-            change
-                portFd
-                sockFd
-                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, readWrite, 0xABCDUL))
+            FileDescriptorRegistry.addEpollRegistration
+                portId
+                key
+                {
+                    Events = readWrite
+                    Data = 0xABCDUL
+                    RegisteredAt = 5L
+                }
                 registry
 
         registrationsOf portFd registry
         |> shouldEqual (
             Map.ofList
                 [
-                    (sockFd, sockId),
+                    key,
                     {
-                        Interest = readWrite
+                        Events = readWrite
                         Data = 0xABCDUL
-                        RegisteredAt = 0L
+                        RegisteredAt = 5L
                     }
                 ]
         )
 
-        let readOnly =
-            { readWrite with
-                Out = false
-            }
+        let readOnly = readWrite &&& ~~~EpollEvents.Out
 
         let registry =
-            change
-                portFd
-                sockFd
-                (SocketEventRegistrationChange.Modify (SocketEventTrigger.EdgeTriggered, readOnly, 77UL))
-                registry
+            FileDescriptorRegistry.modifyEpollRegistration portId key readOnly 77UL registry
 
         registrationsOf portFd registry
         |> shouldEqual (
             Map.ofList
                 [
-                    (sockFd, sockId),
+                    key,
                     {
-                        Interest = readOnly
+                        Events = readOnly
                         Data = 77UL
-                        RegisteredAt = 0L
+                        RegisteredAt = 5L
                     }
                 ]
         )
 
-        let registry = change portFd sockFd SocketEventRegistrationChange.Remove registry
+        let registry = FileDescriptorRegistry.removeEpollRegistration portId key registry
         registrationsOf portFd registry |> shouldEqual Map.empty
         FileDescriptorRegistry.assertInvariants "after remove" registry |> ignore
 
-    /// The registration key is the (fd, description) *pair*, exactly as epoll
-    /// keys it: a `dup` of the target admits a second registration, and a
-    /// `dup` of the port operates on the one shared table.
+    /// A removal takes the pending entry with it, and leaves every other
+    /// entry's place alone; a modification moves nothing.
     [<Test>]
-    let ``dup of the target is a second key; dup of the port is the same table`` () : unit =
+    let ``Remove drops the pending entry and Modify keeps its place`` () : unit =
+        let portFd, registry =
+            FileDescriptorRegistry.createSocketEventPort FileDescriptorRegistry.initial
+
+        let aFd, registry = FileDescriptorRegistry.createSocket (SocketId 0L) registry
+        let bFd, registry = FileDescriptorRegistry.createSocket (SocketId 1L) registry
+        let portId = idOf portFd registry
+        let a = aFd, idOf aFd registry
+        let b = bFd, idOf bFd registry
+
+        let registry =
+            registry
+            |> add portFd aFd 1UL
+            |> add portFd bFd 2UL
+            |> FileDescriptorRegistry.appendSocketEventReady portId a
+            |> FileDescriptorRegistry.appendSocketEventReady portId b
+
+        let registry =
+            FileDescriptorRegistry.modifyEpollRegistration portId a EpollEvents.In 3UL registry
+
+        readyOf portFd registry |> shouldEqual [ a ; b ]
+
+        let registry = FileDescriptorRegistry.removeEpollRegistration portId a registry
+        readyOf portFd registry |> shouldEqual [ b ]
+        FileDescriptorRegistry.assertInvariants "after remove" registry |> ignore
+
+    /// Each primitive is the table half of a call whose other half has already
+    /// answered EEXIST or ENOENT, so being asked the wrong question is a bug in
+    /// the caller, reported loudly rather than answered.
+    [<Test>]
+    let ``the table primitives refuse a key in the wrong state`` () : unit =
         let portFd, registry =
             FileDescriptorRegistry.createSocketEventPort FileDescriptorRegistry.initial
 
         let sockFd, registry = FileDescriptorRegistry.createSocket (SocketId 0L) registry
+        let portId = idOf portFd registry
+        let key = sockFd, idOf sockFd registry
 
-        let dupFd, registry =
-            match FileDescriptorRegistry.dup sockFd registry with
-            | Ok result -> result
-            | Error error -> failwith $"dup failed: %O{error}"
+        Assert.Throws<System.Exception> (fun () ->
+            FileDescriptorRegistry.modifyEpollRegistration portId key readWrite 0UL registry
+            |> ignore
+        )
+        |> ignore
 
-        let registry =
-            change
-                portFd
-                sockFd
-                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, readWrite, 1UL))
-                registry
+        Assert.Throws<System.Exception> (fun () ->
+            FileDescriptorRegistry.removeEpollRegistration portId key registry |> ignore
+        )
+        |> ignore
 
-        let registry =
-            change
-                portFd
-                dupFd
-                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, readWrite, 2UL))
-                registry
+        let registry = add portFd sockFd 0UL registry
 
-        (registrationsOf portFd registry).Count |> shouldEqual 2
+        Assert.Throws<System.Exception> (fun () -> add portFd sockFd 0UL registry |> ignore)
+        |> ignore
 
-        // The port's dup reaches the same table: a re-Add through it answers
-        // AlreadyRegistered, and a Remove through it is visible via the
-        // original port fd.
-        let dupPortFd, registry =
-            match FileDescriptorRegistry.dup portFd registry with
-            | Ok result -> result
-            | Error error -> failwith $"dup failed: %O{error}"
-
-        FileDescriptorRegistry.changeSocketEventRegistration
-            dupPortFd
-            sockFd
-            0L
-            (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, readWrite, 3UL))
-            registry
-        |> shouldEqual (Error SocketEventRegistrationError.AlreadyRegistered)
-
-        let registry = change dupPortFd sockFd SocketEventRegistrationChange.Remove registry
-        (registrationsOf portFd registry).Count |> shouldEqual 1
+        // A description that is not a port.
+        Assert.Throws<System.Exception> (fun () ->
+            FileDescriptorRegistry.addEpollRegistration (snd key) (portFd, portId) (registration 0UL) registry
+            |> ignore
+        )
+        |> ignore
 
     /// Linux removes a destroyed description's registrations at file-release
     /// time (`eventpoll_release`); PawPrint's `close` does the same sweep. No
@@ -2019,12 +1915,7 @@ module TestFileDescriptorRegistry =
             | Ok result -> result
             | Error error -> failwith $"dup failed: %O{error}"
 
-        let registry =
-            change
-                portFd
-                sockFd
-                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, readWrite, 1UL))
-                registry
+        let registry = add portFd sockFd 1UL registry
 
         // Closing `sockFd` leaves the description alive through the dup, so
         // the registration — keyed on the now-dead fd number — survives, which
@@ -2066,7 +1957,7 @@ module TestFileDescriptorRegistry =
                                                 [
                                                     (4, deadId),
                                                     {
-                                                        Interest = readWrite
+                                                        Events = readWrite
                                                         Data = 0UL
                                                         RegisteredAt = 0L
                                                     }
@@ -2105,12 +1996,7 @@ module TestFileDescriptorRegistry =
             | Some id -> id
             | None -> failwith "port fd not live"
 
-        let registry =
-            change
-                portFd
-                sockFd
-                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, readWrite, 1UL))
-                registry
+        let registry = add portFd sockFd 1UL registry
 
         let withReady (ready : (int * OpenFileDescriptionId) list) : FileDescriptorRegistry =
             FileDescriptorRegistry.Unchecked.mapDescription

@@ -14,6 +14,20 @@ type SimulatedUnixReleaseError =
     /// silently truncate what the guest sees.
     | NotPrintableAscii of index : int * character : char
 
+/// Why a combination of flavour, architecture, page size and release is not a
+/// `SimulatedUnixPlatform`.
+[<RequireQualifiedAccess>]
+type SimulatedUnixPlatformError =
+    /// The release string is not one a `uname` could report.
+    | Release of SimulatedUnixReleaseError
+    /// No kernel of this flavour, built for this architecture with pages of this
+    /// size, has been measured, so the facts this library derives from the
+    /// three are unknown for it.
+    | UnmeasuredKernel of
+        flavour : SimulatedUnixFlavour *
+        architecture : SimulatedUnixArchitecture *
+        pageSize : SimulatedPageSize
+
 /// Identity of the Unix-shaped platform the simulated process believes it is
 /// running on: what `uname(2)` reports, and the flavour every other
 /// platform-dependent answer follows.
@@ -25,35 +39,43 @@ type SimulatedUnixReleaseError =
 /// letting the host leak in here would change their *control flow* between
 /// runs.
 ///
-/// Modelled as a flavour plus a release string, rather than as a bag of loose
+/// Modelled as a flavour, an architecture, a page size and a release string,
+/// each of which a kernel image is built with, rather than as a bag of loose
 /// `utsname` fields, so that the facts we report stay mutually consistent as
-/// more of `utsname` gets modelled: its version or machine field would be a new
-/// total *function* of the flavour, not a new independently-settable string
-/// that could claim a Darwin release alongside an x86_64 machine.
+/// more of `utsname` gets modelled: its machine field would be a total
+/// *function* of the flavour and the architecture, not an independently-settable
+/// string that could claim an x86_64 machine alongside arm64's struct layouts.
 ///
-/// One representation per platform, which is what the flavour buys: every
-/// platform-dependent fact below is a total function of it, with no failure
-/// arms for an unclassifiable platform.
+/// Every platform-dependent fact below is a total function of these, with no
+/// failure arms for an unclassifiable platform, because `create` admits only
+/// combinations whose facts have been measured.
 ///
-/// Construct with `SimulatedUnixPlatform.linuxX64`, `macOsArm64`, or `create`
-/// for a specific release string.
+/// Construct with `SimulatedUnixPlatform.linuxX64`, `linuxArm64`, `macOsArm64`,
+/// or `create` for a specific release string.
 [<CustomEquality ; NoComparison>]
 type SimulatedUnixPlatform =
     private
         {
             Flavour : SimulatedUnixFlavour
+            Architecture : SimulatedUnixArchitecture
+            PageSize : SimulatedPageSize
             Release : string
         }
 
-    override this.ToString () : string = $"%O{this.Flavour} %s{this.Release}"
+    override this.ToString () : string =
+        $"%O{this.Flavour} %O{this.Architecture} %O{this.PageSize} %s{this.Release}"
 
     override this.Equals (other : obj) : bool =
         match other with
-        | :? SimulatedUnixPlatform as other -> this.Flavour = other.Flavour && this.Release = other.Release
+        | :? SimulatedUnixPlatform as other ->
+            this.Flavour = other.Flavour
+            && this.Architecture = other.Architecture
+            && this.PageSize = other.PageSize
+            && this.Release = other.Release
         | _ -> false
 
     override this.GetHashCode () : int =
-        System.HashCode.Combine (this.Flavour, this.Release)
+        System.HashCode.Combine (this.Flavour, this.Architecture, this.PageSize, this.Release)
 
 /// What `getcwd(3)` answers when the current directory has been *removed* — so
 /// there is no path to report — and how small a buffer can still change that
@@ -190,37 +212,92 @@ module SimulatedUnixPlatform =
         | SimulatedUnixReleaseError.NotPrintableAscii (index, character) ->
             $"release string contains non-printable-ASCII character U+%04X{int character} at index %d{index}; `utsname.release` is reported to the guest as single-byte characters, so only printable ASCII round-trips faithfully"
 
-    /// A platform of the given flavour reporting `release` from `uname -r`.
+    /// Why a combination is not a platform, for a message.
+    let describeError (error : SimulatedUnixPlatformError) : string =
+        match error with
+        | SimulatedUnixPlatformError.Release error -> describe error
+        | SimulatedUnixPlatformError.UnmeasuredKernel (flavour, architecture, pageSize) ->
+            $"no %O{flavour} kernel for %O{architecture} with %d{SimulatedPageSize.bytes pageSize}-byte pages has been measured, so the facts that follow from the architecture and the page size are unknown for it"
+
+    // The combinations whose architecture- and page-size-dependent facts have
+    // been measured, by
+    // docs/plans/2026-08-23-posix-kernel-extraction/architecture-facts-linux.c
+    // and architecture-facts-darwin.c on 2026-09-26:
+    //
+    //   Linux x86-64, 4 KiB: Debian's 6.12 kernel under QEMU (x86-64 has no
+    //     other base page size).
+    //   Linux arm64, 4 KiB: 6.18.5 under Apple's `container`. arm64 kernels are
+    //     also built for 16 and 64 KiB pages, which nothing here has measured.
+    //   Darwin arm64, 16 KiB: Darwin 27.0.0 on Apple silicon.
+    //
+    // Darwin x86-64 is not admitted: macOS 27 runs on no Intel machine, and the
+    // measuring machine has no Rosetta to run an x86-64 process under.
+    let private isMeasured
+        (flavour : SimulatedUnixFlavour)
+        (architecture : SimulatedUnixArchitecture)
+        (pageSize : SimulatedPageSize)
+        : bool
+        =
+        match flavour, architecture, pageSize with
+        | SimulatedUnixFlavour.Linux, SimulatedUnixArchitecture.X64, SimulatedPageSize.FourKiB
+        | SimulatedUnixFlavour.Linux, SimulatedUnixArchitecture.Arm64, SimulatedPageSize.FourKiB
+        | SimulatedUnixFlavour.Darwin, SimulatedUnixArchitecture.Arm64, SimulatedPageSize.SixteenKiB -> true
+        | _ -> false
+
+    /// A platform of the given flavour, built for `architecture` with pages of
+    /// `pageSize`, reporting `release` from `uname -r`.
     ///
-    /// Validated here rather than when the release is read, which is what makes
+    /// Validated here rather than when a fact is read, which is what makes
     /// every accessor below total: a value of this type is a platform some Unix
-    /// could actually be.
+    /// could actually be, and one whose facts are known. A combination nobody has
+    /// measured is refused rather than answered from a neighbouring one.
     let create
         (flavour : SimulatedUnixFlavour)
+        (architecture : SimulatedUnixArchitecture)
+        (pageSize : SimulatedPageSize)
         (release : string)
-        : Result<SimulatedUnixPlatform, SimulatedUnixReleaseError>
+        : Result<SimulatedUnixPlatform, SimulatedUnixPlatformError>
         =
         if System.String.IsNullOrEmpty release then
-            Error SimulatedUnixReleaseError.Empty
+            Error (SimulatedUnixPlatformError.Release SimulatedUnixReleaseError.Empty)
         elif String.length release > maxReleaseLength then
-            Error (SimulatedUnixReleaseError.TooLong (String.length release, maxReleaseLength))
+            Error (
+                SimulatedUnixPlatformError.Release (
+                    SimulatedUnixReleaseError.TooLong (String.length release, maxReleaseLength)
+                )
+            )
         else
 
         match release |> Seq.tryFindIndex (fun c -> c < ' ' || c > '~') with
-        | Some i -> Error (SimulatedUnixReleaseError.NotPrintableAscii (i, release.[i]))
+        | Some i ->
+            Error (SimulatedUnixPlatformError.Release (SimulatedUnixReleaseError.NotPrintableAscii (i, release.[i])))
         | None ->
-            Ok
-                {
-                    Flavour = flavour
-                    Release = release
-                }
 
-    let createOrFail (context : string) (flavour : SimulatedUnixFlavour) (release : string) : SimulatedUnixPlatform =
-        match create flavour release with
+        if not (isMeasured flavour architecture pageSize) then
+            Error (SimulatedUnixPlatformError.UnmeasuredKernel (flavour, architecture, pageSize))
+        else
+
+        Ok
+            {
+                Flavour = flavour
+                Architecture = architecture
+                PageSize = pageSize
+                Release = release
+            }
+
+    let createOrFail
+        (context : string)
+        (flavour : SimulatedUnixFlavour)
+        (architecture : SimulatedUnixArchitecture)
+        (pageSize : SimulatedPageSize)
+        (release : string)
+        : SimulatedUnixPlatform
+        =
+        match create flavour architecture pageSize release with
         | Ok platform -> platform
-        | Error error -> failwith $"%s{context}: %s{describe error}"
+        | Error error -> failwith $"%s{context}: %s{describeError error}"
 
-    /// 64-bit x86 Linux, at a kernel release a real machine was running (a
+    /// 64-bit x86 Linux with 4 KiB pages, at a kernel release a real machine was running (a
     /// GitHub Actions Ubuntu runner's): the release this reports and the
     /// behaviour derived from it below therefore describe one real machine
     /// rather than a plausible composite. `UnixSystem.defaultUnixPlatform`.
@@ -233,16 +310,43 @@ module SimulatedUnixPlatform =
     /// machines running this very kernel, like the user-address limit, is a
     /// client's configuration instead.
     let linuxX64 : SimulatedUnixPlatform =
-        createOrFail "SimulatedUnixPlatform.linuxX64" SimulatedUnixFlavour.Linux "6.17.0-1022-azure"
+        createOrFail
+            "SimulatedUnixPlatform.linuxX64"
+            SimulatedUnixFlavour.Linux
+            SimulatedUnixArchitecture.X64
+            SimulatedPageSize.FourKiB
+            "6.17.0-1022-azure"
 
-    /// 64-bit ARM macOS 27.0. The release is the *Darwin* kernel's, so
-    /// `27.0.0` rather than `27.0`; as for `linuxX64`, it names the kernel the
-    /// Darwin behaviour below was measured against.
+    /// 64-bit ARM Linux with 4 KiB pages, at the release of the kernel most of
+    /// this library's Linux behaviour was measured against (Apple's
+    /// `container`), for the same reason `linuxX64` names a real one.
+    let linuxArm64 : SimulatedUnixPlatform =
+        createOrFail
+            "SimulatedUnixPlatform.linuxArm64"
+            SimulatedUnixFlavour.Linux
+            SimulatedUnixArchitecture.Arm64
+            SimulatedPageSize.FourKiB
+            "6.18.5"
+
+    /// 64-bit ARM macOS 27.0, whose pages are 16 KiB. The release is the
+    /// *Darwin* kernel's, so `27.0.0` rather than `27.0`; as for `linuxX64`, it
+    /// names the kernel the Darwin behaviour below was measured against.
     let macOsArm64 : SimulatedUnixPlatform =
-        createOrFail "SimulatedUnixPlatform.macOsArm64" SimulatedUnixFlavour.Darwin "27.0.0"
+        createOrFail
+            "SimulatedUnixPlatform.macOsArm64"
+            SimulatedUnixFlavour.Darwin
+            SimulatedUnixArchitecture.Arm64
+            SimulatedPageSize.SixteenKiB
+            "27.0.0"
 
     /// Which Unix this platform is.
     let flavour (platform : SimulatedUnixPlatform) : SimulatedUnixFlavour = platform.Flavour
+
+    /// The instruction set this platform's processes run as.
+    let architecture (platform : SimulatedUnixPlatform) : SimulatedUnixArchitecture = platform.Architecture
+
+    /// The size of this platform's pages.
+    let pageSize (platform : SimulatedUnixPlatform) : SimulatedPageSize = platform.PageSize
 
     /// The `utsname.release` string this platform reports, i.e. exactly what
     /// `uname -r` would print. Part of every replay's input: changing a
@@ -261,14 +365,14 @@ module SimulatedUnixPlatform =
         match box platform with
         | null ->
             failwith
-                $"%s{context}: the platform is null, which it can only be if it came from `Unchecked.defaultof` or C# `default`; construct one with SimulatedUnixPlatform.create, or use the linuxX64 / macOsArm64 presets."
+                $"%s{context}: the platform is null, which it can only be if it came from `Unchecked.defaultof` or C# `default`; construct one with SimulatedUnixPlatform.create, or use the linuxX64 / linuxArm64 / macOsArm64 presets."
         | _ ->
 
-        match create platform.Flavour platform.Release with
+        match create platform.Flavour platform.Architecture platform.PageSize platform.Release with
         | Ok _ -> platform
         | Error error ->
             failwith
-                $"%s{context}: %s{describe error}. A SimulatedUnixPlatform that fails its own invariant can only have come from `Unchecked.defaultof` or C# `default`; construct one with SimulatedUnixPlatform.create instead."
+                $"%s{context}: %s{describeError error}. A SimulatedUnixPlatform that fails its own invariant can only have come from `Unchecked.defaultof` or C# `default`; construct one with SimulatedUnixPlatform.create instead."
 
     /// Whose `<errno.h>` numbering this platform reports, for the errors where
     /// the two Unixes disagree.
@@ -352,10 +456,8 @@ module SimulatedUnixPlatform =
     ///
     /// Measured, not read from a feature test: macOS 26.6's libc exports no such
     /// symbol, so a program that called it would not link, and there is no
-    /// answer for a caller to compare against. Linux 6.18.5 provides it. A
-    /// caller that has no answer of its own to give for the absent case wants
-    /// <c>UnixDescriptor.posixFadvise</c>, which reports the absence rather than
-    /// leaving it to be guessed.
+    /// answer for a caller to compare against. Linux 6.18.5 provides it.
+    /// <c>UnixDescriptor.posixFadvise</c> refuses on a platform without it.
     ///
     /// Darwin's nearest equivalent is the <c>F_RDADVISE</c> fcntl, which takes a
     /// different argument shape and is not modelled: the two are not
@@ -528,7 +630,7 @@ module SimulatedUnixPlatform =
     /// bytes never looks at the buffer: measured, `read(f, (void*)-1, 5)` on a
     /// descriptor at end-of-file is EFAULT on Linux and 0 on macOS.
     ///
-    /// *Where* it screens is the machine's `UserAddressLimit`, not a property
+    /// *Where* it screens is the machine's `UserBufferCheck`, not a property
     /// of the flavour: both architectures compare the range end against
     /// `TASK_SIZE_MAX` (`valid_user_address` against `USER_PTR_MAX` in
     /// arch/x86/include/asm/uaccess_64.h, and the
