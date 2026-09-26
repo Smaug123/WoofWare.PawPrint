@@ -238,18 +238,15 @@ module Intrinsics =
         match popManagedByrefArgument operation byrefArg with
         | ManagedPointerSource.Null -> nullLocation site state
         | byrefSrc ->
-            match
-                IlMachineState.readManagedByrefForUse
+            // Only moved: the old value is returned, never compared or computed with, so an
+            // undefined one is returned undefined.
+            let currentValue =
+                IlMachineState.readManagedByref
                     site.BaseClassTypes
                     state
                     (ManagedPointerSource.requireAddressed byrefSrc)
-            with
-            | Error u ->
-                UndefinedValueObservation.ReadByRuntime site.Method "the location it operates on" u
-                |> IntrinsicResult.UndefinedValueObserved
-            | Ok currentValue ->
 
-            let valueCli = EvalStackValue.toCliTypeCoerced currentValue value
+            let valueCli = EvalStackValue.toCliTypeCoerced (CliType.Shape currentValue) value
 
             // The intrinsic bypasses normal method-frame construction, so coerce the
             // eval-stack value to the signedness/width of the overload before writing.
@@ -1443,32 +1440,32 @@ module Intrinsics =
 
                     let valueSrc = toNativeIntSource value
 
-                    match
-                        IlMachineState.readManagedByrefForUse
+                    // Only moved: the old value is returned, never compared or computed with, so an
+                    // undefined one is returned undefined.
+                    let currentValue =
+                        IlMachineState.readManagedByref
                             baseClassTypes
                             state
                             (ManagedPointerSource.requireAddressed byrefSrc)
-                    with
-                    | Error u ->
-                        UndefinedValueObservation.ReadByRuntime methodToCall "the location it operates on" u
-                        |> IntrinsicResult.UndefinedValueObserved
-                    | Ok currentValue ->
 
                     // `ref IntPtr` / `ref UIntPtr` derefs to a wrapper struct. Route the read/write through
                     // the eval-stack flatten/rewrap boundary: `ofCliType` peels the primitive-like
                     // wrapper to `NativeInt`, and `toCliTypeCoerced` reconstructs the wrapper shape
                     // on write. The primitive-like registry is the single source of truth for shape.
-                    let currentSrc =
+                    let current =
                         match EvalStackValue.ofCliType currentValue with
-                        | EvalStackValue.NativeInt src -> src
-                        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> NativeIntSource.Verbatim i
-                        | EvalStackValue.Int32 (Int32Source.Verbatim i) -> NativeIntSource.Verbatim (int64<int> i)
+                        | EvalStackValue.NativeInt _
+                        | EvalStackValue.Undefined _ as current -> current
+                        | EvalStackValue.Int64 (Int64Source.Verbatim i) ->
+                            EvalStackValue.NativeInt (NativeIntSource.Verbatim i)
+                        | EvalStackValue.Int32 (Int32Source.Verbatim i) ->
+                            EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<int> i))
                         | other ->
                             failwith
                                 $"Interlocked.Exchange(ref native-int,...): expected NativeInt at byref target, got %O{other}"
 
                     let newValue =
-                        EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.NativeInt valueSrc)
+                        EvalStackValue.toCliTypeCoerced (CliType.Shape currentValue) (EvalStackValue.NativeInt valueSrc)
 
                     let state =
                         IlMachineState.writeManagedByrefWithBase
@@ -1478,7 +1475,7 @@ module Intrinsics =
                             newValue
 
                     state
-                    |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt currentSrc) currentThread
+                    |> IlMachineState.pushToEvalStack' current currentThread
                     |> advanceCaller
                     |> IntrinsicResult.Completed
             | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes locationPrimitive)
@@ -1503,18 +1500,14 @@ module Intrinsics =
                 match popManagedByrefArgument "Interlocked.Exchange<T>" byrefArg with
                 | ManagedPointerSource.Null -> nullLocation site state
                 | byrefSrc ->
-                    match
-                        IlMachineState.readManagedByrefForUse
+                    // Only moved: the old reference is returned, never dereferenced or compared.
+                    let currentValue =
+                        IlMachineState.readManagedByref
                             baseClassTypes
                             state
                             (ManagedPointerSource.requireAddressed byrefSrc)
-                    with
-                    | Error u ->
-                        UndefinedValueObservation.ReadByRuntime methodToCall "the location it operates on" u
-                        |> IntrinsicResult.UndefinedValueObserved
-                    | Ok currentValue ->
 
-                    let valueCli = EvalStackValue.toCliTypeCoerced currentValue value
+                    let valueCli = EvalStackValue.toCliTypeCoerced (CliType.Shape currentValue) value
 
                     let state =
                         IlMachineState.writeManagedByrefWithBase

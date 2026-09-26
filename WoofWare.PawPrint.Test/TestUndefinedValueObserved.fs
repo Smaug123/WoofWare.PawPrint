@@ -348,6 +348,40 @@ unsafe class Program
             )
 
     [<Test>]
+    let ``Interlocked.Exchange returns an undefined old value, which is observed where it is used`` () : unit =
+        let source =
+            """
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    static int Main(string[] args)
+    {
+        int* numbers = stackalloc int[1];
+        int location = numbers[0];
+        // The exchange only moves the old value; the comparison uses it.
+        int old = Interlocked.Exchange(ref location, 1);
+        return old == 7 ? 1 : 0;
+    }
+}
+"""
+
+        run
+            "UndefinedInterlockedExchangeResult.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.Int32
+                stackOrigins observation.Value |> shouldEqual [ 0 ; 1 ; 2 ; 3 ]
+
+                match observation.Use with
+                | UndefinedValueUse.Operand (method, _, _, _) -> method.Name |> shouldEqual "Main"
+                | other -> failwith $"expected Main's comparison to use the old value, got %O{other}"
+            )
+
+    [<Test>]
     let ``Interlocked.CompareExchange on a location holding an undefined value ends the run at the compare`` () : unit =
         let source =
             """
