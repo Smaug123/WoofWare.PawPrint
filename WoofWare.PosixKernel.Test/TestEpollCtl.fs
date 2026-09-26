@@ -12,8 +12,9 @@ open WoofWare.PosixKernel
 /// `UnixPoll.epollCtl`, held to what `epoll_ctl(2)` answered on Linux 6.18.5.
 ///
 /// The measurements are `docs/plans/2026-08-23-posix-kernel-extraction/epoll-ctl.c`'s,
-/// taken on 2026-09-26 under aarch64 and x86-64 userlands, which printed
-/// identical rows. Its LADDER section is checked in verbatim as
+/// taken on 2026-09-26 on an aarch64 kernel, from an aarch64 userland and from
+/// an x86-64 one under Rosetta, which printed identical rows. No x86-64 kernel
+/// was measured. Its LADDER section is checked in verbatim as
 /// `epollCtl/linux-ladder.txt`; its REPORT and EXCL sections are stated below
 /// as the levels and the rule they measured.
 [<TestFixture>]

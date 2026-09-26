@@ -27,16 +27,21 @@
 //   WAKEUP  whether EPOLLWAKEUP survives into the stored mask, read back
 //           through /proc/self/fdinfo, beside this process's CapEff.
 //
-// Build and run, from this directory (both architectures, since
-// `struct epoll_event` is packed on x86-64 only):
+// Build and run, from this directory. The second command runs an x86-64
+// userland under Rosetta, which translates its syscalls to the same aarch64
+// kernel (repacking the 12-byte x86-64 `struct epoll_event` on the way): it
+// checks the x86-64 ABI's path to the answers, not an x86-64 kernel.
 //   container run --rm -v "$PWD:/probe" gcc:14 sh -c
 //     'gcc -Wall -O1 -o /tmp/ec /probe/epoll-ctl.c && /tmp/ec'
 //   container run --rm --arch amd64 -v "$PWD:/probe" gcc:14 sh -c
 //     'gcc -Wall -O1 -o /tmp/ec /probe/epoll-ctl.c && /tmp/ec'
 //
-// Measured 2026-09-26 on Linux 6.18.5 (the `container` VM) under both
-// aarch64 and x86-64 (Rosetta) userlands; the results are summarised beside
-// `UnixPoll.epollCtl` and in its tests.
+// Measured 2026-09-26 on Linux 6.18.5 aarch64 (the `container` VM), from an
+// aarch64 userland and from an x86-64 one under Rosetta, which printed
+// identical rows. No x86-64 kernel was measured; nothing epoll_ctl decides
+// here reads the architecture, but that is the source's claim, not a
+// measurement. The results are summarised beside `UnixPoll.epollCtl` and in
+// its tests.
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <errno.h>
