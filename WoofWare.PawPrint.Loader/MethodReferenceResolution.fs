@@ -35,6 +35,12 @@ type MethodReferenceTarget =
     /// <c>MissingMethodException</c>.
     | Missing
 
+    /// The answer turns on how a type variable of the context using the reference is instantiated,
+    /// which a reading of the definitions alone cannot know: the parent is itself a type variable,
+    /// or it is a vector of one and the reference could be a constructor for a deeper nesting of
+    /// vectors than the spelling shows.
+    | DependsOnInstantiation
+
 /// <summary>
 /// Which method a MemberRef names, answered at the level of generic definitions: no type is
 /// instantiated, and a reference to a member of <c>List&lt;int&gt;</c> resolves to the method of
@@ -63,9 +69,10 @@ module MethodReferenceResolution =
         (assemblies : LoadedAssemblies)
         : LoadedAssemblies * ResolvedTypeIdentity
         =
-        match spelling with
+        // A custom modifier annotates a signature; the type it annotates is the one being named.
+        match TypeDefn.stripCustomModifiers spelling with
         | TypeDefn.GenericInstantiation (root, _) ->
-            match root with
+            match TypeDefn.stripCustomModifiers root with
             | TypeDefn.FromDefinition (identity, _) -> assemblies, identity
             | TypeDefn.FromReference (typeRef, _) ->
                 match
@@ -108,17 +115,28 @@ module MethodReferenceResolution =
     /// array's rank, and its constructors. A multidimensional array has one taking lengths and one
     /// taking lower bounds and lengths; a vector has one per level of vector nesting in its element
     /// type, each allocating that many levels.
-    let private arrayMethods (arrayType : TypeDefn) : (ArrayAccessor * TypeMethodSignature<TypeDefn>) list =
-        let element, rank, constructorArities =
+    ///
+    /// The flag is whether a vector may have more constructors than these: its innermost element,
+    /// past every level of vector nesting, is a type variable, which an instantiation could make a
+    /// vector in turn.
+    let private arrayMethods (arrayType : TypeDefn) : (ArrayAccessor * TypeMethodSignature<TypeDefn>) list * bool =
+        let element, rank, constructorArities, openEnded =
             match arrayType with
-            | TypeDefn.Array (element, rank) -> element, rank, [ rank ; 2 * rank ]
+            | TypeDefn.Array (element, rank) -> element, rank, [ rank ; 2 * rank ], false
             | TypeDefn.OneDimensionalArrayLowerBoundZero element ->
-                let rec nesting (ty : TypeDefn) : int =
-                    match ty with
-                    | TypeDefn.OneDimensionalArrayLowerBoundZero inner -> 1 + nesting inner
-                    | _ -> 0
+                // `ptr.GetInternalCorElementType() == ELEMENT_TYPE_SZARRAY` counts the levels of a
+                // type handle, which has no custom modifiers to stop at.
+                let rec nesting (ty : TypeDefn) : int * bool =
+                    match TypeDefn.stripCustomModifiers ty with
+                    | TypeDefn.OneDimensionalArrayLowerBoundZero inner ->
+                        let depth, openEnded = nesting inner
+                        1 + depth, openEnded
+                    | TypeDefn.GenericTypeParameter _
+                    | TypeDefn.GenericMethodParameter _ -> 0, true
+                    | _ -> 0, false
 
-                element, 1, [ 1 .. 1 + nesting element ]
+                let depth, openEnded = nesting element
+                element, 1, [ 1 .. 1 + depth ], openEnded
             | other -> failwith $"not an array type: %O{other}"
 
         let instance (ret : MethodReturnType<TypeDefn>) (parameters : TypeDefn list) : TypeMethodSignature<TypeDefn> =
@@ -146,7 +164,8 @@ module MethodReferenceResolution =
             ArrayAccessor.Address, instance (MethodReturnType.Returns (TypeDefn.Byref element)) (indices rank)
         ]
         @ (constructorArities
-           |> List.map (fun arity -> ArrayAccessor.Constructor arity, instance MethodReturnType.Void (indices arity)))
+           |> List.map (fun arity -> ArrayAccessor.Constructor arity, instance MethodReturnType.Void (indices arity))),
+        openEnded
 
     /// <summary>
     /// `MemberLoader::GetDescFromMemberRef` for a method-shaped MemberRef of `referencingAssembly`,
@@ -368,8 +387,10 @@ module MethodReferenceResolution =
                 | ArrayAccessor.Address -> "Address"
                 | ArrayAccessor.Constructor _ -> ".ctor"
 
+            let accessors, openEnded = arrayMethods arrayType
+
             let accessor =
-                arrayMethods arrayType
+                accessors
                 |> List.filter (fun (accessor, _) -> accessorName accessor = name)
                 |> List.fold
                     (fun (ctx, found) (accessor, candidate) ->
@@ -392,8 +413,20 @@ module MethodReferenceResolution =
                     )
                     (ctx, None)
 
+            // A constructor for more levels of nesting than the spelling shows, which only an
+            // instantiation making the innermost element a vector would supply.
+            let couldBeDeeperConstructor =
+                openEnded
+                && name = ".ctor"
+                && signature.Header.Get.IsInstance
+                && signature.GenericParameterCount = 0
+                && signature.ReturnType = MethodReturnType.Void
+                && signature.ParameterTypes
+                   |> List.forall (fun ty -> ty = TypeDefn.PrimitiveType PrimitiveType.Int32)
+
             match accessor with
             | ctx, Some found -> ctx, found
+            | ctx, None when couldBeDeeperConstructor -> ctx, MethodReferenceTarget.DependsOnInstantiation
             | ctx, None ->
                 let systemArray = searchedDefinition ctx.BaseTypes.Array.Identity 0
                 findMethod ctx systemArray.Context systemArray true
@@ -431,10 +464,14 @@ module MethodReferenceResolution =
 
             searchFrom (withAssemblies ctx assemblies) identity
         | MetadataToken.TypeSpecification handle ->
-            match referencingAssembly.TypeSpecs.[handle].Signature with
+            let spelling = referencingAssembly.TypeSpecs.[handle].Signature
+
+            match TypeDefn.stripCustomModifiers spelling with
             | TypeDefn.OneDimensionalArrayLowerBoundZero _
             | TypeDefn.Array _ as arrayType -> searchArray ctx arrayType
-            | spelling ->
+            | TypeDefn.GenericTypeParameter _
+            | TypeDefn.GenericMethodParameter _ -> ctx, MethodReferenceTarget.DependsOnInstantiation
+            | _ ->
                 let assemblies, identity =
                     identityOfSpelling
                         loggerFactory

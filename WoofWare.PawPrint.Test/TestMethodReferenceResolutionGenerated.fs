@@ -33,6 +33,10 @@ module TestMethodReferenceResolutionGenerated =
         | String
         /// Only as a primitive parent: the generator never puts it in a signature.
         | Object
+        /// `!!i` of the method whose IL uses the reference; hand-written cases only.
+        | MethodVar of int
+        /// `modopt(System.Runtime.CompilerServices.IsConst)` on a type; hand-written cases only.
+        | Modified of Ty
         /// `!i` of the type the signature belongs to.
         | Var of int
         | ArrayOf of Ty
@@ -89,9 +93,10 @@ module TestMethodReferenceResolutionGenerated =
         /// A method named on `int32[,]`: one the runtime supplies, one `System.Array` or `Object`
         /// declares, or neither.
         | OnArray of name : string * parameters : Ty list * ret : Ty option * returnsByref : bool
-        /// A MemberRef whose parent is a TypeSpec spelling a primitive (`ELEMENT_TYPE_I4`,
-        /// `ELEMENT_TYPE_STRING`, `ELEMENT_TYPE_OBJECT`), which CoreCLR reads as the CoreLib type.
-        | OnPrimitive of parent : Ty * name : string * parameters : Ty list * ret : Ty option
+        /// A MemberRef whose parent is a TypeSpec spelling this type: a primitive (`ELEMENT_TYPE_I4`,
+        /// which CoreCLR reads as the CoreLib type), a vector, a type variable, or any of those under
+        /// a custom modifier.
+        | OnTypeSpec of parent : Ty * name : string * parameters : Ty list * ret : Ty option
 
     type World =
         {
@@ -251,7 +256,7 @@ module TestMethodReferenceResolutionGenerated =
                             List.init (random.Next 2) (fun _ -> pick random [ Ty.Int32 ; Ty.String ])
 
                         let ret = pick random [ None ; Some Ty.Int32 ; Some Ty.String ; Some Ty.Object ]
-                        GeneratedReference.OnPrimitive (parent, name, parameters, ret)
+                        GeneratedReference.OnTypeSpec (parent, name, parameters, ret)
                     | 1 ->
                         let varargs =
                             types
@@ -404,6 +409,14 @@ module TestMethodReferenceResolutionGenerated =
         let objectRef = corelibType "Object"
         let valueTypeRef = corelibType "ValueType"
 
+        let isConstRef : EntityHandle =
+            metadata.AddTypeReference (
+                (AssemblyReferenceHandle.op_Implicit corelibRef : EntityHandle),
+                metadata.GetOrAddString "System.Runtime.CompilerServices",
+                metadata.GetOrAddString "IsConst"
+            )
+            |> TypeReferenceHandle.op_Implicit
+
         // Row 1 is `<Module>`; world type i is row i + 2.
         let typeHandle (index : int) : EntityHandle =
             MetadataTokens.TypeDefinitionHandle (index + 2)
@@ -417,6 +430,12 @@ module TestMethodReferenceResolutionGenerated =
             | Ty.String -> encoder.String ()
             | Ty.Object -> encoder.Object ()
             | Ty.Var i -> encoder.GenericTypeParameter i
+            | Ty.MethodVar i -> encoder.GenericMethodTypeParameter i
+            | Ty.Modified inner ->
+                encoder.CustomModifiers().AddModifier (isConstRef, true)
+                |> ignore<CustomModifiersEncoder>
+
+                encode encoder inner
             | Ty.ArrayOf element -> encode (encoder.SZArray ()) element
             | Ty.World (index, []) -> encoder.Type (typeHandle index, isValueType index)
             | Ty.World (index, arguments) ->
@@ -603,7 +622,7 @@ module TestMethodReferenceResolutionGenerated =
                         metadata.GetOrAddString "V",
                         signature SignatureCallingConvention.VarArgs true fixedParameters extra None
                     )
-                | GeneratedReference.OnPrimitive (parent, name, parameters, ret) ->
+                | GeneratedReference.OnTypeSpec (parent, name, parameters, ret) ->
                     metadata.AddMemberReference (
                         typeSpec parent,
                         metadata.GetOrAddString name,
@@ -748,15 +767,49 @@ module TestMethodReferenceResolutionGenerated =
                 Types = []
                 References =
                     [
-                        GeneratedReference.OnPrimitive (Ty.Int32, "ToString", [], Some Ty.String)
-                        GeneratedReference.OnPrimitive (Ty.Int32, "CompareTo", [ Ty.Int32 ], Some Ty.Int32)
-                        GeneratedReference.OnPrimitive (Ty.Object, "ToString", [], Some Ty.String)
-                        GeneratedReference.OnPrimitive (Ty.Object, "GetHashCode", [], Some Ty.Int32)
-                        GeneratedReference.OnPrimitive (Ty.String, "get_Length", [], Some Ty.Int32)
+                        GeneratedReference.OnTypeSpec (Ty.Int32, "ToString", [], Some Ty.String)
+                        GeneratedReference.OnTypeSpec (Ty.Int32, "CompareTo", [ Ty.Int32 ], Some Ty.Int32)
+                        GeneratedReference.OnTypeSpec (Ty.Object, "ToString", [], Some Ty.String)
+                        GeneratedReference.OnTypeSpec (Ty.Object, "GetHashCode", [], Some Ty.Int32)
+                        GeneratedReference.OnTypeSpec (Ty.String, "get_Length", [], Some Ty.Int32)
                         // Object's non-virtual methods are found from a class and not from a
                         // struct, whose search stops at its own method table.
-                        GeneratedReference.OnPrimitive (Ty.Int32, "MemberwiseClone", [], Some Ty.Object)
-                        GeneratedReference.OnPrimitive (Ty.String, "MemberwiseClone", [], Some Ty.Object)
+                        GeneratedReference.OnTypeSpec (Ty.Int32, "MemberwiseClone", [], Some Ty.Object)
+                        GeneratedReference.OnTypeSpec (Ty.String, "MemberwiseClone", [], Some Ty.Object)
+                    ]
+            }
+            // A custom modifier annotates a signature without changing the type it describes, so a
+            // parent under one is the parent without it.
+            "parents under custom modifiers",
+            {
+                Types = []
+                References =
+                    [
+                        GeneratedReference.OnTypeSpec (Ty.Modified Ty.Object, "ToString", [], Some Ty.String)
+                        GeneratedReference.OnTypeSpec (
+                            Ty.ArrayOf (Ty.Modified (Ty.ArrayOf Ty.Int32)),
+                            ".ctor",
+                            [ Ty.Int32 ; Ty.Int32 ],
+                            None
+                        )
+                        GeneratedReference.OnTypeSpec (
+                            Ty.Modified (Ty.ArrayOf Ty.Int32),
+                            "Get",
+                            [ Ty.Int32 ],
+                            Some Ty.Int32
+                        )
+                        GeneratedReference.OnTypeSpec (
+                            Ty.ArrayOf (Ty.ArrayOf Ty.Int32),
+                            ".ctor",
+                            [ Ty.Int32 ; Ty.Int32 ],
+                            None
+                        )
+                        GeneratedReference.OnTypeSpec (
+                            Ty.ArrayOf (Ty.ArrayOf Ty.Int32),
+                            ".ctor",
+                            [ Ty.Int32 ; Ty.Int32 ; Ty.Int32 ],
+                            None
+                        )
                     ]
             }
             "what structs and interfaces inherit",
@@ -940,3 +993,130 @@ module TestMethodReferenceResolutionGenerated =
             match outcomes.TryGetValue outcome with
             | true, n -> n |> shouldBeGreaterThan 20
             | false, _ -> failwith $"no generated reference came out as %s{outcome}"
+
+    /// References whose target no reading of the spelling alone can decide, because a type variable
+    /// of the context that uses them stands where the answer is: a vector of `!!0` has one
+    /// constructor per level of vector nesting in `!!0`, and `!0::ToString` is whichever `ToString`
+    /// the instantiation has. Each is asked of the runtime under two instantiations. Where the
+    /// resolver says the answer depends on the instantiation, the two must differ; where it answers
+    /// outright, both must be that answer.
+    [<Test>]
+    let ``a reference whose target depends on the instantiation says so`` () : unit =
+        let frameworkDir = FrameworkUnderTest.sharedFrameworkDirectory ()
+        let runtimeDirs = FrameworkUnderTest.runtimeDirs ()
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let corelib =
+            Assembly.readFile loggerFactory (Path.Combine (frameworkDir, "System.Private.CoreLib.dll"))
+
+        let baseClassTypes = Corelib.getBaseTypes corelib
+
+        let cases : (GeneratedReference * Type * Type * bool) list =
+            [
+                // (reference, first instantiation, second, whether the resolver should defer)
+                GeneratedReference.OnTypeSpec (Ty.ArrayOf (Ty.MethodVar 0), ".ctor", [ Ty.Int32 ; Ty.Int32 ], None),
+                typeof<int>,
+                typeof<int[]>,
+                true
+                GeneratedReference.OnTypeSpec (Ty.ArrayOf (Ty.MethodVar 0), ".ctor", [ Ty.Int32 ], None),
+                typeof<int>,
+                typeof<int[]>,
+                false
+                GeneratedReference.OnTypeSpec (Ty.ArrayOf (Ty.MethodVar 0), "Get", [ Ty.Int32 ], Some (Ty.MethodVar 0)),
+                typeof<int>,
+                typeof<string>,
+                false
+                GeneratedReference.OnTypeSpec (Ty.ArrayOf (Ty.MethodVar 0), ".ctor", [ Ty.String ], None),
+                typeof<int>,
+                typeof<int[]>,
+                false
+                GeneratedReference.OnTypeSpec (Ty.MethodVar 0, "ToString", [], Some Ty.String),
+                typeof<int>,
+                typeof<string>,
+                true
+            ]
+
+        let world =
+            {
+                Types = []
+                References = cases |> List.map (fun (reference, _, _, _) -> reference)
+            }
+
+        let assemblyName = "InstantiationDependentWorld"
+        let image, handles = emit 0 assemblyName world
+
+        let analysed =
+            Assembly.read loggerFactory (Some $"%s{assemblyName}.dll") (new MemoryStream (image))
+
+        let loaded = LoadedAssemblies.ofAssemblies [ corelib ; analysed ]
+
+        let mutable ctx : TypeConcretization.ConcretizationContext<DumpedAssembly> =
+            {
+                ConcreteTypes = Corelib.concretizeAll loaded baseClassTypes AllConcreteTypes.Empty
+                LoadedAssemblies = loaded
+                BaseTypes = baseClassTypes
+            }
+
+        do
+            // Each question in a load context of its own: CoreCLR caches a MemberRef's resolution in
+            // its module whenever the method found is not generic (`StoreMemberRef`), so a second
+            // question in the same module is answered from the first instantiation's lookup.
+            let under (token : int) (argument : Type) : Oracle =
+                let fresh =
+                    AssemblyLoadContext ($"%s{assemblyName}-%s{argument.Name}", isCollectible = true)
+
+                try
+                    let reflected = fresh.LoadFromStream (new MemoryStream (image))
+
+                    try
+                        Oracle.Method (reflected.ManifestModule.ResolveMethod (token, [| argument |], [| argument |]))
+                    with :? MissingMethodException ->
+                        Oracle.Missing
+                finally
+                    fresh.Unload ()
+
+            let describeOracle (oracle : Oracle) : string =
+                match oracle with
+                | Oracle.Method mb -> $"%s{mb.DeclaringType.FullName}::%s{mb.Name}/%d{mb.GetParameters().Length}"
+                | Oracle.Missing -> "missing"
+                | Oracle.Refused e -> $"refused: %s{e.Message}"
+
+            let agrees (oracle : Oracle) (ours : MethodReferenceTarget) : bool =
+                match oracle, ours with
+                | Oracle.Missing, MethodReferenceTarget.Missing -> true
+                | Oracle.Method mb, MethodReferenceTarget.ArrayMethod (_, accessor) ->
+                    TestMethodReferenceResolution.arrayAccessorIs accessor mb
+                | Oracle.Method mb, MethodReferenceTarget.Defined (declaringAssembly, method) ->
+                    mb.Module.Assembly.GetName().Name = declaringAssembly.Name.Name
+                    && mb.MetadataToken = MetadataTokens.GetToken (
+                        MethodDefinitionHandle.op_Implicit method : EntityHandle
+                    )
+                | _ -> false
+
+            for (reference, first, second, shouldDefer), handle in List.zip cases handles do
+                let token =
+                    MetadataTokens.GetToken (MemberReferenceHandle.op_Implicit handle : EntityHandle)
+
+                let firstAnswer = under token first
+                let secondAnswer = under token second
+
+                let ctx', ours =
+                    MethodReferenceResolution.resolve
+                        loggerFactory
+                        runtimeDirs
+                        ctx
+                        (ctx.LoadedAssemblies.ByDefinitionName analysed.DefinitionFullName)
+                        handle
+
+                ctx <- ctx'
+
+                let describe () =
+                    $"%A{reference}: resolver %A{ours}; runtime %s{describeOracle firstAnswer} under %s{first.Name}, %s{describeOracle secondAnswer} under %s{second.Name}"
+
+                match ours with
+                | MethodReferenceTarget.DependsOnInstantiation ->
+                    if not shouldDefer || describeOracle firstAnswer = describeOracle secondAnswer then
+                        failwith (describe ())
+                | ours ->
+                    if shouldDefer || not (agrees firstAnswer ours) || not (agrees secondAnswer ours) then
+                        failwith (describe ())
