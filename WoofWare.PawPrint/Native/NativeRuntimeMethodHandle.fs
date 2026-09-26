@@ -614,73 +614,6 @@ module NativeRuntimeMethodHandle =
             // TypeVarTypeDesc.
             StubDeclaringType.TypeDesc
 
-    /// Resolve a `RuntimeMethodHandleInternal` argument to the `MethodHandle` it denotes.
-    let private resolveMethodHandleFromArg
-        (operation : string)
-        (state : IlMachineState)
-        (arg : CliType)
-        : MethodHandle
-        =
-        // CoreCLR's RuntimeMethodHandle FCalls dereference the MethodDesc* directly and
-        // assert non-null; PawPrint's existing callers never yield a null handle, so we
-        // surface a contract violation rather than silently producing a default value.
-        let methodHandleId =
-            NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation arg
-            |> Option.defaultWith (fun () -> failwith $"%s{operation}: null RuntimeMethodHandleInternal")
-
-        MethodHandleRegistry.resolveMethodFromId methodHandleId state.MethodHandles
-        |> Option.defaultWith (fun () ->
-            failwith $"%s{operation}: registry id %d{methodHandleId} did not resolve to a known MethodHandle"
-        )
-
-    /// The declaring type of a metadata method handle, narrowed to a closed instantiation.
-    ///
-    /// For consumers that can only work under a concrete instantiation. An open generic type
-    /// definition, or an open construction over one's variables, is refused rather than
-    /// approximated: binding an invocation under `G&lt;&gt;` needs a formal type context — the
-    /// definition's own type variables — and `ConcreteTypeHandle` cannot express one. Consumers that need only the *layout* of a
-    /// definition should ask `VirtualSlotLayout.slotTableOfDefinition`, and those that need the
-    /// types a definition's signature *reflects as* should ask
-    /// `ReflectedTypeTarget.reflectedTypeTarget`; both carry a formal context of their own.
-    let requireClosedDeclaringType (operation : string) (identity : MetadataMethodIdentity) : ConcreteTypeHandle =
-        match identity.GetDeclaringType () with
-        | RuntimeTypeHandleTarget.Closed handle -> handle
-        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition declaringIdentity ->
-            failwith
-                $"TODO: %s{operation} on a method declared by open generic type definition %O{declaringIdentity}; this needs the definition's own type variables as a substitution context, which ConcreteTypeHandle cannot express -- reflection over such a definition names them with RuntimeTypeHandleTarget.GenericParameter instead, which no runtime type can stand in for here"
-        | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
-            failwith
-                $"TODO: %s{operation} on a method declared by %O{openConstructed}; at least one of its arguments is a type variable, which ConcreteTypeHandle cannot express as a substitution context"
-        | other ->
-            // `MethodHandleRegistry` admits only `Closed`, `OpenGenericTypeDefinition` and
-            // `OpenConstructed` when minting, so any other shape here means a handle was built
-            // outside that chokepoint.
-            failwith
-                $"%s{operation}: declaring type %O{other} cannot declare a metadata-backed method; MethodHandleRegistry refuses to mint such a handle, so this identity did not come from it"
-
-    /// The metadata `MethodInfo` the given identity's MethodDef token names.
-    let methodInfoOfMetadataIdentity
-        (operation : string)
-        (state : IlMachineState)
-        (identity : MetadataMethodIdentity)
-        : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
-        =
-        let assemblyFullName = identity.GetAssemblyFullName ()
-
-        let assembly =
-            state.LoadedAssembly assemblyFullName
-            |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
-
-        let methodDefHandle = identity.GetMethodDefinitionHandle().Get
-
-        let mutable methodInfo =
-            Unchecked.defaultof<MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>>
-
-        if not (assembly.Methods.TryGetValue (methodDefHandle, &methodInfo)) then
-            failwith $"%s{operation}: MethodDef %O{methodDefHandle} not found in assembly %s{assemblyFullName}"
-
-        methodInfo
-
     /// Resolve a `RuntimeMethodHandleInternal` argument to the metadata identity it denotes.
     /// Every native that reads a MethodDef token, a declaring assembly, or a method instantiation
     /// needs one of these, and none of them has an answer for a no-metadata (`DynamicMethod`)
@@ -697,7 +630,7 @@ module NativeRuntimeMethodHandle =
         (arg : CliType)
         : MetadataMethodIdentity
         =
-        match resolveMethodHandleFromArg operation state arg with
+        match MethodHandleResolution.resolveMethodHandleFromArg operation state arg with
         | MethodHandle.FromMetadata identity -> identity
         | MethodHandle.FromDynamic dynamicHandle ->
             let name =
@@ -708,63 +641,6 @@ module NativeRuntimeMethodHandle =
             failwith
                 $"TODO: %s{operation} was given %O{dynamicHandle} (%s{name}), a Reflection.Emit method with no MethodDef token to read; PawPrint mints these in ModuleHandle_GetDynamicMethod but cannot yet answer metadata queries about them"
 
-    /// The method a metadata handle names, concretized under its declaring type's instantiation and
-    /// the handle's own method instantiation, as a frame for it would be pushed. Returns the
-    /// declaring type alongside.
-    ///
-    /// Refuses a handle whose declaring type is not closed (see `requireClosedDeclaringType`), and one
-    /// on a generic method that binds none of its type arguments; a caller for which CoreCLR has a
-    /// defined answer on such a handle must give it before asking for this.
-    let concretizeClosedMetadataIdentity
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (operation : string)
-        (identity : MetadataMethodIdentity)
-        (state : IlMachineState)
-        : IlMachineState * MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> * ConcreteTypeHandle
-        =
-        let methodInfo = methodInfoOfMetadataIdentity operation state identity
-
-        let declaringTypeHandle = requireClosedDeclaringType operation identity
-
-        let typeGenerics =
-            match declaringTypeHandle with
-            | ConcreteTypeHandle.Concrete _ ->
-                match AllConcreteTypes.lookup declaringTypeHandle state.ConcreteTypes with
-                | Some declaringType -> declaringType.Generics
-                | None ->
-                    failwith
-                        $"%s{operation}: declaring type handle %O{declaringTypeHandle} was not concretized, so the target method cannot be resolved"
-            | ConcreteTypeHandle.Byref _
-            | ConcreteTypeHandle.Pointer _
-            | ConcreteTypeHandle.FunctionPointer _
-            | ConcreteTypeHandle.OneDimArrayZero _
-            | ConcreteTypeHandle.Array _ ->
-                // The runtime-generated array methods (Get/Set/Address/.ctor) are the only members
-                // of a structural type. CoreCLR resolves their signatures against
-                // `GetClassOrArrayInstantiation`, which PawPrint does not model — it stores array
-                // element types structurally in the handle rather than as a generic argument
-                // vector. `Array_CreateInstance` is the supported route to those.
-                failwith
-                    $"TODO: %s{operation} on a method whose declaring type is the structural type %O{declaringTypeHandle}; CoreCLR resolves such a signature against GetClassOrArrayInstantiation, which PawPrint does not model"
-
-        let methodGenerics = identity.GetMethodGenerics () |> ImmutableArray.CreateRange
-
-        if methodInfo.Generics.Length <> methodGenerics.Length then
-            failwith
-                $"TODO: %s{operation} on generic method definition %s{methodInfo.Name}: it declares %d{methodInfo.Generics.Length} generic parameter(s) but the handle carries %d{methodGenerics.Length} generic argument(s); the managed reflection layer is expected to reject an uninstantiated generic method before the QCall"
-
-        let state, concretized, _declaringTypeHandle =
-            ExecutionConcretization.concretizeMethodWithAllGenerics
-                loggerFactory
-                baseClassTypes
-                typeGenerics
-                methodInfo
-                methodGenerics
-                state
-
-        state, concretized, declaringTypeHandle
-
     let private resolveMethodInfoFromHandleArg
         (operation : string)
         (state : IlMachineState)
@@ -772,66 +648,7 @@ module NativeRuntimeMethodHandle =
         : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
         =
         resolveMetadataIdentityFromArg operation state arg
-        |> methodInfoOfMetadataIdentity operation state
-
-    /// Resolve an <c>IRuntimeMethodInfo</c> object-reference argument to the <c>MethodHandle</c> it
-    /// names. The sibling of <c>resolveMethodHandleFromArg</c> for the handful of natives CoreCLR
-    /// declares over the reflection object rather than over a <c>RuntimeMethodHandleInternal</c>.
-    ///
-    /// Accepts each of the three CoreLib types that implement the interface, and refuses anything
-    /// else by name; a null reference is a contract violation rather than an answer, as it is in
-    /// CoreCLR.
-    let private resolveMethodHandleFromMethodInfoObject
-        (operation : string)
-        (state : IlMachineState)
-        (arg : CliType)
-        : MethodHandle
-        =
-        let address =
-            match arg with
-            | CliType.ObjectRef (Some address) -> address
-            | CliType.ObjectRef None ->
-                // CoreCLR asserts the argument non-null, and both of its managed callers pass
-                // `this`, so a null here is a contract violation rather than a case to answer.
-                failwith $"%s{operation}: null IRuntimeMethodInfo"
-            | other -> failwith $"%s{operation}: expected an IRuntimeMethodInfo object reference, got %O{other}"
-
-        let object' = ManagedHeap.get address state.ManagedHeap
-
-        // CoreCLR reads the `MethodDesc*` at a fixed offset (`ReflectMethodObject::m_pMD`,
-        // object.h:1120); the three implementers are laid out so that this is legal, which is why
-        // `RuntimeMethodInfoStub` carries eight unused `object?` fields whose comment says they are
-        // there "to ensure that this class has the same layout as RuntimeMethodInfo"
-        // (RuntimeHandles.cs:930-940). Reading by name instead means naming the three, and means
-        // that the two spellings CoreLib gives that one slot both have to be handled:
-        // `RuntimeMethodInfo` and `RuntimeConstructorInfo` call it `m_handle` and declare it
-        // `IntPtr`; the stub calls it `m_value` and declares it `RuntimeMethodHandleInternal`.
-        //
-        // Matched against CoreLib's own types rather than against the namespace and name alone, so
-        // that a guest which declares a type of the same name is not mistaken for one of these.
-        // Nothing reachable exercises that: `IRuntimeMethodInfo` is internal to CoreLib, so no
-        // guest-authored object can arrive typed as this parameter.
-        let fieldName =
-            match object'.ConcreteType with
-            | CorelibType state.ConcreteTypes ("System.Reflection", "RuntimeMethodInfo", generics) when generics.IsEmpty ->
-                "m_handle"
-            | CorelibType state.ConcreteTypes ("System.Reflection", "RuntimeConstructorInfo", generics) when
-                generics.IsEmpty
-                ->
-                "m_handle"
-            | CorelibType state.ConcreteTypes ("System", "RuntimeMethodInfoStub", generics) when generics.IsEmpty ->
-                "m_value"
-            | other ->
-                let described =
-                    match AllConcreteTypes.lookup other state.ConcreteTypes with
-                    | Some concrete -> $"%s{concrete.Namespace}.%s{concrete.Name} in %O{concrete.AssemblyFullName}"
-                    | None -> string other
-
-                failwith
-                    $"%s{operation}: object at %O{address} is a %s{described}, which is not one of CoreLib's three IRuntimeMethodInfo implementers (System.Reflection.RuntimeMethodInfo, System.Reflection.RuntimeConstructorInfo, System.RuntimeMethodInfoStub); a fourth implementer needs its handle field naming here"
-
-        // Both declared types reach the registry id through the same reader.
-        resolveMethodHandleFromArg operation state (AllocatedNonArrayObject.DereferenceField fieldName object')
+        |> MethodHandleResolution.methodInfoOfMetadataIdentity operation state
 
     /// Resolve a <c>QCallTypeHandle</c>-encoded type to its
     /// <c>(DumpedAssembly, TypeInfo)</c>, accepting the MethodTable-backed
@@ -999,7 +816,7 @@ module NativeRuntimeMethodHandle =
             // type. If that lookup fails and the target is not a value type, throw
             // MissingMethodException; if it is a value type, fall back to mdPublic.
             let attrCtorId : int64 option =
-                NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation attrCtorArg
+                MethodHandleResolution.methodHandleIdOfRuntimeMethodHandleInternal operation attrCtorArg
 
             let attrCtorMethodOpt : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> option =
                 match attrCtorId with
@@ -1125,7 +942,7 @@ module NativeRuntimeMethodHandle =
             // never reaches this QCall anyway -- `DynamicMethod` does not override
             // `MemberInfo.IsCollectible`, so it answers `true` from the managed default without
             // asking the runtime.
-            resolveMethodHandleFromArg operation state instruction.Arguments.[0]
+            MethodHandleResolution.resolveMethodHandleFromArg operation state instruction.Arguments.[0]
             |> ignore<MethodHandle>
 
             // Interop.BOOL is int-backed with FALSE = 0 and TRUE = 1.
@@ -1163,7 +980,8 @@ module NativeRuntimeMethodHandle =
             let identity =
                 resolveMetadataIdentityFromArg operation state instruction.Arguments.[0]
 
-            let methodInfo = methodInfoOfMetadataIdentity operation state identity
+            let methodInfo =
+                MethodHandleResolution.methodInfoOfMetadataIdentity operation state identity
 
             let declaringType =
                 match identity.GetDeclaringType () with
@@ -1211,7 +1029,7 @@ module NativeRuntimeMethodHandle =
                 |> Some
             | FunctionPointerOutcome.SharedCode _ ->
                 let declaringTypeName =
-                    requireClosedDeclaringType operation identity
+                    MethodHandleResolution.requireClosedDeclaringType operation identity
                     |> AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes
 
                 failwith
@@ -1219,7 +1037,12 @@ module NativeRuntimeMethodHandle =
             | FunctionPointerOutcome.ExactInstantiation entry ->
 
             let state, concretized, _declaringType =
-                concretizeClosedMetadataIdentity ctx.LoggerFactory ctx.BaseClassTypes operation identity state
+                MethodHandleResolution.concretizeClosedMetadataIdentity
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    operation
+                    identity
+                    state
 
             // `Managed` is the target `ldftn` pushes for this method, so the two compare equal as
             // they do on CoreCLR.
@@ -1259,7 +1082,8 @@ module NativeRuntimeMethodHandle =
             let identity =
                 resolveMetadataIdentityFromArg operation state instruction.Arguments.[0]
 
-            let methodInfo = methodInfoOfMetadataIdentity operation state identity
+            let methodInfo =
+                MethodHandleResolution.methodInfoOfMetadataIdentity operation state identity
 
             let retTypes =
                 NativeCall.objectHandleOnStackTarget operation state "retTypes" instruction.Arguments.[1]
@@ -1326,7 +1150,8 @@ module NativeRuntimeMethodHandle =
             if instruction.Arguments.Length <> 2 then
                 failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
 
-            let original = resolveMethodHandleFromArg operation state instruction.Arguments.[0]
+            let original =
+                MethodHandleResolution.resolveMethodHandleFromArg operation state instruction.Arguments.[0]
 
             let refMethod =
                 NativeCall.objectHandleOnStackTarget operation state "refMethod" instruction.Arguments.[1]
@@ -1340,7 +1165,7 @@ module NativeRuntimeMethodHandle =
                     ctx.BaseClassTypes
                     state
                     (ManagedPointerSource.requireAddressed refMethod)
-                |> resolveMethodHandleFromMethodInfoObject operation state
+                |> MethodHandleResolution.resolveMethodHandleFromMethodInfoObject operation state
 
             if current <> original then
                 failwith
@@ -1364,7 +1189,8 @@ module NativeRuntimeMethodHandle =
             // CoreCLR's `LoadTypicalMethodDefinition` carries the postcondition
             // `RETVAL->IsTypicalMethodDefinition()`; check it against the FCall's own predicate so
             // that the two natives cannot disagree about what "typical" means.
-            let methodInfo = methodInfoOfMetadataIdentity operation state typical
+            let methodInfo =
+                MethodHandleResolution.methodInfoOfMetadataIdentity operation state typical
 
             let typicalIsTypical =
                 match stubDeclaringTypeOfTarget operation ctx.BaseClassTypes state (typical.GetDeclaringType ()) with
@@ -1436,13 +1262,14 @@ module NativeRuntimeMethodHandle =
                 failwith $"%s{operation}: expected three native arguments, got %d{instruction.Arguments.Length}"
 
             let methodHandleId =
-                NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation instruction.Arguments.[0]
+                MethodHandleResolution.methodHandleIdOfRuntimeMethodHandleInternal operation instruction.Arguments.[0]
                 |> Option.defaultWith (fun () -> failwith $"%s{operation}: null RuntimeMethodHandleInternal")
 
             let identity =
                 resolveMetadataIdentityFromArg operation state instruction.Arguments.[0]
 
-            let methodInfo = methodInfoOfMetadataIdentity operation state identity
+            let methodInfo =
+                MethodHandleResolution.methodInfoOfMetadataIdentity operation state identity
 
             let declaringTarget =
                 NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget
@@ -1800,7 +1627,12 @@ module NativeRuntimeMethodHandle =
             let operation = "RuntimeMethodHandle.GetImplAttributes"
 
             let attributes =
-                match resolveMethodHandleFromMethodInfoObject operation state instruction.Arguments.[0] with
+                match
+                    MethodHandleResolution.resolveMethodHandleFromMethodInfoObject
+                        operation
+                        state
+                        instruction.Arguments.[0]
+                with
                 | MethodHandle.FromDynamic _ ->
                     // CoreCLR's `IsNilToken(pMethod->GetMemberDef())` arm. Under PawPrint the
                     // handles with a nil MethodDef token are exactly the dynamic ones -- see
@@ -1812,7 +1644,7 @@ module NativeRuntimeMethodHandle =
                     // `ImplAttributes` is read straight out of the MethodDef row when the assembly
                     // is loaded, so there is nothing to derive: this is the row's own column.
                     let facts =
-                        methodInfoOfMetadataIdentity operation state identity
+                        MethodHandleResolution.methodInfoOfMetadataIdentity operation state identity
                         |> MethodInfo.requireMetadata operation
 
                     int32 facts.ImplAttributes
@@ -1857,7 +1689,8 @@ module NativeRuntimeMethodHandle =
             let identity =
                 resolveMetadataIdentityFromArg operation state instruction.Arguments.[0]
 
-            let methodInfo = methodInfoOfMetadataIdentity operation state identity
+            let methodInfo =
+                MethodHandleResolution.methodInfoOfMetadataIdentity operation state identity
 
             let declaringType = identity.GetDeclaringType ()
 
@@ -1926,7 +1759,7 @@ module NativeRuntimeMethodHandle =
             let operation = "RuntimeMethodHandle.GetMethodDef"
 
             let methodHandle =
-                resolveMethodHandleFromArg operation state instruction.Arguments.[0]
+                MethodHandleResolution.resolveMethodHandleFromArg operation state instruction.Arguments.[0]
 
             let state =
                 IlMachineState.pushToEvalStack
@@ -1980,7 +1813,8 @@ module NativeRuntimeMethodHandle =
             let identity =
                 resolveMetadataIdentityFromArg operation state instruction.Arguments.[0]
 
-            let methodInfo = methodInfoOfMetadataIdentity operation state identity
+            let methodInfo =
+                MethodHandleResolution.methodInfoOfMetadataIdentity operation state identity
 
             let state = IlMachineState.loadArgument ctx.Thread 1 state
             let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
@@ -2045,7 +1879,8 @@ module NativeRuntimeMethodHandle =
             let identity =
                 resolveMetadataIdentityFromArg operation state instruction.Arguments.[0]
 
-            let methodInfo = methodInfoOfMetadataIdentity operation state identity
+            let methodInfo =
+                MethodHandleResolution.methodInfoOfMetadataIdentity operation state identity
 
             let result =
                 isGenericMethodDefinition methodInfo.Generics.Length (identity.GetMethodGenerics ()).Length
@@ -2070,7 +1905,12 @@ module NativeRuntimeMethodHandle =
             let operation = "RuntimeMethodHandle.IsTypicalMethodDefinition"
 
             let result =
-                match resolveMethodHandleFromMethodInfoObject operation state instruction.Arguments.[0] with
+                match
+                    MethodHandleResolution.resolveMethodHandleFromMethodInfoObject
+                        operation
+                        state
+                        instruction.Arguments.[0]
+                with
                 | MethodHandle.FromDynamic _ ->
                     // A `DynamicMethodDesc` is classified `mcDynamic` (dynamicmethod.cpp:163),
                     // never `mcInstantiated`, so `HasMethodInstantiation()` is false; and it is
@@ -2086,7 +1926,8 @@ module NativeRuntimeMethodHandle =
                     true
                 | MethodHandle.FromMetadata identity ->
 
-                let methodInfo = methodInfoOfMetadataIdentity operation state identity
+                let methodInfo =
+                    MethodHandleResolution.methodInfoOfMetadataIdentity operation state identity
 
                 let declaringType =
                     match
@@ -2126,7 +1967,7 @@ module NativeRuntimeMethodHandle =
             let operation = "RuntimeMethodHandle.IsDynamicMethod"
 
             let methodHandle =
-                resolveMethodHandleFromArg operation state instruction.Arguments.[0]
+                MethodHandleResolution.resolveMethodHandleFromArg operation state instruction.Arguments.[0]
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.ofBool (isDynamicMethod methodHandle)) ctx.Thread state
@@ -2164,7 +2005,7 @@ module NativeRuntimeMethodHandle =
             // produced straight from the scope assembly recorded at mint time: no assembly needs
             // loading and no type needs concretising, because there is no metadata behind it.
             let target =
-                match resolveMethodHandleFromArg operation state instruction.Arguments.[0] with
+                match MethodHandleResolution.resolveMethodHandleFromArg operation state instruction.Arguments.[0] with
                 | MethodHandle.FromMetadata identity ->
                     match identity.GetDeclaringType () with
                     | RuntimeTypeHandleTarget.Closed handle ->
@@ -2263,7 +2104,7 @@ module NativeRuntimeMethodHandle =
                 resolveMethodInfoFromHandleArg operation state instruction.Arguments.[0]
 
             let methodHandleId =
-                NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation instruction.Arguments.[0]
+                MethodHandleResolution.methodHandleIdOfRuntimeMethodHandleInternal operation instruction.Arguments.[0]
                 |> Option.defaultWith (fun () -> failwith $"%s{operation}: null RuntimeMethodHandleInternal")
 
             // Same CoreCLR predicate the `HasMethodInstantiation` FCall returns, so it is spelled

@@ -55,7 +55,7 @@ module internal NativeReflectionInvocation =
             IlMachineState.requiredOwnInstanceFieldId state signatureObj.ConcreteType "_pMethod"
 
         AllocatedNonArrayObject.DereferenceFieldById pMethodField signatureObj
-        |> NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation
+        |> MethodHandleResolution.methodHandleIdOfRuntimeMethodHandleInternal operation
         |> Option.defaultWith (fun () ->
             failwith $"%s{operation}: null RuntimeMethodHandleInternal in Signature._pMethod"
         )
@@ -92,7 +92,7 @@ module internal NativeReflectionInvocation =
                 failwith $"%s{operation}: method-registry id %d{methodHandleId} did not resolve to a known MethodHandle"
 
         let state, concretized, declaringTypeHandle =
-            NativeRuntimeMethodHandle.concretizeClosedMetadataIdentity
+            MethodHandleResolution.concretizeClosedMetadataIdentity
                 ctx.LoggerFactory
                 ctx.BaseClassTypes
                 operation

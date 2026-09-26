@@ -252,7 +252,7 @@ public static class Entry
             let stub = ManagedHeap.get stubAddr state.ManagedHeap
 
             AllocatedNonArrayObject.DereferenceField "m_value" stub
-            |> NativeCall.methodHandleIdOfRuntimeMethodHandleInternal "pushDynamicMethodFrame"
+            |> MethodHandleResolution.methodHandleIdOfRuntimeMethodHandleInternal "pushDynamicMethodFrame"
             |> Option.defaultWith (fun () -> failwith "the minted stub carried no method-registry id")
             |> DynamicMethodHandle.ofRegistryId
 
@@ -586,7 +586,7 @@ public static class Entry
         [ 0 .. shape.Length - 1 ]
         |> List.map (fun i ->
             IlMachineState.getArrayValue arrayAddr i state
-            |> NativeCall.methodHandleIdOfRuntimeMethodHandleInternal "test"
+            |> MethodHandleResolution.methodHandleIdOfRuntimeMethodHandleInternal "test"
             |> Option.defaultWith (fun () -> failwith $"rgMethodHandle[%d{i}] did not carry a method-registry id")
         )
 

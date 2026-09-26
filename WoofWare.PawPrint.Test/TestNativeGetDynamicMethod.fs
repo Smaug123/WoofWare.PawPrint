@@ -505,7 +505,7 @@ public static class Entry
         =
         let registryId =
             internalHandleOfStub state stubAddress
-            |> NativeCall.methodHandleIdOfRuntimeMethodHandleInternal "test"
+            |> MethodHandleResolution.methodHandleIdOfRuntimeMethodHandleInternal "test"
             |> Option.defaultWith (fun () -> failwith "stub carried a null RuntimeMethodHandleInternal")
 
         match MethodHandleRegistry.resolveMethodFromId registryId state.MethodHandles with

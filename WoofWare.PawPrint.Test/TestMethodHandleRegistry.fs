@@ -1008,22 +1008,22 @@ public static class GenericMethodHolder
 
         let canonical = CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle 42L)
 
-        NativeCall.methodHandleIdOfRuntimeMethodHandleInternal op canonical
+        MethodHandleResolution.methodHandleIdOfRuntimeMethodHandleInternal op canonical
         |> shouldEqual (Some 42L)
 
         let postRewrap =
             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.MethodHandlePtr 42L))
 
-        NativeCall.methodHandleIdOfRuntimeMethodHandleInternal op postRewrap
+        MethodHandleResolution.methodHandleIdOfRuntimeMethodHandleInternal op postRewrap
         |> shouldEqual (Some 42L)
 
         // Both null-sentinel encodings (verbatim 0L on either tag) signal "iteration exhausted".
-        NativeCall.methodHandleIdOfRuntimeMethodHandleInternal
+        MethodHandleResolution.methodHandleIdOfRuntimeMethodHandleInternal
             op
             (CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L))
         |> shouldEqual None
 
-        NativeCall.methodHandleIdOfRuntimeMethodHandleInternal
+        MethodHandleResolution.methodHandleIdOfRuntimeMethodHandleInternal
             op
             (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
         |> shouldEqual None
@@ -1205,7 +1205,9 @@ public static class InstantiationHolder
             registry <- reg
 
             let registryId =
-                NativeCall.methodHandleIdOfRuntimeMethodHandleInternal "test" (CliType.ValueType internalHandle)
+                MethodHandleResolution.methodHandleIdOfRuntimeMethodHandleInternal
+                    "test"
+                    (CliType.ValueType internalHandle)
                 |> Option.defaultWith (fun () -> failwith $"minting %s{method.Name} produced a null handle")
 
             let methodHandle =
@@ -2586,7 +2588,7 @@ public static class TypicalHolder<T>
 
         let isTypical (identity : MetadataMethodIdentity) : bool =
             let methodInfo =
-                NativeRuntimeMethodHandle.methodInfoOfMetadataIdentity "test" state identity
+                MethodHandleResolution.methodInfoOfMetadataIdentity "test" state identity
 
             match
                 NativeRuntimeMethodHandle.stubDeclaringTypeOfTarget
@@ -2646,7 +2648,7 @@ public static class TypicalHolder<T>
             // The typical definition is the very handle reflection over the definition mints, so a
             // stack frame's method and `typeof(G<>).GetMethod(...)` resolve to one registry id.
             let methodInfo =
-                NativeRuntimeMethodHandle.methodInfoOfMetadataIdentity "test" state identity
+                MethodHandleResolution.methodInfoOfMetadataIdentity "test" state identity
 
             let typicalId, registry' =
                 MethodHandleRegistry.getOrAllocateInternalId

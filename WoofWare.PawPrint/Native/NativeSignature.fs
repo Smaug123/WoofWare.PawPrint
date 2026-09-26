@@ -519,7 +519,7 @@ module NativeSignature =
             NativeRuntimeMethodHandle.resolveMetadataIdentityFromArg operation state methodHandleArg
 
         let methodInfo =
-            NativeRuntimeMethodHandle.methodInfoOfMetadataIdentity operation state identity
+            MethodHandleResolution.methodInfoOfMetadataIdentity operation state identity
 
         let assemblyFullName = identity.GetAssemblyFullName ()
 
@@ -1093,7 +1093,7 @@ module NativeSignature =
             // and refuses both-non-null: no managed `Signature` constructor passes both, so a value
             // arriving that way would be a PawPrint bug, and silently preferring one would hide it.
             let methodHandle =
-                NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation instruction.Arguments.[4]
+                MethodHandleResolution.methodHandleIdOfRuntimeMethodHandleInternal operation instruction.Arguments.[4]
 
             let fieldHandle =
                 NativeRuntimeFieldHandle.fieldHandleOfRuntimeFieldHandleInternal
@@ -1248,7 +1248,7 @@ module NativeSignature =
                 AllocatedNonArrayObject.DereferenceFieldById pMethodFieldId signatureObj
 
             let typeGenerics, methodGenerics =
-                match NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation pMethod with
+                match MethodHandleResolution.methodHandleIdOfRuntimeMethodHandleInternal operation pMethod with
                 | Some _ ->
                     let _, methodInfo, _, declaringTypeContext, methodGenericContext =
                         methodSignatureTypeContext operation state pMethod
