@@ -22,8 +22,9 @@ type private OperandResolution =
     /// and re-execute this instruction.
     | NeedsMinting of ManagedHeapAddress
     /// The operand is one real .NET refuses when it compiles the body; raise this exception type
-    /// into the guest. <c>why</c> is a PawPrint diagnostic for the log, not the guest's message.
-    | Invalid of exceptionType : TypeInfo<GenericParamFromMetadata, TypeDefn> * why : string
+    /// into the guest, worded for a token of this kind. <c>why</c> is a PawPrint diagnostic for the
+    /// log, not the guest's message.
+    | Invalid of kind : BadTokenKind * exceptionType : TypeInfo<GenericParamFromMetadata, TypeDefn> * why : string
 
 [<RequireQualifiedAccess>]
 module internal UnaryMetadataIlOp =
@@ -87,24 +88,24 @@ module internal UnaryMetadataIlOp =
                 | IlDecoding.ScopeOperandKind.Type ->
                     match DynamicScopeOperand.closedType baseClassTypes operation scopeIndex state scope with
                     | Ok handle -> ResolvedMetadataOperand.ScopeType handle |> OperandResolution.Ready
-                    | Error (exceptionType, why) -> OperandResolution.Invalid (exceptionType, why)
+                    | Error (exceptionType, why) -> OperandResolution.Invalid (BadTokenKind.Class, exceptionType, why)
                 | IlDecoding.ScopeOperandKind.Method ->
                     match DynamicScopeOperand.method baseClassTypes operation scopeIndex state scope with
                     | Ok (ScopeMethodResolution.Resolved handle) ->
                         ResolvedMetadataOperand.ScopeMethod handle |> OperandResolution.Ready
                     | Ok (ScopeMethodResolution.NeedsMinting callee) -> OperandResolution.NeedsMinting callee
-                    | Error (exceptionType, why) -> OperandResolution.Invalid (exceptionType, why)
+                    | Error (exceptionType, why) -> OperandResolution.Invalid (BadTokenKind.Method, exceptionType, why)
                 | IlDecoding.ScopeOperandKind.AnyType ->
                     // No narrowing: `ldtoken` hands the handle to the guest rather than consuming
                     // it, so every shape a target can take is a legal operand. See `closedType` for
                     // the three refusals that apply to the opcodes which do consume a type.
                     match DynamicScopeOperand.typeHandleTarget baseClassTypes operation scopeIndex state scope with
                     | Ok target -> ResolvedMetadataOperand.ScopeTypeTarget target |> OperandResolution.Ready
-                    | Error (exceptionType, why) -> OperandResolution.Invalid (exceptionType, why)
+                    | Error (exceptionType, why) -> OperandResolution.Invalid (BadTokenKind.Unnamed, exceptionType, why)
                 | IlDecoding.ScopeOperandKind.Field ->
                     match DynamicScopeOperand.field baseClassTypes operation scopeIndex state scope with
                     | Ok handle -> ResolvedMetadataOperand.ScopeField handle |> OperandResolution.Ready
-                    | Error (exceptionType, why) -> OperandResolution.Invalid (exceptionType, why)
+                    | Error (exceptionType, why) -> OperandResolution.Invalid (BadTokenKind.Field, exceptionType, why)
                 | IlDecoding.ScopeOperandKind.NotYetSupported missing ->
                     // Unreachable: the decoder refuses such a body when the method is minted, so no
                     // `IlOp` carrying a scope operand for this opcode exists to be executed.
@@ -131,7 +132,7 @@ module internal UnaryMetadataIlOp =
                     state
 
             state, WhatWeDid.SuspendedForManagedCall
-        | OperandResolution.Invalid (exceptionType, why) ->
+        | OperandResolution.Invalid (kind, exceptionType, why) ->
             // Measured on real .NET: an open generic definition, a bare generic parameter and an
             // open constructed type all make the method throw InvalidProgramException when it is
             // compiled, against a closed control that runs. `Emit` accepts all of them, because
@@ -152,7 +153,7 @@ module internal UnaryMetadataIlOp =
                 loggerFactory
                 baseClassTypes
                 exceptionType
-                (DynamicScopeOperand.clrMessageFor baseClassTypes exceptionType)
+                (DynamicScopeOperand.clrMessageFor baseClassTypes kind exceptionType)
                 thread
                 state
         | OperandResolution.Ready operand ->

@@ -2993,6 +2993,26 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // Scope entries rewritten through private reflection after CreateDelegate: null,
+                // truncated and wrong-kind entries in method, field and type position, and the
+                // null and open contexts of GenericMethodInfo and GenericFieldInfo, each with the
+                // exception and message real .NET raises. Dynamic-code switch overridden to true
+                // like its siblings; verified by hand to exit 0 on real .NET.
+                FileName = "DynamicScopeRewrittenEntries.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // `Delegate_BindToMethodInfo`, the QCall behind `DynamicMethod.CreateDelegate`.
                 // Registered with the dynamic-code switch overridden to true, like its
                 // `ModuleHandle_GetDynamicMethod` sibling above. The guest walks every binding

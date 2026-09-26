@@ -134,7 +134,9 @@ module internal UnaryStringTokenIlOp =
                     loggerFactory
                     baseClassTypes
                     exceptionType
-                    (DynamicScopeOperand.clrMessageFor baseClassTypes exceptionType)
+                    // The JIT reads a string literal through `GetStringLiteral`, not as a class,
+                    // method or field token.
+                    (DynamicScopeOperand.clrMessageFor baseClassTypes BadTokenKind.Unnamed exceptionType)
                     thread
                     state
             | Ok (value, candidate) ->

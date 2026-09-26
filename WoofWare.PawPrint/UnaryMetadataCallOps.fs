@@ -795,13 +795,15 @@ module internal UnaryMetadataCallOps =
                 // site, because that is where the callee's first JIT happens, so the caller's own
                 // handlers see it — which is what raising here rather than pushing a frame gives.
                 // Don't advance the PC: exception dispatch needs the faulting instruction's offset.
+                // `concretize` refuses only a `catch` clause's type, which the JIT resolves as a
+                // class token.
                 ctx.Logger.LogWarning ("call refused a DynamicMethod callee: {Reason}", why)
 
                 IlMachineStateExecution.raiseRuntimeExceptionWithMessage
                     ctx.LoggerFactory
                     ctx.BaseClassTypes
                     exceptionType
-                    (DynamicScopeOperand.clrMessageFor ctx.BaseClassTypes exceptionType)
+                    (DynamicScopeOperand.clrMessageFor ctx.BaseClassTypes BadTokenKind.Class exceptionType)
                     ctx.Thread
                     state
         | ResolvedMetadataOperand.FromMetadata _

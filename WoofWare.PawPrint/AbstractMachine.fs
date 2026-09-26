@@ -351,7 +351,12 @@ module AbstractMachine =
                 // whose own clauses are therefore out of scope", which is exactly this situation.
                 logger.LogWarning ("delegate invocation refused a dynamic target: {Reason}", why)
 
-                raiseFromPoppedStub exceptionType (DynamicScopeOperand.clrMessageFor baseClassTypes exceptionType) state
+                // `concretize` refuses only a `catch` clause's type, which the JIT resolves as a
+                // class token.
+                raiseFromPoppedStub
+                    exceptionType
+                    (DynamicScopeOperand.clrMessageFor baseClassTypes BadTokenKind.Class exceptionType)
+                    state
             | Ok methodPtr ->
 
             // A virtual call stub over a *static* virtual — a static abstract interface method —
