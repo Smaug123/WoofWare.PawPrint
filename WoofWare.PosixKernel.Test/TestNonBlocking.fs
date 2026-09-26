@@ -335,7 +335,7 @@ module TestNonBlocking =
             let flagged = set 0 true clear
 
             let answerOf (system : UnixSystem<int, string>) =
-                match UnixReadWrite.read 0 buffer count system with
+                match UnixReadWrite.read 0 buffer (uint64 count) system with
                 | Ok (answer, after) ->
                     after |> shouldEqual system
                     Ok answer
@@ -354,7 +354,12 @@ module TestNonBlocking =
         for platform in streamPlatforms do
             let flagged = set 0 true (systemOn platform)
 
-            for buffer, count in [ UserBuffer.Mapped, 16 ; UserBuffer.Unmapped 0UL, 16 ; UserBuffer.Mapped, 0 ] do
+            for buffer, count in
+                [
+                    UserBuffer.Mapped, 16UL
+                    UserBuffer.Unmapped 0UL, 16UL
+                    UserBuffer.Mapped, 0UL
+                ] do
                 match UnixReadWrite.read 0 buffer count flagged with
                 | Ok (ReadAnswer.Completed bytes, _) -> bytes.IsEmpty |> shouldEqual true
                 | other -> failwith $"%O{platform}: read(0, %A{buffer}, %d{count}) answered %A{other}"
@@ -387,7 +392,7 @@ module TestNonBlocking =
 
             match UnixReadWrite.write fd bytes flagged, UnixReadWrite.write fd bytes clear with
             | Ok (answer, after), Ok (blockingAnswer, blockingAfter) when count <= emptyPipeTakes ->
-                answer |> shouldEqual (WriteAnswer.Completed count)
+                answer |> shouldEqual (WriteAnswer.Completed (int64 count))
                 answer |> shouldEqual blockingAnswer
 
                 // The same bytes reach the same log, entry for entry, and the
@@ -411,7 +416,7 @@ module TestNonBlocking =
 
                 withoutLog (unflag after) |> shouldEqual (withoutLog blockingAfter)
             | Error refusal, Ok (WriteAnswer.Completed written, _) when count > emptyPipeTakes ->
-                written |> shouldEqual count
+                written |> shouldEqual (int64 count)
 
                 refusal
                 |> shouldEqual (WriteRefusal.NonBlockingStandardStreamShortWrite (role, count, emptyPipeTakes))
@@ -435,7 +440,7 @@ module TestNonBlocking =
             let flagged = set 1 true (systemOn platform)
 
             match UnixReadWrite.write 1 (ImmutableArray.Create<byte> (Array.zeroCreate 65536)) flagged with
-            | Ok (WriteAnswer.Completed 65536, _) -> ()
+            | Ok (WriteAnswer.Completed 65536L, _) -> ()
             | other -> failwith $"%O{platform}: a 65536-byte write answered %A{Result.map fst other}"
 
             UnixReadWrite.write 1 (ImmutableArray.Create<byte> (Array.zeroCreate 65537)) flagged
