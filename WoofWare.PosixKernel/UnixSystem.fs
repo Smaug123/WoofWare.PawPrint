@@ -19,9 +19,9 @@ type Syscall =
     | FLock of fd : int * operation : int
     | FTruncate of fd : int * length : int64
     | Close of fd : int
-    /// `mode` is raw: the C shim passes it straight to `mkdir(2)`, so how it
-    /// combines with the umask and with the parent's set-group-ID bit is
-    /// behaviour this kernel models, and models per flavour.
+    /// `mode` is raw, as `mkdir(2)` takes it: how it combines with the umask
+    /// and with the parent's set-group-ID bit is behaviour this kernel models,
+    /// and models per flavour.
     | MkDir of path : UnixPath * mode : int
     | Unlink of path : UnixPath
     | RmDir of path : UnixPath
@@ -674,16 +674,13 @@ module UnixSystem =
     /// This library models no `exec(2)`, so there is no file that started this
     /// process, and the emulated filesystem holds no image of one. `None` is
     /// therefore the only true answer, and it is a *modelled* Unix state rather
-    /// than an invention: both flavours report exactly this — NULL from
-    /// `minipal_getexepath`, errno `ENOENT` — for a live process whose
-    /// executable no longer resolves, because each of them reaches the path
-    /// through `realpath`. Measured on both, by having a guest unlink its own
-    /// executable before its first read.
+    /// than an invention: on both flavours, resolving a live process's
+    /// executable with `realpath` fails with ENOENT once that executable has
+    /// been unlinked. Measured on both, by having a process unlink its own
+    /// executable before first asking for its path.
     ///
-    /// Synthesising a plausible path instead was rejected for the same reason
-    /// `Assembly.Location` reports the empty string: nothing would be there, so
-    /// the process could not act on it. A client that wants a particular
-    /// executable sets it with `UnixProcessState.withProcessPath`.
+    /// A client that wants a particular executable sets it with
+    /// `UnixProcessState.withProcessPath`.
     let defaultProcessPath : AbsoluteUnixPath option = None
 
     /// The range `bind(2)` draws from when asked for port 0, on a machine of
