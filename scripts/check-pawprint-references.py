@@ -47,6 +47,8 @@ MARKERS = [
     "NativeDispatch",
     "HostConfig",
     "DirectoryStreamBlocks",
+    "NextLowLevelMonitorId",
+    "LowLevelMonitor",
     r"Program\.prepare",
     r"Program\.run",
 ]

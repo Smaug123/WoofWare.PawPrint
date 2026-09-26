@@ -251,6 +251,8 @@
     <Compile Include="TestDebuggerState.fs" />
     <Compile Include="TestProgramDebugger.fs" />
     <Compile Include="TestDebuggerServer.fs" />
+    <Compile Include="TestDebuggerValueJson.fs" />
+    <Compile Include="TestDebuggerStringPreview.fs" />
     <Compile Include="TestBclIntrinsicStaticFields.fs" />
     <Compile Include="TestThreadStatics.fs" />
     <Compile Include="TestLowLevelMonitor.fs" />
@@ -311,6 +313,7 @@
     <Compile Include="TestFabricatedLongFormArgLocal.fs" />
     <Compile Include="TestFabricatedArrayConstructorNewobj.fs" />
     <Compile Include="TestFabricatedNullByrefArgument.fs" />
+    <Compile Include="TestConstrainedGetTypeNullByref.fs" />
     <Compile Include="TestFabricatedCallArgumentCoercion.fs" />
     <Compile Include="TestFabricatedEntryPoint.fs" />
     <Compile Include="TestFabricatedIntrinsicWithoutIl.fs" />

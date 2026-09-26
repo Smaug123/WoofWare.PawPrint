@@ -328,9 +328,16 @@ module DebuggerServer =
 
         writer.WriteEndArray ()
 
-    let private writeEvalStackValue (writer : Utf8JsonWriter) (value : EvalStackValue) : unit =
+    let private writeEvalStackValue
+        (writer : Utf8JsonWriter)
+        (context : DebuggerValueContext)
+        (value : EvalStackValue)
+        : unit
+        =
         writer.WriteStartObject ()
         writer.WriteString ("value", string value)
+        writer.WritePropertyName "structured"
+        DebuggerValueJson.writeEvalStackValue writer context value
 
         match value with
         | EvalStackValue.ObjectRef address -> writer.WriteNumber ("objectAddress", heapAddressValue address)
@@ -344,9 +351,11 @@ module DebuggerServer =
 
         writer.WriteEndObject ()
 
-    let private writeCliType (writer : Utf8JsonWriter) (value : CliType) : unit =
+    let private writeCliType (writer : Utf8JsonWriter) (context : DebuggerValueContext) (value : CliType) : unit =
         writer.WriteStartObject ()
         writer.WriteString ("value", string value)
+        writer.WritePropertyName "structured"
+        DebuggerValueJson.writeCliType writer context value
 
         match value with
         | CliType.ObjectRef address -> writeOptionalHeapAddress writer "objectAddress" address
@@ -367,11 +376,18 @@ module DebuggerServer =
         (frame : MethodState)
         : unit
         =
+        let context = DebuggerValueJson.ofState state
         writer.WriteStartObject ()
         writeFrameProperties writer state sourceIlOffset true activeFrame frameId frame
-        writeValueArray writer "evalStack" frame.EvaluationStack.Values writeEvalStackValue
-        writeValueArray writer "arguments" frame.Arguments writeCliType
-        writeValueArray writer "locals" frame.LocalVariables writeCliType
+
+        writeValueArray
+            writer
+            "evalStack"
+            frame.EvaluationStack.Values
+            (fun writer value -> writeEvalStackValue writer context value)
+
+        writeValueArray writer "arguments" frame.Arguments (fun writer value -> writeCliType writer context value)
+        writeValueArray writer "locals" frame.LocalVariables (fun writer value -> writeCliType writer context value)
         writer.WriteEndObject ()
 
     let private writeRunOutcome (writer : Utf8JsonWriter) (outcome : RunOutcome) : unit =
@@ -984,6 +1000,264 @@ module DebuggerServer =
         let state = sessionState session
         state.ThreadState |> Map.containsKey threadId
 
+    /// The heap objects an object refers to directly, as `references`: each address once, in
+    /// ascending order.
+    let private writeReferences (writer : Utf8JsonWriter) (references : ManagedHeapAddress list) : unit =
+        writeValueArray
+            writer
+            "references"
+            (references |> List.distinct |> List.sort)
+            (fun writer address -> writer.WriteNumberValue (heapAddressValue address))
+
+    /// How many UTF-16 code units of a string the heap listing shows.
+    let internal stringPreviewLength : int = 256
+
+    /// Whether `text` can be written as a JSON string: `Utf8JsonWriter` refuses a lone surrogate,
+    /// which a guest string is free to contain.
+    let private isWellFormedUtf16 (text : string) : bool =
+        let mutable ok = true
+        let mutable i = 0
+
+        while ok && i < text.Length do
+            if Char.IsHighSurrogate text.[i] then
+                if i + 1 < text.Length && Char.IsLowSurrogate text.[i + 1] then
+                    i <- i + 2
+                else
+                    ok <- false
+            elif Char.IsLowSurrogate text.[i] then
+                ok <- false
+            else
+                i <- i + 1
+
+        ok
+
+    /// The heap listing's preview of a string, and whether it is shorter than the string. The
+    /// preview is the string's first `stringPreviewLength` code units, one fewer if the last of
+    /// those is a high surrogate (so a pair is never split); it is `None` if that prefix holds a
+    /// lone surrogate, which `Utf8JsonWriter` cannot write.
+    let internal stringPreview (text : string) : string option * bool =
+        let truncated = text.Length > stringPreviewLength
+
+        let prefix =
+            if not truncated then
+                text
+            elif Char.IsHighSurrogate text.[stringPreviewLength - 1] then
+                text.Substring (0, stringPreviewLength - 1)
+            else
+                text.Substring (0, stringPreviewLength)
+
+        (if isWellFormedUtf16 prefix then Some prefix else None), truncated
+
+    let private writeHeapListingEntry
+        (writer : Utf8JsonWriter)
+        (state : IlMachineState)
+        (address : ManagedHeapAddress)
+        : unit
+        =
+        writer.WriteStartObject ()
+        writer.WriteNumber ("address", heapAddressValue address)
+
+        let concreteType =
+            match HeapObserver.tryGetNonArrayObject address state.ManagedHeap with
+            | Some object ->
+                writer.WriteString ("kind", "object")
+                writer.WriteNull "length"
+                object.ConcreteType
+            | None ->
+                match HeapObserver.tryGetArray address state.ManagedHeap with
+                | Some array ->
+                    writer.WriteString ("kind", "array")
+                    writer.WriteNumber ("length", array.Shape.Length)
+                    array.Shape.ConcreteType
+                | None -> failwith $"heap listing: live address %d{heapAddressValue address} has no payload"
+
+        writer.WriteString ("type", typeDescription state concreteType)
+
+        match HeapObserver.getStringContents address state.ManagedHeap with
+        | None ->
+            writer.WriteNull "string"
+            writer.WriteNull "stringLength"
+            writer.WriteBoolean ("stringTruncated", false)
+        | Some text ->
+            let preview, truncated = stringPreview text
+
+            match preview with
+            | Some preview -> writer.WriteString ("string", preview)
+            | None -> writer.WriteNull "string"
+
+            writer.WriteNumber ("stringLength", text.Length)
+            writer.WriteBoolean ("stringTruncated", truncated)
+
+        writer.WriteEndObject ()
+
+    /// One page of the live heap in ascending address order: up to `limit` objects with addresses
+    /// above `after`. `nextAfter` is the `after` that fetches the next page, or null on the last.
+    /// Addresses are never reused, so paging stays consistent while the guest allocates.
+    let private writeHeapListingResponse
+        (writer : Utf8JsonWriter)
+        (session : SessionState)
+        (after : ManagedHeapAddress option)
+        (limit : int)
+        : unit
+        =
+        let state = sessionState session
+        let live = HeapObserver.liveAddresses state.ManagedHeap
+
+        let candidates =
+            match after with
+            | None -> live :> seq<ManagedHeapAddress>
+            | Some after -> live |> Seq.filter (fun address -> address > after)
+
+        let page = candidates |> Seq.truncate (limit + 1) |> Seq.toList
+        let hasMore = page.Length > limit
+        let page = page |> List.truncate limit
+
+        writer.WriteStartObject ()
+        writer.WriteNumber ("liveCount", live.Count)
+        writer.WriteNumber ("limit", limit)
+        writeValueArray writer "objects" page (fun writer address -> writeHeapListingEntry writer state address)
+
+        match hasMore, List.tryLast page with
+        | true, Some last -> writer.WriteNumber ("nextAfter", heapAddressValue last)
+        | true, None
+        | false, _ -> writer.WriteNull "nextAfter"
+
+        writer.WriteEndObject ()
+
+    let private writeTypeInitState (writer : Utf8JsonWriter) (initState : TypeInitState option) : unit =
+        writer.WritePropertyName "initState"
+
+        match initState with
+        | None -> writer.WriteNullValue ()
+        | Some initState ->
+            writer.WriteStartObject ()
+
+            match initState with
+            | TypeInitState.Initialized -> writer.WriteString ("kind", "initialized")
+            | TypeInitState.InProgress thread ->
+                writer.WriteString ("kind", "inProgress")
+                writer.WriteNumber ("thread", threadIdValue thread)
+            | TypeInitState.Failed (exceptionAddress, _) ->
+                writer.WriteString ("kind", "failed")
+                writer.WriteNumber ("exception", heapAddressValue exceptionAddress)
+
+            writer.WriteEndObject ()
+
+    /// The static fields of every type that has begun initialisation or has a written static
+    /// slot. Each field lists its written slots; a field with none holds its type's zero in every
+    /// slot, except an RVA-backed one, whose contents live in the PE image and are not reported.
+    /// `const` fields have no storage and are omitted.
+    let private writeStaticsResponse (writer : Utf8JsonWriter) (session : SessionState) : unit =
+        let state = sessionState session
+        let context = DebuggerValueJson.ofState state
+
+        let writtenByType =
+            StaticStorageObserver.writtenSlots state.Statics
+            |> List.groupBy (fun (_, ty, _, _) -> ty)
+            |> Map.ofList
+
+        let types =
+            Set.union
+                (state.TypeInitTable |> Seq.map (fun kvp -> kvp.Key) |> Set.ofSeq)
+                (writtenByType |> Map.keys |> Set.ofSeq)
+
+        let writeSlots (slots : (StaticOwner * CliType) list) : unit =
+            writeValueArray
+                writer
+                "slots"
+                slots
+                (fun writer (owner, value) ->
+                    writer.WriteStartObject ()
+                    writer.WritePropertyName "owner"
+                    writer.WriteStartObject ()
+
+                    match owner with
+                    | StaticOwner.Shared -> writer.WriteString ("kind", "shared")
+                    | StaticOwner.OwnedBy thread ->
+                        writer.WriteString ("kind", "thread")
+                        writer.WriteNumber ("thread", threadIdValue thread)
+
+                    writer.WriteEndObject ()
+                    writer.WritePropertyName "value"
+                    DebuggerValueJson.writeCliType writer context value
+                    writer.WriteEndObject ()
+                )
+
+        writer.WriteStartObject ()
+
+        writeValueArray
+            writer
+            "types"
+            types
+            (fun writer ty ->
+                let written =
+                    writtenByType
+                    |> Map.tryFind ty
+                    |> Option.defaultValue []
+                    |> List.map (fun (owner, _, field, value) -> field, (owner, value))
+
+                let slotsOf (field : ComparableFieldDefinitionHandle) : (StaticOwner * CliType) list =
+                    written |> List.filter (fun (f, _) -> f = field) |> List.map snd
+
+                let declared =
+                    match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes ty with
+                    | None -> []
+                    | Some (_, typeInfo) ->
+                        typeInfo.Fields
+                        |> List.filter (fun field ->
+                            field.IsStatic
+                            && not (field.Attributes.HasFlag System.Reflection.FieldAttributes.Literal)
+                        )
+
+                let declaredHandles =
+                    declared
+                    |> List.map (fun field -> ComparableFieldDefinitionHandle.Make field.Handle)
+                    |> Set.ofList
+
+                // A written slot for a field the type does not declare would be an interpreter
+                // bug; it is reported rather than hidden.
+                let undeclared =
+                    written
+                    |> List.map fst
+                    |> List.distinct
+                    |> List.filter (fun field -> not (declaredHandles.Contains field))
+
+                writer.WriteStartObject ()
+                writer.WriteString ("type", string ty)
+                writer.WriteString ("typeDescription", typeDescription state ty)
+                writeTypeInitState writer (TypeInitTable.tryGet ty state.TypeInitTable)
+                writer.WriteStartArray "fields"
+
+                for field in declared do
+                    let handle = ComparableFieldDefinitionHandle.Make field.Handle
+                    writer.WriteStartObject ()
+                    writer.WriteString ("name", field.Name)
+                    writer.WriteString ("token", string handle)
+
+                    writer.WriteString (
+                        "storage",
+                        if field.HasFieldRVA then "rva"
+                        elif field.IsThreadStatic then "threadStatic"
+                        else "shared"
+                    )
+
+                    writeSlots (slotsOf handle)
+                    writer.WriteEndObject ()
+
+                for handle in undeclared do
+                    writer.WriteStartObject ()
+                    writer.WriteNull "name"
+                    writer.WriteString ("token", string handle)
+                    writer.WriteNull "storage"
+                    writeSlots (slotsOf handle)
+                    writer.WriteEndObject ()
+
+                writer.WriteEndArray ()
+                writer.WriteEndObject ()
+            )
+
+        writer.WriteEndObject ()
+
     let private writeHeapObjectResponse
         (writer : Utf8JsonWriter)
         (session : SessionState)
@@ -994,12 +1268,16 @@ module DebuggerServer =
         writer.WriteStartObject ()
         writer.WriteNumber ("address", heapAddressValue address)
 
+        let context = DebuggerValueJson.ofState state
+
         match HeapObserver.tryGetNonArrayObject address state.ManagedHeap with
         | Some object ->
             writer.WriteString ("kind", "object")
             writer.WriteString ("concreteType", string object.ConcreteType)
             writer.WriteString ("typeDescription", typeDescription state object.ConcreteType)
             writer.WriteString ("contents", string object.Contents)
+            DebuggerValueJson.writeValueTypeFields writer context object.Contents
+            writeReferences writer (DebuggerValueJson.referencesOfValueType object.Contents)
             writeOptionalString writer "string" (HeapObserver.getStringContents address state.ManagedHeap)
             writer.WriteString ("syncBlock", string (HeapObserver.getSyncBlock address state.ManagedHeap))
         | None ->
@@ -1009,7 +1287,14 @@ module DebuggerServer =
                 writer.WriteString ("concreteType", string array.Shape.ConcreteType)
                 writer.WriteString ("typeDescription", typeDescription state array.Shape.ConcreteType)
                 writer.WriteNumber ("length", array.Shape.Length)
-                writeValueArray writer "elements" array.Elements writeCliType
+
+                writeValueArray writer "elements" array.Elements (fun writer value -> writeCliType writer context value)
+
+                writeReferences
+                    writer
+                    (array.Elements
+                     |> Seq.collect DebuggerValueJson.referencesOfCliType
+                     |> Seq.toList)
                 // Arrays carry an object header exactly like any other heap object, so a
                 // `lock (array)` is visible here too.
                 writer.WriteString ("syncBlock", string (HeapObserver.getSyncBlock address state.ManagedHeap))
@@ -1195,7 +1480,9 @@ module DebuggerServer =
                 "GET  /thread/{id}"
                 "GET  /thread/{id}/stack-summary"
                 "GET  /thread/{id}/active-method/il"
+                "GET  /heap?after=<address>&limit=200"
                 "GET  /heap/{address}"
+                "GET  /statics"
                 "GET  /output"
                 "POST /reset"
                 "POST /stop"
@@ -1484,6 +1771,32 @@ module DebuggerServer =
                                                 (fun writer -> writeThreadResponse writer session threadId)
                                             |> responseOnly
                                         | _ -> responseOnly (textResponse 400 $"Invalid thread id: %s{rawThread}")
+                                    | "GET", [ "heap" ] ->
+                                        let limit = parsePositiveInt "limit" 200 2000 context.Request.Query
+                                        let rawAfter = context.Request.Query.["after"].ToString ()
+
+                                        if String.IsNullOrWhiteSpace rawAfter then
+                                            jsonResponse
+                                                200
+                                                (fun writer -> writeHeapListingResponse writer session None limit)
+                                            |> responseOnly
+                                        else
+                                            match Int32.TryParse rawAfter with
+                                            | true, after ->
+                                                let after = Some (ManagedHeapAddress.ManagedHeapAddress after)
+
+                                                jsonResponse
+                                                    200
+                                                    (fun writer ->
+                                                        writeHeapListingResponse writer session after limit
+                                                    )
+                                                |> responseOnly
+                                            | false, _ ->
+                                                responseOnly (textResponse 400 $"Invalid heap address: %s{rawAfter}")
+                                    | "GET", [ "statics" ] ->
+                                        responseOnly (
+                                            jsonResponse 200 (fun writer -> writeStaticsResponse writer session)
+                                        )
                                     | "GET", [ "heap" ; rawAddress ] ->
                                         match Int32.TryParse rawAddress with
                                         | true, address ->

@@ -225,11 +225,10 @@ module UnixReadWrite =
     /// `read(2)`: move up to `count` bytes from `fd`'s current offset into the
     /// caller's buffer, and advance the offset by what actually moved.
     ///
-    /// `count` must not be negative. A negative count is a foreign-function
-    /// layer's error rather than a kernel's — .NET's `Common_Read` returns
-    /// before it evaluates the descriptor at all, so `read(badfd, buf, -1)` is
-    /// EINVAL and not EBADF — and a client that models such a layer must answer
-    /// it before asking here.
+    /// `count` must not be negative. The kernel's `count` is a `size_t`, so a
+    /// negative one is an artefact of a narrower type in whatever layer the
+    /// caller speaks through, and that layer must answer it before asking
+    /// here.
     ///
     /// The buffer is consulted at three points and *not* consulted at three
     /// others, and both sets are measured; see the comments inline.

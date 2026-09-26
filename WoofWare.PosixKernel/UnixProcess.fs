@@ -225,9 +225,9 @@ module UnixProcessState =
     /// the answer travels through several signatures before it is used, and a
     /// bare flag arrives at them saying nothing about which fact it is.
     ///
-    /// A client should think before defaulting `UserId` to 0. .NET's
-    /// `Environment.IsPrivilegedProcess` is literally `GetEUid() == 0`, so a
-    /// guest run as root skips its own privilege guards; that is why
+    /// A client should think before defaulting `UserId` to 0: root passes
+    /// every permission check this kernel models, and programs commonly skip
+    /// their own guards when they find they are root. That is why
     /// `UnixSystem.defaultUserId` is 1000.
     let callerPrivilege<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (proc : UnixProcessState<'Task, 'Handler>)
