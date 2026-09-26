@@ -31,6 +31,16 @@ public class Gen<T>
     public virtual string Inst() => "Gen" + typeof(T).Name;
 }
 
+public static class Generic
+{
+    public static T Identity<T>(T x) => x;
+}
+
+public class Holder<T>
+{
+    public static T Echo(T x) => x;
+}
+
 public class Program
 {
     // Dynamic methods whose `call` and `callvirt` name reflected methods rather than other dynamic
@@ -286,6 +296,30 @@ public class Program
         }
         catch (InvalidProgramException)
         {
+        }
+
+        // A float returned through a generic parameter, bound by the method's instantiation and by
+        // its declaring type's: the value on the stack after the call is a float either way.
+        Func<float, float> floatIdentity = (Func<float, float>) Make(typeof(float), new Type[] { typeof(float) }, il =>
+        {
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Call, typeof(Generic).GetMethod("Identity").MakeGenericMethod(typeof(float)));
+            il.Emit(OpCodes.Ret);
+        }).CreateDelegate(typeof(Func<float, float>));
+        if (floatIdentity(1.5f) != 1.5f)
+        {
+            return 20;
+        }
+
+        Func<double, double> doubleEcho = (Func<double, double>) Make(typeof(double), new Type[] { typeof(double) }, il =>
+        {
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Call, typeof(Holder<double>).GetMethod("Echo"));
+            il.Emit(OpCodes.Ret);
+        }).CreateDelegate(typeof(Func<double, double>));
+        if (doubleEcho(2.5) != 2.5)
+        {
+            return 21;
         }
 
         // The thunk System.Linq.Expressions emits for a delegate of more than two parameters

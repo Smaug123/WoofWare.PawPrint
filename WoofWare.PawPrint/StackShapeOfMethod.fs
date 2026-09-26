@@ -169,12 +169,12 @@ module StackShapeOfMethod =
         | Error e, _
         | _, Error e -> Error e
 
-    /// The shape of a call to a reflected method: its own signature, read under the declaring type's
-    /// instantiation and its own, which the identity carries.
+    /// The shape of a call to a reflected method: its own signature, with each generic parameter
+    /// taking the shape of the argument the identity binds it to. Read from the concrete handles
+    /// rather than through a `TypeDefn`, since only CoreLib's own metadata names a float there.
     let private reflectedCalleeShape
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (operation : string)
         (state : IlMachineState)
+        (operation : string)
         (identity : MetadataMethodIdentity)
         : TokenShape
         =
@@ -187,29 +187,28 @@ module StackShapeOfMethod =
                 failwith $"%s{operation}: assembly %s{identity.GetAssemblyFullName ()} of a scope method is not loaded"
             )
 
-        let toTypeDefn (handle : ConcreteTypeHandle) : TypeDefn =
-            Concretization.concreteHandleToTypeDefn baseClassTypes handle state.ConcreteTypes state._LoadedAssemblies
-
         let typeArguments =
             let declaring = MethodHandleResolution.requireClosedDeclaringType operation identity
 
             match IlMachineState.tryGetConcreteTypeInfo state declaring with
-            | Some (concreteType, _) -> concreteType.Generics |> Seq.map toTypeDefn |> ImmutableArray.CreateRange
+            | Some (concreteType, _) -> concreteType.Generics
             | None ->
                 failwith
                     $"%s{operation}: the declaring type %O{declaring} of a scope method is not a registered nominal type"
 
-        let substitution =
+        let bind (arguments : ImmutableArray<ConcreteTypeHandle>) (index : int) : SlotShape =
+            if index >= 0 && index < arguments.Length then
+                shapeOfConcreteType state arguments.[index]
+            else
+                SlotShape.Other
+
+        let binding =
             {
-                TypeArguments = Some typeArguments
-                MethodArguments =
-                    identity.GetMethodGenerics ()
-                    |> Seq.map toTypeDefn
-                    |> ImmutableArray.CreateRange
-                    |> Some
+                TypeParameter = bind typeArguments
+                MethodParameter = bind (identity.GetMethodGenerics () |> ImmutableArray.CreateRange)
             }
 
-        StackShapeTokens.calleeShape assembly GenericBinding.AtDefinition substitution definition.Signature
+        StackShapeTokens.calleeShape assembly binding GenericSubstitution.None definition.Signature
 
     /// The effect of one `DynamicScope` operand, read the way the instruction itself will read it.
     let private dynamicTokenShape
@@ -232,7 +231,7 @@ module StackShapeOfMethod =
             | Error (ScopeEntryRefusal.GuestException (_, why))
             | Error (ScopeEntryRefusal.Unsupported why) -> Error why
             | Ok (ScopeMethodResolution.Resolved (MethodHandle.FromMetadata identity)) ->
-                Ok (Some (reflectedCalleeShape baseClassTypes operation state identity))
+                Ok (Some (reflectedCalleeShape state operation identity))
             | Ok (ScopeMethodResolution.Resolved (MethodHandle.FromDynamic callee)) ->
                 let definition =
                     MethodHandleRegistry.resolveDynamicMethod callee state.MethodHandles
