@@ -973,6 +973,9 @@ module internal UnaryMetadataCallOps =
         /// The prefix loads through its byref receiver, and that byref is null, so the instruction
         /// faults. The call's arguments are popped and the program counter has not moved.
         | NullDereference of IlMachineState
+        /// The prefix would box a `Nullable<T>` whose `hasValue` is undefined, and whether there is
+        /// a box to call on depends on it, so the run ends here.
+        | UndefinedHasValue of UndefinedValue
 
     let executeCallvirt (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
@@ -1363,6 +1366,10 @@ module internal UnaryMetadataCallOps =
 
                         let derefEval = EvalStackValue.ofCliType derefCli
 
+                        match Boxing.tryUndefinedHasValue baseClassTypes tHandle derefEval state with
+                        | Some u -> ConstrainedReceiver.UndefinedHasValue u
+                        | None ->
+
                         // Box `*ptr` exactly as `box T` would (ECMA III.4.1), Nullable rule
                         // included: a value-less `Nullable<T>` becomes null, so the null check
                         // below raises NullReferenceException; one with a value boxes its `T`,
@@ -1380,7 +1387,8 @@ module internal UnaryMetadataCallOps =
                             $"constrained.callvirt case 2: non-base method %s{methodToCall.Name} had no direct value-type implementation for type %s{tConcrete.Namespace}.%s{tConcrete.Name}"
 
             match transformed with
-            | ConstrainedReceiver.NullDereference _ -> transformed
+            | ConstrainedReceiver.NullDereference _
+            | ConstrainedReceiver.UndefinedHasValue _ -> transformed
             | ConstrainedReceiver.Ready (state, concretizedMethod, dispatchesOnReceiver) ->
                 // Restore the method arguments on top of the transformed receiver.
                 // argsBottomToTop has the bottom-most arg at the head; pushing left-to-right
@@ -1394,6 +1402,12 @@ module internal UnaryMetadataCallOps =
         match constrainedReceiver with
         | ConstrainedReceiver.NullDereference state ->
             IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
+        | ConstrainedReceiver.UndefinedHasValue u ->
+            IlMachineStateExecution.observeUndefinedInInstruction
+                "the hasValue field a constrained. callvirt decides by whether to box a Nullable`1"
+                u
+                thread
+                state
         | ConstrainedReceiver.Ready (state, concretizedMethod, dispatchesOnReceiver) ->
 
         let receiver =

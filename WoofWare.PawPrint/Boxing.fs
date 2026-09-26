@@ -112,15 +112,6 @@ module internal Boxing =
 
         IlMachineState.allocateManagedObject typeHandle cvt state
 
-    /// Box a value whose type is the value type `typeHandle`, exactly as the `box` opcode would
-    /// (ECMA-335 III.4.1), answering the reference that `box` pushes.
-    ///
-    /// A `Nullable<T>` never boxes as itself: one without a value boxes to null, and one with a
-    /// value boxes its `T`. Every other value type boxes as itself. `toBox` is the value as it
-    /// sits on the evaluation stack, so a primitive-like value type arrives flattened and a
-    /// `Nullable<T>` arrives as `UserDefinedValueType`.
-    ///
-    /// Reference types are not accepted: boxing one is a no-op the caller can perform by itself.
     /// The undefined `hasValue` of `toBox`, when boxing it as `typeHandle` would read one: a
     /// `Nullable<T>` boxes to null or to its `T` according to `hasValue`, so an undefined one is a
     /// use of undefined content. `None` for any other type, and for a defined `hasValue`.
@@ -143,6 +134,15 @@ module internal Boxing =
             | _ -> None
         | _ -> None
 
+    /// Box a value whose type is the value type `typeHandle`, exactly as the `box` opcode would
+    /// (ECMA-335 III.4.1), answering the reference that `box` pushes.
+    ///
+    /// A `Nullable<T>` never boxes as itself: one without a value boxes to null, and one with a
+    /// value boxes its `T`. Every other value type boxes as itself. `toBox` is the value as it
+    /// sits on the evaluation stack, so a primitive-like value type arrives flattened and a
+    /// `Nullable<T>` arrives as `UserDefinedValueType`.
+    ///
+    /// Reference types are not accepted: boxing one is a no-op the caller can perform by itself.
     let boxValue
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
