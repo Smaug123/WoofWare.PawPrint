@@ -485,6 +485,40 @@ module TestMarshalLayoutClass =
             failwith $"%d{failures.Length} of %d{hostAnswers.Length} classes disagree:\n%s{described}"
 
     [<Test>]
+    let ``MarshalFieldOffset tells apart fields of different classes with the same row number`` () : unit =
+        // A class's placements span its base chain, which may cross assemblies, and a field row
+        // number is only unique within one assembly: the declaring type is part of the identity.
+        let row = System.Reflection.Metadata.Ecma335.MetadataTokens.FieldDefinitionHandle 1
+        let baseType = ConcreteTypeHandle.Concrete 1
+        let derivedType = ConcreteTypeHandle.Concrete 2
+
+        let placement (declaringType : ConcreteTypeHandle) (offset : int) : MarshalFieldPlacement =
+            {
+                Field =
+                    {
+                        Id = FieldId.metadata declaringType row "f"
+                        Name = "f"
+                        Contents = CliType.Numeric (CliNumericType.Int32 0)
+                        Offset = None
+                        Type = baseType
+                        MarshallingDescriptor = None
+                    }
+                NativeOffset = offset
+                Native =
+                    MarshalFieldNative.Leaf
+                        {
+                            Size = 4
+                            Alignment = 4
+                        }
+            }
+
+        let placements = [ placement baseType 0 ; placement derivedType 4 ]
+        let field = ComparableFieldDefinitionHandle.Make row
+
+        CliType.MarshalFieldOffset baseType field placements |> shouldEqual 0
+        CliType.MarshalFieldOffset derivedType field placements |> shouldEqual 4
+
+    [<Test>]
     let ``the class corpus reaches every field kind, and real .NET both answers and refuses`` () : unit =
         // Vacuity guard: a sample that stopped drawing some kind, or whose every class real .NET
         // refused, or whose every answer PawPrint refused, would pass the comparison above while
