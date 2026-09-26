@@ -20,6 +20,7 @@
     <Compile Include="TestAssemblyReadCache.fs" />
     <Compile Include="TestSequencePoints.fs" />
     <Compile Include="TestCustomAttributeBlob.fs" />
+    <Compile Include="TestRuntimeCompatibility.fs" />
     <Compile Include="TestMultiDimArrayAllocation.fs" />
     <Compile Include="TestArrayConstructor.fs" />
     <Compile Include="TestAttributeUsageBlob.fs" />
