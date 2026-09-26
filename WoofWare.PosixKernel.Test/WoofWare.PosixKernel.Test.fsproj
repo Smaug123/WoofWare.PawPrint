@@ -54,6 +54,8 @@
     <Compile Include="TestSignalState.fs" />
     <Compile Include="TestUnixSignal.fs" />
     <Compile Include="TestDirectoryEnumeration.fs" />
+    <Compile Include="TestDirectoryDescription.fs" />
+    <Compile Include="TestDirectoryReadAgainstHost.fs" />
     <Compile Include="TestPathCursor.fs" />
     <Compile Include="TestVirtualFileSystem.fs" />
     <Compile Include="TestOpenDirRules.fs" />

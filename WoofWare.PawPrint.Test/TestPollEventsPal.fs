@@ -313,7 +313,8 @@ module TestPollEventsPal =
         let level =
             match description.Target with
             | OpenFileTarget.Socket socketId -> UnixMachineState.socketReadinessLevel socketId system.Machine
-            | OpenFileTarget.File _ ->
+            | OpenFileTarget.File _
+            | OpenFileTarget.Directory _ ->
                 { ReadinessLevel.none with
                     In = true
                     Out = true

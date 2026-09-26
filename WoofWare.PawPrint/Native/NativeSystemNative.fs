@@ -2576,6 +2576,8 @@ module NativeSystemNative =
                     NoFollow = flags &&& palNoFollow <> 0
                     CloseOnExec = flags &&& palCloExec <> 0
                     Synchronous = flags &&& palSync <> 0
+                    // The PAL has no `O_DIRECTORY` bit to translate.
+                    Directory = false
                 }
 
             match
@@ -2764,9 +2766,10 @@ module NativeSystemNative =
         // and a **raw** errno otherwise — this entry point does not use
         // `SetLastError`, and `FileSystemEnumerator.FindNextEntry` feeds the
         // return value straight to `new Interop.ErrorInfo(result)`, which
-        // converts it with `ConvertErrorPlatformToPal`. No failure arm exists
-        // here: the cursor walk is total, and a `DIR*` this kernel never issued
-        // is undefined behaviour on a real libc rather than an errno, so
+        // converts it with `ConvertErrorPlatformToPal`. The one failure is a
+        // read through a descriptor the guest closed or replaced behind the
+        // stream's back; a `DIR*` this kernel never issued is undefined
+        // behaviour on a real libc rather than an errno, so
         // `EmulatedKernel.directoryStreamId` refuses instead of inventing EBADF.
         //
         // The output parameter is matched loosely, as `SystemNative_Stat`'s is
@@ -2799,14 +2802,6 @@ module NativeSystemNative =
             // around the call and `Marshal.GetLastSystemError` reads what the C
             // left — zero. Without this, a guest that failed a syscall and then
             // enumerated a directory would still see the old errno.
-            // Note what this does *not* touch: the offset on the descriptor
-            // `opendir` opened. A real `readdir` moves it, but to a cookie
-            // PawPrint cannot produce — measured, it jumps once when libc's
-            // `getdents` buffer fills and then stays put as entries are consumed
-            // out of it, and its value is the filesystem's own (a block boundary
-            // on ext4, `2147483647` on APFS for a three-entry directory). An
-            // entry index would be wrong in shape as well as in value. See
-            // `docs/divergences.md`.
             let state = state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread 0)
 
             match UnixNamespace.readdir id (EmulatedKernel.unix state.Kernel) with
@@ -2825,6 +2820,19 @@ module NativeSystemNative =
                     0
                     (withAnswered system state)
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | ReadDirAnswer.Failed error, system ->
+                // "kernel set errno -> failure": the same zeroed entry, and the
+                // raw errno as the return value. Reachable only by a guest that
+                // closed or replaced the stream's descriptor behind its back.
+                // `readdir` left the errno behind, and nothing restores it.
+                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+                let raw = UnixError.toRawErrnoUnder numbering error
+
+                (withAnswered system state).MapKernel (EmulatedKernel.withLastSystemError ctx.Thread raw)
+                |> writeDirectoryEntry ctx operation directoryEntryHandle output ManagedPointerSource.Null 0 0
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim raw)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
             | ReadDirAnswer.Entry (name, kind), system ->
@@ -3503,8 +3511,9 @@ module NativeSystemNative =
                     match refusal with
                     | LSeekRefusal.Sparseness _ ->
                         "CoreLib never sends these -- Interop.Sys.SeekWhence is 0, 1, 2 -- so this is a hand-rolled P/Invoke."
-                    | LSeekRefusal.DirectoryEnd _ ->
-                        "No BCL caller reaches it: SafeFileHandle.Init raises UnauthorizedAccessException on opening a directory for reading (SafeFileHandle.Unix.cs:320-327), and directory enumeration goes through opendir/readdir."
+                    | LSeekRefusal.DirectoryEnd _
+                    | LSeekRefusal.DirectoryPosition _ ->
+                        "No BCL caller reaches it: SafeFileHandle.Init raises UnauthorizedAccessException on opening a directory for reading (SafeFileHandle.Unix.cs:320-327), and directory enumeration goes through opendir/readdir, whose descriptor no CoreLib code asks for."
 
                 failwith $"%s{operation}: fd %d{fd}: %s{LSeekRefusal.describe refusal} %s{reachability}"
             | Ok (SyscallAnswer.Failed error, system) ->
@@ -5627,6 +5636,7 @@ module NativeSystemNative =
                         match description.Target with
                         | OpenFileTarget.StandardStream role -> StepEffect.WroteToFd (role, bytes)
                         | OpenFileTarget.File _
+                        | OpenFileTarget.Directory _
                         | OpenFileTarget.Socket _
                         | OpenFileTarget.SocketEventPort _ -> StepEffect.NoEffect
                     | None -> StepEffect.NoEffect
@@ -5732,8 +5742,8 @@ module NativeSystemNative =
             // PawPrint has no terminal but mirrors the dedicated-thread shape:
             // on first init we allocate a fresh `ThreadId` for the
             // signal dispatcher and park it (status `ThreadStatus.Parked`),
-            // recording its id in `Signals.Init`. A future slice will wake
-            // that thread out of `Parked` to actually invoke handlers.
+            // recording its id in `PosixSignalShim`. `SignalDispatch` wakes
+            // that thread out of `Parked` to invoke the managed callback.
             // The call is idempotent: a second invocation preserves the
             // already-allocated dispatcher (BCL initializers may run more
             // than once across the surface). Real native code returns 0 on
@@ -5741,17 +5751,14 @@ module NativeSystemNative =
             // process); PawPrint always reports success because there is no
             // underlying syscall that could fail.
             let state =
-                if SignalState.isInitialized state.Kernel.Signals then
+                if PosixSignalShim.isInitialized state.Kernel.PosixSignalShim then
                     state
                 else
                     let state, dispatcher = IlMachineState.allocateParkedThread state
 
                     state.MapKernel (fun kernel ->
                         { kernel with
-                            Process =
-                                { kernel.Process with
-                                    Signals = SignalState.markInitialized dispatcher kernel.Signals
-                                }
+                            PosixSignalShim = PosixSignalShim.markInitialized dispatcher kernel.PosixSignalShim
                         }
                     )
 
@@ -5828,10 +5835,10 @@ module NativeSystemNative =
             // a function-pointer-typed `delegate* unmanaged<int, PosixSignal, int>`.
             // Real native code stashes the raw pointer into a global
             // (`g_posixSignalHandler`) and the signal-handling thread later
-            // invokes it after a signal is queued. PawPrint just records the
-            // managed identity of the target method on `SignalState` — the
-            // forthcoming signal-delivery slice reads it back at dispatch
-            // time. We refuse anything other than a real
+            // invokes it after a signal is queued. PawPrint records the
+            // managed identity of the target method on `PosixSignalShim`,
+            // and `SignalDispatch` reads it back at dispatch time. We refuse
+            // anything other than a real
             // `NativeIntSource.FunctionPointer`: any other tag means the
             // value didn't come from `Ldftn` on a managed method, so we
             // have no callable identity to record and silently dropping it
@@ -5849,10 +5856,7 @@ module NativeSystemNative =
 
             state.MapKernel (fun kernel ->
                 { kernel with
-                    Process =
-                        { kernel.Process with
-                            Signals = SignalState.setHandler (SignalHandler.ofMethodInfo mi) kernel.Signals
-                        }
+                    PosixSignalShim = PosixSignalShim.setHandler (SignalHandler.ofMethodInfo mi) kernel.PosixSignalShim
                 }
             )
             |> NativeHandlerResult.completed

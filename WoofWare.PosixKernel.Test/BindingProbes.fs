@@ -121,6 +121,7 @@ module BindingProbes =
             NoFollow = false
             CloseOnExec = false
             Synchronous = false
+            Directory = false
         }
 
     let private reading : OpenFlags =

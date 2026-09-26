@@ -49,10 +49,8 @@ module PropertySignatureDecoding =
         try
             decoder.DecodeMethodSignature &reader
         with :? BadImageFormatException as e ->
-            // Deliberately not `SignatureBlobDecoding.reraiseAsUndecodable`: that reports the
-            // likely cause as an `ELEMENT_TYPE_INTERNAL` from a `DynamicMethod`-built blob, which
-            // cannot be what happened here. These bytes come from a Property row in a PE image, so
-            // a decode failure means the image is malformed.
+            // These bytes come from a Property row in a PE image, so a decode failure means the
+            // image is malformed.
             raise (
                 BadImageFormatException (
                     $"could not decode the PropertySig at %O{signature} in %O{assembly}; the Property row's signature blob is malformed",

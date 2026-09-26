@@ -88,6 +88,7 @@ module TestUnixPathBytes =
             match UnixNamespace.readdir stream system with
             | ReadDirAnswer.EndOfStream, _ -> acc
             | ReadDirAnswer.Entry (name, _), system -> drain system (List.ofSeq name :: acc)
+            | ReadDirAnswer.Failed error, _ -> failwith $"readdir failed with %O{error}"
 
         drain system []
         |> List.sort
@@ -214,6 +215,7 @@ module TestUnixPathBytes =
                 NoFollow = false
                 CloseOnExec = false
                 Synchronous = false
+                Directory = false
             }
 
         for name in [ text "g" ; [ 0xFFuy ] ] do

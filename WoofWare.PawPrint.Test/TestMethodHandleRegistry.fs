@@ -2356,7 +2356,14 @@ public static class TypicalHolder<T>
             typicalFixture "TypicalDynamicMethodAssembly"
 
         // `static void ()`: default calling convention, no parameters, void return.
-        let signature = ImmutableArray.Create (0x00uy, 0x00uy, 0x01uy)
+        let signature =
+            [ 0x00uy ; 0x00uy ; 0x01uy ]
+            |> Seq.map UInt8Source.Verbatim
+            |> ImmutableArray.CreateRange
+            |> DynamicSignatureDecoding.decodeMethod (fun source ->
+                failwith $"no ELEMENT_TYPE_INTERNAL here, but asked about %O{source}"
+            )
+            |> TypeMethodSignature.make
 
         let body =
             MintedDynamicMethodBody.make [ IlOp.Nullary NullaryIlOp.Ret, 0 ] None ImmutableArray.Empty

@@ -53,6 +53,13 @@ type OpenFlags =
         /// its bytes in memory, so every write is already as durable as the
         /// model gets. Here for the same reason as `CloseOnExec`.
         Synchronous : bool
+        /// `O_DIRECTORY`: fail ENOTDIR unless the path names a directory.
+        ///
+        /// Modelled only as `opendir(3)` uses it: with `O_RDONLY`, and without
+        /// `O_CREAT`, `O_TRUNC` or `O_NOFOLLOW`. `UnixNamespace.openPath`
+        /// refuses every other combination, whose check order against those
+        /// flags is unmeasured.
+        Directory : bool
     }
 
 /// What `readlink(2)` puts in the caller's buffer and what it returns.
@@ -120,6 +127,51 @@ type ReadDirAnswer =
     /// terminating is the client's business, its buffer being the one with a
     /// size. `.` and `..` are entries like any other and are reported here.
     | Entry of name : ImmutableArray<byte> * kind : DirectoryEntryKind
+    /// `readdir` returns NULL with `error` in errno. Only a process that closed
+    /// or replaced the stream's descriptor can reach this.
+    | Failed of error : UnixError
+
+/// One entry of a directory, as `getdents(2)` reports it: the facts in a
+/// `struct linux_dirent64` or a Darwin `struct direntry`, without either's
+/// layout.
+type DirectoryRecord =
+    {
+        /// `d_ino`: the inode the entry names. For `.` that is the directory
+        /// itself and for `..` its parent, as `stat` would report them.
+        Inode : InodeNumber
+        /// `d_name`.
+        Name : DirectoryStreamName
+        /// `d_type`. Never unknown: measured on tmpfs and APFS, every entry,
+        /// the dots included, reports its kind.
+        Kind : DirectoryEntryKind
+    }
+
+/// What reading the next entry of a directory descriptor answers.
+[<RequireQualifiedAccess>]
+type ReadDirectoryAnswer =
+    /// The next entry. The description's position has moved past it.
+    | Entry of record : DirectoryRecord
+    /// There is nothing further: `getdents` returns 0.
+    | EndOfDirectory
+    /// `getdents` returns -1 with this errno.
+    | Failed of error : UnixError
+
+/// Why this kernel will not say what reading a directory descriptor yields.
+[<RequireQualifiedAccess>]
+type ReadDirectoryRefusal =
+    /// `lseek` moved the description to a nonzero offset (see
+    /// `DirectoryPosition.Unenumerable`), and what each filesystem yields from
+    /// an offset it did not hand out is its own.
+    | UnenumerablePosition of inode : InodeNumber * offset : int64
+
+[<RequireQualifiedAccess>]
+module ReadDirectoryRefusal =
+    /// What this kernel knows about why it cannot answer, for a client composing
+    /// a diagnostic.
+    let describe (refusal : ReadDirectoryRefusal) : string =
+        match refusal with
+        | ReadDirectoryRefusal.UnenumerablePosition (inode, offset) ->
+            $"the description onto directory %O{inode} is at offset %d{offset}, where lseek put it. Both kernels accept that offset, but what the next read yields from it is each filesystem's own (tmpfs resumes from the entry with the greatest offset at or below it; APFS skips that many entries, or answers EAGAIN, depending on the high word), and this kernel's position is a name rather than an offset. Only offset 0, which rewinds, is readable from."
 
 /// How far `rename(2)` had got with its source when it stopped to copy its
 /// *destination* pathname in — which is not the same point on the two flavours.
@@ -184,7 +236,9 @@ module UnixNamespace =
     /// 0o0755 on both flavours, so a bit above the permission word is dropped
     /// exactly as the platform's own mask drops it.
     ///
-    /// Never refused: every outcome is a descriptor or an errno.
+    /// Never refused: every outcome is a descriptor or an errno. The one
+    /// exception is an `O_DIRECTORY` combination this library does not model;
+    /// see `OpenFlags.Directory`.
     let openPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (flags : OpenFlags)
         (path : UnixPath)
@@ -208,8 +262,16 @@ module UnixNamespace =
             (system : UnixSystem<'Task, 'Handler>)
             : SyscallAnswer * UnixSystem<'Task, 'Handler>
             =
+            // A directory gets a description positioned in its entries rather
+            // than at a byte offset. It can only be here for reading: every
+            // writable or truncating open of one answered EISDIR before this.
             let fd, registry =
-                FileDescriptorRegistry.openFile inode flags.Access system.Process.FileDescriptors
+                match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
+                | Some (InodeContent.Directory _) ->
+                    FileDescriptorRegistry.openDirectory inode system.Process.FileDescriptors
+                | Some (InodeContent.RegularFile _)
+                | Some (InodeContent.Symlink _)
+                | None -> FileDescriptorRegistry.openFile inode flags.Access system.Process.FileDescriptors
 
             SyscallAnswer.Completed (int64 fd),
             { system with
@@ -218,6 +280,32 @@ module UnixNamespace =
                         FileDescriptors = registry
                     }
             }
+
+        if flags.Directory then
+            if
+                flags.Access <> FileAccessMode.ReadOnly
+                || flags.Create
+                || flags.Truncate
+                || flags.NoFollow
+            then
+                failwith
+                    $"UnixNamespace.openPath: O_DIRECTORY with %A{flags}. Only O_DIRECTORY|O_RDONLY without O_CREAT, O_TRUNC or O_NOFOLLOW (what opendir(3) opens with) is modelled; where ENOTDIR falls among EISDIR, EACCES, ELOOP and the creation checks for any other combination is unmeasured."
+
+            // `opendir(3)` is exactly this open, and its rows are measured on
+            // both kernels, which agree in every one: a final symlink is
+            // followed, a trailing separator changes nothing, being a file beats
+            // being unreadable, and it is the read bit rather than the search
+            // bit that is demanded. `OpenDirRules` holds them.
+            match
+                UnixPathResolution.resolvePathFull SymlinkPolicy.Follow TrailingSeparatorPolicy.Demand path system
+            with
+            | Error error -> SyscallAnswer.Failed error, system
+            | Ok resolution ->
+
+            match OpenDirRules.verdict privilege resolution system.Machine.FileSystem with
+            | OpenDirVerdict.Refuse error -> SyscallAnswer.Failed error, system
+            | OpenDirVerdict.Open inode -> opened inode system
+        else
 
         // `O_CREAT|O_EXCL` does not follow a final symlink -- measured
         // unanimously: an existing link is EEXIST whether it dangles, points at a
@@ -480,8 +568,106 @@ module UnixNamespace =
         else
             Ok (ReadLinkAnswer.Reported (ImmutableArray.CreateRange (Seq.truncate capacity all)))
 
-    /// `opendir(3)`: resolve `path` and start a stream over the directory it
-    /// names.
+    /// Read the next entry of the directory `fd` names, and move its open file
+    /// description's position past it: one record of `getdents(2)` (Linux) or
+    /// `getdirentries(2)` (Darwin), without either's byte layout.
+    ///
+    /// The position is the description's, so every descriptor `dup(2)` made
+    /// for it reads onward from the same place, and `lseek(fd, 0, SEEK_SET)`
+    /// starts again from the first entry.
+    ///
+    /// The names come in this library's own order, which matches no real
+    /// filesystem: see `VirtualFileSystem.nextDirectoryEntry`.
+    let readDirectoryEntry<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<ReadDirectoryAnswer * UnixSystem<'Task, 'Handler>, ReadDirectoryRefusal>
+        =
+        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+
+        match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+        | None -> Ok (ReadDirectoryAnswer.Failed UnixError.EBADF, system)
+        | Some description ->
+
+        // Not a directory. Measured on every descriptor kind this library
+        // models (a regular file opened each way, both ends of a pipe, stream
+        // and datagram sockets of both domains, an epoll instance or kqueue):
+        //
+        //   descriptor                       Linux     Darwin
+        //   regular file, readable           ENOTDIR   EINVAL
+        //   regular file, O_WRONLY           ENOTDIR   EBADF
+        //   pipe, socket, epoll or kqueue    ENOTDIR   ENOTSUP
+        //
+        // Ahead of the buffer on both (a NULL buffer on a regular file answers
+        // the same), which is why a caller need not screen one first.
+        let notADirectory (readable : bool) (isVnode : bool) : UnixError =
+            match flavour with
+            | SimulatedUnixFlavour.Linux -> UnixError.ENOTDIR
+            | SimulatedUnixFlavour.Darwin ->
+                if not isVnode then UnixError.ENOTSUP
+                elif not readable then UnixError.EBADF
+                else UnixError.EINVAL
+
+        match description.Target with
+        | OpenFileTarget.File _ ->
+            let readable = FileAccessMode.permitsRead description.AccessMode
+            Ok (ReadDirectoryAnswer.Failed (notADirectory readable true), system)
+        | OpenFileTarget.StandardStream _
+        | OpenFileTarget.Socket _
+        | OpenFileTarget.SocketEventPort _ -> Ok (ReadDirectoryAnswer.Failed (notADirectory true false), system)
+        | OpenFileTarget.Directory (inode, position) ->
+
+        let withPosition (position : DirectoryPosition) (system : UnixSystem<'Task, 'Handler>) =
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors =
+                            FileDescriptorRegistry.setDirectoryPosition fd position system.Process.FileDescriptors
+                    }
+            }
+
+        // A directory `rmdir` has removed yields nothing, from any position:
+        // measured one call at a time, on a fresh description, after a partial
+        // read, after a full one, after a rewind, and at offsets 5, 2^31-1 and
+        // 2^62. Linux answers ENOENT and leaves the position alone. Darwin
+        // answers 0 and moves the position to its end-of-directory value --
+        // except at 2^62, where it answers EAGAIN, so a position `lseek` chose
+        // stays refused there.
+        let orphaned = VirtualFileSystem.isOrphanedDirectory inode system.Machine.FileSystem
+
+        match flavour, orphaned, position with
+        | SimulatedUnixFlavour.Linux, true, _ -> Ok (ReadDirectoryAnswer.Failed UnixError.ENOENT, system)
+        | _, _, DirectoryPosition.Unenumerable offset ->
+            Error (ReadDirectoryRefusal.UnenumerablePosition (inode, offset))
+        | SimulatedUnixFlavour.Darwin, true, DirectoryPosition.Cursor _ ->
+            Ok (
+                ReadDirectoryAnswer.EndOfDirectory,
+                withPosition (DirectoryPosition.Cursor DirectoryCursor.ReturnedDot) system
+            )
+        | _, false, DirectoryPosition.Cursor cursor ->
+
+        match VirtualFileSystem.nextDirectoryEntry inode cursor system.Machine.FileSystem with
+        | None -> Ok (ReadDirectoryAnswer.EndOfDirectory, system)
+        | Some (name, target, next) ->
+
+        let kind =
+            match VirtualFileSystem.tryGetContent target system.Machine.FileSystem with
+            | Some content -> DirectoryEntryKind.ofContent content
+            | None ->
+                failwith
+                    $"UnixNamespace.readDirectoryEntry: the entry \"%O{name}\" names inode %O{target}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
+
+        let record : DirectoryRecord =
+            {
+                Inode = target
+                Name = name
+                Kind = kind
+            }
+
+        Ok (ReadDirectoryAnswer.Entry record, withPosition (DirectoryPosition.Cursor next) system)
+
+    /// `opendir(3)`: open `path` as `open(O_RDONLY|O_DIRECTORY|O_CLOEXEC)`
+    /// does, and start a stream over the descriptor.
     ///
     /// Answers a minted `DirectoryStreamId`, not a `DIR*`: see
     /// `OpenDirAnswer.Opened`. A client that materialises a pointer for its
@@ -489,11 +675,8 @@ module UnixNamespace =
     /// `VirtualFileSystem.checkInvariants` refuses a state in which the two
     /// disagree.
     ///
-    /// Consumes a descriptor, which `dirfd(3)` would hand back. A caller that
-    /// never calls `dirfd` still sees it in the numbering of a later `open` --
-    /// which is enough to make it observable, and is why the
-    /// stream takes a real descriptor rather than living beside the table. It is
-    /// also what pins the directory's inode while the stream is open.
+    /// The descriptor is an ordinary one, which a later `open` sees in its
+    /// numbering, and it is what the stream reads through.
     ///
     /// Never refused: every outcome is a stream or an errno.
     let opendir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -501,24 +684,30 @@ module UnixNamespace =
         (system : UnixSystem<'Task, 'Handler>)
         : OpenDirAnswer * UnixSystem<'Task, 'Handler>
         =
-        // `Follow`, and a trailing separator that merely records its demand:
-        // measured on both kernels, `opendir` follows a final symlink and a
-        // trailing separator changes no row at all -- "ld" and "ld/" both
-        // succeed, "f" and "f/" are both ENOTDIR. Nothing reads
-        // `TrailingSeparatorDemanded`, because a directory is demanded outright
-        // whether the separator was there or not.
-        match UnixPathResolution.resolvePathFull SymlinkPolicy.Follow TrailingSeparatorPolicy.Demand path system with
-        | Error error -> OpenDirAnswer.Failed error, system
-        | Ok resolution ->
+        let flags : OpenFlags =
+            {
+                Access = FileAccessMode.ReadOnly
+                Create = false
+                Exclusive = false
+                Truncate = false
+                NoFollow = false
+                CloseOnExec = true
+                Synchronous = false
+                Directory = true
+            }
 
-        match
-            OpenDirRules.verdict (UnixProcessState.callerPrivilege system.Process) resolution system.Machine.FileSystem
-        with
-        | OpenDirVerdict.Refuse error -> OpenDirAnswer.Failed error, system
-        | OpenDirVerdict.Open inode ->
+        match openPath flags path 0 system with
+        | SyscallAnswer.Failed error, system -> OpenDirAnswer.Failed error, system
+        | SyscallAnswer.Completed fd, system ->
 
-        let fd, registry =
-            FileDescriptorRegistry.openFile inode FileAccessMode.ReadOnly system.Process.FileDescriptors
+        let fd = int fd
+
+        let inode =
+            match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+            | Some (OpenFileTarget.Directory (inode, _)) -> inode
+            | other ->
+                failwith
+                    $"UnixNamespace.opendir: an O_DIRECTORY open answered fd %d{fd}, which names %O{other} rather than a directory (this is a bug in this library)."
 
         let id = system.Process.NextDirectoryStreamId
         let (DirectoryStreamId raw) = id
@@ -527,25 +716,29 @@ module UnixNamespace =
             {
                 Fd = fd
                 Inode = inode
-                Cursor = DirectoryCursor.Start
             }
 
         OpenDirAnswer.Opened id,
         { system with
             Process =
                 { system.Process with
-                    FileDescriptors = registry
                     DirectoryStreams = Map.add id stream system.Process.DirectoryStreams
                     NextDirectoryStreamId = DirectoryStreamId (raw + 1L)
                 }
         }
 
-    /// `readdir(3)`: hand back the next entry of `stream` and advance it.
+    /// `readdir(3)`: hand back the next entry of `stream`, read through its
+    /// descriptor.
     ///
-    /// Total: there is no failure arm, because the cursor walk always has an
-    /// answer and a stream this kernel never issued is a caller bug rather than
-    /// an errno -- a real libc calls that undefined behaviour, so there is no
-    /// errno to report.
+    /// As glibc does, a directory `rmdir` has removed is end-of-stream rather
+    /// than the ENOENT the kernel answers. Any other failure is one a process
+    /// can only cause by closing or replacing the stream's descriptor behind
+    /// its back, and is reported as `readdir` would report it.
+    ///
+    /// A stream this kernel never issued is a caller bug rather than an errno --
+    /// a real libc calls that undefined behaviour -- and so is refused loudly,
+    /// as is a descriptor `lseek` moved to a position this kernel does not
+    /// model (see `ReadDirectoryRefusal`).
     let readdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (stream : DirectoryStreamId)
         (system : UnixSystem<'Task, 'Handler>)
@@ -558,30 +751,16 @@ module UnixNamespace =
                 failwith
                     $"UnixNamespace.readdir: %O{stream} is not a directory stream this kernel issued. A real libc calls passing an unissued DIR* undefined behaviour rather than reporting an errno, so there is nothing to answer (this is a bug in the caller)."
 
-        match VirtualFileSystem.nextDirectoryEntry current.Inode current.Cursor system.Machine.FileSystem with
-        | None -> ReadDirAnswer.EndOfStream, system
-        | Some (name, target, next) ->
-
-        let kind =
-            match VirtualFileSystem.tryGetContent target system.Machine.FileSystem with
-            | Some content -> DirectoryEntryKind.ofContent content
-            | None ->
-                failwith
-                    $"UnixNamespace.readdir: the entry \"%O{name}\" names inode %O{target}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
-
-        ReadDirAnswer.Entry (UnixByteString.toBytes (DirectoryStreamName.toByteString name), kind),
-        { system with
-            Process =
-                { system.Process with
-                    DirectoryStreams =
-                        Map.add
-                            stream
-                            { current with
-                                Cursor = next
-                            }
-                            system.Process.DirectoryStreams
-                }
-        }
+        match readDirectoryEntry current.Fd system with
+        | Error refusal ->
+            failwith
+                $"UnixNamespace.readdir: %O{stream} reads through fd %d{current.Fd}, and %s{ReadDirectoryRefusal.describe refusal}"
+        | Ok (ReadDirectoryAnswer.EndOfDirectory, system) -> ReadDirAnswer.EndOfStream, system
+        | Ok (ReadDirectoryAnswer.Failed UnixError.ENOENT, system) -> ReadDirAnswer.EndOfStream, system
+        | Ok (ReadDirectoryAnswer.Failed error, system) -> ReadDirAnswer.Failed error, system
+        | Ok (ReadDirectoryAnswer.Entry record, system) ->
+            ReadDirAnswer.Entry (UnixByteString.toBytes (DirectoryStreamName.toByteString record.Name), record.Kind),
+            system
 
     /// `mkdir(2)`: bind a new directory at `path`.
     ///

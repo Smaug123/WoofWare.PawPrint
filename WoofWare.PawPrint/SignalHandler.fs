@@ -8,7 +8,7 @@ open WoofWare.PosixKernel
 /// call site pre-resolved — no need to round-trip through raw pointer
 /// bits.
 ///
-/// The wrapper exists purely so `SignalState` keeps clean structural
+/// The wrapper exists purely so `PosixSignalShim` keeps clean structural
 /// equality: `MethodInfo<_,_,_>` carries `ImmutableArray` fields and a
 /// `MethodBody` DU whose payloads use reference equality, so naked
 /// `MethodInfo` equality is unstable. `MethodInfo.NominallyEqual` is the

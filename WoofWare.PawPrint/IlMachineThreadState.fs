@@ -510,7 +510,7 @@ module IlMachineThreadState =
     /// Populate the bottom frame of a `Parked` signal-dispatcher thread
     /// with a handler-invocation method state, and flip its status to
     /// `Runnable`. Symmetric to `startUnstartedThread`, but for the
-    /// kernel-owned dispatcher allocated by `allocateParkedThread`:
+    /// runtime-owned dispatcher allocated by `allocateParkedThread`:
     /// the thread was sitting frameless with `Status = Parked` and
     /// `ActiveMethodState = FrameId -1`, and the signal-dispatch
     /// subsystem has now decided to wake it onto a handler. Fails loud

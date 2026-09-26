@@ -58,13 +58,9 @@ module TestUnixProcessState =
         // `SignalHandler` would not compile here at all.
         let proc =
             { empty with
-                Signals =
-                    empty.Signals
-                    |> SignalState.setHandler "sigaction"
-                    |> SignalState.block 7 Signal.SIGTERM
+                Signals = empty.Signals |> SignalState.block 7 Signal.SIGTERM
             }
 
-        SignalState.handler proc.Signals |> shouldEqual (Some "sigaction")
         SignalState.isBlocked 7 Signal.SIGTERM proc.Signals |> shouldEqual true
         SignalState.isBlocked 8 Signal.SIGTERM proc.Signals |> shouldEqual false
 
@@ -198,7 +194,6 @@ module TestUnixProcessState =
                             {
                                 Fd = streamFd
                                 Inode = streamInode
-                                Cursor = DirectoryCursor.Start
                             }
                         ]
             }

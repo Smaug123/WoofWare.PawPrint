@@ -461,15 +461,25 @@ type SocketEventPortState =
 type OpenFileTarget =
     /// One of the inherited standard streams. No offset: not seekable.
     | StandardStream of role : FileDescriptorRole
-    /// A regular file or directory, and where in it this description is
-    /// positioned. `read(2)` consumes from here and advances it; `lseek(2)`
-    /// sets it; `pread(2)` leaves it alone.
+    /// A regular file, and where in it this description is positioned.
+    /// `read(2)` consumes from here and advances it; `lseek(2)` sets it;
+    /// `pread(2)` leaves it alone.
     ///
     /// A real kernel permits an offset arbitrarily far past the end of the
     /// file (`lseek` beyond EOF is how sparse files are made), so this is not
     /// bounded by the file's length — only by being non-negative, which
     /// `VirtualFileSystem.seekTarget` enforces.
     | File of inode : InodeNumber * offset : int64
+    /// A directory, and how far through it this description has read.
+    ///
+    /// Not a `File` with an offset, because a directory's position is not a
+    /// byte offset on either kernel: it is a resumption point in the
+    /// directory's entries, which is what `DirectoryPosition` states. `lseek(2)`
+    /// moves it, and it is shared by every descriptor `dup(2)` makes.
+    ///
+    /// Always opened for reading only: a directory cannot be opened for writing
+    /// on either kernel.
+    | Directory of inode : InodeNumber * position : DirectoryPosition
     /// An epoll instance (Linux) or kqueue (Darwin), handed out by
     /// `FileDescriptorRegistry.createSocketEventPort` and destroyed by
     /// `close(2)`, which is why the port is a descriptor at all rather than a
@@ -594,7 +604,8 @@ module OpenFileDescription =
     let object (description : OpenFileDescription) : OpenFileObject =
         match description.Target with
         | OpenFileTarget.StandardStream role -> OpenFileObject.StandardStream role
-        | OpenFileTarget.File (inode, _) -> OpenFileObject.File inode
+        | OpenFileTarget.File (inode, _)
+        | OpenFileTarget.Directory (inode, _) -> OpenFileObject.File inode
         // Every socket event port collapses to one object, because on Linux
         // every anon-inode file shares one inode and so they all contend under
         // `flock`. See `OpenFileObject.AnonymousInode`.
@@ -701,6 +712,15 @@ type FileDescriptorRegistryDefect =
     /// There is no matching "too large" defect: seeking arbitrarily far past
     /// EOF is legal, and is how sparse files are made.
     | NegativeOffset of description : OpenFileDescriptionId * offset : int64
+    /// A directory description is at `DirectoryPosition.Unenumerable` with an
+    /// offset that is not positive. A negative one is `lseek`'s EINVAL on both
+    /// kernels, and zero is the start of the directory, which is
+    /// `DirectoryPosition.Cursor DirectoryCursor.Start`: holding it as an
+    /// offset would refuse a read both kernels answer.
+    | UnenumerableDirectoryPositionNotPositive of description : OpenFileDescriptionId * offset : int64
+    /// A directory description is open for writing, which no kernel permits:
+    /// `open(2)` on a directory for writing is EISDIR on both.
+    | WritableDirectory of description : OpenFileDescriptionId
     /// Two distinct descriptions name the same file and hold locks that
     /// `flock(2)` would never have granted together — at least one of them
     /// exclusive. This is the mutual-exclusion property itself rather than a
@@ -926,6 +946,7 @@ module FileDescriptorRegistry =
                         }
                     | OpenFileTarget.StandardStream _
                     | OpenFileTarget.File _
+                    | OpenFileTarget.Directory _
                     | OpenFileTarget.Socket _ -> description
                 )
 
@@ -980,6 +1001,34 @@ module FileDescriptorRegistry =
                         // modelled open starts blocking.
                         NonBlocking = false
                         // `open(2)` never takes a lock.
+                        Flock = None
+                    }
+                    registry.Descriptions
+            NextId = OpenFileDescriptionId (raw + 1L)
+        }
+
+    /// Mirrors the descriptor half of `open(2)` on a directory: allocate a
+    /// fresh open file description positioned at the start of `inode`'s
+    /// entries, open for reading, and the lowest non-negative descriptor not in
+    /// use to point at it.
+    ///
+    /// Total, for the reasons `openFile` is; whether `inode` is a directory the
+    /// process may read is decided before this is reached.
+    let openDirectory (inode : InodeNumber) (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
+        let id = registry.NextId
+        let (OpenFileDescriptionId raw) = id
+        let fd = lowestFree registry.Fds
+
+        fd,
+        { registry with
+            Fds = Map.add fd id registry.Fds
+            Descriptions =
+                Map.add
+                    id
+                    {
+                        Target = OpenFileTarget.Directory (inode, DirectoryPosition.Cursor DirectoryCursor.Start)
+                        AccessMode = FileAccessMode.ReadOnly
+                        NonBlocking = false
                         Flock = None
                     }
                     registry.Descriptions
@@ -1263,6 +1312,9 @@ module FileDescriptorRegistry =
         | OpenFileTarget.Socket socketId ->
             failwith
                 $"setOffset: fd %d{fd} names socket %O{socketId}, which holds no file offset on either platform — `lseek` on a socket is ESPIPE on both (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have answered ESPIPE)."
+        | OpenFileTarget.Directory (inode, _) ->
+            failwith
+                $"setOffset: fd %d{fd} names directory %O{inode}, whose position is not a byte offset (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have called setDirectoryPosition)."
         | OpenFileTarget.File (inode, _) ->
 
         { registry with
@@ -1274,6 +1326,50 @@ module FileDescriptorRegistry =
                     }
                     registry.Descriptions
         }
+
+    /// Move the position of the directory description `fd` names, which every
+    /// descriptor `dup(2)` made for it shares.
+    ///
+    /// Partial in the descriptor, like `setOffset`: the caller has already
+    /// answered EBADF for a dead fd, and has established that `fd` names a
+    /// directory.
+    let setDirectoryPosition
+        (fd : int)
+        (position : DirectoryPosition)
+        (registry : FileDescriptorRegistry)
+        : FileDescriptorRegistry
+        =
+        let id =
+            match Map.tryFind fd registry.Fds with
+            | Some id -> id
+            | None ->
+                failwith
+                    $"setDirectoryPosition: fd %d{fd} is not a live file descriptor (this is a bug in the caller of FileDescriptorRegistry.setDirectoryPosition, which should have answered EBADF)."
+
+        let description =
+            match Map.tryFind id registry.Descriptions with
+            | Some description -> description
+            | None ->
+                failwith
+                    $"file descriptor %d{fd} names open file description %O{id}, which is not present in the table (this is a bug in this library: every descriptor names a description in the table)"
+
+        match description.Target with
+        | OpenFileTarget.Directory (inode, _) ->
+            { registry with
+                Descriptions =
+                    Map.add
+                        id
+                        { description with
+                            Target = OpenFileTarget.Directory (inode, position)
+                        }
+                        registry.Descriptions
+            }
+        | OpenFileTarget.StandardStream _
+        | OpenFileTarget.File _
+        | OpenFileTarget.SocketEventPort _
+        | OpenFileTarget.Socket _ ->
+            failwith
+                $"setDirectoryPosition: fd %d{fd} names %O{description.Target}, which is not a directory (this is a bug in the caller of FileDescriptorRegistry.setDirectoryPosition)."
 
     /// Mirrors the `O_NONBLOCK` half of `fcntl(F_SETFL)`: record whether this
     /// description's transfers should refuse to block. On the description, so
@@ -1313,6 +1409,7 @@ module FileDescriptorRegistry =
         | OpenFileTarget.StandardStream _, false
         | OpenFileTarget.SocketEventPort _, _
         | OpenFileTarget.File _, _
+        | OpenFileTarget.Directory _, _
         | OpenFileTarget.Socket _, _ ->
 
         { registry with
@@ -1345,6 +1442,7 @@ module FileDescriptorRegistry =
         match description.Target with
         | OpenFileTarget.StandardStream _
         | OpenFileTarget.File _
+        | OpenFileTarget.Directory _
         | OpenFileTarget.Socket _ ->
             failwith
                 $"%s{operation}: %O{portId} is not a socket event port; the caller resolved it as one moments ago, so this is a bug in the caller of FileDescriptorRegistry.%s{operation}."
@@ -1472,6 +1570,7 @@ module FileDescriptorRegistry =
         match description.Target with
         | OpenFileTarget.StandardStream _
         | OpenFileTarget.File _
+        | OpenFileTarget.Directory _
         | OpenFileTarget.Socket _ ->
             failwith
                 $"appendSocketEventReady: %O{portId} is not a socket event port; the caller resolved it as one moments ago, so this is a bug in the caller of FileDescriptorRegistry.appendSocketEventReady."
@@ -1520,6 +1619,7 @@ module FileDescriptorRegistry =
         match description.Target with
         | OpenFileTarget.StandardStream _
         | OpenFileTarget.File _
+        | OpenFileTarget.Directory _
         | OpenFileTarget.Socket _ ->
             failwith
                 $"setSocketEventReady: %O{portId} is not a socket event port (this is a bug in the caller of FileDescriptorRegistry.setSocketEventReady, which derived the list from a different table)."
@@ -1581,6 +1681,7 @@ module FileDescriptorRegistry =
                 match description.Target with
                 | OpenFileTarget.StandardStream _
                 | OpenFileTarget.File _
+                | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _ -> description
                 | OpenFileTarget.SocketEventPort portState ->
                     let entering =
@@ -1653,6 +1754,26 @@ module FileDescriptorRegistry =
                         Some (FileDescriptorRegistryDefect.NegativeOffset (id, offset))
                     else
                         None
+                | OpenFileTarget.Directory (_, DirectoryPosition.Cursor _) -> None
+                | OpenFileTarget.Directory (_, DirectoryPosition.Unenumerable offset) ->
+                    if offset <= 0L then
+                        Some (FileDescriptorRegistryDefect.UnenumerableDirectoryPositionNotPositive (id, offset))
+                    else
+                        None
+            )
+
+        let writableDirectories =
+            registry.Descriptions
+            |> Map.toList
+            |> List.choose (fun (id, description) ->
+                match description.Target with
+                | OpenFileTarget.Directory _ when FileAccessMode.permitsWrite description.AccessMode ->
+                    Some (FileDescriptorRegistryDefect.WritableDirectory id)
+                | OpenFileTarget.Directory _
+                | OpenFileTarget.StandardStream _
+                | OpenFileTarget.SocketEventPort _
+                | OpenFileTarget.Socket _
+                | OpenFileTarget.File _ -> None
             )
 
         let locked =
@@ -1688,7 +1809,8 @@ module FileDescriptorRegistry =
                 match description.Target with
                 | OpenFileTarget.StandardStream _
                 | OpenFileTarget.SocketEventPort _
-                | OpenFileTarget.File _ -> None
+                | OpenFileTarget.File _
+                | OpenFileTarget.Directory _ -> None
                 | OpenFileTarget.Socket socketId -> Some (id, socketId)
             )
 
@@ -1714,6 +1836,7 @@ module FileDescriptorRegistry =
                 match description.Target with
                 | OpenFileTarget.StandardStream _
                 | OpenFileTarget.File _
+                | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _ -> []
                 | OpenFileTarget.SocketEventPort portState ->
                     portState.Registrations
@@ -1733,6 +1856,7 @@ module FileDescriptorRegistry =
                 match description.Target with
                 | OpenFileTarget.StandardStream _
                 | OpenFileTarget.File _
+                | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _ -> []
                 | OpenFileTarget.SocketEventPort portState ->
                     let unregistered =
@@ -1773,6 +1897,7 @@ module FileDescriptorRegistry =
         @ unreferenced
         @ freshness
         @ negativeOffsets
+        @ writableDirectories
         @ conflicting
         @ duplicateSockets
         @ deadRegistrations

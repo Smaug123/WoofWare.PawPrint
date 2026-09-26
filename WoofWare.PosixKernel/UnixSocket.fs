@@ -392,6 +392,7 @@ module UnixSocket =
 
         match description.Target with
         | OpenFileTarget.File _
+        | OpenFileTarget.Directory _
         | OpenFileTarget.StandardStream _
         | OpenFileTarget.SocketEventPort _ -> answered (UnixError.ENOTSOCK)
         | OpenFileTarget.Socket socketId ->
@@ -539,6 +540,7 @@ module UnixSocket =
             | Some error -> Ok (SetNonBlockingAnswer.Failed error, system)
         | Some (OpenFileTarget.StandardStream _)
         | Some (OpenFileTarget.File _)
+        | Some (OpenFileTarget.Directory _)
         | Some (OpenFileTarget.Socket _) -> Ok (SetNonBlockingAnswer.Set, stored system)
 
     /// `fcntl(F_GETFL)`'s `O_NONBLOCK` half: whether the open file description
@@ -786,6 +788,7 @@ module UnixSocket =
 
         match target with
         | OpenFileTarget.File _
+        | OpenFileTarget.Directory _
         | OpenFileTarget.StandardStream _
         | OpenFileTarget.SocketEventPort _ -> Ok (ListenAnswer.Failed UnixError.ENOTSOCK, system)
         | OpenFileTarget.Socket socketId ->
@@ -930,6 +933,7 @@ module UnixSocket =
 
         match target with
         | OpenFileTarget.File _
+        | OpenFileTarget.Directory _
         | OpenFileTarget.StandardStream _
         | OpenFileTarget.SocketEventPort _ -> Ok (GetSockNameAnswer.Failed (UnixError.ENOTSOCK, None))
         | OpenFileTarget.Socket socketId ->
@@ -1008,6 +1012,7 @@ module UnixSocket =
         match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
         | None -> Error UnixError.EBADF
         | Some (OpenFileTarget.File _)
+        | Some (OpenFileTarget.Directory _)
         | Some (OpenFileTarget.StandardStream _)
         | Some (OpenFileTarget.SocketEventPort _) -> Error UnixError.ENOTSOCK
         | Some (OpenFileTarget.Socket socketId) -> Ok socketId
