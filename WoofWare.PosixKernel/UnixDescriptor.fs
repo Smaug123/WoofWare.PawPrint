@@ -164,6 +164,13 @@ type CloseRefusal<'Task> =
     /// fact about the model and is the same on both. There is nothing here to
     /// measure and complete.
     | LastFlockedDescriptorWithWaiter of description : OpenFileDescriptionId * task : 'Task
+    /// The descriptor `fd`, which `task` is parked in a `poll(2)` watching.
+    ///
+    /// Refused under either flavour, because this table cannot represent what
+    /// Linux does: the sleeping poll keeps the file it found open, so the file
+    /// can still wake it, and it then looks the number up again and reports
+    /// what the number names by then.
+    | PolledDescriptor of fd : int * task : 'Task
 
 [<RequireQualifiedAccess>]
 module CloseRefusal =
@@ -178,6 +185,8 @@ module CloseRefusal =
             $"the descriptor names socket event port %O{port}, and task %O{task} is parked in a wait on it. Measured, Darwin's kevent *ends* such a wait with an error when the fd it was entered through closes -- but which error is not measured precisely, and what a close of a *different* descriptor onto the same kqueue does is not measured at all."
         | CloseRefusal.LastFlockedDescriptorWithWaiter (description, task) ->
             $"the descriptor is the last one onto open file description %O{description}, and task %O{task} is parked on an `flock` of it. A real kernel's blocked `flock` holds a reference to the file, so the description outlives every descriptor onto it and the waiter is eventually granted its lock; this table has no such reference to represent, so destroying the description would either strand the waiter for ever or wake it into an EBADF no kernel produces."
+        | CloseRefusal.PolledDescriptor (fd, task) ->
+            $"task %O{task} is parked in a poll(2) watching fd %d{fd}. Measured on Linux (poll-timeout.c), the sleeping poll keeps the file it found: the close does not wake it, the closed file can still wake it (a datagram sent to a closed UDP socket's address did), and when it wakes it looks the number up again, answering POLLNVAL if the number is free and the new file's readiness if another open took the number. Representing that needs the file to outlive its descriptor while the poll sleeps, which this kernel's descriptor table cannot express."
         | CloseRefusal.ListenerWouldResetUnacceptedClient (listener, connection, client) ->
             $"the close destroys listening socket %O{listener} while connection %O{connection} sits unaccepted in its queue, and that connection's client (socket %O{client}) is still open. A real kernel RSTs the unaccepted client on listener close, leaving it in a state this kernel has not measured: its readiness level, and what connect(2) then answers, are both unknown, and it would otherwise be indistinguishable from a cleanly FIN'd peer."
 
@@ -955,6 +964,9 @@ module UnixDescriptor =
             | Some (ParkedSyscall.SocketWait wait) ->
                 failwith
                     $"UnixDescriptor.flockAcquire: task %O{task} is parked in a socket wait on %O{wait.Port}, not in an flock, so there is no acquisition to finish (this is a bug in the client)."
+            | Some (ParkedSyscall.Poll poll) ->
+                failwith
+                    $"UnixDescriptor.flockAcquire: task %O{task} is parked in a poll of %A{poll.Entries}, not in an flock, so there is no acquisition to finish (this is a bug in the client)."
             | None ->
                 failwith
                     $"UnixDescriptor.flockAcquire: task %O{task} is not parked, so there is no acquisition to finish. A blocked `flock` records the park; only a task it answered `WouldBlock` finishes here (this is a bug in the client)."
@@ -1121,6 +1133,35 @@ module UnixDescriptor =
             )
 
         match flockRefusal with
+        | Some refusal -> Error refusal
+        | None ->
+
+        // A real poll looks each descriptor up again whenever it wakes, so
+        // closing one it watches changes what it reports -- by number, not by
+        // description, so a `dup` keeping the description alive does not help.
+        let pollRefusal : CloseRefusal<'Task> option =
+            system.Tasks
+            |> Map.tryPick (fun task state ->
+                match state.Parked |> Option.map (fun park -> park.Syscall) with
+                | Some (ParkedSyscall.Poll parked) ->
+                    let watches =
+                        parked.Entries
+                        |> List.exists (fun entry ->
+                            match entry with
+                            | ParkedPollEntry.Watched (watched, _, _) -> watched = fd
+                            | ParkedPollEntry.Ignored _ -> false
+                        )
+
+                    if watches then
+                        Some (CloseRefusal.PolledDescriptor (fd, task))
+                    else
+                        None
+                | Some (ParkedSyscall.Flock _)
+                | Some (ParkedSyscall.SocketWait _)
+                | None -> None
+            )
+
+        match pollRefusal with
         | Some refusal -> Error refusal
         | None ->
 

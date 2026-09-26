@@ -35,6 +35,14 @@ type WakePrimitive =
     /// reason `FlockGrantable`'s requester is: the number can be closed and
     /// reused while the wait sleeps, and a `dup` of it waits on the same port.
     | SocketEventDeliverable of port : OpenFileDescriptionId
+    /// The open file description `description` presents at least one of
+    /// `conditions`, in the numbering `<poll.h>` and `<sys/epoll.h>` share, as
+    /// `LinuxReadiness.ofDescription` reads its level.
+    ///
+    /// What a `poll(2)` entry waits for, with `conditions` its request plus the
+    /// `POLLERR` and `POLLHUP` a poll reports unasked. It never waits on a
+    /// socket event port, whose level is not modelled.
+    | DescriptorReady of description : OpenFileDescriptionId * conditions : uint32
     /// The machine's monotonic clock (`UnixMachineState.NanosecondsSinceBoot`)
     /// has reached `nanosecondsSinceBoot`.
     ///
@@ -85,6 +93,17 @@ module WakeCondition =
                 FileDescriptorRegistry.flockConflicts (OpenFileDescription.object description) requester mode registry
                 |> not
         | WakePrimitive.SocketEventDeliverable port -> SocketEventPort.hasDeliverableEvent port system
+        | WakePrimitive.DescriptorReady (description, conditions) ->
+            if
+                not (
+                    FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+                    |> Map.containsKey description
+                )
+            then
+                failwith
+                    $"WakeCondition.satisfied: open file description %O{description} is not in the table, so a task waiting for it to become ready has had it closed underneath it. This library's table models no reference from a waiter to what it waits on, so a client that parks must refuse such a close (as `close` does for a descriptor a parked poll watches)."
+
+            LinuxReadiness.ofDescription description system &&& conditions <> 0u
         | WakePrimitive.DeadlinePassed deadline -> system.Machine.NanosecondsSinceBoot >= deadline
 
     /// The primitives of `condition` which hold of `system`: empty exactly when
@@ -135,7 +154,8 @@ module WakeCondition =
         match condition with
         | WakeCondition.Primitive (WakePrimitive.DeadlinePassed deadline) -> [ deadline ]
         | WakeCondition.Primitive (WakePrimitive.FlockGrantable _)
-        | WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable _) -> []
+        | WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable _)
+        | WakeCondition.Primitive (WakePrimitive.DescriptorReady _) -> []
         | WakeCondition.AnyOf (first, rest) -> deadlines first @ List.collect deadlines rest
 
     /// What the task holding `parked` is waiting for.
@@ -144,7 +164,9 @@ module WakeCondition =
     /// use. A record is *richer* than its condition — a socket wait also carries
     /// the event count its finishing call will copy out with, which no condition
     /// mentions — so record to condition is total where condition to record is
-    /// not.
+    /// not. The one record with no condition is a parked `poll` with no
+    /// descriptor to watch and no deadline, a wait only a signal could end; no
+    /// syscall here parks one, and this fails loudly on it.
     ///
     /// Deriving rather than storing the condition beside the record is what stops
     /// the two disagreeing: a client cannot park a task on one object while
@@ -154,6 +176,30 @@ module WakeCondition =
         | ParkedSyscall.Flock parked ->
             WakeCondition.Primitive (WakePrimitive.FlockGrantable (parked.Requester, parked.Mode))
         | ParkedSyscall.SocketWait wait -> WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable wait.Port)
+        | ParkedSyscall.Poll poll ->
+            let watched =
+                poll.Entries
+                |> List.choose (fun entry ->
+                    match entry with
+                    | ParkedPollEntry.Ignored _ -> None
+                    | ParkedPollEntry.Watched (_, description, events) ->
+                        // Through `uint16`, so that a request with its top bit
+                        // set does not sign-extend into bits above `<poll.h>`.
+                        let conditions = uint32 (uint16 events) ||| EpollEvents.Err ||| EpollEvents.Hup
+                        Some (WakeCondition.Primitive (WakePrimitive.DescriptorReady (description, conditions)))
+                )
+
+            let deadline =
+                poll.Deadline
+                |> Option.map (WakePrimitive.DeadlinePassed >> WakeCondition.Primitive)
+                |> Option.toList
+
+            match watched @ deadline with
+            | [] ->
+                failwith
+                    $"WakeCondition.ofPark: a parked poll with entries %A{poll.Entries} watches no descriptor and has no deadline, so nothing but a signal could end it, and this library parks no such poll (this is a bug in the caller that recorded it)."
+            | [ only ] -> only
+            | first :: rest -> WakeCondition.AnyOf (first, rest)
 
 /// What became of a request this kernel could answer, where "answer" may be
 /// "the calling task sleeps".

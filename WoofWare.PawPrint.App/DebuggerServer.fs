@@ -207,6 +207,28 @@ module DebuggerServer =
                     | FlockMode.Shared -> "shared"
                     | FlockMode.Exclusive -> "exclusive"
                 )
+            | Some (ParkedSyscall.Poll parked) ->
+                writer.WriteString ("kind", "blockedInPoll")
+                writer.WriteStartArray "entries"
+
+                for entry in parked.Entries do
+                    writer.WriteStartObject ()
+
+                    match entry with
+                    | ParkedPollEntry.Ignored fd -> writer.WriteNumber ("fd", fd)
+                    | ParkedPollEntry.Watched (fd, OpenFileDescriptionId description, events) ->
+                        writer.WriteNumber ("fd", fd)
+                        writer.WriteNumber ("description", description)
+                        // The platform `<poll.h>` bits, as the unsigned 16 bits they are.
+                        writer.WriteNumber ("events", int (uint16 events))
+
+                    writer.WriteEndObject ()
+
+                writer.WriteEndArray ()
+
+                match parked.Deadline with
+                | None -> ()
+                | Some deadline -> writer.WriteNumber ("deadlineTicks", ClockPal.firstTickAtOrAfter deadline)
             | None -> writer.WriteString ("kind", "blockedInSyscall")
 
             writer.WriteEndObject ()

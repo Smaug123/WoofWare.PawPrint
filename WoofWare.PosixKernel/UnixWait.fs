@@ -90,6 +90,8 @@ module UnixWait =
         // scheduler. Several tasks really can share one lock condition, because a
         // lock belongs to the open file description: two tasks blocking through
         // one shared descriptor for the same mode wait for the same primitive.
+        // A `poll` queues itself on each description it watches non-exclusively,
+        // so every poller of a description that becomes ready wakes.
         let exclusive =
             woken
             |> List.collect (fun (_, task, fired) ->
@@ -99,6 +101,7 @@ module UnixWait =
                     match primitive with
                     | WakePrimitive.SocketEventDeliverable port -> Some (port, task)
                     | WakePrimitive.FlockGrantable _
+                    | WakePrimitive.DescriptorReady _
                     | WakePrimitive.DeadlinePassed _ -> None
                 )
             )

@@ -91,6 +91,10 @@ module SocketFuzz =
 
     /// `close(2)`. A refusal is the model's, and is reported as one; an errno
     /// comes back, because that is an answer.
+    /// The task the fuzzer's `poll`s are made by. The sequences are otherwise
+    /// taskless, so it is registered for each call rather than kept in the state.
+    let private pollTask : int = 1
+
     let private closeFd (fd : int) (system : UnixSystem<int, string>) : Result<UnixSystem<int, string>, UnixError> =
         match UnixDescriptor.close fd system with
         | Error refusal -> raise (ModelRefusal $"close of fd %d{fd} refused: %s{CloseRefusal.describe refusal}")
@@ -554,10 +558,19 @@ module SocketFuzz =
                     Events = int16 (uint16 events)
                 }
 
-            match UnixPoll.poll [ entry ] 0 state.Kernel with
+            // `poll` is made by a task; a timeout of 0 never parks, so the one
+            // registered here for the call is never left behind in the state.
+            let polling =
+                { state.Kernel with
+                    Tasks = UnixTaskTable.register pollTask (CpuId 0) (OsThreadId 1u) state.Kernel.Tasks
+                }
+
+            match UnixPoll.poll pollTask [ entry ] 0 polling with
             | Error refusal -> raise (ModelRefusal $"poll of fd %d{fd} refused: %s{PollRefusal.describe refusal}")
-            | Ok ([ reported ], _) -> $"<%s{pollMaskString reported}>", state
-            | Ok (reported, _) ->
+            | Ok (PollOutcome.WouldBlock condition, _) ->
+                failwith $"INTERPRETER-DRIVER BUG: a poll at timeout 0 parked on %A{condition}."
+            | Ok (PollOutcome.Answered ([ reported ], _), _) -> $"<%s{pollMaskString reported}>", state
+            | Ok (PollOutcome.Answered (reported, _), _) ->
                 failwith $"INTERPRETER-DRIVER BUG: one poll entry was answered with %d{List.length reported} reports."
 
     /// Run one sequence against a fresh `UnixSystem.initial SimulatedUnixPlatform.linuxX64` (Linux

@@ -15,12 +15,11 @@ using System.Net.Sockets;
 //
 // Two things here are load-bearing and must survive any edit:
 //
-//  * **Every row that expects `false` polls with timeout 0.** PawPrint models a
-//    blocking poll only when something is already ready; a not-ready entry at a
-//    positive timeout is a refusal, so such a row would abort rather than
-//    answer. `Socket.Poll` divides microseconds by 1000, so 500µs is also a
-//    0ms timeout — which is why check 9 is safe and check 10 is the deliberate
-//    exception.
+//  * **Every row that expects `false` polls with timeout 0.** A not-ready entry
+//    at a positive timeout sleeps until the timeout, which is
+//    `SocketPollTimeout.cs`'s subject rather than this file's. `Socket.Poll`
+//    divides microseconds by 1000, so 500µs is also a 0ms timeout — which is
+//    why check 9 is safe and check 10 is the deliberate exception.
 //  * **The connect is blocking.** A non-blocking one races the SYN, and the
 //    listener's read-readiness row would flake on the real-runtime side.
 //

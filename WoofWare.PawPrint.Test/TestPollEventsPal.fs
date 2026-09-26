@@ -220,6 +220,9 @@ module TestPollEventsPal =
     // The composition `SystemNative_Poll` answers with.
     // ---------------------------------------------------------------------
 
+    /// The task the polls here are made by.
+    let private poller : int = 1
+
     let private linux : UnixSystem<int, string> =
         let system : UnixSystem<int, string> =
             UnixSystem.initial SimulatedUnixPlatform.linuxX64
@@ -229,6 +232,7 @@ module TestPollEventsPal =
                 { system.Machine with
                     LocalRoutes = []
                 }
+            Tasks = UnixTaskTable.register poller (CpuId 0) (OsThreadId 2u) system.Tasks
         }
 
     let private withSocket
@@ -412,9 +416,11 @@ module TestPollEventsPal =
                     let expected = fds |> List.map (fun fd -> sixBitProjection pal system fd palEvents)
                     let expectedCount = expected |> List.filter (fun r -> r <> 0s) |> List.length
 
-                    match PollEventsPal.poll (fds |> List.map (fun fd -> fd, palEvents)) 0 system with
+                    match PollEventsPal.poll poller (fds |> List.map (fun fd -> fd, palEvents)) 0 system with
                     | Error refusal -> yield $"PAL events 0x%04x{raw}: refused: %s{PollRefusal.describe refusal}"
-                    | Ok (reported, count) ->
+                    | Ok (PollOutcome.WouldBlock condition, _) ->
+                        yield $"PAL events 0x%04x{raw}: parked at timeout 0 on %A{condition}"
+                    | Ok (PollOutcome.Answered (reported, count), _) ->
                         for fd, expected, reported in List.zip3 fds expected reported do
                             if expected <> reported then
                                 yield

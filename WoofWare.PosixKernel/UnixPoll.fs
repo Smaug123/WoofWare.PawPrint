@@ -40,19 +40,25 @@ type PollRefusal =
     /// Reachable in a way epoll's equivalent is not: `epoll_ctl` screens the
     /// targets it will accept, and `poll(2)` accepts any descriptor.
     | UnmodelledTarget of fd : int
-    /// No entry carries anything and the timeout is not zero, so a real `poll`
-    /// sleeps here until a descriptor becomes ready or the timeout expires.
+    /// No entry carries anything, no entry names a descriptor, and the timeout
+    /// is negative, so a real `poll` sleeps until a signal interrupts it.
     ///
-    /// Not `SyscallOutcome.WouldBlock`, for the reason `accept`'s `WouldPark` is
-    /// not: blocking is an outcome only where there is a `WakeCondition` to hand
-    /// back, and this library has none carrying a poll's captured entry set and
-    /// its deadline.
-    ///
-    /// Every *other* case is answerable whatever the timeout, which is measured
-    /// rather than assumed: an entry carrying anything at all -- a requested
-    /// `IN`/`OUT`, an unrequested `HUP`, or `NVAL` -- makes a real poll return
-    /// immediately at any timeout.
-    | WouldPark of timeoutMilliseconds : int
+    /// Such a wait has nothing to wake on but a signal, and this library does
+    /// not deliver signals into a sleeping syscall, so it has no condition to
+    /// park on.
+    | UnendingWait of timeoutMilliseconds : int
+
+/// What became of a `poll(2)` this kernel could answer.
+[<RequireQualifiedAccess>]
+type PollOutcome =
+    /// `poll` returned: the `revents` for each entry, in order, raw bits in the
+    /// flavour's own `<poll.h>` numbering, and the return value, which counts
+    /// the entries carrying anything.
+    | Answered of revents : int16 list * count : int
+    /// `poll` did not return. The calling task is parked, and sleeps until
+    /// `WakeCondition.satisfied` of this condition is non-empty; then
+    /// `UnixPoll.finishPoll` finishes the call.
+    | WouldBlock of WakeCondition
 
 [<RequireQualifiedAccess>]
 module PollRefusal =
@@ -64,8 +70,8 @@ module PollRefusal =
             $"this kernel is %O{flavour}-flavoured, and `poll(2)` is modelled here for Linux only. Darwin's answer is not one level masked by the request: it registers a kqueue filter per group of requested bits, so which bits were asked together decides what is reported (a vnode bit on a socket answers POLLNVAL, a reported HUP suppresses OUT, and a request of 0 reports nothing even for a descriptor that is not open). Model that before polling under this flavour."
         | PollRefusal.UnmodelledTarget fd ->
             $"fd %d{fd} names a socket event port, which this kernel does not answer `poll(2)` for. Linux answers it by re-polling the port's ready list, as `epoll_wait` does, and what that walk leaves in the list is unmeasured; model that before answering."
-        | PollRefusal.WouldPark timeoutMilliseconds ->
-            $"no entry carries anything and the timeout is %d{timeoutMilliseconds}ms, so a real `poll(2)` would sleep. This library models no parked poll: `WakeCondition` has no case carrying a poll's entry set and its deadline, so a park here would never end. A poll with anything already ready is answered at any timeout; only this case needs the park."
+        | PollRefusal.UnendingWait timeoutMilliseconds ->
+            $"no entry names a descriptor and the timeout is %d{timeoutMilliseconds}ms, which `poll(2)` reads as infinite, so a real poll sleeps until a signal interrupts it. This library delivers no signal into a sleeping syscall, so nothing could end the wait."
 
 /// What a wait for socket events settles before it can either deliver or sleep:
 /// `epoll_wait(2)`'s screens under one flavour, `kevent(2)`'s under the other.
@@ -633,8 +639,76 @@ module UnixPoll =
     let private linuxPollHup : int16 = 0x0010s
     let private linuxPollNval : int16 = 0x0020s
 
-    /// `poll(2)`: what each entry reports right now, and how many entries carry
-    /// anything.
+    /// What `entry` reports right now under the Linux flavour, as `do_pollfd`
+    /// computes it: by looking its descriptor up afresh.
+    let private reportOne<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        (entry : PollEntry)
+        : Result<int16, PollRefusal>
+        =
+        if entry.Fd < 0 then
+            // Measured on both kernels: a negative descriptor is ignored,
+            // reports nothing, and does not count towards the return value.
+            // It is not an error and not NVAL.
+            Ok 0s
+        else
+
+        match FileDescriptorRegistry.tryFindWithId entry.Fd system.Process.FileDescriptors with
+        | None ->
+            // POLLNVAL is a statement about the entry, not a readiness
+            // level: measured, it is reported alone, whatever was asked
+            // for, `events = 0` included.
+            Ok linuxPollNval
+        | Some (descriptionId, description) ->
+
+        match description.Target with
+        // Measured on Linux (`poll-alphabet.c`): POLLIN|POLLRDNORM when an
+        // event is deliverable, nothing otherwise, under the same
+        // `level & (events | POLLERR | POLLHUP)` rule. Refused anyway,
+        // because the kernel computes that level by re-polling the ready
+        // list, and whether the walk drops a stale entry, as `drain` does,
+        // is unmeasured.
+        | OpenFileTarget.SocketEventPort _ -> Error (PollRefusal.UnmodelledTarget entry.Fd)
+        | OpenFileTarget.Socket _
+        | OpenFileTarget.File _
+        | OpenFileTarget.Directory _
+        | OpenFileTarget.StandardStream _ ->
+            // `do_pollfd`'s own shape: the level, filtered by the request
+            // with POLLERR and POLLHUP added whatever was asked.
+            // The level's bits all lie below 0x10000, where `<poll.h>`
+            // and `<sys/epoll.h>` share their numbering.
+            int16 (LinuxReadiness.ofDescription descriptionId system)
+            &&& (entry.Events ||| linuxPollErr ||| linuxPollHup)
+            |> Ok
+
+    /// Every entry's report, in list order, stopping at the first entry that
+    /// cannot be answered: a real `poll` inspects its entries in order, so that
+    /// is the entry a refusal names.
+    let private scan<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        (entries : PollEntry list)
+        : Result<int16 list * int, PollRefusal>
+        =
+        let rec report (remaining : PollEntry list) (acc : int16 list) : Result<int16 list, PollRefusal> =
+            match remaining with
+            | [] -> Ok (List.rev acc)
+            | entry :: rest ->
+                match reportOne system entry with
+                | Error refusal -> Error refusal
+                | Ok events -> report rest (events :: acc)
+
+        match report entries [] with
+        | Error refusal -> Error refusal
+        | Ok reported ->
+            let triggered =
+                reported |> List.filter (fun revents -> revents <> 0s) |> List.length
+
+            Ok (reported, triggered)
+
+    let private nanosecondsPerMillisecond : int64 = 1_000_000L
+
+    /// `poll(2)`: what each entry reports, and how many entries carry anything;
+    /// or, when nothing does and the timeout lets it, the calling task sleeps.
     ///
     /// Each entry's `Events`, and each `revents` answered for it, is the raw
     /// bits in the simulated flavour's own `<poll.h>` numbering. Under the Linux
@@ -647,21 +721,37 @@ module UnixPoll =
     ///
     /// The count is `poll(2)`'s own return value, and it is neither the number
     /// of entries nor the number of *conditions*: it counts entries carrying
-    /// something. Derivable from the list, and answered here so that no client
-    /// re-derives a kernel rule.
+    /// something.
     ///
-    /// `milliseconds` is read as `poll(2)` reads it -- zero means "answer now",
-    /// and every other value means "sleep until something happens", negative
-    /// included. A foreign-function layer that screens some negative values
+    /// `milliseconds` is read as Linux's `poll(2)` reads it. Zero answers now.
+    /// A positive timeout, when nothing is ready, parks `task` until a watched
+    /// descriptor becomes ready or `milliseconds` have passed on the machine's
+    /// monotonic clock, whichever is first; at the deadline and not before, the
+    /// call finishes with 0. A negative timeout of any size is infinite. A wait
+    /// with nothing to watch and no deadline is refused, since only a signal
+    /// could end it. A foreign-function layer that screens some negative values
     /// itself does that before calling.
     ///
-    /// Changes nothing and returns no system: a `poll` asks.
+    /// A poll with anything ready is answered at every timeout: an entry
+    /// carrying anything at all -- a requested `IN`/`OUT`, an unrequested
+    /// `HUP`, or `NVAL` -- makes a real poll return at once. The system comes
+    /// back unchanged unless the task parked.
+    ///
+    /// `task` must not already be parked: a task blocks in one syscall at a
+    /// time, and a parked `poll` is finished with `finishPoll`.
     let poll<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
         (entries : PollEntry list)
         (milliseconds : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<int16 list * int, PollRefusal>
+        : Result<PollOutcome * UnixSystem<'Task, 'Handler>, PollRefusal>
         =
+        match UnixTaskTable.parkedFor task system.Tasks with
+        | Some parked ->
+            failwith
+                $"UnixPoll.poll: task %O{task} is parked in %A{parked}, and is issuing a poll. A task blocks in one syscall at a time; a parked poll is finished with `finishPoll` (this is a bug in the client)."
+        | None ->
+
         // Ahead of the entries, and so ahead of an empty entry list too: a
         // zero-entry poll answers `rv = 0` identically on both flavours and
         // consults no readiness at all, but answering that one row would be a
@@ -684,63 +774,140 @@ module UnixPoll =
         | SimulatedUnixFlavour.Darwin -> Error (PollRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin)
         | SimulatedUnixFlavour.Linux ->
 
-        let reportOne (entry : PollEntry) : Result<int16, PollRefusal> =
-            if entry.Fd < 0 then
-                // Measured on both kernels: a negative descriptor is ignored,
-                // reports nothing, and does not count towards the return value.
-                // It is not an error and not NVAL.
-                Ok 0s
-            else
-
-            match FileDescriptorRegistry.tryFindWithId entry.Fd system.Process.FileDescriptors with
-            | None ->
-                // POLLNVAL is a statement about the entry, not a readiness
-                // level: measured, it is reported alone, whatever was asked
-                // for, `events = 0` included.
-                Ok linuxPollNval
-            | Some (descriptionId, description) ->
-
-            match description.Target with
-            // Measured on Linux (`poll-alphabet.c`): POLLIN|POLLRDNORM when an
-            // event is deliverable, nothing otherwise, under the same
-            // `level & (events | POLLERR | POLLHUP)` rule. Refused anyway,
-            // because the kernel computes that level by re-polling the ready
-            // list, and whether the walk drops a stale entry, as `drain` does,
-            // is unmeasured.
-            | OpenFileTarget.SocketEventPort _ -> Error (PollRefusal.UnmodelledTarget entry.Fd)
-            | OpenFileTarget.Socket _
-            | OpenFileTarget.File _
-            | OpenFileTarget.Directory _
-            | OpenFileTarget.StandardStream _ ->
-                // `do_pollfd`'s own shape: the level, filtered by the request
-                // with POLLERR and POLLHUP added whatever was asked.
-                // The level's bits all lie below 0x10000, where `<poll.h>`
-                // and `<sys/epoll.h>` share their numbering.
-                int16 (LinuxReadiness.ofDescription descriptionId system)
-                &&& (entry.Events ||| linuxPollErr ||| linuxPollHup)
-                |> Ok
-
-        // In list order, stopping at the first entry that cannot be answered:
-        // a real `poll` inspects its entries in order, so that is the entry a
-        // refusal names.
-        let rec report (remaining : PollEntry list) (acc : int16 list) : Result<int16 list, PollRefusal> =
-            match remaining with
-            | [] -> Ok (List.rev acc)
-            | entry :: rest ->
-                match reportOne entry with
-                | Error refusal -> Error refusal
-                | Ok events -> report rest (events :: acc)
-
-        let reported = report entries []
-
-        match reported with
+        match scan system entries with
         | Error refusal -> Error refusal
-        | Ok reported ->
+        | Ok (reported, triggered) ->
 
-        let triggered =
-            reported |> List.filter (fun revents -> revents <> 0s) |> List.length
-
-        if triggered = 0 && milliseconds <> 0 then
-            Error (PollRefusal.WouldPark milliseconds)
+        if triggered > 0 || milliseconds = 0 then
+            Ok (PollOutcome.Answered (reported, triggered), system)
         else
-            Ok (reported, triggered)
+
+        // Every entry carries nothing, so every non-negative descriptor is open
+        // (a closed one would carry NVAL): the park records the description
+        // each named, which is what a real poll sleeps on.
+        let parkedEntries =
+            entries
+            |> List.map (fun entry ->
+                if entry.Fd < 0 then
+                    ParkedPollEntry.Ignored entry.Fd
+                else
+                    match FileDescriptorRegistry.tryFindId entry.Fd system.Process.FileDescriptors with
+                    | Some description -> ParkedPollEntry.Watched (entry.Fd, description, entry.Events)
+                    | None ->
+                        failwith
+                            $"UnixPoll.poll: fd %d{entry.Fd} reported nothing but names no open file description, where a closed descriptor reports POLLNVAL (this is a bug in this library)."
+            )
+
+        // Measured (`poll-timeout.c`): Linux turns a timeout of `ms` into a
+        // deadline `ms` milliseconds from now on the monotonic clock, and never
+        // returns before it; every negative timeout is infinite. Returning at
+        // the deadline is this library's answer; a real wait returns at or a
+        // little after it.
+        let deadline =
+            if milliseconds > 0 then
+                Some (
+                    system.Machine.NanosecondsSinceBoot
+                    + int64 milliseconds * nanosecondsPerMillisecond
+                )
+            else
+                None
+
+        let watchesNothing =
+            parkedEntries
+            |> List.forall (fun entry ->
+                match entry with
+                | ParkedPollEntry.Ignored _ -> true
+                | ParkedPollEntry.Watched _ -> false
+            )
+
+        if watchesNothing && deadline.IsNone then
+            Error (PollRefusal.UnendingWait milliseconds)
+        else
+
+        let parked =
+            ParkedSyscall.Poll
+                {
+                    Entries = parkedEntries
+                    Deadline = deadline
+                }
+
+        Ok (PollOutcome.WouldBlock (WakeCondition.ofPark parked), UnixWait.park task parked system)
+
+    /// Finish the `poll` `task` parked in: scan its entries again, as a woken
+    /// real poll does, and answer.
+    ///
+    /// Scans the entries the call was made with, not whatever the caller's
+    /// array holds now: a real kernel copied them in when the call began. A
+    /// descriptor is looked up afresh, as a real poll does, and `close` refuses
+    /// to close one a parked poll watches, so each still names the description
+    /// the call went to sleep on.
+    ///
+    /// Answers the count when any entry carries anything, whether or not the
+    /// deadline has passed too; 0, with every `revents` 0, when only the
+    /// deadline has; and otherwise re-parks the task on the same entries and
+    /// deadline, since whatever woke it has gone again. An answer clears the
+    /// park.
+    ///
+    /// `task` must be parked in a `poll`.
+    let finishPoll<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<PollOutcome * UnixSystem<'Task, 'Handler>, PollRefusal>
+        =
+        let parked =
+            match UnixTaskTable.parkedFor task system.Tasks with
+            | Some (ParkedSyscall.Poll parked) -> parked
+            | Some other ->
+                failwith
+                    $"UnixPoll.finishPoll: task %O{task} is parked in %A{other}, not in a poll, so there is no poll to finish (this is a bug in the client)."
+            | None ->
+                failwith
+                    $"UnixPoll.finishPoll: task %O{task} is not parked, so there is no poll to finish. Only a task `poll` answered `WouldBlock` finishes here (this is a bug in the client)."
+
+        let descriptions =
+            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+
+        let entries =
+            parked.Entries
+            |> List.map (fun entry ->
+                match entry with
+                | ParkedPollEntry.Ignored fd ->
+                    {
+                        PollEntry.Fd = fd
+                        Events = 0s
+                    }
+                | ParkedPollEntry.Watched (fd, description, events) ->
+                    if not (Map.containsKey description descriptions) then
+                        failwith
+                            $"UnixPoll.finishPoll: task %O{task}'s poll watches open file description %O{description}, which is not in the table, so it was closed underneath the wait. `close` refuses such a close (this is a bug in this library, or in a caller that destroyed the description without UnixDescriptor.close)."
+
+                    match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+                    | Some current when current = description ->
+                        {
+                            PollEntry.Fd = fd
+                            Events = events
+                        }
+                    | other ->
+                        failwith
+                            $"UnixPoll.finishPoll: task %O{task}'s poll watches fd %d{fd} on open file description %O{description}, but fd %d{fd} now names %A{other}. `close` refuses to close a descriptor a parked poll watches (this is a bug in this library, or in a caller that closed it without UnixDescriptor.close)."
+            )
+
+        match scan system entries with
+        | Error refusal -> Error refusal
+        | Ok (reported, triggered) ->
+
+        let timedOut =
+            match parked.Deadline with
+            | Some deadline -> system.Machine.NanosecondsSinceBoot >= deadline
+            | None -> false
+
+        if triggered > 0 || timedOut then
+            let finished =
+                { system with
+                    Tasks = UnixTaskTable.unpark task system.Tasks
+                }
+
+            Ok (PollOutcome.Answered (reported, triggered), finished)
+        else
+            let parkedAgain = ParkedSyscall.Poll parked
+            Ok (PollOutcome.WouldBlock (WakeCondition.ofPark parkedAgain), UnixWait.park task parkedAgain system)
