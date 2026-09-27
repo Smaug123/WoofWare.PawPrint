@@ -204,9 +204,9 @@ module SignalState =
         | Some set -> set
 
     /// Add `signal` to `thread`'s sigprocmask. Idempotent: a second `block`
-    /// of an already-blocked signal is a no-op. The thread does not need to
-    /// be live; masks for non-live threads are harmless because dispatch
-    /// already filters to the live set.
+    /// of an already-blocked signal is a no-op. `thread` should be one of the
+    /// process's tasks: `UnixSystem.checkInvariants` reports a mask held for
+    /// anything else, and `forgetTask` drops a task's mask when it exits.
     ///
     /// A signal the kernel refuses to let a thread block — SIGKILL and
     /// SIGSTOP, plus the two glibc screens out on Linux; see
@@ -262,6 +262,21 @@ module SignalState =
                 { state with
                     Blocked = blocked
                 }
+
+    /// Drop everything held for `thread` alone: its mask, and the signals pending
+    /// on it alone, which are discarded rather than passed on to another thread.
+    /// Signals pending on the process stay for another thread to take.
+    ///
+    /// For a thread that has exited.
+    let forgetTask (thread : 'Task) (state : SignalState<'Task, 'Handler>) : SignalState<'Task, 'Handler> =
+        // Discarded, not passed to the process: measured on Linux 6.18.5 and Darwin
+        // 27.0.0 by `docs/plans/2026-08-23-posix-kernel-extraction/thread-exit-pending.c`.
+        // A signal pending on an exiting thread alone was never delivered afterwards,
+        // nor pending on the thread that remained, whether that thread blocked it or not.
+        { state with
+            Blocked = Map.remove thread state.Blocked
+            Pending = state.Pending |> List.filter (fun entry -> entry.Target <> ValueSome thread)
+        }
 
     /// Add a generated signal to the pending queue, canonicalising its
     /// spelling first.

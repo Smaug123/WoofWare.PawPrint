@@ -790,6 +790,33 @@ module TestImpureCases =
                 )
             ]
 
+    /// Build one registration of `StdioNonBlocking.cs` under `platform`. The
+    /// guest's own checks say what the flag does to each stream; the
+    /// assertion here is that its two non-blocking writes delivered their bytes
+    /// whole, to the stream each named.
+    let private stdioNonBlockingCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
+        {
+            FileName = "StdioNonBlocking.cs"
+            ExpectedReturnCode = 0
+            KernelConfig =
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.Never
+            ExpectsUnhandledException = false
+            AssertTerminalState =
+                Some (fun state ->
+                    OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
+                    |> Seq.toArray
+                    |> shouldEqual (Text.Encoding.ASCII.GetBytes "out")
+
+                    OutputLogEntry.bytesFor FileDescriptorRole.StandardError state.Kernel.OutputLog
+                    |> Seq.toArray
+                    |> shouldEqual (Text.Encoding.ASCII.GetBytes "err")
+                )
+        }
+
     let cases : EndToEndTestCase list =
         [
             // Both of these have a current directory whose UTF-8 encoding
@@ -875,6 +902,10 @@ module TestImpureCases =
             // high bit set and neither fits in sixteen bits, which is what
             // makes a truncating or sign-confusing handler visible at all.
             effectiveUserIdCase 4294967294u 4294967293u
+            // Both flavours: they answered every row alike, so a handler that
+            // branched on the flavour for a standard stream would show here.
+            stdioNonBlockingCase SimulatedUnixPlatform.linuxX64
+            stdioNonBlockingCase SimulatedUnixPlatform.macOsArm64
             processIdCase None
             // Small enough to fit in a byte, so the case above is not the only
             // one that pins the handler to the configuration.

@@ -68,6 +68,18 @@ module TestSchedulerYieldDebt =
             Name = None
         }
 
+    /// Each thread's task, as the thread-allocation paths register one: a thread's exit
+    /// removes its task, so a stub thread with none could not terminate.
+    let private withTasks (threads : ThreadId list) (state : IlMachineState) : IlMachineState =
+        (state, threads)
+        ||> List.fold (fun state tid ->
+            state.MapKernel (
+                EmulatedKernel.mapTasks (
+                    UnixTaskTable.register tid (CpuId 0) (EmulatedKernel.osThreadId state.Kernel.Process.ProcessId tid)
+                )
+            )
+        )
+
     let private withThreads (threads : (ThreadId * ThreadStatus) list) (state : IlMachineState) : IlMachineState =
         { state with
             ThreadState =
@@ -75,6 +87,7 @@ module TestSchedulerYieldDebt =
                 |> List.map (fun (tid, status) -> tid, stubThreadState status)
                 |> Map.ofList
         }
+        |> withTasks (List.map fst threads)
 
     let private debtOf (tid : ThreadId) (state : IlMachineState) : Set<ThreadId> = state.ThreadState.[tid].YieldDebt
 

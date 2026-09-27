@@ -132,11 +132,13 @@ type TaskPark =
 /// What the emulated kernel knows about one task — one scheduling entity, what
 /// `gettid(2)` names.
 ///
-/// A client mints one for every thread at its creation, and keeps the set of
-/// tasks equal to its set of live threads. That is what makes the record
-/// total: `Cpu` and `OsThreadId` have no truthful default, so a `Map` of each
-/// would have no honest answer for an absent key, and the answer is that there
-/// is never an absent key rather than that a default exists.
+/// A client registers one for every thread when the thread is created
+/// (`UnixTaskTable.register`), and the thread's exit removes it
+/// (`UnixTaskLifecycle.exitThread`), so the table holds a task for each thread
+/// from its creation until its exit. That is what makes the record total:
+/// `Cpu` and `OsThreadId` have no truthful default, so a `Map` of each would
+/// have no honest answer for an absent key, and the answer is that there is
+/// never an absent key rather than that a default exists.
 ///
 /// The per-thread errno is *not* here. On a real Unix errno lives in libc, not
 /// in the kernel: the kernel returns an error code and the syscall wrapper
@@ -153,9 +155,12 @@ type UnixTaskState =
         Cpu : CpuId
         /// The OS thread identifier this task reports, as `gettid(2)` does.
         ///
-        /// Assigned once, at thread creation, and never reused: real kernels
-        /// recycle thread ids, but a recycled one here would let a stale owner
-        /// identity recorded by a user-space lock be mistaken for a live owner.
+        /// Chosen by the client when it registers the task, and fixed from then
+        /// on. This library does not check that it differs from every other
+        /// task's, nor from the id of a task that has exited. A real kernel
+        /// recycles an exited thread's id; a client that does the same lets a
+        /// stale owner identity recorded by a user-space lock be mistaken for a
+        /// live owner.
         OsThreadId : OsThreadId
         /// The syscall this task is blocked in, and where that park stands in park
         /// order, if it is blocked in one.
@@ -185,9 +190,9 @@ module UnixTaskTable =
 
     /// The task `name` is.
     ///
-    /// Total, and loudly partial rather than an option: every live task is
-    /// registered when it is created, so a name that resolves to nothing is a
-    /// client bug rather than anything a guest did.
+    /// Total, and loudly partial rather than an option: every task is registered
+    /// when it is created and removed only when it exits, so a name that
+    /// resolves to nothing is a client bug rather than anything a guest did.
     let get<'Task when 'Task : comparison> (name : 'Task) (tasks : Map<'Task, UnixTaskState>) : UnixTaskState =
         match Map.tryFind name tasks with
         | Some task -> task
@@ -197,8 +202,8 @@ module UnixTaskTable =
 
     /// Mint the task for a newly-created scheduling entity.
     ///
-    /// The one route by which a task enters the table, so that "exactly the live
-    /// tasks" is maintained at the single place a task comes into being.
+    /// The one route by which a task enters the table, as
+    /// `UnixTaskLifecycle.exitThread` is the one by which it leaves.
     let register<'Task when 'Task : comparison>
         (name : 'Task)
         (cpu : CpuId)

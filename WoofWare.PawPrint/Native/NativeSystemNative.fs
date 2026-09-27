@@ -3757,15 +3757,8 @@ module NativeSystemNative =
             //
             // The flag lands on the open file description
             // (`OpenFileDescription.NonBlocking`), where POSIX keeps the status
-            // flags — but only for the targets whose every modelled operation
-            // honours it: a socket (`SystemNative_Accept` and
-            // `SystemNative_Connect` consult it, and each transfer syscall
-            // that lands must too), a regular file (both kernels give `O_NONBLOCK` no effect
-            // there, so handlers that never look are right not to), and a
-            // socket event port (whose waits block per their own timeout
-            // argument, never per this flag). The one target whose modelled
-            // transfers would *ignore* a stored flag — a standard stream — is
-            // refused below rather than silently diverging.
+            // flags, for every target: `UnixSocket.setNonBlocking` says what
+            // each one's operations do with it.
             //
             // The second parameter is matched loosely for the reason
             // `SystemNative_Socket`'s enums are: CoreLib declares it `int`
@@ -3785,9 +3778,8 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
-            match UnixSocket.setNonBlocking fd isNonBlocking (EmulatedKernel.unix state.Kernel) with
-            | Error refusal -> failwith $"%s{operation}: fd %d{fd}: %s{SetNonBlockingRefusal.describe refusal}"
-            | Ok (answer, unix) ->
+            let answer, unix =
+                UnixSocket.setNonBlocking fd isNonBlocking (EmulatedKernel.unix state.Kernel)
 
             // The system comes back on the failing arm too: on one flavour the
             // event port's bit toggles and the call reports a failure anyway.
@@ -3808,9 +3800,6 @@ module NativeSystemNative =
             // the C, odd as it is. On failure the C stores 0 through the
             // pointer before returning -1, and the only failure the modelled
             // targets can produce is EBADF.
-            //
-            // Reads for every target kind, where the setter refuses some:
-            // `false` is the truth for a target the setter will not flag.
             let operation = "SystemNative_FcntlGetIsNonBlocking"
 
             let outArgument =
@@ -5549,6 +5538,8 @@ module NativeSystemNative =
                         "Nothing in the BCL waits on this: CoreLib reaches a socket through `SystemNative_Send`, `SafeSocketHandle` not being a `SafeFileHandle`, so this is a hand-rolled P/Invoke. Model the connection state (issue #956) before answering it."
                     | WriteRefusal.ExceedsRepresentableLength _ ->
                         "Write less, or raise the model's file-length limit (issue #956)."
+                    | WriteRefusal.NonBlockingStandardStreamShortWrite _ ->
+                        "Reachable from the BCL once the guest has set O_NONBLOCK on the stream: `ConsolePal.Unix.Write` hands `write` the whole buffer a `Stream.Write` on `Console.OpenStandardOutput()` was given, and loops over a short count. Answering needs the kernel's log to record the bytes a short write took rather than the bytes offered, and this handler's `WroteToFd` to follow it."
                     | WriteRefusal.Buffer _ -> "Pass a buffer that names guest storage."
 
                 failwith $"%s{operation}: fd %d{fd}: %s{WriteRefusal.describe refusal} %s{reachability}"

@@ -79,6 +79,11 @@ type WriteRefusal =
     | SocketConnectionState of socket : SocketId * domain : SocketDomain * kind : SocketKind
     /// The write would leave the file longer than this kernel can represent.
     | ExceedsRepresentableLength of inode : InodeNumber * offset : int64 * count : int
+    /// A write of `count` bytes to an output stream whose description carries
+    /// `O_NONBLOCK`, of which a real kernel takes only `taken`: more than an
+    /// empty pipe holds. The answer is a short write of `taken`, and this
+    /// kernel's writes to a standard stream are whole.
+    | NonBlockingStandardStreamShortWrite of role : FileDescriptorRole * count : int * taken : int
 
 [<RequireQualifiedAccess>]
 module WriteRefusal =
@@ -97,6 +102,8 @@ module WriteRefusal =
             $"the descriptor is socket %O{socket} (%O{domain}, %O{kind}). This kernel models no socket connection state, and `write(2)` on a socket is an answer about exactly that: measured on an unconnected socket it is EPIPE on Linux against ENOTCONN on Darwin for a TCP socket, ENOTCONN on both for a Unix-domain stream socket, and EDESTADDRREQ for a datagram socket. The Linux TCP row also raises SIGPIPE, though a runtime that ignores that signal process-wide sees only the errno."
         | WriteRefusal.ExceedsRepresentableLength (inode, offset, count) ->
             describeExceedsRepresentableLength inode offset count
+        | WriteRefusal.NonBlockingStandardStreamShortWrite (role, count, taken) ->
+            $"the descriptor is the standard stream %O{role}, whose description carries O_NONBLOCK, and the write is of %d{count} bytes. Measured on both flavours with the far reader draining as fast as it can (stdio-nonblock.c), a real kernel takes %d{taken} of them, which is what an empty pipe holds, and returns that short count. This kernel records each write to a standard stream whole, so it refuses rather than answer a count different from the bytes it recorded. Write at most %d{taken} bytes per call, or clear O_NONBLOCK first."
 
 /// Why this kernel will not answer a `pwrite`.
 ///
@@ -152,8 +159,8 @@ type private WriteTarget =
     /// which is the whole difference from `pwrite`.
     | File of inode : InodeNumber * offset : int64
     /// One of the standard streams, whose bytes this kernel records rather than
-    /// storing.
-    | StandardStream of role : FileDescriptorRole
+    /// storing, and whether its description carries `O_NONBLOCK`.
+    | StandardStream of role : FileDescriptorRole * nonBlocking : bool
     /// A socket, which is refused rather than answered — but only once the
     /// buffer screen has had its say, which on one flavour answers first.
     | Socket of socket : SocketId
@@ -356,7 +363,9 @@ module UnixReadWrite =
             // process was launched rather than a fallback: this kernel models
             // standard input as the read end of a pipe whose write end was
             // closed by whoever started the process, so there is nothing to read
-            // and never will be.
+            // and never will be. `O_NONBLOCK` changes nothing here: measured on
+            // both flavours (stdio-nonblock.c), a non-blocking read of such a
+            // stdin is 0 too.
             //
             // The buffer is not consulted: measured on both platforms, a read
             // that returns end-of-file never touches it, so `read(0, NULL, 5)`
@@ -602,7 +611,7 @@ module UnixReadWrite =
             | SimulatedUnixFlavour.Darwin -> Error UnixError.ENXIO
         | OpenFileTarget.Socket socketId -> Ok (WriteTarget.Socket socketId)
         | OpenFileTarget.File (inode, offset) -> Ok (WriteTarget.File (inode, offset))
-        | OpenFileTarget.StandardStream role -> Ok (WriteTarget.StandardStream role)
+        | OpenFileTarget.StandardStream role -> Ok (WriteTarget.StandardStream (role, description.NonBlocking))
         | OpenFileTarget.Directory (inode, _) ->
             failwith
                 $"UnixReadWrite.write: fd %d{fd} names directory %O{inode} with an access mode that permits writing. A directory can only be opened for reading (open answers EISDIR otherwise), so FileDescriptorRegistry.checkInvariants reports this as WritableDirectory (this is a bug in this library)."
@@ -722,21 +731,38 @@ module UnixReadWrite =
             // After the descriptor checks, not before: `write(rdonlyFd, buf, 0)`
             // is EBADF rather than 0, measured on both.
             Ok (WriteAnswer.Completed 0, system)
-        | Ok (WriteTarget.StandardStream role) ->
-            Ok (
-                WriteAnswer.Completed bytes.Length,
-                { system with
-                    Process =
-                        { system.Process with
-                            OutputLog =
-                                system.Process.OutputLog.Add
-                                    {
-                                        OutputLogEntry.Role = role
-                                        OutputLogEntry.Bytes = bytes
-                                    }
-                        }
-                }
-            )
+        | Ok (WriteTarget.StandardStream (role, nonBlocking)) ->
+            // This kernel's output streams are pipes whose reader takes every
+            // byte as it arrives, so each write finds its pipe empty. A
+            // blocking write then completes whole. A non-blocking one takes
+            // what an empty pipe holds and no more, however fast the reader:
+            // measured on both flavours (stdio-nonblock.c), 20 writes to each
+            // output stream of each of sixteen sizes from 1 byte to 1 MiB,
+            // each after the pipe had drained, were whole up to 65536 bytes
+            // and 65536 beyond. `PipeBuffer` states that rule.
+            let taken =
+                if nonBlocking then
+                    PipeBuffer.write bytes (PipeBuffer.empty system.Machine.UnixPlatform) |> fst
+                else
+                    bytes.Length
+
+            if taken < bytes.Length then
+                Error (WriteRefusal.NonBlockingStandardStreamShortWrite (role, bytes.Length, taken))
+            else
+                Ok (
+                    WriteAnswer.Completed bytes.Length,
+                    { system with
+                        Process =
+                            { system.Process with
+                                OutputLog =
+                                    system.Process.OutputLog.Add
+                                        {
+                                            OutputLogEntry.Role = role
+                                            OutputLogEntry.Bytes = bytes
+                                        }
+                            }
+                    }
+                )
         | Ok (WriteTarget.File (inode, offset)) ->
 
         let now = UnixMachineState.realtime system.Machine
