@@ -266,13 +266,19 @@ module NativeCryptoNative =
             // which OpenSSL accepts.
             let bytes =
                 if count = 0 then
-                    ImmutableArray<byte>.Empty
+                    Ok ImmutableArray<byte>.Empty
                 else
                     let buffer =
                         NativeSystemNative.bufferPointerArgument operation "d" instruction.Arguments.[1]
 
                     let storage = NativeSystemNative.requireUnscreenedStorage operation "d" buffer
                     NativeSystemNative.readBytesThrough ctx operation storage count state
+
+            match bytes with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the bytes it digests" u
+                |> Some
+            | Ok bytes ->
 
             let context =
                 EvpDigestRegistry.get operation handle state.EvpDigests
@@ -346,13 +352,19 @@ module NativeCryptoNative =
             // when `sourceSize` is 0 on CoreLib's own path; nothing is read in that case.
             let bytes =
                 if sourceSize = 0 then
-                    ImmutableArray<byte>.Empty
+                    Ok ImmutableArray<byte>.Empty
                 else
                     let buffer =
                         NativeSystemNative.bufferPointerArgument operation "source" instruction.Arguments.[1]
 
                     let storage = NativeSystemNative.requireUnscreenedStorage operation "source" buffer
                     NativeSystemNative.readBytesThrough ctx operation storage sourceSize state
+
+            match bytes with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the bytes it digests" u
+                |> Some
+            | Ok bytes ->
 
             let md =
                 NativeSystemNative.bufferPointerArgument operation "md" instruction.Arguments.[3]
