@@ -6177,17 +6177,7 @@ module NativeSystemNative =
 
                 let system = EmulatedKernel.unix restored.Kernel
 
-                let liveThreads =
-                    restored.ThreadState
-                    |> Seq.choose (fun (KeyValue (thread, ts)) ->
-                        if ThreadStatus.canReceiveSignal ts.Status then
-                            Some thread
-                        else
-                            None
-                    )
-                    |> ImmutableArray.CreateRange
-
-                match UnixSignal.kill liveThreads (ProcessId.toInt32 (UnixSystem.processId system)) signo system with
+                match UnixSignal.kill (ProcessId.toInt32 (UnixSystem.processId system)) signo system with
                 | Ok (Ok (KillOutcome.ProcessContinues after)) ->
                     restored.MapKernel (EmulatedKernel.withUnix after)
                     |> NativeHandlerResult.completed

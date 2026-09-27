@@ -234,7 +234,8 @@ review.
 
 * FIFO delivery order where Linux picks lowest-signo-first among deliverable
   pending signals (`next_signal`); unobservable until two signals can be
-  pending at once through a modelled path.
+  pending at once through a modelled path. Since modelled per flavour
+  (`SignalState.pendingFor`, measured by `signal-pick-order.c`).
 * The (signal, target) coalescing key delivers twice where a single-threaded
   Darwin process delivers once (xnu assigns process-directed signals to a
   thread at generation; measured 2026-09-16, three runs each shape). Revisit

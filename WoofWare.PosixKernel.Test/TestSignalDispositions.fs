@@ -1,6 +1,5 @@
 namespace WoofWare.PosixKernel.Test
 
-open System.Collections.Immutable
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
@@ -40,7 +39,26 @@ module TestSignalDispositions =
 
     let private t0 : Task = Task 0
 
-    let private live : ImmutableArray<Task> = ImmutableArray.Create t0
+    let private tasks : Set<Task> = Set.singleton t0
+
+    /// `SignalState.generate` in a process whose only task is `t0`.
+    let private generateIn
+        (entry : PendingSignal<Task>)
+        (s : SignalState<Task, Handler>)
+        : SignalGeneration<Task, Handler>
+        =
+        match SignalState.generate CoreDumps.Suppressed t0 tasks entry s with
+        | Ok generation -> generation
+        | Error refusal -> failwith $"generate refused: %O{refusal}"
+
+    /// What `t0` takes next.
+    let private leaderDelivery
+        (s : SignalState<Task, Handler>)
+        : SignalDelivery<Task, Handler> option * SignalState<Task, Handler>
+        =
+        match SignalState.nextDelivery CoreDumps.Suppressed t0 tasks t0 s with
+        | Ok answer -> answer
+        | Error refusal -> failwith $"nextDelivery refused: %O{refusal}"
 
     /// The signals a process that `generation` did not kill has.
     let private stateAfter (generation : SignalGeneration<Task, Handler>) : SignalState<Task, Handler> =
@@ -125,9 +143,7 @@ module TestSignalDispositions =
 
                             let generated =
                                 match
-                                    SignalState.generate
-                                        CoreDumps.Suppressed
-                                        live
+                                    generateIn
                                         {
                                             Signal = signal
                                             Target = target
@@ -148,7 +164,7 @@ module TestSignalDispositions =
                                 changed
                                 |> SignalState.setDisposition signal (SignalDisposition.Catch H)
                                 |> SignalState.unblock t0 signal
-                                |> SignalState.nextDelivery CoreDumps.Suppressed live
+                                |> leaderDelivery
                                 |> fst
 
                             let expectedAtGeneration =
@@ -163,10 +179,9 @@ module TestSignalDispositions =
                             |> shouldEqual (row, expectedAtGeneration, expectedAfter)
 
                             match delivered with
-                            | Some (SignalDelivery.RunHandler (entry, receiver, handler)) ->
+                            | Some (SignalDelivery.RunHandler (entry, handler)) ->
                                 (row, true) |> shouldEqual (row, expectedAfter)
                                 entry.Signal |> shouldEqual signal
-                                receiver |> shouldEqual t0
                                 handler |> shouldEqual H
                             | None -> (row, false) |> shouldEqual (row, expectedAfter)
                             | Some other -> failwith $"%s{row}: delivered %A{other}"
@@ -238,9 +253,7 @@ module TestSignalDispositions =
                                             |> SignalState.setDisposition secondSignal (toDisposition secondDisposition)
 
                                         let generate (signal : Signal) target (s : SignalState<Task, Handler>) =
-                                            SignalState.generate
-                                                CoreDumps.Suppressed
-                                                live
+                                            generateIn
                                                 {
                                                     Signal = signal
                                                     Target = target
@@ -310,9 +323,7 @@ module TestSignalDispositions =
                                     }
 
                             let s =
-                                SignalState.generate
-                                    CoreDumps.Suppressed
-                                    live
+                                generateIn
                                     {
                                         Signal = secondSignal
                                         Target = ValueNone

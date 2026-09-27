@@ -1,13 +1,12 @@
 namespace WoofWare.PosixKernel
 
-open System.Collections.Immutable
-
-/// Why this library will not answer a `kill(2)`. Each is a target it does not
-/// model, rather than an error a kernel would report: a real kernel's answer
-/// depends on other processes, which this library has none of.
+/// Why this library will not answer a `kill(2)`: something it does not model,
+/// rather than an error a kernel would report.
 [<RequireQualifiedAccess>]
 type KillRefusal =
-    /// A positive process ID other than the calling process's own.
+    /// A positive process ID other than the calling process's own. A real
+    /// kernel's answer depends on other processes, which this library has none
+    /// of.
     | OtherProcess of pid : int32
     /// Zero or a negative number: a process group, or every process the caller
     /// may signal.
@@ -16,6 +15,9 @@ type KillRefusal =
     /// inside its own PID namespace, every signal it has not installed a
     /// handler for, SIGKILL included, and this library does not model that.
     | InitProcess
+    /// The signal is sent to the calling process, and which of its tasks would
+    /// receive it is not modelled.
+    | Receiver of SignalReceiverRefusal
 
 /// What a `kill(2)` the kernel answered did to the calling process.
 [<RequireQualifiedAccess>]
@@ -31,19 +33,23 @@ type KillOutcome<'Task, 'Handler when 'Task : comparison and 'Handler : equality
 [<RequireQualifiedAccess>]
 module UnixSignal =
 
+    let private tasksOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : Set<'Task>
+        =
+        system.Tasks |> Map.keys |> Set.ofSeq
+
     /// `kill(2)`, sent by the calling process to `pid`, with `signo` read under
     /// the process's own signal numbering.
     ///
-    /// `liveThreads` are the process's threads that exist at the kernel level;
-    /// a signal sent to the process can be received by any of them that does
-    /// not block it. See `SignalState.generate` for what the signal then does.
-    /// A signal that kills the process ends it, and the answer is then the
-    /// ended process rather than a system to make another call in.
+    /// The signal is pending on the process as a whole, so its leader receives
+    /// it unless it blocks the signal. See `SignalState.generate` for what the
+    /// signal then does. A signal that kills the process ends it, and the answer
+    /// is then the ended process rather than a system to make another call in.
     ///
     /// Only a signal to the calling process itself is answered. Signal number 0
     /// sends nothing, and a number that is neither 0 nor a signal is `EINVAL`.
     let kill<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (liveThreads : ImmutableArray<'Task>)
         (pid : int32)
         (signo : int32)
         (system : UnixSystem<'Task, 'Handler>)
@@ -81,7 +87,8 @@ module UnixSignal =
             let generation =
                 SignalState.generate
                     system.Process.CoreDumps
-                    liveThreads
+                    system.Leader
+                    (tasksOf system)
                     {
                         Signal = signal
                         Target = ValueNone
@@ -89,11 +96,34 @@ module UnixSignal =
                     system.Process.Signals
 
             match generation with
-            | SignalGeneration.ProcessContinues signals -> Ok (Ok (KillOutcome.ProcessContinues (withSignals signals)))
-            | SignalGeneration.ProcessStopped (signal, signals) ->
+            | Error refusal -> Error (KillRefusal.Receiver refusal)
+            | Ok (SignalGeneration.ProcessContinues signals) ->
+                Ok (Ok (KillOutcome.ProcessContinues (withSignals signals)))
+            | Ok (SignalGeneration.ProcessStopped (signal, signals)) ->
                 Ok (Ok (KillOutcome.ProcessStopped (signal, withSignals signals)))
-            | SignalGeneration.ProcessTerminated (signal, coreDumped) ->
+            | Ok (SignalGeneration.ProcessTerminated (signal, coreDumped)) ->
                 let ended =
                     UnixTaskLifecycle.endProcess (ProcessTermination.Signaled (signal, coreDumped)) system
 
                 Ok (Ok (KillOutcome.ProcessEnded ended))
+
+    /// What the kernel does next with the signals `task` could take, as
+    /// `SignalState.nextDelivery` decides: `task` takes its own, and if it is the
+    /// process's leader, the process's too.
+    ///
+    /// Fails loudly if `task` names no task, which is a bug in the client.
+    let nextDelivery<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SignalDelivery<'Task, 'Handler> option * UnixSystem<'Task, 'Handler>, SignalReceiverRefusal>
+        =
+        SignalState.nextDelivery system.Process.CoreDumps system.Leader (tasksOf system) task system.Process.Signals
+        |> Result.map (fun (delivery, signals) ->
+            delivery,
+            { system with
+                Process =
+                    { system.Process with
+                        Signals = signals
+                    }
+            }
+        )

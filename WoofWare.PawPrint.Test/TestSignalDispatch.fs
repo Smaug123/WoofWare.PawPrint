@@ -221,11 +221,10 @@ module TestSignalDispatch =
         dispatcherTs.MethodStates.Count |> shouldEqual 0
 
     [<Test>]
-    let ``trySpawnHandler holds a pending signal with no eligible receiver`` () : unit =
-        // Pending entry exists but the only thread in the state is the
-        // dispatcher itself, which is never a candidate receiver — so the
-        // entry stays queued. (SIGINT, because a Continue-default signal
-        // would surface without a receiver.)
+    let ``trySpawnHandler holds a pending signal every thread blocks`` () : unit =
+        // The leader and the dispatcher, the process's only tasks, both block
+        // SIGINT, so the entry stays queued. (SIGINT, because a Continue-default
+        // signal would surface whatever the masks say.)
         let state, dispatcher, _ = preparedState ()
 
         let state =
@@ -235,6 +234,8 @@ module TestSignalDispatch =
                         { kernel.Process with
                             Signals =
                                 kernel.Signals
+                                |> SignalState.block kernel.Leader Signal.SIGINT
+                                |> SignalState.block dispatcher Signal.SIGINT
                                 |> SignalState.enqueue
                                     {
                                         Signal = Signal.SIGINT
@@ -543,17 +544,13 @@ module TestSignalDispatch =
         |> shouldEqual (CliType.Numeric (CliNumericType.Int32 (int System.Runtime.InteropServices.PosixSignal.SIGCHLD)))
 
     [<Test>]
-    let ``trySpawnHandler does not pick the dispatcher itself as the signal receiver`` () : unit =
-        // For a process-directed signal (Target = ValueNone), the dispatcher
-        // has an empty `Blocked` map, so the naive eligibility check ("thread
-        // is live and not blocking the signal") would mark it as a candidate
-        // receiver. `SignalDispatch.trySpawnHandler` must exclude the
-        // dispatcher from the live-threads set passed to `nextDelivery`,
-        // otherwise a process-directed signal with no other live threads
-        // would dispatch its own handler to itself as the receiver. Set up a
-        // world where the dispatcher is the *only* live thread and confirm
-        // the entry is treated as non-deliverable (it stays queued).
-        let state, dispatcher, _ = preparedState ()
+    let ``trySpawnHandler never gives a signal to the dispatcher in place of the leader`` () : unit =
+        // The kernel gives a signal sent to the process to its leader. With
+        // the leader blocking SIGINT and the dispatcher not, a real kernel
+        // would pick another thread, which PawPrint does not model: the poll
+        // must refuse rather than run the handler as though the dispatcher
+        // had received it.
+        let state, _dispatcher, _ = preparedState ()
 
         let state =
             state.MapKernel (fun kernel ->
@@ -565,6 +562,7 @@ module TestSignalDispatch =
                                 |> SignalState.setDisposition
                                     Signal.SIGINT
                                     (SignalDisposition.Catch NativeSignalHandler.SystemNative)
+                                |> SignalState.block kernel.Leader Signal.SIGINT
                                 |> SignalState.enqueue
                                     {
                                         Signal = Signal.SIGINT
@@ -574,21 +572,38 @@ module TestSignalDispatch =
                 }
             )
 
-        let state' = SignalDispatch.trySpawnHandler baseClassTypes state
+        let exn =
+            Assert.Throws (fun () -> SignalDispatch.trySpawnHandler baseClassTypes state |> ignore<IlMachineState>)
 
-        let dispatcherTs = state'.ThreadState |> Map.find dispatcher
-        dispatcherTs.Status |> shouldEqual ThreadStatus.Parked
-        dispatcherTs.MethodStates.Count |> shouldEqual 0
+        exn.Message |> shouldContainText "LeaderBlocks"
 
-        state'.Kernel.Signals
-        |> SignalState.pending
-        |> shouldEqual
-            [
-                {
-                    Signal = Signal.SIGINT
-                    Target = ValueNone
+    [<Test>]
+    let ``trySpawnHandler refuses a dispatcher that is the leader`` () : unit =
+        // The dispatcher runs handlers for the leader, so it cannot be the
+        // leader; a state that says it is has lost track of which thread is
+        // which.
+        let state, _dispatcher, handler = preparedState ()
+        let leader = state.Kernel.Leader
+
+        let state =
+            { state with
+                ThreadState = state.ThreadState |> Map.add leader (stubThreadState ThreadStatus.Parked)
+            }
+
+        let state =
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    PosixSignalShim =
+                        PosixSignalShim.initial
+                        |> PosixSignalShim.markInitialized leader
+                        |> PosixSignalShim.setHandler handler
                 }
-            ]
+            )
+
+        let exn =
+            Assert.Throws (fun () -> SignalDispatch.trySpawnHandler baseClassTypes state |> ignore<IlMachineState>)
+
+        exn.Message |> shouldContainText "is the process's leader"
 
     [<Test>]
     let ``trySpawnHandler rejects a handler with the wrong arity`` () : unit =
@@ -783,114 +798,42 @@ module TestSignalDispatch =
         frame.Arguments.[1] |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0))
 
     [<Test>]
-    let ``trySpawnHandler does not consider Terminated threads eligible receivers`` () : unit =
-        // A `Terminated` thread is not signal-eligible: its OS-level thread
-        // has exited, even though its final frames are intentionally
-        // retained for `Join` observers. This means
-        // `ThreadStatus.hasNoActiveFrame` returns `false` for a terminated
-        // thread, and a naive "has a live frame" filter would mistakenly
-        // include it. Set up a world where the only non-dispatcher thread
-        // is `Terminated` and assert the pending signal is treated as
-        // non-deliverable.
-        let state, dispatcher, _ = preparedState ()
-        let terminatedSibling = ThreadId 99
+    let ``trySpawnHandler delivers to the leader whatever state the other threads are in`` () : unit =
+        // Which thread takes a signal sent to the process is the kernel's
+        // answer, and it is the leader: not the lowest-numbered thread that
+        // happens to be running, so no other thread's status enters into it.
+        for sibling in [ ThreadStatus.Terminated ; ThreadStatus.NotStarted ; ThreadStatus.Runnable ] do
+            let state, dispatcher, _ = preparedState ()
 
-        let state =
-            { state with
-                ThreadState =
-                    state.ThreadState
-                    |> Map.add terminatedSibling (stubThreadState ThreadStatus.Terminated)
-            }
-
-        let state =
-            state.MapKernel (fun kernel ->
-                { kernel with
-                    Process =
-                        { kernel.Process with
-                            Signals =
-                                kernel.Signals
-                                |> SignalState.setDisposition
-                                    Signal.SIGINT
-                                    (SignalDisposition.Catch NativeSignalHandler.SystemNative)
-                                |> SignalState.enqueue
-                                    {
-                                        Signal = Signal.SIGINT
-                                        Target = ValueNone
-                                    }
-                        }
+            let state =
+                { state with
+                    ThreadState = state.ThreadState |> Map.add (ThreadId 99) (stubThreadState sibling)
                 }
-            )
 
-        let state' = SignalDispatch.trySpawnHandler baseClassTypes state
+            let state =
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        Process =
+                            { kernel.Process with
+                                Signals =
+                                    kernel.Signals
+                                    |> SignalState.setDisposition
+                                        Signal.SIGINT
+                                        (SignalDisposition.Catch NativeSignalHandler.SystemNative)
+                                    |> SignalState.enqueue
+                                        {
+                                            Signal = Signal.SIGINT
+                                            Target = ValueNone
+                                        }
+                            }
+                    }
+                )
 
-        let dispatcherTs = state'.ThreadState |> Map.find dispatcher
-        dispatcherTs.Status |> shouldEqual ThreadStatus.Parked
-        dispatcherTs.MethodStates.Count |> shouldEqual 0
+            let state' = SignalDispatch.trySpawnHandler baseClassTypes state
 
-        state'.Kernel.Signals
-        |> SignalState.pending
-        |> shouldEqual
-            [
-                {
-                    Signal = Signal.SIGINT
-                    Target = ValueNone
-                }
-            ]
-
-    [<Test>]
-    let ``trySpawnHandler does not consider NotStarted threads eligible receivers`` () : unit =
-        // A managed `Thread` that has been constructed but never `Start`ed
-        // has no kernel-level thread behind it: no OS thread exists to
-        // receive the signal. PawPrint mirrors that by classifying
-        // `NotStarted` threads as frameless via `ThreadStatus.hasNoActiveFrame`
-        // and excluding them from the receiver candidate set. Set up a world
-        // where the only non-dispatcher thread is `NotStarted` and assert the
-        // pending signal is treated as non-deliverable (queue intact, frame
-        // not spawned).
-        let state, dispatcher, _ = preparedState ()
-        let notStartedSibling = ThreadId 99
-
-        let state =
-            { state with
-                ThreadState =
-                    state.ThreadState
-                    |> Map.add notStartedSibling (stubThreadState ThreadStatus.NotStarted)
-            }
-
-        let state =
-            state.MapKernel (fun kernel ->
-                { kernel with
-                    Process =
-                        { kernel.Process with
-                            Signals =
-                                kernel.Signals
-                                |> SignalState.setDisposition
-                                    Signal.SIGINT
-                                    (SignalDisposition.Catch NativeSignalHandler.SystemNative)
-                                |> SignalState.enqueue
-                                    {
-                                        Signal = Signal.SIGINT
-                                        Target = ValueNone
-                                    }
-                        }
-                }
-            )
-
-        let state' = SignalDispatch.trySpawnHandler baseClassTypes state
-
-        let dispatcherTs = state'.ThreadState |> Map.find dispatcher
-        dispatcherTs.Status |> shouldEqual ThreadStatus.Parked
-        dispatcherTs.MethodStates.Count |> shouldEqual 0
-
-        state'.Kernel.Signals
-        |> SignalState.pending
-        |> shouldEqual
-            [
-                {
-                    Signal = Signal.SIGINT
-                    Target = ValueNone
-                }
-            ]
+            let dispatcherTs = state'.ThreadState |> Map.find dispatcher
+            dispatcherTs.Status |> shouldEqual ThreadStatus.Runnable
+            state'.Kernel.Signals |> SignalState.pending |> shouldEqual []
 
     [<Test>]
     let ``trySpawnHandler refuses a signal whose System.Native handler would first run the runtime's`` () : unit =
