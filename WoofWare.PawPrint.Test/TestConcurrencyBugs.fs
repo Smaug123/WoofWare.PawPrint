@@ -221,6 +221,8 @@ module TestConcurrencyBugs =
         // would raise.
         let rec loop (prepared : Program.PreparedProgram) : RunSummary =
             match Program.stepPrepared loggerFactory logger prepared with
+            | Program.ProgramStepOutcome.StoppedAtUndefinedValue (_, thread, observation) ->
+                failwith $"PawPrint stopped the guest on %O{thread} at an undefined value: %O{observation}"
             | Program.ProgramStepOutcome.Completed outcome -> classifyRunOutcome outcome
             | Program.ProgramStepOutcome.Deadlocked (_, stuck) -> RunSummary.Deadlock stuck
             | Program.ProgramStepOutcome.InstructionStepped (p, _, _, _) -> loop p

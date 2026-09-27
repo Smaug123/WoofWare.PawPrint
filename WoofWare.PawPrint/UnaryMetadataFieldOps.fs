@@ -289,6 +289,7 @@ module internal UnaryMetadataFieldOps =
             IlMachineState.cliTypeZeroOfHandle state baseClassTypes declaringType
 
         match declaringZero with
+        | CliType.Undefined u -> failwith $"unreachable: the zero value of %O{declaringType} is the undefined %O{u}"
         | CliType.ValueType _
         | CliType.ObjectRef _
         | CliType.RuntimePointer _ -> FieldThroughByref.Projected, state
@@ -354,6 +355,7 @@ module internal UnaryMetadataFieldOps =
 
         let state =
             match currentObj with
+            | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "stfld's object" u
             | EvalStackValue.Int32 _ -> failwith "unexpectedly setting field on an int"
             | EvalStackValue.Int64 _ -> failwith "unexpectedly setting field on an int64"
             | EvalStackValue.NativeInt (NativeIntSource.MethodTableAuxiliaryDataPtr methodTableFor) ->
@@ -499,6 +501,7 @@ module internal UnaryMetadataFieldOps =
 
         let state =
             match currentObj with
+            | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "ldfld's object" u
             | EvalStackValue.Int32 i -> failwith $"todo: Ldfld on an int32 object reference (%O{i})"
             | EvalStackValue.Int64 int64 -> failwith "todo: int64"
             | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr methodTableFor) ->
@@ -597,6 +600,7 @@ module internal UnaryMetadataFieldOps =
         : IlMachineState * ManagedPointerSource
         =
         match receiver with
+        | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "ldflda's object" u
         | NativeInt (NativeIntSource.MethodTableAuxiliaryDataPtr methodTableFor) ->
             match
                 MethodTableProjection.tryProjectAuxiliaryDataFieldAddress

@@ -86,6 +86,8 @@ module TestStepEffectStreaming =
             : (FileDescriptorRole * byte array) list * IlMachineState
             =
             match Program.stepPrepared loggerFactory logger prepared with
+            | Program.ProgramStepOutcome.StoppedAtUndefinedValue (_, thread, observation) ->
+                failwith $"PawPrint stopped the guest on %O{thread} at an undefined value: %O{observation}"
             | Program.ProgramStepOutcome.Completed outcome ->
                 if expectDeadlock then
                     failwith $"expected guest to deadlock, but it completed: %O{outcome}"
@@ -260,6 +262,8 @@ class Program
             : (FileDescriptorRole * byte array) list * Program.PreparedProgram
             =
             match Program.stepStartup loggerFactory logger startup with
+            | Program.StartupStepOutcome.StoppedAtUndefinedValue (_, thread, observation) ->
+                failwith $"PawPrint stopped the guest on %O{thread} at an undefined value: %O{observation}"
             | Program.StartupStepOutcome.Stepped (startup, _, _, effect) ->
                 let acc =
                     match effect with
@@ -296,6 +300,8 @@ class Program
             : (FileDescriptorRole * byte array) list
             =
             match Program.stepPrepared loggerFactory logger prepared with
+            | Program.ProgramStepOutcome.StoppedAtUndefinedValue (_, thread, observation) ->
+                failwith $"PawPrint stopped the guest on %O{thread} at an undefined value: %O{observation}"
             | Program.ProgramStepOutcome.Completed (RunOutcome.NormalExit _) -> List.rev acc
             | Program.ProgramStepOutcome.Completed other -> failwith $"guest did not exit normally: %O{other}"
             | Program.ProgramStepOutcome.Deadlocked (_, stuck) -> failwith $"guest deadlocked: %s{stuck}"
