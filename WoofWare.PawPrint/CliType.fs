@@ -3755,6 +3755,12 @@ and CliValueType =
         match affectedFields with
         | [] -> failwith "unexpectedly didn't dereference a field"
         | [ f ] -> f.Contents
+        | _ :: _ :: _ when CliType.HasUndefinedLeaf (CliType.ValueType cvt) ->
+            // The field's own bytes, each defined or not, as they stand after every overlapping
+            // write: a field some of whose bytes another field left undefined is undefined in
+            // those bytes, and one all of whose bytes are defined is the number they spell.
+            CliType.ImageBytesAt targetField.Offset targetField.Size (CliType.ValueType cvt)
+            |> CliType.OfImageBytesLike targetField.Contents
         | _ :: _ :: _ ->
             let fieldBytes = CliValueType.BytesAt targetField.Offset targetField.Size cvt
 
