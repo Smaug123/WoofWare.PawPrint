@@ -102,7 +102,7 @@ module DifferentialOracle =
             let m = fatal.Message |> Option.defaultValue "<no message>"
 
             failwith $"PawPrint guest aborted (%O{fatal.Code}) for %s{fileName}: %s{m}"
-        | _, RunOutcome.SignalTerminated (_, signal) ->
+        | _, RunOutcome.SignalTerminated (_, signal, _) ->
             failwith
                 $"PawPrint guest was terminated by POSIX signal %O{signal} for %s{fileName}; this test does not exercise signal-driven termination"
         | _, RunOutcome.ProcessExit _ -> failwith "unreachable: normalised away above"

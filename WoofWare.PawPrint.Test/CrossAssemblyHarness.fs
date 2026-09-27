@@ -140,7 +140,8 @@ module CrossAssemblyHarness =
                 | RunOutcome.Aborted (_, _, fatal) ->
                     let m = fatal.Message |> Option.defaultValue "<no message>"
                     failwith $"Guest aborted (%O{fatal.Code}): %s{m}"
-                | RunOutcome.SignalTerminated (_, signal) -> failwith $"Guest was terminated by POSIX signal %O{signal}"
+                | RunOutcome.SignalTerminated (_, signal, _) ->
+                    failwith $"Guest was terminated by POSIX signal %O{signal}"
                 | RunOutcome.NormalExit (state, _) -> state
                 | RunOutcome.ProcessExit (state, _) -> state
 

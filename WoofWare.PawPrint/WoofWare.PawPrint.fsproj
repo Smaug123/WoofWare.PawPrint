@@ -71,6 +71,8 @@
     <Compile Include="StackCrawlMark.fs" />
     <Compile Include="DebuggerState.fs" />
     <Compile Include="SignalHandler.fs" />
+    <Compile Include="Native\NativeSignalHandler.fs" />
+    <Compile Include="Native\StartupSignalDispositions.fs" />
     <Compile Include="Native\PosixSignalShim.fs" />
     <Compile Include="Native\ClockPal.fs" />
     <Compile Include="Native\EnvironmentPal.fs" />
@@ -151,7 +153,6 @@
     <Compile Include="Native\DirectoryEntryPal.fs" />
     <Compile Include="Native\SocketShimPal.fs" />
     <Compile Include="Native\NativeCall.fs" />
-    <Compile Include="Native\StartupSignalDispositions.fs" />
     <Compile Include="Native\NativeLibc.fs" />
     <Compile Include="Native\NativeGc.fs" />
     <Compile Include="Native\NativeGcFrameRegistration.fs" />

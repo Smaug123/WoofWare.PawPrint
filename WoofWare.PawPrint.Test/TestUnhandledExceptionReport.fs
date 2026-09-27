@@ -30,7 +30,7 @@ module TestUnhandledExceptionReport =
         | RunOutcome.Aborted (_, _, fatal) ->
             let message = fatal.Message |> Option.defaultValue "<no message>"
             failwith $"expected an unhandled exception, but the guest aborted (%O{fatal.Code}): %s{message}"
-        | RunOutcome.SignalTerminated (_, signal) ->
+        | RunOutcome.SignalTerminated (_, signal, _) ->
             failwith $"expected an unhandled exception, but the guest was terminated by %O{signal}"
 
     let private runImage (name : string) (image : byte[]) : string list =

@@ -81,7 +81,7 @@ module TestClockJitterFindsBugs =
         | RunOutcome.ProcessExit (state, _) -> Ending.ExitCode state.LatchedExitCode
         | RunOutcome.GuestUnhandledException _ -> Ending.Other "unhandled guest exception"
         | RunOutcome.Aborted (_, _, fatal) -> Ending.Other $"aborted %O{fatal.Code}: %A{fatal.Message}"
-        | RunOutcome.SignalTerminated (_, signal) -> Ending.Other $"signalled: %O{signal}"
+        | RunOutcome.SignalTerminated (_, signal, _) -> Ending.Other $"signalled: %O{signal}"
 
     /// Run the guest once under a given jitter strategy and PCT seed, from
     /// scratch. Used for the jittered runs: the fork-prefix shortcut below

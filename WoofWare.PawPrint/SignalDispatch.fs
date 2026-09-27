@@ -16,11 +16,11 @@ open WoofWare.PosixKernel
 ///
 ///   * `trySpawnHandler` — Parked → Runnable. Polled between every guest IL
 ///     step from `Program.stepPrepared`. If a pending entry in
-///     `SignalState.Pending` is deliverable now (signal enabled, target alive
-///     and not blocking it, or no specific target but at least one such live
-///     thread exists), and the dispatcher itself is currently Parked, we pop
-///     the entry off the queue and install
-///     a fresh bottom frame on the dispatcher that calls the registered
+///     `SignalState.Pending` is deliverable now (caught by System.Native's
+///     handler, target alive and not blocking it, or no specific target but
+///     at least one such live thread exists), and the dispatcher itself is
+///     currently Parked, we pop the entry off the queue and install a fresh
+///     bottom frame on the dispatcher that calls the registered
 ///     handler with `(int signo, int posixSignalEnumValue)`. The frame has no
 ///     `ReturnState`, so when the handler eventually `ret`urns, the bottom
 ///     frame's exit surfaces as `ExecutionResult.Terminated` — that's the
@@ -178,7 +178,7 @@ module SignalDispatch =
         let liveThreads = liveExcludingDispatcher dispatcher state
 
         let delivery, signalsAfter =
-            SignalState.nextDelivery liveThreads state.Kernel.Signals
+            SignalState.nextDelivery state.Kernel.Process.CoreDumps liveThreads state.Kernel.Signals
 
         // Persist the scan's state whether or not it produced an action:
         // discarding a receivable ignored signal is a state change with no
@@ -201,10 +201,10 @@ module SignalDispatch =
             // Nothing receivable now (queue empty, target dead/blocking, or —
             // for a process-directed signal — no eligible live thread).
             state
-        | Some (SignalDelivery.DefaultTerminate signal)
+        | Some (SignalDelivery.DefaultTerminate (signal, _))
         | Some (SignalDelivery.DefaultStop signal)
         | Some (SignalDelivery.DefaultContinue signal) ->
-            // A pending signal with no handler enabled for it, whose kernel
+            // A pending signal at its default disposition, whose kernel
             // default is to terminate, stop or continue the process.
             // `SignalState.generate` applies a terminating or stopping default
             // at generation whenever some thread can receive the signal, so it
@@ -214,8 +214,22 @@ module SignalDispatch =
             // without this poll learning to apply defaults, and it is refused
             // rather than half-modelled.
             failwith
-                $"SignalDispatch.trySpawnHandler: pending %O{signal} has no enabled handler and its kernel default is not Ignore; applying a default disposition at delivery rather than at generation is not modelled."
-        | Some (SignalDelivery.RunHandler (entry, _receiver)) ->
+                $"SignalDispatch.trySpawnHandler: pending %O{signal} is at its default disposition, and its kernel default is not Ignore; applying a default disposition at delivery rather than at generation is not modelled."
+        | Some (SignalDelivery.RunHandler (entry, _receiver, NativeSignalHandler.CoreClrPal))
+        | Some (SignalDelivery.RunHandler (entry, _receiver, NativeSignalHandler.GlibcSetXid)) ->
+            // `NativeLibc.kill` refuses to generate these, so this is a test
+            // driving the queue by hand.
+            failwith
+                $"SignalDispatch.trySpawnHandler: %O{entry.Signal} is caught by a native handler the runtime or libc installed before Main, which PawPrint does not model."
+        | Some (SignalDelivery.RunHandler (entry, _receiver, NativeSignalHandler.SystemNative)) ->
+
+        let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
+
+        match PosixSignalShim.chainsToNativeHandler numbering entry.Signal state.Kernel.PosixSignalShim with
+        | Some chained ->
+            failwith
+                $"SignalDispatch.trySpawnHandler: System.Native's handler for %O{entry.Signal} would first run the handler it replaced (%O{chained}), which PawPrint does not model."
+        | None ->
 
         let handler =
             match PosixSignalShim.handler state.Kernel.PosixSignalShim with
@@ -226,7 +240,7 @@ module SignalDispatch =
                 // asserts calls a null function pointer: there is no
                 // behaviour here to model.
                 failwith
-                    $"SignalDispatch.trySpawnHandler: %O{entry.Signal} is enabled and due for delivery, but no handler has been installed with SystemNative_SetPosixSignalHandler; the real shim asserts one has."
+                    $"SignalDispatch.trySpawnHandler: %O{entry.Signal} is caught by System.Native and due for delivery, but no handler has been installed with SystemNative_SetPosixSignalHandler; the real shim asserts one has."
 
         let mi = SignalHandler.methodInfo handler
         validateHandlerSignature state.ConcreteTypes mi
@@ -238,8 +252,7 @@ module SignalDispatch =
                     $"SignalDispatch.trySpawnHandler: assembly %s{AssemblyDefinitionName.simpleName mi.DeclaringAssemblyFullName} for handler %s{mi.Name} is not loaded; the SetPosixSignalHandler QCall should have loaded it."
             )
 
-        let args =
-            buildArgs (SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform) entry.Signal
+        let args = buildArgs numbering entry.Signal
 
         // `MethodState.Empty` enforces an arity check against
         // `MethodInfo.arity mi` (plus 1 if non-static). The handler is

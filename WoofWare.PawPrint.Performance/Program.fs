@@ -288,7 +288,7 @@ module private Harness =
         | RunOutcome.Aborted (_, _, fatal) ->
             let m = fatal.Message |> Option.defaultValue "<no message>"
             failwith $"PawPrint guest aborted (%O{fatal.Code}): %s{m}"
-        | RunOutcome.SignalTerminated (_, signal) ->
+        | RunOutcome.SignalTerminated (_, signal, _) ->
             failwith $"PawPrint guest was terminated by POSIX signal %O{signal} during benchmark"
         | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
             failwith

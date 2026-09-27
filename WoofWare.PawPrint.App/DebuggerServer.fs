@@ -426,7 +426,7 @@ module DebuggerServer =
             match fatal.Message with
             | Some m -> writer.WriteString ("message", m)
             | None -> writer.WriteNull "message"
-        | RunOutcome.SignalTerminated (state, signal) ->
+        | RunOutcome.SignalTerminated (state, signal, coreDumped) ->
             // The signo is read under the platform the guest simulated, since
             // that is what its own shell would have reported.
             let signo =
@@ -435,6 +435,7 @@ module DebuggerServer =
             writer.WriteString ("kind", "signalTerminated")
             writer.WriteString ("signal", sprintf "%O" signal)
             writer.WriteNumber ("signo", signo)
+            writer.WriteBoolean ("coreDumped", coreDumped)
             writer.WriteNumber ("exitCode", 128 + signo)
         | RunOutcome.GuestUnhandledException (_, thread, exn) ->
             writer.WriteString ("kind", "guestUnhandledException")
@@ -465,7 +466,7 @@ module DebuggerServer =
         | SessionState.Finished (RunOutcome.NormalExit (state, _), _)
         | SessionState.Finished (RunOutcome.ProcessExit (state, _), _)
         | SessionState.Finished (RunOutcome.Aborted (state, _, _), _)
-        | SessionState.Finished (RunOutcome.SignalTerminated (state, _), _)
+        | SessionState.Finished (RunOutcome.SignalTerminated (state, _, _), _)
         | SessionState.Finished (RunOutcome.GuestUnhandledException (state, _, _), _) -> state
         | SessionState.Deadlocked (prepared, _, _) -> prepared.State
 

@@ -168,7 +168,7 @@ module TestConcurrencyBugs =
             RunSummary.UnhandledException (typeName, message)
         | RunOutcome.Aborted (_, _, fatal) ->
             RunSummary.Aborted (fatal.Code, Option.defaultValue "<no message>" fatal.Message)
-        | RunOutcome.SignalTerminated (_, signal) -> RunSummary.Signal (sprintf "%O" signal)
+        | RunOutcome.SignalTerminated (_, signal, _) -> RunSummary.Signal (sprintf "%O" signal)
 
     /// Compute the part of a run that every seed in the sweep shares: everything
     /// up to the guest's first *contended* scheduling decision.

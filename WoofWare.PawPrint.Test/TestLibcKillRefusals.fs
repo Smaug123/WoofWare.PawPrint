@@ -66,8 +66,73 @@ class Program
 }
 """
 
-    let private runSource (source : string) (platform : SimulatedUnixPlatform) (signo : int) : RunOutcome =
-        let description = $"kill(self, %d{signo})"
+    /// Holds System.Native's dispatcher in a SIGWINCH handler while a stop
+    /// signal (`args[0]`) and then SIGCONT (`args[1]`) are sent, both with
+    /// handlers registered: the stop signal is still waiting for the
+    /// dispatcher when SIGCONT is generated.
+    let private queuedStopThenContinueGuest : string =
+        """
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+class Program
+{
+    [DllImport("libc", EntryPoint = "kill", SetLastError = true)]
+    static extern int Kill(int pid, int sig);
+
+    static int Main(string[] args)
+    {
+        int pid = Environment.ProcessId;
+        using var release = new ManualResetEventSlim(false);
+        using var busy = PosixSignalRegistration.Create(PosixSignal.SIGWINCH, _ => release.Wait());
+        using var stop = PosixSignalRegistration.Create(PosixSignal.SIGTSTP, context => context.Cancel = true);
+        using var cont = PosixSignalRegistration.Create(PosixSignal.SIGCONT, context => context.Cancel = true);
+
+        if (Kill(pid, 28) != 0) return 1;
+        if (Kill(pid, int.Parse(args[0])) != 0) return 2;
+        if (Kill(pid, int.Parse(args[1])) != 0) return 3;
+
+        release.Set();
+        return 42;
+    }
+}
+"""
+
+    /// Holds System.Native's dispatcher in a SIGWINCH handler while SIGCHLD
+    /// (`args[0]`), registered, is sent and then unregistered: the SIGCHLD is
+    /// still waiting for the dispatcher when its default is restored.
+    let private queuedThenUnregisteredGuest : string =
+        """
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+class Program
+{
+    [DllImport("libc", EntryPoint = "kill", SetLastError = true)]
+    static extern int Kill(int pid, int sig);
+
+    static int Main(string[] args)
+    {
+        int pid = Environment.ProcessId;
+        using var release = new ManualResetEventSlim(false);
+        using var busy = PosixSignalRegistration.Create(PosixSignal.SIGWINCH, _ => release.Wait());
+        var child = PosixSignalRegistration.Create(PosixSignal.SIGCHLD, _ => { });
+
+        if (Kill(pid, 28) != 0) return 1;
+        if (Kill(pid, int.Parse(args[0])) != 0) return 2;
+        child.Dispose();
+
+        release.Set();
+        return 42;
+    }
+}
+"""
+
+    let private runSourceWith (source : string) (platform : SimulatedUnixPlatform) (argv : string list) : RunOutcome =
+        let arguments = String.concat " " argv
+        let description = $"kill(self, %s{arguments})"
 
         let _messages, loggerFactory =
             LoggerFactory.makeTestWithProperties [ "case", description ]
@@ -88,9 +153,12 @@ class Program
                             { KernelConfig.Default with
                                 UnixPlatform = platform
                             }
-                        Argv = [ string<int> signo ]
+                        Argv = argv
                     }
             }
+
+    let private runSource (source : string) (platform : SimulatedUnixPlatform) (signo : int) : RunOutcome =
+        runSourceWith source platform [ string<int> signo ]
 
     let private run (platform : SimulatedUnixPlatform) (signo : int) : RunOutcome = runSource guest platform signo
 
@@ -100,17 +168,29 @@ class Program
         exn.Message |> shouldContainText reason
 
     [<Test>]
-    let ``SIGPIPE, which the runtime ignores from startup, is refused under Linux`` () : unit =
-        refused SimulatedUnixPlatform.linuxX64 13 "catches or ignores SIGPIPE from startup"
+    let ``SIGPIPE, which the runtime ignores from startup, is discarded under either flavour`` () : unit =
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            match run platform 13 with
+            | RunOutcome.NormalExit (state, _) -> state.LatchedExitCode |> shouldEqual 42
+            | other -> failwith $"expected kill(self, SIGPIPE) to be answered and the guest to exit 42, got %O{other}"
 
     [<Test>]
     let ``30 is Darwin's SIGUSR1, the runtime's activation signal, and is refused there`` () : unit =
-        refused SimulatedUnixPlatform.macOsArm64 30 "catches or ignores SIGUSR1 from startup"
+        refused SimulatedUnixPlatform.macOsArm64 30 "runs a handler of CoreCLR's PAL for SIGUSR1"
+
+    [<Test>]
+    let ``11 is SIGSEGV, which the runtime catches, and is refused under either flavour`` () : unit =
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            refused platform 11 "runs a handler of CoreCLR's PAL"
+
+    [<Test>]
+    let ``33 is glibc's SIGSETXID, which glibc catches, and is refused under Linux`` () : unit =
+        refused SimulatedUnixPlatform.linuxX64 33 "runs glibc's own SIGSETXID handler"
 
     [<Test>]
     let ``30 is Linux's SIGPWR, which terminates a real process, and PawPrint's`` () : unit =
         match run SimulatedUnixPlatform.linuxX64 30 with
-        | RunOutcome.SignalTerminated (_, signal) -> signal |> shouldEqual (Signal.Other 30)
+        | RunOutcome.SignalTerminated (_, signal, _) -> signal |> shouldEqual (Signal.Other 30)
         | other -> failwith $"expected termination by signal 30, got %O{other}"
 
     [<Test>]
@@ -129,4 +209,31 @@ class Program
             )
 
         exn.Message |> shouldContainText "SystemNative_HandleNonCanceledPosixSignal"
+        exn.Message |> shouldContainText "still queued"
+
+    [<Test>]
+    let ``SIGCONT discarding a stop signal queued for the dispatcher is refused`` () : unit =
+        // On the real runtime both handlers run: the native handler took the
+        // stop signal before SIGCONT was sent. SIGTSTP and SIGCONT are 20 and
+        // 18 under Linux's numbering.
+        let exn =
+            Assert.Catch<exn> (fun () ->
+                runSourceWith queuedStopThenContinueGuest SimulatedUnixPlatform.linuxX64 [ "20" ; "18" ]
+                |> ignore<RunOutcome>
+            )
+
+        exn.Message |> shouldContainText "would discard the pending SIGTSTP"
+
+    [<Test>]
+    let ``unregistering a signal queued for the dispatcher is refused`` () : unit =
+        // On the real runtime the queued SIGCHLD still reaches the callback;
+        // restoring SIGCHLD's default would discard it from PawPrint's
+        // pending set. SIGCHLD is 17 under Linux's numbering.
+        let exn =
+            Assert.Catch<exn> (fun () ->
+                runSourceWith queuedThenUnregisteredGuest SimulatedUnixPlatform.linuxX64 [ "17" ]
+                |> ignore<RunOutcome>
+            )
+
+        exn.Message |> shouldContainText "SystemNative_DisablePosixSignalHandling"
         exn.Message |> shouldContainText "still queued"

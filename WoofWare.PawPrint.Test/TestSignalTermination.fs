@@ -56,9 +56,66 @@ module TestSignalTermination =
 
             reraise ()
 
+    /// Sends itself `args[0]` with libc's kill(2), or, given a second
+    /// argument, hands it to the shim's non-cancelled handling instead.
+    let private selfSignalGuest : string =
+        """
+using System;
+using System.Runtime.InteropServices;
+
+class Program
+{
+    [DllImport("libc", EntryPoint = "kill", SetLastError = true)]
+    static extern int Kill(int pid, int sig);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_HandleNonCanceledPosixSignal")]
+    static extern void HandleNonCanceled(int signalCode);
+
+    static int Main(string[] args)
+    {
+        int signo = int.Parse(args[0]);
+        if (args.Length > 1) HandleNonCanceled(signo);
+        else Kill(Environment.ProcessId, signo);
+        return 99;
+    }
+}
+"""
+
+    let private runSelfSignal
+        (platform : SimulatedUnixPlatform)
+        (coreDumps : CoreDumps)
+        (argv : string list)
+        : RunOutcome
+        =
+        let image = Roslyn.compile [ selfSignalGuest ]
+
+        let _messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "case", String.concat " " argv ]
+
+        use _loggerFactoryResource = loggerFactory
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
+        use peImage = new MemoryStream (image)
+        let host = HostConfig.Default dotnetRuntimes
+
+        Program.run
+            loggerFactory
+            None
+            peImage
+            { host with
+                Guest =
+                    { host.Guest with
+                        Kernel =
+                            { host.Guest.Kernel with
+                                UnixPlatform = platform
+                                CoreDumps = coreDumps
+                            }
+                        Argv = argv
+                    }
+            }
+
     let private signalTerminatedBy (outcome : RunOutcome) : Signal =
         match outcome with
-        | RunOutcome.SignalTerminated (_, signal) -> signal
+        | RunOutcome.SignalTerminated (_, signal, _) -> signal
         | other -> failwith $"expected RunOutcome.SignalTerminated, got %O{other}"
 
     [<Test>]
@@ -118,3 +175,43 @@ module TestSignalTermination =
 
         128 + Signal.toRawSignoUnder SignalNumbering.Darwin Signal.SIGUSR2
         |> shouldEqual 159
+
+    [<Test>]
+    let ``a death by a signal that dumps core reports the dump exactly when the process writes dumps`` () : unit =
+        // SIGQUIT (3 under both numberings) dumps core by default; SIGTERM does
+        // not. Both routes to the death, libc's kill(2) and the shim's
+        // re-raise, read the process's setting.
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            for route in [ [] ; [ "shim" ] ] do
+                for coreDumps in [ CoreDumps.Suppressed ; CoreDumps.Written ] do
+                    for signo, signal, dumpsCore in [ 3, Signal.SIGQUIT, true ; 15, Signal.SIGTERM, false ] do
+                        match runSelfSignal platform coreDumps (string<int> signo :: route) with
+                        | RunOutcome.SignalTerminated (_, killedBy, coreDumped) ->
+                            (platform, route, coreDumps, killedBy, coreDumped)
+                            |> shouldEqual (
+                                platform,
+                                route,
+                                coreDumps,
+                                signal,
+                                dumpsCore && coreDumps = CoreDumps.Written
+                            )
+                        | other -> failwith $"%O{platform} %A{route} signo %d{signo}: expected a death, got %O{other}"
+
+    [<Test>]
+    let ``the shim re-raises SIGKILL though sigaction refuses to restore it`` () : unit =
+        // The restore fails with EINVAL, unchecked, and kill(2) goes ahead.
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            match runSelfSignal platform CoreDumps.Written [ "9" ; "shim" ] with
+            | RunOutcome.SignalTerminated (_, signal, coreDumped) ->
+                (signal, coreDumped) |> shouldEqual (Signal.Other 9, false)
+            | other -> failwith $"%O{platform}: expected death by SIGKILL, got %O{other}"
+
+    [<Test>]
+    let ``the shim's re-raise of Linux's 33 is refused, because glibc's handler would run`` () : unit =
+        let exn =
+            Assert.Catch<exn> (fun () ->
+                runSelfSignal SimulatedUnixPlatform.linuxX64 CoreDumps.Suppressed [ "33" ; "shim" ]
+                |> ignore<RunOutcome>
+            )
+
+        exn.Message |> shouldContainText "native code PawPrint does not model"

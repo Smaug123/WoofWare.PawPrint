@@ -762,7 +762,7 @@ public static class LayoutClassSweep
                     | RunOutcome.GuestUnhandledException (_, _, exn) ->
                         failwith $"%s{sourceName}: guest threw an unhandled exception: %O{exn.ExceptionObject}"
                     | RunOutcome.Aborted (_, _, fatal) -> failwith $"%s{sourceName}: guest aborted: %O{fatal}"
-                    | RunOutcome.SignalTerminated (_, signal) ->
+                    | RunOutcome.SignalTerminated (_, signal, _) ->
                         failwith $"%s{sourceName}: guest was signalled: %O{signal}"
                 )
 

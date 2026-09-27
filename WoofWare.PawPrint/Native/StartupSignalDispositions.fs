@@ -2,14 +2,13 @@ namespace WoofWare.PawPrint
 
 open WoofWare.PosixKernel
 
-/// The signals a real CoreCLR process catches or ignores from the moment it
-/// starts, before any guest code runs, so that sending one does not do what
-/// the kernel's default would: terminate the process with that signal.
+/// The dispositions a real CoreCLR process has installed by the time any guest
+/// code runs: the signals it catches or ignores from the moment it starts, so
+/// that sending one does not do what the kernel's default would.
 ///
-/// PawPrint's kernel model starts every signal at its kernel default, so for
-/// these signals its answer would be wrong. A generator of signals refuses
-/// them until the model holds the runtime's startup dispositions. `TestStartupSignalDispositions` checks the
-/// host's column against the real runtime the test host runs.
+/// A PawPrint process starts with this table, over whatever its launcher left
+/// ignored. `TestStartupSignalDispositions` checks the host's column against
+/// the real runtime the test host runs.
 [<RequireQualifiedAccess>]
 module StartupSignalDispositions =
 
@@ -46,8 +45,10 @@ module StartupSignalDispositions =
     // (INJECT_ACTIVATION_SIGNAL), which is SIGRTMIN, 34 under glibc, on Linux
     // and SIGUSR1 on Darwin; and it sets SIGPIPE to SIG_IGN. Linux's 33 is
     // glibc's SIGSETXID, whose disposition glibc's sigaction refuses even to
-    // report, so the reading cannot say what catches it, only that the process
-    // survives it.
+    // report; the raw rt_sigaction(2) syscall, which glibc does not screen,
+    // finds its handler in libc.so.6, glibc's own
+    // (docs/plans/2026-08-23-posix-kernel-extraction/startup-signal-handler-owners.cs,
+    // 2026-09-26, .NET 10.0.11 on Linux 6.18.5 aarch64).
     //
     // Darwin takes faults as Mach exceptions rather than signals, so its PAL
     // installs no SIGTRAP handler, and a Darwin process dies of SIGTRAP as the
@@ -56,24 +57,86 @@ module StartupSignalDispositions =
     // SIGINT, SIGQUIT and SIGTERM have PAL handlers too, and are not here:
     // each restores the previous disposition and sends the signal again, so
     // the process dies of it exactly as the default says.
-    let private linuxSignos : Set<int> =
-        Set.ofList [ 4 ; 5 ; 6 ; 7 ; 8 ; 11 ; 13 ; 33 ; 34 ]
+    //
+    // Inherited ignores, measured 2026-09-26 by starting both probes from
+    // `bash -c "trap '' <signals>; exec ..."` (dash does not pass on an
+    // ignored SIGCHLD, bash does), ignoring every standard signal the table
+    // does not name as well as those it does: on Linux 6.18.5 (.NET 10.0.11)
+    // and Darwin 27.0.0 (.NET 10.0.7) alike, the runtime's handlers replaced
+    // the ignores of the signals below and of SIGTERM, and every other ignore
+    // was still in place at Main. The PAL installs SIGINT's and SIGQUIT's
+    // handlers only over a disposition that is not SIG_IGN; its others it
+    // installs regardless.
+    let private runtimeCaught (numbering : SignalNumbering) : int list =
+        match numbering with
+        | SignalNumbering.Linux -> [ 4 ; 5 ; 6 ; 7 ; 8 ; 11 ; 34 ]
+        | SignalNumbering.Darwin -> [ 4 ; 6 ; 8 ; 10 ; 11 ; 30 ]
 
-    let private darwinSignos : Set<int> = Set.ofList [ 4 ; 6 ; 8 ; 10 ; 11 ; 13 ; 30 ]
-
-    /// Whether the kernel's default for `signal` is to terminate the process,
-    /// but a CoreCLR process that has registered no handler through
-    /// `PosixSignalRegistration` is not terminated by it when sent it.
+    /// Why a set of inherited ignores cannot start a PawPrint process, or
+    /// `None` if it can.
     ///
-    /// What happens instead is not one answer: usually the process survives,
-    /// but on x86-64 Linux, SIGTRAP kills it with SIGILL.
-    ///
-    /// Answers for the signal the value *is* under the numbering, so an `Other`
-    /// carrying SIGPIPE's number counts.
-    let overridesTerminatingDefault (numbering : SignalNumbering) (signal : Signal) : bool =
-        let signos =
-            match numbering with
-            | SignalNumbering.Linux -> linuxSignos
-            | SignalNumbering.Darwin -> darwinSignos
+    /// Refused: a number that is not a signal under `numbering`; any signal
+    /// glibc's `sigaction` refuses (SIGKILL and SIGSTOP, and on Linux its
+    /// reserved 32 and 33), which a launcher could not have left ignored; and
+    /// SIGTERM. The runtime replaces an ignored SIGTERM with a handler of its
+    /// own that restores the ignore and re-sends the signal, which PawPrint
+    /// models as the ignore alone. That is exact until the guest registers a
+    /// handler for SIGTERM: a real process then runs it, where the model
+    /// would leave the signal ignored.
+    let refusal (numbering : SignalNumbering) (inheritedIgnores : Set<Signal>) : string option =
+        inheritedIgnores
+        |> Seq.tryPick (fun signal ->
+            match signal with
+            | Signal.Other raw when (Signal.ofRawSignoUnder numbering raw).IsNone ->
+                Some $"%d{raw} is not a signal under the %O{numbering} numbering"
+            | _ ->
 
-        Set.contains (Signal.toRawSignoUnder numbering signal) signos
+            let signal = Signal.canonicalUnder numbering signal
+
+            if Signal.isUncatchableUnder numbering signal then
+                Some $"%O{signal} cannot be ignored through sigaction under the %O{numbering} numbering"
+            elif signal = Signal.SIGTERM then
+                Some
+                    "SIGTERM: the runtime replaces an ignored SIGTERM with a handler that restores the ignore and re-sends it, which PawPrint models as the ignore alone, and a guest's own SIGTERM handler would then never run where it runs on real .NET"
+            else
+                None
+        )
+
+    /// The disposition table of a real CoreCLR process at Main, whose launcher
+    /// left `inheritedIgnores` ignored (read under `numbering`).
+    ///
+    /// The runtime ignores SIGPIPE, and catches the hardware-fault signals
+    /// and its thread-activation signal with handlers of its own whatever
+    /// they were before; on Linux, glibc's own handler catches its reserved
+    /// 33. Every other signal is ignored if the launcher left it so, and at
+    /// its default otherwise. The runtime's handlers for SIGINT, SIGQUIT and
+    /// SIGTERM are not in the table: each restores the disposition it
+    /// replaced and re-sends the signal, so the process does exactly what
+    /// that disposition says.
+    ///
+    /// Fails loud on inherited ignores `refusal` refuses.
+    let initial<'Task when 'Task : comparison>
+        (numbering : SignalNumbering)
+        (inheritedIgnores : Set<Signal>)
+        : SignalState<'Task, NativeSignalHandler>
+        =
+        match refusal numbering inheritedIgnores with
+        | Some reason -> failwith $"StartupSignalDispositions.initial: cannot start a process with %s{reason}."
+        | None ->
+
+        let caught =
+            [
+                for signo in runtimeCaught numbering do
+                    signo, SignalDisposition.Catch NativeSignalHandler.CoreClrPal
+                match numbering with
+                | SignalNumbering.Linux -> 33, SignalDisposition.Catch NativeSignalHandler.GlibcSetXid
+                | SignalNumbering.Darwin -> ()
+                13, SignalDisposition.Ignore
+            ]
+
+        (SignalState.initial numbering inheritedIgnores, caught)
+        ||> List.fold (fun state (signo, disposition) ->
+            match Signal.ofRawSignoUnder numbering signo with
+            | ValueSome signal -> SignalState.setDisposition signal disposition state
+            | ValueNone -> failwith $"StartupSignalDispositions: %d{signo} is not a signal under %O{numbering}"
+        )
