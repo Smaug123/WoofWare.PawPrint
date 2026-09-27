@@ -491,3 +491,41 @@ module TestUndefinedMemory =
 
         if undefinedReads < 100 || definedReads < 100 then
             failwith $"generator was unbalanced: %d{undefinedReads} undefined reads, %d{definedReads} defined"
+
+    /// A reference or pointer nothing wrote, overwritten a range at a time: once every byte is
+    /// zero it is null, the one value of its shape a byte image spells, however many writes that
+    /// took; a nonzero image names nothing, and is refused.
+    [<Test>]
+    let ``An undefined reference or pointer zeroed in parts is null`` () : unit =
+        let unwritten (i : int) : ValueByte =
+            ValueByte.Undefined
+                {
+                    Memory = foreign
+                    Offset = i
+                }
+
+        for kind in [ UndefinedPrimitive.ObjectRef ; UndefinedPrimitive.RuntimePointer ] do
+            let size = UndefinedPrimitive.size kind
+
+            let cell =
+                CliType.OfValueBytesLike (CliType.ZeroOfPrimitive kind) (Array.init size unwritten)
+
+            let half = Array.create (size / 2) (ValueByte.Defined 0uy)
+
+            let zeroed =
+                [ 0 ; size / 2 ]
+                |> List.fold
+                    (fun cell offset -> CliType.WithValueBytesAtIfChanged offset half cell |> Option.defaultValue cell)
+                    cell
+
+            zeroed |> shouldEqual (CliType.ZeroOfPrimitive kind)
+
+            let lowHalfSet =
+                CliType.WithValueBytesAtIfChanged 0 (Array.create (size / 2) (ValueByte.Defined 1uy)) cell
+                |> Option.defaultValue cell
+
+            Assert.Throws<exn> (fun () ->
+                CliType.WithValueBytesAtIfChanged (size / 2) half lowHalfSet
+                |> ignore<CliType option>
+            )
+            |> ignore<exn>
