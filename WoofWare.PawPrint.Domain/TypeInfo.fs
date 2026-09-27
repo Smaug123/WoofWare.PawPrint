@@ -310,6 +310,13 @@ type BaseClassTypes<'corelib> =
         /// field a guest can obtain from <c>Type.GetField</c>. Recognised by identity, for the
         /// reason <see cref="VarArgMethod"/> gives.
         GenericFieldInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// <c>System.Reflection.Emit.GenericMethodInfo</c>, the wrapper
+        /// <c>DynamicScope.GetTokenFor(RuntimeMethodHandle, RuntimeTypeHandle)</c> puts round a
+        /// reflected method together with its declaring type. <c>DynamicILGenerator.Emit(OpCode,
+        /// MethodInfo)</c> takes that overload when the declaring type is generic or an array, and
+        /// stores a bare <c>RuntimeMethodHandle</c> otherwise. Recognised by identity, for the reason
+        /// <see cref="VarArgMethod"/> gives.
+        GenericMethodInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>
         RuntimeMethodHandleInternal : TypeInfo<GenericParamFromMetadata, TypeDefn>
         RuntimeFieldHandle : TypeInfo<GenericParamFromMetadata, TypeDefn>
         RuntimeTypeHandle : TypeInfo<GenericParamFromMetadata, TypeDefn>

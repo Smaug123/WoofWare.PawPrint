@@ -213,7 +213,7 @@ module NativeCall =
     /// the null sentinel. `default(RuntimeFieldHandleInternal)` reaches PawPrint as whichever zero
     /// shape the zero-initialising path produced -- a verbatim zero or a null managed pointer, in
     /// either the runtime-pointer or the native-int tag -- so all four spellings map to `None`,
-    /// exactly as in `methodHandleIdOfRuntimeMethodHandleInternal` below.
+    /// exactly as in `MethodHandleResolution.methodHandleIdOfRuntimeMethodHandleInternal`.
     let fieldHandleIdOfRuntimeFieldHandleInternal (operation : string) (arg : CliType) : int64 option =
         match CliType.unwrapPrimitiveLikeDeep arg with
         | CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle id) -> Some id
@@ -225,23 +225,6 @@ module NativeCall =
         | other ->
             failwith
                 $"%s{operation}: expected RuntimeFieldHandleInternal containing a field-registry handle, got %O{other}"
-
-    /// Extract the registry id from the m_handle of a `RuntimeMethodHandleInternal`. Accepts both
-    /// the canonical `RuntimePointer (MethodRegistryHandle id)` form and the `NativeInt
-    /// (MethodHandlePtr id)` form that primitive-like rewrapping produces when the value is
-    /// stored through an `IntPtr`-shaped byref (see EvalStack rewrap rules). `Verbatim 0L` in
-    /// either tag means "null sentinel" — the BCL writes that when iteration is exhausted.
-    let methodHandleIdOfRuntimeMethodHandleInternal (operation : string) (arg : CliType) : int64 option =
-        match CliType.unwrapPrimitiveLikeDeep arg with
-        | CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle id) -> Some id
-        | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L) -> None
-        | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null) -> None
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.MethodHandlePtr id)) -> Some id
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> None
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) -> None
-        | other ->
-            failwith
-                $"%s{operation}: expected RuntimeMethodHandleInternal containing a method-registry handle, got %O{other}"
 
     let managedPointerOfPointerArgument (operation : string) (argName : string) (arg : CliType) : ManagedPointerSource =
         match CliType.unwrapPrimitiveLikeDeep arg with

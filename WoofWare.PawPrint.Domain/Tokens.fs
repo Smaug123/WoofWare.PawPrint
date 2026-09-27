@@ -347,9 +347,23 @@ type DynamicScopeEntry =
     ///
     /// Payload-free, as the other wrappers are.
     | GenericFieldInfo
-    /// Some entry kind whose resolution is not yet implemented — a signature blob, a
-    /// `RuntimeMethodHandle`, a `GenericMethodInfo`. The description names the kind, for the
-    /// refusal message an instruction naming it would produce.
+    /// A boxed `System.RuntimeMethodHandle`, which is what `Emit(OpCode, MethodInfo)` stores for a
+    /// reflected method whose declaring type is neither generic nor an array
+    /// (`DynamicILGenerator.cs:67-70`).
+    ///
+    /// Payload-free, as `TypeHandle` is: which method the handle names is read from the live scope
+    /// when the instruction runs.
+    | MethodHandle
+    /// CoreLib's `System.Reflection.Emit.GenericMethodInfo`, which pairs a `RuntimeMethodHandle`
+    /// with the `RuntimeTypeHandle` of the method's declaring type. `Emit(OpCode, MethodInfo)`
+    /// stores this for a reflected method whose declaring type is generic or an array
+    /// (`DynamicILGenerator.cs:67-70`), because CoreCLR shares one `MethodDesc` across the
+    /// reference-type instantiations of a generic type and needs the type to tell them apart.
+    ///
+    /// Payload-free, as the other wrappers are.
+    | GenericMethodInfo
+    /// Some entry kind whose resolution is not yet implemented, a signature blob above all. The
+    /// description names the kind, for the refusal message an instruction naming it would produce.
     | Unsupported of description : string
 
 [<RequireQualifiedAccess>]
@@ -365,6 +379,8 @@ module DynamicScopeEntry =
         | DynamicScopeEntry.VarArgMethod -> "a call site naming a dynamic method"
         | DynamicScopeEntry.FieldHandle -> "a field handle"
         | DynamicScopeEntry.GenericFieldInfo -> "a field handle together with its declaring type"
+        | DynamicScopeEntry.MethodHandle -> "a method handle"
+        | DynamicScopeEntry.GenericMethodInfo -> "a method handle together with its declaring type"
         | DynamicScopeEntry.String contents -> $"the string %s{contents}"
         | DynamicScopeEntry.Unsupported description -> description
 

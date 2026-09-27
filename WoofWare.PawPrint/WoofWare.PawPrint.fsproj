@@ -104,6 +104,7 @@
     <Compile Include="RawArrayDataProjection.fs" />
     <Compile Include="RuntimeFieldProjection.fs" />
     <Compile Include="ExecutionConcretization.fs" />
+    <Compile Include="MethodHandleResolution.fs" />
     <Compile Include="ExceptionDispatching.fs" />
     <Compile Include="ManagedPointerByteView.fs" />
     <Compile Include="StorageLocation.fs" />

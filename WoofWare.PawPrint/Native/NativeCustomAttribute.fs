@@ -423,7 +423,7 @@ module NativeCustomAttribute =
                     AllocatedNonArrayObject.DereferenceFieldById stubValueField ctorStubObj
 
                 let methodRegistryId =
-                    NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation stubMValue
+                    MethodHandleResolution.methodHandleIdOfRuntimeMethodHandleInternal operation stubMValue
                     |> Option.defaultWith (fun () ->
                         failwith
                             $"%s{operation}: RuntimeMethodInfoStub at %O{ctorStubAddr} carried a null RuntimeMethodHandleInternal"

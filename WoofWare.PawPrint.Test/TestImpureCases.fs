@@ -2639,6 +2639,26 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // Dynamic methods whose `call` and `callvirt` name reflected methods, stored as a
+                // bare RuntimeMethodHandle or as a GenericMethodInfo: dispatch, value-type and
+                // generic receivers, the three refusals real .NET makes, and the expression
+                // interpreter's three-parameter thunk. Dynamic-code switch overridden to true like
+                // its siblings; verified by hand to exit 0 on real .NET.
+                FileName = "DynamicMethodReflectedCalls.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // `Delegate_BindToMethodInfo`, the QCall behind `DynamicMethod.CreateDelegate`.
                 // Registered with the dynamic-code switch overridden to true, like its
                 // `ModuleHandle_GetDynamicMethod` sibling above. The guest walks every binding

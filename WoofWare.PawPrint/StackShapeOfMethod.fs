@@ -169,6 +169,47 @@ module StackShapeOfMethod =
         | Error e, _
         | _, Error e -> Error e
 
+    /// The shape of a call to a reflected method: its own signature, with each generic parameter
+    /// taking the shape of the argument the identity binds it to. Read from the concrete handles
+    /// rather than through a `TypeDefn`, since only CoreLib's own metadata names a float there.
+    let private reflectedCalleeShape
+        (state : IlMachineState)
+        (operation : string)
+        (identity : MetadataMethodIdentity)
+        : TokenShape
+        =
+        let definition =
+            MethodHandleResolution.methodInfoOfMetadataIdentity operation state identity
+
+        let assembly =
+            state.LoadedAssembly (identity.GetAssemblyFullName ())
+            |> Option.defaultWith (fun () ->
+                failwith $"%s{operation}: assembly %s{identity.GetAssemblyFullName ()} of a scope method is not loaded"
+            )
+
+        let typeArguments =
+            let declaring = MethodHandleResolution.requireClosedDeclaringType operation identity
+
+            match IlMachineState.tryGetConcreteTypeInfo state declaring with
+            | Some (concreteType, _) -> concreteType.Generics
+            | None ->
+                failwith
+                    $"%s{operation}: the declaring type %O{declaring} of a scope method is not a registered nominal type"
+
+        let bind (arguments : ImmutableArray<ConcreteTypeHandle>) (index : int) : SlotShape =
+            if index >= 0 && index < arguments.Length then
+                shapeOfConcreteType state arguments.[index]
+            else
+                SlotShape.Other
+
+        let binding =
+            {
+                TypeParameter = bind typeArguments
+                MethodParameter = bind (identity.GetMethodGenerics () |> ImmutableArray.CreateRange)
+            }
+
+        StackShapeTokens.calleeShape assembly binding GenericSubstitution.None definition.Signature
+
     /// The effect of one `DynamicScope` operand, read the way the instruction itself will read it.
     let private dynamicTokenShape
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -181,12 +222,36 @@ module StackShapeOfMethod =
         let operation = $"stack shape of %O{op}"
 
         match op with
-        | UnaryMetadataTokenIlOp.Call ->
-            // An entry that is not a dynamic method (a guest can put a `RuntimeMethodHandle`
-            // there after the mint) is the call's own problem when it executes.
-            match DynamicScopeOperand.tryDynamicMethod baseClassTypes operation index state handle with
-            | Error why -> Error why
-            | Ok (DynamicMethodResolution.Resolved callee) ->
+        | UnaryMetadataTokenIlOp.Call
+        | UnaryMetadataTokenIlOp.Callvirt ->
+            // An entry the instruction would refuse, or one PawPrint does not implement, is the
+            // instruction's own problem when it executes. So is a callee the instruction refuses
+            // whatever the stack holds: a `callvirt` of a static method is MissingMethodException,
+            // and a `call` of an abstract one BadImageFormatException, each measured with none of
+            // the callee's arguments pushed. A shape here would have the analysis refuse the
+            // underflow first.
+            let refusedCallee (callee : string) (exceptionName : string) : Result<TokenShape option, string> =
+                Error $"%s{operation} names %s{callee}, so the instruction raises %s{exceptionName} when it runs"
+
+            let staticCallvirt (callee : string) : Result<TokenShape option, string> =
+                refusedCallee $"%s{callee}, which is static" "MissingMethodException"
+
+            match DynamicScopeOperand.tryMethod baseClassTypes operation index state handle with
+            | Error (ScopeEntryRefusal.GuestException (_, why))
+            | Error (ScopeEntryRefusal.Unsupported why) -> Error why
+            | Ok (ScopeMethodResolution.Resolved (MethodHandle.FromDynamic _))
+            | Ok (ScopeMethodResolution.NeedsMinting _) when op = UnaryMetadataTokenIlOp.Callvirt ->
+                staticCallvirt "a DynamicMethod"
+            | Ok (ScopeMethodResolution.Resolved (MethodHandle.FromMetadata identity)) ->
+                let definition =
+                    MethodHandleResolution.methodInfoOfMetadataIdentity operation state identity
+
+                match op, definition.Body with
+                | UnaryMetadataTokenIlOp.Callvirt, _ when definition.IsStatic -> staticCallvirt "a reflected method"
+                | UnaryMetadataTokenIlOp.Call, MethodBody.Abstract ->
+                    refusedCallee "an abstract reflected method" "BadImageFormatException"
+                | _ -> Ok (Some (reflectedCalleeShape state operation identity))
+            | Ok (ScopeMethodResolution.Resolved (MethodHandle.FromDynamic callee)) ->
                 let definition =
                     MethodHandleRegistry.resolveDynamicMethod callee state.MethodHandles
                     |> Option.defaultWith (fun () ->
@@ -211,9 +276,8 @@ module StackShapeOfMethod =
                             signature
                     )
                 )
-            | Ok (DynamicMethodResolution.NeedsMinting callee) ->
+            | Ok (ScopeMethodResolution.NeedsMinting callee) ->
                 unmintedCalleeShape baseClassTypes operation state callee |> Result.map Some
-        | UnaryMetadataTokenIlOp.Callvirt
         | UnaryMetadataTokenIlOp.Calli
         | UnaryMetadataTokenIlOp.Newobj
         | UnaryMetadataTokenIlOp.Jmp ->
@@ -226,8 +290,8 @@ module StackShapeOfMethod =
             // Reading ahead decides nothing: an entry the guest's instruction would raise on, or
             // one PawPrint does not implement, is the instruction's own problem when it executes.
             match DynamicScopeOperand.tryField baseClassTypes operation index state handle with
-            | Error (ScopeFieldRefusal.GuestException (_, why))
-            | Error (ScopeFieldRefusal.Unsupported why) -> Error why
+            | Error (ScopeEntryRefusal.GuestException (_, why))
+            | Error (ScopeEntryRefusal.Unsupported why) -> Error why
             | Ok field ->
                 let assembly =
                     state.LoadedAssembly (field.GetAssemblyFullName ())

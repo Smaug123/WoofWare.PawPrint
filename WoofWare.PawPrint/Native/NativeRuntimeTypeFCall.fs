@@ -1037,7 +1037,7 @@ module NativeRuntimeTypeFCall =
             // form GetFirst returns) or as a NativeInt with a MethodHandlePtr source (the form
             // produced after passing through an IntPtr field). The shared helper accepts both.
             let currentId =
-                match NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation currentValue with
+                match MethodHandleResolution.methodHandleIdOfRuntimeMethodHandleInternal operation currentValue with
                 | Some id -> id
                 | None -> 0L
 

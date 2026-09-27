@@ -860,7 +860,11 @@ module NativeDelegate =
                         $"TODO: %s{operation} was passed DelegateBindingFlags 0x%08x{flags}; PawPrint implements only DBF_RelaxedSignature (0x%08x{DelegateBindingFlags.relaxedSignature}) and DBF_OpenDelegateOnly|DBF_RelaxedSignature (0x%08x{DelegateBindingFlags.openDelegateOnly ||| DelegateBindingFlags.relaxedSignature}), which are the only sets any caller that can reach this QCall passes"
 
             let methodHandle =
-                match NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation instruction.Arguments.[2] with
+                match
+                    MethodHandleResolution.methodHandleIdOfRuntimeMethodHandleInternal
+                        operation
+                        instruction.Arguments.[2]
+                with
                 | None ->
                     failwith
                         $"%s{operation}: the method handle is the null sentinel, but Delegate.CreateDelegateNoSecurityCheck rejects a null handle with ArgumentNullException before reaching this QCall"
@@ -884,7 +888,7 @@ module NativeDelegate =
             match methodHandle with
             | MethodHandle.FromMetadata identity when
                 NativeRuntimeMethodHandle.isGenericMethodDefinition
-                    (NativeRuntimeMethodHandle.methodInfoOfMetadataIdentity operation state identity).Generics.Length
+                    (MethodHandleResolution.methodInfoOfMetadataIdentity operation state identity).Generics.Length
                     (identity.GetMethodGenerics ()).Length
                 ->
                 NativeHandlerResult.raiseExceptionWithMessage
@@ -899,7 +903,7 @@ module NativeDelegate =
                 match methodHandle with
                 | MethodHandle.FromMetadata identity ->
                     let methodInfo =
-                        NativeRuntimeMethodHandle.methodInfoOfMetadataIdentity operation state identity
+                        MethodHandleResolution.methodInfoOfMetadataIdentity operation state identity
 
                     match identity.GetDeclaringType () with
                     | RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition ->
@@ -956,7 +960,7 @@ module NativeDelegate =
                     // Cross-checked against the handle's own declaring type rather than trusted,
                     // because the two travelling separately is where a mismatch would hide.
                     let declaringType =
-                        NativeRuntimeMethodHandle.requireClosedDeclaringType operation identity
+                        MethodHandleResolution.requireClosedDeclaringType operation identity
 
                     match declaringTypeTarget with
                     | RuntimeTypeHandleTarget.Closed argumentHandle when argumentHandle = declaringType -> ()
