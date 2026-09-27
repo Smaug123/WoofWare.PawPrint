@@ -3108,7 +3108,7 @@ module TestUnixSystemStep =
             Set.singleton (WakePrimitive.FlockGrantable (descriptionOf fd freed, FlockMode.Exclusive))
 
         UnixWait.wakes (Set.ofList [ waiterTask ; thirdTask ]) freed
-        |> shouldEqual (Ok [ thirdTask, firedFor another ; waiterTask, firedFor second ])
+        |> shouldEqual [ thirdTask, firedFor another ; waiterTask, firedFor second ]
 
     [<Test>]
     let ``flockAcquire for a task that is not parked in an flock is refused`` () : unit =
@@ -3219,6 +3219,7 @@ module TestUnixSystemStep =
                 {
                     ParkedSocketWait.Port = descriptionOf fd system
                     MaxEvents = 8
+                    Deadline = None
                 })
             system
 
@@ -3483,6 +3484,7 @@ module TestUnixSystemStep =
                 {
                     ParkedSocketWait.Port = descriptionOf fd system
                     MaxEvents = 8
+                    Deadline = None
                 }
 
         // The event count is re-entry state for the finishing call, and no part of what is being
@@ -3521,6 +3523,7 @@ module TestUnixSystemStep =
                     {
                         ParkedSocketWait.Port = descriptionOf fd system
                         MaxEvents = 8
+                        Deadline = None
                     })
         )
 
@@ -3531,33 +3534,51 @@ module TestUnixSystemStep =
 
         UnixWait.wakes (Set.singleton 7) parked
         |> shouldEqual (
-            Ok
-                [
-                    7, Set.singleton (WakePrimitive.SocketEventDeliverable (descriptionOf ready system))
-                ]
+            [
+                7, Set.singleton (WakePrimitive.SocketEventDeliverable (descriptionOf ready system))
+            ]
         )
 
     [<Test>]
-    let ``several waiters on one deliverable port are refused, named in park order`` () : unit =
-        // A real kernel wakes exactly one of them; which end of its queue that is has not been
-        // measured, so the sweep refuses rather than inventing a winner.
+    let ``of several waiters on one deliverable port, only the one that parked last wakes`` () : unit =
+        // Measured (`epoll-wait.c`, section F): each signal wakes one waiter, the one at the
+        // front of the port's queue, which is the one that parked last.
         let ready, system = withPendingPort linux
         let parked = parkedOnPortInOrder [ 9 ; 7 ; 8 ] ready system
 
-        UnixWait.wakes (Set.ofList [ 7 ; 8 ; 9 ]) parked
-        |> shouldEqual (Error (WakeRefusal.ExclusiveWaiters (descriptionOf ready system, [ 9 ; 7 ; 8 ])))
+        let fired =
+            Set.singleton (WakePrimitive.SocketEventDeliverable (descriptionOf ready system))
 
-        UnixWait.wakes (Set.ofList [ 7 ; 8 ]) parked
-        |> shouldEqual (Error (WakeRefusal.ExclusiveWaiters (descriptionOf ready system, [ 7 ; 8 ])))
+        UnixWait.wakes (Set.ofList [ 7 ; 8 ; 9 ]) parked |> shouldEqual [ 8, fired ]
 
-        // Only waiters the client holds asleep count: with one of them asleep, it wakes.
-        UnixWait.wakes (Set.singleton 8) parked
-        |> shouldEqual (
-            Ok
-                [
-                    8, Set.singleton (WakePrimitive.SocketEventDeliverable (descriptionOf ready system))
-                ]
-        )
+        // Waiters the client has already woken, and which have not finished, hold the event:
+        // one of them will take it, so nobody else on the port wakes.
+        UnixWait.wakes (Set.ofList [ 7 ; 9 ]) parked |> shouldEqual []
+        UnixWait.wakes (Set.singleton 8) parked |> shouldEqual []
+
+    [<Test>]
+    let ``a waiter that parks again goes to the front of the port's queue`` () : unit =
+        // Measured (`epoll-wait.c`, section F2): a thread that waits again as soon as it
+        // returns is woken first every time.
+        let ready, system = withPendingPort linux
+        let parked = parkedOnPortInOrder [ 9 ; 7 ; 8 ] ready system
+
+        let reparked =
+            UnixWait.park
+                9
+                (ParkedSyscall.SocketWait
+                    {
+                        ParkedSocketWait.Port = descriptionOf ready system
+                        MaxEvents = 8
+                        Deadline = None
+                    })
+                parked
+
+        UnixWait.wakes (Set.ofList [ 7 ; 8 ; 9 ]) reparked
+        |> shouldEqual
+            [
+                9, Set.singleton (WakePrimitive.SocketEventDeliverable (descriptionOf ready system))
+            ]
 
     [<Test>]
     let ``truncateAt refuses a negative length rather than emptying the file`` () : unit =

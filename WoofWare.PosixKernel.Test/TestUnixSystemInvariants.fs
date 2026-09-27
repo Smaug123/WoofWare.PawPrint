@@ -344,6 +344,7 @@ module TestUnixSystemInvariants =
                     {
                         Port = absentDescription
                         MaxEvents = 1
+                        Deadline = None
                     }
             )
         )
@@ -365,6 +366,7 @@ module TestUnixSystemInvariants =
                     {
                         Port = stdoutDescription
                         MaxEvents = 1
+                        Deadline = None
                     }
             )
         )
@@ -468,6 +470,7 @@ module TestUnixSystemInvariants =
                     {
                         Port = port
                         MaxEvents = 1
+                        Deadline = None
                     }
             )
         )

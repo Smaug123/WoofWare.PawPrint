@@ -8,8 +8,8 @@ open WoofWare.PosixKernel
 
 /// Park order, and which parked tasks a system wakes.
 ///
-/// The socket-event half of `UnixWait.wakes` lives in `TestUnixSystemStep`, beside the
-/// port fixtures that can make a port deliverable.
+/// The socket-event half of `UnixWait.wakes` lives in `TestUnixSystemStep` and
+/// `TestEpollWait`, beside the port fixtures that can make a port deliverable.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestUnixWait =
@@ -84,6 +84,7 @@ module TestUnixWait =
                 {
                     Port = blocked
                     MaxEvents = 1
+                    Deadline = None
                 }
         else
             ParkedSyscall.Flock
@@ -204,16 +205,16 @@ module TestUnixWait =
         let fired =
             Set.singleton (WakePrimitive.FlockGrantable (blocked, FlockMode.Exclusive))
 
-        UnixWait.wakes asleep parked |> shouldEqual (Ok [])
+        UnixWait.wakes asleep parked |> shouldEqual []
 
         UnixWait.wakes asleep (releaseLock parked)
-        |> shouldEqual (Ok [ 4, fired ; 3, fired ])
+        |> shouldEqual [ 4, fired ; 3, fired ]
 
         // A re-park moves the waiter behind every park already made.
         let reparked = parked |> UnixWait.park 4 (parkOfTask 4)
 
         UnixWait.wakes asleep (releaseLock reparked)
-        |> shouldEqual (Ok [ 3, fired ; 4, fired ])
+        |> shouldEqual [ 3, fired ; 4, fired ]
 
     [<Test>]
     let ``only the tasks the client holds asleep are woken`` () : unit =
@@ -227,10 +228,9 @@ module TestUnixWait =
 
         UnixWait.wakes (Set.singleton 4) released
         |> shouldEqual (
-            Ok
-                [
-                    4, Set.singleton (WakePrimitive.FlockGrantable (blocked, FlockMode.Exclusive))
-                ]
+            [
+                4, Set.singleton (WakePrimitive.FlockGrantable (blocked, FlockMode.Exclusive))
+            ]
         )
 
     [<Test>]
@@ -247,11 +247,11 @@ module TestUnixWait =
 
     [<Test>]
     let ``a quiet port wakes none of its waiters, however many there are`` () : unit =
-        // The exclusive-wake refusal is about a deliverable event, not about sharing a port.
+        // An exclusive wake is about a deliverable event, not about sharing a port.
         let parked =
             system |> UnixWait.park 1 (parkOfTask 1) |> UnixWait.park 2 (parkOfTask 2)
 
-        UnixWait.wakes (Set.ofList [ 1 ; 2 ]) parked |> shouldEqual (Ok [])
+        UnixWait.wakes (Set.ofList [ 1 ; 2 ]) parked |> shouldEqual []
 
     [<Test>]
     let ``a park of a different syscall over an existing one is refused`` () : unit =

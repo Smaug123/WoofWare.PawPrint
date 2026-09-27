@@ -57,6 +57,7 @@ module TestUnixTaskTable =
             {
                 Port = OpenFileDescriptionId 5L
                 MaxEvents = 8
+                Deadline = None
             }
 
         let parked =

@@ -163,8 +163,8 @@ module TestPollTimeout =
 
     let private woken (system : UnixSystem<int, string>) : Set<WakePrimitive> option =
         match UnixWait.wakes (Set.singleton task) system with
-        | Ok [] -> None
-        | Ok [ woken, fired ] when woken = task -> Some fired
+        | [] -> None
+        | [ woken, fired ] when woken = task -> Some fired
         | other -> failwith $"unexpected wake %A{other}"
 
     /// Requests the listener answers once its queue is non-empty, with the
@@ -520,6 +520,7 @@ module TestPollTimeout =
                     {
                         Port = idOf listener idle
                         MaxEvents = 1
+                        Deadline = None
                     }
             ] do
             let exn = Assert.Throws<exn> (fun () -> UnixWait.park task other parked |> ignore)

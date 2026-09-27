@@ -402,7 +402,8 @@ module Program =
     ///
     /// A wake is not a promise. Two threads can be woken for one lock and only
     /// one of them get it; the loser re-enters, finds it taken, and parks again
-    /// on the record it still holds.
+    /// on the record it still holds. Of several threads waiting on one socket
+    /// event port, the kernel wakes one per event.
     let private fireSyscallWakes (asleep : ThreadId list) (state : IlMachineState) : IlMachineState =
         // Before projecting the kernel, which allocates a `UnixSystem`: this runs
         // on every tick of every workload, and almost none of them ever park.
@@ -410,15 +411,8 @@ module Program =
         | [] -> state
         | asleep ->
 
-        match UnixWait.wakes (Set.ofList asleep) (EmulatedKernel.unix state.Kernel) with
-        | Error (WakeRefusal.ExclusiveWaiters (port, waiters)) ->
-            // No managed caller can reach this: `SocketAsyncEngine` dedicates one
-            // thread to each port.
-            let tids = waiters |> List.map (fun tid -> $"%O{tid}") |> String.concat ", "
-
-            failwith
-                $"fireSyscallWakes: threads %s{tids} are all parked in SystemNative_WaitForSocketEvents on port %O{port}, which now has a deliverable event. epoll parks waiters exclusively, so a real kernel wakes exactly one of them, chosen by park order, which the kernel records but whose semantics have not been measured. Implement the one-wakeup rule before parking several threads on one port."
-        | Ok woken -> (state, woken) ||> List.fold (fun s (tid, _) -> Scheduler.wakeFromSyscall tid s)
+        (state, UnixWait.wakes (Set.ofList asleep) (EmulatedKernel.unix state.Kernel))
+        ||> List.fold (fun s (tid, _) -> Scheduler.wakeFromSyscall tid s)
 
     /// Every deadline a thread parked in a syscall is waiting for, as the first
     /// tick of the virtual clock at or after it.
