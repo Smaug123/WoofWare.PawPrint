@@ -11,6 +11,10 @@ method, a `rethrow`) may add more:
   is named as "this type or a subtype";
 * the faults the runtime raises by itself come from `WoofWare.PawPrint.Semantics`' `OpcodeFaults`,
   the same table the PawPrint interpreter raises them through;
+* an `[Intrinsic]` is read as what CoreCLR runs for it (`IntrinsicBody`): the IL its VM substitutes
+  (`VmSubstitution`), or its own IL with its call to itself performed as the JIT expands it, which
+  for one of the runtime's primitives raises what that primitive's contract (`IntrinsicPrimitive`)
+  says it can;
 * a `catch` absorbs what derives from its type, decided on the real base chains of types in any
   assembly, which `WoofWare.PawPrint.Loader` resolves exactly as the interpreter does;
 * an object thrown that is not an exception is named as itself; a `catch` sees it as a

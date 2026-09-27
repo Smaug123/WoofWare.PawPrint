@@ -31,6 +31,16 @@ public class Locking
     public void Instance() { }
 }
 
+public static class Intrinsics
+{
+    // `Unsafe.As<TFrom, TTo>(ref TFrom)` is a body CoreCLR's VM substitutes; the read through the
+    // result is the caller's own.
+    public static uint Reinterpret(ref int x) => System.Runtime.CompilerServices.Unsafe.As<int, uint>(ref x);
+
+    // A barrier the JIT emits in place of the method's call to itself.
+    public static void Fence() => System.Threading.Interlocked.MemoryBarrier();
+}
+
 public static class Cases
 {
     public static void ThrowsDirectly() { throw new InvalidOperationException("boom"); }
@@ -358,6 +368,13 @@ public class NullReferenceException : Exception { }
             { expect "Fixture.ShadowCases" "DereferencesNull" with
                 Contains = [ "=System.NullReferenceException" ]
             }
+            { expect "Fixture.Intrinsics" "Reinterpret" with
+                Contains = [ "=System.NullReferenceException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.Intrinsics" "Fence" with
+                Unknown = Some false
+            }
         ]
 
     /// An answer as the expectations spell it: `=T` for `Exactly T`, `<:T` for `SubtypeOf T`.
@@ -449,6 +466,82 @@ public class NullReferenceException : Exception { }
 
         if failures.Count > 0 then
             failures |> String.concat Environment.NewLine |> failwith
+
+    /// Every intrinsic in CoreLib, answered from what CoreCLR runs for it: the IL its VM substitutes
+    /// where there is some, and otherwise its own IL with its call to itself performed as the JIT
+    /// expands it. Without a CPU to answer for, a hardware instruction or capability query stays
+    /// unknown.
+    [<Test>]
+    let ``each CoreLib intrinsic is analysed as what CoreCLR runs for it`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let corelib =
+            Assembly.readFile
+                loggerFactory
+                (Path.Combine (FrameworkUnderTest.sharedFrameworkDirectory (), "System.Private.CoreLib.dll"))
+
+        let mutable analysis = analysisOver [] id
+        let failures = ResizeArray<string> ()
+        let mutable substituted = 0
+        let mutable primitives = 0
+        let mutable placeholders = 0
+        let mutable wholePrimitives = 0
+
+        let faultName (fault : PrimitiveFault) : string =
+            match fault with
+            | PrimitiveFault.NullReference -> "=System.NullReferenceException"
+            | PrimitiveFault.DataMisaligned -> "=System.DataMisalignedException"
+
+        for KeyValue (handle, method) in corelib.Methods do
+            if IntrinsicBody.isIntrinsic corelib handle then
+                let next, escapes = EscapeAnalysis.escapes analysis (MethodKey.make corelib handle)
+                analysis <- next
+                let shown = render analysis escapes
+
+                let describe () =
+                    $"%s{method.RequiredDeclaringType.Name}::%s{method.Name}: %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+
+                match VmSubstitution.unsafeStub corelib handle, IntrinsicBody.classify corelib handle with
+                | Some _, _ ->
+                    substituted <- substituted + 1
+
+                    if escapes.Unknown then
+                        failures.Add $"%s{describe ()}: the VM's IL for it is all there is to see"
+                | None, IntrinsicBody.JitExpansion (JitExpansion.Primitive primitive) ->
+                    primitives <- primitives + 1
+
+                    for fault, _ in (IntrinsicPrimitive.contract primitive).Raises do
+                        if not (shown.Contains (faultName fault)) then
+                            failures.Add $"%s{describe ()} lacks %s{faultName fault}, which %A{primitive} can raise"
+                | None, IntrinsicBody.VmSubstitution ->
+                    // The VM chooses the substitute by instantiation; where it is a primitive, that
+                    // is the whole method.
+                    match IntrinsicPrimitive.recognise corelib handle with
+                    | Some primitive ->
+                        wholePrimitives <- wholePrimitives + 1
+
+                        let wanted =
+                            (IntrinsicPrimitive.contract primitive).Raises
+                            |> List.map (fst >> faultName)
+                            |> Set.ofList
+
+                        if escapes.Unknown || shown <> wanted then
+                            failures.Add $"%s{describe ()}: %A{primitive} raises exactly %A{Set.toList wanted}"
+                    | None -> ()
+                | None, IntrinsicBody.JitExpansion _ ->
+                    placeholders <- placeholders + 1
+
+                    if not escapes.Unknown then
+                        failures.Add $"%s{describe ()}: answered without a CPU to answer for"
+                | None, _ -> ()
+
+        if failures.Count > 0 then
+            failures |> Seq.truncate 40 |> String.concat Environment.NewLine |> failwith
+
+        substituted |> shouldBeGreaterThan 20
+        primitives |> shouldBeGreaterThan 10
+        placeholders |> shouldBeGreaterThan 20
+        wholePrimitives |> shouldBeGreaterThan 0
 
     /// A client compiled against one version of a provider, run against another that lacks what it
     /// uses. The JIT binds a body's tokens before the body runs, so the failure comes out of the
