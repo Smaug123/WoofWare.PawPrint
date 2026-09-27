@@ -128,12 +128,22 @@ module DifferentialOracle =
                 $"PawPrint guest was terminated by POSIX signal %O{signal} for %s{fileName}; this test does not exercise signal-driven termination"
         | _, RunOutcome.ProcessExit _ -> failwith "unreachable: normalised away above"
 
+    /// Refuse a case whose configuration the oracle cannot reproduce, so that
+    /// comparing it would dress a PawPrint-only fact up as a cross-runtime one.
+    ///
     /// The oracle loads the guest under a fixed `runtimeconfig.json`
     /// (`RealRuntime.runtimeConfig`) that carries no `configProperties`, so a case's
-    /// AppContext properties never reach the real runtime. Comparing a seeded PawPrint
-    /// against an unseeded oracle would dress a PawPrint-only fact up as a
-    /// cross-runtime one, so a case that seeds properties must not be compared.
+    /// AppContext properties never reach the real runtime. It materialises the seed
+    /// in a scratch directory that belongs to whoever runs the tests, so it cannot
+    /// give that directory another owner either. (A seed *entry* that states an
+    /// owner is refused where the oracle materialises it.)
     let assertComparable (case : EndToEndTestCase) : unit =
         if not (AppContextProperties.isEmpty case.AppContext) then
             failwith
                 $"%s{case.FileName} sets AppContext properties (%O{case.AppContext}), but its OraclePolicy asks for a differential comparison (%O{case.Oracle}). Drop the properties, or -- if the case exists to assert what they do -- register it in sourcesImpure with Oracle = OraclePolicy.Never."
+
+        match case.KernelConfig.FileSystemRootOwner with
+        | None -> ()
+        | Some owner ->
+            failwith
+                $"%s{case.FileName} gives its seed's root directory the owner %O{owner} (KernelConfig.FileSystemRootOwner), but its OraclePolicy asks for a differential comparison (%O{case.Oracle}), and the oracle's root is a scratch directory owned by whoever runs the tests. Leave the root owner as None, or register the case in sourcesImpure with Oracle = OraclePolicy.Never."

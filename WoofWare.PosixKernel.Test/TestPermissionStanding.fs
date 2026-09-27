@@ -1293,3 +1293,148 @@ module TestPermissionStanding =
 
         moved 0o070 |> shouldEqual true
         moved 0o707 |> shouldEqual false
+
+    // ------------------------------------------------------------- no Linux refusal
+
+    /// Every ownership-dependent call this library can refuse, made once each
+    /// against `system`, and the refusals it met. Each call starts from
+    /// `system` rather than from the one before it, so that none of them is
+    /// hidden behind an earlier one having removed its file.
+    let private refusalsMet (system : UnixSystem<int, string>) : string list =
+        let one = ImmutableArray.Create 9uy
+
+        let readWrite =
+            { readOnly with
+                Access = FileAccessMode.ReadWrite
+            }
+
+        let truncating =
+            { readOnly with
+                Access = FileAccessMode.WriteOnly
+                Truncate = true
+            }
+
+        let refused (result : Result<'a, 'e>) : string option =
+            match result with
+            | Ok _ -> None
+            | Error refusal -> Some $"%A{refusal}"
+
+        let throughDescriptor (p : string) : string option list =
+            match UnixNamespace.openPath readWrite (path p) 0 system with
+            | Ok (SyscallAnswer.Completed fd, opened) ->
+                let fd = int fd
+
+                [
+                    UnixReadWrite.write fd one opened |> refused
+                    UnixReadWrite.pwrite fd one 0L opened |> refused
+                    UnixDescriptor.ftruncate fd 0L opened |> refused
+                    UnixDescriptor.ftruncate fd 4L opened |> refused
+                ]
+            | Ok (SyscallAnswer.Failed _, _) -> []
+            | Error refusal -> [ Some $"%A{refusal}" ]
+
+        [
+            for p in [ "/d/f" ; "/d/g" ] do
+                yield UnixNamespace.openPath truncating (path p) 0 system |> refused
+                yield! throughDescriptor p
+            for p in [ "/d/f" ; "/d/e" ] do
+                yield UnixNamespace.unlink (path p) system |> refused
+                yield UnixNamespace.rmdir (path p) system |> refused
+            for source, destination in
+                [
+                    "/d/f", "/d/g"
+                    "/d/f", "/w/f2"
+                    "/d/e", "/w/e2"
+                    "/d/e", "/d/h"
+                    "/d/h", "/d/e"
+                    "/w/k", "/d/e"
+                    "/w/k", "/d/f"
+                ] do
+                yield UnixNamespace.rename (argument source) (argument destination) system |> refused
+        ]
+        |> List.choose id
+
+    [<Test>]
+    let ``no Linux call meets a refusal, whoever owns what`` () : unit =
+        // Every refusal an ownership rule can raise names Darwin: its sticky
+        // rows for root and for a directory displacing a directory, and its
+        // set-ID changes by a writer it has not been measured for. This drives
+        // every call that can raise one over trees of foreign owners, sticky
+        // and set-ID bits, on both flavours: Linux must answer every one, and
+        // Darwin must meet every kind of refusal, or the trees are not reaching
+        // the rows.
+        let users = [ 0u ; 1000u ; 1001u ]
+        let groups = [ 0u ; 1000u ; 2000u ]
+
+        let ownerGen : Gen<InodeOwner> =
+            gen {
+                let! user = Gen.elements users
+                let! group = Gen.elements groups
+                return owner user group
+            }
+
+        let modeGen : Gen<int> =
+            Gen.oneof
+                [
+                    Gen.choose (0, 0o7777)
+                    Gen.elements [ 0o1777 ; 0o6777 ; 0o2666 ; 0o4755 ; 0o777 ]
+                ]
+
+        let treeGen : Gen<VirtualFileSystem> =
+            gen {
+                let! owners = Gen.listOfLength 7 ownerGen
+                let! modes = Gen.listOfLength 7 modeGen
+
+                // Every directory stays searchable by everyone, so that a call
+                // is answered by the rule under test rather than refused at the
+                // walk; its write and sticky bits are still drawn.
+                let searchable (bits : int) : int = bits ||| 0o111
+
+                return
+                    VirtualFileSystem.empty epoch (owner 0u 0u)
+                    |> directory "/d" owners.[0] (searchable modes.[0])
+                    |> file "/d/f" owners.[1] modes.[1]
+                    |> file "/d/g" owners.[2] modes.[2]
+                    |> directory "/d/e" owners.[3] (searchable modes.[3])
+                    |> directory "/d/h" owners.[4] (searchable modes.[4])
+                    |> directory "/w" owners.[5] 0o1777
+                    |> directory "/w/k" owners.[6] (searchable modes.[6])
+            }
+
+        let callerGen : Gen<Credentials> =
+            gen {
+                let! user = Gen.elements users
+                let! group = Gen.elements groups
+                let! supplementary = Gen.subListOf groups
+                return Credentials.ofIds (uid user) (gid group) (supplementary |> List.map gid)
+            }
+
+        let mutable darwinRefusals : Set<string> = Set.empty
+
+        let kinds =
+            [
+                "UnmeasuredDarwinWrite"
+                "UnmeasuredDarwinTruncation"
+                "DarwinPrivilegedCaller"
+                "DarwinDirectoryDisplacingDirectory"
+            ]
+
+        let property (vfs : VirtualFileSystem, caller : Credentials) : unit =
+            refusalsMet (systemOn SimulatedUnixPlatform.linuxX64 caller vfs)
+            |> shouldEqual []
+
+            for refusal in refusalsMet (systemOn SimulatedUnixPlatform.macOsArm64 caller vfs) do
+                for kind in kinds do
+                    if refusal.Contains kind then
+                        darwinRefusals <- Set.add kind darwinRefusals
+
+        let gen =
+            gen {
+                let! vfs = treeGen
+                let! caller = callerGen
+                return vfs, caller
+            }
+
+        Check.One (config.WithMaxTest 500, Prop.forAll (Arb.fromGen gen) property)
+
+        darwinRefusals |> shouldEqual (Set.ofList kinds)
