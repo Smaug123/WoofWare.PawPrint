@@ -48,7 +48,7 @@ module TestUndefinedValueObserved =
     /// The observation PawPrint stops at, run step by step, and checked to be a stop at the state
     /// from before the observing step: stepping that state again stops at the same observation,
     /// so the stop cannot have skipped past the instruction or call that used the value.
-    let private stoppedRun (name : string) (source : string) : RunEnd =
+    let private stoppedRunWith (pctSeed : uint64 option) (name : string) (source : string) : RunEnd =
         let image = Roslyn.compile [ source ]
         let messages, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
@@ -66,9 +66,13 @@ module TestUndefinedValueObserved =
             match Program.stepPrepared loggerFactory logger prepared with
             | Program.ProgramStepOutcome.StoppedAtUndefinedValue (stopped, thread, observation) ->
                 match Program.stepPrepared loggerFactory logger stopped with
-                | Program.ProgramStepOutcome.StoppedAtUndefinedValue (_, threadAgain, again) ->
+                | Program.ProgramStepOutcome.StoppedAtUndefinedValue (stoppedAgain, threadAgain, again) ->
                     threadAgain |> shouldEqual thread
                     sameStop observation again
+                    // A stop is where stepping it leaves it: nothing of the tick that found it,
+                    // not even the step counter its preamble advances, is carried into it.
+                    stoppedAgain.State.Kernel.StepCounter
+                    |> shouldEqual stopped.State.Kernel.StepCounter
                 | _ -> failwith $"%s{name}: stepping the stopped state again did not stop at %O{observation}"
 
                 RunEnd.StoppedAtUndefinedValue (stopped.State, thread, observation)
@@ -81,9 +85,12 @@ module TestUndefinedValueObserved =
             match Program.stepStartup loggerFactory logger startup with
             | Program.StartupStepOutcome.StoppedAtUndefinedValue (stopped, thread, observation) ->
                 match Program.stepStartup loggerFactory logger stopped with
-                | Program.StartupStepOutcome.StoppedAtUndefinedValue (_, threadAgain, again) ->
+                | Program.StartupStepOutcome.StoppedAtUndefinedValue (stoppedAgain, threadAgain, again) ->
                     threadAgain |> shouldEqual thread
                     sameStop observation again
+
+                    stoppedAgain.State.Kernel.StepCounter
+                    |> shouldEqual stopped.State.Kernel.StepCounter
                 | _ -> failwith $"%s{name}: stepping the stopped startup again did not stop at %O{observation}"
 
                 RunEnd.StoppedAtUndefinedValue (stopped.State, thread, observation)
@@ -100,7 +107,9 @@ module TestUndefinedValueObserved =
                 loggerFactory
                 (Some name)
                 peImage
-                (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
+                { HostConfig.Default (FrameworkUnderTest.runtimeDirs ()) with
+                    PctSeed = pctSeed
+                }
             |> goStartup 0L
         with _ ->
             for message in messages () do
@@ -109,7 +118,7 @@ module TestUndefinedValueObserved =
             reraise ()
 
     let private run (name : string) (source : string) (check : UndefinedValueObservation -> unit) : unit =
-        stoppedRun name source |> observed |> check
+        stoppedRunWith None name source |> observed |> check
 
     /// Which way the process ended, without rendering the machine state an outcome carries.
     let private endedName (outcome : RunOutcome) : string =
@@ -1200,4 +1209,91 @@ unsafe class Program
                     "<GetHashCodeStrategy>g__"
                     "the reference field the hash-code strategy tests for null"
                     observation
+            )
+
+    /// A stop under a scheduler with choices to make: whichever thread the seed runs into the
+    /// undefined value, stepping the stopped program again makes the same scheduling decision and
+    /// stops at the same place, rather than running another thread past it.
+    [<Test>]
+    let ``A stop on a worker thread under PCT scheduling replays to the same stop`` () : unit =
+        let source =
+            """
+using System;
+using System.Runtime.CompilerServices;
+using System.Threading;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    static int counter;
+
+    static void Busy()
+    {
+        for (int i = 0; i < 20; i++)
+        {
+            Interlocked.Increment(ref counter);
+            Thread.Yield();
+        }
+    }
+
+    static void Worker()
+    {
+        for (int i = 0; i < 10; i++) Thread.Yield();
+        int* numbers = stackalloc int[1];
+        if (numbers[0] == 3) Environment.Exit(1);
+    }
+
+    static int Main(string[] args)
+    {
+        var busy = new Thread(Busy);
+        var worker = new Thread(Worker);
+        busy.Start();
+        worker.Start();
+        Busy();
+        worker.Join();
+        busy.Join();
+        return 0;
+    }
+}
+"""
+
+        for seed in 1UL .. 32UL do
+            stoppedRunWith (Some seed) $"UndefinedUnderPct%d{seed}.cs" source
+            |> observed
+            |> fun observation -> stackOrigins observation.Value |> shouldEqual [ 0 ; 1 ; 2 ; 3 ]
+
+    [<Test>]
+    let ``Constructing a span of unwritten length with newobj stops the run at the constructor`` () : unit =
+        let source =
+            """
+using System;
+using System.Runtime.CompilerServices;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    static int LengthOf(Span<int> span) => span.Length;
+
+    static int Main(string[] args)
+    {
+        int* numbers = stackalloc int[1];
+        return LengthOf(new Span<int>(numbers, *numbers)) == 3 ? 1 : 0;
+    }
+}
+"""
+
+        run
+            "UndefinedSpanConstructorLength.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.Int32
+                stackOrigins observation.Value |> shouldEqual [ 0 ; 1 ; 2 ; 3 ]
+
+                match observation.Use with
+                | UndefinedValueUse.RuntimeArgument (method, index) ->
+                    method.Name |> shouldEqual ".ctor"
+                    index |> shouldEqual 2
+                | other -> failwith $"expected the span constructor's argument, got %O{other}"
             )

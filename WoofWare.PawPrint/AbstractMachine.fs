@@ -88,7 +88,6 @@ module AbstractMachine =
         : ExecutionResult
         =
         let instruction = state.ThreadState.[thread].MethodState
-        let stateBeforeStep = state
 
         // A method whose implementation the runtime supplies reads its arguments: none of them may
         // be undefined, down to the leaves of a value type. `readsArgument` narrows that for the
@@ -116,7 +115,7 @@ module AbstractMachine =
                         Use = UndefinedValueUse.RuntimeArgument (instruction.ExecutingMethod, index)
                     }
 
-                ExecutionResult.UndefinedValueObserved (state, thread, observation)
+                ExecutionResult.UndefinedValueObserved (thread, observation)
             | None -> proceed ()
 
         let dispatchNative () =
@@ -229,9 +228,9 @@ module AbstractMachine =
                 // matching handler; returnStackFrame would pop the wrong frame.
                 ExecutionResult.Stepped (state, WhatWeDid.ThrowingTypeInitializationException, effect)
             | NativeHandlerResult.UndefinedValueObserved observation ->
-                // Reported at the state from before the handler ran, so that nothing the handler
-                // did before it found the undefined value is part of the run.
-                ExecutionResult.UndefinedValueObserved (stateBeforeStep, thread, observation)
+                // The step did not happen, so nothing the handler did before it found the value is
+                // part of the run.
+                ExecutionResult.UndefinedValueObserved (thread, observation)
             | NativeHandlerResult.Terminating executionResult ->
                 // The handler delegated to an ExternImpl that produced a terminating
                 // outcome (ProcessExit, FailFast, Terminated, UnhandledException). Surface
@@ -700,7 +699,7 @@ module AbstractMachine =
                         )
                 }
 
-            ExecutionResult.UndefinedValueObserved (state, thread, observation)
+            ExecutionResult.UndefinedValueObserved (thread, observation)
         | None ->
 
         let result =
@@ -717,13 +716,7 @@ module AbstractMachine =
                 UnaryStringTokenIlOp.execute loggerFactory baseClassTypes unaryStringTokenIlOp stringHandle state thread
                 |> ExecutionResult.stepped
 
-        match result with
-        // An instruction that finds an undefined value partway through has usually popped its
-        // operands by then. The run ends as though it had never started, which is what an operand
-        // caught above reports too.
-        | ExecutionResult.Stepped (_, WhatWeDid.UndefinedValueObserved observation, effect) ->
-            ExecutionResult.Stepped (state, WhatWeDid.UndefinedValueObserved observation, effect)
-        | _ -> result
+        result
 
     /// Convert a step that tore the process down -- by aborting, or by raising an exception
     /// nothing on the thread handles -- into the terminating outcome.
@@ -751,8 +744,8 @@ module AbstractMachine =
             // As for an abort: the step never completed, so it has no effect to ask for.
             failwith
                 $"logic error: thread %O{thread} ended with an unhandled exception while also requesting the step effect %O{effect}; a step that did not retire must not emit one"
-        | ExecutionResult.Stepped (state, WhatWeDid.UndefinedValueObserved observation, StepEffect.NoEffect) ->
-            ExecutionResult.UndefinedValueObserved (state, thread, observation)
+        | ExecutionResult.Stepped (_, WhatWeDid.UndefinedValueObserved observation, StepEffect.NoEffect) ->
+            ExecutionResult.UndefinedValueObserved (thread, observation)
         | ExecutionResult.Stepped (_, WhatWeDid.UndefinedValueObserved observation, effect) ->
             // As for an abort: the step never completed, so it has no effect to ask for.
             failwith
@@ -775,21 +768,6 @@ module AbstractMachine =
         : ExecutionResult
         =
         let logger = logger loggerFactory
-        let stateBeforeStep = state
-
-        // A step that observes an undefined value did not happen: whatever the path that found the
-        // value had done by then (popped operands, a delegate's frame, a callee's arguments), the
-        // stop is reported at the state this step started from, so stepping it again stops again.
-        let reportedBeforeStep (result : ExecutionResult) : ExecutionResult =
-            match result with
-            | ExecutionResult.UndefinedValueObserved (_, observingThread, observation) ->
-                ExecutionResult.UndefinedValueObserved (stateBeforeStep, observingThread, observation)
-            | ExecutionResult.Terminated _
-            | ExecutionResult.ProcessExit _
-            | ExecutionResult.Aborted _
-            | ExecutionResult.SignalTerminated _
-            | ExecutionResult.Stepped _
-            | ExecutionResult.UnhandledException _ -> result
 
         let ran =
             match state.ThreadState.[thread].MethodState.PendingTypeInit with
@@ -802,4 +780,3 @@ module AbstractMachine =
         ran
         |> AssemblyLoadEvent.announceBeforeStep loggerFactory baseClassTypes thread state
         |> surfaceTerminatingStep thread
-        |> reportedBeforeStep
