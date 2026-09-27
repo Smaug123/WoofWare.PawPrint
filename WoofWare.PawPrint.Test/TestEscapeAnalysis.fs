@@ -39,6 +39,9 @@ public static class Intrinsics
 
     // A barrier the JIT emits in place of the method's call to itself.
     public static void Fence() => System.Threading.Interlocked.MemoryBarrier();
+
+    // A capability query, which the JIT answers as a constant for the CPU.
+    public static bool Accelerated() => System.Runtime.Intrinsics.Vector128.IsHardwareAccelerated;
 }
 
 public static class Cases
@@ -375,6 +378,9 @@ public class NullReferenceException : Exception { }
             { expect "Fixture.Intrinsics" "Fence" with
                 Unknown = Some false
             }
+            { expect "Fixture.Intrinsics" "Accelerated" with
+                Unknown = Some false
+            }
         ]
 
     /// An answer as the expectations spell it: `=T` for `Exactly T`, `<:T` for `SubtypeOf T`.
@@ -402,8 +408,17 @@ public class NullReferenceException : Exception { }
                 None
         )
 
-    /// An analysis over CoreLib and `assemblies`, with `bind` applied to the load context.
-    let private analysisOver
+    /// The architecture the framework under test's JIT compiles for.
+    let private hostTarget () : JitTarget =
+        match Runtime.InteropServices.RuntimeInformation.ProcessArchitecture with
+        | Runtime.InteropServices.Architecture.Arm64 -> JitTarget.Arm64
+        | Runtime.InteropServices.Architecture.X64 -> JitTarget.X64
+        | other -> failwith $"No JIT table describes the host's architecture, %O{other}"
+
+    /// An analysis over CoreLib and `assemblies`, with `bind` applied to the load context, for the
+    /// host's JIT on a CPU `profile` describes.
+    let private analysisUnder
+        (profile : HardwareIntrinsicsProfile)
         (assemblies : DumpedAssembly list)
         (bind : LoadedAssemblies -> LoadedAssemblies)
         : EscapeAnalysisState
@@ -421,11 +436,22 @@ public class NullReferenceException : Exception { }
         EscapeAnalysis.create
             loggerFactory
             runtimeDirs
+            (hostTarget ())
+            profile
             {
                 ConcreteTypes = Corelib.concretizeAll loaded baseClassTypes AllConcreteTypes.Empty
                 LoadedAssemblies = loaded
                 BaseTypes = baseClassTypes
             }
+
+    /// An analysis over CoreLib and `assemblies`, with `bind` applied to the load context, on a CPU
+    /// with no instruction sets.
+    let private analysisOver
+        (assemblies : DumpedAssembly list)
+        (bind : LoadedAssemblies -> LoadedAssemblies)
+        : EscapeAnalysisState
+        =
+        analysisUnder HardwareIntrinsicsProfile.ScalarOnly assemblies bind
 
     [<Test>]
     let ``each fixture method's escaping exceptions are as stated`` () : unit =
@@ -467,12 +493,54 @@ public class NullReferenceException : Exception { }
         if failures.Count > 0 then
             failures |> String.concat Environment.NewLine |> failwith
 
+    /// The CPUs the CoreLib-wide tests answer for: one with no instruction sets, and one with every
+    /// instruction set whose class in `corelib` is a placeholder.
+    let profiles : TestCaseData list =
+        [
+            TestCaseData("scalar-only").SetArgDisplayNames "scalar-only CPU"
+            TestCaseData("every instruction set").SetArgDisplayNames "CPU with every instruction set"
+        ]
+
+    let private profileNamed (corelib : DumpedAssembly) (name : string) : HardwareIntrinsicsProfile =
+        match name with
+        | "scalar-only" -> HardwareIntrinsicsProfile.ScalarOnly
+        | "every instruction set" ->
+            let expansions =
+                [
+                    for KeyValue (handle, _) in corelib.Methods do
+                        if IntrinsicBody.isIntrinsic corelib handle then
+                            match IntrinsicBody.classify corelib handle with
+                            | IntrinsicBody.JitExpansion expansion -> yield expansion
+                            | _ -> ()
+                ]
+
+            {
+                IsSupported =
+                    expansions
+                    |> List.choose (fun expansion ->
+                        match expansion with
+                        | JitExpansion.IsSupportedQuery c
+                        | JitExpansion.HardwareInstruction c -> Some c
+                        | _ -> None
+                    )
+                    |> Set.ofList
+                IsHardwareAccelerated =
+                    expansions
+                    |> List.choose (fun expansion ->
+                        match expansion with
+                        | JitExpansion.IsHardwareAcceleratedQuery c -> Some c
+                        | _ -> None
+                    )
+                    |> Set.ofList
+            }
+        | other -> failwith $"unknown profile %s{other}"
+
     /// Every intrinsic in CoreLib, answered from what CoreCLR runs for it: the IL its VM substitutes
     /// where there is some, and otherwise its own IL with its call to itself performed as the JIT
-    /// expands it. Without a CPU to answer for, a hardware instruction or capability query stays
-    /// unknown.
-    [<Test>]
-    let ``each CoreLib intrinsic is analysed as what CoreCLR runs for it`` () : unit =
+    /// expands it for the CPU: a capability query answers a constant, an instruction the CPU lacks
+    /// throws `PlatformNotSupportedException`, and one it has raises what the JIT's tables say.
+    [<TestCaseSource(nameof profiles)>]
+    let ``each CoreLib intrinsic is analysed as what CoreCLR runs for it`` (profileName : string) : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let corelib =
@@ -480,11 +548,24 @@ public class NullReferenceException : Exception { }
                 loggerFactory
                 (Path.Combine (FrameworkUnderTest.sharedFrameworkDirectory (), "System.Private.CoreLib.dll"))
 
-        let mutable analysis = analysisOver [] id
+        let profile = profileNamed corelib profileName
+        let target = hostTarget ()
+        let mutable analysis = analysisUnder profile [] id
         let failures = ResizeArray<string> ()
         let mutable substituted = 0
         let mutable primitives = 0
         let mutable placeholders = 0
+        let mutable constants = 0
+        let mutable unsupported = 0
+        let mutable instructions = 0
+
+        let instructionFaultName (fault : InstructionFault) : string =
+            match fault with
+            | InstructionFault.NullAddress -> "=System.NullReferenceException"
+            | InstructionFault.ImmediateOutOfRange -> "=System.ArgumentOutOfRangeException"
+            | InstructionFault.ZeroDivisor -> "=System.DivideByZeroException"
+            | InstructionFault.QuotientOverflow -> "=System.OverflowException"
+
         let mutable wholePrimitives = 0
 
         let faultName (fault : PrimitiveFault) : string =
@@ -528,11 +609,41 @@ public class NullReferenceException : Exception { }
                         if escapes.Unknown || shown <> wanted then
                             failures.Add $"%s{describe ()}: %A{primitive} raises exactly %A{Set.toList wanted}"
                     | None -> ()
-                | None, IntrinsicBody.JitExpansion _ ->
+                | None, IntrinsicBody.JitExpansion expansion ->
                     placeholders <- placeholders + 1
 
-                    if not escapes.Unknown then
-                        failures.Add $"%s{describe ()}: answered without a CPU to answer for"
+                    match IntrinsicBody.expandSelfCall profile expansion with
+                    | SelfCallExpansion.Constant _ ->
+                        constants <- constants + 1
+
+                        if escapes.Unknown then
+                            failures.Add $"%s{describe ()}: a capability query is a constant"
+                    | SelfCallExpansion.ThrowPlatformNotSupported ->
+                        unsupported <- unsupported + 1
+
+                        // The JIT calls CoreLib's throw helper, whose `newobj` can exhaust memory.
+                        for wanted in [ "=System.PlatformNotSupportedException" ; "=System.OutOfMemoryException" ] do
+                            if not (shown.Contains wanted) then
+                                failures.Add $"%s{describe ()} lacks %s{wanted}: the CPU lacks the instruction"
+                    | SelfCallExpansion.HardwareInstruction intrinsicClass ->
+                        match HardwareInstruction.contract target intrinsicClass method.Name with
+                        | InstructionContract.Unknown ->
+                            if not escapes.Unknown then
+                                failures.Add $"%s{describe ()}: the JIT's tables do not say what it raises"
+                        | InstructionContract.Raises faults ->
+                            instructions <- instructions + 1
+
+                            if escapes.Unknown then
+                                failures.Add $"%s{describe ()}: the JIT's tables say it raises %A{faults}"
+
+                            for fault in faults do
+                                if not (shown.Contains (instructionFaultName fault)) then
+                                    failures.Add $"%s{describe ()} lacks %s{instructionFaultName fault}"
+                    // Answered by the branch above.
+                    | SelfCallExpansion.Primitive _ -> ()
+                    | SelfCallExpansion.Unrecognised ->
+                        if not escapes.Unknown then
+                            failures.Add $"%s{describe ()}: what the JIT emits is not known"
                 | None, _ -> ()
 
         if failures.Count > 0 then
@@ -542,6 +653,32 @@ public class NullReferenceException : Exception { }
         primitives |> shouldBeGreaterThan 10
         placeholders |> shouldBeGreaterThan 20
         wholePrimitives |> shouldBeGreaterThan 0
+        constants |> shouldBeGreaterThan 20
+
+        match profileName with
+        | "scalar-only" ->
+            unsupported |> shouldBeGreaterThan 1000
+            instructions |> shouldEqual 0
+        | _ ->
+            unsupported |> shouldEqual 0
+            instructions |> shouldBeGreaterThan 1000
+
+    [<Test>]
+    let ``a profile supporting another architecture's instruction set is refused`` () : unit =
+        let foreign = JitTarget.all |> List.find (fun target -> target <> hostTarget ())
+
+        let profile =
+            { HardwareIntrinsicsProfile.ScalarOnly with
+                IsSupported =
+                    Set.singleton
+                        {
+                            Namespace = JitTarget.instructionSetNamespace foreign
+                            Path = [ "Aes" ]
+                        }
+            }
+
+        Assert.Throws<ArgumentException> (fun () -> analysisUnder profile [] id |> ignore<EscapeAnalysisState>)
+        |> ignore<ArgumentException>
 
     /// A client compiled against one version of a provider, run against another that lacks what it
     /// uses. The JIT binds a body's tokens before the body runs, so the failure comes out of the
