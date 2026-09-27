@@ -1063,3 +1063,79 @@ module TestPermissionStanding =
                             failwith
                                 $"%s{label}, umask 0o%04o{umask}, mode 0o%04o{requested}: created 0o%04o{actual}, measured 0o%04o{expected}"
                     | other -> failwith $"%s{label}: creating /p/c answered %A{other}"
+
+    // ------------------------------------------------------------- every other permission check, end to end
+
+    /// A directory `/d` with mode `bits`, holding a file `f`, an empty
+    /// directory `e`, a directory `m` with mode `movedBits` and a file `kid`,
+    /// all of uid 1001 and group 2000, beside a directory `/o` the caller owns
+    /// holding its file `x`. The caller is u1000 in groups 1000 and 2000, so it
+    /// is in the group of everything under `/d` and owns none of it.
+    let private groupTree (bits : int) (movedBits : int) : UnixSystem<int, string> =
+        let theirs = owner 1001u 2000u
+
+        VirtualFileSystem.empty epoch (owner 0u 0u)
+        |> directory "/d" theirs bits
+        |> file "/d/f" theirs 0o666
+        |> file "/d/kid" theirs 0o666
+        |> directory "/d/e" theirs 0o777
+        |> directory "/d/m" theirs movedBits
+        |> directory "/o" (owner 1000u 1000u) 0o777
+        |> file "/o/x" (owner 1000u 1000u) 0o666
+        |> systemOn SimulatedUnixPlatform.linuxX64 (Credentials.ofIds (uid 1000u) (gid 1000u) [ gid 1000u ; gid 2000u ])
+
+    [<Test>]
+    let ``every syscall that checks a directory's bits reads the group triple for a member of its group`` () : unit =
+        // 0o070 grants the group everything and the owner nothing; 0o707 the
+        // other way round. A check that read the owner's triple would answer
+        // each mode the other's way.
+        let succeeds (answer : SyscallAnswer, _ : UnixSystem<int, string>) : bool =
+            match answer with
+            | SyscallAnswer.Completed _ -> true
+            | SyscallAnswer.Failed UnixError.EACCES -> false
+            | SyscallAnswer.Failed error -> failwith $"expected success or EACCES, got %O{error}"
+
+        let renamed (source : string) (destination : string) (system : UnixSystem<int, string>) : bool =
+            UnixNamespace.rename (argument source) (argument destination) system
+            |> ok
+            |> succeeds
+
+        let calls : (string * (UnixSystem<int, string> -> bool)) list =
+            [
+                "search (stat /d/kid)",
+                fun system ->
+                    match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (path "/d/kid") system with
+                    | Ok (FileStatusAnswer.Reported _) -> true
+                    | Ok (FileStatusAnswer.Failed UnixError.EACCES) -> false
+                    | other -> failwith $"stat: %A{other}"
+                "chdir /d", fun system -> UnixPathResolution.chdir (path "/d") system |> succeeds
+                "opendir /d",
+                fun system ->
+                    UnixNamespace.openPath
+                        { readOnly with
+                            Directory = true
+                        }
+                        (path "/d")
+                        0
+                        system
+                    |> succeeds
+                "open(O_CREAT) /d/new",
+                fun system -> UnixNamespace.openPath creating (path "/d/new") 0o600 system |> succeeds
+                "mkdir /d/new", fun system -> UnixNamespace.mkdir (path "/d/new") 0o755 system |> succeeds
+                "unlink /d/f", fun system -> UnixNamespace.unlink (path "/d/f") system |> succeeds
+                "rmdir /d/e", fun system -> UnixNamespace.rmdir (path "/d/e") system |> succeeds
+                "rename /d/f out of /d", renamed "/d/f" "/o/f"
+                "rename into /d", renamed "/o/x" "/d/x"
+            ]
+
+        for label, call in calls do
+            (label, call (groupTree 0o070 0o070)) |> shouldEqual (label, true)
+            (label, call (groupTree 0o707 0o070)) |> shouldEqual (label, false)
+
+        // Moving `m` to another parent rewrites its own "..", so its own write
+        // bit is checked; `/d` grants the group everything throughout.
+        let moved (movedBits : int) : bool =
+            groupTree 0o070 movedBits |> renamed "/d/m" "/o/m"
+
+        moved 0o070 |> shouldEqual true
+        moved 0o707 |> shouldEqual false
