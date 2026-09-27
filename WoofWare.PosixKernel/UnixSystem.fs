@@ -1049,18 +1049,24 @@ module UnixSystem =
         }
 
     // The process's leader and the only task it has, failing with `context` if it
-    // has another: every setter below is a boot-time setting, which a process
-    // that has created a thread is too late for.
+    // has created a thread, even one that has since exited: every setter below is
+    // a boot-time setting, and moving the counter back after a thread has taken an
+    // id would hand that id out again.
     let private soleTask<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (context : string)
         (system : UnixSystem<'Task, 'Handler>)
         : UnixTaskState
         =
-        if system.Tasks.Count <> 1 then
-            failwith
-                $"%s{context}: the process has %d{system.Tasks.Count} tasks, but this can only be set while it has just its leader, before any thread has been created."
+        let leader = UnixTaskTable.get system.Leader system.Tasks
 
-        UnixTaskTable.get system.Leader system.Tasks
+        if
+            system.Tasks.Count <> 1
+            || not (ThreadIdAllocator.untouchedSince leader.OsThreadId system.Machine.ThreadIds)
+        then
+            failwith
+                $"%s{context}: the process has created a thread, but this can only be set before any thread has been created."
+
+        leader
 
     /// Set the ID `getpid(2)` reports for the simulated process. On Linux this is
     /// also the leader's thread ID, and the thread IDs the process's threads get

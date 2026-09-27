@@ -261,6 +261,15 @@ module TestThreadIds =
         refuses (fun () -> UnixSystem.withProcessId "ctx" (pid 8) darwinSpawned) "before any thread"
         refuses (fun () -> UnixSystem.withLeaderThreadId "ctx" 7UL darwinSpawned) "before any thread"
 
+        // Including once every thread it created has exited: the counter has moved
+        // on, and moving it back would hand an exited thread's id out again.
+        let exited = spawned |> exitOrFail 1
+        let darwinExited = darwinSpawned |> exitOrFail 1
+        exited.Tasks.Count |> shouldEqual 1
+        refuses (fun () -> UnixSystem.withProcessId "ctx" (pid 4242) exited) "before any thread"
+        refuses (fun () -> UnixSystem.withProcessId "ctx" (pid 4242) darwinExited) "before any thread"
+        refuses (fun () -> UnixSystem.withLeaderThreadId "ctx" 4242UL darwinExited) "before any thread"
+
         // A Linux pid is a thread ID, so it is below pid_max.
         let small =
             linux
