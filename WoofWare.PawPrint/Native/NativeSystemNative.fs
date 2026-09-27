@@ -1030,7 +1030,7 @@ module NativeSystemNative =
         (call :
             UnixPath
                 -> UnixSystem<ThreadId, NativeSignalHandler>
-                -> SyscallAnswer * UnixSystem<ThreadId, NativeSignalHandler>)
+                -> Result<SyscallAnswer * UnixSystem<ThreadId, NativeSignalHandler>, string>)
         (state : IlMachineState)
         : NativeHandlerResult option
         =
@@ -1062,12 +1062,13 @@ module NativeSystemNative =
         | Ok path ->
 
         match call path (EmulatedKernel.unix state.Kernel) with
-        | SyscallAnswer.Failed error, system ->
+        | Error described -> failwith $"%s{operation}: %s{described}"
+        | Ok (SyscallAnswer.Failed error, system) ->
             withErrno ctx error system state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
-        | SyscallAnswer.Completed _, system ->
+        | Ok (SyscallAnswer.Completed _, system) ->
             withAnswered system state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
             |> NativeHandlerResult.completed
@@ -1121,9 +1122,12 @@ module NativeSystemNative =
     let private renameSyscall (ctx : NativeCallContext) (state : IlMachineState) : NativeHandlerResult option =
         let operation = "SystemNative_Rename"
 
-        let answer (outcome : Result<SyscallAnswer * UnixSystem<ThreadId, NativeSignalHandler>, PathArgumentRefusal>) =
+        let answer (outcome : Result<SyscallAnswer * UnixSystem<ThreadId, NativeSignalHandler>, RenameRefusal>) =
             match outcome with
-            | Error (PathArgumentRefusal.InteriorNul offset) ->
+            | Error (RenameRefusal.Sticky refusal) ->
+                failwith
+                    $"%s{operation}: RenameRefusal.Sticky: %s{StickyRefusal.describe refusal} A seed owned by anyone but the configured user and group is refused (`EmulatedKernel.withFileSystemAndCurrentDirectory`), so no guest file should reach this; if one did, that refusal was lifted without modelling this row."
+            | Error (RenameRefusal.PathArgument (PathArgumentRefusal.InteriorNul offset)) ->
                 failwith
                     $"%s{operation}: the bytes read for one of the guest's paths hold a NUL at offset %d{offset}, which a C string cannot: the read ran past the string's end (this is an interpreter bug)."
             | Ok (SyscallAnswer.Failed error, system) ->
@@ -1141,7 +1145,7 @@ module NativeSystemNative =
             pathArgumentBytes ctx operation "oldPath" ctx.Instruction.Arguments.[0] state
 
         match UnixNamespace.renameSourcePhase source (EmulatedKernel.unix state.Kernel) with
-        | Error refusal -> answer (Error refusal)
+        | Error refusal -> answer (Error (RenameRefusal.PathArgument refusal))
         | Ok (RenameProgress.Answered (syscallAnswer, system)) -> answer (Ok (syscallAnswer, system))
         | Ok (RenameProgress.NeedsDestination paused) ->
             pathArgumentBytes ctx operation "newPath" ctx.Instruction.Arguments.[1] state
@@ -2670,12 +2674,15 @@ module NativeSystemNative =
             let mode = NativeCall.int32Argument operation instruction.Arguments.[2]
 
             match UnixNamespace.openPath openFlags path mode (EmulatedKernel.unix state.Kernel) with
-            | SyscallAnswer.Failed error, system ->
+            | Error refusal ->
+                failwith
+                    $"%s{operation}: OpenRefusal: %s{OpenRefusal.describe refusal} A seed owned by anyone but the configured user and group is refused (`EmulatedKernel.withFileSystemAndCurrentDirectory`), so no guest file should reach this; if one did, that refusal was lifted without modelling this row."
+            | Ok (SyscallAnswer.Failed error, system) ->
                 withErrno ctx error system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim -1L)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-            | SyscallAnswer.Completed fd, system ->
+            | Ok (SyscallAnswer.Completed fd, system) ->
 
             withAnswered system state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim fd)) ctx.Thread
@@ -2697,7 +2704,7 @@ module NativeSystemNative =
             // pre-empt the EFAULT a bad path earns.
             let mode = NativeCall.int32Argument operation instruction.Arguments.[1]
 
-            pathSyscall ctx operation (fun path system -> UnixNamespace.mkdir path mode system) state
+            pathSyscall ctx operation (fun path system -> Ok (UnixNamespace.mkdir path mode system)) state
         // `int32_t SystemNative_Unlink(const char* path)` (pal_io.c:368), an
         // EINTR-retrying `unlink(2)` and nothing else. CoreLib declares it as
         // `int Unlink(string)` under UTF-8 marshalling, so the argument that
@@ -2706,7 +2713,16 @@ module NativeSystemNative =
         | Some "SystemNative_Unlink",
           [ ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
-            pathSyscall ctx "SystemNative_Unlink" UnixNamespace.unlink state
+            pathSyscall
+                ctx
+                "SystemNative_Unlink"
+                (fun path system ->
+                    UnixNamespace.unlink path system
+                    |> Result.mapError (fun refusal ->
+                        $"StickyRefusal: %s{StickyRefusal.describe refusal} A seed owned by anyone but the configured user and group is refused (`EmulatedKernel.withFileSystemAndCurrentDirectory`), so no guest file should reach this; if one did, that refusal was lifted without modelling this row."
+                    )
+                )
+                state
         // `int32_t SystemNative_ChDir(const char* path)` (pal_io.c): `chdir(2)`
         // and nothing else. CoreLib declares it as `int ChDir(string)` under
         // UTF-8 marshalling, so what arrives is the same NUL-terminated byte
@@ -2714,14 +2730,23 @@ module NativeSystemNative =
         | Some "SystemNative_ChDir",
           [ ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
-            pathSyscall ctx "SystemNative_ChDir" UnixPathResolution.chdir state
+            pathSyscall ctx "SystemNative_ChDir" (fun path system -> Ok (UnixPathResolution.chdir path system)) state
         // `int32_t SystemNative_RmDir(const char* path)` (pal_io.c): an
         // EINTR-retrying `rmdir(2)` and nothing else, taking a UTF-8 path
         // exactly as `SystemNative_Unlink` does.
         | Some "SystemNative_RmDir",
           [ ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
-            pathSyscall ctx "SystemNative_RmDir" UnixNamespace.rmdir state
+            pathSyscall
+                ctx
+                "SystemNative_RmDir"
+                (fun path system ->
+                    UnixNamespace.rmdir path system
+                    |> Result.mapError (fun refusal ->
+                        $"StickyRefusal: %s{StickyRefusal.describe refusal} A seed owned by anyone but the configured user and group is refused (`EmulatedKernel.withFileSystemAndCurrentDirectory`), so no guest file should reach this; if one did, that refusal was lifted without modelling this row."
+                    )
+                )
+                state
         // `int32_t SystemNative_Rename(const char* oldPath, const char* newPath)`
         // (pal_io.c): `rename(2)` and nothing else -- not even an EINTR retry,
         // which `rename` cannot return. CoreLib declares both a UTF-8 `string`
@@ -2794,7 +2819,10 @@ module NativeSystemNative =
                 }
 
             match UnixNamespace.openPath flags path 0 (EmulatedKernel.unix state.Kernel) with
-            | SyscallAnswer.Failed error, system ->
+            | Error refusal ->
+                failwith
+                    $"%s{operation}: OpenRefusal: %s{OpenRefusal.describe refusal} A seed owned by anyone but the configured user and group is refused (`EmulatedKernel.withFileSystemAndCurrentDirectory`), so no guest file should reach this; if one did, that refusal was lifted without modelling this row."
+            | Ok (SyscallAnswer.Failed error, system) ->
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
                 state.MapKernel (EmulatedKernel.withUnix system)
@@ -2805,7 +2833,7 @@ module NativeSystemNative =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-            | SyscallAnswer.Completed fd, system ->
+            | Ok (SyscallAnswer.Completed fd, system) ->
 
             // The block whose address the guest holds as its `DIR*`, and whose
             // bytes are the `d_name` buffer each `ReadDir` refills. One
@@ -3082,6 +3110,9 @@ module NativeSystemNative =
             let length = NativeCall.int64Argument operation instruction.Arguments.[1]
 
             match UnixDescriptor.ftruncate fd length (EmulatedKernel.unix state.Kernel) with
+            | Error (TruncationRefusal.UnmeasuredSetIdChange _ as refusal) ->
+                failwith
+                    $"%s{operation}: TruncationRefusal.UnmeasuredSetIdChange: %s{TruncationRefusal.describe refusal} A seed owned by anyone but the configured user and group is refused (`EmulatedKernel.withFileSystemAndCurrentDirectory`), so no guest file should reach this; if one did, that refusal was lifted without modelling this row."
             | Error refusal -> failwith $"%s{operation}: %s{TruncationRefusal.describe refusal}"
             | Ok (SyscallAnswer.Failed error, system) ->
                 withErrno ctx error system state
@@ -3412,6 +3443,9 @@ module NativeSystemNative =
                     // PawPrint says which managed caller could have reached it.
                     failwith
                         $"%s{operation}: fd %d{fd}: %s{PWriteRefusal.describe refusal} Reachable from the BCL: `RandomAccess.WriteAtOffset` passes the guest's own offset through, so a guest writing far past the end of a file gets here. Represent file contents sparsely (issue #956) before answering it."
+                | PWriteRefusal.UnmeasuredSetIdChange _ ->
+                    failwith
+                        $"%s{operation}: fd %d{fd}: PWriteRefusal.UnmeasuredSetIdChange: %s{PWriteRefusal.describe refusal} A seed owned by anyone but the configured user and group is refused (`EmulatedKernel.withFileSystemAndCurrentDirectory`), so no guest file should reach this; if one did, that refusal was lifted without modelling this row."
 
             match
                 UnixReadWrite.admitPWrite
@@ -5694,6 +5728,8 @@ module NativeSystemNative =
                     | WriteRefusal.NonBlockingStandardStreamShortWrite _ ->
                         "Reachable from the BCL once the guest has set O_NONBLOCK on the stream: `ConsolePal.Unix.Write` hands `write` the whole buffer a `Stream.Write` on `Console.OpenStandardOutput()` was given, and loops over a short count. Answering needs the kernel's log to record the bytes a short write took rather than the bytes offered, and this handler's `WroteToFd` to follow it."
                     | WriteRefusal.Buffer _ -> "Pass a buffer that names guest storage."
+                    | WriteRefusal.UnmeasuredSetIdChange _ ->
+                        "(WriteRefusal.UnmeasuredSetIdChange) A seed owned by anyone but the configured user and group is refused (`EmulatedKernel.withFileSystemAndCurrentDirectory`), so no guest file should reach this; if one did, that refusal was lifted without modelling this row."
 
                 failwith $"%s{operation}: fd %d{fd}: %s{WriteRefusal.describe refusal} %s{reachability}"
 

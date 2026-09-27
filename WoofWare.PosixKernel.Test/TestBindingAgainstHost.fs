@@ -157,7 +157,7 @@ module TestBindingAgainstHost =
         match
             UnixSystem.withFileSystemAndCurrentDirectory
                 (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
-                Owners.linuxDefault
+                (InodeOwner.ofProcess system.Process.Credentials)
                 BindingProbes.tree
                 AbsoluteUnixPath.root
                 system

@@ -189,6 +189,41 @@ type RenameProgress<'Task, 'Handler when 'Task : comparison and 'Handler : equal
     /// `UnixNamespace.renameWithDestination`.
     | NeedsDestination of paused : PausedRename<'Task, 'Handler>
 
+/// Why this kernel will not answer a `rename(2)`.
+[<RequireQualifiedAccess>]
+type RenameRefusal =
+    /// One of the pathnames' bytes are not a pathname at all.
+    | PathArgument of refusal : PathArgumentRefusal
+    /// A sticky directory whose rule Darwin has not been measured to apply to
+    /// this caller.
+    | Sticky of refusal : StickyRefusal
+
+[<RequireQualifiedAccess>]
+module RenameRefusal =
+    /// What this kernel knows about why it will not answer. A client adds which
+    /// entry point asked, and with which paths.
+    let describe (refusal : RenameRefusal) : string =
+        match refusal with
+        | RenameRefusal.PathArgument (PathArgumentRefusal.InteriorNul offset) ->
+            $"a pathname's bytes hold a NUL at offset %d{offset}, so they are not a C string: the caller read past the string's end, or built the bytes from something that was never one."
+        | RenameRefusal.Sticky refusal -> StickyRefusal.describe refusal
+
+/// Why this kernel will not answer an `open(2)`.
+[<RequireQualifiedAccess>]
+type OpenRefusal =
+    /// An `O_TRUNC` open of the file at `inode`, whose effect on the file's
+    /// set-ID bits has not been measured for this caller. Nothing was changed.
+    | UnmeasuredSetIdChange of inode : InodeNumber * refusal : SetIdChangeRefusal
+
+[<RequireQualifiedAccess>]
+module OpenRefusal =
+    /// What this kernel knows about why it will not answer. A client adds which
+    /// entry point asked, and with which path.
+    let describe (refusal : OpenRefusal) : string =
+        match refusal with
+        | OpenRefusal.UnmeasuredSetIdChange (inode, refusal) ->
+            $"opening inode %O{inode} with O_TRUNC: %s{SetIdChangeRefusal.describe refusal}"
+
 [<RequireQualifiedAccess>]
 module UnixNamespace =
 
@@ -237,10 +272,10 @@ module UnixNamespace =
         (path : UnixPath)
         (mode : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, OpenRefusal>
         =
         let rules = SimulatedUnixPlatform.creatingOpenRules system.Machine.UnixPlatform
-        let privilege = UnixProcessState.callerPrivilege system.Process
+        let credentials = system.Process.Credentials
 
         // `O_EXCL` on its own is neither an error nor a refusal: both kernels
         // ignore it entirely, measured. So it is read
@@ -253,7 +288,7 @@ module UnixNamespace =
         let opened
             (inode : InodeNumber)
             (system : UnixSystem<'Task, 'Handler>)
-            : SyscallAnswer * UnixSystem<'Task, 'Handler>
+            : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, OpenRefusal>
             =
             // A directory gets a description positioned in its entries rather
             // than at a byte offset. It can only be here for reading: every
@@ -266,13 +301,15 @@ module UnixNamespace =
                 | Some (InodeContent.Symlink _)
                 | None -> FileDescriptorRegistry.openFile inode flags.Access system.Process.FileDescriptors
 
-            SyscallAnswer.Completed (int64 fd),
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
-            }
+            Ok (
+                SyscallAnswer.Completed (int64 fd),
+                { system with
+                    Process =
+                        { system.Process with
+                            FileDescriptors = registry
+                        }
+                }
+            )
 
         if flags.Directory then
             if
@@ -292,11 +329,11 @@ module UnixNamespace =
             match
                 UnixPathResolution.resolvePathFull SymlinkPolicy.Follow TrailingSeparatorPolicy.Demand path system
             with
-            | Error error -> SyscallAnswer.Failed error, system
+            | Error error -> Ok (SyscallAnswer.Failed error, system)
             | Ok resolution ->
 
-            match OpenDirRules.verdict privilege resolution system.Machine.FileSystem with
-            | OpenDirVerdict.Refuse error -> SyscallAnswer.Failed error, system
+            match OpenDirRules.verdict credentials resolution system.Machine.FileSystem with
+            | OpenDirVerdict.Refuse error -> Ok (SyscallAnswer.Failed error, system)
             | OpenDirVerdict.Open inode -> opened inode system
         else
 
@@ -318,23 +355,38 @@ module UnixNamespace =
                 TrailingSeparatorPolicy.Demand
 
         match UnixPathResolution.resolvePathFull policy trailingSeparatorPolicy path system with
-        | Error error -> SyscallAnswer.Failed error, system
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
         | Ok resolution ->
 
         match
             CreatingOpenRules.verdict
                 rules
                 (SimulatedUnixPlatform.bindableEntryNames system.Machine.UnixPlatform)
-                privilege
+                credentials
                 flags.Create
                 exclusive
                 resolution
                 system.Machine.FileSystem
         with
-        | CreatingOpenVerdict.Refuse error -> SyscallAnswer.Failed error, system
+        | CreatingOpenVerdict.Refuse error -> Ok (SyscallAnswer.Failed error, system)
         | CreatingOpenVerdict.Create (directory, name) ->
+            let parent =
+                match VirtualFileSystem.tryGet directory system.Machine.FileSystem with
+                | Some ({
+                            Content = InodeContent.Directory parent
+                        } as entry) -> entry, parent
+                | Some _
+                | None ->
+                    failwith
+                        $"UnixNamespace.openPath: about to create \"%s{DirectoryEntryName.toEscaped name}\" in inode %O{directory}, which the walk had established was a directory, but it is now absent or not a directory (this is a bug in this library)."
+
             let permissions =
-                CreatingOpenRules.createdPermissions rules system.Process.Umask mode
+                CreatingOpenRules.createdPermissions
+                    rules
+                    (Standing.toward credentials (fst parent).Owner)
+                    (snd parent).Permissions
+                    system.Process.Umask
+                    mode
 
             let now = UnixMachineState.realtime system.Machine
 
@@ -378,7 +430,7 @@ module UnixNamespace =
             // above selects: without it the resolver would have followed the link
             // (or failed ENOENT on a dangling one). ELOOP rather than anything
             // more specific is what both Unixes answer.
-            SyscallAnswer.Failed UnixError.ELOOP, system
+            Ok (SyscallAnswer.Failed UnixError.ELOOP, system)
         | InodeContent.Directory _ when FileAccessMode.permitsWrite flags.Access || flags.Truncate ->
             // Measured on both flavours, for `O_WRONLY` and `O_RDWR` alike, and
             // at uid 0 as well as uid 1000: a directory cannot be opened for
@@ -394,7 +446,7 @@ module UnixNamespace =
             // includes `O_CREAT | O_RDONLY | O_TRUNC` on the flavour whose
             // `RefusesExistingDirectory` is false, where the verdict is therefore
             // `OpenExisting` on the directory itself.
-            SyscallAnswer.Failed UnixError.EISDIR, system
+            Ok (SyscallAnswer.Failed UnixError.EISDIR, system)
         | InodeContent.RegularFile _
         | InodeContent.Directory _ ->
 
@@ -417,8 +469,8 @@ module UnixNamespace =
         //   0200   EACCES    ok        EACCES
         //   0000   EACCES    EACCES    EACCES
         //
-        // Only the owner triple is consulted (`PermissionBits.deniedTo`), which
-        // is exact only for a caller who owns the file.
+        // The triple consulted is the one the caller's standing towards the
+        // file selects (`PermissionBits.deniedTo`).
         //
         // `O_TRUNC` adds the write bit to whatever the access mode already asked
         // for, and adds nothing else. Measured at uid 1000 on both:
@@ -433,14 +485,16 @@ module UnixNamespace =
         // Both halves, where the mode asks for both: `O_RDWR` on a 0o400 file is
         // refused for want of the write bit even though the read bit is there,
         // which is what the disjunction says.
+        let standing = Standing.toward credentials entry.Owner
+
         let denied =
             (FileAccessMode.permitsRead flags.Access
-             && PermissionBits.deniedTo privilege AccessRequest.Read permissionBits)
+             && PermissionBits.deniedTo standing AccessRequest.Read permissionBits)
             || ((FileAccessMode.permitsWrite flags.Access || flags.Truncate)
-                && PermissionBits.deniedTo privilege AccessRequest.Write permissionBits)
+                && PermissionBits.deniedTo standing AccessRequest.Write permissionBits)
 
         if denied then
-            SyscallAnswer.Failed UnixError.EACCES, system
+            Ok (SyscallAnswer.Failed UnixError.EACCES, system)
         else
 
         // Only now, with every refusal discharged: measured, a refused open
@@ -454,22 +508,22 @@ module UnixNamespace =
         // regular file is truncated -- a directory cannot reach here at all (the
         // arm above refuses every truncating open of one), so the match is over
         // what the descriptor may still name rather than a filter.
-        let system =
+        let truncated =
             match entry.Content with
             | InodeContent.RegularFile _ when flags.Truncate ->
                 match UnixDescriptor.truncateAt inode 0L system with
-                | Ok system -> system
-                | Error refusal ->
-                    // Truncating to zero cannot exceed a length limit and cannot
-                    // be negative, which are the only two refusals `truncateAt`
-                    // has.
+                | Ok system -> Ok system
+                | Error (TruncationRefusal.UnmeasuredSetIdChange (inode, refusal)) ->
+                    Error (OpenRefusal.UnmeasuredSetIdChange (inode, refusal))
+                | Error (TruncationRefusal.ExceedsRepresentableLength _ as refusal) ->
+                    // Truncating to zero cannot exceed a length limit.
                     failwith
                         $"UnixNamespace.openPath: truncating inode %O{inode} to zero was refused -- %s{TruncationRefusal.describe refusal} (this is a bug in this library)."
             | InodeContent.RegularFile _
             | InodeContent.Directory _
-            | InodeContent.Symlink _ -> system
+            | InodeContent.Symlink _ -> Ok system
 
-        opened inode system
+        truncated |> Result.bind (opened inode)
 
     /// `readlink(2)`: report what the symbolic link at `path` points at.
     ///
@@ -686,7 +740,7 @@ module UnixNamespace =
         match
             MkDirRules.verdict
                 (SimulatedUnixPlatform.bindableEntryNames system.Machine.UnixPlatform)
-                (UnixProcessState.callerPrivilege system.Process)
+                system.Process.Credentials
                 resolution
                 system.Machine.FileSystem
         with
@@ -721,11 +775,13 @@ module UnixNamespace =
     /// `unlink(2)`: remove the name `path`, and the inode it named if nothing
     /// else holds it.
     ///
-    /// Never refused: every outcome is a success or an errno.
+    /// Every outcome is a success or an errno, except where Darwin's sticky
+    /// rule has not been measured for this caller (`StickyRefusal`), which
+    /// changes nothing.
     let unlink<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
-        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, StickyRefusal>
         =
         let rules = SimulatedUnixPlatform.unlinkRules system.Machine.UnixPlatform
 
@@ -734,18 +790,19 @@ module UnixNamespace =
         // only thing that can reach past a final symlink, and only on Darwin;
         // see `UnlinkRules.TrailingSeparator`.
         match UnixPathResolution.resolvePathFull SymlinkPolicy.NoFollowFinal rules.TrailingSeparator path system with
-        | Error error -> SyscallAnswer.Failed error, system
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
         | Ok resolution ->
 
         match
             UnlinkRules.verdict
                 (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform)
-                (UnixProcessState.callerPrivilege system.Process)
+                system.Process.Credentials
                 resolution
                 system.Machine.FileSystem
         with
-        | UnlinkVerdict.Refuse error -> SyscallAnswer.Failed error, system
-        | UnlinkVerdict.Remove (directory, name) ->
+        | Error refusal -> Error refusal
+        | Ok (UnlinkVerdict.Refuse error) -> Ok (SyscallAnswer.Failed error, system)
+        | Ok (UnlinkVerdict.Remove (directory, name)) ->
 
         let now = UnixMachineState.realtime system.Machine
 
@@ -762,23 +819,27 @@ module UnixNamespace =
         // name or any open descriptor still holds it. A real `unlink` of a file
         // something has open leaves it readable through that descriptor until the
         // last one closes.
-        SyscallAnswer.Completed 0L,
-        UnixDescriptor.forgetIfUnheld
-            target
-            { system with
-                Machine =
-                    { system.Machine with
-                        FileSystem = filesystem
-                    }
-            }
+        Ok (
+            SyscallAnswer.Completed 0L,
+            UnixDescriptor.forgetIfUnheld
+                target
+                { system with
+                    Machine =
+                        { system.Machine with
+                            FileSystem = filesystem
+                        }
+                }
+        )
 
     /// `rmdir(2)`: remove the empty directory `path` names.
     ///
-    /// Never refused: every outcome is a success or an errno.
+    /// Every outcome is a success or an errno, except where Darwin's sticky
+    /// rule has not been measured for this caller (`StickyRefusal`), which
+    /// changes nothing.
     let rmdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
-        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, StickyRefusal>
         =
         let rules = SimulatedUnixPlatform.rmDirRules system.Machine.UnixPlatform
 
@@ -787,18 +848,19 @@ module UnixNamespace =
         // `rmdir("ld/")` removes the *link's target* there and is ENOTDIR on
         // Linux. See `RmDirRules.TrailingSeparator`.
         match UnixPathResolution.resolvePathFull SymlinkPolicy.NoFollowFinal rules.TrailingSeparator path system with
-        | Error error -> SyscallAnswer.Failed error, system
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
         | Ok resolution ->
 
         match
             RmDirRules.verdict
                 (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform)
-                (UnixProcessState.callerPrivilege system.Process)
+                system.Process.Credentials
                 resolution
                 system.Machine.FileSystem
         with
-        | RmDirVerdict.Refuse error -> SyscallAnswer.Failed error, system
-        | RmDirVerdict.Remove (directory, name) ->
+        | Error refusal -> Error refusal
+        | Ok (RmDirVerdict.Refuse error) -> Ok (SyscallAnswer.Failed error, system)
+        | Ok (RmDirVerdict.Remove (directory, name)) ->
 
         let now = UnixMachineState.realtime system.Machine
 
@@ -813,15 +875,17 @@ module UnixNamespace =
         // `rmdir` leaves such an orphan usable through what holds it.
         // `forgetIfUnheld` also collects the ancestors this directory's ".." was
         // keeping alive.
-        SyscallAnswer.Completed 0L,
-        UnixDescriptor.forgetIfUnheld
-            target
-            { system with
-                Machine =
-                    { system.Machine with
-                        FileSystem = filesystem
-                    }
-            }
+        Ok (
+            SyscallAnswer.Completed 0L,
+            UnixDescriptor.forgetIfUnheld
+                target
+                { system with
+                    Machine =
+                        { system.Machine with
+                            FileSystem = filesystem
+                        }
+                }
+        )
 
     /// How a phase of `rename`'s two-path walk ended, when it did not produce a
     /// resolution.
@@ -921,13 +985,14 @@ module UnixNamespace =
     /// The rest of `rename(2)`, given the destination pathname the kernel has
     /// just reached the point of copying in.
     ///
-    /// Never refused as a *syscall*: every outcome is a success or an errno. The
-    /// `Result` is for the one thing that is not either — a pathname whose bytes
-    /// name a file this kernel cannot represent.
+    /// Every outcome is a success or an errno, except the two things that are
+    /// neither: a pathname whose bytes are not a pathname at all, and a sticky
+    /// directory whose rule Darwin has not been measured to apply to this
+    /// caller. Neither changes anything.
     let renameWithDestination<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (destination : PathArgumentBytes)
         (paused : PausedRename<'Task, 'Handler>)
-        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, PathArgumentRefusal>
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, RenameRefusal>
         =
         match box paused with
         | null ->
@@ -1002,7 +1067,7 @@ module UnixNamespace =
             |> Result.map (fun destinationResolution -> sourceResolution, destinationResolution)
 
         match resolved with
-        | Error (RenameStop.Refused refusal) -> Error refusal
+        | Error (RenameStop.Refused refusal) -> Error (RenameRefusal.PathArgument refusal)
         | Error (RenameStop.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Ok (sourceResolution, destinationResolution) ->
 
@@ -1010,18 +1075,19 @@ module UnixNamespace =
             RenameRules.verdict
                 (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform)
                 (SimulatedUnixPlatform.bindableEntryNames system.Machine.UnixPlatform)
-                (UnixProcessState.callerPrivilege system.Process)
+                system.Process.Credentials
                 sourceResolution
                 destinationResolution
                 system.Machine.FileSystem
         with
-        | RenameVerdict.Refuse error -> Ok (SyscallAnswer.Failed error, system)
+        | Error refusal -> Error (RenameRefusal.Sticky refusal)
+        | Ok (RenameVerdict.Refuse error) -> Ok (SyscallAnswer.Failed error, system)
         // Both paths name one inode: a success that changes nothing at all, not
         // a binding and not a timestamp. Deliberately not routed through
         // `VirtualFileSystem.rename`, which refuses it — the graph primitive
         // would have to invent a no-op stamp to express it.
-        | RenameVerdict.NoOp -> Ok (SyscallAnswer.Completed 0L, system)
-        | RenameVerdict.Move (sourceDirectory, sourceName, destinationDirectory, destinationName) ->
+        | Ok RenameVerdict.NoOp -> Ok (SyscallAnswer.Completed 0L, system)
+        | Ok (RenameVerdict.Move (sourceDirectory, sourceName, destinationDirectory, destinationName)) ->
 
         let now = UnixMachineState.realtime system.Machine
 
@@ -1081,9 +1147,9 @@ module UnixNamespace =
         (source : PathArgumentBytes)
         (destination : PathArgumentBytes)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, PathArgumentRefusal>
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, RenameRefusal>
         =
         match renameSourcePhase source system with
-        | Error refusal -> Error refusal
+        | Error refusal -> Error (RenameRefusal.PathArgument refusal)
         | Ok (RenameProgress.Answered (answer, system)) -> Ok (answer, system)
         | Ok (RenameProgress.NeedsDestination paused) -> renameWithDestination destination paused

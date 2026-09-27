@@ -1,5 +1,34 @@
 namespace WoofWare.PosixKernel
 
+/// Why this kernel will not say what a sticky directory's rule does to an
+/// `unlink(2)`, `rmdir(2)` or `rename(2)`: Darwin's answer for this caller has
+/// not been measured.
+///
+/// Each case carries the sticky directory, the entry the call would remove or
+/// replace, and how the caller stands towards that entry, which it owns
+/// neither of.
+[<RequireQualifiedAccess>]
+type StickyRefusal =
+    /// A privileged caller, on Darwin. Whether Darwin's sticky rule exempts
+    /// root has not been measured: that needs root and a second user.
+    | DarwinPrivilegedCaller of directory : InodeNumber * entry : InodeNumber * standing : Standing
+    /// A `rename(2)` on Darwin in which a directory displaces the directory
+    /// `entry`. Darwin consults the displaced directory's own write bit there
+    /// rather than its parent's, and whether it consults the parent's sticky
+    /// bit at all has not been measured.
+    | DarwinDirectoryDisplacingDirectory of directory : InodeNumber * entry : InodeNumber * standing : Standing
+
+[<RequireQualifiedAccess>]
+module StickyRefusal =
+    /// What this kernel knows about why it will not answer. A client adds which
+    /// entry point asked, and with which paths.
+    let describe (refusal : StickyRefusal) : string =
+        match refusal with
+        | StickyRefusal.DarwinPrivilegedCaller (directory, entry, standing) ->
+            $"inode %O{directory} is a sticky directory, and the caller, standing %A{standing} towards its entry %O{entry}, owns neither of them but is privileged. Whether Darwin's sticky rule exempts a privileged caller has not been measured (it needs root and a second user)."
+        | StickyRefusal.DarwinDirectoryDisplacingDirectory (directory, entry, standing) ->
+            $"a directory would displace the directory %O{entry} in the sticky directory %O{directory}, and the caller, standing %A{standing} towards %O{entry}, owns neither of them. Darwin consults the displaced directory's own write bit there rather than its parent's, and whether it consults the sticky bit at all has not been measured."
+
 /// <summary>
 /// Parametrises the behaviour of different kernels when <c>unlink(2)</c> removes a name.
 /// </summary>
@@ -57,41 +86,102 @@ type UnlinkVerdict =
 /// what a "yes" costs, is each syscall's own measured business.
 [<RequireQualifiedAccess>]
 module private RemovalChecks =
+    /// The holding directory's inode and permission bits.
+    ///
+    /// Partial in `directory`, which the walk has just reported as the directory
+    /// holding `name`.
+    let private holding
+        (directory : InodeNumber)
+        (name : DirectoryEntryName)
+        (vfs : VirtualFileSystem)
+        : Inode * PermissionBits
+        =
+        match VirtualFileSystem.tryGet directory vfs with
+        | Some parent ->
+            match Inode.permissions parent with
+            | InodePermissions.Stored bits -> parent, bits
+            | InodePermissions.PlatformSymlinkDefault ->
+                failwith
+                    $"RemovalChecks.holding: the walk resolved \"%s{DirectoryEntryName.toEscaped name}\" inside inode %O{directory}, which reports platform-default symlink permissions -- but only a directory can hold an entry (this is a bug in this library's path walk, or in a caller that assembled the resolution itself)."
+        | None ->
+            failwith
+                $"RemovalChecks.holding: resolution named inode %O{directory} as the directory holding \"%s{DirectoryEntryName.toEscaped name}\", but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
+
     /// Whether the *holding* directory refuses this caller the write bit it
     /// needs to remove a name from it.
     ///
     /// Write alone: the search half is the walk's, and a resolution that got
-    /// this far has passed it. Only the owner triple is consulted, and the
-    /// sticky bit never refuses — POSIX permits the removal when the caller
-    /// owns the file *or* the directory — so the answer is exact only for a
-    /// caller who owns the directory.
+    /// this far has passed it. The sticky bit is a separate question, which
+    /// `sticky` answers.
     ///
     /// Partial in `directory`, which the walk has just reported as the directory
     /// holding `name`.
     let lacksWrite
-        (privilege : CallerPrivilege)
+        (credentials : Credentials)
         (directory : InodeNumber)
         (name : DirectoryEntryName)
         (vfs : VirtualFileSystem)
         : bool
         =
-        // The lookup is above the privilege test, so its two assertions below
+        // The lookup is above the privilege test, so its two assertions
         // fire for a privileged caller too. That is deliberate: both name a
         // corrupt inode graph, and root skipping the check would leave the
         // corruption to be found somewhere less informative.
-        let permissions =
-            match VirtualFileSystem.tryGet directory vfs with
-            | Some parent ->
-                match Inode.permissions parent with
-                | InodePermissions.Stored bits -> bits
-                | InodePermissions.PlatformSymlinkDefault ->
-                    failwith
-                        $"RemovalChecks.lacksWrite: the walk resolved \"%s{DirectoryEntryName.toEscaped name}\" inside inode %O{directory}, which reports platform-default symlink permissions -- but only a directory can hold an entry (this is a bug in this library's path walk, or in a caller that assembled the resolution itself)."
+        let parent, permissions = holding directory name vfs
+        PermissionBits.deniedTo (Standing.toward credentials parent.Owner) AccessRequest.Write permissions
+
+    /// What the holding directory's sticky bit says about this caller removing,
+    /// renaming or replacing `name`, which is bound to `target`.
+    ///
+    /// Partial in `directory` and `target`, which the walk has just reported.
+    let sticky
+        (credentials : Credentials)
+        (directory : InodeNumber)
+        (name : DirectoryEntryName)
+        (target : InodeNumber)
+        (vfs : VirtualFileSystem)
+        : StickyRemoval
+        =
+        let parent, permissions = holding directory name vfs
+
+        let entry =
+            match VirtualFileSystem.tryGet target vfs with
+            | Some entry -> entry
             | None ->
                 failwith
-                    $"RemovalChecks.lacksWrite: resolution named inode %O{directory} as the directory holding \"%s{DirectoryEntryName.toEscaped name}\", but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
+                    $"RemovalChecks.sticky: the walk resolved \"%s{DirectoryEntryName.toEscaped name}\" to inode %O{target}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
 
-        PermissionBits.deniedTo privilege AccessRequest.Write permissions
+        PermissionBits.stickyRemoval
+            (Standing.toward credentials parent.Owner)
+            (Standing.toward credentials entry.Owner)
+            permissions
+
+    /// How this caller stands towards `target`, which the walk has just
+    /// reported.
+    let standingTowards (credentials : Credentials) (target : InodeNumber) (vfs : VirtualFileSystem) : Standing =
+        match VirtualFileSystem.tryGet target vfs with
+        | Some entry -> Standing.toward credentials entry.Owner
+        | None ->
+            failwith
+                $"RemovalChecks.standingTowards: the walk resolved a name to inode %O{target}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
+
+    /// Whether Darwin's sticky rule refuses this caller removing, renaming or
+    /// replacing `name`, which is bound to `target`. Darwin refuses with EACCES,
+    /// at the position of the write check (the two cannot be told apart). What
+    /// it does for root has not been measured, so that is a refusal.
+    let darwinStickyRefuses
+        (credentials : Credentials)
+        (directory : InodeNumber)
+        (name : DirectoryEntryName)
+        (target : InodeNumber)
+        (vfs : VirtualFileSystem)
+        : Result<bool, StickyRefusal>
+        =
+        match sticky credentials directory name target vfs with
+        | StickyRemoval.Unrestricted -> Ok false
+        | StickyRemoval.Forbidden -> Ok true
+        | StickyRemoval.ForbiddenButPrivileged ->
+            Error (StickyRefusal.DarwinPrivilegedCaller (directory, target, standingTowards credentials target vfs))
 
     /// <summary>
     /// Whether the inode a name is bound to is a directory.
@@ -150,6 +240,11 @@ module UnlinkRules =
     ///    `unlink("dang/")`, `unlink("cyc/")` and `unlink("lroot/")` are all
     ///    ENOTDIR, with no ELOOP and no chance of destroying a link's target.
     ///  * Removing a name needs write on the directory holding it: EACCES.
+    ///  * A sticky directory forbids removing an entry the caller owns neither
+    ///    of: EPERM, unless the caller is privileged. Below the write check —
+    ///    `unlink` of another user's file in an unwritable sticky directory is
+    ///    EACCES — and above the directory arm: `unlink` of another user's
+    ///    directory in a writable one is EPERM.
     ///  * The target being a directory is EISDIR — *below* the write check, and
     ///    measured to be: `unlink("nowrite/kdir")` is EACCES where
     ///    `unlink("nowrite/kdir/")` is EISDIR. That pair is the only thing
@@ -157,10 +252,10 @@ module UnlinkRules =
     ///    an errno.
     ///
     /// EISDIR here is privilege-independent: measured at uid 0, Linux still
-    /// refuses to `unlink` a directory. `CallerPrivilege` gates the write bit
-    /// and nothing else.
+    /// refuses to `unlink` a directory. Privilege exempts the caller from the
+    /// write bit and the sticky bit and from nothing else.
     let private linuxVerdict
-        (privilege : CallerPrivilege)
+        (credentials : Credentials)
         (resolution : Resolution)
         (vfs : VirtualFileSystem)
         : UnlinkVerdict
@@ -178,8 +273,10 @@ module UnlinkRules =
                 UnlinkVerdict.Refuse UnixError.EISDIR
             else
                 UnlinkVerdict.Refuse UnixError.ENOTDIR
-        elif RemovalChecks.lacksWrite privilege directory name vfs then
+        elif RemovalChecks.lacksWrite credentials directory name vfs then
             UnlinkVerdict.Refuse UnixError.EACCES
+        elif RemovalChecks.sticky credentials directory name target vfs = StickyRemoval.Forbidden then
+            UnlinkVerdict.Refuse UnixError.EPERM
         elif RemovalChecks.isDirectory target vfs then
             UnlinkVerdict.Refuse UnixError.EISDIR
         else
@@ -202,6 +299,12 @@ module UnlinkRules =
     ///    `unlink("nowrite/kdir")` is EPERM where `unlink("nowrite/kid")` is
     ///    EACCES. This is the arm Linux orders the other way round.
     ///  * Removing a name needs write on the directory holding it: EACCES.
+    ///  * A sticky directory forbids removing an entry the caller owns neither
+    ///    of, and Darwin spends EACCES on it where Linux spends EPERM — so it is
+    ///    indistinguishable from the write check, and below the directory arm
+    ///    as that is: `unlink` of root's directory in root's writable sticky
+    ///    directory is EPERM. Whether it exempts a privileged caller has not
+    ///    been measured, and such a caller is refused.
     ///
     /// EPERM is privilege-independent — measured at uid 0, where `unlink("d")`
     /// is still EPERM and `rmdir("d")` succeeds. The `unlink(2)` man page's "and
@@ -217,47 +320,55 @@ module UnlinkRules =
     /// from the arm below, which is why the destructive divergence
     /// `Resolution.FinalSymlinkFollowed` warns about costs `unlink` nothing.
     let private darwinVerdict
-        (privilege : CallerPrivilege)
+        (credentials : Credentials)
         (resolution : Resolution)
         (vfs : VirtualFileSystem)
-        : UnlinkVerdict
+        : Result<UnlinkVerdict, StickyRefusal>
         =
         match resolution.Target with
         | ResolvedTarget.Directory (inode, reachedBy) ->
             match reachedBy with
-            | FinalNavigation.Root -> UnlinkVerdict.Refuse UnixError.EISDIR
+            | FinalNavigation.Root -> Ok (UnlinkVerdict.Refuse UnixError.EISDIR)
             | FinalNavigation.Current
             | FinalNavigation.Parent ->
                 if inode = VirtualFileSystem.root vfs then
-                    UnlinkVerdict.Refuse UnixError.EBUSY
+                    Ok (UnlinkVerdict.Refuse UnixError.EBUSY)
                 else
-                    UnlinkVerdict.Refuse UnixError.EPERM
+                    Ok (UnlinkVerdict.Refuse UnixError.EPERM)
         | ResolvedTarget.Entry (directory, name, existing) ->
 
         match existing with
-        | None -> UnlinkVerdict.Refuse UnixError.ENOENT
+        | None -> Ok (UnlinkVerdict.Refuse UnixError.ENOENT)
         | Some target ->
 
         if RemovalChecks.isDirectory target vfs then
-            UnlinkVerdict.Refuse UnixError.EPERM
-        elif RemovalChecks.lacksWrite privilege directory name vfs then
-            UnlinkVerdict.Refuse UnixError.EACCES
+            Ok (UnlinkVerdict.Refuse UnixError.EPERM)
+        elif RemovalChecks.lacksWrite credentials directory name vfs then
+            Ok (UnlinkVerdict.Refuse UnixError.EACCES)
         else
-            UnlinkVerdict.Remove (directory, name)
+
+        match RemovalChecks.darwinStickyRefuses credentials directory name target vfs with
+        | Error refusal -> Error refusal
+        | Ok true -> Ok (UnlinkVerdict.Refuse UnixError.EACCES)
+        | Ok false -> Ok (UnlinkVerdict.Remove (directory, name))
 
     /// <summary>
     /// Decide what <c>unlink(2)</c> does, given how its input path resolved.
     /// </summary>
+    /// <remarks>
+    /// Refused where Darwin's sticky rule has not been measured for this caller;
+    /// see <c>StickyRefusal</c>.
+    /// </remarks>
     let verdict
         (flavour : SimulatedUnixFlavour)
-        (privilege : CallerPrivilege)
+        (credentials : Credentials)
         (resolution : Resolution)
         (vfs : VirtualFileSystem)
-        : UnlinkVerdict
+        : Result<UnlinkVerdict, StickyRefusal>
         =
         match flavour with
-        | SimulatedUnixFlavour.Linux -> linuxVerdict privilege resolution vfs
-        | SimulatedUnixFlavour.Darwin -> darwinVerdict privilege resolution vfs
+        | SimulatedUnixFlavour.Linux -> Ok (linuxVerdict credentials resolution vfs)
+        | SimulatedUnixFlavour.Darwin -> darwinVerdict credentials resolution vfs
 
 /// Everything a kernel does differently when `rmdir(2)` removes a directory.
 ///
@@ -337,24 +448,32 @@ module OpenDirRules =
     /// There is no root-navigation arm either, and `rmdir`'s three are the
     /// reason to say so rather than leave it implied: `opendir("/")`,
     /// `opendir("d/.")` and `opendir("d/..")` all simply succeed, on both.
-    let verdict (privilege : CallerPrivilege) (resolution : Resolution) (vfs : VirtualFileSystem) : OpenDirVerdict =
+    let verdict (credentials : Credentials) (resolution : Resolution) (vfs : VirtualFileSystem) : OpenDirVerdict =
         match PathWalk.existingOf resolution.Target with
         | Error error -> OpenDirVerdict.Refuse error
         | Ok inode ->
 
-        match VirtualFileSystem.tryGetContent inode vfs with
+        match VirtualFileSystem.tryGet inode vfs with
         | None ->
             failwith
                 $"OpenDirRules.verdict: the walk resolved to inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
-        | Some (InodeContent.RegularFile _)
-        | Some (InodeContent.Symlink _) ->
+        | Some {
+                   Content = InodeContent.RegularFile _
+               }
+        | Some {
+                   Content = InodeContent.Symlink _
+               } ->
             // The symlink arm is unreachable through the resolver, which
             // followed every final link and answered ENOENT for a dangling one.
             // It is the same answer either way, so there is nothing to refuse.
             OpenDirVerdict.Refuse UnixError.ENOTDIR
-        | Some (InodeContent.Directory content) ->
+        | Some ({
+                    Content = InodeContent.Directory content
+                } as directory) ->
 
-        if PermissionBits.deniedTo privilege AccessRequest.Read content.Permissions then
+        if
+            PermissionBits.deniedTo (Standing.toward credentials directory.Owner) AccessRequest.Read content.Permissions
+        then
             OpenDirVerdict.Refuse UnixError.EACCES
         else
             OpenDirVerdict.Open inode
@@ -391,6 +510,11 @@ module RmDirRules =
     ///  * A free final name is ENOENT, and that beats the write check:
     ///    `rmdir("nowrite/nx")` is ENOENT.
     ///  * Removing a name needs write on the directory holding it: EACCES.
+    ///  * A sticky directory forbids removing an entry the caller owns neither
+    ///    of: EPERM, unless the caller is privileged. Below the write check,
+    ///    as `unlink`'s is, and above both arms below: `rmdir` of another
+    ///    user's regular file there is EPERM rather than ENOTDIR, and of
+    ///    another user's non-empty directory EPERM rather than ENOTEMPTY.
     ///  * The target not being a directory is ENOTDIR — *below* the write check,
     ///    and measured to be: `rmdir("nowrite/kid")` is EACCES at uid 1000 and
     ///    ENOTDIR at uid 0. This is the arm Darwin orders the other way round.
@@ -401,11 +525,11 @@ module RmDirRules =
     /// `rmdir` owes anyway. Measured, every `X/` row answers what its `X` row
     /// answers.
     ///
-    /// Measured at uid 0, every row: the EACCES rows fall through to their next
-    /// check and nothing else moves, so `CallerPrivilege` gates the write bit
-    /// and nothing else.
+    /// Measured at uid 0, every row: the EACCES and EPERM rows fall through to
+    /// their next check and nothing else moves, so privilege exempts the caller
+    /// from the write bit and the sticky bit and from nothing else.
     let private linuxVerdict
-        (privilege : CallerPrivilege)
+        (credentials : Credentials)
         (resolution : Resolution)
         (vfs : VirtualFileSystem)
         : RmDirVerdict
@@ -422,8 +546,10 @@ module RmDirRules =
         | None -> RmDirVerdict.Refuse UnixError.ENOENT
         | Some target ->
 
-        if RemovalChecks.lacksWrite privilege directory name vfs then
+        if RemovalChecks.lacksWrite credentials directory name vfs then
             RmDirVerdict.Refuse UnixError.EACCES
+        elif RemovalChecks.sticky credentials directory name target vfs = StickyRemoval.Forbidden then
+            RmDirVerdict.Refuse UnixError.EPERM
         elif not (RemovalChecks.isDirectory target vfs) then
             RmDirVerdict.Refuse UnixError.ENOTDIR
         elif not (RemovalChecks.isEmptyDirectory target vfs) then
@@ -450,6 +576,11 @@ module RmDirRules =
     ///    check: `rmdir("nowrite/kid")` is ENOTDIR where `rmdir("nowrite/kdir")`
     ///    is EACCES. This is the arm Linux orders the other way round.
     ///  * Removing a name needs write on the directory holding it: EACCES.
+    ///  * A sticky directory forbids removing an entry the caller owns neither
+    ///    of, with EACCES, as `unlink`'s does on this flavour: below ENOTDIR
+    ///    (`rmdir` of root's file in root's sticky directory is ENOTDIR) and
+    ///    above ENOTEMPTY (of root's non-empty directory there, EACCES). A
+    ///    privileged caller is refused, as `unlink` refuses one.
     ///  * A directory that still holds an entry is ENOTEMPTY, and the write
     ///    check beats it: `rmdir("nowrite/kfull")` is EACCES.
     ///
@@ -460,35 +591,42 @@ module RmDirRules =
     /// a final symlink named, and that is the destructive row: `rmdir("ld/")`
     /// removes `d`.
     let private darwinVerdict
-        (privilege : CallerPrivilege)
+        (credentials : Credentials)
         (resolution : Resolution)
         (vfs : VirtualFileSystem)
-        : RmDirVerdict
+        : Result<RmDirVerdict, StickyRefusal>
         =
         match resolution.Target with
         | ResolvedTarget.Directory (inode, reachedBy) ->
             match reachedBy with
-            | FinalNavigation.Root -> RmDirVerdict.Refuse UnixError.EISDIR
+            | FinalNavigation.Root -> Ok (RmDirVerdict.Refuse UnixError.EISDIR)
             | FinalNavigation.Current
             | FinalNavigation.Parent ->
                 if inode = VirtualFileSystem.root vfs then
-                    RmDirVerdict.Refuse UnixError.EBUSY
+                    Ok (RmDirVerdict.Refuse UnixError.EBUSY)
                 else
-                    RmDirVerdict.Refuse UnixError.EINVAL
+                    Ok (RmDirVerdict.Refuse UnixError.EINVAL)
         | ResolvedTarget.Entry (directory, name, existing) ->
 
         match existing with
-        | None -> RmDirVerdict.Refuse UnixError.ENOENT
+        | None -> Ok (RmDirVerdict.Refuse UnixError.ENOENT)
         | Some target ->
 
         if not (RemovalChecks.isDirectory target vfs) then
-            RmDirVerdict.Refuse UnixError.ENOTDIR
-        elif RemovalChecks.lacksWrite privilege directory name vfs then
-            RmDirVerdict.Refuse UnixError.EACCES
-        elif not (RemovalChecks.isEmptyDirectory target vfs) then
-            RmDirVerdict.Refuse UnixError.ENOTEMPTY
+            Ok (RmDirVerdict.Refuse UnixError.ENOTDIR)
+        elif RemovalChecks.lacksWrite credentials directory name vfs then
+            Ok (RmDirVerdict.Refuse UnixError.EACCES)
         else
-            RmDirVerdict.Remove (directory, name)
+
+        match RemovalChecks.darwinStickyRefuses credentials directory name target vfs with
+        | Error refusal -> Error refusal
+        | Ok true -> Ok (RmDirVerdict.Refuse UnixError.EACCES)
+        | Ok false ->
+
+        if not (RemovalChecks.isEmptyDirectory target vfs) then
+            Ok (RmDirVerdict.Refuse UnixError.ENOTEMPTY)
+        else
+            Ok (RmDirVerdict.Remove (directory, name))
 
     /// Decide what an `rmdir(2)` owes, given how its path resolved.
     ///
@@ -498,13 +636,16 @@ module RmDirRules =
     /// `rmdir` makes the case more strongly than `unlink` did — the two flavours
     /// disagree about which of the root and the *path to it* is the special
     /// thing, which no table of errnos can express.
+    ///
+    /// Refused where Darwin's sticky rule has not been measured for this caller;
+    /// see `StickyRefusal`.
     let verdict
         (flavour : SimulatedUnixFlavour)
-        (privilege : CallerPrivilege)
+        (credentials : Credentials)
         (resolution : Resolution)
         (vfs : VirtualFileSystem)
-        : RmDirVerdict
+        : Result<RmDirVerdict, StickyRefusal>
         =
         match flavour with
-        | SimulatedUnixFlavour.Linux -> linuxVerdict privilege resolution vfs
-        | SimulatedUnixFlavour.Darwin -> darwinVerdict privilege resolution vfs
+        | SimulatedUnixFlavour.Linux -> Ok (linuxVerdict credentials resolution vfs)
+        | SimulatedUnixFlavour.Darwin -> darwinVerdict credentials resolution vfs

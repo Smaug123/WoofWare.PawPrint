@@ -83,7 +83,7 @@ module TestDirectoryDescription =
 
     let private createFile (path : string) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         let fd, system =
-            UnixNamespace.openPath creating (rooted path) 0o644 system
+            Answered.openPath creating (rooted path) 0o644 system
             |> completed $"creat %s{path}"
 
         closeFd (int fd) system
@@ -94,12 +94,11 @@ module TestDirectoryDescription =
         |> snd
 
     let private unlink (path : string) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        UnixNamespace.unlink (rooted path) system |> completed $"unlink %s{path}" |> snd
+        Answered.unlink (rooted path) system |> completed $"unlink %s{path}" |> snd
 
     let private openAt (flags : OpenFlags) (path : string) (system : UnixSystem<int, string>) =
         let fd, system =
-            UnixNamespace.openPath flags (rooted path) 0 system
-            |> completed $"open %s{path}"
+            Answered.openPath flags (rooted path) 0 system |> completed $"open %s{path}"
 
         int fd, system
 
@@ -482,7 +481,7 @@ module TestDirectoryDescription =
             let system =
                 (system, names) ||> List.fold (fun system n -> unlink $"d/%s{n}" system)
 
-            let system = UnixNamespace.rmdir (rooted "d") system |> completed "rmdir d" |> snd
+            let system = Answered.rmdir (rooted "d") system |> completed "rmdir d" |> snd
 
             let expected =
                 match SimulatedUnixPlatform.flavour platform with
@@ -511,7 +510,7 @@ module TestDirectoryDescription =
         for platform in platforms do
             let fd, system = withDirectory platform []
             let _, system = seek fd 5L 0 system
-            let system = UnixNamespace.rmdir (rooted "d") system |> completed "rmdir d" |> snd
+            let system = Answered.rmdir (rooted "d") system |> completed "rmdir d" |> snd
 
             match SimulatedUnixPlatform.flavour platform, UnixNamespace.readDirectoryEntry fd system with
             | SimulatedUnixFlavour.Linux, Ok (ReadDirectoryAnswer.Failed UnixError.ENOENT, _) -> ()
@@ -597,7 +596,7 @@ module TestDirectoryDescription =
         for platform in platforms do
             let system = UnixSystem.initial platform |> createFile "f"
 
-            match UnixNamespace.openPath directoryReading (rooted "f") 0 system with
+            match Answered.openPath directoryReading (rooted "f") 0 system with
             | SyscallAnswer.Failed UnixError.ENOTDIR, _ -> ()
             | other -> failwith $"%O{platform}: %A{other}"
 
@@ -626,7 +625,7 @@ module TestDirectoryDescription =
             let system = UnixSystem.initial platform |> makeDirectory "d"
 
             for flags in unmeasured do
-                (fun () -> UnixNamespace.openPath flags (rooted "d") 0 system |> ignore)
+                (fun () -> Answered.openPath flags (rooted "d") 0 system |> ignore)
                 |> shouldFail
 
     // ------------------------------------------------------------ invariants
@@ -755,7 +754,7 @@ module TestDirectoryDescription =
         // it reads a removed directory, so the model must not be left at the
         // start, where SEEK_CUR would answer 0.
         let fd, system = withDirectory SimulatedUnixPlatform.macOsArm64 []
-        let system = UnixNamespace.rmdir (rooted "d") system |> completed "rmdir d" |> snd
+        let system = Answered.rmdir (rooted "d") system |> completed "rmdir d" |> snd
         let _, system = read fd system
 
         match UnixDescriptor.lseek fd 0L 1 system with

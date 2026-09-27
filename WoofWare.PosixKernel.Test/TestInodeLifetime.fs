@@ -74,7 +74,7 @@ module TestInodeLifetime =
         match
             PathWalk.resolveExisting
                 (SimulatedUnixPlatform.pathLimits kernel.Machine.UnixPlatform)
-                CallerPrivilege.Privileged
+                Owners.root
                 (VirtualFileSystem.root kernel.Machine.FileSystem)
                 SymlinkPolicy.Follow
                 (UnixPath.parseOrFail "test" path)
@@ -474,7 +474,7 @@ module TestInodeLifetime =
                 Directory = true
             }
 
-        match UnixNamespace.openPath flags (UnixPath.parseOrFail "test" "/outer/inner") 0 kernel with
+        match Answered.openPath flags (UnixPath.parseOrFail "test" "/outer/inner") 0 kernel with
         | SyscallAnswer.Completed fd, system -> int fd, inner, system
         | other -> failwith $"could not open the directory: %O{other}"
 

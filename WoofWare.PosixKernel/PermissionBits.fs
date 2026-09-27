@@ -26,8 +26,9 @@ type CallerPrivilege =
 /// <remarks>
 /// There is not yet a case for executing a regular file: WoofWare.PosixKernel
 /// does not yet model <c>exec</c> or <c>access(2)</c>, so no caller can yet
-/// ask for that permission. Both modelled kernels grant root <c>X_OK</c> only
-/// when at least one of the three execute bits is set.
+/// ask for that permission. Linux grants root <c>X_OK</c> only when at least
+/// one of the three execute bits is set; Darwin's answer for root has not been
+/// measured.
 /// (By contrast, root bypasses read, write and directory search outright.)
 /// </remarks>
 [<RequireQualifiedAccess>]
@@ -47,6 +48,41 @@ type AccessRequest =
     /// </remarks>
     | SearchDirectory
 
+/// How a caller stands towards one inode: whether it is exempt from the
+/// permission rules, whether it owns the inode, and whether it is in the
+/// inode's group.
+///
+/// Every rule that depends on who the caller is reads one of these rather
+/// than comparing IDs itself. `Standing.toward` derives it from a process's
+/// credentials and the inode's owner.
+///
+/// Any combination of the three is one some caller can be in: root can own an
+/// inode or not, and an owner need not be in its inode's group.
+type Standing =
+    {
+        /// Whether the caller is exempt from the permission rules.
+        Privilege : CallerPrivilege
+        /// Whether the caller's effective user ID is the inode's owner.
+        Owns : bool
+        /// Whether the caller's effective group ID, or one of its
+        /// supplementary groups, is the inode's group.
+        InGroup : bool
+    }
+
+/// What a directory's sticky bit (`S_ISVTX`) says about removing, renaming or
+/// replacing one of its entries.
+[<RequireQualifiedAccess>]
+type StickyRemoval =
+    /// The sticky bit forbids nothing: the directory does not carry it, or the
+    /// caller owns the directory or the entry.
+    | Unrestricted
+    /// The directory carries the sticky bit and the caller owns neither the
+    /// directory nor the entry, but the caller is privileged.
+    | ForbiddenButPrivileged
+    /// The directory carries the sticky bit, the caller owns neither the
+    /// directory nor the entry, and the caller is not privileged.
+    | Forbidden
+
 /// <summary>
 /// Whether this Unix clears <c>S_ISGID</c> when an unprivileged process changes a
 /// file's contents, on a file that is not group-executable.
@@ -63,24 +99,32 @@ type AccessRequest =
 [<RequireQualifiedAccess>]
 type SetGroupIdOnWrite =
     /// <summary>
-    /// An unprivileged write to the file does not change <c>S_IXGRP</c>.
+    /// An unprivileged write to the file clears <c>S_ISGID</c> if the file is
+    /// group-executable, or if the writer is not in the file's group.
     /// </summary>
     /// <remarks>
-    /// On Linux, the <c>S_IXGRP</c> bit means "mandatory locking" rather than privilege,
-    /// so a write can (and does) safely leave it alone.
+    /// On Linux, <c>S_ISGID</c> without <c>S_IXGRP</c> means "mandatory locking" rather than privilege,
+    /// so a write by a member of the file's group can (and does) safely leave it alone.
+    /// Whether the writer owns the file makes no difference.
     /// </remarks>
     /// <example>
     /// This is the case on Linux.
     ///
-    /// For example, <c>02644</c> remains <c>02644</c> after an unprivileged write.
+    /// For example, <c>02644</c> remains <c>02644</c> after an unprivileged write by a member of the
+    /// file's group, and becomes <c>00644</c> after one by anyone else.
     /// </example>
-    | StripWhenGroupExecutable
+    | StripWhenGroupExecutableOrWriterOutsideGroup
     /// <summary>
     /// Regardless of what the execute bits say, the group ID from <c>setgid</c> gets
     /// cleared after an unprivileged write.
     /// </summary>
     /// <remarks>
     /// On all platforms, <c>S_ISUID</c> already behaves this way.
+    ///
+    /// Only a writer who owns the file has been measured, and only a writer in the file's
+    /// group when the file is set-group-ID. Asked about a set-user-ID or set-group-ID file
+    /// on behalf of any other writer, privileged or not, <c>PermissionBits.afterContentChangingWrite</c>
+    /// answers <c>SetIdChangeRefusal.UnmeasuredDarwinWrite</c> rather than guess.
     /// </remarks>
     /// <example>
     /// This is the case on Darwin.
@@ -100,7 +144,8 @@ type SetIdBitsOnTruncation =
     /// </summary>
     /// <remarks>
     /// That is, truncation is a content change like any other, and it clears the
-    /// same bits that a normal write would clear.
+    /// same bits that a normal write would clear: <c>S_ISUID</c> always, and <c>S_ISGID</c>
+    /// if the file is group-executable or the truncating process is not in the file's group.
     /// </remarks>
     /// <example>
     /// Linux behaves this way.
@@ -110,6 +155,12 @@ type SetIdBitsOnTruncation =
     /// This Unix leaves <c>S_ISUID</c> and <c>S_ISGID</c> alone on file truncation,
     /// even if a write to the same file by the same process would strip them.
     /// </summary>
+    /// <remarks>
+    /// Only a truncating process that owns the file has been measured, and only one in the
+    /// file's group when the file is set-group-ID. Asked about a set-user-ID or set-group-ID
+    /// file on behalf of any other process, privileged or not, <c>PermissionBits.afterTruncation</c>
+    /// answers <c>SetIdChangeRefusal.UnmeasuredDarwinTruncation</c> rather than guess.
+    /// </remarks>
     /// <example>
     /// Darwin behaves this way.
     /// </example>
@@ -143,6 +194,32 @@ type PermissionBits =
         match this with
         | PermissionBits bits -> "0o" + System.Convert.ToString(bits, 8).PadLeft (4, '0')
 
+/// Why this library will not say what a write or a truncation does to a file's
+/// set-user-ID and set-group-ID bits: the kernel's answer for that caller and
+/// that mode has not been measured.
+[<RequireQualifiedAccess>]
+type SetIdChangeRefusal =
+    /// A content-changing write, under `SetGroupIdOnWrite.StripAlways`, by a
+    /// caller standing as `standing` towards a file whose bits are `bits`.
+    | UnmeasuredDarwinWrite of standing : Standing * bits : PermissionBits
+    /// A truncation, under `SetIdBitsOnTruncation.Preserve`, by a caller
+    /// standing as `standing` towards a file whose bits are `bits`.
+    | UnmeasuredDarwinTruncation of standing : Standing * bits : PermissionBits
+
+[<RequireQualifiedAccess>]
+module SetIdChangeRefusal =
+    /// What this library knows about why it will not answer. A client adds
+    /// which call it was answering and which file it was.
+    let describe (refusal : SetIdChangeRefusal) : string =
+        let measured =
+            "What has been measured: a file with neither set-ID bit, a caller that owns the file and is in its group, and an unprivileged owner outside the group of a file without S_ISGID. Measuring the rest needs root or a second user on Darwin."
+
+        match refusal with
+        | SetIdChangeRefusal.UnmeasuredDarwinWrite (standing, bits) ->
+            $"what Darwin does to the set-ID bits of a %O{bits} file written to by a caller standing %A{standing} towards it has not been measured. %s{measured}"
+        | SetIdChangeRefusal.UnmeasuredDarwinTruncation (standing, bits) ->
+            $"what Darwin does to the set-ID bits of a %O{bits} file truncated by a caller standing %A{standing} towards it has not been measured. %s{measured}"
+
 [<RequireQualifiedAccess>]
 module PermissionBits =
     /// <summary>
@@ -159,20 +236,28 @@ module PermissionBits =
         | PermissionBits bits -> bits
 
     /// <summary>
-    /// Whether a caller with <c>privilege</c> is refused <c>needed</c> on an
-    /// object carrying <c>bits</c>.
+    /// Whether a caller standing as <c>standing</c> towards an object carrying
+    /// <c>bits</c> is refused <c>needed</c> on it.
     /// </summary>
     /// <remarks>
-    /// Consults the <b>owner</b> triple only, so the answer is exact only for a caller
-    /// who owns the object. For any other caller, the group or other triple is
-    /// the one a kernel would consult, and this function does not.
+    /// Exactly one permission triple is consulted: the owner's if the caller owns
+    /// the object, otherwise the group's if the caller is in the object's group,
+    /// and otherwise the other triple. So an owner is refused what its own triple
+    /// forbids even when the group or other triple would allow it.
     /// </remarks>
     /// <example>
     /// A <c>CallerPrivilege.Privileged</c> caller is refused nothing that
     /// <c>AccessRequest</c> can express, whatever the mode says.
     /// </example>
-    let deniedTo (privilege : CallerPrivilege) (needed : AccessRequest) (bits : PermissionBits) : bool =
-        match privilege, needed with
+    let deniedTo (standing : Standing) (needed : AccessRequest) (bits : PermissionBits) : bool =
+        // Measured on Linux 6.18.5 (`permission-standing.c`, ext4 and tmpfs):
+        // open for reading and for writing, a directory's search and read bits,
+        // and creating an entry, over all 4096 modes for the owner, a member of
+        // the group by its effective gid and by a supplementary group, anyone
+        // else, and root, with no mismatch. Darwin 27.0 at uid 501: the owner
+        // over 512 modes, and spot rows for the group and other triples
+        // (`ownership-probe.c`).
+        match standing.Privilege, needed with
         // Root bypasses each of these three, but would *not* bypass
         // executing a regular file. When we add execution to WoofWare.PosixKernel,
         // we'll need to decide how to treat perms appropriately.
@@ -181,13 +266,45 @@ module PermissionBits =
         | CallerPrivilege.Privileged, AccessRequest.SearchDirectory -> false
         | CallerPrivilege.Unprivileged, _ ->
 
-        let bit =
+        let ownerBit =
             match needed with
             | AccessRequest.Read -> 0o400
             | AccessRequest.Write -> 0o200
             | AccessRequest.SearchDirectory -> 0o100
 
+        let bit =
+            if standing.Owns then ownerBit
+            elif standing.InGroup then ownerBit >>> 3
+            else ownerBit >>> 6
+
         toInt bits &&& bit <> bit
+
+    /// What the sticky bit of a directory carrying <c>directoryBits</c> says about
+    /// removing, renaming or replacing one of its entries, for a caller standing as
+    /// `directory` towards the directory and as `entry` towards the inode the entry
+    /// names.
+    ///
+    /// Which errno a kernel spends on `StickyRemoval.Forbidden`, where it falls among
+    /// that syscall's other refusals, and what it does about
+    /// `StickyRemoval.ForbiddenButPrivileged`, are each flavour's own: see
+    /// `UnlinkRules.verdict`, `RmDirRules.verdict` and `RenameRules.verdict`.
+    ///
+    /// The two standings must be one caller's, so they must agree about its
+    /// privilege; this throws if they do not.
+    let stickyRemoval (directory : Standing) (entry : Standing) (directoryBits : PermissionBits) : StickyRemoval =
+        if directory.Privilege <> entry.Privilege then
+            failwith
+                $"PermissionBits.stickyRemoval: the standing towards the directory (%O{directory}) and the standing towards the entry (%O{entry}) disagree about the caller's privilege, so they cannot be one caller's."
+
+        let sticky = 0o1000
+
+        if toInt directoryBits &&& sticky = 0 || directory.Owns || entry.Owns then
+            StickyRemoval.Unrestricted
+        else
+
+        match directory.Privilege with
+        | CallerPrivilege.Privileged -> StickyRemoval.ForbiddenButPrivileged
+        | CallerPrivilege.Unprivileged -> StickyRemoval.Forbidden
 
     /// <summary>
     /// Parse a raw mode word's permission bits, or <c>None</c> if it does not fit in
@@ -264,28 +381,36 @@ module PermissionBits =
         mode &&& toInt modeMask &&& ~~~(toInt umask &&& umaskBitsOnly)
         |> parseOrFail "PermissionBits.fromCreationMode"
 
-    /// <summary>
-    /// When an unprivileged process changes a file's contents, Linux strips set-ID bits
-    /// from that file. This is the set-user-ID bit which Linux clears.
-    /// </summary>
-    /// <remarks>
-    /// Darwin doesn't strip anything on truncation, so there is actual logic required here.
-    ///
-    /// `S_ISUID` goes whatever the execute bits say (`04644` becomes `00644`).
-    /// `S_ISGID` goes only alongside `S_IXGRP`: without it the bit means
-    /// mandatory locking rather than privilege, and `02644` survives. The sticky
-    /// bit is never touched.
-    /// </remarks>
     let private setUserId : int = 0o4000
     let private setGroupId : int = 0o2000
     let private groupExecute : int = 0o0010
 
-    let private setIdBitsLinuxClears (raw : int) : int =
-        setUserId ||| (if raw &&& groupExecute <> 0 then setGroupId else 0)
+    // When an unprivileged process changes a file's contents, Linux strips
+    // `S_ISUID` whatever the execute bits say (`04644` becomes `00644`), and
+    // `S_ISGID` if the file is group-executable or the writer is not in the
+    // file's group. A member of the group keeps a `S_ISGID` without `S_IXGRP`,
+    // which means mandatory locking rather than privilege: `02644` survives.
+    // Owning the file makes no difference. The sticky bit is never touched.
+    let private setIdBitsLinuxClears (standing : Standing) (raw : int) : int =
+        let clearsGroup = raw &&& groupExecute <> 0 || not standing.InGroup
+        setUserId ||| (if clearsGroup then setGroupId else 0)
+
+    // Darwin's rules for a write and a truncation are measured only for a
+    // writer who owns the file, and who is in its group when the file is
+    // set-group-ID: an ordinary user cannot give a file it does not own a
+    // set-ID bit, nor set `S_ISGID` on a file outside its groups. A file with
+    // neither set-ID bit has nothing either rule could clear.
+    let private darwinMeasured (standing : Standing) (bits : PermissionBits) : bool =
+        let raw = toInt bits
+
+        raw &&& (setUserId ||| setGroupId) = 0
+        || standing.Owns
+           && (standing.InGroup
+               || raw &&& setGroupId = 0 && standing.Privilege = CallerPrivilege.Unprivileged)
 
     /// <summary>
-    /// After a content-changing write to a regular file by a process with the specified privilege,
-    /// what permission bits now apply to the file?
+    /// After a content-changing write to a regular file by a process standing as <c>standing</c>
+    /// towards it, what permission bits now apply to the file?
     /// </summary>
     /// <remarks>
     /// This is a security measure imposed by the emulated platform: an unprivileged writer should not
@@ -298,25 +423,34 @@ module PermissionBits =
     /// `S_ISUID` is blatted on both platforms whatever the execute bits say, and the
     /// sticky bit is never touched on either. The whole of the disagreement is
     /// `S_ISGID` on a file that is not group-executable.
+    ///
+    /// Answers <c>SetIdChangeRefusal.UnmeasuredDarwinWrite</c> for a write whose answer under
+    /// <c>SetGroupIdOnWrite.StripAlways</c> has not been measured; see that case.
     /// </remarks>
     /// <param name="rule">
     /// Different platforms do different things to the set-group-ID on an unprivileged write.
     /// This parameter specifies what this platform does.
     /// </param>>
-    /// <param name="privilege">
-    /// A privileged writer doesn't change any bits; this function only does anything when the
-    /// writer is unprivileged.
+    /// <param name="standing">
+    /// A privileged writer doesn't change any bits. Whether an unprivileged writer is in the file's
+    /// group decides what Linux does to <c>S_ISGID</c>.
     /// </param>
     /// <param name="bits">
     /// The original permissions of the file before the writer wrote to it.
     /// </param>
     let afterContentChangingWrite
         (rule : SetGroupIdOnWrite)
-        (privilege : CallerPrivilege)
+        (standing : Standing)
         (bits : PermissionBits)
-        : PermissionBits
+        : Result<PermissionBits, SetIdChangeRefusal>
         =
-        // Measured non-root on macOS 26.6 and Linux 6.18.5:
+        // Measured on Linux 6.18.5 (`permission-standing.c`): every one of the
+        // 4096 modes, written through a descriptor by the owner in and out of
+        // the file's group, by a non-owner in the group by its effective gid
+        // and by a supplementary group, by a non-owner outside it, and by root,
+        // with no mismatch. On Darwin 27.0 at uid 501, the owner in the file's
+        // group over all 4096 modes, and the owner outside it over the 2048
+        // without `S_ISGID`. For example, non-root and in the file's group:
         //
         // | before | Linux | Darwin |
         // |---|---|---|
@@ -333,21 +467,27 @@ module PermissionBits =
         // | `00644` | `00644` | `00644` |
         //
         // ...and as root every row is left exactly as it was, on both.
-        match privilege with
-        | CallerPrivilege.Privileged -> bits
+        match rule with
+        | SetGroupIdOnWrite.StripAlways when not (darwinMeasured standing bits) ->
+            Error (SetIdChangeRefusal.UnmeasuredDarwinWrite (standing, bits))
+        | SetGroupIdOnWrite.StripAlways
+        | SetGroupIdOnWrite.StripWhenGroupExecutableOrWriterOutsideGroup ->
+
+        match standing.Privilege with
+        | CallerPrivilege.Privileged -> Ok bits
         | CallerPrivilege.Unprivileged ->
 
         let raw = toInt bits
 
         let cleared =
             match rule with
-            | SetGroupIdOnWrite.StripWhenGroupExecutable -> setIdBitsLinuxClears raw
+            | SetGroupIdOnWrite.StripWhenGroupExecutableOrWriterOutsideGroup -> setIdBitsLinuxClears standing raw
             | SetGroupIdOnWrite.StripAlways -> setUserId ||| setGroupId
 
-        parseOrFail "PermissionBits.afterContentChangingWrite" (raw &&& ~~~cleared)
+        Ok (parseOrFail "PermissionBits.afterContentChangingWrite" (raw &&& ~~~cleared))
 
     /// <summary>
-    /// After a truncation of a regular file by a process with the specified privilege,
+    /// After a truncation of a regular file by a process standing as <c>standing</c> towards it,
     /// what permission bits now apply to the file?
     /// </summary>
     /// <remarks>
@@ -359,14 +499,20 @@ module PermissionBits =
     /// even ones which change no bytes.
     /// (This is by contrast to the situation with <c>afterContentChangingWrite</c>, which
     /// explicitly only applies to writes of at least one byte.)
+    ///
+    /// Answers <c>SetIdChangeRefusal.UnmeasuredDarwinTruncation</c> for a truncation whose answer
+    /// under <c>SetIdBitsOnTruncation.Preserve</c> has not been measured; see that case.
     /// </remarks>
     let afterTruncation
         (rule : SetIdBitsOnTruncation)
-        (privilege : CallerPrivilege)
+        (standing : Standing)
         (bits : PermissionBits)
-        : PermissionBits
+        : Result<PermissionBits, SetIdChangeRefusal>
         =
-        // Measured non-root on macOS 26.6 and Linux 6.18.5:
+        // Measured as `afterContentChangingWrite` was, with `ftruncate(0)`,
+        // `ftruncate` to the length the file already has, and (over the modes
+        // the truncating process may open for writing) `open(O_TRUNC)`. For
+        // example, non-root and in the file's group:
         //
         // | before | Linux | Darwin |
         // |---|---|---|
@@ -382,10 +528,12 @@ module PermissionBits =
         // | `01755` | `01755` | `01755` |
         //
         // ...and as root every row is left exactly as it was, on both.
-        match rule, privilege with
+        match rule, standing.Privilege with
+        | SetIdBitsOnTruncation.Preserve, _ when not (darwinMeasured standing bits) ->
+            Error (SetIdChangeRefusal.UnmeasuredDarwinTruncation (standing, bits))
         | SetIdBitsOnTruncation.Preserve, _
-        | _, CallerPrivilege.Privileged -> bits
+        | _, CallerPrivilege.Privileged -> Ok bits
         | SetIdBitsOnTruncation.Strip, CallerPrivilege.Unprivileged ->
 
         let raw = toInt bits
-        parseOrFail "PermissionBits.afterTruncation" (raw &&& ~~~(setIdBitsLinuxClears raw))
+        Ok (parseOrFail "PermissionBits.afterTruncation" (raw &&& ~~~(setIdBitsLinuxClears standing raw)))

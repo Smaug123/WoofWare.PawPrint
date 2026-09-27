@@ -204,7 +204,7 @@ type PausedResolution =
     private
         {
             Limits : PathLimits
-            Privilege : CallerPrivilege
+            Credentials : Credentials
             Policy : SymlinkPolicy
             TrailingSeparator : TrailingSeparatorPolicy
             FileSystem : VirtualFileSystem
@@ -301,7 +301,7 @@ module PathWalk =
     /// both kernels.
     let rec private walkFrom
         (limits : PathLimits)
-        (privilege : CallerPrivilege)
+        (credentials : Credentials)
         (policy : SymlinkPolicy)
         (trailingSeparatorPolicy : TrailingSeparatorPolicy)
         (vfs : VirtualFileSystem)
@@ -316,7 +316,7 @@ module PathWalk =
         let paused (final : (DirectoryEntryName * PathCursor) option) : PausedResolution =
             {
                 Limits = limits
-                Privilege = privilege
+                Credentials = credentials
                 Policy = policy
                 TrailingSeparator = trailingSeparatorPolicy
                 FileSystem = vfs
@@ -356,20 +356,28 @@ module PathWalk =
         // ENAMETOOLONG, ELOOP or EISDIR the same call earns under a
         // searchable one.
         //
-        // Only the *owner* triple is consulted, which is
-        // `PermissionBits.deniedTo`'s contract, and which is exact only for a
-        // caller who owns the directory. Measured, and a corpus of ordinary
-        // modes cannot show it: a
-        // 0o677 directory is EACCES to its owner though group and other may
-        // search it, while 0o100 is searchable though nobody else may.
-        let directoryContent =
-            match VirtualFileSystem.tryGetDirectory directory vfs with
-            | Some content -> content
+        // The triple consulted is the one the caller's standing towards *this*
+        // directory selects, so a walk through directories with different
+        // owners consults a different triple at each step. Measured, and a
+        // corpus of ordinary modes cannot show it: a 0o677 directory is EACCES
+        // to its owner though group and other may search it, while 0o100 is
+        // searchable by its owner though nobody else may.
+        let directoryInode, directoryContent =
+            match VirtualFileSystem.tryGet directory vfs with
+            | Some ({
+                        Content = InodeContent.Directory content
+                    } as inode) -> inode, content
+            | Some _
             | None ->
                 failwith
                     $"VirtualFileSystem: about to consume a component from inode %O{directory}, which the walk had already established was a directory, but it is now absent or not a directory. The inode graph is inconsistent; run VirtualFileSystem.checkInvariants."
 
-        if PermissionBits.deniedTo privilege AccessRequest.SearchDirectory directoryContent.Permissions then
+        if
+            PermissionBits.deniedTo
+                (Standing.toward credentials directoryInode.Owner)
+                AccessRequest.SearchDirectory
+                directoryContent.Permissions
+        then
             Error UnixError.EACCES
         else
 
@@ -377,7 +385,7 @@ module PathWalk =
         | PathComponent.Current ->
             walkFrom
                 limits
-                privilege
+                credentials
                 policy
                 trailingSeparatorPolicy
                 vfs
@@ -390,7 +398,7 @@ module PathWalk =
         | PathComponent.Parent ->
             walkFrom
                 limits
-                privilege
+                credentials
                 policy
                 trailingSeparatorPolicy
                 vfs
@@ -441,7 +449,7 @@ module PathWalk =
 
             walkFrom
                 limits
-                privilege
+                credentials
                 policy
                 trailingSeparatorPolicy
                 vfs
@@ -459,7 +467,7 @@ module PathWalk =
         | InodeContent.Directory _ ->
             walkFrom
                 limits
-                privilege
+                credentials
                 policy
                 trailingSeparatorPolicy
                 vfs
@@ -631,7 +639,7 @@ module PathWalk =
 
             walkFrom
                 limits
-                paused.Privilege
+                paused.Credentials
                 paused.Policy
                 paused.TrailingSeparator
                 vfs
@@ -664,7 +672,9 @@ module PathWalk =
     /// short of the final lookup, which `completeResolution` performs.
     ///
     /// Everything a path's *prefix* can be refused for happens here, and the
-    /// final name's length and lookup happen there. That boundary is measured,
+    /// final name's length and lookup happen there. Each directory a component
+    /// is looked up in must grant `credentials` its search bit, in the triple
+    /// that caller's standing towards that directory selects. That boundary is measured,
     /// not chosen for tidiness: see `PausedResolution` for the pair of
     /// `rename` rows that pin it.
     ///
@@ -680,7 +690,7 @@ module PathWalk =
     /// caller; see `TrailingSeparatorPolicy`.
     let resolveParent
         (limits : PathLimits)
-        (privilege : CallerPrivilege)
+        (credentials : Credentials)
         (startDirectory : InodeNumber)
         (policy : SymlinkPolicy)
         (trailingSeparatorPolicy : TrailingSeparatorPolicy)
@@ -717,7 +727,7 @@ module PathWalk =
 
         walkFrom
             limits
-            privilege
+            credentials
             policy
             trailingSeparatorPolicy
             vfs
@@ -733,7 +743,7 @@ module PathWalk =
     /// wants. Only a caller interleaving two resolutions needs the halves.
     let resolveFull
         (limits : PathLimits)
-        (privilege : CallerPrivilege)
+        (credentials : Credentials)
         (startDirectory : InodeNumber)
         (policy : SymlinkPolicy)
         (trailingSeparatorPolicy : TrailingSeparatorPolicy)
@@ -741,7 +751,7 @@ module PathWalk =
         (vfs : VirtualFileSystem)
         : Result<Resolution, UnixError>
         =
-        resolveParent limits privilege startDirectory policy trailingSeparatorPolicy path vfs
+        resolveParent limits credentials startDirectory policy trailingSeparatorPolicy path vfs
         |> Result.bind completeResolution
 
     /// `resolveFull`, discarding the how-it-finished facts. For the lookup
@@ -749,14 +759,14 @@ module PathWalk =
     /// them.
     let resolve
         (limits : PathLimits)
-        (privilege : CallerPrivilege)
+        (credentials : Credentials)
         (startDirectory : InodeNumber)
         (policy : SymlinkPolicy)
         (path : UnixPath)
         (vfs : VirtualFileSystem)
         : Result<ResolvedTarget, UnixError>
         =
-        resolveFull limits privilege startDirectory policy TrailingSeparatorPolicy.Demand path vfs
+        resolveFull limits credentials startDirectory policy TrailingSeparatorPolicy.Demand path vfs
         |> Result.map (fun resolution -> resolution.Target)
 
     /// The inode a resolved target names. Turns a free final name into ENOENT,
@@ -773,14 +783,14 @@ module PathWalk =
     /// want: `resolve` followed by `existingOf`.
     let resolveExisting
         (limits : PathLimits)
-        (privilege : CallerPrivilege)
+        (credentials : Credentials)
         (startDirectory : InodeNumber)
         (policy : SymlinkPolicy)
         (path : UnixPath)
         (vfs : VirtualFileSystem)
         : Result<InodeNumber, UnixError>
         =
-        resolve limits privilege startDirectory policy path vfs
+        resolve limits credentials startDirectory policy path vfs
         |> Result.bind existingOf
 
 // ------------------------------------------------------------ inspection

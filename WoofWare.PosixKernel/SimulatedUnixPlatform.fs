@@ -543,12 +543,15 @@ module SimulatedUnixPlatform =
     ///
     /// The only thing about a write's effect on the mode that the two Unixes
     /// disagree about: `S_ISUID` goes on both whatever the execute bits say, and
-    /// the sticky bit is left alone by both. So this is a lone value rather than
+    /// the sticky bit is left alone by both. On Linux the answer also depends on
+    /// whether the writer is in the file's group, which is why the rule takes a
+    /// `Standing`. So this is a lone value rather than
     /// a `CreatingOpenRules`-shaped record, for the reason
     /// `setIdBitsOnTruncation` above gives.
     ///
     /// Measured non-root on macOS 26.6 and Linux 6.18.5, one byte written over
-    /// the front of a four-byte file; `PermissionBits.afterContentChangingWrite`
+    /// the front of a four-byte file, and since then on Linux by writers
+    /// standing in every relation to the file; `PermissionBits.afterContentChangingWrite`
     /// carries the table. Linux applies to a write the same rule it applies to a
     /// truncation, and **Darwin does not** — there a write strips `02644` to
     /// `00644` while an `ftruncate` on the same file leaves the whole mode alone,
@@ -559,7 +562,7 @@ module SimulatedUnixPlatform =
     /// agreement.
     let setGroupIdOnWrite (platform : SimulatedUnixPlatform) : SetGroupIdOnWrite =
         match flavour platform with
-        | SimulatedUnixFlavour.Linux -> SetGroupIdOnWrite.StripWhenGroupExecutable
+        | SimulatedUnixFlavour.Linux -> SetGroupIdOnWrite.StripWhenGroupExecutableOrWriterOutsideGroup
         | SimulatedUnixFlavour.Darwin -> SetGroupIdOnWrite.StripAlways
 
     /// How this platform's `open(2)` behaves when asked to create; see

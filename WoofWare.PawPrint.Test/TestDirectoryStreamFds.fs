@@ -63,7 +63,7 @@ module TestDirectoryStreamFds =
                     0
                     (EmulatedKernel.unix kernel)
             with
-            | SyscallAnswer.Completed fd, system -> int fd, system
+            | Ok (SyscallAnswer.Completed fd, system) -> int fd, system
             | other -> failwith $"could not open the directory: %O{other}"
 
         let kernel = EmulatedKernel.withUnix system kernel

@@ -47,7 +47,8 @@ module TestKernelConfig =
         match
             PathWalk.resolveExisting
                 (SimulatedUnixPlatform.pathLimits kernel.UnixPlatform)
-                CallerPrivilege.Privileged
+                // Root, whom no directory's search bit refuses.
+                (Credentials.ofIds UserId.root (GroupId.parseOrFail "test" 0u) [])
                 (VirtualFileSystem.root vfs)
                 SymlinkPolicy.Follow
                 (UnixPath.parseOrFail "test" path)
