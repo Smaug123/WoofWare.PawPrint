@@ -361,12 +361,12 @@ public class TestBulkMoveCellAccessSweep
                 reraise ()
 
         match outcome with
-        | RunOutcome.NormalExit (terminalState, _)
-        | RunOutcome.ProcessExit (terminalState, _) -> terminalState.LatchedExitCode
-        | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+        | RunOutcome.NormalExit (terminalState, _, _)
+        | RunOutcome.ProcessExit (terminalState, _, _) -> terminalState.LatchedExitCode
+        | RunOutcome.GuestUnhandledException (finalState, _, exn, _) ->
             failwith
                 $"%s{sourceName}: guest threw an unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
-        | RunOutcome.Aborted (_, _, fatal) ->
+        | RunOutcome.Aborted (_, _, fatal, _) ->
             let message = fatal.Message |> Option.defaultValue "<no message>"
             failwith $"%s{sourceName}: guest aborted (%O{fatal.Code}): %s{message}"
         | RunOutcome.SignalTerminated (_, signal, _) ->

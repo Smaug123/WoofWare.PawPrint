@@ -107,5 +107,5 @@ public static class Program
             exn.Message |> shouldContainText "SIGSEGV"
         else
             match run () with
-            | RunOutcome.NormalExit (state, _) -> state.LatchedExitCode |> shouldEqual 0
+            | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 0
             | other -> failwith $"expected a normal exit, got %O{other}"

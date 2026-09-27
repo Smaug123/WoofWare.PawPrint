@@ -217,8 +217,8 @@ class Program
             match Program.stepPrepared loggerFactory logger prepared with
             | Program.ProgramStepOutcome.Completed outcome ->
                 match outcome with
-                | RunOutcome.NormalExit (state, _)
-                | RunOutcome.ProcessExit (state, _) -> finish state (Some outcome) None
+                | RunOutcome.NormalExit (state, _, _)
+                | RunOutcome.ProcessExit (state, _, _) -> finish state (Some outcome) None
                 | _ -> finish prepared.State (Some outcome) None
             | Program.ProgramStepOutcome.Deadlocked (prepared, stuck) -> finish prepared.State None (Some stuck)
             | Program.ProgramStepOutcome.WorkerTerminated (prepared, _) ->
@@ -231,8 +231,8 @@ class Program
     /// The exit code a cleanly terminated guest latched.
     let private exitCodeOf (outcome : RunOutcome) : int =
         match outcome with
-        | RunOutcome.NormalExit (state, _)
-        | RunOutcome.ProcessExit (state, _) -> state.LatchedExitCode
+        | RunOutcome.NormalExit (state, _, _)
+        | RunOutcome.ProcessExit (state, _, _) -> state.LatchedExitCode
         | other -> failwith $"expected the guest to terminate cleanly, got %O{other}"
 
     let private completed (journey : Journey) : int =

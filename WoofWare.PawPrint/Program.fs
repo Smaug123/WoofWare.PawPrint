@@ -24,8 +24,8 @@ module Program =
     [<RequireQualifiedAccess>]
     type EntryFrameKind =
         /// One of the calls startup pumps to completion: the AppContext seed, the command-line
-        /// initialiser, a class initialiser. Its return ends the pump with `NormalExit`, and the
-        /// entry thread is left as it is for startup to give it its next frame.
+        /// initialiser, a class initialiser. Its return ends the phase, and the entry thread is
+        /// left as it is for startup to give it its next frame.
         | StartupCall
         /// `Main`. Its return latches the exit code if `Main` returns one, and does not end the
         /// run: the entry thread goes to `ThreadStatus.WaitingForForegroundThreads` (and
@@ -108,7 +108,7 @@ module Program =
         | InitialisingClasses of mainArgs : ImmutableArray<CliType>
 
     /// Startup in progress. Holds the machine state as a `PreparedProgram`, so the same
-    /// `stepPrepared` drives startup as drives `Main`, plus what remains to be done at each
+    /// scheduler tick drives startup as drives `Main`, plus what remains to be done at each
     /// phase boundary.
     ///
     /// This exists so a driver can *step* startup rather than having it run to completion
@@ -690,6 +690,31 @@ module Program =
     let private holdsProcessOpen (thread : ThreadState) : bool =
         not thread.IsBackground && ThreadStatus.keepsProcessAlive thread.Status
 
+    /// How the process ends when the runtime aborts it on `thread`: CoreCLR's `PROCAbort`
+    /// ends in `abort()`, which the kernel answers with a death by SIGABRT.
+    let private abortTermination (thread : ThreadId) (state : IlMachineState) : ProcessTermination =
+        let receivers =
+            state.ThreadState
+            |> Seq.choose (fun (KeyValue (tid, ts)) ->
+                if ThreadStatus.canReceiveSignal ts.Status then
+                    Some tid
+                else
+                    None
+            )
+            |> ImmutableArray.CreateRange
+
+        EmulatedKernel.abort thread receivers state.Kernel
+
+    /// What one scheduler tick did. `Stepped` is every outcome a caller of `stepPrepared`
+    /// sees; `StartupCallReturned` is the entry thread's `EntryFrameKind.StartupCall`
+    /// returning, which ends a phase of startup rather than the process, and which only
+    /// `stepStartup` meets.
+    [<Struct>]
+    [<RequireQualifiedAccess>]
+    type private Tick =
+        | Stepped of outcome : ProgramStepOutcome
+        | StartupCallReturned of state : IlMachineState
+
     /// `RunMain`'s `SetLatchedExitCode(*piRetVal)`: the moment an `int Main` returns, its return
     /// value — which its `ret` left as the only value on the entry thread's eval stack — becomes
     /// the latched exit code. A `void Main` latches nothing.
@@ -751,7 +776,11 @@ module Program =
 
         match entry.Status with
         | ThreadStatus.WaitingForForegroundThreads when nowSignalled ->
-            ProgramStepOutcome.Completed (RunOutcome.NormalExit (prepared.State, prepared.EntryThread))
+            // The host passes the latched exit code to `exit`, which ends in `exit_group`.
+            let termination =
+                EmulatedKernel.exitGroup prepared.EntryThread prepared.State.LatchedExitCode prepared.State.Kernel
+
+            ProgramStepOutcome.Completed (RunOutcome.NormalExit (prepared.State, prepared.EntryThread, termination))
         | _ ->
             // The latch goes one way, so this rebuilds the program at most once per run; every
             // other tick hands `prepared` on as it is.
@@ -767,12 +796,7 @@ module Program =
     /// fold the outcome back into the thread states. `prepared` must already have been through
     /// `advanceToDecision`; running this against an inter-tick value would consult the policy
     /// about a Runnable set that a deadline or a spurious wake was about to change.
-    let private stepDecided
-        (loggerFactory : ILoggerFactory)
-        (logger : ILogger)
-        (prepared : PreparedProgram)
-        : ProgramStepOutcome
-        =
+    let private stepDecided (loggerFactory : ILoggerFactory) (logger : ILogger) (prepared : PreparedProgram) : Tick =
         let scheduledState, scheduledChoice =
             Scheduler.chooseNext prepared.LastRan prepared.State
 
@@ -789,7 +813,7 @@ module Program =
         | None ->
             // No Runnable threads and the entry thread didn't hit its ret. Every
             // remaining thread is blocked, so progress is impossible.
-            ProgramStepOutcome.Deadlocked (prepared, deadlockDescription prepared.State)
+            Tick.Stepped (ProgramStepOutcome.Deadlocked (prepared, deadlockDescription prepared.State))
         | Some nextThread ->
             // `nextThread` has now retired a step, and that is true of *every* outcome below —
             // including the ones that do not look like ordinary progress: a thread's final
@@ -810,8 +834,7 @@ module Program =
             | ExecutionResult.Terminated (state, terminatingThread) ->
                 if terminatingThread = prepared.EntryThread then
                     match prepared.EntryFrame with
-                    | EntryFrameKind.StartupCall ->
-                        ProgramStepOutcome.Completed (RunOutcome.NormalExit (state, prepared.EntryThread))
+                    | EntryFrameKind.StartupCall -> Tick.StartupCallReturned state
                     | EntryFrameKind.Main (returns, _) ->
                         // `Main` has returned. Its return value, if it has one, is latched as the
                         // exit code now, and the entry thread keeps its final frame and waits for
@@ -849,6 +872,7 @@ module Program =
                                     StepEffect.NoEffect
                                 )
                             )
+                        |> Tick.Stepped
                 elif PosixSignalShim.signalThread state.Kernel.PosixSignalShim = Some terminatingThread then
                     // The shim's signal-dispatch thread's handler frame
                     // has returned past its bottom; `Ret` surfaces that as a
@@ -885,6 +909,7 @@ module Program =
                                 StepEffect.NoEffect
                             )
                         )
+                    |> Tick.Stepped
                 else
                     let state = Scheduler.onThreadTerminated terminatingThread state
 
@@ -897,14 +922,30 @@ module Program =
                     afterStep
                         prepared
                         (fun prepared -> ProgramStepOutcome.WorkerTerminated (prepared, terminatingThread))
+                    |> Tick.Stepped
             | ExecutionResult.ProcessExit (state, exitingThread) ->
-                ProgramStepOutcome.Completed (RunOutcome.ProcessExit (state, exitingThread))
+                // `Environment.Exit` passes the latched exit code to `exit`, which ends in
+                // `exit_group`.
+                let termination =
+                    EmulatedKernel.exitGroup exitingThread state.LatchedExitCode state.Kernel
+
+                Tick.Stepped (ProgramStepOutcome.Completed (RunOutcome.ProcessExit (state, exitingThread, termination)))
             | ExecutionResult.Aborted (state, abortingThread, message) ->
-                ProgramStepOutcome.Completed (RunOutcome.Aborted (state, abortingThread, message))
+                let termination = abortTermination abortingThread state
+
+                Tick.Stepped (
+                    ProgramStepOutcome.Completed (RunOutcome.Aborted (state, abortingThread, message, termination))
+                )
             | ExecutionResult.SignalTerminated (state, signal, coreDumped) ->
-                ProgramStepOutcome.Completed (RunOutcome.SignalTerminated (state, signal, coreDumped))
+                Tick.Stepped (ProgramStepOutcome.Completed (RunOutcome.SignalTerminated (state, signal, coreDumped)))
             | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
-                ProgramStepOutcome.Completed (RunOutcome.GuestUnhandledException (state, terminatingThread, exn))
+                let termination = abortTermination terminatingThread state
+
+                Tick.Stepped (
+                    ProgramStepOutcome.Completed (
+                        RunOutcome.GuestUnhandledException (state, terminatingThread, exn, termination)
+                    )
+                )
             | ExecutionResult.Stepped (state, whatWeDid, effect) ->
                 logStepOutcome logger state nextThread whatWeDid
 
@@ -919,6 +960,7 @@ module Program =
                 afterStep
                     prepared
                     (fun prepared -> ProgramStepOutcome.InstructionStepped (prepared, nextThread, whatWeDid, effect))
+                |> Tick.Stepped
 
     /// <summary>
     /// Run <paramref name="tick" />, annotating any host failure with where the guest was at
@@ -943,7 +985,7 @@ module Program =
     /// <para>
     /// Hence the invariant this combinator exists to make checkable: <c>advanceToDecision</c> and
     /// <c>stepDecided</c> are both private, and *every* call to either is inside an
-    /// <c>annotating</c>. There are three such sites — <c>stepPrepared</c>, and the two in the
+    /// <c>annotating</c>. There are three such sites — <c>stepTick</c>, and the two in the
     /// fork-prefix sweep — and grepping for the two names finds exactly them. Adding a fourth
     /// call site outside a wrapper is the one way to reintroduce the gap.
     /// </para>
@@ -973,14 +1015,19 @@ module Program =
             | Some annotated -> raise annotated
             | None -> reraise ()
 
+    /// One scheduler tick, inside `annotating`: `stepDecided` after `advanceToDecision`.
+    let private stepTick (loggerFactory : ILoggerFactory) (logger : ILogger) (prepared : PreparedProgram) : Tick =
+        annotating prepared.State (fun () -> stepDecided loggerFactory logger (advanceToDecision prepared))
+
     /// Advance the machine by one scheduler tick.
     ///
     /// What the entry thread's bottom frame returning means depends on `prepared.EntryFrame`:
-    ///   * `StartupCall`: the pumped call is done, and the tick reports `NormalExit` at once,
-    ///     whatever the other threads are doing. The entry thread is deliberately not marked
-    ///     Terminated — startup is about to give it its next frame, ultimately `Main` — because
-    ///     a worker that joined it during a `.cctor` must not observe a false end-of-thread and
-    ///     proceed past its Join before `Main` has started.
+    ///   * `StartupCall`: the pumped call is done, which ends a phase of startup rather than the
+    ///     run, whatever the other threads are doing. `stepStartup` steps a program still
+    ///     starting up, and moves it to its next phase then; this fails loudly. The entry thread
+    ///     is deliberately not marked Terminated — startup is about to give it its next frame,
+    ///     ultimately `Main` — because a worker that joined it during a `.cctor` must not observe
+    ///     a false end-of-thread and proceed past its Join before `Main` has started.
     ///   * `Main`: an `int Main`'s return value is latched as the exit code, the entry thread
     ///     goes to `WaitingForForegroundThreads` and becomes a background thread, as
     ///     `WaitForOtherThreads` makes it, and the run goes on until shutdown has been
@@ -996,7 +1043,11 @@ module Program =
         (prepared : PreparedProgram)
         : ProgramStepOutcome
         =
-        annotating prepared.State (fun () -> stepDecided loggerFactory logger (advanceToDecision prepared))
+        match stepTick loggerFactory logger prepared with
+        | Tick.Stepped outcome -> outcome
+        | Tick.StartupCallReturned _ ->
+            failwith
+                "Program.stepPrepared: the entry thread's startup call returned, which ends a phase of startup; a program still starting up is stepped by stepStartup"
 
     let rec pumpPrepared (loggerFactory : ILoggerFactory) (logger : ILogger) (prepared : PreparedProgram) : RunOutcome =
         match stepPrepared loggerFactory logger prepared with
@@ -1529,9 +1580,9 @@ module Program =
     /// structural formatting would render the entire heap into the exception message.
     let private describeStartupOutcome (outcome : RunOutcome) : string =
         match outcome with
-        | RunOutcome.NormalExit _ -> "returned normally"
-        | RunOutcome.ProcessExit (_, thread) -> $"called Environment.Exit on %O{thread}"
-        | RunOutcome.Aborted (_, thread, fatal) ->
+        | RunOutcome.NormalExit _ -> "exited normally"
+        | RunOutcome.ProcessExit (_, thread, _) -> $"called Environment.Exit on %O{thread}"
+        | RunOutcome.Aborted (_, thread, fatal, _) ->
             let message = fatal.Message |> Option.defaultValue "<no message>"
             $"aborted on %O{thread} with %O{fatal.Code}: %s{message}"
         | RunOutcome.SignalTerminated (_, signal, coreDumped) ->
@@ -1539,13 +1590,32 @@ module Program =
                 $"was terminated by signal %O{signal} (core dumped)"
             else
                 $"was terminated by signal %O{signal}"
-        | RunOutcome.GuestUnhandledException (finalState, thread, exn) ->
+        | RunOutcome.GuestUnhandledException (finalState, thread, exn, _) ->
             $"threw an unhandled exception on %O{thread}:\n%s{UnhandledExceptionReport.describe finalState exn}"
 
     /// Advance startup by one guest instruction, crossing a phase boundary when the entry
     /// thread's current frame returns.
     let stepStartup (loggerFactory : ILoggerFactory) (logger : ILogger) (startup : Startup) : StartupStepOutcome =
-        match stepPrepared loggerFactory logger startup.Prepared with
+        match stepTick loggerFactory logger startup.Prepared with
+        | Tick.StartupCallReturned state ->
+            match startup.Phase with
+            | StartupPhase.SeedingAppContext onReturn
+            | StartupPhase.InitialisingCommandLine onReturn ->
+                let state, phase = onReturn state
+
+                StartupStepOutcome.PhaseAdvanced
+                    { startup with
+                        Prepared =
+                            { startup.Prepared with
+                                State = state
+                            }
+                        Phase = phase
+                    }
+            | StartupPhase.InitialisingClasses mainArgs ->
+                StartupStepOutcome.Completed (startup.InstallMain state mainArgs)
+        | Tick.Stepped outcome ->
+
+        match outcome with
         | ProgramStepOutcome.InstructionStepped (prepared, ran, whatWeDid, effect) ->
             StartupStepOutcome.Stepped (
                 { startup with
@@ -1571,40 +1641,21 @@ module Program =
             )
         | ProgramStepOutcome.Completed outcome ->
 
-        // `stepPrepared` reports `Completed` as soon as the entry thread terminates, which
-        // during startup means the frame this phase was pumping has returned rather than that
-        // the program is over.
-        match startup.Phase, outcome with
-        | StartupPhase.SeedingAppContext onReturn, RunOutcome.NormalExit (state, _)
-        | StartupPhase.InitialisingCommandLine onReturn, RunOutcome.NormalExit (state, _) ->
-            let state, phase = onReturn state
-
-            StartupStepOutcome.PhaseAdvanced
-                { startup with
-                    Prepared =
-                        { startup.Prepared with
-                            State = state
-                        }
-                    Phase = phase
-                }
-        | StartupPhase.InitialisingCommandLine _, outcome ->
+        // The process ended before `Main` was installed.
+        match startup.Phase with
+        | StartupPhase.InitialisingCommandLine _ ->
             // `InitializeCommandLineArgs` news up two arrays and copies strings out of buffers
             // we ourselves just wrote; it has no other way to end. Anything else means a cctor
             // dragged in by that work misbehaved, and pressing on would run Main with an
             // unpopulated command line.
             failwith $"Installing the guest's command line %s{describeStartupOutcome outcome}."
-        | StartupPhase.SeedingAppContext _, outcome ->
+        | StartupPhase.SeedingAppContext _ ->
             // Nothing in `AppContext.Setup` can legitimately exit, fail fast or throw: it
             // allocates a Dictionary and copies strings out of buffers we ourselves just
             // wrote. Anything else means a cctor dragged in by that work misbehaved, and
             // pressing on would run Main against a half-seeded AppContext.
             failwith $"Seeding AppContext %s{describeStartupOutcome outcome}."
-        | StartupPhase.InitialisingClasses mainArgs, RunOutcome.NormalExit (state, _) ->
-            StartupStepOutcome.Completed (startup.InstallMain state mainArgs)
-        | StartupPhase.InitialisingClasses _, RunOutcome.GuestUnhandledException _
-        | StartupPhase.InitialisingClasses _, RunOutcome.ProcessExit _
-        | StartupPhase.InitialisingClasses _, RunOutcome.Aborted _
-        | StartupPhase.InitialisingClasses _, RunOutcome.SignalTerminated _ ->
+        | StartupPhase.InitialisingClasses _ ->
             // The entry thread's `.cctor` raised, or a worker spawned during cctor pumping
             // exited, failed fast, or took a terminating signal. In every case the CLR would
             // tear the process down; propagate rather than collapsing to a host `failwith`
@@ -1793,10 +1844,13 @@ module Program =
         | None ->
 
         match annotating advanced.State (fun () -> stepDecided loggerFactory logger advanced) with
-        | ProgramStepOutcome.Completed outcome -> PrefixOutcome.NeverForked outcome
-        | ProgramStepOutcome.Deadlocked (_, stuck) -> PrefixOutcome.DeadlockedBeforeFork stuck
-        | ProgramStepOutcome.WorkerTerminated (next, _) -> runToNextFork loggerFactory logger next
-        | ProgramStepOutcome.InstructionStepped (next, ran, whatWeDid, _) ->
+        | Tick.StartupCallReturned _ ->
+            failwith
+                "Program.runToNextFork: the entry thread's startup call returned, but a fork snapshot is taken only once Main is installed"
+        | Tick.Stepped (ProgramStepOutcome.Completed outcome) -> PrefixOutcome.NeverForked outcome
+        | Tick.Stepped (ProgramStepOutcome.Deadlocked (_, stuck)) -> PrefixOutcome.DeadlockedBeforeFork stuck
+        | Tick.Stepped (ProgramStepOutcome.WorkerTerminated (next, _)) -> runToNextFork loggerFactory logger next
+        | Tick.Stepped (ProgramStepOutcome.InstructionStepped (next, ran, whatWeDid, _)) ->
             checkYieldDidNotStraddle ran whatWeDid next
             runToNextFork loggerFactory logger next
 

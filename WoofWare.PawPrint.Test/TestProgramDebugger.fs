@@ -72,9 +72,9 @@ class Program
 
     let private outcomeSignature (outcome : RunOutcome) : OutcomeSignature =
         match outcome with
-        | RunOutcome.NormalExit (state, _)
-        | RunOutcome.ProcessExit (state, _) -> OutcomeSignature.ExitCode state.LatchedExitCode
-        | RunOutcome.Aborted (_, _, fatal) -> OutcomeSignature.Aborted (fatal.Code, fatal.Message)
+        | RunOutcome.NormalExit (state, _, _)
+        | RunOutcome.ProcessExit (state, _, _) -> OutcomeSignature.ExitCode state.LatchedExitCode
+        | RunOutcome.Aborted (_, _, fatal, _) -> OutcomeSignature.Aborted (fatal.Code, fatal.Message)
         | RunOutcome.SignalTerminated (_, signal, _) -> OutcomeSignature.SignalTerminated signal
         | RunOutcome.GuestUnhandledException _ -> OutcomeSignature.GuestUnhandledException
 

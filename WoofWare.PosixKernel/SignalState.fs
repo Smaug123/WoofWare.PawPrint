@@ -66,22 +66,6 @@ type SignalDelivery<'Task, 'Handler> =
     /// handler delivery.
     | DefaultContinue of Signal
 
-/// What generating a signal does to the process at once, as decided by
-/// `SignalState.generate`. Anything else it does happens later, through the
-/// pending queue and `SignalState.nextDelivery`.
-[<RequireQualifiedAccess>]
-type SignalGeneration =
-    /// The process carries on. The signal is pending, or coalesced into an
-    /// instance already pending, or discarded because it is ignored.
-    | ProcessContinues
-    /// The signal terminates the process: its disposition is the default,
-    /// which is to terminate, and some live thread could receive it. A
-    /// parent's `wait` reports the core flag iff `coreDumped`.
-    | ProcessTerminated of signal : Signal * coreDumped : bool
-    /// The signal stops the whole process: its disposition is the default,
-    /// which is to stop, and some live thread could receive it.
-    | ProcessStopped of Signal
-
 /// Pure, deterministic model of the simulator's signal-handling state.
 ///
 /// The shape is deliberately small:
@@ -129,6 +113,25 @@ type SignalState<'Task, 'Handler when 'Task : comparison and 'Handler : equality
             /// throughout.
             Pending : PendingSignal<'Task> list
         }
+
+/// What generating a signal does to the process at once, as decided by
+/// `SignalState.generate`. Anything else it does happens later, through the
+/// pending queue and `SignalState.nextDelivery`.
+[<RequireQualifiedAccess>]
+type SignalGeneration<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    /// The process carries on, with these signals. The signal is pending, or
+    /// coalesced into an instance already pending, or discarded because it is
+    /// ignored.
+    | ProcessContinues of SignalState<'Task, 'Handler>
+    /// The signal terminates the process: its disposition is the default,
+    /// which is to terminate, and some live thread could receive it. A
+    /// parent's `wait` reports the core flag iff `coreDumped`. There is no
+    /// state to carry on with, because the process has ended.
+    | ProcessTerminated of signal : Signal * coreDumped : bool
+    /// The signal stops the whole process, which has these signals: its
+    /// disposition is the default, which is to stop, and some live thread
+    /// could receive it.
+    | ProcessStopped of signal : Signal * SignalState<'Task, 'Handler>
 
 [<RequireQualifiedAccess>]
 module SignalState =
@@ -570,7 +573,7 @@ module SignalState =
         (liveThreads : ImmutableArray<'Task>)
         (entry : PendingSignal<'Task>)
         (state : SignalState<'Task, 'Handler>)
-        : SignalGeneration * SignalState<'Task, 'Handler>
+        : SignalGeneration<'Task, 'Handler>
         =
         let entry =
             { entry with
@@ -578,7 +581,7 @@ module SignalState =
             }
 
         match beginGeneration entry.Signal state with
-        | None -> SignalGeneration.ProcessContinues, state
+        | None -> SignalGeneration.ProcessContinues state
         | Some state ->
 
         // Linux decides this at generation (`complete_signal` takes the whole
@@ -599,7 +602,7 @@ module SignalState =
                 // queued instead, it would sit there until the client next
                 // polled `nextDelivery`, and a handler installed in between
                 // would receive a signal that was ignored when it was sent.
-                | SignalDisposition.Ignore -> Some SignalGeneration.ProcessContinues
+                | SignalDisposition.Ignore -> Some (SignalGeneration.ProcessContinues state)
                 | SignalDisposition.Default ->
                     match Signal.defaultDispositionUnder state.Numbering entry.Signal with
                     | DefaultDisposition.Terminate ->
@@ -609,13 +612,13 @@ module SignalState =
                                 dumpsCore coreDumps state.Numbering entry.Signal
                             )
                         )
-                    | DefaultDisposition.Stop -> Some (SignalGeneration.ProcessStopped entry.Signal)
-                    | DefaultDisposition.Ignore -> Some SignalGeneration.ProcessContinues
+                    | DefaultDisposition.Stop -> Some (SignalGeneration.ProcessStopped (entry.Signal, state))
+                    | DefaultDisposition.Ignore -> Some (SignalGeneration.ProcessContinues state)
                     | DefaultDisposition.Continue -> None
 
         match immediate with
-        | Some effect -> effect, state
-        | None -> SignalGeneration.ProcessContinues, admit entry state
+        | Some effect -> effect
+        | None -> SignalGeneration.ProcessContinues (admit entry state)
 
     /// Snapshot of the pending queue, in FIFO order (head = next candidate),
     /// every entry's signal in its canonical spelling.

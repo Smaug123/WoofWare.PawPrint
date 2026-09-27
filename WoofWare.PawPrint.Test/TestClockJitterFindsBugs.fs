@@ -77,10 +77,10 @@ module TestClockJitterFindsBugs =
 
     let private endingOfOutcome (outcome : RunOutcome) : Ending =
         match outcome with
-        | RunOutcome.NormalExit (state, _)
-        | RunOutcome.ProcessExit (state, _) -> Ending.ExitCode state.LatchedExitCode
+        | RunOutcome.NormalExit (state, _, _)
+        | RunOutcome.ProcessExit (state, _, _) -> Ending.ExitCode state.LatchedExitCode
         | RunOutcome.GuestUnhandledException _ -> Ending.Other "unhandled guest exception"
-        | RunOutcome.Aborted (_, _, fatal) -> Ending.Other $"aborted %O{fatal.Code}: %A{fatal.Message}"
+        | RunOutcome.Aborted (_, _, fatal, _) -> Ending.Other $"aborted %O{fatal.Code}: %A{fatal.Message}"
         | RunOutcome.SignalTerminated (_, signal, _) -> Ending.Other $"signalled: %O{signal}"
 
     /// Run the guest once under a given jitter strategy and PCT seed, from

@@ -84,7 +84,7 @@ module TestVariableSizeNewobj =
 
         try
             match Program.run loggerFactory (Some sourceName) peImage (HostConfig.Default dotnetRuntimes) with
-            | RunOutcome.NormalExit (state, _) ->
+            | RunOutcome.NormalExit (state, _, _) ->
                 if state.LatchedExitCode <> 0 then
                     failwith $"%s{sourceName}: expected guest exit code 0, got %d{state.LatchedExitCode}"
 

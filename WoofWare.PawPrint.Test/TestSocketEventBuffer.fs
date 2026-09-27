@@ -86,8 +86,8 @@ class Program
             }
 
         match Program.run loggerFactory (Some "SocketEventBufferProbe.cs") peImage hostConfig with
-        | RunOutcome.NormalExit (state, _)
-        | RunOutcome.ProcessExit (state, _) ->
+        | RunOutcome.NormalExit (state, _, _)
+        | RunOutcome.ProcessExit (state, _, _) ->
             match state.LatchedExitCode with
             | 0 -> state
             | other -> failwith $"guest failed its own check %d{other}, so it never reached the state these tests read"

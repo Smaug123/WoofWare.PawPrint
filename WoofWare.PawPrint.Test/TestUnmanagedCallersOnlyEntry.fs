@@ -109,7 +109,7 @@ module TestUnmanagedCallersOnlyEntry =
                 $"%s{sourceName}: the real runtime terminated with an unhandled exception, so the refusal has become catchable:\n%s{report}"
 
         match runUnderPawPrint sourceName [] image with
-        | RunOutcome.Aborted (_, _, fatal) ->
+        | RunOutcome.Aborted (_, _, fatal, _) ->
             fatal.Code |> shouldEqual FatalErrorCode.ExecutionEngine
 
             match fatal.Message with
@@ -117,8 +117,8 @@ module TestUnmanagedCallersOnlyEntry =
             | Some message ->
                 if not (message.Contains messageMarker) then
                     failwith $"%s{sourceName}: PawPrint aborted with the wrong message: %s{message}"
-        | RunOutcome.NormalExit (terminalState, terminatingThread)
-        | RunOutcome.ProcessExit (terminalState, terminatingThread) ->
+        | RunOutcome.NormalExit (terminalState, terminatingThread, _)
+        | RunOutcome.ProcessExit (terminalState, terminatingThread, _) ->
             let returned =
                 match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
                 | [] -> "void"
@@ -126,7 +126,7 @@ module TestUnmanagedCallersOnlyEntry =
 
             failwith
                 $"%s{sourceName}: PawPrint ran the UnmanagedCallersOnly method and returned %s{returned}; the real runtime refuses this entry uncatchably"
-        | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+        | RunOutcome.GuestUnhandledException (finalState, _, exn, _) ->
             failwith
                 $"%s{sourceName}: PawPrint let the refusal become a catchable exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
         | RunOutcome.SignalTerminated (_, signal, _) ->
@@ -167,8 +167,8 @@ module TestUnmanagedCallersOnlyEntry =
         // Non-vacuity again, on PawPrint: the same read must print through PawPrint's own console
         // path, or its silence below would say nothing.
         match runUnderPawPrint sourceName [ "run" ] image with
-        | RunOutcome.NormalExit (terminalState, _)
-        | RunOutcome.ProcessExit (terminalState, _) ->
+        | RunOutcome.NormalExit (terminalState, _, _)
+        | RunOutcome.ProcessExit (terminalState, _, _) ->
             let written = guestStandardError terminalState
 
             if not (written.Contains marker) then
@@ -177,7 +177,7 @@ module TestUnmanagedCallersOnlyEntry =
         | other -> failwith $"PawPrint did not complete the ordinary read of the declaring type: %O{other}"
 
         match runUnderPawPrint sourceName [ "call" ] image with
-        | RunOutcome.Aborted (terminalState, _, fatal) ->
+        | RunOutcome.Aborted (terminalState, _, fatal, _) ->
             fatal.Code |> shouldEqual FatalErrorCode.ExecutionEngine
 
             let written = guestStandardError terminalState

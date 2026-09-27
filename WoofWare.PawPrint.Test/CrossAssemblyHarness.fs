@@ -135,15 +135,15 @@ module CrossAssemblyHarness =
 
             let terminalState =
                 match outcome with
-                | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+                | RunOutcome.GuestUnhandledException (finalState, _, exn, _) ->
                     failwith $"Guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
-                | RunOutcome.Aborted (_, _, fatal) ->
+                | RunOutcome.Aborted (_, _, fatal, _) ->
                     let m = fatal.Message |> Option.defaultValue "<no message>"
                     failwith $"Guest aborted (%O{fatal.Code}): %s{m}"
                 | RunOutcome.SignalTerminated (_, signal, _) ->
                     failwith $"Guest was terminated by POSIX signal %O{signal}"
-                | RunOutcome.NormalExit (state, _) -> state
-                | RunOutcome.ProcessExit (state, _) -> state
+                | RunOutcome.NormalExit (state, _, _) -> state
+                | RunOutcome.ProcessExit (state, _, _) -> state
 
             terminalState.LatchedExitCode
         with _ ->

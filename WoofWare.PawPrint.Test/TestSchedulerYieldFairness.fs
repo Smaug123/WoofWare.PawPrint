@@ -69,7 +69,7 @@ module TestSchedulerYieldFairness =
         | Program.ProgramStartResult.Ready prepared ->
             let rec loop (prepared : Program.PreparedProgram) : int * int64 =
                 match Program.stepPrepared loggerFactory logger prepared with
-                | Program.ProgramStepOutcome.Completed (RunOutcome.NormalExit (state, _)) ->
+                | Program.ProgramStepOutcome.Completed (RunOutcome.NormalExit (state, _, _)) ->
                     let code = state.LatchedExitCode
 
                     // The discharge lemma, checked against a real run rather than a model of

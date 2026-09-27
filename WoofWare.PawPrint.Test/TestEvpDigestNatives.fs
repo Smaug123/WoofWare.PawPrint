@@ -218,7 +218,7 @@ public class Program
         let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         match Program.run loggerFactory (Some name) peImage (HostConfig.Default dotnetRuntimes) with
-        | RunOutcome.NormalExit (terminalState, _) -> terminalState
+        | RunOutcome.NormalExit (terminalState, _, _) -> terminalState
         | other -> failwith $"Expected the guest to exit normally, got %O{other}"
 
     /// What CoreLib's callers cannot see. `LiteHash.Finalize` and `OneShotHashProvider.HashData`

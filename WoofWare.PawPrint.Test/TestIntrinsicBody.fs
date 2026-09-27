@@ -1193,5 +1193,5 @@ unsafe class CallsSubstitutedIntrinsicThroughCalli
                 peImage
                 (HostConfig.Default dotnetRuntimes)
         with
-        | RunOutcome.NormalExit (state, _) -> state.LatchedExitCode |> shouldEqual 1
+        | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 1
         | other -> failwith $"expected the guest to exit normally, got %O{other}"

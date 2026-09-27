@@ -91,7 +91,7 @@ module TestStepEffectStreaming =
                     failwith $"expected guest to deadlock, but it completed: %O{outcome}"
 
                 match outcome with
-                | RunOutcome.NormalExit (terminalState, _) ->
+                | RunOutcome.NormalExit (terminalState, _, _) ->
                     if terminalState.LatchedExitCode <> 0 then
                         failwith $"guest did not return exit code 0: %d{terminalState.LatchedExitCode}"
 

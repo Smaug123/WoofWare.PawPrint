@@ -158,10 +158,17 @@ module NativeLibc =
 
             state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering errno))
             |> returning -1
-        | Ok (Ok (generation, after)) ->
+        | Ok (Ok outcome) ->
 
         let sent =
             Signal.ofRawSignoUnder (SignalState.numbering system.Process.Signals) signo
+
+        // A process that died has no signals left to have discarded one from.
+        let signalsAfter =
+            match outcome with
+            | KillOutcome.ProcessContinues after
+            | KillOutcome.ProcessStopped (_, after) -> Some after.Process.Signals
+            | KillOutcome.ProcessEnded _ -> None
 
         match
             sent
@@ -169,7 +176,8 @@ module NativeLibc =
                 match screenSelfSignal state.Kernel.PosixSignalShim system.Process.Signals sent with
                 | Some refusal -> ValueSome refusal
                 | None ->
-                    screenGeneration sent system.Process.Signals after.Process.Signals
+                    signalsAfter
+                    |> Option.bind (screenGeneration sent system.Process.Signals)
                     |> ValueOption.ofOption
             )
         with
@@ -178,13 +186,18 @@ module NativeLibc =
                 $"%s{operation}: kill(%d{pid}, %d{signo}) is not modelled: %s{UnmodelledSelfSignal.describe refusal}"
         | ValueNone ->
 
-        match generation with
-        | SignalGeneration.ProcessContinues -> state.MapKernel (EmulatedKernel.withUnix after) |> returning 0
-        | SignalGeneration.ProcessTerminated (signal, coreDumped) ->
+        match outcome with
+        | KillOutcome.ProcessContinues after -> state.MapKernel (EmulatedKernel.withUnix after) |> returning 0
+        | KillOutcome.ProcessEnded ended ->
             // The process never returns from this call.
-            ExecutionResult.SignalTerminated (state.MapKernel (EmulatedKernel.withUnix after), signal, coreDumped)
-            |> NativeHandlerResult.ofExecutionResult
-        | SignalGeneration.ProcessStopped signal ->
+            match ended.Termination with
+            | ProcessTermination.Signaled (signal, coreDumped) ->
+                ExecutionResult.SignalTerminated (state, signal, coreDumped)
+                |> NativeHandlerResult.ofExecutionResult
+            | ProcessTermination.Exited _ ->
+                failwith
+                    $"%s{operation}: kill(%d{pid}, %d{signo}) ended the process with an exit status (%O{ended.Termination}), which only an exit can"
+        | KillOutcome.ProcessStopped (signal, _) ->
             failwith
                 $"%s{operation}: %O{signal} would stop the whole process, and PawPrint does not model a stopped process (nothing could continue it)."
 

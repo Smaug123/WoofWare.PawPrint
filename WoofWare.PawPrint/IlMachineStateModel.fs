@@ -583,10 +583,8 @@ type ExecutionResult =
     /// System.Native's handling of a signal its registered handlers did not
     /// cancel. A parent's `wait` would report the process as killed by the
     /// signal, with the core flag set iff `coreDumped`. Carries no `ThreadId`
-    /// because the whole process dies, not one thread. The App layer derives
-    /// its exit code, `128 + signo` as a shell and .NET's `Process.ExitCode`
-    /// render such a death, from `Signal.toRawSignoUnder` under the simulated
-    /// platform's numbering.
+    /// because the whole process dies, not one thread. `signal` and
+    /// `coreDumped` are the kernel's answer to the `kill` that killed it.
     | SignalTerminated of IlMachineState * signal : Signal * coreDumped : bool
     | Stepped of IlMachineState * WhatWeDid * StepEffect
     | UnhandledException of
@@ -760,33 +758,39 @@ type ReturnFrameResult =
         exceptionType : ConcreteTypeHandle *
         fields : RuntimeExceptionField list
 
-/// Result of a complete program run (the pump loop having finished).
+/// How a run of the simulated process ended: the process itself ended, and each case
+/// carries the machine as it stood when it did, and how the kernel says it ended
+/// (`RunOutcome.termination`).
 type RunOutcome =
-    /// The entry thread's bottom frame returned. For `Main` that means the process exited
-    /// cleanly — `Main` returned and then the last foreground thread finished — with the exit
-    /// code `IlMachineState.LatchedExitCode`; during startup it means the pumped call is done
-    /// (see `Program.EntryFrameKind`). `terminatingThread` is the entry thread.
-    | NormalExit of IlMachineState * terminatingThread : ThreadId
+    /// `Main` returned and then the last foreground thread finished, so the process exited
+    /// cleanly with the exit code `IlMachineState.LatchedExitCode`. `terminatingThread` is the
+    /// entry thread, and `termination` is what the kernel kept of the exit code.
+    | NormalExit of IlMachineState * terminatingThread : ThreadId * termination : ProcessTermination
     /// A thread called `Environment.Exit`. The process tore itself down regardless
-    /// of other threads still running, with the exit code `IlMachineState.LatchedExitCode`.
+    /// of other threads still running, with the exit code `IlMachineState.LatchedExitCode`,
+    /// of which the kernel kept `termination`.
     /// Distinct from `NormalExit` so the pre-main cctor pump can bail rather
     /// than silently continuing into `Main` after the guest already asked to die.
-    | ProcessExit of IlMachineState * exitingThread : ThreadId
+    | ProcessExit of IlMachineState * exitingThread : ThreadId * termination : ProcessTermination
     /// A fatal error aborted the process while `abortingThread` was running: `Environment.FailFast`,
     /// or a refusal the runtime itself raises. The `FatalError` is surfaced for diagnostics, and
     /// its `Code` is what the host derives the banner and exit code from. Distinct from ProcessExit
     /// because an abort is not a clean exit — finalizers do not run on real CoreCLR, and the host
-    /// reports a non-zero/abort exit.
-    | Aborted of IlMachineState * abortingThread : ThreadId * fatal : FatalError
+    /// reports a non-zero/abort exit. `termination` is the SIGABRT that CoreCLR's `abort()` ends
+    /// the process with.
+    | Aborted of IlMachineState * abortingThread : ThreadId * fatal : FatalError * termination : ProcessTermination
     /// The simulated process was killed by `signal`, whose disposition was
     /// the kernel default of terminating the process; a parent's `wait`
     /// would report the core flag iff `coreDumped`. See
     /// `ExecutionResult.SignalTerminated`.
     | SignalTerminated of IlMachineState * signal : Signal * coreDumped : bool
+    /// An exception escaped `terminatingThread`, and the runtime aborted the process;
+    /// `termination` is the SIGABRT that CoreCLR's `abort()` ends it with.
     | GuestUnhandledException of
         IlMachineState *
         terminatingThread : ThreadId *
-        CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+        termination : ProcessTermination
 
 type StateLoadResult =
     /// The type is loaded; you can proceed.
@@ -810,6 +814,27 @@ type StateLoadResult =
     /// particular the caller's program counter must not advance, so the opcode is retried on
     /// wake-up.
     | Blocked of IlMachineState * blockedBy : ThreadId
+
+[<RequireQualifiedAccess>]
+module RunOutcome =
+
+    /// How the kernel says the process ended.
+    let termination (outcome : RunOutcome) : ProcessTermination =
+        match outcome with
+        | RunOutcome.NormalExit (_, _, termination)
+        | RunOutcome.ProcessExit (_, _, termination)
+        | RunOutcome.Aborted (_, _, _, termination)
+        | RunOutcome.GuestUnhandledException (_, _, _, termination) -> termination
+        | RunOutcome.SignalTerminated (_, signal, coreDumped) -> ProcessTermination.Signaled (signal, coreDumped)
+
+    /// The machine as it stood when the process ended.
+    let state (outcome : RunOutcome) : IlMachineState =
+        match outcome with
+        | RunOutcome.NormalExit (state, _, _)
+        | RunOutcome.ProcessExit (state, _, _)
+        | RunOutcome.Aborted (state, _, _, _)
+        | RunOutcome.SignalTerminated (state, _, _)
+        | RunOutcome.GuestUnhandledException (state, _, _, _) -> state
 
 [<RequireQualifiedAccess>]
 module ExecutionResult =

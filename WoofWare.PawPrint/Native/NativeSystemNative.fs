@@ -6112,18 +6112,21 @@ module NativeSystemNative =
                     |> ImmutableArray.CreateRange
 
                 match UnixSignal.kill liveThreads (ProcessId.toInt32 (UnixSystem.processId system)) signo system with
-                | Ok (Ok (SignalGeneration.ProcessContinues, after)) ->
+                | Ok (Ok (KillOutcome.ProcessContinues after)) ->
                     restored.MapKernel (EmulatedKernel.withUnix after)
                     |> NativeHandlerResult.completed
                     |> Some
-                | Ok (Ok (SignalGeneration.ProcessTerminated (killedBy, coreDumped), after)) ->
-                    ExecutionResult.SignalTerminated (
-                        restored.MapKernel (EmulatedKernel.withUnix after),
-                        killedBy,
-                        coreDumped
-                    )
-                    |> NativeHandlerResult.ofExecutionResult
-                    |> Some
+                | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
+                    match ended.Termination with
+                    | ProcessTermination.Signaled (killedBy, coreDumped) ->
+                        // The machine as it stood when the signal was re-raised, with
+                        // the handler restored.
+                        ExecutionResult.SignalTerminated (restored, killedBy, coreDumped)
+                        |> NativeHandlerResult.ofExecutionResult
+                        |> Some
+                    | ProcessTermination.Exited _ ->
+                        failwith
+                            $"%s{operation}: re-raising %O{signal} ended the process with an exit status (%O{ended.Termination}), which only an exit can"
                 | other ->
                     failwith
                         $"%s{operation}: re-raising %O{signal} under the %O{numbering} numbering at its default did not terminate or discard it: %O{other}"

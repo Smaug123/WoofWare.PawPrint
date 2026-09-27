@@ -77,21 +77,21 @@ module TestScheduleFork =
     /// printable at any sane size.
     let private describeOutcome (outcome : RunOutcome) : string =
         match outcome with
-        | RunOutcome.NormalExit (state, _)
-        | RunOutcome.ProcessExit (state, _) -> $"exit %d{state.LatchedExitCode}"
-        | RunOutcome.Aborted (_, _, fatal) ->
+        | RunOutcome.NormalExit (state, _, _)
+        | RunOutcome.ProcessExit (state, _, _) -> $"exit %d{state.LatchedExitCode}"
+        | RunOutcome.Aborted (_, _, fatal, _) ->
             let message = fatal.Message |> Option.defaultValue "<none>"
             $"aborted %O{fatal.Code} %s{message}"
         | RunOutcome.SignalTerminated (_, signal, _) -> $"signal %O{signal}"
-        | RunOutcome.GuestUnhandledException (_, _, _) -> "unhandled exception"
+        | RunOutcome.GuestUnhandledException (_, _, _, _) -> "unhandled exception"
 
     let private terminalStateOf (outcome : RunOutcome) : IlMachineState =
         match outcome with
-        | RunOutcome.NormalExit (state, _)
-        | RunOutcome.ProcessExit (state, _)
-        | RunOutcome.Aborted (state, _, _)
+        | RunOutcome.NormalExit (state, _, _)
+        | RunOutcome.ProcessExit (state, _, _)
+        | RunOutcome.Aborted (state, _, _, _)
         | RunOutcome.SignalTerminated (state, _, _)
-        | RunOutcome.GuestUnhandledException (state, _, _) -> state
+        | RunOutcome.GuestUnhandledException (state, _, _, _) -> state
 
     let private bytesOf (role : FileDescriptorRole) (state : IlMachineState) : byte list =
         OutputLogEntry.bytesFor role state.Kernel.OutputLog |> List.ofSeq

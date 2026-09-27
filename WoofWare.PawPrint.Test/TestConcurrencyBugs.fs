@@ -160,13 +160,13 @@ module TestConcurrencyBugs =
 
     let private classifyRunOutcome (outcome : RunOutcome) : RunSummary =
         match outcome with
-        | RunOutcome.NormalExit (state, _)
-        | RunOutcome.ProcessExit (state, _) -> RunSummary.ExitCode state.LatchedExitCode
-        | RunOutcome.GuestUnhandledException (state, _, exn) ->
+        | RunOutcome.NormalExit (state, _, _)
+        | RunOutcome.ProcessExit (state, _, _) -> RunSummary.ExitCode state.LatchedExitCode
+        | RunOutcome.GuestUnhandledException (state, _, exn, _) ->
             let typeName = exceptionTypeFullName state exn.ExceptionObject
             let message = exceptionMessage state exn.ExceptionObject
             RunSummary.UnhandledException (typeName, message)
-        | RunOutcome.Aborted (_, _, fatal) ->
+        | RunOutcome.Aborted (_, _, fatal, _) ->
             RunSummary.Aborted (fatal.Code, Option.defaultValue "<no message>" fatal.Message)
         | RunOutcome.SignalTerminated (_, signal, _) -> RunSummary.Signal (sprintf "%O" signal)
 
