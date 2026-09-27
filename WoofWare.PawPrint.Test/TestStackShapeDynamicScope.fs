@@ -50,7 +50,7 @@ module TestStackShapeDynamicScope =
             | RunOutcome.Aborted (_, _, fatal) ->
                 let message = fatal.Message |> Option.defaultValue "<no message>"
                 failwith $"Guest aborted (%O{fatal.Code}): %s{message}"
-            | RunOutcome.SignalTerminated (_, signal) -> failwith $"Guest was terminated by POSIX signal %O{signal}"
+            | RunOutcome.SignalTerminated (_, signal, _) -> failwith $"Guest was terminated by POSIX signal %O{signal}"
 
         terminalState.LatchedExitCode |> shouldEqual 0
 

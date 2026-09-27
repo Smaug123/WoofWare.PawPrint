@@ -98,8 +98,8 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// Who the simulated process is: its real, effective and saved user and
         /// group IDs, and its supplementary groups.
         ///
-        /// `stat` reports the effective IDs as every inode's `st_uid` and
-        /// `st_gid`, because this library stores no per-inode ownership yet.
+        /// Changing them changes nothing an inode records: an inode's owner is
+        /// its own (`Inode.Owner`), fixed when it was created or seeded.
         Credentials : Credentials
         /// The simulated process's file-mode creation mask: the permission bits
         /// `open(O_CREAT)` clears from the mode its caller asked for.
@@ -126,6 +126,11 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// signal disposition is process-wide; the per-thread piece lives
         /// inside `SignalState.Blocked`.
         Signals : SignalState<'Task, 'Handler>
+        /// Whether the process writes a core dump when a signal whose default
+        /// action dumps core kills it. Fixed for the whole run: this library
+        /// models no `setrlimit(2)`; a client sets it once with
+        /// `UnixProcessState.withCoreDumps`.
+        CoreDumps : CoreDumps
     }
 
 [<RequireQualifiedAccess>]
@@ -176,6 +181,17 @@ module UnixProcessState =
         =
         { proc with
             ProcessId = ProcessId.assertValid context pid
+        }
+
+    /// Set whether the process writes a core dump when a signal whose default
+    /// action dumps core kills it. See `UnixProcessState.CoreDumps`.
+    let withCoreDumps<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (coreDumps : CoreDumps)
+        (proc : UnixProcessState<'Task, 'Handler>)
+        : UnixProcessState<'Task, 'Handler>
+        =
+        { proc with
+            CoreDumps = coreDumps
         }
 
     /// Whether the simulated process is exempt from the permission rules a kernel

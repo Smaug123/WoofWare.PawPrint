@@ -15,8 +15,8 @@ using System.Runtime.InteropServices;
 // SIGURG (16).
 //
 // The registration asserts on the terminal kernel state as well as on the
-// exit code: which of the signals enabled below are still enabled after
-// their non-cancelled handling ran.
+// exit code: which of the signals enabled below System.Native's handler
+// still catches after their non-cancelled handling ran.
 class Program
 {
     const int EINVAL = 22;
@@ -48,7 +48,7 @@ class Program
         // 30 is SIGUSR1 here (10 under Linux).
         if (Enable(30) != 1) return 6;
 
-        // Disabling clears the enable bit for a signo that was enabled. For
+        // Disabling restores the disposition a signo had when it was enabled. For
         // 32, which never could have been, the PAL still calls sigaction(2)
         // to restore the prior disposition and does not check the result;
         // Darwin refuses it, so what the call leaves behind is EINVAL in
@@ -81,8 +81,8 @@ class Program
         // Linux 29 is SIGIO, which terminates. Neither has an explicit arm
         // in the PAL's switch, so the PAL restores SIG_DFL and re-raises:
         // the process survives, but its native handler for that signo is
-        // gone, which the registration observes as the enable bit having
-        // been cleared. 16 is SIGURG, which the PAL's switch names, so its
+        // gone, which the registration observes as System.Native's handler no
+        // longer being the disposition. 16 is SIGURG, which the PAL's switch names, so its
         // handler stays installed. 32 is not a signal at all, so the PAL's
         // sigaction(2) and kill(2) both fail with EINVAL, unchecked, and the
         // process continues with that in errno.

@@ -542,7 +542,7 @@ type EmulatedKernel =
         ///
         /// Read through the forwarding members below rather than directly, so that
         /// moving a field in or out of here costs no call site.
-        Process : UnixProcessState<ThreadId, SignalHandler>
+        Process : UnixProcessState<ThreadId, NativeSignalHandler>
         /// The POSIX machine this process is running on: see `UnixMachineState`.
         ///
         /// Read through the forwarding members below rather than directly, so that
@@ -747,7 +747,7 @@ type EmulatedKernel =
 
     member this.Credentials : Credentials = this.Process.Credentials
     member this.Umask : PermissionBits = this.Process.Umask
-    member this.Signals : SignalState<ThreadId, SignalHandler> = this.Process.Signals
+    member this.Signals : SignalState<ThreadId, NativeSignalHandler> = this.Process.Signals
 
     // Forwarding members for everything `Machine` now holds, so that this split
     // costs no read site. They go when stage 6 moves `UnixMachineState` to the
@@ -852,7 +852,7 @@ module EmulatedKernel =
     /// This kernel's POSIX half, as `UnixSystem.step` and its per-syscall
     /// siblings want it. Allocates: `EmulatedKernel` stores the three parts
     /// flat, and this assembles a view of them.
-    let unix (kernel : EmulatedKernel) : UnixSystem<ThreadId, SignalHandler> =
+    let unix (kernel : EmulatedKernel) : UnixSystem<ThreadId, NativeSignalHandler> =
         {
             Machine = kernel.Machine
             Process = kernel.Process
@@ -870,7 +870,7 @@ module EmulatedKernel =
     /// with `unix`, which `TestUnixSystemProjection` asserts: a syscall's answer
     /// is lost if a caller forgets this, and gained twice if a caller writes
     /// back a system it did not step.
-    let withUnix (system : UnixSystem<ThreadId, SignalHandler>) (kernel : EmulatedKernel) : EmulatedKernel =
+    let withUnix (system : UnixSystem<ThreadId, NativeSignalHandler>) (kernel : EmulatedKernel) : EmulatedKernel =
         { kernel with
             Machine = system.Machine
             Process = system.Process
@@ -881,7 +881,7 @@ module EmulatedKernel =
     /// operations live in `UnixSystem`, which takes the three parts as one
     /// record rather than the kernel.
     let mapUnix
-        (f : UnixSystem<ThreadId, SignalHandler> -> UnixSystem<ThreadId, SignalHandler>)
+        (f : UnixSystem<ThreadId, NativeSignalHandler> -> UnixSystem<ThreadId, NativeSignalHandler>)
         (kernel : EmulatedKernel)
         : EmulatedKernel
         =
@@ -1004,15 +1004,21 @@ module EmulatedKernel =
     /// and the setters that read it back.
     ///
     /// The POSIX half is `UnixSystem.initial`'s, entropy pool included; what is
-    /// added here is the CoreCLR-shaped state no POSIX kernel has, and the
-    /// environment, which PawPrint pins rather than inherits. The environment is
+    /// added here is the CoreCLR-shaped state no POSIX kernel has, the signal
+    /// dispositions a CoreCLR process has installed by Main
+    /// (`StartupSignalDispositions`, with no inherited ignores; see
+    /// `withInheritedSignalIgnores`), and the environment, which PawPrint pins
+    /// rather than inherits. The environment is
     /// stated rather than left to the library because it is part of PawPrint's
     /// replay contract: a change to the library's default must not silently
     /// change what a recorded trace observes. The entropy pool's seed,
     /// `UnixSystem.defaultEntropySeed`, is part of the same contract, and
     /// PawPrint's tests pin it rather than a second copy of the value.
     let create (platform : SimulatedUnixPlatform) : EmulatedKernel =
-        let system : UnixSystem<ThreadId, SignalHandler> = UnixSystem.initial platform
+        let system : UnixSystem<ThreadId, NativeSignalHandler> = UnixSystem.initial platform
+
+        let signals =
+            StartupSignalDispositions.initial (SimulatedUnixPlatform.signalNumbering platform) Set.empty
 
         {
             InstructionCostTicks = defaultInstructionCostTicks
@@ -1037,6 +1043,7 @@ module EmulatedKernel =
             Process =
                 { system.Process with
                     Environment = encodeEnvironment "EmulatedKernel.defaultEnvironment" defaultEnvironment
+                    Signals = signals
                 }
         }
 
@@ -1054,12 +1061,48 @@ module EmulatedKernel =
     /// Apply an operation to the simulated process's own state. Those operations
     /// live in `UnixProcessState`, which takes that state rather than the kernel.
     let mapProcess
-        (f : UnixProcessState<ThreadId, SignalHandler> -> UnixProcessState<ThreadId, SignalHandler>)
+        (f : UnixProcessState<ThreadId, NativeSignalHandler> -> UnixProcessState<ThreadId, NativeSignalHandler>)
         (kernel : EmulatedKernel)
         : EmulatedKernel
         =
         { kernel with
             Process = f kernel.Process
+        }
+
+    /// Start the process as though its launcher had left `ignored` ignored
+    /// (read under the platform's numbering), as `nohup` leaves SIGHUP: the
+    /// startup dispositions `create` installs, over those ignores. See
+    /// `StartupSignalDispositions.initial` for which ignores the runtime keeps
+    /// and which it replaces, and which it refuses.
+    ///
+    /// `context` prefixes the rejection a refused set earns. Fails too if
+    /// anything has touched the process's signal state since `create`,
+    /// because a process's inherited ignores are fixed before any of its own
+    /// code runs.
+    let withInheritedSignalIgnores
+        (context : string)
+        (ignored : Set<Signal>)
+        (kernel : EmulatedKernel)
+        : EmulatedKernel
+        =
+        let numbering = SimulatedUnixPlatform.signalNumbering kernel.UnixPlatform
+
+        match StartupSignalDispositions.refusal numbering ignored with
+        | Some reason -> failwith $"%s{context}: cannot start a process with %s{reason}."
+        | None ->
+
+        if
+            kernel.Process.Signals <> StartupSignalDispositions.initial numbering Set.empty
+            || kernel.PosixSignalShim <> PosixSignalShim.initial
+        then
+            failwith
+                $"%s{context}: the process's signal state has changed since it was created; inherited ignores can only be set on a fresh process."
+
+        { kernel with
+            Process =
+                { kernel.Process with
+                    Signals = StartupSignalDispositions.initial numbering ignored
+                }
         }
 
     /// Set the environment the simulated process was started with: every
@@ -1100,8 +1143,16 @@ module EmulatedKernel =
     /// agree. A failure here is a host mistake with no honest errno — ENOENT
     /// would blame a guest path that does not exist yet — and there is nothing
     /// for the run to go on and do.
+    ///
+    /// `owner` owns every inode of the seed. A seed entry that states any other
+    /// owner is refused: a file the process does not own would reach
+    /// CoreLib's group-membership check (`FileStatus.IsModeReadOnlyCore`), whose
+    /// `SystemNative_GetEGid` and `GetGroups` are not implemented, and the
+    /// kernel's permission checks do not yet consult anything but the owner's
+    /// bits.
     let withFileSystemAndCurrentDirectory
         (createdAt : UnixTimestamp)
+        (owner : InodeOwner)
         (seed : Map<DirectoryEntryName, SeedEntry>)
         (directory : AbsoluteUnixPath)
         (kernel : EmulatedKernel)
@@ -1113,11 +1164,40 @@ module EmulatedKernel =
         let directory =
             AbsoluteUnixPath.assertValid "EmulatedKernel.CurrentDirectory" directory
 
+        let rec firstOwned
+            (path : DirectoryEntryName list)
+            (entries : Map<DirectoryEntryName, SeedEntry>)
+            : (DirectoryEntryName list * InodeOwner) option
+            =
+            entries
+            |> Map.toSeq
+            |> Seq.tryPick (fun (name, entry) ->
+                let stated =
+                    match entry with
+                    | SeedEntry.File (_, _, stated)
+                    | SeedEntry.Symlink (_, stated)
+                    | SeedEntry.Directory (_, _, stated) -> stated
+
+                match stated, entry with
+                | Some stated, _ when stated <> owner -> Some (List.rev (name :: path), stated)
+                | _, SeedEntry.Directory (children, _, _) -> firstOwned (name :: path) children
+                | _, SeedEntry.File _
+                | _, SeedEntry.Symlink _ -> None
+            )
+
+        match firstOwned [] seed with
+        | Some (path, stated) ->
+            let described = path |> List.map DirectoryEntryName.toEscaped |> String.concat "/"
+
+            failwith
+                $"EmulatedKernel.FileSystem: KernelConfig.FileSystem gives \"/%s{described}\" the owner %O{stated}, but PawPrint does not yet model a file owned by anyone but the configured user and group, %O{owner}. Leave the entry's owner as None, and it will belong to them."
+        | None ->
+
         let described = AbsoluteUnixPath.toEscaped directory
 
         match
             unix kernel
-            |> UnixSystem.withFileSystemAndCurrentDirectory createdAt seed directory
+            |> UnixSystem.withFileSystemAndCurrentDirectory createdAt owner seed directory
         with
         | Ok system -> withUnix system kernel
         | Error (CurrentDirectoryFault.DoesNotResolve error) ->
@@ -1808,13 +1888,13 @@ type KernelConfig =
         /// the same tree whatever the machine.
         FileSystem : Map<DirectoryEntryName, SeedEntry>
         /// User ID the simulated process runs as (its real, effective and saved
-        /// user IDs alike), observed as every inode's `st_uid`, or `None` for
+        /// user IDs alike), and the owner of every inode `FileSystem` seeds, or `None` for
         /// the flavour's first interactive user (1000 on Linux, 501 on Darwin).
         /// See `UnixSystem.defaultUserId` for why the default is not root.
         /// `(uid_t)-1` is refused: no process can hold it.
         UserId : uint32 option
         /// Group ID the simulated process runs as (its real, effective and saved
-        /// group IDs alike), observed as every inode's `st_gid`, or `None` for
+        /// group IDs alike), and the group of every inode `FileSystem` seeds, or `None` for
         /// the flavour's default (1000 on Linux, 20 on Darwin). `(gid_t)-1` is
         /// refused.
         GroupId : uint32 option
@@ -1870,6 +1950,24 @@ type KernelConfig =
         /// inside one; Darwin ignores them. See
         /// `UnixSystem.defaultLocalRoutes`.
         LocalRoutes : Ipv4Prefix list
+        /// Signals the simulated process's launcher left ignored, as `nohup`
+        /// leaves SIGHUP or a shell's `trap '' <signal>` leaves its signal, read
+        /// under `UnixPlatform`'s numbering. Empty by default: nothing ignored.
+        ///
+        /// An ignored signal is discarded when it is sent, and a
+        /// `PosixSignalRegistration` for it never runs, exactly as on real .NET,
+        /// which keeps these ignores; except that the runtime replaces an
+        /// ignore of a signal it catches itself (see
+        /// `StartupSignalDispositions`). Refused: SIGKILL, SIGSTOP and Linux's
+        /// 32 and 33, which no launcher can ignore through `sigaction`, and
+        /// SIGTERM; see `StartupSignalDispositions.refusal`.
+        InheritedSignalIgnores : Set<Signal>
+        /// Whether the simulated process writes a core dump when a signal
+        /// whose default action dumps core kills it (`Signal.dumpsCoreUnder`),
+        /// which a host sees as `RunOutcome.SignalTerminated`'s core flag.
+        /// Defaults to `Suppressed`, as under an `RLIMIT_CORE` of 0; see
+        /// `UnixProcessState.CoreDumps`.
+        CoreDumps : CoreDumps
     }
 
     /// Configuration a host gets if it expresses no preference: no environment
@@ -1899,6 +1997,8 @@ type KernelConfig =
             SoMaxConn = None
             LocalAddresses = UnixSystem.defaultLocalAddresses
             LocalRoutes = UnixSystem.defaultLocalRoutes
+            InheritedSignalIgnores = Set.empty
+            CoreDumps = UnixSystem.defaultCoreDumps
         }
 
 [<RequireQualifiedAccess>]
@@ -1921,7 +2021,20 @@ module KernelConfig =
 
         let flavour = SimulatedUnixPlatform.flavour platform
 
+        let credentials =
+            Credentials.ofIds
+                (config.UserId
+                 |> Option.map (UserId.parseOrFail "KernelConfig.UserId")
+                 |> Option.defaultValue (UnixSystem.defaultUserId flavour))
+                (config.GroupId
+                 |> Option.map (GroupId.parseOrFail "KernelConfig.GroupId")
+                 |> Option.defaultValue (UnixSystem.defaultGroupId flavour))
+                (config.SupplementaryGroups
+                 |> List.map (GroupId.parseOrFail "KernelConfig.SupplementaryGroups"))
+
         EmulatedKernel.create platform
+        |> EmulatedKernel.withInheritedSignalIgnores "KernelConfig.InheritedSignalIgnores" config.InheritedSignalIgnores
+        |> EmulatedKernel.mapProcess (UnixProcessState.withCoreDumps config.CoreDumps)
         |> EmulatedKernel.withEnvironment "KernelConfig.Environment" config.Environment
         |> EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount config.ProcessorCount)
         |> EmulatedKernel.mapMachine (fun machine ->
@@ -1935,23 +2048,14 @@ module KernelConfig =
         |> EmulatedKernel.withWallClockEpochMs config.WallClockEpochMs
         |> EmulatedKernel.mapMachine (UnixMachineState.withMount config.Mount)
         |> EmulatedKernel.mapProcess (UnixProcessState.withProcessPath "KernelConfig.ProcessPath" config.ProcessPath)
+        // The seed is owned by the configured user and group, named here rather
+        // than read back off the process, which only takes them below.
         |> EmulatedKernel.withFileSystemAndCurrentDirectory
             (UnixTimestamp.ofMillisecondsSinceEpoch config.WallClockEpochMs)
+            (InodeOwner.ofProcess credentials)
             config.FileSystem
             config.CurrentDirectory
-        |> EmulatedKernel.mapUnix (
-            UnixSystem.withCredentials
-                "KernelConfig"
-                (Credentials.ofIds
-                    (config.UserId
-                     |> Option.map (UserId.parseOrFail "KernelConfig.UserId")
-                     |> Option.defaultValue (UnixSystem.defaultUserId flavour))
-                    (config.GroupId
-                     |> Option.map (GroupId.parseOrFail "KernelConfig.GroupId")
-                     |> Option.defaultValue (UnixSystem.defaultGroupId flavour))
-                    (config.SupplementaryGroups
-                     |> List.map (GroupId.parseOrFail "KernelConfig.SupplementaryGroups")))
-        )
+        |> EmulatedKernel.mapUnix (UnixSystem.withCredentials "KernelConfig" credentials)
         |> EmulatedKernel.mapMachine (
             UnixMachineState.withEphemeralPortRange (
                 config.EphemeralPortRange

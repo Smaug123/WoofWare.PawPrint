@@ -70,6 +70,7 @@ module TestUnixSystemStep =
                     rootInode
                     (DirectoryEntryName.parseOrFail context "f")
                     (PermissionBits.parseOrFail context 0o644)
+                    Owners.linuxDefault
                     epoch
                     (ImmutableArray.CreateRange [ 1uy ; 2uy ; 3uy ; 4uy ; 5uy ])
                     system.Machine.FileSystem
@@ -738,6 +739,7 @@ module TestUnixSystemStep =
                     rootInode
                     (DirectoryEntryName.parseOrFail context "d")
                     (PermissionBits.parseOrFail context 0o755)
+                    Owners.linuxDefault
                     epoch
                     system.Machine.FileSystem
             with
@@ -1432,6 +1434,7 @@ module TestUnixSystemStep =
                 VirtualFileSystem.createSymlink
                     rootInode
                     (DirectoryEntryName.parseOrFail context "l")
+                    Owners.linuxDefault
                     epoch
                     (SymlinkTarget.parseOrFail context "abcdefg")
                     system.Machine.FileSystem
@@ -1533,10 +1536,9 @@ module TestUnixSystemStep =
         |> shouldEqual (Some epoch)
 
     [<Test>]
-    let ``ownership is the calling process's, not the inode's`` () : unit =
-        // This kernel stores no per-inode ownership, so `fstat` reports whoever
-        // is asking. Asserted by *changing* the asker: a hardcoded 1000/1000
-        // would pass a row that only read the default.
+    let ``fstat reports the inode's owner, whoever is asking`` () : unit =
+        // Asserted by *changing* the asker, so that an answer read off the
+        // caller's credentials rather than the inode fails.
         let fd, system = withOpenFile linux
 
         let system =
@@ -1546,14 +1548,13 @@ module TestUnixSystemStep =
                 (Credentials.ofIds (UserId.parseOrFail "test" 41u) (GroupId.parseOrFail "test" 43u) [])
 
         let status = UnixPathResolution.fstat fd system |> reported
-        status.UserId |> shouldEqual (UserId.parseOrFail "test" 41u)
-        status.GroupId |> shouldEqual (GroupId.parseOrFail "test" 43u)
+        status.UserId |> shouldEqual Owners.linuxDefault.User
+        status.GroupId |> shouldEqual Owners.linuxDefault.Group
 
     [<Test>]
-    let ``ownership and geteuid report the effective IDs, not the real or saved ones`` () : unit =
+    let ``geteuid reports the effective user ID, not the real or saved one`` () : unit =
         // Six distinct IDs, so an answer read from the wrong one of them names
         // which.
-        let fd, system = withOpenFile linux
 
         let credentials =
             {
@@ -1566,11 +1567,7 @@ module TestUnixSystemStep =
                 SupplementaryGroups = [ GroupId.parseOrFail "test" 64u ]
             }
 
-        let system = system |> UnixSystem.withCredentials "test" credentials
-
-        let status = UnixPathResolution.fstat fd system |> reported
-        status.UserId |> shouldEqual credentials.EffectiveUser
-        status.GroupId |> shouldEqual credentials.EffectiveGroup
+        let system = linux |> UnixSystem.withCredentials "test" credentials
 
         UnixDescriptor.effectiveUserId system |> shouldEqual credentials.EffectiveUser
 
@@ -1659,6 +1656,7 @@ module TestUnixSystemStep =
                 rootInode
                 (DirectoryEntryName.parseOrFail context "d")
                 dirPermissions
+                Owners.linuxDefault
                 epoch
                 system.Machine.FileSystem
             |> orFail "/d"
@@ -1668,6 +1666,7 @@ module TestUnixSystemStep =
                 d
                 (DirectoryEntryName.parseOrFail context "inner")
                 innerPermissions
+                Owners.linuxDefault
                 epoch
                 vfs
             |> orFail "/d/inner"
@@ -1677,6 +1676,7 @@ module TestUnixSystemStep =
                 inner
                 (DirectoryEntryName.parseOrFail context "t")
                 (PermissionBits.parseOrFail context 0o600)
+                Owners.linuxDefault
                 epoch
                 (ImmutableArray.CreateRange [ 1uy ; 2uy ; 3uy ])
                 vfs
@@ -1686,6 +1686,7 @@ module TestUnixSystemStep =
             VirtualFileSystem.createSymlink
                 rootInode
                 (DirectoryEntryName.parseOrFail context "l")
+                Owners.linuxDefault
                 epoch
                 (SymlinkTarget.parseOrFail context "/d/inner/t")
                 vfs
@@ -1698,6 +1699,7 @@ module TestUnixSystemStep =
             VirtualFileSystem.createSymlink
                 rootInode
                 (DirectoryEntryName.parseOrFail context "dangling")
+                Owners.linuxDefault
                 epoch
                 (SymlinkTarget.parseOrFail context "/d/inner/gone")
                 vfs
@@ -3956,6 +3958,7 @@ module TestUnixSystemStep =
                         (VirtualFileSystem.root system.Machine.FileSystem)
                         (DirectoryEntryName.parseOrFail context "readable")
                         (PermissionBits.parseOrFail context 0o400)
+                        Owners.linuxDefault
                         epoch
                         (ImmutableArray.CreateRange [ 1uy ])
                         system.Machine.FileSystem
@@ -4002,6 +4005,7 @@ module TestUnixSystemStep =
                         (VirtualFileSystem.root vfs)
                         (DirectoryEntryName.parseOrFail context name)
                         (PermissionBits.parseOrFail context mode)
+                        Owners.linuxDefault
                         epoch
                         (ImmutableArray.CreateRange [ 1uy ])
                         vfs
@@ -4284,6 +4288,7 @@ module TestUnixSystemStep =
                     VirtualFileSystem.createSymlink
                         (VirtualFileSystem.root system.Machine.FileSystem)
                         (DirectoryEntryName.parseOrFail context "ld")
+                        Owners.linuxDefault
                         epoch
                         (SymlinkTarget.parseOrFail context "/d/inner")
                         system.Machine.FileSystem
@@ -4493,6 +4498,7 @@ module TestUnixSystemStep =
                     VirtualFileSystem.createSymlink
                         (VirtualFileSystem.root system.Machine.FileSystem)
                         (DirectoryEntryName.parseOrFail context "wide")
+                        Owners.linuxDefault
                         epoch
                         (SymlinkTarget.parseOrFail context "/éé")
                         system.Machine.FileSystem
@@ -4818,31 +4824,45 @@ module TestUnixSystemStep =
                 rootInode
                 (n "f")
                 (mode 0o644)
+                Owners.linuxDefault
                 epoch
                 ImmutableArray.Empty
                 system.Machine.FileSystem
             |> orFail "/f"
 
         let dir, vfs =
-            VirtualFileSystem.createDirectory rootInode (n "dir") (mode 0o755) epoch vfs
+            VirtualFileSystem.createDirectory rootInode (n "dir") (mode 0o755) Owners.linuxDefault epoch vfs
             |> orFail "/dir"
 
         let _, vfs =
-            VirtualFileSystem.createDirectory dir (n "sub") (mode 0o755) epoch vfs
+            VirtualFileSystem.createDirectory dir (n "sub") (mode 0o755) Owners.linuxDefault epoch vfs
             |> orFail "/dir/sub"
 
         // 0o600: readable and *not* searchable, which is what makes a lookup
         // through it EACCES while the directory itself still stats fine.
         let nosearch, vfs =
-            VirtualFileSystem.createDirectory rootInode (n "nosearch") (mode 0o600) epoch vfs
+            VirtualFileSystem.createDirectory rootInode (n "nosearch") (mode 0o600) Owners.linuxDefault epoch vfs
             |> orFail "/nosearch"
 
         let _, vfs =
-            VirtualFileSystem.createFile nosearch (n "kid") (mode 0o644) epoch ImmutableArray.Empty vfs
+            VirtualFileSystem.createFile
+                nosearch
+                (n "kid")
+                (mode 0o644)
+                Owners.linuxDefault
+                epoch
+                ImmutableArray.Empty
+                vfs
             |> orFail "/nosearch/kid"
 
         let link (name : string) (target : string) (vfs : VirtualFileSystem) =
-            VirtualFileSystem.createSymlink rootInode (n name) epoch (SymlinkTarget.parseOrFail context target) vfs
+            VirtualFileSystem.createSymlink
+                rootInode
+                (n name)
+                Owners.linuxDefault
+                epoch
+                (SymlinkTarget.parseOrFail context target)
+                vfs
             |> orFail $"/%s{name}"
             |> snd
 
@@ -5038,6 +5058,7 @@ module TestUnixSystemStep =
                     rootInode
                     (n "victim")
                     (PermissionBits.parseOrFail context 0o644)
+                    Owners.linuxDefault
                     epoch
                     ImmutableArray.Empty
                     system.Machine.FileSystem
@@ -5388,29 +5409,48 @@ module TestUnixSystemStep =
         let mode (m : int) = PermissionBits.parseOrFail context m
 
         let d, vfs =
-            VirtualFileSystem.createDirectory rootInode (n "d") (mode 0o755) epoch system.Machine.FileSystem
+            VirtualFileSystem.createDirectory
+                rootInode
+                (n "d")
+                (mode 0o755)
+                Owners.linuxDefault
+                epoch
+                system.Machine.FileSystem
             |> orFail "/d"
 
         let _, vfs =
-            VirtualFileSystem.createDirectory d (n "sub") (mode 0o755) epoch vfs
+            VirtualFileSystem.createDirectory d (n "sub") (mode 0o755) Owners.linuxDefault epoch vfs
             |> orFail "/d/sub"
 
         let _, vfs =
-            VirtualFileSystem.createFile rootInode (n "f") (mode 0o644) epoch ImmutableArray.Empty vfs
+            VirtualFileSystem.createFile
+                rootInode
+                (n "f")
+                (mode 0o644)
+                Owners.linuxDefault
+                epoch
+                ImmutableArray.Empty
+                vfs
             |> orFail "/f"
 
         // Search but not read, and read but not search: the pair that says which
         // bit chdir actually wants.
         let _, vfs =
-            VirtualFileSystem.createDirectory rootInode (n "xonly") (mode 0o100) epoch vfs
+            VirtualFileSystem.createDirectory rootInode (n "xonly") (mode 0o100) Owners.linuxDefault epoch vfs
             |> orFail "/xonly"
 
         let _, vfs =
-            VirtualFileSystem.createDirectory rootInode (n "ronly") (mode 0o400) epoch vfs
+            VirtualFileSystem.createDirectory rootInode (n "ronly") (mode 0o400) Owners.linuxDefault epoch vfs
             |> orFail "/ronly"
 
         let link (name : string) (target : string) (vfs : VirtualFileSystem) =
-            VirtualFileSystem.createSymlink rootInode (n name) epoch (SymlinkTarget.parseOrFail context target) vfs
+            VirtualFileSystem.createSymlink
+                rootInode
+                (n name)
+                Owners.linuxDefault
+                epoch
+                (SymlinkTarget.parseOrFail context target)
+                vfs
             |> orFail $"/%s{name}"
             |> snd
 

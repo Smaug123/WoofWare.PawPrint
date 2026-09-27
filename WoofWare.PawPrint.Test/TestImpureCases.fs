@@ -300,6 +300,14 @@ module TestImpureCases =
         methodNames |> List.contains "Thrower" |> shouldEqual true
         methodNames |> List.contains "Main" |> shouldEqual true
 
+    /// The signals whose disposition is System.Native's handler.
+    let private caughtBySystemNative (state : IlMachineState) : Set<Signal> =
+        SignalState.dispositions state.Kernel.Signals
+        |> Map.filter (fun _ disposition -> disposition = SignalDisposition.Catch NativeSignalHandler.SystemNative)
+        |> Map.toSeq
+        |> Seq.map fst
+        |> Set.ofSeq
+
     /// The seed both write-wiring guests read: one file per mode shape, each
     /// holding the same five bytes, so a row's answer turns on its mode alone.
     let private writeModeSeed : Map<DirectoryEntryName, SeedEntry> =
@@ -309,7 +317,7 @@ module TestImpureCases =
 
         let entry (name : string) (mode : int) : DirectoryEntryName * SeedEntry =
             DirectoryEntryName.parseOrFail "test seed" name,
-            SeedEntry.File (hello, PermissionBits.parseOrFail "test seed" mode)
+            SeedEntry.File (hello, PermissionBits.parseOrFail "test seed" mode, None)
 
         Map.ofList
             [
@@ -350,7 +358,7 @@ module TestImpureCases =
 
         let entry (name : string) (mode : int) : DirectoryEntryName * SeedEntry =
             DirectoryEntryName.parseOrFail "test seed" name,
-            SeedEntry.File (hello, PermissionBits.parseOrFail "test seed" mode)
+            SeedEntry.File (hello, PermissionBits.parseOrFail "test seed" mode, None)
 
         Map.ofList
             [
@@ -396,27 +404,27 @@ module TestImpureCases =
             [
                 name "f", SeedEntry.file (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
                 name "d", SeedEntry.directory Map.empty
-                name "lf", SeedEntry.Symlink (target "f")
-                name "ld", SeedEntry.Symlink (target "d")
+                name "lf", SeedEntry.Symlink (target "f", None)
+                name "ld", SeedEntry.Symlink (target "d", None)
                 // The link whose target Darwin creates and Linux does not.
                 // "nx" is deliberately absent.
-                name "dang", SeedEntry.Symlink (target "nx")
-                name "cyc", SeedEntry.Symlink (target "cyc")
+                name "dang", SeedEntry.Symlink (target "nx", None)
+                name "cyc", SeedEntry.Symlink (target "cyc", None)
                 // A parent carrying S_ISGID, which only Linux passes on. Seeded
                 // rather than chmod'ed into place: there is no `SystemNative_ChMod`,
                 // and on a real host a non-root `chmod` would drop the bit anyway.
-                name "sg", SeedEntry.Directory (Map.empty, mode 0o2777)
+                name "sg", SeedEntry.Directory (Map.empty, mode 0o2777, None)
                 // Searchable but not writable, and holding a child: the child
                 // answers EEXIST while a free name beside it answers EACCES,
                 // which is what puts the write check *below* the EEXIST arm.
                 name "nowrite",
-                SeedEntry.Directory (Map.ofList [ name "kid", SeedEntry.directory Map.empty ], mode 0o555)
+                SeedEntry.Directory (Map.ofList [ name "kid", SeedEntry.directory Map.empty ], mode 0o555, None)
                 // Unsearchable, and holding a child: looking the final name up
                 // needs the search bit, so this answers EACCES where "nowrite"
                 // — which can be searched but not written — answers EEXIST for
                 // the same shape.
                 name "nosearch",
-                SeedEntry.Directory (Map.ofList [ name "kid", SeedEntry.directory Map.empty ], mode 0o666)
+                SeedEntry.Directory (Map.ofList [ name "kid", SeedEntry.directory Map.empty ], mode 0o666, None)
             ]
 
     /// Shared by the two guests that bind names which are not UTF-8, so that the
@@ -428,7 +436,7 @@ module TestImpureCases =
         Map.ofList
             [
                 name "d", SeedEntry.directory (Map.ofList [ name "f", SeedEntry.file ImmutableArray.Empty ])
-                name "ro", SeedEntry.Directory (Map.empty, PermissionBits.parseOrFail "test seed" 0o555)
+                name "ro", SeedEntry.Directory (Map.empty, PermissionBits.parseOrFail "test seed" 0o555, None)
             ]
 
     /// Shared by the two `unlink` wiring guests, so that the only thing that
@@ -447,13 +455,13 @@ module TestImpureCases =
             [
                 name "f", SeedEntry.file (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
                 name "d", SeedEntry.directory Map.empty
-                name "ld", SeedEntry.Symlink (target "d")
-                name "dang", SeedEntry.Symlink (target "nx")
-                name "cyc", SeedEntry.Symlink (target "cyc")
+                name "ld", SeedEntry.Symlink (target "d", None)
+                name "dang", SeedEntry.Symlink (target "nx", None)
+                name "cyc", SeedEntry.Symlink (target "cyc", None)
                 // The row that separates the two walks: with a trailing
                 // separator, Darwin follows this to the root and answers EISDIR
                 // where Linux never looks and answers ENOTDIR.
-                name "lroot", SeedEntry.Symlink (target "/")
+                name "lroot", SeedEntry.Symlink (target "/", None)
                 // Searchable but not writable, holding one of each kind: the
                 // directory is EACCES on Linux and EPERM on Darwin, which is the
                 // pair of orderings the two guests exist to tell apart.
@@ -465,7 +473,8 @@ module TestImpureCases =
                             name "kid",
                             SeedEntry.file (Text.Encoding.UTF8.GetBytes "inside" |> ImmutableArray.CreateRange)
                         ],
-                    mode 0o555
+                    mode 0o555,
+                    None
                 )
             ]
 
@@ -544,12 +553,12 @@ module TestImpureCases =
                 // destructive divergence, and a non-empty `d` would hide it
                 // behind ENOTEMPTY.
                 name "d", SeedEntry.directory Map.empty
-                name "ld", SeedEntry.Symlink (target "d")
-                name "dang", SeedEntry.Symlink (target "nx")
-                name "cyc", SeedEntry.Symlink (target "cyc")
+                name "ld", SeedEntry.Symlink (target "d", None)
+                name "dang", SeedEntry.Symlink (target "nx", None)
+                name "cyc", SeedEntry.Symlink (target "cyc", None)
                 // Followed to the root by Darwin's walk, giving EISDIR where
                 // Linux never looks and answers ENOTDIR.
-                name "lroot", SeedEntry.Symlink (target "/")
+                name "lroot", SeedEntry.Symlink (target "/", None)
                 // Opened, removed, and `fstat`ed on either side of the removal:
                 // the one guest-readable half of
                 // `RmDirRules.RemovedDirectoryEffect`.
@@ -565,7 +574,8 @@ module TestImpureCases =
                             name "kid",
                             SeedEntry.file (Text.Encoding.UTF8.GetBytes "inside" |> ImmutableArray.CreateRange)
                         ],
-                    mode 0o555
+                    mode 0o555,
+                    None
                 )
             ]
 
@@ -753,13 +763,15 @@ module TestImpureCases =
                 name "ns",
                 SeedEntry.Directory (
                     Map.ofList [ name "kid", SeedEntry.directory Map.empty ; name "f", file "hello" ],
-                    mode 0o666
+                    mode 0o666,
+                    None
                 )
                 // The control: the same shape, searchable.
-                name "open", SeedEntry.Directory (Map.ofList [ name "kid", SeedEntry.directory Map.empty ], mode 0o755)
+                name "open",
+                SeedEntry.Directory (Map.ofList [ name "kid", SeedEntry.directory Map.empty ], mode 0o755, None)
                 // A component spliced in from a symlink target is looked up like
                 // any other, so this earns the same answer "ns/kid" does.
-                name "lns", SeedEntry.Symlink (target "ns")
+                name "lns", SeedEntry.Symlink (target "ns", None)
             ]
 
     /// An unsearchable directory holding the current directory, for the guest
@@ -783,10 +795,12 @@ module TestImpureCases =
                             name "inner",
                             SeedEntry.Directory (
                                 Map.ofList [ name "target", file "hello" ; name "sub", SeedEntry.directory Map.empty ],
-                                mode 0o755
+                                mode 0o755,
+                                None
                             )
                         ],
-                    mode 0o666
+                    mode 0o666,
+                    None
                 )
             ]
 
@@ -995,8 +1009,8 @@ module TestImpureCases =
                                     name "f",
                                     SeedEntry.file (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
                                     name "d", SeedEntry.directory Map.empty
-                                    name "lf", SeedEntry.Symlink (target "f")
-                                    name "dang", SeedEntry.Symlink (target "nx")
+                                    name "lf", SeedEntry.Symlink (target "f", None)
+                                    name "dang", SeedEntry.Symlink (target "nx", None)
                                 ]
                     }
                 AppContext = AppContextProperties.empty
@@ -1023,7 +1037,7 @@ module TestImpureCases =
                                 [
                                     name "f",
                                     SeedEntry.file (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
-                                    name "lf", SeedEntry.Symlink (target "f")
+                                    name "lf", SeedEntry.Symlink (target "f", None)
                                     // U+00DF then 'x': three UTF-8 bytes,
                                     // C3 9F 78, so that a one- or two-byte
                                     // truncation lands *inside* the first
@@ -1032,7 +1046,7 @@ module TestImpureCases =
                                     // a correct one on every ASCII target, and
                                     // ASCII is all the oracle's seed validator
                                     // permits.
-                                    name "mb", SeedEntry.Symlink (target "ßx")
+                                    name "mb", SeedEntry.Symlink (target "ßx", None)
                                 ]
                     }
                 AppContext = AppContextProperties.empty
@@ -1186,15 +1200,15 @@ module TestImpureCases =
                             Map.ofList
                                 [
                                     name "f", SeedEntry.file (bytes "hello")
-                                    name "ro", SeedEntry.File (bytes "hello", mode 0o444)
-                                    name "wo", SeedEntry.File (bytes "hello", mode 0o200)
+                                    name "ro", SeedEntry.File (bytes "hello", mode 0o444, None)
+                                    name "wo", SeedEntry.File (bytes "hello", mode 0o200, None)
                                     // Set-user-ID; set-group-ID on a
                                     // group-executable file, which is the shape
                                     // whose bit a write strips; and sticky, which
                                     // it must not.
-                                    name "suid", SeedEntry.File (bytes "hello", mode 0o4755)
-                                    name "sgid", SeedEntry.File (bytes "hello", mode 0o2755)
-                                    name "sticky", SeedEntry.File (bytes "hello", mode 0o1755)
+                                    name "suid", SeedEntry.File (bytes "hello", mode 0o4755, None)
+                                    name "sgid", SeedEntry.File (bytes "hello", mode 0o2755, None)
+                                    name "sticky", SeedEntry.File (bytes "hello", mode 0o1755, None)
                                 ]
                     }
                 AppContext = AppContextProperties.empty
@@ -1977,9 +1991,9 @@ module TestImpureCases =
 
                             Map.ofList
                                 [
-                                    name "setuid", SeedEntry.File (bytes "x", mode 0o4755)
-                                    name "setgid", SeedEntry.File (bytes "x", mode 0o2755)
-                                    name "sticky", SeedEntry.Directory (Map.empty, mode 0o1777)
+                                    name "setuid", SeedEntry.File (bytes "x", mode 0o4755, None)
+                                    name "setgid", SeedEntry.File (bytes "x", mode 0o2755, None)
+                                    name "sticky", SeedEntry.Directory (Map.empty, mode 0o1777, None)
                                     name "plain", SeedEntry.file (bytes "x")
                                 ]
                     }
@@ -2019,7 +2033,7 @@ module TestImpureCases =
                                             else
                                                 $"%s{prefix}%d{i + 1}"
 
-                                        yield name $"%s{prefix}%d{i}", SeedEntry.Symlink (target next)
+                                        yield name $"%s{prefix}%d{i}", SeedEntry.Symlink (target next, None)
 
                                     yield name $"%s{prefix}target", SeedEntry.file ImmutableArray<byte>.Empty
                                 ]
@@ -2203,8 +2217,10 @@ module TestImpureCases =
                             // `pathLimits`, so that this test disagrees with a
                             // wrong PATH_MAX instead of agreeing with it.
                             [
-                                DirectoryEntryName.parseOrFail "test seed" "atMax", SeedEntry.Symlink (dangling 1021)
-                                DirectoryEntryName.parseOrFail "test seed" "overMax", SeedEntry.Symlink (dangling 1022)
+                                DirectoryEntryName.parseOrFail "test seed" "atMax",
+                                SeedEntry.Symlink (dangling 1021, None)
+                                DirectoryEntryName.parseOrFail "test seed" "overMax",
+                                SeedEntry.Symlink (dangling 1022, None)
                             ]
                             |> Map.ofList
                     }
@@ -3087,13 +3103,11 @@ module TestImpureCases =
                 ExpectsUnhandledException = false
                 AssertTerminalState =
                     Some (fun state ->
-                        let enabled = SignalState.enabled state.Kernel.Signals
                         // SIGINFO and SIGIO took the PAL's default arm, which
                         // restored SIG_DFL: no later occurrence reaches
-                        // managed code, which the model records as the
-                        // enable bit cleared. SIGURG has an explicit arm and
-                        // keeps its handler.
-                        enabled |> shouldEqual (Set.ofList [ Signal.SIGURG ])
+                        // managed code. SIGURG has an explicit arm and keeps
+                        // System.Native's handler.
+                        caughtBySystemNative state |> shouldEqual (Set.ofList [ Signal.SIGURG ])
                     )
             }
             {
@@ -3114,7 +3128,7 @@ module TestImpureCases =
                         // PAL's switch, so handling them leaves their
                         // handlers installed; SIGRTMAX was disabled by the
                         // guest itself.
-                        SignalState.enabled state.Kernel.Signals
+                        caughtBySystemNative state
                         |> shouldEqual (Set.ofList [ Signal.SIGCHLD ; Signal.SIGURG ])
                     )
             }
@@ -3333,7 +3347,8 @@ module TestImpureCases =
                 | RunOutcome.Aborted (_, _, fatal) ->
                     let m = fatal.Message |> Option.defaultValue "<no message>"
                     failwith $"Guest aborted (%O{fatal.Code}): %s{m}"
-                | RunOutcome.SignalTerminated (_, signal) -> failwith $"Guest was terminated by POSIX signal %O{signal}"
+                | RunOutcome.SignalTerminated (_, signal, _) ->
+                    failwith $"Guest was terminated by POSIX signal %O{signal}"
                 | RunOutcome.NormalExit (state, _) -> state
                 | RunOutcome.ProcessExit (state, _) -> state
 

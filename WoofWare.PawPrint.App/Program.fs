@@ -246,25 +246,24 @@ module AppProgram =
                         FatalErrorCode.toHResult fatal.Code
                     else
                         134
-                | RunOutcome.SignalTerminated (state, signal) ->
-                    // pal_signal.c's Terminate branch restores the original
-                    // sigaction and calls `kill(g_pid, signalCode)`, so the
-                    // host shell observes the process as having exited with
-                    // the POSIX-conventional code `128 + signo`. Mirror that
-                    // here so guests that install a signal handler and
-                    // forward to the default disposition observe the same
-                    // shell-level exit code as a real .NET process — under the
-                    // numbering of the platform the guest simulated, which is
-                    // the shell that process would have had.
+                | RunOutcome.SignalTerminated (state, signal, coreDumped) ->
+                    // A real process killed by a signal reaches its parent
+                    // as `WIFSIGNALED`, which a shell and .NET's
+                    // `Process.ExitCode` both render as `128 + signo`. This
+                    // host exits with that code rather than dying of the
+                    // signal itself, under the numbering of the platform the
+                    // guest simulated, which is the shell that process would
+                    // have had.
                     drainRemaining state
 
                     let signo =
                         Signal.toRawSignoUnder (SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform) signal
 
                     logger.LogInformation (
-                        "Guest terminated by POSIX signal {SignalName} (signo {Signo}); exiting with code {ExitCode}",
+                        "Guest terminated by POSIX signal {SignalName} (signo {Signo}, core dumped: {CoreDumped}); exiting with code {ExitCode}",
                         sprintf "%O" signal,
                         signo,
+                        coreDumped,
                         128 + signo
                     )
 

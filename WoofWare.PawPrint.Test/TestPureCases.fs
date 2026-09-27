@@ -115,8 +115,8 @@ module TestPureCases =
                 [
                     name "f", file "hello"
                     name "d", SeedEntry.directory (Map.ofList [ name "g", file "nested" ])
-                    name "lf", SeedEntry.Symlink (target "f")
-                    name "ld", SeedEntry.Symlink (target "d")
+                    name "lf", SeedEntry.Symlink (target "f", None)
+                    name "ld", SeedEntry.Symlink (target "d", None)
                 ]
 
         [
@@ -125,9 +125,9 @@ module TestPureCases =
                 [
                     name "f", file "hello"
                     name "d", SeedEntry.directory (Map.ofList [ name "g", file "nested" ])
-                    name "lf", SeedEntry.Symlink (target "f")
-                    name "ld", SeedEntry.Symlink (target "d")
-                    name "dang", SeedEntry.Symlink (target "nx")
+                    name "lf", SeedEntry.Symlink (target "f", None)
+                    name "ld", SeedEntry.Symlink (target "d", None)
+                    name "dang", SeedEntry.Symlink (target "nx", None)
                     // A leading dot, which is the whole of what "hidden" means
                     // on Unix.
                     name ".hidden", file "x"
@@ -140,11 +140,11 @@ module TestPureCases =
             Map.ofList
                 [
                     name "default", file "hello"
-                    name "private", SeedEntry.File (bytes "hello", mode 0o600)
-                    name "shared", SeedEntry.File (bytes "hello", mode 0o666)
-                    name "readonly", SeedEntry.File (bytes "hello", mode 0o444)
+                    name "private", SeedEntry.File (bytes "hello", mode 0o600, None)
+                    name "shared", SeedEntry.File (bytes "hello", mode 0o666, None)
+                    name "readonly", SeedEntry.File (bytes "hello", mode 0o444, None)
                     name "dir", SeedEntry.directory Map.empty
-                    name "narrow", SeedEntry.Directory (Map.empty, mode 0o711)
+                    name "narrow", SeedEntry.Directory (Map.empty, mode 0o711, None)
                     // Non-empty *and* not writable by its owner, which is the
                     // one shape that makes the oracle's materialisation order
                     // observable: the child has to be created before the mode
@@ -152,30 +152,30 @@ module TestPureCases =
                     // process running as root bypasses that check, so on a root
                     // CI runner this seed exercises the order without being
                     // able to falsify it — the test still passes either way.)
-                    name "locked", SeedEntry.Directory (Map.ofList [ name "inside", file "within" ], mode 0o555)
+                    name "locked", SeedEntry.Directory (Map.ofList [ name "inside", file "within" ], mode 0o555, None)
                 ]
             "FileExistsSeeded.cs",
             Map.ofList
                 [
                     name "f", file "hello"
                     name "d", SeedEntry.directory (Map.ofList [ name "g", file "nested" ])
-                    name "lf", SeedEntry.Symlink (target "f")
-                    name "ld", SeedEntry.Symlink (target "d")
-                    name "dang", SeedEntry.Symlink (target "nx")
-                    name "cyc", SeedEntry.Symlink (target "cyc")
+                    name "lf", SeedEntry.Symlink (target "f", None)
+                    name "ld", SeedEntry.Symlink (target "d", None)
+                    name "dang", SeedEntry.Symlink (target "nx", None)
+                    name "cyc", SeedEntry.Symlink (target "cyc", None)
                 ]
             "SystemNativeReadLink.cs",
             Map.ofList
                 [
                     name "f", file "hello"
                     name "d", SeedEntry.directory Map.empty
-                    name "lf", SeedEntry.Symlink (target "f")
+                    name "lf", SeedEntry.Symlink (target "f", None)
                     // Six bytes, so that "exactly the target", "one byte more"
                     // and "one byte less" are three different buffer sizes.
                     // Dangling on purpose: `readlink` reports a target without
                     // resolving it, and a target that existed would let a
                     // handler that answered from the *resolved* file pass.
-                    name "five", SeedEntry.Symlink (target "hello5")
+                    name "five", SeedEntry.Symlink (target "hello5", None)
                 ]
             // Both open-path guests want the same tree, and deliberately share
             // one: the raw guest pins the syscall contract and the managed one
@@ -189,8 +189,8 @@ module TestPureCases =
                     name "held", file "payload"
                     name "f2", file "two"
                     name "d", SeedEntry.directory (Map.ofList [ name "g", file "nested" ])
-                    name "lg", SeedEntry.Symlink (target "g")
-                    name "dang", SeedEntry.Symlink (target "nx")
+                    name "lg", SeedEntry.Symlink (target "g", None)
+                    name "dang", SeedEntry.Symlink (target "nx", None)
                 ]
             "ChDirSeeded.cs",
             Map.ofList
@@ -198,7 +198,7 @@ module TestPureCases =
                     name "f", file "top"
                     name "d", SeedEntry.directory (Map.ofList [ name "g", file "inside" ])
                     // Entering this must leave the process in `d`, not in `ld`.
-                    name "ld", SeedEntry.Symlink (target "d")
+                    name "ld", SeedEntry.Symlink (target "d", None)
                 ]
             "RmDirSeeded.cs",
             Map.ofList
@@ -208,8 +208,8 @@ module TestPureCases =
                     name "f", file "hello"
                     // To a directory, so that following it would destroy `full`
                     // rather than merely answering the wrong errno.
-                    name "ld", SeedEntry.Symlink (target "full")
-                    name "dang", SeedEntry.Symlink (target "nx")
+                    name "ld", SeedEntry.Symlink (target "full", None)
+                    name "dang", SeedEntry.Symlink (target "nx", None)
                     // Two levels, so that "nav/kid/." reaches a directory that
                     // is not the root -- the flavours agree there and diverge at
                     // the root itself.
@@ -225,18 +225,18 @@ module TestPureCases =
                 [
                     name "f", file "hello"
                     name "d", SeedEntry.directory Map.empty
-                    name "lf", SeedEntry.Symlink (target "f")
-                    name "ld", SeedEntry.Symlink (target "d")
+                    name "lf", SeedEntry.Symlink (target "f", None)
+                    name "ld", SeedEntry.Symlink (target "d", None)
                     // A link to a link, so that following to the final target
                     // has to iterate rather than merely dereference once.
-                    name "l2", SeedEntry.Symlink (target "lf")
-                    name "dang", SeedEntry.Symlink (target "nx")
-                    name "cyc", SeedEntry.Symlink (target "cyc")
+                    name "l2", SeedEntry.Symlink (target "lf", None)
+                    name "dang", SeedEntry.Symlink (target "nx", None)
+                    name "cyc", SeedEntry.Symlink (target "cyc", None)
                     // Longer than the 256-byte stackalloc `Interop.Sys.ReadLink`
                     // starts with, so reading it at all requires the truncating
                     // first call and the grown retry. NAME_MAX does not apply:
                     // this is a link's *target*, not anything's name.
-                    name "long", SeedEntry.Symlink (target (String.replicate 300 "a"))
+                    name "long", SeedEntry.Symlink (target (String.replicate 300 "a"), None)
                 ]
             "ReadAllBytesSeeded.cs",
             Map.ofList
@@ -260,12 +260,12 @@ module TestPureCases =
                 [
                     name "f", file "hello"
                     name "d", SeedEntry.directory Map.empty
-                    name "lf", SeedEntry.Symlink (target "f")
+                    name "lf", SeedEntry.Symlink (target "f", None)
                     // The link the plain-O_CREAT row follows: creating through it
                     // must bind "viadangtarget", not replace the link.
-                    name "viadang", SeedEntry.Symlink (target "viadangtarget")
-                    name "dang", SeedEntry.Symlink (target "nx")
-                    name "cyc", SeedEntry.Symlink (target "cyc")
+                    name "viadang", SeedEntry.Symlink (target "viadangtarget", None)
+                    name "dang", SeedEntry.Symlink (target "nx", None)
+                    name "cyc", SeedEntry.Symlink (target "cyc", None)
                 ]
             "PosixFAdviseSeeded.cs",
             Map.ofList
@@ -289,13 +289,13 @@ module TestPureCases =
                     // The symlink O_TRUNC follows: its *target* is what must end
                     // up empty, and the two names are distinct so that following
                     // it can be told from replacing it.
-                    name "lf", SeedEntry.Symlink (target "f2")
+                    name "lf", SeedEntry.Symlink (target "f2", None)
                     name "f2", file "hello"
                     // The pair the refusal rows read back: a refused open must
                     // leave "keep" exactly as it was, whether it was refused for
                     // EEXIST or (through the link, under O_NOFOLLOW) for ELOOP.
                     name "keep", file "hello"
-                    name "lkeep", SeedEntry.Symlink (target "keep")
+                    name "lkeep", SeedEntry.Symlink (target "keep", None)
                     // All four BCL rows need a *non-empty* file to start from:
                     // `SafeFileHandle.Init` swallows EINVAL and EBADF from
                     // FTruncate, so a wrongly-refused truncation shows up only as
@@ -335,12 +335,12 @@ module TestPureCases =
                             [
                                 name "a", file "aaa"
                                 name "sub", SeedEntry.directory (Map.ofList [ name "z", file "zzz" ])
-                                name "ls", SeedEntry.Symlink (target "a")
+                                name "ls", SeedEntry.Symlink (target "a", None)
                             ]
                     )
                     name "f", file "hello"
-                    name "ld", SeedEntry.Symlink (target "d")
-                    name "dang", SeedEntry.Symlink (target "nx")
+                    name "ld", SeedEntry.Symlink (target "d", None)
+                    name "dang", SeedEntry.Symlink (target "nx", None)
                     name "gone", SeedEntry.directory Map.empty
                     name "del",
                     SeedEntry.directory (
@@ -356,13 +356,13 @@ module TestPureCases =
                 [
                     name "f", file "hello"
                     name "d", SeedEntry.directory (Map.ofList [ name "g", file "nested" ])
-                    name "lf", SeedEntry.Symlink (target "f")
-                    name "ld", SeedEntry.Symlink (target "d")
+                    name "lf", SeedEntry.Symlink (target "f", None)
+                    name "ld", SeedEntry.Symlink (target "d", None)
                     // A dangling link and a cyclic one: `mkdir` answers EEXIST
                     // for both, which is what says it never dereferences the
                     // name it is about to bind.
-                    name "dang", SeedEntry.Symlink (target "nx")
-                    name "cyc", SeedEntry.Symlink (target "cyc")
+                    name "dang", SeedEntry.Symlink (target "nx", None)
+                    name "cyc", SeedEntry.Symlink (target "cyc", None)
                 ]
             "FlockContentionSeeded.cs",
             Map.ofList
@@ -373,7 +373,7 @@ module TestPureCases =
                     name "g", file "other"
                     // Another path to `f`. Locks are keyed on the resolved
                     // inode, not on the path used to reach it.
-                    name "lf", SeedEntry.Symlink (target "f")
+                    name "lf", SeedEntry.Symlink (target "f", None)
                 ]
         ]
         |> Map.ofList
@@ -508,7 +508,7 @@ module TestPureCases =
             | RunOutcome.NormalExit (state, _)
             | RunOutcome.ProcessExit (state, _)
             | RunOutcome.Aborted (state, _, _)
-            | RunOutcome.SignalTerminated (state, _)
+            | RunOutcome.SignalTerminated (state, _, _)
             | RunOutcome.GuestUnhandledException (state, _, _) -> state
 
         EmulatedKernel.checkTaskInvariants (state.ThreadState |> Map.map (fun _ ts -> ts.Status)) state.Kernel
@@ -780,7 +780,7 @@ class Program
                 | RunOutcome.Aborted (_, _, fatal) ->
                     let m = fatal.Message |> Option.defaultValue "<no message>"
                     failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
-                | RunOutcome.SignalTerminated (_, signal) ->
+                | RunOutcome.SignalTerminated (_, signal, _) ->
                     failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
                 | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
                     failwith $"guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
@@ -841,7 +841,7 @@ class Program
                 | RunOutcome.Aborted (_, _, fatal) ->
                     let m = fatal.Message |> Option.defaultValue "<no message>"
                     failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
-                | RunOutcome.SignalTerminated (_, signal) ->
+                | RunOutcome.SignalTerminated (_, signal, _) ->
                     failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
                 | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
                     failwith $"guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
@@ -896,7 +896,7 @@ class Program
                 | RunOutcome.Aborted (_, _, fatal) ->
                     let m = fatal.Message |> Option.defaultValue "<no message>"
                     failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
-                | RunOutcome.SignalTerminated (_, signal) ->
+                | RunOutcome.SignalTerminated (_, signal, _) ->
                     failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
                 | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
                     failwith $"guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
@@ -938,7 +938,7 @@ class Program
                 | RunOutcome.Aborted (_, _, fatal) ->
                     let m = fatal.Message |> Option.defaultValue "<no message>"
                     failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
-                | RunOutcome.SignalTerminated (_, signal) ->
+                | RunOutcome.SignalTerminated (_, signal, _) ->
                     failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
                 | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
                     failwith $"guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
@@ -971,7 +971,7 @@ class Program
                     fatal.Message |> shouldEqual (Some "boom")
                 | RunOutcome.NormalExit _ -> failwith "expected FailFast, got normal exit"
                 | RunOutcome.ProcessExit _ -> failwith "expected FailFast, got process exit"
-                | RunOutcome.SignalTerminated (_, signal) ->
+                | RunOutcome.SignalTerminated (_, signal, _) ->
                     failwith $"expected FailFast, got POSIX signal termination: %O{signal}"
                 | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
                     failwith
@@ -1101,7 +1101,7 @@ class Program
         | RunOutcome.Aborted (_, _, fatal) ->
             let m = fatal.Message |> Option.defaultValue "<no message>"
             failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
-        | RunOutcome.SignalTerminated (_, signal) ->
+        | RunOutcome.SignalTerminated (_, signal, _) ->
             failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
         | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
             failwith $"guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"

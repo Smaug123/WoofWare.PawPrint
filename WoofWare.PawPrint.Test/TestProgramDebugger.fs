@@ -75,7 +75,7 @@ class Program
         | RunOutcome.NormalExit (state, _)
         | RunOutcome.ProcessExit (state, _) -> OutcomeSignature.ExitCode state.LatchedExitCode
         | RunOutcome.Aborted (_, _, fatal) -> OutcomeSignature.Aborted (fatal.Code, fatal.Message)
-        | RunOutcome.SignalTerminated (_, signal) -> OutcomeSignature.SignalTerminated signal
+        | RunOutcome.SignalTerminated (_, signal, _) -> OutcomeSignature.SignalTerminated signal
         | RunOutcome.GuestUnhandledException _ -> OutcomeSignature.GuestUnhandledException
 
     let private stepToCompletion

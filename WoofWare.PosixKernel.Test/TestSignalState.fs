@@ -47,7 +47,7 @@ module TestSignalState =
     /// `obj` handler would make the equality constraint vacuous and the tests
     /// below would stop saying anything about it.
     let private initial (numbering : SignalNumbering) : SignalState<TestTask, TestHandler> =
-        SignalState.initial numbering
+        SignalState.initial numbering Set.empty
 
     /// Most of the operations' behaviour does not depend on the numbering at
     /// all; those tests run on this instance and rely on the property test to
@@ -117,59 +117,112 @@ module TestSignalState =
 
     let private liveThreads (threads : TestTask list) : ImmutableArray<TestTask> = threads |> ImmutableArray.CreateRange
 
+    let private handler : TestHandler = TestHandler "h"
+
+    let private catch : SignalDisposition<TestHandler> = SignalDisposition.Catch handler
+
+    /// Install `handler` for `signal`, as `sigaction` with a handler does.
+    let private enable (signal : Signal) (s : SignalState<TestTask, TestHandler>) : SignalState<TestTask, TestHandler> =
+        SignalState.setDisposition signal catch s
+
+    /// Restore `signal`'s default, as `sigaction` with `SIG_DFL` does.
+    let private restoreDefault
+        (signal : Signal)
+        (s : SignalState<TestTask, TestHandler>)
+        : SignalState<TestTask, TestHandler>
+        =
+        SignalState.setDisposition signal SignalDisposition.Default s
+
     // ------------------------- Unit tests ------------------------- //
 
     [<Test>]
-    let ``initial has nothing enabled, nothing blocked, nothing pending`` () : unit =
+    let ``initial has every signal at its default, nothing blocked, nothing pending`` () : unit =
         for numbering in everyNumbering do
             let s = initial numbering
             SignalState.numbering s |> shouldEqual numbering
-            SignalState.isEnabled Signal.SIGINT s |> shouldEqual false
+            SignalState.disposition Signal.SIGINT s |> shouldEqual SignalDisposition.Default
             SignalState.isBlocked t0 Signal.SIGINT s |> shouldEqual false
             SignalState.blockedFor t0 s |> shouldEqual Set.empty
             SignalState.pending s |> Seq.toList |> shouldEqual []
-            SignalState.enabled s |> shouldEqual Set.empty
+            SignalState.dispositions s |> shouldEqual Map.empty
 
     [<Test>]
-    let ``enable flips a signal's bit on`` () : unit =
-        let s = empty |> SignalState.enable Signal.SIGINT
-        SignalState.isEnabled Signal.SIGINT s |> shouldEqual true
-        SignalState.isEnabled Signal.SIGHUP s |> shouldEqual false
-        SignalState.enabled s |> shouldEqual (Set.singleton Signal.SIGINT)
+    let ``initial ignores exactly the inherited ignores, in their canonical spelling`` () : unit =
+        for numbering in everyNumbering do
+            let spelt = Signal.Other (Signal.toRawSignoUnder numbering Signal.SIGHUP)
+
+            let s : SignalState<TestTask, TestHandler> =
+                SignalState.initial numbering (Set.ofList [ spelt ; Signal.SIGUSR2 ])
+
+            SignalState.dispositions s
+            |> shouldEqual (
+                Map.ofList
+                    [
+                        Signal.SIGHUP, SignalDisposition.Ignore
+                        Signal.SIGUSR2, SignalDisposition.Ignore
+                    ]
+            )
+
+            SignalState.disposition Signal.SIGHUP s |> shouldEqual SignalDisposition.Ignore
+            SignalState.disposition Signal.SIGINT s |> shouldEqual SignalDisposition.Default
 
     [<Test>]
-    let ``enable is idempotent`` () : unit =
-        let once = empty |> SignalState.enable Signal.SIGINT
-        let twice = once |> SignalState.enable Signal.SIGINT
+    let ``initial refuses an inherited ignore of SIGKILL or SIGSTOP`` () : unit =
+        for numbering in everyNumbering do
+            let stop =
+                match numbering with
+                | SignalNumbering.Linux -> 19
+                | SignalNumbering.Darwin -> 17
+
+            for raw in [ 9 ; stop ] do
+                Assert.Throws (fun () ->
+                    SignalState.initial numbering (Set.singleton (Signal.Other raw))
+                    |> ignore<SignalState<TestTask, TestHandler>>
+                )
+                |> ignore<exn>
+
+    [<Test>]
+    let ``setDisposition installs a handler`` () : unit =
+        let s = empty |> enable Signal.SIGINT
+        SignalState.disposition Signal.SIGINT s |> shouldEqual catch
+        SignalState.disposition Signal.SIGHUP s |> shouldEqual SignalDisposition.Default
+        SignalState.dispositions s |> shouldEqual (Map.ofList [ Signal.SIGINT, catch ])
+
+    [<Test>]
+    let ``setDisposition is idempotent`` () : unit =
+        let once = empty |> enable Signal.SIGINT
+        let twice = once |> enable Signal.SIGINT
         twice |> shouldEqual once
 
     [<Test>]
-    let ``disable clears a previously enabled signal`` () : unit =
-        let s =
-            empty |> SignalState.enable Signal.SIGINT |> SignalState.disable Signal.SIGINT
+    let ``a second handler replaces the first`` () : unit =
+        let other = SignalDisposition.Catch (TestHandler "other")
 
-        SignalState.isEnabled Signal.SIGINT s |> shouldEqual false
+        let s =
+            empty |> enable Signal.SIGINT |> SignalState.setDisposition Signal.SIGINT other
+
+        SignalState.disposition Signal.SIGINT s |> shouldEqual other
 
     [<Test>]
-    let ``disable of an unenabled signal is a no-op`` () : unit =
-        let s = empty |> SignalState.disable Signal.SIGINT
+    let ``restoring the default of a signal at its default is a no-op`` () : unit =
+        let s = empty |> restoreDefault Signal.SIGINT
         s |> shouldEqual empty
 
     [<Test>]
-    let ``enable then disable collapses to the initial state`` () : unit =
-        // Mirrors the unblock/empty-mask collapse: an enable followed by a
-        // matching disable must be structurally identical to never having
-        // enabled. Without this, state dedup in the debugger would
-        // distinguish two semantically-equivalent states.
-        let enabledThenDisabled =
-            empty |> SignalState.enable Signal.SIGINT |> SignalState.disable Signal.SIGINT
+    let ``a handler then the default collapses to the initial state`` () : unit =
+        // Mirrors the unblock/empty-mask collapse: installing a handler and
+        // then restoring the default must be structurally identical to never
+        // having installed one. Without this, state dedup in the debugger
+        // would distinguish two semantically-equivalent states.
+        let caughtThenRestored =
+            empty |> enable Signal.SIGINT |> restoreDefault Signal.SIGINT
 
-        enabledThenDisabled |> shouldEqual empty
+        caughtThenRestored |> shouldEqual empty
 
     [<Test>]
-    let ``disable leaves a pending entry queued, and its kernel default then applies`` () : unit =
-        // Removing the disposition while a signal is pending doesn't drop
-        // the signal — it remains queued, and delivery applies whatever the
+    let ``restoring a terminating default leaves a pending entry queued, and the default then applies`` () : unit =
+        // Removing the handler while a signal is pending doesn't drop the
+        // signal — it remains queued, and delivery applies whatever the
         // disposition is at that moment: SIGINT's kernel default is to
         // terminate the process.
         let entry =
@@ -180,14 +233,18 @@ module TestSignalState =
 
         let s =
             empty
-            |> SignalState.enable Signal.SIGINT
+            |> enable Signal.SIGINT
             |> SignalState.enqueue entry
-            |> SignalState.disable Signal.SIGINT
+            |> restoreDefault Signal.SIGINT
 
         SignalState.pending s |> Seq.toList |> shouldEqual [ entry ]
 
-        let delivery, s' = SignalState.nextDelivery (liveThreads [ t0 ]) s
-        delivery |> shouldEqual (Some (SignalDelivery.DefaultTerminate Signal.SIGINT))
+        let delivery, s' =
+            SignalState.nextDelivery CoreDumps.Suppressed (liveThreads [ t0 ]) s
+
+        delivery
+        |> shouldEqual (Some (SignalDelivery.DefaultTerminate (Signal.SIGINT, false)))
+
         SignalState.pending s' |> shouldEqual []
 
     [<Test>]
@@ -198,10 +255,10 @@ module TestSignalState =
                 Target = ValueNone
             }
 
-        let s = empty |> SignalState.enqueue entry |> SignalState.enable Signal.SIGINT
+        let s = empty |> SignalState.enqueue entry |> enable Signal.SIGINT
 
-        match SignalState.nextDelivery (liveThreads [ t0 ]) s with
-        | Some (SignalDelivery.RunHandler (e, tid)), s' ->
+        match SignalState.nextDelivery CoreDumps.Suppressed (liveThreads [ t0 ]) s with
+        | Some (SignalDelivery.RunHandler (e, tid, _)), s' ->
             e |> shouldEqual entry
             tid |> shouldEqual t0
             SignalState.pending s' |> Seq.toList |> shouldEqual []
@@ -271,10 +328,10 @@ module TestSignalState =
                 blocked |> SignalState.unblock t0 signal |> shouldEqual (initial numbering)
 
                 if not (Signal.isUncatchableUnder numbering spelt) then
-                    let enabled = initial numbering |> SignalState.enable spelt
-                    SignalState.isEnabled signal enabled |> shouldEqual true
-                    SignalState.enabled enabled |> shouldEqual (Set.singleton signal)
-                    enabled |> SignalState.disable signal |> shouldEqual (initial numbering)
+                    let caught = initial numbering |> enable spelt
+                    SignalState.disposition signal caught |> shouldEqual catch
+                    SignalState.dispositions caught |> shouldEqual (Map.ofList [ signal, catch ])
+                    caught |> restoreDefault signal |> shouldEqual (initial numbering)
 
     [<Test>]
     let ``enqueue stores the canonical spelling`` () : unit =
@@ -282,10 +339,10 @@ module TestSignalState =
             for signal in namedSignals do
                 let spelt = Signal.Other (Signal.toRawSignoUnder numbering signal)
 
-                // Enabled first (every named case is catchable), so the
+                // Caught first (every named case is catchable), so the
                 // ignore-default rows are not discarded at generation and
                 // every row exercises the storage path.
-                let start = initial numbering |> SignalState.enable signal
+                let start = initial numbering |> enable signal
 
                 let viaSpelling =
                     start
@@ -367,25 +424,37 @@ module TestSignalState =
             for signal in unblockableSpellings numbering do
                 SignalState.isBlocked t0 signal s |> shouldEqual false
 
-    [<Test>]
-    let ``enable refuses a signal sigaction cannot install a handler for`` () : unit =
-        for numbering in everyNumbering do
-            for signal in unblockableSpellings numbering do
-                // The unblockable spellings are exactly the uncatchable ones
-                // today (SIGKILL, SIGSTOP, glibc's 32/33), so they double as
-                // the enable-refusal cases.
-                Signal.isUncatchableUnder numbering signal |> shouldEqual true
-
-                Assert.Throws (fun () -> initial numbering |> SignalState.enable signal |> ignore<SignalState<_, _>>)
-                |> ignore<exn>
+    /// SIGKILL's number and SIGSTOP's under this numbering: the signals for
+    /// which the kernel refuses any disposition but the default.
+    let private kernelUncatchable (numbering : SignalNumbering) : Signal list =
+        match numbering with
+        | SignalNumbering.Linux -> [ Signal.Other 9 ; Signal.Other 19 ]
+        | SignalNumbering.Darwin -> [ Signal.Other 9 ; Signal.Other 17 ]
 
     [<Test>]
-    let ``disable of an uncatchable signal is the ordinary not-enabled no-op`` () : unit =
+    let ``setDisposition refuses every disposition for SIGKILL and SIGSTOP`` () : unit =
         for numbering in everyNumbering do
-            for signal in unblockableSpellings numbering do
-                initial numbering
-                |> SignalState.disable signal
-                |> shouldEqual (initial numbering)
+            for signal in kernelUncatchable numbering do
+                for disposition in [ SignalDisposition.Default ; SignalDisposition.Ignore ; catch ] do
+                    Assert.Throws (fun () ->
+                        initial numbering
+                        |> SignalState.setDisposition signal disposition
+                        |> ignore<SignalState<_, _>>
+                    )
+                    |> ignore<exn>
+
+    [<Test>]
+    let ``setDisposition accepts glibc's reserved 32 and 33, which only glibc's sigaction refuses`` () : unit =
+        // The kernel holds a handler for 33 in every process glibc's
+        // setxid machinery has run in; it is glibc's own sigaction wrapper
+        // that refuses the pair, and a client modelling that wrapper screens
+        // with Signal.isUncatchableUnder first.
+        for raw in [ 32 ; 33 ] do
+            Signal.isUncatchableUnder SignalNumbering.Linux (Signal.Other raw)
+            |> shouldEqual true
+
+            let s = initial SignalNumbering.Linux |> enable (Signal.Other raw)
+            SignalState.disposition (Signal.Other raw) s |> shouldEqual catch
 
     [<Test>]
     let ``every operation refuses a number that is not a signal under the numbering`` () : unit =
@@ -400,13 +469,19 @@ module TestSignalState =
                 let signal = Signal.Other raw
                 let s = initial numbering
 
-                Assert.Throws (fun () -> SignalState.enable signal s |> ignore<SignalState<_, _>>)
+                Assert.Throws (fun () -> enable signal s |> ignore<SignalState<_, _>>)
                 |> ignore<exn>
 
-                Assert.Throws (fun () -> SignalState.disable signal s |> ignore<SignalState<_, _>>)
+                Assert.Throws (fun () -> restoreDefault signal s |> ignore<SignalState<_, _>>)
                 |> ignore<exn>
 
-                Assert.Throws (fun () -> SignalState.isEnabled signal s |> ignore<bool>)
+                Assert.Throws (fun () -> SignalState.disposition signal s |> ignore<SignalDisposition<_>>)
+                |> ignore<exn>
+
+                Assert.Throws (fun () ->
+                    SignalState.initial numbering (Set.singleton signal)
+                    |> ignore<SignalState<TestTask, TestHandler>>
+                )
                 |> ignore<exn>
 
                 Assert.Throws (fun () -> SignalState.block t0 signal s |> ignore<SignalState<_, _>>)
@@ -554,11 +629,11 @@ module TestSignalState =
         SignalState.pending s |> shouldEqual [ rt ; rt ; rt ]
 
         // And each queued instance delivers separately.
-        let s = s |> SignalState.enable (Signal.Other 36)
+        let s = s |> enable (Signal.Other 36)
 
         let s =
-            match SignalState.nextDelivery (liveThreads [ t0 ]) s with
-            | Some (SignalDelivery.RunHandler (e, _)), s' ->
+            match SignalState.nextDelivery CoreDumps.Suppressed (liveThreads [ t0 ]) s with
+            | Some (SignalDelivery.RunHandler (e, _, _)), s' ->
                 e |> shouldEqual rt
                 s'
             | other, _ -> failwith $"expected the first real-time instance to deliver, got %A{other}"
@@ -588,14 +663,14 @@ module TestSignalState =
 
         let buildA () =
             empty
-            |> SignalState.enable Signal.SIGINT
+            |> enable Signal.SIGINT
             |> SignalState.block t0 Signal.SIGTERM
             |> SignalState.enqueue entryA
             |> SignalState.enqueue entryB
 
         let buildB () =
             empty
-            |> SignalState.enable Signal.SIGINT
+            |> enable Signal.SIGINT
             |> SignalState.block t0 Signal.SIGTERM
             |> SignalState.enqueue entryA
             |> SignalState.enqueue entryB
@@ -610,12 +685,12 @@ module TestSignalState =
         // nextDelivery rebuilds the pending list from a skipped/tail
         // split.
         let drainedFromA =
-            match SignalState.nextDelivery (liveThreads [ t0 ; t1 ]) a with
+            match SignalState.nextDelivery CoreDumps.Suppressed (liveThreads [ t0 ; t1 ]) a with
             | Some (SignalDelivery.RunHandler _), s' -> s'
             | other, _ -> failwith $"expected a handler delivery from buildA, got %A{other}"
 
         let drainedFromB =
-            match SignalState.nextDelivery (liveThreads [ t0 ; t1 ]) b with
+            match SignalState.nextDelivery CoreDumps.Suppressed (liveThreads [ t0 ; t1 ]) b with
             | Some (SignalDelivery.RunHandler _), s' -> s'
             | other, _ -> failwith $"expected a handler delivery from buildB, got %A{other}"
 
@@ -635,8 +710,10 @@ module TestSignalState =
                         Target = ValueNone
                     }
 
-            let delivery, s' = SignalState.nextDelivery (liveThreads [ t0 ]) s
-            delivery |> shouldEqual (Some (SignalDelivery.DefaultTerminate signal))
+            let delivery, s' =
+                SignalState.nextDelivery CoreDumps.Suppressed (liveThreads [ t0 ]) s
+
+            delivery |> shouldEqual (Some (SignalDelivery.DefaultTerminate (signal, false)))
             SignalState.pending s' |> shouldEqual []
 
     [<Test>]
@@ -648,7 +725,7 @@ module TestSignalState =
                     Signal = signal
                     Target = ValueNone
                 }
-            |> SignalState.nextDelivery (liveThreads [ t0 ])
+            |> SignalState.nextDelivery CoreDumps.Suppressed (liveThreads [ t0 ])
             |> fst
 
         deliveryFor Signal.SIGTSTP
@@ -675,7 +752,9 @@ module TestSignalState =
                     Target = ValueNone
                 }
 
-        let delivery, s' = SignalState.nextDelivery (liveThreads [ t0 ]) s
+        let delivery, s' =
+            SignalState.nextDelivery CoreDumps.Suppressed (liveThreads [ t0 ]) s
+
         delivery |> shouldEqual (Some (SignalDelivery.DefaultContinue Signal.SIGCONT))
         SignalState.pending s' |> shouldEqual []
 
@@ -687,7 +766,7 @@ module TestSignalState =
                     Target = ValueNone
                 }
 
-        let delivery, s' = SignalState.nextDelivery (liveThreads []) s
+        let delivery, s' = SignalState.nextDelivery CoreDumps.Suppressed (liveThreads []) s
         delivery |> shouldEqual (Some (SignalDelivery.DefaultContinue Signal.SIGCONT))
         SignalState.pending s' |> shouldEqual []
 
@@ -699,8 +778,11 @@ module TestSignalState =
                 Target = ValueNone
             }
 
-        let generation, s' = SignalState.generate (liveThreads [ t0 ]) entry empty
-        generation |> shouldEqual (SignalGeneration.ProcessTerminated Signal.SIGTERM)
+        let generation, s' =
+            SignalState.generate CoreDumps.Suppressed (liveThreads [ t0 ]) entry empty
+
+        generation
+        |> shouldEqual (SignalGeneration.ProcessTerminated (Signal.SIGTERM, false))
         // Nothing is left pending for a delivery that the termination replaced.
         s' |> shouldEqual empty
 
@@ -708,6 +790,7 @@ module TestSignalState =
         let masked = empty |> SignalState.block t0 (Signal.Other 9)
 
         SignalState.generate
+            CoreDumps.Suppressed
             (liveThreads [ t0 ])
             {
                 Signal = (Signal.Other 9)
@@ -715,11 +798,12 @@ module TestSignalState =
             }
             masked
         |> fst
-        |> shouldEqual (SignalGeneration.ProcessTerminated (Signal.Other 9))
+        |> shouldEqual (SignalGeneration.ProcessTerminated (Signal.Other 9, false))
 
     [<Test>]
     let ``generating an unclaimed stop signal stops the process at once`` () : unit =
         SignalState.generate
+            CoreDumps.Suppressed
             (liveThreads [ t0 ])
             {
                 Signal = (Signal.Other 19)
@@ -738,12 +822,17 @@ module TestSignalState =
 
         // Every live thread blocks it...
         let blocked = empty |> SignalState.block t0 Signal.SIGTERM
-        let generation, s' = SignalState.generate (liveThreads [ t0 ]) entry blocked
+
+        let generation, s' =
+            SignalState.generate CoreDumps.Suppressed (liveThreads [ t0 ]) entry blocked
+
         generation |> shouldEqual SignalGeneration.ProcessContinues
         SignalState.pending s' |> shouldEqual [ entry ]
 
         // ...or there is no live thread at all.
-        let generation, s' = SignalState.generate (liveThreads []) entry empty
+        let generation, s' =
+            SignalState.generate CoreDumps.Suppressed (liveThreads []) entry empty
+
         generation |> shouldEqual SignalGeneration.ProcessContinues
         SignalState.pending s' |> shouldEqual [ entry ]
 
@@ -754,7 +843,9 @@ module TestSignalState =
                 Target = ValueSome t0
             }
 
-        let generation, s' = SignalState.generate (liveThreads [ t0 ; t1 ]) directed blocked
+        let generation, s' =
+            SignalState.generate CoreDumps.Suppressed (liveThreads [ t0 ; t1 ]) directed blocked
+
         generation |> shouldEqual SignalGeneration.ProcessContinues
         SignalState.pending s' |> shouldEqual [ directed ]
 
@@ -766,8 +857,11 @@ module TestSignalState =
                 Target = ValueNone
             }
 
-        let claimed = empty |> SignalState.enable Signal.SIGTERM
-        let generation, s' = SignalState.generate (liveThreads [ t0 ]) entry claimed
+        let claimed = empty |> enable Signal.SIGTERM
+
+        let generation, s' =
+            SignalState.generate CoreDumps.Suppressed (liveThreads [ t0 ]) entry claimed
+
         generation |> shouldEqual SignalGeneration.ProcessContinues
         SignalState.pending s' |> shouldEqual [ entry ]
 
@@ -782,16 +876,16 @@ module TestSignalState =
 
             let s = initial numbering
 
-            SignalState.generate (liveThreads [ t0 ]) entry s
+            SignalState.generate CoreDumps.Suppressed (liveThreads [ t0 ]) entry s
             |> shouldEqual (SignalGeneration.ProcessContinues, s)
 
             // Nothing is left for a later handler to claim.
             let claimedLater =
-                SignalState.generate (liveThreads [ t0 ]) entry s
+                SignalState.generate CoreDumps.Suppressed (liveThreads [ t0 ]) entry s
                 |> snd
-                |> SignalState.enable Signal.SIGCHLD
+                |> enable Signal.SIGCHLD
 
-            SignalState.nextDelivery (liveThreads [ t0 ]) claimedLater
+            SignalState.nextDelivery CoreDumps.Suppressed (liveThreads [ t0 ]) claimedLater
             |> fst
             |> shouldEqual None
 
@@ -804,7 +898,10 @@ module TestSignalState =
             }
 
         let blocked = empty |> SignalState.block t0 Signal.SIGCHLD
-        let generation, s' = SignalState.generate (liveThreads [ t0 ]) entry blocked
+
+        let generation, s' =
+            SignalState.generate CoreDumps.Suppressed (liveThreads [ t0 ]) entry blocked
+
         generation |> shouldEqual SignalGeneration.ProcessContinues
         SignalState.pending s' |> shouldEqual [ entry ]
 
@@ -821,7 +918,9 @@ module TestSignalState =
                     Target = ValueNone
                 }
 
-        let delivery, s' = SignalState.nextDelivery (liveThreads [ t0 ]) s
+        let delivery, s' =
+            SignalState.nextDelivery CoreDumps.Suppressed (liveThreads [ t0 ]) s
+
         delivery |> shouldEqual None
         s' |> shouldEqual s
 
@@ -840,7 +939,9 @@ module TestSignalState =
 
         SignalState.pending s |> List.length |> shouldEqual 1
 
-        let delivery, s' = SignalState.nextDelivery (liveThreads [ t0 ]) s
+        let delivery, s' =
+            SignalState.nextDelivery CoreDumps.Suppressed (liveThreads [ t0 ]) s
+
         delivery |> shouldEqual None
         SignalState.pending s' |> shouldEqual []
         s' |> shouldEqual empty
@@ -858,18 +959,18 @@ module TestSignalState =
 
         let held = empty |> SignalState.block t0 Signal.SIGCHLD |> SignalState.enqueue entry
 
-        let delivery, afterScan = SignalState.nextDelivery (liveThreads [ t0 ]) held
+        let delivery, afterScan =
+            SignalState.nextDelivery CoreDumps.Suppressed (liveThreads [ t0 ]) held
+
         delivery |> shouldEqual None
         SignalState.pending afterScan |> shouldEqual [ entry ]
 
         // Handler claimed before the unblock: delivered.
         let claimed =
-            afterScan
-            |> SignalState.enable Signal.SIGCHLD
-            |> SignalState.unblock t0 Signal.SIGCHLD
+            afterScan |> enable Signal.SIGCHLD |> SignalState.unblock t0 Signal.SIGCHLD
 
-        match SignalState.nextDelivery (liveThreads [ t0 ]) claimed with
-        | Some (SignalDelivery.RunHandler (e, tid)), s' ->
+        match SignalState.nextDelivery CoreDumps.Suppressed (liveThreads [ t0 ]) claimed with
+        | Some (SignalDelivery.RunHandler (e, tid, _)), s' ->
             e |> shouldEqual entry
             tid |> shouldEqual t0
             SignalState.pending s' |> shouldEqual []
@@ -877,7 +978,10 @@ module TestSignalState =
 
         // Still ignored at the unblock: discarded.
         let discarded = afterScan |> SignalState.unblock t0 Signal.SIGCHLD
-        let delivery, s' = SignalState.nextDelivery (liveThreads [ t0 ]) discarded
+
+        let delivery, s' =
+            SignalState.nextDelivery CoreDumps.Suppressed (liveThreads [ t0 ]) discarded
+
         delivery |> shouldEqual None
         SignalState.pending s' |> shouldEqual []
 
@@ -917,19 +1021,21 @@ module TestSignalState =
 
         let s =
             empty
-            |> SignalState.enable Signal.SIGINT
+            |> enable Signal.SIGINT
             |> SignalState.enqueue ignored
             |> SignalState.enqueue handled
 
-        match SignalState.nextDelivery (liveThreads [ t0 ]) s with
-        | Some (SignalDelivery.RunHandler (e, _)), s' ->
+        match SignalState.nextDelivery CoreDumps.Suppressed (liveThreads [ t0 ]) s with
+        | Some (SignalDelivery.RunHandler (e, _, _)), s' ->
             e |> shouldEqual handled
             SignalState.pending s' |> shouldEqual []
         | other, _ -> failwith $"expected the enabled entry to deliver past the discard, got %A{other}"
 
     [<Test>]
     let ``nextDelivery returns nothing for an empty queue`` () : unit =
-        let delivery, s' = SignalState.nextDelivery (liveThreads [ t0 ]) empty
+        let delivery, s' =
+            SignalState.nextDelivery CoreDumps.Suppressed (liveThreads [ t0 ]) empty
+
         delivery |> shouldEqual None
         s' |> shouldEqual empty
 
@@ -937,14 +1043,14 @@ module TestSignalState =
     let ``nextDelivery holds everything when there are no live threads`` () : unit =
         let s =
             empty
-            |> SignalState.enable Signal.SIGINT
+            |> enable Signal.SIGINT
             |> SignalState.enqueue
                 {
                     Signal = Signal.SIGINT
                     Target = ValueNone
                 }
 
-        let delivery, s' = SignalState.nextDelivery (liveThreads []) s
+        let delivery, s' = SignalState.nextDelivery CoreDumps.Suppressed (liveThreads []) s
         delivery |> shouldEqual None
         s' |> shouldEqual s
 
@@ -956,12 +1062,12 @@ module TestSignalState =
                 Target = ValueNone
             }
 
-        let s = empty |> SignalState.enable Signal.SIGINT |> SignalState.enqueue entry
+        let s = empty |> enable Signal.SIGINT |> SignalState.enqueue entry
 
         // Live-thread order is deliberately scrambled to confirm the
         // implementation sorts internally rather than trusting input order.
-        match SignalState.nextDelivery (liveThreads [ t2 ; t0 ; t1 ]) s with
-        | Some (SignalDelivery.RunHandler (e, tid)), s' ->
+        match SignalState.nextDelivery CoreDumps.Suppressed (liveThreads [ t2 ; t0 ; t1 ]) s with
+        | Some (SignalDelivery.RunHandler (e, tid, _)), s' ->
             e |> shouldEqual entry
             tid |> shouldEqual t0
             SignalState.pending s' |> Seq.toList |> shouldEqual []
@@ -971,7 +1077,7 @@ module TestSignalState =
     let ``nextDelivery skips the lowest thread if it is blocking the signal`` () : unit =
         let s =
             empty
-            |> SignalState.enable Signal.SIGINT
+            |> enable Signal.SIGINT
             |> SignalState.block t0 Signal.SIGINT
             |> SignalState.enqueue
                 {
@@ -979,15 +1085,15 @@ module TestSignalState =
                     Target = ValueNone
                 }
 
-        match SignalState.nextDelivery (liveThreads [ t0 ; t1 ; t2 ]) s with
-        | Some (SignalDelivery.RunHandler (_, tid)), _ -> tid |> shouldEqual t1
+        match SignalState.nextDelivery CoreDumps.Suppressed (liveThreads [ t0 ; t1 ; t2 ]) s with
+        | Some (SignalDelivery.RunHandler (_, tid, _)), _ -> tid |> shouldEqual t1
         | other, _ -> failwith $"expected a handler delivery, got %A{other}"
 
     [<Test>]
     let ``nextDelivery holds a signal every live thread blocks`` () : unit =
         let s =
             empty
-            |> SignalState.enable Signal.SIGINT
+            |> enable Signal.SIGINT
             |> SignalState.block t0 Signal.SIGINT
             |> SignalState.block t1 Signal.SIGINT
             |> SignalState.enqueue
@@ -996,7 +1102,9 @@ module TestSignalState =
                     Target = ValueNone
                 }
 
-        let delivery, s' = SignalState.nextDelivery (liveThreads [ t0 ; t1 ]) s
+        let delivery, s' =
+            SignalState.nextDelivery CoreDumps.Suppressed (liveThreads [ t0 ; t1 ]) s
+
         delivery |> shouldEqual None
         s' |> shouldEqual s
 
@@ -1006,7 +1114,7 @@ module TestSignalState =
         // targeted at t0 must stay queued, not get delivered to t1.
         let s =
             empty
-            |> SignalState.enable Signal.SIGINT
+            |> enable Signal.SIGINT
             |> SignalState.block t0 Signal.SIGINT
             |> SignalState.enqueue
                 {
@@ -1014,7 +1122,9 @@ module TestSignalState =
                     Target = ValueSome t0
                 }
 
-        let delivery, s' = SignalState.nextDelivery (liveThreads [ t0 ; t1 ]) s
+        let delivery, s' =
+            SignalState.nextDelivery CoreDumps.Suppressed (liveThreads [ t0 ; t1 ]) s
+
         delivery |> shouldEqual None
         s' |> shouldEqual s
 
@@ -1022,14 +1132,16 @@ module TestSignalState =
     let ``nextDelivery holds a signal targeted at a dead thread`` () : unit =
         let s =
             empty
-            |> SignalState.enable Signal.SIGINT
+            |> enable Signal.SIGINT
             |> SignalState.enqueue
                 {
                     Signal = Signal.SIGINT
                     Target = ValueSome t2
                 }
 
-        let delivery, s' = SignalState.nextDelivery (liveThreads [ t0 ; t1 ]) s
+        let delivery, s' =
+            SignalState.nextDelivery CoreDumps.Suppressed (liveThreads [ t0 ; t1 ]) s
+
         delivery |> shouldEqual None
         s' |> shouldEqual s
 
@@ -1059,14 +1171,14 @@ module TestSignalState =
 
         let s =
             empty
-            |> SignalState.enable Signal.SIGINT
+            |> enable Signal.SIGINT
             |> SignalState.block t0 Signal.SIGINT
             |> SignalState.enqueue head
             |> SignalState.enqueue middle
             |> SignalState.enqueue tail
 
-        match SignalState.nextDelivery (liveThreads [ t0 ; t1 ]) s with
-        | Some (SignalDelivery.RunHandler (e, tid)), s' ->
+        match SignalState.nextDelivery CoreDumps.Suppressed (liveThreads [ t0 ; t1 ]) s with
+        | Some (SignalDelivery.RunHandler (e, tid, _)), s' ->
             e |> shouldEqual tail
             tid |> shouldEqual t1
             SignalState.pending s' |> Seq.toList |> shouldEqual [ head ; middle ]
@@ -1077,32 +1189,67 @@ module TestSignalState =
     /// Operation language for the random property test. Each constructor
     /// maps to exactly one public method on the API.
     type private Op =
-        | Enable of signal : Signal
-        | Disable of signal : Signal
+        | SetDisposition of signal : Signal * disposition : SignalDisposition<TestHandler>
         | Block of thread : TestTask * signal : Signal
         | Unblock of thread : TestTask * signal : Signal
         | Enqueue of entry : PendingSignal<TestTask>
-        | Generate of live : TestTask list * entry : PendingSignal<TestTask>
-        | Deliver of live : TestTask list
+        | Generate of coreDumps : CoreDumps * live : TestTask list * entry : PendingSignal<TestTask>
+        | Deliver of coreDumps : CoreDumps * live : TestTask list
 
     /// Reference implementation: simple lists / sets / maps, completely
     /// independent of the production module's internal representation. Every
     /// signal is stored canonically, via `Signal.canonicalUnder` — whose two
     /// columns `TestSignal` pins independently — so a production module that
     /// forgot to canonicalise diverges from it on the first `Other` spelling.
+    ///
+    /// It stores every disposition it is given, `Default` included: the
+    /// production module must store none, and `assertEquivalent` checks that
+    /// it answers every read the same way *and* holds no stored default.
     type private ReferenceState =
         {
-            Enabled : Set<Signal>
+            Dispositions : Map<Signal, SignalDisposition<TestHandler>>
             Blocked : Map<TestTask, Set<Signal>>
             Pending : PendingSignal<TestTask> list
         }
 
     let private referenceEmpty : ReferenceState =
         {
-            Enabled = Set.empty
+            Dispositions = Map.empty
             Blocked = Map.empty
             Pending = []
         }
+
+    let private referenceDisposition (r : ReferenceState) (signal : Signal) : SignalDisposition<TestHandler> =
+        Map.tryFind signal r.Dispositions
+        |> Option.defaultValue SignalDisposition.Default
+
+    /// The measured table, stated per disposition rather than through the
+    /// production module's helpers: which dispositions ignore a signal as it
+    /// is generated.
+    let private referenceIgnoredAtGeneration
+        (numbering : SignalNumbering)
+        (r : ReferenceState)
+        (signal : Signal)
+        : bool
+        =
+        match referenceDisposition r signal, Signal.defaultDispositionUnder numbering signal with
+        | SignalDisposition.Ignore, _ -> true
+        | SignalDisposition.Default, DefaultDisposition.Ignore -> true
+        | _, _ -> false
+
+    /// Which dispositions discard a signal's pending instances as they are
+    /// set: the generation-time ones, plus a default SIGCONT.
+    let private referenceDiscardsWhenSet
+        (numbering : SignalNumbering)
+        (disposition : SignalDisposition<TestHandler>)
+        (signal : Signal)
+        : bool
+        =
+        match disposition, Signal.defaultDispositionUnder numbering signal with
+        | SignalDisposition.Ignore, _ -> true
+        | SignalDisposition.Default, DefaultDisposition.Ignore -> true
+        | SignalDisposition.Default, DefaultDisposition.Continue -> true
+        | _, _ -> false
 
     /// The thread that would take `e` now, if any: the target if it is live and
     /// not blocking, or for a process-directed signal the lowest-numbered live
@@ -1131,56 +1278,101 @@ module TestSignalState =
                 None
         | ValueNone -> sortedLive |> List.tryFind (fun tid -> not (isBlocked tid e.Signal))
 
-    /// The kernel's enqueue rule, on an entry already in canonical spelling:
-    /// the generation-time ignore drop, then coalescing of standard signals.
-    let private referenceEnqueue
+    /// The first step of generating `signal` (canonical): `None` if Darwin
+    /// drops it as ignored before anything else (SIGCONT excepted), and
+    /// otherwise the state after the opposite kind's pending instances are
+    /// flushed.
+    let private referenceBeginGeneration
+        (numbering : SignalNumbering)
+        (signal : Signal)
+        (r : ReferenceState)
+        : ReferenceState option
+        =
+        let droppedFirst =
+            numbering = SignalNumbering.Darwin
+            && signal <> Signal.SIGCONT
+            && referenceIgnoredAtGeneration numbering r signal
+
+        if droppedFirst then
+            None
+        else
+            let isStop (x : Signal) : bool =
+                Signal.defaultDispositionUnder numbering x = DefaultDisposition.Stop
+
+            let flushes (pendingSignal : Signal) : bool =
+                (signal = Signal.SIGCONT && isStop pendingSignal)
+                || (isStop signal && pendingSignal = Signal.SIGCONT)
+
+            Some
+                { r with
+                    Pending = r.Pending |> List.filter (fun p -> not (flushes p.Signal))
+                }
+
+    /// Coalescing of standard signals, on an entry already admitted.
+    let private referenceAdmit
         (numbering : SignalNumbering)
         (entry : PendingSignal<TestTask>)
         (r : ReferenceState)
         : ReferenceState
         =
-        let ignoredNow =
-            not (Set.contains entry.Signal r.Enabled)
-            && Signal.defaultDispositionUnder numbering entry.Signal = DefaultDisposition.Ignore
-
         let alreadyPendingInSet =
             r.Pending
             |> List.exists (fun p -> p.Signal = entry.Signal && p.Target = entry.Target)
 
-        if ignoredNow && not (Signal.blockedIgnoredSignalStaysPendingUnder numbering) then
-            r
-        elif alreadyPendingInSet && not (Signal.isRealTimeUnder numbering entry.Signal) then
+        if alreadyPendingInSet && not (Signal.isRealTimeUnder numbering entry.Signal) then
             r
         else
             { r with
                 Pending = r.Pending @ [ entry ]
             }
 
+    let private referenceEnqueue
+        (numbering : SignalNumbering)
+        (entry : PendingSignal<TestTask>)
+        (r : ReferenceState)
+        : ReferenceState
+        =
+        match referenceBeginGeneration numbering entry.Signal r with
+        | None -> r
+        | Some r -> referenceAdmit numbering entry r
+
+    let private referenceCore (numbering : SignalNumbering) (coreDumps : CoreDumps) (signal : Signal) : bool =
+        coreDumps = CoreDumps.Written && Signal.dumpsCoreUnder numbering signal
+
     /// What generating `entry` (canonical) does at once, and the state after.
-    /// An unclaimed signal some thread could receive takes its default here:
-    /// terminate, stop, or be discarded if it is ignored.
+    /// A default-disposition signal some thread could receive takes its
+    /// default here: terminate, stop, or be discarded if the default ignores
+    /// it; an ignored one some thread could receive is discarded.
     let private referenceGenerate
         (numbering : SignalNumbering)
+        (coreDumps : CoreDumps)
         (live : TestTask list)
         (entry : PendingSignal<TestTask>)
         (r : ReferenceState)
         : SignalGeneration * ReferenceState
         =
-        let unclaimedAndReceivable =
-            not (Set.contains entry.Signal r.Enabled)
-            && (referenceReceiver live r entry).IsSome
+        match referenceBeginGeneration numbering entry.Signal r with
+        | None -> SignalGeneration.ProcessContinues, r
+        | Some r ->
+            let receivable = (referenceReceiver live r entry).IsSome
 
-        match unclaimedAndReceivable, Signal.defaultDispositionUnder numbering entry.Signal with
-        | true, DefaultDisposition.Terminate -> SignalGeneration.ProcessTerminated entry.Signal, r
-        | true, DefaultDisposition.Stop -> SignalGeneration.ProcessStopped entry.Signal, r
-        | true, DefaultDisposition.Ignore -> SignalGeneration.ProcessContinues, r
-        | _, _ -> SignalGeneration.ProcessContinues, referenceEnqueue numbering entry r
+            match
+                receivable, referenceDisposition r entry.Signal, Signal.defaultDispositionUnder numbering entry.Signal
+            with
+            | true, SignalDisposition.Ignore, _ -> SignalGeneration.ProcessContinues, r
+            | true, SignalDisposition.Default, DefaultDisposition.Terminate ->
+                SignalGeneration.ProcessTerminated (entry.Signal, referenceCore numbering coreDumps entry.Signal), r
+            | true, SignalDisposition.Default, DefaultDisposition.Stop ->
+                SignalGeneration.ProcessStopped entry.Signal, r
+            | true, SignalDisposition.Default, DefaultDisposition.Ignore -> SignalGeneration.ProcessContinues, r
+            | _, _, _ -> SignalGeneration.ProcessContinues, referenceAdmit numbering entry r
 
     /// Index-based scan over an array with a removal mask: distinct algorithm
     /// from the production module's recursive accumulator walk, so a
     /// regression in either side surfaces as a divergence.
     let private referenceNextDelivery
         (numbering : SignalNumbering)
+        (coreDumps : CoreDumps)
         (live : TestTask list)
         (r : ReferenceState)
         : SignalDelivery<TestTask, TestHandler> option * ReferenceState
@@ -1195,13 +1387,17 @@ module TestSignalState =
         while result.IsNone && i < entries.Length do
             let entry = entries.[i]
 
-            if Set.contains entry.Signal r.Enabled then
+            match referenceDisposition r entry.Signal with
+            | SignalDisposition.Catch h ->
                 match pickReceiver entry with
                 | Some receiver ->
                     removed.[i] <- true
-                    result <- Some (SignalDelivery.RunHandler (entry, receiver))
+                    result <- Some (SignalDelivery.RunHandler (entry, receiver, h))
                 | None -> ()
-            else
+            | SignalDisposition.Ignore ->
+                if (pickReceiver entry).IsSome then
+                    removed.[i] <- true
+            | SignalDisposition.Default ->
                 match Signal.defaultDispositionUnder numbering entry.Signal with
                 | DefaultDisposition.Continue ->
                     // Resumption bypasses masks and receivers entirely.
@@ -1213,7 +1409,14 @@ module TestSignalState =
                 | DefaultDisposition.Terminate ->
                     if (pickReceiver entry).IsSome then
                         removed.[i] <- true
-                        result <- Some (SignalDelivery.DefaultTerminate entry.Signal)
+
+                        result <-
+                            Some (
+                                SignalDelivery.DefaultTerminate (
+                                    entry.Signal,
+                                    referenceCore numbering coreDumps entry.Signal
+                                )
+                            )
                 | DefaultDisposition.Stop ->
                     if (pickReceiver entry).IsSome then
                         removed.[i] <- true
@@ -1247,15 +1450,19 @@ module TestSignalState =
         let canonical (signal : Signal) : Signal = Signal.canonicalUnder numbering signal
 
         match op with
-        | Op.Enable sig0 ->
-            SignalState.enable sig0 s,
+        | Op.SetDisposition (sig0, disposition) ->
+            let signal = canonical sig0
+
+            let pending =
+                if referenceDiscardsWhenSet numbering disposition signal then
+                    r.Pending |> List.filter (fun p -> p.Signal <> signal)
+                else
+                    r.Pending
+
+            SignalState.setDisposition sig0 disposition s,
             { r with
-                Enabled = Set.add (canonical sig0) r.Enabled
-            }
-        | Op.Disable sig0 ->
-            SignalState.disable sig0 s,
-            { r with
-                Enabled = Set.remove (canonical sig0) r.Enabled
+                Dispositions = Map.add signal disposition r.Dispositions
+                Pending = pending
             }
         | Op.Block (tid, sig0) ->
             let reference =
@@ -1300,12 +1507,13 @@ module TestSignalState =
                 }
 
             SignalState.enqueue e s, referenceEnqueue numbering entry r
-        | Op.Generate (live, e) ->
-            let actual, s' = SignalState.generate (liveThreads live) e s
+        | Op.Generate (coreDumps, live, e) ->
+            let actual, s' = SignalState.generate coreDumps (liveThreads live) e s
 
             let expected, r' =
                 referenceGenerate
                     numbering
+                    coreDumps
                     live
                     { e with
                         Signal = canonical e.Signal
@@ -1316,9 +1524,9 @@ module TestSignalState =
                 failwith $"generate disagreed: actual=%A{actual}, reference=%A{expected}"
 
             s', r'
-        | Op.Deliver live ->
-            let actualDelivery, s' = SignalState.nextDelivery (liveThreads live) s
-            let expectedDelivery, r' = referenceNextDelivery numbering live r
+        | Op.Deliver (coreDumps, live) ->
+            let actualDelivery, s' = SignalState.nextDelivery coreDumps (liveThreads live) s
+            let expectedDelivery, r' = referenceNextDelivery numbering coreDumps live r
 
             if actualDelivery <> expectedDelivery then
                 failwith $"nextDelivery disagreed: actual=%A{actualDelivery}, reference=%A{expectedDelivery}"
@@ -1334,12 +1542,16 @@ module TestSignalState =
         (r : ReferenceState)
         : unit
         =
-        SignalState.enabled s |> shouldEqual r.Enabled
+        // Equal as maps, so a stored `Default` on the production side is a
+        // failure even though every read below would agree with it.
+        SignalState.dispositions s
+        |> shouldEqual (r.Dispositions |> Map.filter (fun _ d -> d <> SignalDisposition.Default))
+
         SignalState.pending s |> Seq.toList |> shouldEqual r.Pending
 
         for sig0 in allSignals numbering do
-            SignalState.isEnabled sig0 s
-            |> shouldEqual (Set.contains (Signal.canonicalUnder numbering sig0) r.Enabled)
+            SignalState.disposition sig0 s
+            |> shouldEqual (referenceDisposition r (Signal.canonicalUnder numbering sig0))
 
         for tid in allThreads do
             for sig0 in allSignals numbering do
@@ -1364,57 +1576,82 @@ module TestSignalState =
 
             actualMask |> shouldEqual expectedMask
 
+    /// Every signal `setDisposition` accepts: everything but SIGKILL and
+    /// SIGSTOP, glibc's reserved pair included.
+    let private settableSignals (numbering : SignalNumbering) : Signal list =
+        allSignals numbering
+        |> List.filter (fun signal -> not (List.contains signal (kernelUncatchable numbering)))
+
+    /// The signals the stop/continue flush acts between, over-weighted in the
+    /// walk: a flush needs one pending and the other generated after it.
+    let private jobControl (numbering : SignalNumbering) : Signal list =
+        [
+            Signal.SIGTSTP
+            Signal.SIGTTIN
+            Signal.SIGTTOU
+            Signal.SIGCONT
+            Signal.Other (Signal.toRawSignoUnder numbering Signal.SIGCONT)
+        ]
+
     let private randomOp (numbering : SignalNumbering) (rng : System.Random) : Op =
         let pick (xs : 'a list) : 'a = xs.[rng.Next xs.Length]
+
+        let pickDisposition () : SignalDisposition<TestHandler> =
+            match rng.Next 4 with
+            | 0 -> SignalDisposition.Default
+            | 1 -> SignalDisposition.Ignore
+            | 2 -> catch
+            | _ -> SignalDisposition.Catch (TestHandler "other")
+
+        let pickCoreDumps () : CoreDumps =
+            if rng.Next 2 = 0 then
+                CoreDumps.Suppressed
+            else
+                CoreDumps.Written
+
+        let pickGenerated () : Signal =
+            // The real-time signal is over-weighted: observing
+            // queue-not-coalesce needs the *same* signal generated twice
+            // before a delivery consumes it. So are the job-control signals,
+            // for the flush between them.
+            match rng.Next 8 with
+            | 0 when numbering = SignalNumbering.Linux -> Signal.Other 40
+            | 1
+            | 2 -> pick (jobControl numbering)
+            | _ -> pick (allSignals numbering)
+
+        let pickTarget () : TestTask voption =
+            if rng.Next 2 = 0 then
+                ValueNone
+            else
+                ValueSome (pick allThreads)
+
         let kind = 10 + rng.Next 90
 
-        if kind < 28 then
-            // Only what sigaction would accept: `enable` fails loud on the
-            // rest, and the refusal has its own unit test.
-            Op.Enable (pick (enableableSignals numbering))
-        elif kind < 35 then
-            Op.Disable (pick (allSignals numbering))
+        if kind < 35 then
+            // Only what the kernel accepts: `setDisposition` fails loud on
+            // SIGKILL and SIGSTOP, and the refusal has its own unit test.
+            Op.SetDisposition (pick (settableSignals numbering), pickDisposition ())
         elif kind < 48 then
             Op.Block (pick allThreads, pick (allSignals numbering))
         elif kind < 57 then
             Op.Unblock (pick allThreads, pick (allSignals numbering))
         elif kind < 72 then
-            let target =
-                if rng.Next 2 = 0 then
-                    ValueNone
-                else
-                    ValueSome (pick allThreads)
-
-            // The real-time signal is over-weighted: observing
-            // queue-not-coalesce needs the *same* signal generated twice
-            // before a delivery consumes it, which a uniform pick over ~35
-            // signals rarely produces now that default actions drain the
-            // queue.
-            let signal =
-                match numbering with
-                | SignalNumbering.Linux when rng.Next 6 = 0 -> Signal.Other 40
-                | _ -> pick (allSignals numbering)
-
             Op.Enqueue
                 {
-                    Signal = signal
-                    Target = target
+                    Signal = pickGenerated ()
+                    Target = pickTarget ()
                 }
         elif kind < 82 then
-            let target =
-                if rng.Next 2 = 0 then
-                    ValueNone
-                else
-                    ValueSome (pick allThreads)
-
             let nThreads = rng.Next (allThreads.Length + 1)
             let live = allThreads |> List.sortBy (fun _ -> rng.Next ()) |> List.take nThreads
 
             Op.Generate (
+                pickCoreDumps (),
                 live,
                 {
-                    Signal = pick (allSignals numbering)
-                    Target = target
+                    Signal = pickGenerated ()
+                    Target = pickTarget ()
                 }
             )
         else
@@ -1424,11 +1661,12 @@ module TestSignalState =
 
             let threads = allThreads |> List.sortBy (fun _ -> rng.Next ()) |> List.take nThreads
 
-            Op.Deliver threads
+            Op.Deliver (pickCoreDumps (), threads)
 
     let private checkAgainstOracle (numbering : SignalNumbering) : unit =
         let mutable observedHandlerDeliveries = 0
         let mutable observedDefaultTerminates = 0
+        let mutable observedCoreDumps = 0
         let mutable observedDefaultStopsAndContinues = 0
         let mutable observedIgnoredDiscards = 0
         let mutable observedActionAfterSkip = 0
@@ -1443,6 +1681,9 @@ module TestSignalState =
         let mutable observedGeneratedStops = 0
         let mutable observedGeneratedQueued = 0
         let mutable observedGeneratedIgnoredDiscards = 0
+        let mutable observedDiscardsWhenSet = 0
+        let mutable observedFlushes = 0
+        let mutable observedDefaultsStored = 0
 
         let property (NonNegativeInt seed : NonNegativeInt) : unit =
             let rng = System.Random seed
@@ -1458,13 +1699,16 @@ module TestSignalState =
                 // Distribution telemetry collected before the step so we can
                 // see what shape the random walk drove the model into.
                 match op with
-                | Op.Deliver live ->
-                    let expected, r' = referenceNextDelivery numbering live r
+                | Op.Deliver (coreDumps, live) ->
+                    let expected, r' = referenceNextDelivery numbering coreDumps live r
 
                     match expected with
                     | Some (SignalDelivery.RunHandler _) -> observedHandlerDeliveries <- observedHandlerDeliveries + 1
-                    | Some (SignalDelivery.DefaultTerminate _) ->
+                    | Some (SignalDelivery.DefaultTerminate (_, cored)) ->
                         observedDefaultTerminates <- observedDefaultTerminates + 1
+
+                        if cored then
+                            observedCoreDumps <- observedCoreDumps + 1
                     | Some (SignalDelivery.DefaultStop _)
                     | Some (SignalDelivery.DefaultContinue _) ->
                         observedDefaultStopsAndContinues <- observedDefaultStopsAndContinues + 1
@@ -1488,38 +1732,38 @@ module TestSignalState =
                     | Some _, head :: _ when List.contains head r'.Pending ->
                         observedActionAfterSkip <- observedActionAfterSkip + 1
                     | _ -> ()
-                | Op.Generate (live, e) ->
-                    match
-                        referenceGenerate
-                            numbering
-                            live
-                            { e with
-                                Signal = Signal.canonicalUnder numbering e.Signal
-                            }
-                            r
-                    with
-                    | SignalGeneration.ProcessTerminated _, _ ->
+                | Op.Generate (coreDumps, live, e) ->
+                    let entry =
+                        { e with
+                            Signal = Signal.canonicalUnder numbering e.Signal
+                        }
+
+                    match referenceGenerate numbering coreDumps live entry r with
+                    | SignalGeneration.ProcessTerminated (_, cored), _ ->
                         observedGeneratedTerminations <- observedGeneratedTerminations + 1
+
+                        if cored then
+                            observedCoreDumps <- observedCoreDumps + 1
                     | SignalGeneration.ProcessStopped _, _ -> observedGeneratedStops <- observedGeneratedStops + 1
-                    | SignalGeneration.ProcessContinues, _ -> observedGeneratedQueued <- observedGeneratedQueued + 1
+                    | SignalGeneration.ProcessContinues, r' ->
+                        observedGeneratedQueued <- observedGeneratedQueued + 1
 
-                    let canonicalSignal = Signal.canonicalUnder numbering e.Signal
+                        if r' = r && referenceIgnoredAtGeneration numbering r entry.Signal then
+                            observedGeneratedIgnoredDiscards <- observedGeneratedIgnoredDiscards + 1
+                | Op.SetDisposition (signal, disposition) ->
+                    if Signal.canonicalUnder numbering signal <> signal then
+                        observedNonCanonicalSpellings <- observedNonCanonicalSpellings + 1
 
-                    let receivableAndIgnored =
-                        not (Set.contains canonicalSignal r.Enabled)
-                        && Signal.defaultDispositionUnder numbering canonicalSignal = DefaultDisposition.Ignore
-                        && (referenceReceiver
-                                live
-                                r
-                                { e with
-                                    Signal = canonicalSignal
-                                })
-                            .IsSome
+                    let canonicalSignal = Signal.canonicalUnder numbering signal
 
-                    if receivableAndIgnored then
-                        observedGeneratedIgnoredDiscards <- observedGeneratedIgnoredDiscards + 1
-                | Op.Enable signal
-                | Op.Disable signal
+                    if disposition = SignalDisposition.Default then
+                        observedDefaultsStored <- observedDefaultsStored + 1
+
+                    if
+                        referenceDiscardsWhenSet numbering disposition canonicalSignal
+                        && r.Pending |> List.exists (fun p -> p.Signal = canonicalSignal)
+                    then
+                        observedDiscardsWhenSet <- observedDiscardsWhenSet + 1
                 | Op.Block (_, signal)
                 | Op.Unblock (_, signal)
                 | Op.Enqueue {
@@ -1531,25 +1775,28 @@ module TestSignalState =
                 match op with
                 | Op.Block (_, signal) when Signal.isUnblockableUnder numbering signal ->
                     observedUnblockableBlocks <- observedUnblockableBlocks + 1
-                | Op.Enqueue e ->
+                | Op.Enqueue e
+                | Op.Generate (_, _, e) ->
                     let canonicalSignal = Signal.canonicalUnder numbering e.Signal
 
-                    let ignoredNow =
-                        not (Set.contains canonicalSignal r.Enabled)
-                        && Signal.defaultDispositionUnder numbering canonicalSignal = DefaultDisposition.Ignore
+                    match referenceBeginGeneration numbering canonicalSignal r with
+                    | None -> observedGenerationDrops <- observedGenerationDrops + 1
+                    | Some flushed ->
+                        if List.length flushed.Pending < List.length r.Pending then
+                            observedFlushes <- observedFlushes + 1
 
-                    if ignoredNow && not (Signal.blockedIgnoredSignalStaysPendingUnder numbering) then
-                        observedGenerationDrops <- observedGenerationDrops + 1
-                    else
-                        let alreadyPendingInSet =
-                            r.Pending
-                            |> List.exists (fun p -> p.Signal = canonicalSignal && p.Target = e.Target)
+                        match op with
+                        | Op.Enqueue _ ->
+                            let alreadyPendingInSet =
+                                flushed.Pending
+                                |> List.exists (fun p -> p.Signal = canonicalSignal && p.Target = e.Target)
 
-                        if alreadyPendingInSet then
-                            if Signal.isRealTimeUnder numbering e.Signal then
-                                observedQueuedRealTimeDuplicates <- observedQueuedRealTimeDuplicates + 1
-                            else
-                                observedCoalescedEnqueues <- observedCoalescedEnqueues + 1
+                            if alreadyPendingInSet then
+                                if Signal.isRealTimeUnder numbering e.Signal then
+                                    observedQueuedRealTimeDuplicates <- observedQueuedRealTimeDuplicates + 1
+                                else
+                                    observedCoalescedEnqueues <- observedCoalescedEnqueues + 1
+                        | _ -> ()
                 | _ -> ()
 
                 let s', r' = stepBoth numbering op s r
@@ -1567,6 +1814,7 @@ module TestSignalState =
         // tail of the seed distribution.
         observedHandlerDeliveries |> shouldBeGreaterThan 30
         observedDefaultTerminates |> shouldBeGreaterThan 50
+        observedCoreDumps |> shouldBeGreaterThan 20
         observedDefaultStopsAndContinues |> shouldBeGreaterThan 20
         observedActionAfterSkip |> shouldBeGreaterThan 20
         observedDrainOfEmpty |> shouldBeGreaterThan 20
@@ -1578,12 +1826,15 @@ module TestSignalState =
         observedGeneratedStops |> shouldBeGreaterThan 5
         observedGeneratedQueued |> shouldBeGreaterThan 20
         observedGeneratedIgnoredDiscards |> shouldBeGreaterThan 20
+        observedDiscardsWhenSet |> shouldBeGreaterThan 20
+        observedFlushes |> shouldBeGreaterThan 20
+        observedDefaultsStored |> shouldBeGreaterThan 100
 
         // The generation-versus-delivery halves of the ignore rule are
         // flavour-divergent, so their counters are too: only Darwin drops at
         // generation, and only Linux lets an ignored signal reach the
         // delivery scan's discard. (A Darwin discard is still reachable by
-        // enabling, enqueueing and then disabling, but the walk is not
+        // catching, enqueueing and then ignoring, but the walk is not
         // guaranteed to line those up, so its floor stays at zero.)
         match numbering with
         | SignalNumbering.Linux ->

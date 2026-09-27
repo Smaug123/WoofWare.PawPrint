@@ -59,6 +59,7 @@ module UnixSignal =
         | ValueSome signal ->
             let generation, signals =
                 SignalState.generate
+                    system.Process.CoreDumps
                     liveThreads
                     {
                         Signal = signal

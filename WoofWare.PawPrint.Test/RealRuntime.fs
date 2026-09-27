@@ -452,12 +452,27 @@ module RealRuntime =
                             $"The filesystem seed declares \"%s{name}\" at its root, which is also what this oracle must write there to run the guest at all (\"%s{clash}\"). Rename the seeded entry: silently overwriting the guest image would turn the test into a much more confusing failure."
                     | None -> ()
 
+                // The oracle writes every entry as whoever is running the tests,
+                // and cannot give one to anyone else without privileges it does
+                // not have, so a seeded owner would be compared against the
+                // host's answer for a file with a different owner.
                 match entry with
-                | SeedEntry.File (_, permissions) -> requireOraclePermissions $"%s{prefix}/%s{name}" false permissions
-                | SeedEntry.Directory (children, permissions) ->
+                | SeedEntry.File (_, _, Some owner)
+                | SeedEntry.Directory (_, _, Some owner)
+                | SeedEntry.Symlink (_, Some owner) ->
+                    failwith
+                        $"The filesystem seed gives %s{prefix}/%s{name} the owner %O{owner}, and this oracle can only create entries owned by the user running it. Leave the owner as None, or move the case to sourcesImpure, which materialises nothing."
+                | SeedEntry.File _
+                | SeedEntry.Directory _
+                | SeedEntry.Symlink _ -> ()
+
+                match entry with
+                | SeedEntry.File (_, permissions, _) ->
+                    requireOraclePermissions $"%s{prefix}/%s{name}" false permissions
+                | SeedEntry.Directory (children, permissions, _) ->
                     requireOraclePermissions $"%s{prefix}/%s{name}" true permissions
                     go (prefix + "/" + name) (depth + 1) children
-                | SeedEntry.Symlink target ->
+                | SeedEntry.Symlink (target, _) ->
                     // First, so that a target of several components is refused
                     // for the reason no rewrite of it could fix.
                     hostTarget $"%s{prefix}/%s{name}" target |> ignore<string>
@@ -571,9 +586,9 @@ module RealRuntime =
         seed
         |> Map.forall (fun _ entry ->
             match entry with
-            | SeedEntry.Symlink _ -> true
-            | SeedEntry.File (_, permissions) -> permissions = SeedEntry.defaultPermsForRegularFile
-            | SeedEntry.Directory (children, permissions) ->
+            | SeedEntry.Symlink (_, _) -> true
+            | SeedEntry.File (_, permissions, _) -> permissions = SeedEntry.defaultPermsForRegularFile
+            | SeedEntry.Directory (children, permissions, _) ->
                 permissions = SeedEntry.defaultPermsForDirectory && canMaterialise children
         )
 
@@ -615,14 +630,14 @@ module RealRuntime =
             let path = Path.Combine (directory, hostName directory name)
 
             match entry with
-            | SeedEntry.File (contents, permissions) ->
+            | SeedEntry.File (contents, permissions, _) ->
                 File.WriteAllBytes (path, Seq.toArray contents)
                 // After writing, not before: `File.WriteAllBytes` creates the
                 // file under the host's umask, so the mode it lands with is a
                 // property of the machine rather than of the seed.
                 if not (RuntimeInformation.IsOSPlatform OSPlatform.Windows) then
                     applyMode path permissions
-            | SeedEntry.Directory (children, permissions) ->
+            | SeedEntry.Directory (children, permissions, _) ->
                 Directory.CreateDirectory path |> ignore<DirectoryInfo>
                 // Children first, *then* the mode: a directory seeded without
                 // owner-write or owner-search could not have its own children
@@ -634,8 +649,75 @@ module RealRuntime =
             // Verbatim, and deliberately not checked for existence: a seeded
             // symlink may dangle, and `File.CreateSymbolicLink` is happy to
             // create one that does.
-            | SeedEntry.Symlink target ->
+            | SeedEntry.Symlink (target, _) ->
                 File.CreateSymbolicLink (path, hostTarget path target) |> ignore<FileSystemInfo>
+
+    let private executeInScratch
+        (timeout : TimeSpan)
+        (seed : Map<DirectoryEntryName, SeedEntry>)
+        (environment : string list)
+        (inheritedIgnores : int list)
+        (args : string[])
+        (assemblyBytes : byte array)
+        : RealRuntimeResult
+        =
+        let tempDir =
+            Path.Combine (Path.GetTempPath (), "pawprint-oracle-" + Path.GetRandomFileName ())
+
+        Directory.CreateDirectory tempDir |> ignore
+
+        try
+            let assemblyName = assemblyNameOf assemblyBytes
+            let dllPath = Path.Combine (tempDir, assemblyName + ".dll")
+
+            validateSeedForOracle [ assemblyName + ".dll" ; assemblyName + ".runtimeconfig.json" ] seed
+
+            File.WriteAllBytes (dllPath, assemblyBytes)
+            File.WriteAllText (Path.Combine (tempDir, assemblyName + ".runtimeconfig.json"), runtimeConfig)
+            // The scratch directory *is* the guest's "/" on this side of the
+            // comparison, and `VirtualFileSystem.empty` gives PawPrint's root
+            // `SeedEntry.defaultPermsForDirectory`. `Directory.CreateDirectory`
+            // creates 0777 less the umask, so the two agree only while the
+            // umask is 022 — and the seed, being a map of *entries*, has no way
+            // to name the root and fix it.
+            //
+            // Measured: `nix develop` pins the umask to 0022, so no run through
+            // the devshell (CI included) can diverge here, and
+            // `FileModeSeeded.cs`'s check on "." cannot fail without this line.
+            // The guard is kept anyway, because the suite is runnable outside
+            // the devshell and one chmod is cheaper than the confusing failure
+            // it would otherwise produce there.
+            if not (RuntimeInformation.IsOSPlatform OSPlatform.Windows) then
+                applyMode tempDir SeedEntry.defaultPermsForDirectory
+
+            materialiseSeed tempDir seed
+
+            // A disposition of SIG_IGN survives execve(2), so a shell that
+            // ignores the signals and then execs the muxer starts the guest
+            // with them ignored, as `nohup` starts its command.
+            let exePath, arguments =
+                match inheritedIgnores with
+                | [] -> muxerPath, dllPath :: List.ofArray args
+                | signos ->
+                    let trap = signos |> List.map string<int> |> String.concat " "
+
+                    "/bin/sh",
+                    [ "-c" ; $"trap '' %s{trap}; exec \"$0\" \"$@\"" ; muxerPath ; dllPath ]
+                    @ List.ofArray args
+
+            runToCompletion timeout exePath arguments tempDir (oracleEnvironment environment) assemblyName
+        finally
+            try
+                // A seed may deliberately have left a directory unreadable or
+                // unsearchable, which is a mode `Directory.Delete` cannot
+                // recurse through — and the `with` below would swallow the
+                // failure, leaking the scratch tree rather than reporting it.
+                // Restore owner rwx from the top down first; each directory is
+                // made traversable before it is enumerated.
+                deleteScratchTree tempDir
+            with
+            | :? IOException
+            | :? UnauthorizedAccessException -> ()
 
     /// Run a single-file guest image as its own process on the real .NET
     /// runtime, with `seed` materialised into its working directory, and report
@@ -673,56 +755,24 @@ module RealRuntime =
         (assemblyBytes : byte array)
         : RealRuntimeResult
         =
-        let tempDir =
-            Path.Combine (Path.GetTempPath (), "pawprint-oracle-" + Path.GetRandomFileName ())
+        executeInScratch timeout seed environment [] args assemblyBytes
 
-        Directory.CreateDirectory tempDir |> ignore
+    /// As `executeWithTimeoutAndSeed` with an empty seed and no environment
+    /// entries, the standard time limit, and the guest started with the
+    /// signals `ignoredSignos` (raw numbers on the host) left ignored, as a
+    /// launcher such as `nohup` leaves them. The guest is started through
+    /// `/bin/sh`'s `trap ''` and `exec`; `dash`, which is `/bin/sh` on Debian
+    /// and Ubuntu, does not pass on an ignored SIGCHLD that way.
+    let executeWithInheritedIgnores
+        (ignoredSignos : int list)
+        (args : string[])
+        (assemblyBytes : byte array)
+        : RealRuntimeResult
+        =
+        if List.isEmpty ignoredSignos then
+            failwith "RealRuntime.executeWithInheritedIgnores: no signals to ignore; use executeWithRealRuntime."
 
-        try
-            let assemblyName = assemblyNameOf assemblyBytes
-            let dllPath = Path.Combine (tempDir, assemblyName + ".dll")
-
-            validateSeedForOracle [ assemblyName + ".dll" ; assemblyName + ".runtimeconfig.json" ] seed
-
-            File.WriteAllBytes (dllPath, assemblyBytes)
-            File.WriteAllText (Path.Combine (tempDir, assemblyName + ".runtimeconfig.json"), runtimeConfig)
-            // The scratch directory *is* the guest's "/" on this side of the
-            // comparison, and `VirtualFileSystem.empty` gives PawPrint's root
-            // `SeedEntry.defaultPermsForDirectory`. `Directory.CreateDirectory`
-            // creates 0777 less the umask, so the two agree only while the
-            // umask is 022 — and the seed, being a map of *entries*, has no way
-            // to name the root and fix it.
-            //
-            // Measured: `nix develop` pins the umask to 0022, so no run through
-            // the devshell (CI included) can diverge here, and
-            // `FileModeSeeded.cs`'s check on "." cannot fail without this line.
-            // The guard is kept anyway, because the suite is runnable outside
-            // the devshell and one chmod is cheaper than the confusing failure
-            // it would otherwise produce there.
-            if not (RuntimeInformation.IsOSPlatform OSPlatform.Windows) then
-                applyMode tempDir SeedEntry.defaultPermsForDirectory
-
-            materialiseSeed tempDir seed
-
-            runToCompletion
-                timeout
-                muxerPath
-                (dllPath :: List.ofArray args)
-                tempDir
-                (oracleEnvironment environment)
-                assemblyName
-        finally
-            try
-                // A seed may deliberately have left a directory unreadable or
-                // unsearchable, which is a mode `Directory.Delete` cannot
-                // recurse through — and the `with` below would swallow the
-                // failure, leaking the scratch tree rather than reporting it.
-                // Restore owner rwx from the top down first; each directory is
-                // made traversable before it is enumerated.
-                deleteScratchTree tempDir
-            with
-            | :? IOException
-            | :? UnauthorizedAccessException -> ()
+        executeInScratch guestTimeout FileSystemSeed.empty [] ignoredSignos args assemblyBytes
 
     /// As `executeWithTimeoutAndSeed`, with an empty filesystem seed and no
     /// environment entries.

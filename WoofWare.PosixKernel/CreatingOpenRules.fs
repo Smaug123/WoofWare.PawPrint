@@ -172,6 +172,10 @@ module CreatingOpenRules =
     /// <remarks>
     /// See <c>PermissionBits.fromCreationMode</c>, which is the general method to which <c>CreatingOpenRules</c>
     /// supplies platform-specific information.
+    ///
+    /// Not modelled: Linux also clears a requested <c>S_ISGID</c> (with <c>S_IXGRP</c>) when the file is
+    /// created in a set-group-ID directory whose group the unprivileged caller is not in. So the answer is
+    /// exact only when the caller is in the group of the directory it creates in.
     /// </remarks>
     let createdPermissions (rules : CreatingOpenRules) (umask : PermissionBits) (mode : int) : PermissionBits =
         PermissionBits.fromCreationMode rules.ModeMask umask mode

@@ -448,6 +448,7 @@ class TwoPortsOneEdge
                 match UnixTaskTable.parkedFor tid state.Kernel.Tasks with
                 | Some (ParkedSyscall.SocketWait wait) -> Some (tid, wait.Port)
                 | Some (ParkedSyscall.Flock _)
+                | Some (ParkedSyscall.Poll _)
                 | None -> None
             | _ -> None
         )

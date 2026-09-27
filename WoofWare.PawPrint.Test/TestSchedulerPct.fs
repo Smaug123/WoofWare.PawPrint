@@ -378,7 +378,7 @@ module TestSchedulerPct =
         | RunOutcome.Aborted (_, _, fatal) ->
             let msg = fatal.Message |> Option.defaultValue "<none>"
             $"aborted %O{fatal.Code} %s{msg}"
-        | RunOutcome.SignalTerminated (_, signal) -> $"signal %O{signal}"
+        | RunOutcome.SignalTerminated (_, signal, _) -> $"signal %O{signal}"
         | RunOutcome.GuestUnhandledException (_, _, _) -> "unhandled exception"
 
     [<Test>]
@@ -401,7 +401,7 @@ module TestSchedulerPct =
         | RunOutcome.NormalExit (state, _)
         | RunOutcome.ProcessExit (state, _)
         | RunOutcome.Aborted (state, _, _)
-        | RunOutcome.SignalTerminated (state, _)
+        | RunOutcome.SignalTerminated (state, _, _)
         | RunOutcome.GuestUnhandledException (state, _, _) -> state.Scheduling
 
     [<Test>]

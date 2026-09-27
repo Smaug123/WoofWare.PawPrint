@@ -78,7 +78,7 @@ module TestSignalTerminatedCases =
                 )
 
         match pawPrintResult with
-        | RunOutcome.SignalTerminated (state, signal) ->
+        | RunOutcome.SignalTerminated (state, signal, _) ->
             let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
             Signal.toRawSignoUnder numbering signal |> shouldEqual case.Signo
         | other -> failwith $"%s{case.FileName}: expected PawPrint to report a signal termination, got %O{other}"

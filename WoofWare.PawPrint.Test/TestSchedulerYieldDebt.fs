@@ -603,7 +603,7 @@ module TestSchedulerYieldDebt =
                         Message = Some "m"
                     }
                 )
-                ExecutionResult.SignalTerminated (sentinel, Signal.SIGINT)
+                ExecutionResult.SignalTerminated (sentinel, Signal.SIGINT, false)
                 ExecutionResult.Stepped (sentinel, WhatWeDid.Executed, StepEffect.NoEffect)
                 ExecutionResult.UnhandledException (sentinel, thread, guestException)
             ]
@@ -624,7 +624,7 @@ module TestSchedulerYieldDebt =
                 | ExecutionResult.Terminated (s, _)
                 | ExecutionResult.ProcessExit (s, _)
                 | ExecutionResult.Aborted (s, _, _)
-                | ExecutionResult.SignalTerminated (s, _)
+                | ExecutionResult.SignalTerminated (s, _, _)
                 | ExecutionResult.Stepped (s, _, _)
                 | ExecutionResult.UnhandledException (s, _, _) -> s
 

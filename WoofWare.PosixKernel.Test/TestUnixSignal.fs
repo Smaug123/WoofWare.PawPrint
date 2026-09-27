@@ -52,8 +52,33 @@ module TestUnixSignal =
     [<Test>]
     let ``kill of the calling process with SIGKILL terminates it`` () : unit =
         match UnixSignal.kill live self 9 linux with
-        | Ok (Ok (generation, _)) -> generation |> shouldEqual (SignalGeneration.ProcessTerminated (Signal.Other 9))
+        | Ok (Ok (generation, _)) ->
+            generation
+            |> shouldEqual (SignalGeneration.ProcessTerminated (Signal.Other 9, false))
         | other -> failwith $"unexpected answer: %O{other}"
+
+    [<Test>]
+    let ``a death by a signal that dumps core carries the core flag exactly when the process writes dumps`` () : unit =
+        // SIGQUIT dumps core on both flavours; SIGTERM on neither.
+        for flavour in flavours do
+            for coreDumps in [ CoreDumps.Suppressed ; CoreDumps.Written ] do
+                let system =
+                    let system = systemOn flavour
+
+                    { system with
+                        Process = UnixProcessState.withCoreDumps coreDumps system.Process
+                    }
+
+                let death (signo : int) : SignalGeneration =
+                    match UnixSignal.kill live self signo system with
+                    | Ok (Ok (generation, _)) -> generation
+                    | other -> failwith $"kill(self, %d{signo}) under %O{flavour}: %O{other}"
+
+                death 3
+                |> shouldEqual (SignalGeneration.ProcessTerminated (Signal.SIGQUIT, coreDumps = CoreDumps.Written))
+
+                death 15
+                |> shouldEqual (SignalGeneration.ProcessTerminated (Signal.SIGTERM, false))
 
     [<Test>]
     let ``the null signal to the calling process changes nothing`` () : unit =
@@ -138,11 +163,18 @@ module TestUnixSignal =
             gen {
                 let! flavour = Gen.elements flavours
                 let! signo = signoGen
-                return flavour, signo
+                let! coreDumps = Gen.elements [ CoreDumps.Suppressed ; CoreDumps.Written ]
+                return flavour, signo, coreDumps
             }
 
-        let property (flavour : SimulatedUnixFlavour, signo : int) : unit =
-            let system = systemOn flavour
+        let property (flavour : SimulatedUnixFlavour, signo : int, coreDumps : CoreDumps) : unit =
+            let system =
+                let system = systemOn flavour
+
+                { system with
+                    Process = UnixProcessState.withCoreDumps coreDumps system.Process
+                }
+
             let valid = signo >= 0 && signo <= highestSigno flavour
 
             match UnixSignal.kill live self signo system, valid with
@@ -155,6 +187,7 @@ module TestUnixSignal =
                         SignalGeneration.ProcessContinues, system.Process.Signals
                     else
                         SignalState.generate
+                            coreDumps
                             live
                             {
                                 Signal = Signal.Other signo

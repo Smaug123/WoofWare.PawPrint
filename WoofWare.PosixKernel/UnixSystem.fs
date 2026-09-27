@@ -124,6 +124,18 @@ type UnixSystemDefect<'Task> =
     /// socket event port, which no wait could have produced and which
     /// `SocketEventPort.hasDeliverableEvent` crashes on.
     | ParkedSocketWaitOnNonPort of task : 'Task * description : OpenFileDescriptionId * target : OpenFileTarget
+    /// A task is parked in a `poll` watching a socket event port, which `poll`
+    /// refuses before it parks and whose readiness is not modelled.
+    | ParkedPollOnSocketEventPort of task : 'Task * description : OpenFileDescriptionId
+    /// A task's parked `poll` watches `fd` on the description it named when
+    /// the call went to sleep, and `fd` now names `current` instead. `close`
+    /// refuses to close a descriptor a parked poll watches, so this is a park
+    /// recorded without `poll` or a descriptor closed around it.
+    | ParkedPollDescriptorRebound of
+        task : 'Task *
+        fd : int *
+        watched : OpenFileDescriptionId *
+        current : OpenFileDescriptionId option
     /// A task's park records an ordinal at or above the next one to mint, so
     /// some future park would repeat it, and the two waiters' order would be
     /// unspecified.
@@ -526,6 +538,32 @@ module UnixSystem =
                             [
                                 UnixSystemDefect.ParkedSocketWaitOnNonPort (task, wait.Port, description.Target)
                             ]
+                | Some (ParkedSyscall.Poll parked) ->
+                    parked.Entries
+                    |> List.collect (fun entry ->
+                        match entry with
+                        | ParkedPollEntry.Ignored _ -> []
+                        | ParkedPollEntry.Watched (fd, watched, _) ->
+                            match Map.tryFind watched descriptions with
+                            | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, watched) ]
+                            | Some description ->
+                                let target =
+                                    match description.Target with
+                                    | OpenFileTarget.SocketEventPort _ ->
+                                        [ UnixSystemDefect.ParkedPollOnSocketEventPort (task, watched) ]
+                                    | OpenFileTarget.StandardStream _
+                                    | OpenFileTarget.File _
+                                    | OpenFileTarget.Directory _
+                                    | OpenFileTarget.Socket _ -> []
+
+                                let rebound =
+                                    match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+                                    | Some current when current = watched -> []
+                                    | current ->
+                                        [ UnixSystemDefect.ParkedPollDescriptorRebound (task, fd, watched, current) ]
+
+                                target @ rebound
+                    )
             )
 
         let parkOrdinals =
@@ -792,6 +830,13 @@ module UnixSystem =
     let defaultUmask : PermissionBits =
         PermissionBits.parseOrFail "UnixSystem.defaultUmask" 0o022
 
+    /// Whether a freshly-minted simulated process writes a core dump when a
+    /// signal kills it: never, as under an `RLIMIT_CORE` of 0. A dump is a
+    /// file the simulated process would leave behind, which a client has to
+    /// ask for. A client chooses otherwise with
+    /// `UnixProcessState.withCoreDumps`.
+    let defaultCoreDumps : CoreDumps = CoreDumps.Suppressed
+
     /// Process ID a freshly-minted simulated process reports: 4242.
     ///
     /// Not 1, which is the ID of a PID namespace's init process. A kernel
@@ -849,7 +894,10 @@ module UnixSystem =
 
         // Bound once so that `CurrentDirectoryInode` is the root of *this*
         // filesystem rather than of a second one that merely looks like it.
-        let filesystem = VirtualFileSystem.empty (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
+        let filesystem =
+            VirtualFileSystem.empty
+                (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
+                (InodeOwner.ofProcess (defaultCredentials flavour))
 
         {
             Machine =
@@ -887,7 +935,8 @@ module UnixSystem =
                     Credentials = defaultCredentials flavour
                     Umask = defaultUmask
                     ProcessId = defaultProcessId
-                    Signals = SignalState.initial (SimulatedUnixPlatform.signalNumbering platform)
+                    Signals = SignalState.initial (SimulatedUnixPlatform.signalNumbering platform) Set.empty
+                    CoreDumps = defaultCoreDumps
                 }
             Tasks = Map.empty
         }
@@ -981,8 +1030,14 @@ module UnixSystem =
     /// it, which is what makes that path the physical one with every symlink
     /// resolved away — measured on both kernels, `chdir("outer/lnk")` with
     /// `lnk -> inner` is followed by `getcwd() == ".../outer/inner"`.
+    ///
+    /// `defaultOwner` owns the root and every seed entry that states no owner
+    /// of its own; see `VirtualFileSystem.ofFileSystemSeed`. It is an argument
+    /// rather than read off the process, so that the result does not depend on
+    /// whether the caller set the credentials before or after the filesystem.
     let withFileSystemAndCurrentDirectory<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (createdAt : UnixTimestamp)
+        (defaultOwner : InodeOwner)
         (seed : Map<DirectoryEntryName, SeedEntry>)
         (directory : AbsoluteUnixPath)
         (system : UnixSystem<'Task, 'Handler>)
@@ -1064,7 +1119,7 @@ module UnixSystem =
                     Some (CurrentDirectoryFault.SeedNameNotBindable (name, flavour))
                 else
                     match entry with
-                    | SeedEntry.Directory (children, _) -> firstImpossibleName children
+                    | SeedEntry.Directory (children, _, _) -> firstImpossibleName children
                     | SeedEntry.File _
                     | SeedEntry.Symlink _ -> None
             )
@@ -1073,7 +1128,7 @@ module UnixSystem =
         | Some fault -> Error fault
         | None ->
 
-        let filesystem = VirtualFileSystem.ofFileSystemSeed createdAt seed
+        let filesystem = VirtualFileSystem.ofFileSystemSeed createdAt defaultOwner seed
         let root = VirtualFileSystem.root filesystem
 
         let located =

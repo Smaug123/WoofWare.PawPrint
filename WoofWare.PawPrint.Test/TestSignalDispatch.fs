@@ -179,7 +179,9 @@ module TestSignalDispatch =
                         { kernel.Process with
                             Signals =
                                 kernel.Signals
-                                |> SignalState.enable Signal.SIGINT
+                                |> SignalState.setDisposition
+                                    Signal.SIGINT
+                                    (SignalDisposition.Catch NativeSignalHandler.SystemNative)
                                 |> SignalState.enqueue
                                     {
                                         Signal = Signal.SIGINT
@@ -203,7 +205,11 @@ module TestSignalDispatch =
                 { kernel with
                     Process =
                         { kernel.Process with
-                            Signals = kernel.Signals |> SignalState.enable Signal.SIGINT
+                            Signals =
+                                kernel.Signals
+                                |> SignalState.setDisposition
+                                    Signal.SIGINT
+                                    (SignalDisposition.Catch NativeSignalHandler.SystemNative)
                         }
                 }
             )
@@ -363,7 +369,9 @@ module TestSignalDispatch =
                         { kernel.Process with
                             Signals =
                                 kernel.Signals
-                                |> SignalState.enable Signal.SIGINT
+                                |> SignalState.setDisposition
+                                    Signal.SIGINT
+                                    (SignalDisposition.Catch NativeSignalHandler.SystemNative)
                                 |> SignalState.enqueue
                                     {
                                         Signal = Signal.SIGINT
@@ -413,7 +421,9 @@ module TestSignalDispatch =
                         { kernel.Process with
                             Signals =
                                 kernel.Signals
-                                |> SignalState.enable Signal.SIGINT
+                                |> SignalState.setDisposition
+                                    Signal.SIGINT
+                                    (SignalDisposition.Catch NativeSignalHandler.SystemNative)
                                 |> SignalState.enqueue
                                     {
                                         Signal = Signal.SIGINT
@@ -459,7 +469,9 @@ module TestSignalDispatch =
                         { kernel.Process with
                             Signals =
                                 kernel.Signals
-                                |> SignalState.enable Signal.SIGINT
+                                |> SignalState.setDisposition
+                                    Signal.SIGINT
+                                    (SignalDisposition.Catch NativeSignalHandler.SystemNative)
                                 |> SignalState.enqueue
                                     {
                                         Signal = Signal.SIGINT
@@ -501,7 +513,9 @@ module TestSignalDispatch =
                         { kernel.Process with
                             Signals =
                                 kernel.Signals
-                                |> SignalState.enable Signal.SIGCHLD
+                                |> SignalState.setDisposition
+                                    Signal.SIGCHLD
+                                    (SignalDisposition.Catch NativeSignalHandler.SystemNative)
                                 |> SignalState.enqueue
                                     {
                                         Signal = Signal.SIGCHLD
@@ -548,7 +562,9 @@ module TestSignalDispatch =
                         { kernel.Process with
                             Signals =
                                 kernel.Signals
-                                |> SignalState.enable Signal.SIGINT
+                                |> SignalState.setDisposition
+                                    Signal.SIGINT
+                                    (SignalDisposition.Catch NativeSignalHandler.SystemNative)
                                 |> SignalState.enqueue
                                     {
                                         Signal = Signal.SIGINT
@@ -611,7 +627,9 @@ module TestSignalDispatch =
                         { kernel.Process with
                             Signals =
                                 kernel.Signals
-                                |> SignalState.enable Signal.SIGINT
+                                |> SignalState.setDisposition
+                                    Signal.SIGINT
+                                    (SignalDisposition.Catch NativeSignalHandler.SystemNative)
                                 |> SignalState.enqueue
                                     {
                                         Signal = Signal.SIGINT
@@ -646,7 +664,9 @@ module TestSignalDispatch =
                         { kernel.Process with
                             Signals =
                                 kernel.Signals
-                                |> SignalState.enable Signal.SIGINT
+                                |> SignalState.setDisposition
+                                    Signal.SIGINT
+                                    (SignalDisposition.Catch NativeSignalHandler.SystemNative)
                                 |> SignalState.enqueue
                                     {
                                         Signal = Signal.SIGINT
@@ -693,7 +713,9 @@ module TestSignalDispatch =
                         { kernel.Process with
                             Signals =
                                 kernel.Signals
-                                |> SignalState.enable Signal.SIGINT
+                                |> SignalState.setDisposition
+                                    Signal.SIGINT
+                                    (SignalDisposition.Catch NativeSignalHandler.SystemNative)
                                 |> SignalState.enqueue
                                     {
                                         Signal = Signal.SIGINT
@@ -736,7 +758,9 @@ module TestSignalDispatch =
                         { kernel.Process with
                             Signals =
                                 kernel.Signals
-                                |> SignalState.enable Signal.SIGABRT
+                                |> SignalState.setDisposition
+                                    Signal.SIGABRT
+                                    (SignalDisposition.Catch NativeSignalHandler.SystemNative)
                                 |> SignalState.enqueue
                                     {
                                         Signal = Signal.SIGABRT
@@ -785,7 +809,9 @@ module TestSignalDispatch =
                         { kernel.Process with
                             Signals =
                                 kernel.Signals
-                                |> SignalState.enable Signal.SIGINT
+                                |> SignalState.setDisposition
+                                    Signal.SIGINT
+                                    (SignalDisposition.Catch NativeSignalHandler.SystemNative)
                                 |> SignalState.enqueue
                                     {
                                         Signal = Signal.SIGINT
@@ -838,7 +864,9 @@ module TestSignalDispatch =
                         { kernel.Process with
                             Signals =
                                 kernel.Signals
-                                |> SignalState.enable Signal.SIGINT
+                                |> SignalState.setDisposition
+                                    Signal.SIGINT
+                                    (SignalDisposition.Catch NativeSignalHandler.SystemNative)
                                 |> SignalState.enqueue
                                     {
                                         Signal = Signal.SIGINT
@@ -863,3 +891,79 @@ module TestSignalDispatch =
                     Target = ValueNone
                 }
             ]
+
+    [<Test>]
+    let ``trySpawnHandler refuses a signal whose System.Native handler would first run the runtime's`` () : unit =
+        // SIGSEGV is caught by CoreCLR's PAL from startup; registering it
+        // installs System.Native's handler over the PAL's, which the shim's
+        // handler then calls first. PawPrint does not model what that does.
+        let state, _dispatcher, _ = preparedState ()
+        let runnableSibling = ThreadId 99
+        let segv = Signal.Other 11
+
+        let state =
+            { state with
+                ThreadState =
+                    state.ThreadState
+                    |> Map.add runnableSibling (stubThreadState ThreadStatus.Runnable)
+            }
+
+        let state =
+            state.MapKernel (fun kernel ->
+                let numbering = SimulatedUnixPlatform.signalNumbering kernel.UnixPlatform
+
+                let signals, shim =
+                    PosixSignalShim.installHandler numbering segv kernel.Signals kernel.PosixSignalShim
+
+                { kernel with
+                    PosixSignalShim = shim
+                    Process =
+                        { kernel.Process with
+                            Signals =
+                                signals
+                                |> SignalState.enqueue
+                                    {
+                                        Signal = segv
+                                        Target = ValueNone
+                                    }
+                        }
+                }
+            )
+
+        let exn =
+            Assert.Throws (fun () -> SignalDispatch.trySpawnHandler baseClassTypes state |> ignore<IlMachineState>)
+
+        exn.Message |> shouldContainText "would first run the handler it replaced"
+
+    [<Test>]
+    let ``trySpawnHandler refuses a signal caught by a handler installed before Main`` () : unit =
+        let state, _dispatcher, _ = preparedState ()
+        let runnableSibling = ThreadId 99
+
+        let state =
+            { state with
+                ThreadState =
+                    state.ThreadState
+                    |> Map.add runnableSibling (stubThreadState ThreadStatus.Runnable)
+            }
+
+        let state =
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    Process =
+                        { kernel.Process with
+                            Signals =
+                                kernel.Signals
+                                |> SignalState.enqueue
+                                    {
+                                        Signal = Signal.Other 11
+                                        Target = ValueNone
+                                    }
+                        }
+                }
+            )
+
+        let exn =
+            Assert.Throws (fun () -> SignalDispatch.trySpawnHandler baseClassTypes state |> ignore<IlMachineState>)
+
+        exn.Message |> shouldContainText "installed before Main"

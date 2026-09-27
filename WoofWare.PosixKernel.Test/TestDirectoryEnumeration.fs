@@ -26,12 +26,25 @@ module TestDirectoryEnumeration =
         | Error error -> failwith $"expected success, got %O{error}"
 
     let private mkfile (parent : InodeNumber) (n : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
-        VirtualFileSystem.createFile parent (name n) SeedEntry.defaultPermsForRegularFile buildTime noBytes vfs
+        VirtualFileSystem.createFile
+            parent
+            (name n)
+            SeedEntry.defaultPermsForRegularFile
+            Owners.linuxDefault
+            buildTime
+            noBytes
+            vfs
         |> ok
         |> snd
 
     let private mkdir (parent : InodeNumber) (n : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
-        VirtualFileSystem.createDirectory parent (name n) SeedEntry.defaultPermsForDirectory buildTime vfs
+        VirtualFileSystem.createDirectory
+            parent
+            (name n)
+            SeedEntry.defaultPermsForDirectory
+            Owners.linuxDefault
+            buildTime
+            vfs
         |> ok
         |> snd
 
@@ -67,11 +80,17 @@ module TestDirectoryEnumeration =
     /// The root, and a directory `d` beneath it holding the named entries as
     /// regular files.
     let private withEntries (names : string list) : VirtualFileSystem * InodeNumber =
-        let vfs = VirtualFileSystem.empty buildTime
+        let vfs = VirtualFileSystem.empty buildTime Owners.linuxDefault
         let root = VirtualFileSystem.root vfs
 
         let directory, vfs =
-            VirtualFileSystem.createDirectory root (name "d") SeedEntry.defaultPermsForDirectory buildTime vfs
+            VirtualFileSystem.createDirectory
+                root
+                (name "d")
+                SeedEntry.defaultPermsForDirectory
+                Owners.linuxDefault
+                buildTime
+                vfs
             |> ok
 
         let vfs = (vfs, names) ||> List.fold (fun vfs n -> mkfile directory n vfs)
@@ -108,7 +127,7 @@ module TestDirectoryEnumeration =
 
     [<Test>]
     let ``the root's dot-dot is the root`` () : unit =
-        let vfs = VirtualFileSystem.empty buildTime
+        let vfs = VirtualFileSystem.empty buildTime Owners.linuxDefault
         let root = VirtualFileSystem.root vfs
 
         match VirtualFileSystem.nextDirectoryEntry root DirectoryCursor.Start vfs with

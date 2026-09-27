@@ -43,7 +43,7 @@ module TestEmulatedKernelCurrentDirectory =
                         [
                             name "inner", SeedEntry.directory Map.empty
                             name "file", SeedEntry.file noBytes
-                            name "lnk", SeedEntry.Symlink (target "inner")
+                            name "lnk", SeedEntry.Symlink (target "inner", None)
                         ]
                 )
             ]
@@ -51,7 +51,11 @@ module TestEmulatedKernelCurrentDirectory =
     /// A kernel seeded with the tree above, whose current directory is `dir`.
     let private seededAt (dir : string) : EmulatedKernel =
         EmulatedKernel.initial
-        |> EmulatedKernel.withFileSystemAndCurrentDirectory createdAt seed (absolute dir)
+        |> EmulatedKernel.withFileSystemAndCurrentDirectory
+            createdAt
+            (InodeOwner.ofProcess (UnixSystem.defaultCredentials SimulatedUnixFlavour.Linux))
+            seed
+            (absolute dir)
 
     let private message (body : unit -> unit) : string =
         let thrown = Assert.Throws<exn> (fun () -> body ())
@@ -82,7 +86,11 @@ module TestEmulatedKernelCurrentDirectory =
 
         let darwin =
             EmulatedKernel.create SimulatedUnixPlatform.macOsArm64
-            |> EmulatedKernel.withFileSystemAndCurrentDirectory createdAt seed (absolute $"/%s{wide}")
+            |> EmulatedKernel.withFileSystemAndCurrentDirectory
+                createdAt
+                (InodeOwner.ofProcess (UnixSystem.defaultCredentials SimulatedUnixFlavour.Linux))
+                seed
+                (absolute $"/%s{wide}")
 
         darwin.CurrentDirectoryInode
         |> shouldNotEqual (VirtualFileSystem.root darwin.FileSystem)
@@ -95,7 +103,11 @@ module TestEmulatedKernelCurrentDirectory =
         let text =
             message (fun () ->
                 EmulatedKernel.create SimulatedUnixPlatform.linuxX64
-                |> EmulatedKernel.withFileSystemAndCurrentDirectory createdAt seed (absolute $"/%s{wide}")
+                |> EmulatedKernel.withFileSystemAndCurrentDirectory
+                    createdAt
+                    (InodeOwner.ofProcess (UnixSystem.defaultCredentials SimulatedUnixFlavour.Linux))
+                    seed
+                    (absolute $"/%s{wide}")
                 |> ignore<EmulatedKernel>
             )
 
@@ -115,12 +127,16 @@ module TestEmulatedKernelCurrentDirectory =
         let deep = String.replicate 400 "/ab"
 
         let seed =
-            Map.ofList [ name "l", SeedEntry.Symlink (SymlinkTarget.parseOrFail "test" deep) ]
+            Map.ofList [ name "l", SeedEntry.Symlink (SymlinkTarget.parseOrFail "test" deep, None) ]
 
         let text =
             message (fun () ->
                 EmulatedKernel.create SimulatedUnixPlatform.macOsArm64
-                |> EmulatedKernel.withFileSystemAndCurrentDirectory createdAt seed (absolute "/l")
+                |> EmulatedKernel.withFileSystemAndCurrentDirectory
+                    createdAt
+                    (InodeOwner.ofProcess (UnixSystem.defaultCredentials SimulatedUnixFlavour.Linux))
+                    seed
+                    (absolute "/l")
                 |> ignore<EmulatedKernel>
             )
 
@@ -138,6 +154,7 @@ module TestEmulatedKernelCurrentDirectory =
                 EmulatedKernel.initial
                 |> EmulatedKernel.withFileSystemAndCurrentDirectory
                     (UnixTimestamp.ofSeconds 0L)
+                    (InodeOwner.ofProcess (UnixSystem.defaultCredentials SimulatedUnixFlavour.Linux))
                     FileSystemSeed.empty
                     Unchecked.defaultof<AbsoluteUnixPath>
                 |> ignore<EmulatedKernel>
@@ -156,7 +173,11 @@ module TestEmulatedKernelCurrentDirectory =
         let text =
             message (fun () ->
                 EmulatedKernel.initial
-                |> EmulatedKernel.withFileSystemAndCurrentDirectory createdAt seed (absolute "/")
+                |> EmulatedKernel.withFileSystemAndCurrentDirectory
+                    createdAt
+                    (InodeOwner.ofProcess (UnixSystem.defaultCredentials SimulatedUnixFlavour.Linux))
+                    seed
+                    (absolute "/")
                 |> ignore<EmulatedKernel>
             )
 
@@ -182,7 +203,11 @@ module TestEmulatedKernelCurrentDirectory =
         let text =
             message (fun () ->
                 EmulatedKernel.create SimulatedUnixPlatform.macOsArm64
-                |> EmulatedKernel.withFileSystemAndCurrentDirectory createdAt seed (absolute "/")
+                |> EmulatedKernel.withFileSystemAndCurrentDirectory
+                    createdAt
+                    (InodeOwner.ofProcess (UnixSystem.defaultCredentials SimulatedUnixFlavour.Linux))
+                    seed
+                    (absolute "/")
                 |> ignore<EmulatedKernel>
             )
 

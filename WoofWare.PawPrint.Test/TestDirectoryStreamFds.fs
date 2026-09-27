@@ -32,7 +32,11 @@ module TestDirectoryStreamFds =
 
     let private kernel () : EmulatedKernel =
         EmulatedKernel.initial
-        |> EmulatedKernel.withFileSystemAndCurrentDirectory createdAt seed (absolute "/")
+        |> EmulatedKernel.withFileSystemAndCurrentDirectory
+            createdAt
+            (InodeOwner.ofProcess (UnixSystem.defaultCredentials SimulatedUnixFlavour.Linux))
+            seed
+            (absolute "/")
 
     /// `opendir(3)`'s open.
     let private directoryFlags : OpenFlags =

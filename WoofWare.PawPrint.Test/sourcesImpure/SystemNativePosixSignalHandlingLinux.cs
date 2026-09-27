@@ -16,8 +16,8 @@ using System.Runtime.InteropServices;
 // disposition survives SIGCHLD (17) and SIGURG (23).
 //
 // The registration asserts on the terminal kernel state as well as on the
-// exit code: which of the signals enabled below are still enabled after
-// their non-cancelled handling ran.
+// exit code: which of the signals enabled below System.Native's handler
+// still catches after their non-cancelled handling ran.
 class Program
 {
     const int EINVAL = 22;
@@ -77,8 +77,7 @@ class Program
 
         // Kernel-default dispositions that do not end the process: 17 is
         // SIGCHLD and 23 is SIGURG, both discarded, and both named by the
-        // PAL's switch, so their handlers stay installed and the enable
-        // bits stay set.
+        // PAL's switch, so their handlers stay installed.
         if (Enable(23) != 1) return 9;
         HandleNonCanceled(17);
         HandleNonCanceled(23);

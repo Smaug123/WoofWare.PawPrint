@@ -52,7 +52,7 @@ module TestPosixFadvise =
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
         match
             UnixSystem.initial<int, string> platform
-            |> UnixSystem.withFileSystemAndCurrentDirectory createdAt seed (absolute "/dir")
+            |> UnixSystem.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault seed (absolute "/dir")
         with
         | Ok system -> system
         | Error fault -> failwith $"the fixture's own seed did not boot: %O{fault}."

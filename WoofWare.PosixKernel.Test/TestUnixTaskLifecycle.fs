@@ -340,8 +340,8 @@ module TestUnixTaskLifecycle =
                             SignalState.blockedFor other signalsAfter
                             |> shouldEqual (SignalState.blockedFor other signalsBefore)
 
-                        SignalState.enabled signalsAfter
-                        |> shouldEqual (SignalState.enabled signalsBefore)
+                        SignalState.dispositions signalsAfter
+                        |> shouldEqual (SignalState.dispositions signalsBefore)
 
                         after.Tasks |> shouldEqual (Map.remove task system.Tasks)
                         after.Machine |> shouldEqual system.Machine

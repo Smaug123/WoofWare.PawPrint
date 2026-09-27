@@ -226,7 +226,7 @@ public class Probe
         | RunOutcome.Aborted (_, _, fatal) ->
             let message = fatal.Message |> Option.defaultValue "<no message>"
             failwith $"%s{sourceName}: guest aborted (%O{fatal.Code}): %s{message}"
-        | RunOutcome.SignalTerminated (_, signal) ->
+        | RunOutcome.SignalTerminated (_, signal, _) ->
             failwith $"%s{sourceName}: guest was terminated by POSIX signal %O{signal}"
 
     [<TestCaseSource(nameof cases)>]

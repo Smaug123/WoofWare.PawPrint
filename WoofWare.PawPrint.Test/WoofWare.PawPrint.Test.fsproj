@@ -343,6 +343,7 @@
     <Compile Include="TestImpureCases.fs" />
     <Compile Include="TestSignalTerminatedCases.fs" />
     <Compile Include="TestLibcKillRefusals.fs" />
+    <Compile Include="TestInheritedSignalIgnores.fs" />
     <Compile Include="TestOraclePolicy.fs" />
     <Compile Include="TestRaces.fs" />
     <Compile Include="TestCallSiteTransition.fs" />

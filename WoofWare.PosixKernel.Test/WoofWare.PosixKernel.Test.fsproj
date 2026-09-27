@@ -17,10 +17,12 @@
     <Compile Include="ReuseAddress.fs" />
     <Compile Include="PathText.fs" />
     <Compile Include="DirectoryReading.fs" />
+    <Compile Include="Owners.fs" />
     <Compile Include="BindingProbes.fs" />
     <Compile Include="TestUnixTaskTable.fs" />
     <Compile Include="CredentialsGen.fs" />
     <Compile Include="TestCredentials.fs" />
+    <Compile Include="TestInodeOwner.fs" />
     <Compile Include="TestWakeCondition.fs" />
     <Compile Include="TestUnixWait.fs" />
     <Compile Include="TestUnixTaskLifecycle.fs" />
@@ -58,6 +60,7 @@
     <Compile Include="TestSignalAgainstHost.fs" />
     <Compile Include="TestSignalMaskAgainstHost.fs" />
     <Compile Include="TestSignalState.fs" />
+    <Compile Include="TestSignalDispositions.fs" />
     <Compile Include="TestUnixSignal.fs" />
     <Compile Include="TestDirectoryEnumeration.fs" />
     <Compile Include="TestDirectoryDescription.fs" />
@@ -87,6 +90,7 @@
     <Compile Include="TestNonBlocking.fs" />
     <Compile Include="TestConnect.fs" />
     <Compile Include="TestPoll.fs" />
+    <Compile Include="TestPollTimeout.fs" />
     <Compile Include="TestSocketWait.fs" />
     <Compile Include="TestDatagramDissolve.fs" />
     <Compile Include="TestEpollCtl.fs" />

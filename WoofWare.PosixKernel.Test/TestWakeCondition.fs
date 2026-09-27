@@ -13,7 +13,8 @@ open WoofWare.PosixKernel
 /// by construction, where `WakeCondition.satisfied` recurses over the tree and asks the
 /// kernel. The world is built so that every primitive's answer is known: two socket
 /// event ports, which share one anonymous inode and so contend under `flock`, with an
-/// exclusive lock held through the first; neither port has anything to deliver.
+/// exclusive lock held through the first; neither port has anything to deliver;
+/// and the standard streams, whose readiness is the launch shape's.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestWakeCondition =
@@ -76,6 +77,12 @@ module TestWakeCondition =
             WakePrimitive.FlockGrantable (blocked, FlockMode.Shared), false
             WakePrimitive.SocketEventDeliverable locker, false
             WakePrimitive.SocketEventDeliverable blocked, false
+            // The launch shape's standard streams: stdin presents HUP alone,
+            // stdout OUT and WRNORM.
+            WakePrimitive.DescriptorReady (idOf 1 system, 0x0004u), true
+            WakePrimitive.DescriptorReady (idOf 1 system, 0x0001u ||| 0x0008u ||| 0x0010u), false
+            WakePrimitive.DescriptorReady (idOf 0 system, 0x0010u), true
+            WakePrimitive.DescriptorReady (idOf 0 system, 0x0001u), false
         ]
 
     let private at (clock : int64) : UnixSystem<int, string> =
@@ -87,7 +94,8 @@ module TestWakeCondition =
         match primitive with
         | WakePrimitive.DeadlinePassed deadline -> clock >= deadline
         | WakePrimitive.FlockGrantable _
-        | WakePrimitive.SocketEventDeliverable _ ->
+        | WakePrimitive.SocketEventDeliverable _
+        | WakePrimitive.DescriptorReady _ ->
             match List.tryFind (fun (p, _) -> p = primitive) fixedTruths with
             | Some (_, truth) -> truth
             | None -> failwith $"the oracle's truth table has no row for %O{primitive}"
@@ -261,7 +269,8 @@ module TestWakeCondition =
                         match primitive with
                         | WakePrimitive.DeadlinePassed deadline -> Some deadline
                         | WakePrimitive.FlockGrantable _
-                        | WakePrimitive.SocketEventDeliverable _ -> None
+                        | WakePrimitive.SocketEventDeliverable _
+                        | WakePrimitive.DescriptorReady _ -> None
                     )
                 )
 

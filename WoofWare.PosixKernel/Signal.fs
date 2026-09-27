@@ -338,11 +338,11 @@ module Signal =
 
     /// Whether a signal generated while its disposition is "ignore" (SIG_IGN,
     /// or SIG_DFL with a default of Ignore) survives as pending when the
-    /// receiving thread is blocking it: on Linux it stays pending — and is
-    /// delivered if a handler is installed before the unblock — where Darwin
-    /// discards it at generation despite the block. A signal that is ignored
-    /// and *not* blocked is discarded on both.
-    let blockedIgnoredSignalStaysPendingUnder (numbering : SignalNumbering) : bool =
+    /// receiving thread is blocking it: on Linux it stays pending, and is
+    /// delivered if a handler is installed before the unblock, where Darwin
+    /// discards it at generation despite the block, SIGCONT alone excepted.
+    /// A signal that is ignored and *not* blocked is discarded on both.
+    let blockedIgnoredSignalStaysPendingUnder (numbering : SignalNumbering) (signal : Signal) : bool =
         // Measured 2026-09-16 on Linux 6.18.5 / glibc 2.41 and Darwin 25.6.0,
         // two runs each: SIG_IGN'd SIGUSR1 and default-ignored SIGWINCH,
         // generated both process-directed (kill) and thread-directed
@@ -351,13 +351,60 @@ module Signal =
         // the unblock; on Darwin none was pending and none was delivered. A
         // SIG_DFL SIGUSR2 control stayed pending and delivered on both.
         //
+        // Swept 2026-09-26 over every signal sigaction accepts, under SIG_IGN
+        // and SIG_DFL at generation, both directions, on Linux 6.18.5 and
+        // Darwin 27.0.0
+        // (docs/plans/2026-08-23-posix-kernel-extraction/signal-disposition-table.c):
+        // the same, except that Darwin keeps an ignored SIGCONT pending.
+        //
         // Not measurable as a host-equality test: asking means installing
         // dispositions in the test host's own process, which is why the
         // sigaction facts in this file are probe-pinned too (see
         // TestSignalAgainstHost's header).
         match numbering with
         | SignalNumbering.Linux -> true
-        | SignalNumbering.Darwin -> false
+        | SignalNumbering.Darwin -> canonicalUnder numbering signal = Signal.SIGCONT
+
+    /// Whether the kernel's default action for `signal` dumps core as well as
+    /// terminating the process. The dump is written only if the process's
+    /// settings allow it (see `CoreDumps`); either way the process dies.
+    ///
+    /// Linux: SIGQUIT, SIGILL, SIGTRAP, SIGABRT, SIGBUS, SIGFPE, SIGSEGV,
+    /// SIGXCPU, SIGXFSZ and SIGSYS. Darwin: SIGQUIT, SIGILL, SIGTRAP,
+    /// SIGABRT, SIGEMT, SIGFPE, SIGBUS, SIGSEGV and SIGSYS, which is to say
+    /// not SIGXCPU or SIGXFSZ.
+    let dumpsCoreUnder (numbering : SignalNumbering) (signal : Signal) : bool =
+        // Measured 2026-09-26 by sending every signal number to a child under
+        // SIG_DFL (docs/plans/2026-08-23-posix-kernel-extraction/core-class.c).
+        // Linux 6.18.5, with RLIMIT_CORE raised to infinity: exactly these
+        // deaths carried the wait status's core flag, as they did on
+        // 2026-09-23 in the signals research's own sweep. Darwin 27.0.0, as
+        // an unprivileged user who cannot write the dump into /cores: exactly
+        // these deaths raised EXC_CRASH on the child's task exception port,
+        // which xnu does for a death by a signal whose properties include
+        // SA_CORE, the property its core dump is gated on.
+        match canonicalUnder numbering signal with
+        | Signal.SIGQUIT
+        | Signal.SIGABRT -> true
+        | Signal.SIGHUP
+        | Signal.SIGINT
+        | Signal.SIGTERM
+        | Signal.SIGCHLD
+        | Signal.SIGCONT
+        | Signal.SIGWINCH
+        | Signal.SIGTSTP
+        | Signal.SIGTTIN
+        | Signal.SIGTTOU
+        | Signal.SIGPIPE
+        | Signal.SIGUSR1
+        | Signal.SIGUSR2
+        | Signal.SIGURG -> false
+        | Signal.Other rawSignal ->
+            match numbering with
+            // SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV, SIGXCPU, SIGXFSZ, SIGSYS
+            | SignalNumbering.Linux -> List.contains rawSignal [ 4 ; 5 ; 7 ; 8 ; 11 ; 24 ; 25 ; 31 ]
+            // SIGILL, SIGTRAP, SIGEMT, SIGFPE, SIGBUS, SIGSEGV, SIGSYS
+            | SignalNumbering.Darwin -> List.contains rawSignal [ 4 ; 5 ; 7 ; 8 ; 10 ; 11 ; 12 ]
 
     /// <summary>
     /// The kernel-level default disposition for <c>signal</c>, read under the
