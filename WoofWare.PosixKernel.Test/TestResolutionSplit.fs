@@ -442,7 +442,7 @@ module TestResolutionSplit =
         let resolved (p : string) =
             PathWalk.resolveExisting
                 (SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.linuxX64)
-                CallerPrivilege.Privileged
+                Owners.root
                 rootInode
                 SymlinkPolicy.Follow
                 (path p)
@@ -478,7 +478,14 @@ module TestResolutionSplit =
                                     referenceResolveFull limits privilege start policy trailing (path p) corpus
 
                                 let actual =
-                                    PathWalk.resolveFull limits privilege start policy trailing (path p) corpus
+                                    PathWalk.resolveFull
+                                        limits
+                                        (Owners.caller privilege)
+                                        start
+                                        policy
+                                        trailing
+                                        (path p)
+                                        corpus
 
                                 if actual <> expected then
                                     failwith
@@ -690,7 +697,7 @@ module TestResolutionSplit =
             let actual =
                 PathWalk.resolveFull
                     case.Limits
-                    case.Privilege
+                    (Owners.caller case.Privilege)
                     case.Start
                     case.Policy
                     case.Trailing
@@ -709,7 +716,7 @@ module TestResolutionSplit =
     let private parentOf (limits : PathLimits) (privilege : CallerPrivilege) (p : string) (vfs : VirtualFileSystem) =
         PathWalk.resolveParent
             limits
-            privilege
+            (Owners.caller privilege)
             (VirtualFileSystem.root vfs)
             SymlinkPolicy.NoFollowFinal
             TrailingSeparatorPolicy.Ignore

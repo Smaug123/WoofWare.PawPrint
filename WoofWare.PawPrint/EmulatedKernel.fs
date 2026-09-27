@@ -1147,9 +1147,7 @@ module EmulatedKernel =
     /// `owner` owns every inode of the seed. A seed entry that states any other
     /// owner is refused: a file the process does not own would reach
     /// CoreLib's group-membership check (`FileStatus.IsModeReadOnlyCore`), whose
-    /// `SystemNative_GetEGid` and `GetGroups` are not implemented, and the
-    /// kernel's permission checks do not yet consult anything but the owner's
-    /// bits.
+    /// `SystemNative_GetEGid` and `GetGroups` are not implemented.
     let withFileSystemAndCurrentDirectory
         (createdAt : UnixTimestamp)
         (owner : InodeOwner)

@@ -144,7 +144,7 @@ module TestRmDirRules =
         match
             PathWalk.resolveFull
                 (SimulatedUnixPlatform.pathLimits platform)
-                privilege
+                (Owners.caller privilege)
                 (VirtualFileSystem.root tree)
                 SymlinkPolicy.NoFollowFinal
                 rules.TrailingSeparator
@@ -152,7 +152,9 @@ module TestRmDirRules =
                 tree
         with
         | Error error -> RmDirVerdict.Refuse error
-        | Ok resolution -> RmDirRules.verdict (SimulatedUnixPlatform.flavour platform) privilege resolution tree
+        | Ok resolution ->
+            RmDirRules.verdict (SimulatedUnixPlatform.flavour platform) (Owners.caller privilege) resolution tree
+            |> Answered.unrefused
 
     let private linux : SimulatedUnixPlatform = SimulatedUnixPlatform.linuxX64
 

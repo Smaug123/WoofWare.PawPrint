@@ -198,7 +198,7 @@ module TestInodeOwner =
     /// report who owns each.
     let private createBoth (system : UnixSystem<int, string>) : InodeOwner * InodeOwner =
         let system =
-            match UnixNamespace.openPath creating (UnixPath.parseOrFail context "/p/file") 0o644 system with
+            match Answered.openPath creating (UnixPath.parseOrFail context "/p/file") 0o644 system with
             | SyscallAnswer.Completed _, system -> system
             | other -> failwith $"expected the file to be created, got %O{other}"
 
@@ -400,13 +400,13 @@ module TestInodeOwner =
                 0L
                 (ImmutableArray.Create 1uy)
                 SetGroupIdOnWrite.StripAlways
-                CallerPrivilege.Unprivileged
+                Owners.linuxDefaultCaller
                 later
                 vfs
             |> ok
 
         let vfs =
-            VirtualFileSystem.truncateFile file 0L SetIdBitsOnTruncation.Strip CallerPrivilege.Unprivileged later vfs
+            VirtualFileSystem.truncateFile file 0L SetIdBitsOnTruncation.Strip Owners.linuxDefaultCaller later vfs
             |> ok
 
         let after = VirtualFileSystem.inodes vfs |> Map.map (fun _ inode -> inode.Owner)

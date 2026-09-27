@@ -476,7 +476,7 @@ module TestVirtualFileSystemAgainstHost =
                     // Privileged: this is the builder placing an inode, not a
                     // guest looking one up. `ns/kid/gk` could not be reached
                     // otherwise, since `ns` is narrowed below.
-                    CallerPrivilege.Privileged
+                    Owners.root
                     (VirtualFileSystem.root vfs)
                     SymlinkPolicy.Follow
                     (UnixPath.parseOrFail "test" relative)
@@ -559,7 +559,7 @@ module TestVirtualFileSystemAgainstHost =
         match
             PathWalk.resolveExisting
                 (limits ())
-                (hostPrivilege ())
+                (Owners.caller (hostPrivilege ()))
                 (VirtualFileSystem.root vfs)
                 SymlinkPolicy.NoFollowFinal
                 (UnixPath.parseOrFail "test" relative)
@@ -837,7 +837,7 @@ module TestVirtualFileSystemAgainstHost =
                             match
                                 PathWalk.resolve
                                     (limits ())
-                                    CallerPrivilege.Privileged
+                                    Owners.root
                                     (VirtualFileSystem.root vfs)
                                     SymlinkPolicy.Follow
                                     (UnixPath.parseOrFail "test" ("/" + linkName + suffix))
@@ -1070,7 +1070,7 @@ module TestVirtualFileSystemAgainstHost =
         match
             PathWalk.resolveFull
                 (limits ())
-                (hostPrivilege ())
+                (Owners.caller (hostPrivilege ()))
                 (VirtualFileSystem.root vfs)
                 policy
                 rules.TrailingSeparator
@@ -1087,7 +1087,7 @@ module TestVirtualFileSystemAgainstHost =
             CreatingOpenRules.verdict
                 rules
                 (SimulatedUnixPlatform.bindableEntryNames (hostPlatform ()))
-                (hostPrivilege ())
+                (Owners.caller (hostPrivilege ()))
                 true
                 exclusive
                 resolution
@@ -1287,7 +1287,8 @@ module TestVirtualFileSystemAgainstHost =
 
                 let modelSaid =
                     PermissionBits.parseOrFail "test" mode
-                    |> PermissionBits.afterTruncation rule privilege
+                    |> PermissionBits.afterTruncation rule (Owners.owning privilege)
+                    |> Answered.unrefused
                     |> PermissionBits.toInt
 
                 if kernelSaid <> modelSaid then
@@ -1341,7 +1342,8 @@ module TestVirtualFileSystemAgainstHost =
 
                 let modelSaid =
                     PermissionBits.parseOrFail "test" mode
-                    |> PermissionBits.afterContentChangingWrite rule privilege
+                    |> PermissionBits.afterContentChangingWrite rule (Owners.owning privilege)
+                    |> Answered.unrefused
                     |> PermissionBits.toInt
 
                 if kernelSaid <> modelSaid then
@@ -1472,7 +1474,9 @@ module TestVirtualFileSystemAgainstHost =
 
             let modelSaid =
                 needed
-                |> List.exists (fun request -> PermissionBits.deniedTo CallerPrivilege.Unprivileged request bits)
+                |> List.exists (fun request ->
+                    PermissionBits.deniedTo (Owners.owning CallerPrivilege.Unprivileged) request bits
+                )
 
             if kernelSaid <> modelSaid then
                 failwith
@@ -1564,7 +1568,7 @@ module TestVirtualFileSystemAgainstHost =
         match
             PathWalk.resolveFull
                 (limits ())
-                (hostPrivilege ())
+                (Owners.caller (hostPrivilege ()))
                 (VirtualFileSystem.root vfs)
                 SymlinkPolicy.NoFollowFinal
                 rules.TrailingSeparator
@@ -1580,7 +1584,7 @@ module TestVirtualFileSystemAgainstHost =
         match
             MkDirRules.verdict
                 (SimulatedUnixPlatform.bindableEntryNames (hostPlatform ()))
-                (hostPrivilege ())
+                (Owners.caller (hostPrivilege ()))
                 resolution
                 vfs
         with
@@ -1894,7 +1898,7 @@ module TestVirtualFileSystemAgainstHost =
         match
             PathWalk.resolveFull
                 (limits ())
-                (hostPrivilege ())
+                (Owners.caller (hostPrivilege ()))
                 (VirtualFileSystem.root vfs)
                 SymlinkPolicy.NoFollowFinal
                 rules.TrailingSeparator
@@ -1905,7 +1909,12 @@ module TestVirtualFileSystemAgainstHost =
         | Ok resolution ->
 
         match
-            UnlinkRules.verdict (SimulatedUnixPlatform.flavour (hostPlatform ())) (hostPrivilege ()) resolution vfs
+            UnlinkRules.verdict
+                (SimulatedUnixPlatform.flavour (hostPlatform ()))
+                (Owners.caller (hostPrivilege ()))
+                resolution
+                vfs
+            |> Answered.unrefused
         with
         | UnlinkVerdict.Refuse error -> UnlinkOutcome.Failed (hostErrno error)
         | UnlinkVerdict.Remove (directory, name) ->
@@ -1970,7 +1979,7 @@ module TestVirtualFileSystemAgainstHost =
             match
                 PathWalk.resolveFull
                     (limits ())
-                    CallerPrivilege.Privileged
+                    Owners.root
                     root
                     SymlinkPolicy.NoFollowFinal
                     (SimulatedUnixPlatform.unlinkRules (hostPlatform ())).TrailingSeparator
@@ -2099,7 +2108,7 @@ module TestVirtualFileSystemAgainstHost =
         match
             PathWalk.resolveFull
                 (limits ())
-                (hostPrivilege ())
+                (Owners.caller (hostPrivilege ()))
                 (VirtualFileSystem.root vfs)
                 SymlinkPolicy.NoFollowFinal
                 rules.TrailingSeparator
@@ -2110,7 +2119,12 @@ module TestVirtualFileSystemAgainstHost =
         | Ok resolution ->
 
         match
-            RmDirRules.verdict (SimulatedUnixPlatform.flavour (hostPlatform ())) (hostPrivilege ()) resolution vfs
+            RmDirRules.verdict
+                (SimulatedUnixPlatform.flavour (hostPlatform ()))
+                (Owners.caller (hostPrivilege ()))
+                resolution
+                vfs
+            |> Answered.unrefused
         with
         | RmDirVerdict.Refuse error -> UnlinkOutcome.Failed (hostErrno error)
         | RmDirVerdict.Remove (directory, name) ->
@@ -2330,7 +2344,7 @@ module TestVirtualFileSystemAgainstHost =
         match
             PathWalk.resolveFull
                 (limits ())
-                (hostPrivilege ())
+                (Owners.caller (hostPrivilege ()))
                 (VirtualFileSystem.root vfs)
                 SymlinkPolicy.Follow
                 TrailingSeparatorPolicy.Demand
@@ -2340,7 +2354,7 @@ module TestVirtualFileSystemAgainstHost =
         | Error error -> OpenDirOutcome.Failed (hostErrno error)
         | Ok resolution ->
 
-        match OpenDirRules.verdict (hostPrivilege ()) resolution vfs with
+        match OpenDirRules.verdict (Owners.caller (hostPrivilege ())) resolution vfs with
         | OpenDirVerdict.Refuse error -> OpenDirOutcome.Failed (hostErrno error)
         | OpenDirVerdict.Open _ -> OpenDirOutcome.Opened
 
@@ -2449,7 +2463,7 @@ module TestVirtualFileSystemAgainstHost =
             match
                 PathWalk.resolveFull
                     (limits ())
-                    (hostPrivilege ())
+                    (Owners.caller (hostPrivilege ()))
                     (VirtualFileSystem.root vfs)
                     SymlinkPolicy.Follow
                     TrailingSeparatorPolicy.Demand
@@ -2533,7 +2547,7 @@ module TestVirtualFileSystemAgainstHost =
             match
                 PathWalk.resolveExisting
                     (limits ())
-                    CallerPrivilege.Privileged
+                    Owners.root
                     (VirtualFileSystem.root vfs)
                     SymlinkPolicy.Follow
                     (UnixPath.parseOrFail "test" (if relative = "" then "/" else "/" + relative))
@@ -2679,7 +2693,7 @@ module TestVirtualFileSystemAgainstHost =
             match
                 PathWalk.resolveExisting
                     (limits ())
-                    CallerPrivilege.Privileged
+                    Owners.root
                     (VirtualFileSystem.root vfs)
                     SymlinkPolicy.NoFollowFinal
                     (UnixPath.parseOrFail "test" relative)
@@ -2707,7 +2721,7 @@ module TestVirtualFileSystemAgainstHost =
             match
                 PathWalk.resolve
                     (limits ())
-                    CallerPrivilege.Privileged
+                    Owners.root
                     (VirtualFileSystem.root vfs)
                     SymlinkPolicy.NoFollowFinal
                     (UnixPath.parseOrFail "test" relative)

@@ -324,7 +324,7 @@ module TestDirectoryReadAgainstHost =
                                 File.Create(Path.Combine (hostD, name)).Dispose ()
 
                                 let fd, system =
-                                    UnixNamespace.openPath creating (rooted $"d/%s{name}") 0o644 system
+                                    Answered.openPath creating (rooted $"d/%s{name}") 0o644 system
                                     |> completed $"creat %s{name}"
 
                                 match UnixDescriptor.close (int fd) system with
@@ -374,7 +374,7 @@ module TestDirectoryReadAgainstHost =
                         hostSucceeded "open d" hostFd
 
                         let modelFd, system =
-                            UnixNamespace.openPath reading (rooted "d") 0 system |> completed "open d"
+                            Answered.openPath reading (rooted "d") 0 system |> completed "open d"
 
                         live <-
                             live
@@ -527,14 +527,14 @@ module TestDirectoryReadAgainstHost =
                             ||> List.fold (fun system (name, isDirectory) ->
                                 let answer =
                                     if isDirectory then
-                                        UnixNamespace.rmdir (rooted $"d/%s{name}") system
+                                        Answered.rmdir (rooted $"d/%s{name}") system
                                     else
-                                        UnixNamespace.unlink (rooted $"d/%s{name}") system
+                                        Answered.unlink (rooted $"d/%s{name}") system
 
                                 answer |> completed $"remove %s{name}" |> snd
                             )
 
-                        let system = UnixNamespace.rmdir (rooted "d") system |> completed "rmdir d" |> snd
+                        let system = Answered.rmdir (rooted "d") system |> completed "rmdir d" |> snd
 
                         for target in live do
                             let host =
@@ -592,7 +592,7 @@ module TestDirectoryReadAgainstHost =
                 let system : UnixSystem<int, string> = UnixSystem.initial platform
 
                 let fd, system =
-                    UnixNamespace.openPath creating (rooted "f") 0o644 system |> completed "creat f"
+                    Answered.openPath creating (rooted "f") 0o644 system |> completed "creat f"
 
                 let system =
                     match UnixDescriptor.close (int fd) system with
@@ -600,10 +600,10 @@ module TestDirectoryReadAgainstHost =
                     | Error refusal -> failwith $"%A{refusal}"
 
                 let readable, system =
-                    UnixNamespace.openPath reading (rooted "f") 0 system |> completed "open f"
+                    Answered.openPath reading (rooted "f") 0 system |> completed "open f"
 
                 let writeOnly, system =
-                    UnixNamespace.openPath
+                    Answered.openPath
                         { reading with
                             Access = FileAccessMode.WriteOnly
                         }

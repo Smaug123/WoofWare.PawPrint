@@ -34,6 +34,8 @@ type SyscallRefusal<'Task> =
     | LSeek of LSeekRefusal
     | FLock of FLockRefusal
     | FTruncate of TruncationRefusal
+    | Unlink of StickyRefusal
+    | RmDir of StickyRefusal
     | Close of CloseRefusal<'Task>
 
 /// A way this system's tables disagree with each other — a state no kernel
@@ -307,8 +309,14 @@ module UnixSystem =
             |> answered
             |> Result.mapError SyscallRefusal.Close
         | Syscall.MkDir (path, mode) -> Ok (UnixNamespace.mkdir path mode system) |> answered
-        | Syscall.Unlink path -> Ok (UnixNamespace.unlink path system) |> answered
-        | Syscall.RmDir path -> Ok (UnixNamespace.rmdir path system) |> answered
+        | Syscall.Unlink path ->
+            UnixNamespace.unlink path system
+            |> answered
+            |> Result.mapError SyscallRefusal.Unlink
+        | Syscall.RmDir path ->
+            UnixNamespace.rmdir path system
+            |> answered
+            |> Result.mapError SyscallRefusal.RmDir
         | Syscall.ChDir path -> Ok (UnixPathResolution.chdir path system) |> answered
 
     /// Every way this system's tables disagree with each other: the socket table
@@ -1135,7 +1143,12 @@ module UnixSystem =
             match
                 PathWalk.resolveExisting
                     limits
-                    CallerPrivilege.Privileged
+                    // Root, so that no directory's search bit refuses the walk:
+                    // it is privilege that exempts a caller, whoever owns what.
+                    (Credentials.ofIds
+                        UserId.root
+                        (GroupId.parseOrFail "UnixSystem.withFileSystemAndCurrentDirectory" 0u)
+                        [])
                     root
                     SymlinkPolicy.Follow
                     (UnixPath.ofAbsolute directory)

@@ -61,7 +61,7 @@ module TestPosixFadvise =
         match
             PathWalk.resolveExisting
                 (SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform)
-                CallerPrivilege.Privileged
+                Owners.root
                 (VirtualFileSystem.root system.Machine.FileSystem)
                 SymlinkPolicy.Follow
                 (UnixPath.parseOrFail "test" path)

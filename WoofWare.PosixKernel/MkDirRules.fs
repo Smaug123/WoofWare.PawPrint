@@ -83,9 +83,10 @@ module MkDirRules =
     ///    dangling or cyclic or not.
     ///  * EEXIST beats the *write* bit. Measured on both: an existing child of a
     ///    0o555 directory is EEXIST, where a free name there is EACCES.
-    ///  * Binding a new name needs write on the directory that will hold it:
-    ///    measured, 0o333 and 0o300 succeed while 0o555 and 0o644 are EACCES.
-    ///    Root bypasses it.
+    ///  * Binding a new name needs write on the directory that will hold it,
+    ///    in the triple the caller's standing towards that directory selects:
+    ///    measured as its owner, 0o333 and 0o300 succeed while 0o555 and 0o644
+    ///    are EACCES. Root bypasses it.
     ///  * Last, a name `bindable` does not admit is EILSEQ: measured on Darwin,
     ///    `mkdir("ro/" + 300 × 0xFF)` is EACCES and the same name in a writable
     ///    directory is EILSEQ.
@@ -103,7 +104,7 @@ module MkDirRules =
     ///
     let verdict
         (bindable : BindableEntryNames)
-        (privilege : CallerPrivilege)
+        (credentials : Credentials)
         (resolution : Resolution)
         (vfs : VirtualFileSystem)
         : MkDirVerdict
@@ -128,11 +129,11 @@ module MkDirRules =
 
         // Write alone: the search half of the rule is the walk's, and a
         // resolution that reached here has already passed it.
-        let parentPermissions =
+        let parent, parentPermissions =
             match VirtualFileSystem.tryGet directory vfs with
             | Some parent ->
                 match Inode.permissions parent with
-                | InodePermissions.Stored bits -> bits
+                | InodePermissions.Stored bits -> parent, bits
                 | InodePermissions.PlatformSymlinkDefault ->
                     failwith
                         $"MkDirRules.verdict: the walk resolved \"%s{DirectoryEntryName.toEscaped name}\" inside inode %O{directory}, which reports platform-default symlink permissions -- but only a directory can hold an entry (this is a bug in this library's path walk, or in a caller that assembled the resolution itself)."
@@ -144,7 +145,7 @@ module MkDirRules =
         | Some _ -> MkDirVerdict.Refuse UnixError.EEXIST
         | None ->
 
-        if PermissionBits.deniedTo privilege AccessRequest.Write parentPermissions then
+        if PermissionBits.deniedTo (Standing.toward credentials parent.Owner) AccessRequest.Write parentPermissions then
             MkDirVerdict.Refuse UnixError.EACCES
         elif not (BindableEntryNames.admits bindable name) then
             MkDirVerdict.Refuse UnixError.EILSEQ

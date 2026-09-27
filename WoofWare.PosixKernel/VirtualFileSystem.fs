@@ -118,6 +118,9 @@ type SeekWhence =
 
 /// Why a write to a regular file has no answer this library can give.
 ///
+/// `UnmeasuredSetIdChange` is a row no one has measured rather than a limit of
+/// the model; the rest of what follows is about `WouldExceedMaxLength`.
+///
 /// Not a `UnixError`, and deliberately: this is a limit of the model rather than
 /// anything a kernel does, so a caller must fail loudly rather than translate it
 /// into an errno a guest could catch and interpret. Measured on ext4 and APFS
@@ -129,6 +132,9 @@ type FileWriteRefusal =
     /// Carries the write rather than the resulting length, which need not be a
     /// number: `offset + count` can leave `int64` entirely.
     | WouldExceedMaxLength of offset : int64 * count : int
+    /// What the write would do to the file's set-ID bits has not been measured
+    /// for this writer; see `SetIdChangeRefusal`.
+    | UnmeasuredSetIdChange of refusal : SetIdChangeRefusal
 
 /// Why a truncation has no answer.
 ///
@@ -137,15 +143,18 @@ type FileWriteRefusal =
 /// and neither operation can produce the other's case, so sharing the type would
 /// force every `match` to handle something unreachable.
 ///
-/// Like `FileWriteRefusal`, this is a limit of the model rather than anything a
-/// kernel does, so a caller fails loudly rather than translating it into an
-/// errno. Measured on ext4 and APFS alike, `ftruncate(fd, 3e9)` succeeds and
-/// leaves a sparse three-gigabyte file behind.
+/// Like `FileWriteRefusal`, neither case is anything a kernel does, so a caller
+/// fails loudly rather than translating it into an errno. Measured on ext4 and
+/// APFS alike, `ftruncate(fd, 3e9)` succeeds and leaves a sparse
+/// three-gigabyte file behind.
 [<RequireQualifiedAccess>]
 type FileTruncationRefusal =
     /// The requested length is more than `VirtualFileSystem.maxFileLength`.
     /// Carries the length as asked for, which need not fit in an `int`.
     | WouldExceedMaxLength of length : int64
+    /// What the truncation would do to the file's set-ID bits has not been
+    /// measured for this process; see `SetIdChangeRefusal`.
+    | UnmeasuredSetIdChange of refusal : SetIdChangeRefusal
 
 /// Why a seek computation has no answer.
 ///
@@ -1321,8 +1330,9 @@ module VirtualFileSystem =
                 $"VirtualFileSystem.forget: inode %O{inode} is still named by %d{count} directory entry/entries, so forgetting it would leave the graph with a dangling entry (this is a bug in the caller of VirtualFileSystem.forget)."
 
     /// Write `bytes` at `offset` into the regular file at `inode`, moving its
-    /// `mtime` and `ctime` and — unless `privilege` says otherwise — stripping its
-    /// set-user-ID and set-group-ID bits.
+    /// `mtime` and `ctime` and stripping whichever of its set-user-ID and
+    /// set-group-ID bits `rule` says a writer with `credentials` strips. Refused,
+    /// changing nothing, where `PermissionBits.afterContentChangingWrite` refuses.
     ///
     /// Those timestamps and no others: measured on both platforms, a write leaves
     /// `atime` where it was, and `birth` never moves at all.
@@ -1342,7 +1352,7 @@ module VirtualFileSystem =
         (offset : int64)
         (bytes : ImmutableArray<byte>)
         (rule : SetGroupIdOnWrite)
-        (privilege : CallerPrivilege)
+        (credentials : Credentials)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
         : Result<VirtualFileSystem, FileWriteRefusal>
@@ -1382,8 +1392,9 @@ module VirtualFileSystem =
         // set-group-ID bit on whichever files `rule` says, unless the writer is
         // privileged — so this is a mode change as well as a content change, and
         // the `ctime` above covers both.
-        let permissions =
-            PermissionBits.afterContentChangingWrite rule privilege permissions
+        match PermissionBits.afterContentChangingWrite rule (Standing.toward credentials entry.Owner) permissions with
+        | Error refusal -> Error (FileWriteRefusal.UnmeasuredSetIdChange refusal)
+        | Ok permissions ->
 
         Ok
             { vfs with
@@ -1398,8 +1409,10 @@ module VirtualFileSystem =
             }
 
     /// Set the length of the regular file at `inode` to `length`, moving its
-    /// `mtime` and `ctime` and — subject to `rule` and `privilege` — clearing its
-    /// set-user-ID and set-group-ID bits.
+    /// `mtime` and `ctime` and clearing whichever of its set-user-ID and
+    /// set-group-ID bits `rule` says a truncation by a process with
+    /// `credentials` clears. Refused, changing nothing, where
+    /// `PermissionBits.afterTruncation` refuses.
     ///
     /// **Unconditionally**, which is the whole of what separates this from
     /// `writeFile`. A write of no bytes is not a write and the caller must
@@ -1421,7 +1434,7 @@ module VirtualFileSystem =
         (inode : InodeNumber)
         (length : int64)
         (rule : SetIdBitsOnTruncation)
-        (privilege : CallerPrivilege)
+        (credentials : Credentials)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
         : Result<VirtualFileSystem, FileTruncationRefusal>
@@ -1460,7 +1473,9 @@ module VirtualFileSystem =
 
         // A truncation is a mode change as well as a content change on one of the
         // two platforms, and the `ctime` below covers both either way.
-        let permissions = PermissionBits.afterTruncation rule privilege permissions
+        match PermissionBits.afterTruncation rule (Standing.toward credentials entry.Owner) permissions with
+        | Error refusal -> Error (FileTruncationRefusal.UnmeasuredSetIdChange refusal)
+        | Ok permissions ->
 
         Ok
             { vfs with

@@ -256,7 +256,7 @@ module UnixPathResolution =
         // walk discards.
         PathWalk.resolveFull
             (SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform)
-            (UnixProcessState.callerPrivilege system.Process)
+            system.Process.Credentials
             system.Process.CurrentDirectoryInode
             policy
             trailingSeparatorPolicy
@@ -285,7 +285,7 @@ module UnixPathResolution =
 
         PathWalk.resolveParent
             (SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform)
-            (UnixProcessState.callerPrivilege system.Process)
+            system.Process.Credentials
             system.Process.CurrentDirectoryInode
             policy
             trailingSeparatorPolicy
@@ -662,9 +662,16 @@ module UnixPathResolution =
         //
         // The walk above checks search on every directory it *traverses*; this
         // is the target's own bit, which nothing has asked about yet.
+        let owner =
+            match VirtualFileSystem.tryGet target system.Machine.FileSystem with
+            | Some inode -> inode.Owner
+            | None ->
+                failwith
+                    $"UnixPathResolution.chdir: inode %O{target} was a directory a moment ago and is now absent (this is a bug in this library)."
+
         if
             PermissionBits.deniedTo
-                (UnixProcessState.callerPrivilege system.Process)
+                (Standing.toward system.Process.Credentials owner)
                 AccessRequest.SearchDirectory
                 directory.Permissions
         then

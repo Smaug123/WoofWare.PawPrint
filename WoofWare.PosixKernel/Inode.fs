@@ -245,6 +245,31 @@ module InodeOwner =
             Group = group
         }
 
+[<RequireQualifiedAccess>]
+[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
+module Standing =
+    /// How a process with `credentials` stands towards an inode owned by
+    /// `owner`.
+    ///
+    /// The effective IDs decide it, and the supplementary groups count as
+    /// membership exactly as the effective group does; the real and saved IDs
+    /// play no part.
+    let toward (credentials : Credentials) (owner : InodeOwner) : Standing =
+        // Measured on Linux 6.18.5 (`permission-standing.c`): real 1001 and
+        // effective 1000 may read a 1000-owned 0400 file; real group 2000 and
+        // effective group 1000, with no supplementary groups, may not read a
+        // group-2000 0040 file and may read a group-1000 one; and a group
+        // reached only through a supplementary group selects the group triple
+        // over all 4096 modes. A Darwin process cannot have differing real and
+        // effective IDs in this library (`UnixSystem.withCredentials`).
+        {
+            Privilege = Credentials.privilege credentials
+            Owns = owner.User = credentials.EffectiveUser
+            InGroup =
+                owner.Group = credentials.EffectiveGroup
+                || List.contains owner.Group credentials.SupplementaryGroups
+        }
+
 /// <summary>
 /// One inode: what lives there, and the metadata every inode carries whatever
 /// kind of thing it is.

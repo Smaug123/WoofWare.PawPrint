@@ -205,7 +205,7 @@ module TestRenameRules =
         let resolve (candidate : string) =
             PathWalk.resolveFull
                 (SimulatedUnixPlatform.pathLimits platform)
-                privilege
+                (Owners.caller privilege)
                 startDirectory
                 SymlinkPolicy.NoFollowFinal
                 rules.TrailingSeparator
@@ -223,10 +223,11 @@ module TestRenameRules =
         RenameRules.verdict
             (SimulatedUnixPlatform.flavour platform)
             (SimulatedUnixPlatform.bindableEntryNames platform)
-            privilege
+            (Owners.caller privilege)
             sourceResolution
             destinationResolution
             vfs
+        |> Answered.unrefused
 
     let private verdict
         (platform : SimulatedUnixPlatform)

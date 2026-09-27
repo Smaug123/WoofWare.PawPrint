@@ -1,0 +1,45 @@
+# permission-standing: uid=501 egid=20 base=<base>
+DESCRIBE	owner-in-group parent	<base>/mine	uid=501 gid=20 mode=0755
+DESCRIBE	owner-outside-group parent	<base>/wheel	uid=501 gid=0 mode=0755
+STRIP-SWEEP	owner in group	write(1 byte)	rows=4096	dropped=0 (modes the caller could not set)	mismatches=0
+STRIP-SWEEP	owner in group	ftruncate(0)	rows=4096	dropped=0 (modes the caller could not set)	mismatches=0
+STRIP-SWEEP	owner in group	ftruncate(same length)	rows=4096	dropped=0 (modes the caller could not set)	mismatches=0
+STRIP-SWEEP	owner in group	open(O_TRUNC)	rows=2048	dropped=0 (modes the caller could not set)	mismatches=0
+STRIP-SWEEP	owner not in group	write(1 byte)	rows=2048	dropped=2048 (modes the caller could not set)	mismatches=0
+STRIP-SWEEP	owner not in group	ftruncate(0)	rows=2048	dropped=2048 (modes the caller could not set)	mismatches=0
+STRIP-SWEEP	owner not in group	ftruncate(same length)	rows=2048	dropped=2048 (modes the caller could not set)	mismatches=0
+STRIP-SWEEP	owner not in group	open(O_TRUNC)	rows=1024	dropped=2048 (modes the caller could not set)	mismatches=0
+DESCRIBE	sticky dir	/private/tmp	uid=0 gid=0 mode=1777
+DESCRIBE	root's file	/private/tmp/.AppleMiniSetupDidRun	uid=0 gid=0 mode=0644
+STICKY-ROW	link(root's file -> /private/tmp/L1)	ok
+STICKY-ROW	link(root's file -> /private/tmp/L2)	ok
+DESCRIBE	L1	<base>-L1	uid=0 gid=0 mode=0644
+STICKY-ROW	unlink(L1: root's inode, root's sticky dir)	EACCES
+STICKY-ROW	rmdir(L1)	ENOTDIR
+STICKY-ROW	rename(L1 -> L1b)	EACCES
+STICKY-ROW	rename(myfile -> L1: onto root's inode)	EACCES
+STICKY-ROW	rename(L1 -> mydir: root's file over caller's dir)	EISDIR
+STICKY-ROW	rename(mydir -> L1: caller's dir over root's file)	ENOTDIR
+STICKY-ROW	rename(L1 -> free/: a file onto a free name with a trailing separator)	ENOENT
+STICKY-ROW	rename(L1 -> L2: two names for one inode)	EACCES
+STICKY-ROW	rename(L1 -> /Users/x: unwritable destination parent)	EACCES
+STICKY-ROW	rename(L1 -> mine/moved: to the caller's non-sticky dir)	EACCES
+STICKY-ROW	link(root's file -> own-sticky/L3)	ok
+STICKY-ROW	unlink(own-sticky/L3: root's inode, caller's sticky dir)	ok
+STICKY-ROW	unlink(myfile: caller's file, root's sticky dir)	ok
+DESCRIBE	unwritable sticky dir	/Library/PrivilegedHelperTools	uid=0 gid=0 mode=1755
+DESCRIBE	its entry	/Library/PrivilegedHelperTools/com.ea.origin.ESHelper	uid=0 gid=0 mode=0544
+STICKY-ROW	unlink(entry of an unwritable sticky dir)	EACCES
+STICKY-ROW	rmdir(entry of an unwritable sticky dir)	ENOTDIR
+STICKY-ROW	rename(entry of an unwritable sticky dir -> base/stolen)	EACCES
+DESCRIBE	foreign dir's sticky parent	/private/var/db/mds	uid=0 gid=0 mode=1777
+DESCRIBE	foreign dir	/private/var/db/mds/messages	uid=0 gid=0 mode=0755
+STICKY-ROW	unlink(foreign dir in a writable sticky dir)	EPERM
+STICKY-ROW	rmdir(foreign non-empty dir in a writable sticky dir)	EACCES
+STICKY-ROW	rename(foreign dir -> into itself, in a writable sticky dir)	EINVAL
+STICKY-ROW	link(root's file -> mine/L4)	ok
+STICKY-ROW	unlink(mine/L4: root's inode, caller's plain dir)	ok
+DESCRIBE	unwritable plain dir	/private/etc	uid=0 gid=0 mode=0755
+DESCRIBE	its entry	/private/etc/hosts	uid=0 gid=0 mode=0644
+STICKY-ROW	unlink(/private/etc/hosts: unwritable plain dir)	EACCES
+# done
