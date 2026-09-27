@@ -9,9 +9,9 @@ open WoofWare.PosixKernel
 /// The tier that reaches what `sourcesPure/SocketPoll.cs` cannot: every bit of
 /// Linux's own `<poll.h>` alphabet (a guest reaches `poll` through the shim,
 /// which asks for six bits and hands back six), the Darwin refusal (a guest
-/// runs one flavour, and PawPrint's guests run Linux), the socket-event-port
-/// entry (no managed caller polls one), and the park refusal (a guest that
-/// reached it would abort the interpreter rather than report).
+/// runs one flavour, and PawPrint's guests run Linux), and the socket-event-port
+/// entry (no managed caller polls one). A poll that sleeps is
+/// `TestPollTimeout`'s.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestPoll =
@@ -58,13 +58,40 @@ module TestPoll =
             Events = events
         }
 
+    /// The task every poll here is made by.
+    let private poller : int = 1
+
+    /// `UnixPoll.poll` by `poller`, registering it first if `system` does not
+    /// know it, for the rows that expect an answer or a refusal rather than a
+    /// park.
+    let private pollNow
+        (entries : PollEntry list)
+        (milliseconds : int)
+        (system : UnixSystem<int, string>)
+        : Result<int16 list * int, PollRefusal>
+        =
+        let system =
+            if Map.containsKey poller system.Tasks then
+                system
+            else
+                { system with
+                    Tasks = UnixTaskTable.register poller (CpuId 0) (OsThreadId 2u) system.Tasks
+                }
+
+        match UnixPoll.poll poller entries milliseconds system with
+        | Error refusal -> Error refusal
+        | Ok (PollOutcome.Answered (reported, count), after) ->
+            after |> shouldEqual system
+            Ok (reported, count)
+        | Ok (PollOutcome.WouldBlock condition, _) -> failwith $"expected an answer, got a park on %A{condition}"
+
     let private pollOrFail
         (entries : PollEntry list)
         (milliseconds : int)
         (system : UnixSystem<int, string>)
         : int16 list * int
         =
-        match UnixPoll.poll entries milliseconds system with
+        match pollNow entries milliseconds system with
         | Ok result -> result
         | Error refusal -> failwith $"expected an answer, got a refusal: %s{PollRefusal.describe refusal}"
 
@@ -249,7 +276,7 @@ module TestPoll =
 
                     let expectedCount = expected |> List.filter (fun r -> r <> 0s) |> List.length
 
-                    match UnixPoll.poll entries 0 system with
+                    match pollNow entries 0 system with
                     | Error refusal -> yield $"events 0x%04x{mask}: refused: %s{PollRefusal.describe refusal}"
                     | Ok (reported, count) ->
                         for (name, fd, _), expected, reported in List.zip3 rows expected reported do
@@ -445,13 +472,12 @@ module TestPoll =
         let darwin = systemOn SimulatedUnixPlatform.macOsArm64
         let expected = Error (PollRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin)
 
-        UnixPoll.poll [] 0 darwin |> shouldEqual expected
+        pollNow [] 0 darwin |> shouldEqual expected
 
         for mask in 0..0xFFFF do
             let events = int16 (uint16 mask)
 
-            UnixPoll.poll [ entry 0 events ; entry 99 events ] 0 darwin
-            |> shouldEqual expected
+            pollNow [ entry 0 events ; entry 99 events ] 0 darwin |> shouldEqual expected
 
     /// A guest can reach this where it cannot reach epoll's equivalent:
     /// `epoll_ctl` screens the targets it accepts, and `poll(2)` accepts any
@@ -469,13 +495,13 @@ module TestPoll =
                     }
             }
 
-        UnixPoll.poll [ entry portFd everything ] 0 system
+        pollNow [ entry portFd everything ] 0 system
         |> shouldEqual (Error (PollRefusal.UnmodelledTarget portFd))
 
         // ...and it is refused from anywhere in the list, not only at the head:
         // the entries are all decoded before the answer, exactly as the caller
         // fills its whole array before the syscall.
-        UnixPoll.poll [ entry 0 everything ; entry portFd everything ] 0 system
+        pollNow [ entry 0 everything ; entry portFd everything ] 0 system
         |> shouldEqual (Error (PollRefusal.UnmodelledTarget portFd))
 
     /// A real `poll` inspects its entries in order, so the entry a refusal
@@ -496,10 +522,10 @@ module TestPoll =
                     }
             }
 
-        UnixPoll.poll [ entry firstPort everything ; entry secondPort everything ] 0 system
+        pollNow [ entry firstPort everything ; entry secondPort everything ] 0 system
         |> shouldEqual (Error (PollRefusal.UnmodelledTarget firstPort))
 
-        UnixPoll.poll
+        pollNow
             [
                 entry secondPort everything
                 entry 0 everything
@@ -509,34 +535,12 @@ module TestPoll =
             system
         |> shouldEqual (Error (PollRefusal.UnmodelledTarget secondPort))
 
-    /// Nothing ready and a non-zero timeout is the only case that needs a park.
-    /// A timeout of zero is answerable, which is what stops this from being "any
-    /// poll that reports nothing".
-    [<Test>]
-    let ``nothing ready and a non-zero timeout is refused`` () : unit =
-        // stdout asked only for bits it does not present: open, live, and
-        // carrying nothing.
-        let entries = [ entry 1 (pollIn ||| pollRdHup ||| 0x0800s) ]
-
-        for timeout in [ -1 ; 1 ; 5000 ] do
-            UnixPoll.poll entries timeout linux
-            |> shouldEqual (Error (PollRefusal.WouldPark timeout))
-
-        pollOrFail entries 0 linux |> shouldEqual ([ 0s ], 0)
-
     /// An entry carrying anything at all makes a real poll return immediately at
     /// any timeout, which is measured rather than assumed -- so a *ready* poll
-    /// is answered at the same timeouts the row above refuses.
+    /// is answered without parking at every timeout.
     [<Test>]
     let ``anything ready is answered at every timeout`` () : unit =
         for timeout in [ -1 ; 0 ; 1 ; 5000 ] do
             pollOrFail [ entry 0 everything ; entry 1 0s ] timeout linux
             |> snd
             |> shouldEqual 1
-
-    /// An empty poll reports nothing, so it parks like any other poll that
-    /// reports nothing -- which is the row that shows the refusal is about the
-    /// *count*, not about having entries.
-    [<Test>]
-    let ``an empty poll with a timeout is refused`` () : unit =
-        UnixPoll.poll [] -1 linux |> shouldEqual (Error (PollRefusal.WouldPark -1))

@@ -333,6 +333,23 @@ module GuestLocation =
                             Some $"for events on open file description %O{wait.Port}"
                         | Some (ParkedSyscall.Flock parked) ->
                             Some $"for a lock on open file description %O{parked.Requester}, %O{parked.Mode}"
+                        | Some (ParkedSyscall.Poll parked) ->
+                            let watched =
+                                parked.Entries
+                                |> List.choose (fun entry ->
+                                    match entry with
+                                    | ParkedPollEntry.Watched (fd, description, _) ->
+                                        Some $"fd %d{fd} (open file description %O{description})"
+                                    | ParkedPollEntry.Ignored _ -> None
+                                )
+                                |> String.concat ", "
+
+                            let until =
+                                match parked.Deadline with
+                                | Some deadline -> $" until %d{deadline} ns since boot"
+                                | None -> ""
+
+                            Some $"in a poll of [%s{watched}]%s{until}"
                         | None -> Some "on nothing recorded (this is an interpreter bug)"
                     | _ -> None
             }

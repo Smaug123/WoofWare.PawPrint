@@ -124,7 +124,8 @@ class LockAndPortWaiters
     let private isPortWait (parked : ParkedSyscall) : bool =
         match parked with
         | ParkedSyscall.SocketWait _ -> true
-        | ParkedSyscall.Flock _ -> false
+        | ParkedSyscall.Flock _
+        | ParkedSyscall.Poll _ -> false
 
     /// The exit code a cleanly terminated guest latched.
     let private exitCodeOf (outcome : RunOutcome) : int =

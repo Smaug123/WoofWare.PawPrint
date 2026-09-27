@@ -124,6 +124,18 @@ type UnixSystemDefect<'Task> =
     /// socket event port, which no wait could have produced and which
     /// `SocketEventPort.hasDeliverableEvent` crashes on.
     | ParkedSocketWaitOnNonPort of task : 'Task * description : OpenFileDescriptionId * target : OpenFileTarget
+    /// A task is parked in a `poll` watching a socket event port, which `poll`
+    /// refuses before it parks and whose readiness is not modelled.
+    | ParkedPollOnSocketEventPort of task : 'Task * description : OpenFileDescriptionId
+    /// A task's parked `poll` watches `fd` on the description it named when
+    /// the call went to sleep, and `fd` now names `current` instead. `close`
+    /// refuses to close a descriptor a parked poll watches, so this is a park
+    /// recorded without `poll` or a descriptor closed around it.
+    | ParkedPollDescriptorRebound of
+        task : 'Task *
+        fd : int *
+        watched : OpenFileDescriptionId *
+        current : OpenFileDescriptionId option
     /// A task's park records an ordinal at or above the next one to mint, so
     /// some future park would repeat it, and the two waiters' order would be
     /// unspecified.
@@ -526,6 +538,32 @@ module UnixSystem =
                             [
                                 UnixSystemDefect.ParkedSocketWaitOnNonPort (task, wait.Port, description.Target)
                             ]
+                | Some (ParkedSyscall.Poll parked) ->
+                    parked.Entries
+                    |> List.collect (fun entry ->
+                        match entry with
+                        | ParkedPollEntry.Ignored _ -> []
+                        | ParkedPollEntry.Watched (fd, watched, _) ->
+                            match Map.tryFind watched descriptions with
+                            | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, watched) ]
+                            | Some description ->
+                                let target =
+                                    match description.Target with
+                                    | OpenFileTarget.SocketEventPort _ ->
+                                        [ UnixSystemDefect.ParkedPollOnSocketEventPort (task, watched) ]
+                                    | OpenFileTarget.StandardStream _
+                                    | OpenFileTarget.File _
+                                    | OpenFileTarget.Directory _
+                                    | OpenFileTarget.Socket _ -> []
+
+                                let rebound =
+                                    match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+                                    | Some current when current = watched -> []
+                                    | current ->
+                                        [ UnixSystemDefect.ParkedPollDescriptorRebound (task, fd, watched, current) ]
+
+                                target @ rebound
+                    )
             )
 
         let parkOrdinals =

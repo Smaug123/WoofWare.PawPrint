@@ -67,19 +67,31 @@ module PollEventsPal =
             )
             0s
 
+    /// A kernel poll's outcome with each `revents` converted to the PAL's
+    /// `TriggeredEvents`, as `Common_Poll` converts them on the way out. The
+    /// count is the kernel's, stored through `triggered` unconverted.
+    let private ofKernel (outcome : PollOutcome) : PollOutcome =
+        match outcome with
+        // The count cannot differ from a count of the converted reports: a PAL
+        // request asks for none of the bits `ofPlatform` drops, and `poll(2)`
+        // reports those only when asked -- which also means `ofPlatform` changes
+        // no report this can produce. It is applied anyway, because the shim
+        // applies it.
+        | PollOutcome.Answered (reported, triggered) -> PollOutcome.Answered (List.map ofPlatform reported, triggered)
+        | PollOutcome.WouldBlock condition -> PollOutcome.WouldBlock condition
+
     /// `Common_Poll` between its argument screens and its copy-out: convert each
-    /// entry's PAL `Events`, ask the kernel's `poll(2)`, and convert each
-    /// `revents` back.
+    /// entry's PAL `Events` and ask the kernel's `poll(2)`, made by `task`.
     ///
     /// `entries` pairs each `PollEvent.FileDescriptor` with its PAL `Events`.
-    /// Answers the PAL `TriggeredEvents` for each entry, in order, and
-    /// `poll(2)`'s own return value, which the shim stores through `triggered`
-    /// unconverted.
+    /// An answer carries the PAL `TriggeredEvents` for each entry, in order, and
+    /// `poll(2)`'s own return value; a park is finished with `finish`.
     let poll<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
         (entries : (int * int16) list)
         (milliseconds : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<int16 list * int, PollRefusal>
+        : Result<PollOutcome * UnixSystem<'Task, 'Handler>, PollRefusal>
         =
         let platformEntries =
             entries
@@ -90,11 +102,14 @@ module PollEventsPal =
                 }
             )
 
-        match UnixPoll.poll platformEntries milliseconds system with
-        | Error refusal -> Error refusal
-        // The count is the kernel's, not a count of the converted reports, as
-        // in the C. The two cannot differ here: a PAL request asks for none of
-        // the bits `ofPlatform` drops, and `poll(2)` reports those only when
-        // asked -- which also means `ofPlatform` changes no report this can
-        // produce. It is applied anyway, because the shim applies it.
-        | Ok (reported, triggered) -> Ok (List.map ofPlatform reported, triggered)
+        UnixPoll.poll task platformEntries milliseconds system
+        |> Result.map (fun (outcome, system) -> ofKernel outcome, system)
+
+    /// Finish the `poll` `task` parked in, as `poll` answers one.
+    let finish<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<PollOutcome * UnixSystem<'Task, 'Handler>, PollRefusal>
+        =
+        UnixPoll.finishPoll task system
+        |> Result.map (fun (outcome, system) -> ofKernel outcome, system)

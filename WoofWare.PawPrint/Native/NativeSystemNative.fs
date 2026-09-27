@@ -282,6 +282,8 @@ module NativeSystemNative =
                 "Model a blocked flock's reference to the file it waits on before closing the description out from under a waiter."
             | CloseRefusal.ListenerWouldResetUnacceptedClient _ ->
                 "Accept the connection or close the client before closing the listener."
+            | CloseRefusal.PolledDescriptor _ ->
+                "Model a sleeping poll's reference to the files it watches before closing one out from under it."
 
         $"%s{operation}: fd %d{fd}: %s{CloseRefusal.describe refusal} %s{remedy}"
 
@@ -3233,6 +3235,10 @@ module NativeSystemNative =
                 // would park over the stale record and destroy the evidence.
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered an flock while its task is parked in a socket wait. A task blocks in one syscall at a time, so the wait's completion failed to clear its record (this is an interpreter bug)."
+            | Some (ParkedSyscall.Poll _) ->
+                // Unreachable, for the same reason.
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread} entered an flock while its task is parked in a poll. A task blocks in one syscall at a time, so the poll's completion failed to clear its record (this is an interpreter bug)."
             | Some (ParkedSyscall.Flock parked) ->
                 match UnixDescriptor.flockAcquire ctx.Thread (EmulatedKernel.unix state.Kernel) with
                 | Error refusal -> refused refusal
@@ -5297,6 +5303,10 @@ module NativeSystemNative =
                 // and parking over it would destroy the evidence.
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered a socket wait while its task is parked in an flock. A task blocks in one syscall at a time, so the acquisition's completion failed to clear its record (this is an interpreter bug)."
+            | Some (ParkedSyscall.Poll _) ->
+                // Unreachable, for the same reason.
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread} entered a socket wait while its task is parked in a poll. A task blocks in one syscall at a time, so the poll's completion failed to clear its record (this is an interpreter bug)."
             | None ->
 
             let requestedCount =
@@ -5443,6 +5453,113 @@ module NativeSystemNative =
                     $"%s{operation}: eventCount %d{eventCount} spans %d{totalBytes} bytes, which overflows the int32 byte offsets PawPrint's address space uses. PawPrint models no descriptor limit (RLIMIT_NOFILE is not in the interop surface), so this is a limit of the interpreter rather than a kernel refusal to reproduce."
             else
 
+            // Write back only `TriggeredEvents`. The C leaves `FileDescriptor`
+            // and `Events` alone (it asserts they are unchanged), so PawPrint
+            // must not touch those bytes either.
+            let answer
+                (reported : int16 list)
+                (triggeredCount : int)
+                (state : IlMachineState)
+                : NativeHandlerResult option
+                =
+                let state =
+                    match entriesStorage with
+                    | None -> state
+                    | Some entriesStorage ->
+
+                    reported
+                    |> List.indexed
+                    |> List.fold
+                        (fun state (i, reported) ->
+                            let bytes = Array.zeroCreate<byte> 2
+
+                            BinaryPrimitives.WriteInt16LittleEndian (Span<byte> bytes, reported)
+
+                            writeBytesThrough
+                                ctx
+                                operation
+                                (bufferFieldAt
+                                    ctx
+                                    operation
+                                    entriesStorage
+                                    (i * entryStride + triggeredEventsOffset)
+                                    state)
+                                (ImmutableArray.CreateRange bytes)
+                                state
+                        )
+                        state
+
+                let triggeredBytes = Array.zeroCreate<byte> 4
+                BinaryPrimitives.WriteUInt32LittleEndian (Span<byte> triggeredBytes, uint32 triggeredCount)
+
+                writeBytesThrough
+                    ctx
+                    operation
+                    (requireStorage operation "triggered" triggeredPointer)
+                    (ImmutableArray.CreateRange triggeredBytes)
+                    state
+                |> complete UnixErrorPal.palSuccess
+
+            let settle
+                (outcome : Result<PollOutcome * UnixSystem<ThreadId, NativeSignalHandler>, PollRefusal>)
+                : NativeHandlerResult option
+                =
+                match outcome with
+                | Error refusal ->
+                    // The library says why no kernel answer exists; PawPrint says
+                    // which guest call asked, and what a guest could do instead.
+                    let reachedBy =
+                        match refusal with
+                        | PollRefusal.UnmodelledFlavour _ ->
+                            // Deliberately coarser than it has to be: it precedes the
+                            // entries, so it also refuses a zero-entry poll, whose
+                            // answer is measured identical on both flavours. That row
+                            // would be a branch with no consumer, since no
+                            // Darwin-flavoured guest reaches this entry point today.
+                            " The measured Darwin rows are in docs/plans/2026-08-23-socket-poll and docs/plans/2026-08-23-posix-kernel-extraction/poll-alphabet.c."
+                        | PollRefusal.UnmodelledTarget _ ->
+                            " No managed caller reaches it: CoreLib polls only sockets (System.Net.Sockets), a standard stream (ConsolePal.Write) and an inotify descriptor (FileSystemWatcher, a kind PawPrint does not model), so this is a hand-rolled P/Invoke."
+                        | PollRefusal.DeadlineBeyondClock _ ->
+                            " PawPrint's virtual clock stops far short of this horizon, so the guest has been jumping it with long timed waits."
+                        | PollRefusal.UnendingWait _ ->
+                            " CoreLib's own infinite polls always name a descriptor, so this is a hand-rolled P/Invoke polling nothing, which on a real runtime hangs until a signal."
+
+                    failwith $"%s{operation}: %s{PollRefusal.describe refusal}%s{reachedBy}"
+                | Ok (PollOutcome.Answered (reported, triggeredCount), system) ->
+                    answer reported triggeredCount (state.MapKernel (EmulatedKernel.withUnix system))
+                | Ok (PollOutcome.WouldBlock _, system) ->
+                    // Park re-entrantly, as `SystemNative_WaitForSocketEvents`
+                    // does: the native frame stays and the caller's program counter
+                    // still names the call, so a wake re-enters this handler, which
+                    // finishes the call from the task's park record and writes the
+                    // answer through the caller's own buffer.
+                    state.MapKernel (EmulatedKernel.withUnix system)
+                    |> Scheduler.parkInSyscall ctx.Thread
+                    |> NativeHandlerResult.blockedRetainingFrame
+                    |> Some
+
+            // A re-entry is told apart from a first entry by the record, not by
+            // anything about the frame: the wake leaves the call site exactly as
+            // the park found it. It reads no entry from the caller's array, which
+            // the guest may have written since: the shim copied the array into
+            // its own `struct pollfd`s before sleeping, so the call finishes on
+            // what it was entered with.
+            match UnixTaskTable.parkedFor ctx.Thread state.Kernel.Tasks with
+            | Some (ParkedSyscall.Poll parked) ->
+                if List.length parked.Entries <> int eventCount then
+                    failwith
+                        $"%s{operation}: thread %O{ctx.Thread} re-entered a poll of %d{eventCount} entries, but its park records %d{List.length parked.Entries}. A re-entry runs the same call with the same arguments (this is an interpreter bug)."
+
+                settle (PollEventsPal.finish ctx.Thread (EmulatedKernel.unix state.Kernel))
+            | Some (ParkedSyscall.SocketWait _)
+            | Some (ParkedSyscall.Flock _) ->
+                // Unreachable: a task parked in another syscall is not running
+                // IL. Refused rather than treated as a first entry, which would
+                // park over the stale record and destroy the evidence.
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread} entered a poll while its task is parked in %A{UnixTaskTable.parkedFor ctx.Thread state.Kernel.Tasks}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
+            | None ->
+
             // Decode every entry before answering, exactly as the C fills its
             // whole `struct pollfd` array before calling `poll(2)`. Each is the
             // descriptor and the PAL `Events`; `PollEventsPal.poll` converts.
@@ -5476,62 +5593,7 @@ module NativeSystemNative =
                         BinaryPrimitives.ReadInt16LittleEndian (eventsBytes.AsSpan ())
                     )
 
-            match PollEventsPal.poll entries milliseconds (EmulatedKernel.unix state.Kernel) with
-            | Error refusal ->
-                // The library says why no kernel answer exists; PawPrint says
-                // which guest call asked, and what a guest could do instead.
-                let reachedBy =
-                    match refusal with
-                    | PollRefusal.UnmodelledFlavour _ ->
-                        // Deliberately coarser than it has to be: it precedes the
-                        // entries, so it also refuses a zero-entry poll, whose
-                        // answer is measured identical on both flavours. That row
-                        // would be a branch with no consumer, since no
-                        // Darwin-flavoured guest reaches this entry point today.
-                        " The measured Darwin rows are in docs/plans/2026-08-23-socket-poll and docs/plans/2026-08-23-posix-kernel-extraction/poll-alphabet.c."
-                    | PollRefusal.UnmodelledTarget _ ->
-                        " No managed caller reaches it: CoreLib polls only sockets (System.Net.Sockets), a standard stream (ConsolePal.Write) and an inotify descriptor (FileSystemWatcher, a kind PawPrint does not model), so this is a hand-rolled P/Invoke."
-                    | PollRefusal.WouldPark _ ->
-                        " There is no thread status carrying this call's captured entry set and its deadline, and no wake for it beside the readiness sweep that serves SystemNative_WaitForSocketEvents."
-
-                failwith $"%s{operation}: %s{PollRefusal.describe refusal}%s{reachedBy}"
-            | Ok (reported, triggeredCount) ->
-
-            // Write back only `TriggeredEvents`. The C leaves `FileDescriptor`
-            // and `Events` alone (it asserts they are unchanged), so PawPrint
-            // must not touch those bytes either.
-            let state =
-                match entriesStorage with
-                | None -> state
-                | Some entriesStorage ->
-
-                reported
-                |> List.indexed
-                |> List.fold
-                    (fun state (i, reported) ->
-                        let bytes = Array.zeroCreate<byte> 2
-
-                        BinaryPrimitives.WriteInt16LittleEndian (Span<byte> bytes, reported)
-
-                        writeBytesThrough
-                            ctx
-                            operation
-                            (bufferFieldAt ctx operation entriesStorage (i * entryStride + triggeredEventsOffset) state)
-                            (ImmutableArray.CreateRange bytes)
-                            state
-                    )
-                    state
-
-            let triggeredBytes = Array.zeroCreate<byte> 4
-            BinaryPrimitives.WriteUInt32LittleEndian (Span<byte> triggeredBytes, uint32 triggeredCount)
-
-            writeBytesThrough
-                ctx
-                operation
-                (requireStorage operation "triggered" triggeredPointer)
-                (ImmutableArray.CreateRange triggeredBytes)
-                state
-            |> complete UnixErrorPal.palSuccess
+            settle (PollEventsPal.poll ctx.Thread entries milliseconds (EmulatedKernel.unix state.Kernel))
         | Some "SystemNative_IsATty",
           [ ConcreteIntPtr state.ConcreteTypes ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->

@@ -85,6 +85,35 @@ type ParkedFlock =
         Mode : FlockMode
     }
 
+/// One entry of a parked `poll(2)`, as the call captured it when it went to
+/// sleep.
+[<RequireQualifiedAccess>]
+type ParkedPollEntry =
+    /// A negative descriptor, which `poll` ignores: it reports nothing and
+    /// waits on nothing.
+    | Ignored of fd : int
+    /// The descriptor `fd`, asked for `events` (raw bits in the flavour's own
+    /// `<poll.h>` numbering), and the open file description `fd` named when the
+    /// call went to sleep.
+    ///
+    /// Both halves are kept because a real poll uses both: it sleeps on the
+    /// description it found, and when it wakes it looks `fd` up again. `close`
+    /// refuses to close `fd` while this entry waits, so the two stay in step.
+    | Watched of fd : int * description : OpenFileDescriptionId * events : int16
+
+/// One task's in-flight `poll(2)`: every entry the call was made with, in order,
+/// and when it times out.
+type ParkedPoll =
+    {
+        /// The entries, in the caller's order, which is the order the finishing
+        /// call reports `revents` in.
+        Entries : ParkedPollEntry list
+        /// The instant, in nanoseconds since boot, at which the call stops
+        /// waiting and returns 0; or `None` for a call that waits until a
+        /// descriptor is ready.
+        Deadline : int64 option
+    }
+
 /// <summary>
 /// The syscall a task is blocked in, if it is blocked in one.
 /// </summary>
@@ -101,6 +130,7 @@ type ParkedFlock =
 type ParkedSyscall =
     | SocketWait of ParkedSocketWait
     | Flock of ParkedFlock
+    | Poll of ParkedPoll
 
 /// Where one park stands in the order every park on this machine was made in.
 ///
@@ -269,14 +299,19 @@ module UnixTaskTable =
         =
         let existing = get name tasks
 
-        match existing.Parked |> Option.map (fun park -> park.Syscall), park.Syscall with
-        | Some (ParkedSyscall.SocketWait _), ParkedSyscall.Flock _
-        | Some (ParkedSyscall.Flock _), ParkedSyscall.SocketWait _ ->
+        let sameSyscall =
+            match existing.Parked |> Option.map (fun park -> park.Syscall), park.Syscall with
+            | None, _
+            | Some (ParkedSyscall.SocketWait _), ParkedSyscall.SocketWait _
+            | Some (ParkedSyscall.Flock _), ParkedSyscall.Flock _
+            | Some (ParkedSyscall.Poll _), ParkedSyscall.Poll _ -> true
+            | Some (ParkedSyscall.SocketWait _), (ParkedSyscall.Flock _ | ParkedSyscall.Poll _)
+            | Some (ParkedSyscall.Flock _), (ParkedSyscall.SocketWait _ | ParkedSyscall.Poll _)
+            | Some (ParkedSyscall.Poll _), (ParkedSyscall.SocketWait _ | ParkedSyscall.Flock _) -> false
+
+        if not sameSyscall then
             failwith
                 $"UnixTaskTable.withPark: task %O{name} is parked in %A{existing.Parked} and something is parking it in %A{park} without clearing the first. A task blocks in one syscall at a time, so the earlier park's completion failed to clear its record."
-        | None, _
-        | Some (ParkedSyscall.SocketWait _), ParkedSyscall.SocketWait _
-        | Some (ParkedSyscall.Flock _), ParkedSyscall.Flock _ -> ()
 
         Map.add
             name
