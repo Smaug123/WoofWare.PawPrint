@@ -795,20 +795,20 @@ module internal NativeReflectionInvocation =
                 //
                 // The `Signature` is deliberately not re-read here; everything needed came from the
                 // marker the first-entry branch pushed. See there for why.
-                let returned, state =
+                let returned : Result<CliType * IlMachineState, UndefinedValue> =
                     match stack with
                     | [ EvalStackValue.NullObjectRef ] ->
                         // Void marker: the target returned nothing, and `MethodBase.Invoke` answers
                         // null.
                         let _marker, state = IlMachineState.popEvalStack ctx.Thread state
-                        CliType.ObjectRef None, state
+                        Ok (CliType.ObjectRef None, state)
                     | [ EvalStackValue.ObjectRef constructed ] ->
                         // Constructor marker: the instance this handler allocated, now constructed
                         // in place. CoreCLR hands back the same `gc.retVal` it allocated before the
                         // call (reflectioninvocation.cpp:687), and for a value type that object is
                         // the box.
                         let _marker, state = IlMachineState.popEvalStack ctx.Thread state
-                        CliType.ObjectRef (Some constructed), state
+                        Ok (CliType.ObjectRef (Some constructed), state)
                     | [ returnValue
                         EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed returnType)) ] ->
                         let _returnValue, state = IlMachineState.popEvalStack ctx.Thread state
@@ -819,26 +819,26 @@ module internal NativeReflectionInvocation =
                         | ConcreteTypeHandle.FunctionPointer _ ->
                             let addr, state = NativeReflectionPointer.toObject ctx returnType returnValue state
 
-                            CliType.ObjectRef (Some addr), state
+                            Ok (CliType.ObjectRef (Some addr), state)
                         | _ ->
 
                         if NativeRuntimeTypeHelpers.argumentIsValueType ctx.BaseClassTypes state returnType then
                             // `InvokeUtil::CreateObjectAfterInvoke` (reflectioninvocation.cpp:678):
                             // the QCall's contract is to hand back a boxed value, and for a
                             // `Nullable<T>` return that is `Nullable::Box`'s null-or-boxed-`T`.
-                            let boxed, state =
-                                Boxing.boxValue ctx.LoggerFactory ctx.BaseClassTypes returnType returnValue state
-
-                            match boxed with
-                            | EvalStackValue.ObjectRef addr -> CliType.ObjectRef (Some addr), state
-                            | EvalStackValue.NullObjectRef -> CliType.ObjectRef None, state
-                            | other ->
+                            match Boxing.boxValue ctx.LoggerFactory ctx.BaseClassTypes returnType returnValue state with
+                            | Error u -> Error u
+                            | Ok (EvalStackValue.ObjectRef addr, state) -> Ok (CliType.ObjectRef (Some addr), state)
+                            | Ok (EvalStackValue.NullObjectRef, state) -> Ok (CliType.ObjectRef None, state)
+                            | Ok (other, _) ->
                                 failwith
                                     $"RuntimeMethodHandle_InvokeMethod: boxing the value-type return %O{returnType} produced %O{other}, expected an object reference"
                         else
                             match returnValue with
-                            | EvalStackValue.ObjectRef addr -> CliType.ObjectRef (Some addr), state
-                            | EvalStackValue.NullObjectRef -> CliType.ObjectRef None, state
+                            | EvalStackValue.ObjectRef addr -> Ok (CliType.ObjectRef (Some addr), state)
+                            | EvalStackValue.NullObjectRef -> Ok (CliType.ObjectRef None, state)
+                            // An undefined reference is only moved into the result slot.
+                            | EvalStackValue.Undefined u -> Ok (CliType.Undefined u, state)
                             | other ->
                                 // Re-read `_pMethod` and re-derive the target purely to name it in
                                 // the message. This is the one place the snapshot is deliberately
@@ -852,6 +852,15 @@ module internal NativeReflectionInvocation =
                     | _ ->
                         failwith
                             $"%s{operation}: expected a re-entry marker on the eval stack, optionally beneath one return value, got %d{stack.Length} value(s): %A{stack}"
+
+                match returned with
+                | Error u ->
+                    NativeHandlerResult.undefinedRead
+                        ctx.Instruction.ExecutingMethod
+                        "the hasValue field boxing a Nullable`1 decides by"
+                        u
+                    |> Some
+                | Ok (returned, state) ->
 
                 let state =
                     IlMachineState.writeManagedByrefWithBase

@@ -112,28 +112,6 @@ module internal Boxing =
 
         IlMachineState.allocateManagedObject typeHandle cvt state
 
-    /// The undefined `hasValue` of `toBox`, when boxing it as `typeHandle` would read one: a
-    /// `Nullable<T>` boxes to null or to its `T` according to `hasValue`, so an undefined one is a
-    /// use of undefined content. `None` for any other type, and for a defined `hasValue`.
-    let tryUndefinedHasValue
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (typeHandle : ConcreteTypeHandle)
-        (toBox : EvalStackValue)
-        (state : IlMachineState)
-        : UndefinedValue option
-        =
-        match AllConcreteTypes.lookup typeHandle state.ConcreteTypes, toBox with
-        | Some targetType, EvalStackValue.UserDefinedValueType cvt when
-            InternalTypeKind.kind baseClassTypes targetType = InternalTypeKind.Nullable
-            ->
-            let hasValueField =
-                IlMachineState.requiredOwnInstanceFieldId state cvt.Declared "hasValue"
-
-            match CliValueType.DereferenceFieldById hasValueField cvt with
-            | CliType.Undefined u -> Some u
-            | _ -> None
-        | _ -> None
-
     /// Box a value whose type is the value type `typeHandle`, exactly as the `box` opcode would
     /// (ECMA-335 III.4.1), answering the reference that `box` pushes.
     ///
@@ -143,13 +121,17 @@ module internal Boxing =
     /// `Nullable<T>` arrives as `UserDefinedValueType`.
     ///
     /// Reference types are not accepted: boxing one is a no-op the caller can perform by itself.
+    ///
+    /// `Error` with the `hasValue` of a `Nullable<T>` that nothing wrote: which box it makes is
+    /// decided by that field, so boxing it is a use of undefined content, which the caller reports.
+    /// Any other undefined value is only moved into its box.
     let boxValue
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (typeHandle : ConcreteTypeHandle)
         (toBox : EvalStackValue)
         (state : IlMachineState)
-        : EvalStackValue * IlMachineState
+        : Result<EvalStackValue * IlMachineState, UndefinedValue>
         =
         let targetType =
             AllConcreteTypes.lookup typeHandle state.TypeSystem.ConcreteTypes
@@ -164,7 +146,7 @@ module internal Boxing =
                     IlMachineState.requiredOwnInstanceFieldId state cvt.Declared "hasValue"
 
                 match CliValueType.DereferenceFieldById hasValueField cvt with
-                | CliType.Bool 0uy -> EvalStackValue.NullObjectRef, state
+                | CliType.Bool 0uy -> Ok (EvalStackValue.NullObjectRef, state)
                 | CliType.Bool _ ->
                     let underlyingTypeHandle = targetType.Generics.[0]
 
@@ -188,11 +170,10 @@ module internal Boxing =
                                 (EvalStackValue.ofCliType value)
                                 state
 
-                    EvalStackValue.ObjectRef addr, state
-                | CliType.Undefined u ->
-                    UndefinedValue.failUnobserved "boxing a Nullable`1, which reads its hasValue field" u
+                    Ok (EvalStackValue.ObjectRef addr, state)
+                | CliType.Undefined u -> Error u
                 | other -> failwith $"boxValue: expected Bool for Nullable`1's hasValue field, got %O{other}"
             | other -> failwith $"boxValue: expected a Nullable`1 to arrive as UserDefinedValueType, got %O{other}"
         else
             let addr, state = boxValueType loggerFactory baseClassTypes typeHandle toBox state
-            EvalStackValue.ObjectRef addr, state
+            Ok (EvalStackValue.ObjectRef addr, state)

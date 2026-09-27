@@ -768,6 +768,18 @@ module internal UnaryMetadataCallOps =
         // System.Array and fail).
         match tryGetMultiDimArrayCall activeAssy metadataToken with
         | Some (name, elt, rank, sig0) ->
+            // The array and its indices, beneath the value `Set` stores, which it only moves.
+            let storedValues = if name = "Set" then 1 else 0
+
+            match IlMachineStateExecution.undefinedAmongStackEntries thread storedValues (rank + 1) state with
+            | Some undefined ->
+                IlMachineStateExecution.observeUndefinedInInstruction
+                    "the array and indices a multi-dimensional array's accessor uses"
+                    undefined
+                    thread
+                    state
+            | None ->
+
             match name with
             | "Set" -> executeMultiDimArraySet ctx state elt rank sig0
             | "Get" -> executeMultiDimArrayGet ctx state rank sig0
@@ -1520,16 +1532,13 @@ module internal UnaryMetadataCallOps =
 
                         let derefEval = EvalStackValue.ofCliType derefCli
 
-                        match Boxing.tryUndefinedHasValue baseClassTypes tHandle derefEval state with
-                        | Some u -> ConstrainedReceiver.UndefinedHasValue u
-                        | None ->
-
                         // Box `*ptr` exactly as `box T` would (ECMA III.4.1), Nullable rule
                         // included: a value-less `Nullable<T>` becomes null, so the null check
                         // below raises NullReferenceException; one with a value boxes its `T`,
                         // so `GetType` on the box answers `T`.
-                        let boxed, state =
-                            Boxing.boxValue loggerFactory baseClassTypes tHandle derefEval state
+                        match Boxing.boxValue loggerFactory baseClassTypes tHandle derefEval state with
+                        | Error u -> ConstrainedReceiver.UndefinedHasValue u
+                        | Ok (boxed, state) ->
 
                         ConstrainedReceiver.Ready (
                             IlMachineState.pushToEvalStack' boxed thread state,

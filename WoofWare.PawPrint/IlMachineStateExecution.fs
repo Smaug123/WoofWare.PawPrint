@@ -314,6 +314,22 @@ module IlMachineStateExecution =
             else
                 None
 
+    /// The first undefined value, deepest first, among the `count` evaluation-stack entries that
+    /// lie `skip` entries below the top of `thread`'s stack: the operands a runtime-synthesised
+    /// member uses, which its instruction's `OperandUse` entry cannot pick out.
+    let undefinedAmongStackEntries
+        (thread : ThreadId)
+        (skip : int)
+        (count : int)
+        (state : IlMachineState)
+        : UndefinedValue option
+        =
+        state.ThreadState.[thread].MethodState.EvaluationStack.Values
+        |> List.skip skip
+        |> List.truncate count
+        |> List.rev
+        |> List.tryPick EvalStackValue.tryFindUndefined
+
     /// End the step because the instruction this thread is positioned at would use `value`, an
     /// undefined value, in a way the instruction's `OperandUse` entry does not show and only its
     /// implementation discovers. `description` says what that use is.
