@@ -53,11 +53,12 @@ module TestMethodReferenceResolution =
         /// context, and `object` violates the variable's constraints, so this row says nothing.
         | NoAnswer of exn
 
-    /// A generic context a MemberRef is actually used in: the type and method type parameters of
-    /// some method whose IL names it, directly or through a MethodSpec. Those parameters satisfy
+    /// A generic context a MemberRef, of a method or a field, is actually used in: the type and
+    /// method type parameters of some method whose IL names it, directly or through a MethodSpec.
+    /// Those parameters satisfy
     /// whatever constraints the reference's parent places on them, because the compiler checked
     /// exactly that where it emitted the use.
-    let private contextsOfUse
+    let contextsOfUse
         (analysed : DumpedAssembly)
         : System.Collections.Generic.IReadOnlyDictionary<MemberReferenceHandle, MethodDefinitionHandle>
         =

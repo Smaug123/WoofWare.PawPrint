@@ -276,7 +276,7 @@ module IlFormatting =
                 |> String.concat ", "
 
             $"(%s{paramTypes}) : %s{renderMethodReturnType assembly scope m.ReturnType}"
-        | MemberSignature.Field f -> $" : %s{renderTypeDefn assembly scope f}"
+        | MemberSignature.Field (_, f) -> $" : %s{renderTypeDefn assembly scope f}"
 
     /// <summary>
     /// The scope in which the signature of a member whose parent is <paramref name="parent"/> is
