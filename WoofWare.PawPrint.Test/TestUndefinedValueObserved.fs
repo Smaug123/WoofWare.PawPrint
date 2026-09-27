@@ -193,6 +193,83 @@ unsafe class Program
         | Program.PrefixOutcome.DeadlockedBeforeFork _
         | Program.PrefixOutcome.ForkedDuringStartup _ -> failwith "expected the guest to stop without forking"
 
+    /// The array member `op` uses the undefined value as `description` says.
+    let private expectArrayMemberUse
+        (op : UnaryMetadataTokenIlOp)
+        (description : string)
+        (observation : UndefinedValueObservation)
+        =
+        match observation.Use with
+        | UndefinedValueUse.InstructionDetail (_, _, IlOp.UnaryMetadataToken (actual, _), actualDescription) ->
+            actual |> shouldEqual op
+            actualDescription |> shouldEqual description
+        | other -> failwith $"expected %O{op} to use the value, got %O{other}"
+
+    [<Test>]
+    let ``Constructing a multi-dimensional array of unwritten length stops the run at the newobj`` () : unit =
+        let source =
+            """
+using System.Runtime.CompilerServices;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    static int Main(string[] args)
+    {
+        int* lengths = stackalloc int[1];
+        int[,] array = new int[*lengths, 2];
+        return array.Length == 0 ? 0 : 1;
+    }
+}
+"""
+
+        run
+            "UndefinedMultiDimLength.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.Int32
+                stackOrigins observation.Value |> shouldEqual [ 0 ; 1 ; 2 ; 3 ]
+
+                expectArrayMemberUse
+                    UnaryMetadataTokenIlOp.Newobj
+                    "the lengths an array constructor allocates"
+                    observation
+            )
+
+    [<Test>]
+    let ``Indexing a multi-dimensional array by an unwritten index stops the run at the access`` () : unit =
+        let source =
+            """
+using System.Runtime.CompilerServices;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    static int Main(string[] args)
+    {
+        int* indices = stackalloc int[1];
+        int[,] array = new int[2, 2];
+        array[1, 1] = 7;
+        return array[*indices, 0] == 7 ? 1 : 0;
+    }
+}
+"""
+
+        run
+            "UndefinedMultiDimIndex.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.Int32
+                stackOrigins observation.Value |> shouldEqual [ 0 ; 1 ; 2 ; 3 ]
+
+                expectArrayMemberUse
+                    UnaryMetadataTokenIlOp.Call
+                    "the array and indices a multi-dimensional array's accessor uses"
+                    observation
+            )
+
     [<Test>]
     let ``Branching on an unwritten stackalloc bool ends the run at the branch`` () : unit =
         let source =
@@ -878,4 +955,74 @@ unsafe class Program
                 observation.Value.Kind |> shouldEqual UndefinedPrimitive.Char
                 stackOrigins observation.Value |> shouldEqual [ 2 ; 3 ]
                 expectReadByRuntime "Equals" "the characters of the spans" observation
+            )
+
+    [<Test>]
+    let ``Reflection boxing a returned Nullable whose hasValue nothing wrote stops the run at the invoke`` () : unit =
+        let source =
+            """
+using System.Reflection;
+using System.Runtime.CompilerServices;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    static int? Make()
+    {
+        byte* bytes = stackalloc byte[8];
+        // hasValue, at byte 0, is never written; the padding and the value are.
+        for (int i = 1; i < 8; i++) bytes[i] = 0;
+        return Unsafe.Read<int?>(bytes);
+    }
+
+    static int Main(string[] args)
+    {
+        object boxed = typeof(Program).GetMethod(nameof(Make), BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, null);
+        return boxed == null ? 0 : 1;
+    }
+}
+"""
+
+        run
+            "UndefinedReflectionReturnHasValue.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.Bool
+                stackOrigins observation.Value |> shouldEqual [ 0 ]
+                expectReadByRuntime "InvokeMethod" "the hasValue field boxing a Nullable`1 decides by" observation
+            )
+
+    [<Test>]
+    let ``Reflection boxing a Nullable field whose hasValue nothing wrote stops the run at the read`` () : unit =
+        let source =
+            """
+using System.Reflection;
+using System.Runtime.CompilerServices;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    static int? Field;
+
+    static int Main(string[] args)
+    {
+        byte* bytes = stackalloc byte[8];
+        // hasValue, at byte 0, is never written; the padding and the value are.
+        for (int i = 1; i < 8; i++) bytes[i] = 0;
+        Field = Unsafe.Read<int?>(bytes);
+        object boxed = typeof(Program).GetField(nameof(Field), BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null);
+        return boxed == null ? 0 : 1;
+    }
+}
+"""
+
+        run
+            "UndefinedReflectionFieldHasValue.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.Bool
+                stackOrigins observation.Value |> shouldEqual [ 0 ]
+                expectReadByRuntime "<GetValue>g__" "the hasValue field boxing a Nullable`1 decides by" observation
             )

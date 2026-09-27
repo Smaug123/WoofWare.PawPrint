@@ -362,9 +362,10 @@ type UndefinedValueUse =
     | RuntimeArgument of
         method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
         index : int
-    /// Content that `method`, whose implementation the runtime supplies, reads through a pointer
-    /// or byref it was handed — the location `Interlocked.Add` adds to, the buffer a write system
-    /// call sends. `what` names it. The pointer itself is defined; what it points at is not.
+    /// Content that `method`, whose implementation the runtime supplies, uses though it is none of
+    /// its arguments: what it reads through a pointer or byref it was handed (the location
+    /// `Interlocked.Add` adds to, the buffer a write system call sends), or a value it is handed
+    /// back (the `hasValue` of a `Nullable<T>` that reflection boxes). `what` names it.
     | ReadByRuntime of
         method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
         what : string
@@ -379,8 +380,7 @@ type UndefinedValueUse =
             $"%s{description}, by %O{instruction} at IL offset 0x%04x{ilOffset} in %O{method}"
         | UndefinedValueUse.RuntimeArgument (method, index) ->
             $"argument %d{index} of the runtime-implemented %O{method}"
-        | UndefinedValueUse.ReadByRuntime (method, what) ->
-            $"%s{what}, which the runtime-implemented %O{method} reads through a pointer"
+        | UndefinedValueUse.ReadByRuntime (method, what) -> $"%s{what}, which the runtime-implemented %O{method} uses"
         | UndefinedValueUse.ExitCode -> "the entry point's return value, as the process exit code"
 
 /// The run ended because the guest used a value whose content is undefined: `Value` descends from
@@ -1022,8 +1022,8 @@ module NativeHandlerResult =
         =
         NativeHandlerResult.Terminating (ExecutionResult.UndefinedValueObserved (state, thread, observation))
 
-    /// The handler read `value` through a pointer it was handed and would use it, but it is
-    /// undefined, so the run ends; `what` names what was read.
+    /// The handler would use `value`, which it read through a pointer it was handed or was handed
+    /// back, but it is undefined, so the run stops; `what` names it.
     let undefinedRead
         (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (what : string)
