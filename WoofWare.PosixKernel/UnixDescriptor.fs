@@ -235,6 +235,40 @@ type TerminalAttributesAnswer =
     /// `tcgetattr` returns -1 and `isatty` returns 0, each with this errno.
     | NotATerminal of error : UnixError
 
+/// What `getgroups(2)` does with the caller's buffer and what it returns.
+[<RequireQualifiedAccess>]
+type GetGroupsAnswer =
+    /// The call was asked only how many groups there are (a size of 0). It
+    /// returns `count` and writes nothing, whatever the buffer is.
+    | Counted of count : int
+    /// Place these groups in the caller's buffer, in this order, and return how
+    /// many there are. They fit: the size has already been compared with this
+    /// list. An empty list writes nothing and so never faults.
+    | Copied of groups : GroupId list
+    /// The call returns -1 and the caller stores `error` wherever its libc
+    /// keeps errno. Nothing was written.
+    | Failed of error : UnixError
+
+/// Why this kernel will not answer a `getgroups(2)`.
+[<RequireQualifiedAccess>]
+type GetGroupsRefusal =
+    /// The buffer has no answer at the copy, which is the only step that
+    /// reads it.
+    | Buffer of BufferRefusal
+    /// This flavour's list for these credentials has not been measured; see
+    /// `GroupListReport.Unmeasured`.
+    | UnmeasuredGroupList of flavour : SimulatedUnixFlavour
+
+[<RequireQualifiedAccess>]
+module GetGroupsRefusal =
+    /// What this kernel knows about why it will not answer. A client adds which
+    /// entry point asked, and what the buffer was.
+    let describe (refusal : GetGroupsRefusal) : string =
+        match refusal with
+        | GetGroupsRefusal.Buffer refusal -> BufferRefusal.describe refusal
+        | GetGroupsRefusal.UnmeasuredGroupList flavour ->
+            $"which groups %O{flavour}'s getgroups(2) reports for these credentials has not been measured. It depends on what setgroups(2) does with the list it is given, and setting that needs root. A login process reports its effective group first and the rest unsorted, which fits both of two rules (the effective group added in front of the supplementary groups, or a list that already began with it reported as given), and the two disagree about every other list."
+
 /// Why a file descriptor cannot be seeked, as a *fault* rather than as the errno
 /// it becomes.
 ///
@@ -366,6 +400,63 @@ module UnixDescriptor =
         : UserId
         =
         system.Process.Credentials.EffectiveUser
+
+    /// The effective group ID, as `getegid(2)` reports it.
+    ///
+    /// Total, and changes nothing: `getegid` cannot fail.
+    let effectiveGroupId<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : GroupId
+        =
+        system.Process.Credentials.EffectiveGroup
+
+    /// `getgroups(2)`: the process's groups, into `destination`, which has room
+    /// for `size` of them.
+    ///
+    /// Changes nothing, so it returns no system.
+    let getgroups<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (destination : UserBuffer)
+        (size : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<GetGroupsAnswer, GetGroupsRefusal>
+        =
+        // Measured on Linux 6.18.5 and Darwin 27.0 (`getgroups.c`), in this
+        // order: a negative size is EINVAL on both (-1, -2, -16, -65536,
+        // INT_MIN + 1 and INT_MIN, and -1 with a NULL buffer); a size of 0 returns the count and writes nothing,
+        // even through NULL; a size below the count is EINVAL, NULL or not; and
+        // only then is the buffer written, so NULL is EFAULT. Linux copies
+        // nothing for an empty list, so no buffer faults then. Linux writes
+        // element by element up to a fault (a buffer one element short of a
+        // PROT_NONE page had its first element written), which an `Unmapped`
+        // buffer, holding no storage at all, never shows.
+        if size < 0 then
+            Ok (GetGroupsAnswer.Failed UnixError.EINVAL)
+        else
+
+        match
+            Credentials.reportedGroups
+                (SimulatedUnixPlatform.groupListReport system.Machine.UnixPlatform)
+                system.Process.Credentials
+        with
+        | None ->
+            Error (GetGroupsRefusal.UnmeasuredGroupList (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform))
+        | Some groups ->
+
+        let count = List.length groups
+
+        if size = 0 then
+            Ok (GetGroupsAnswer.Counted count)
+        elif size < count then
+            Ok (GetGroupsAnswer.Failed UnixError.EINVAL)
+        elif count = 0 then
+            Ok (GetGroupsAnswer.Copied [])
+        else
+
+        match destination with
+        | UserBuffer.Mapped -> Ok (GetGroupsAnswer.Copied groups)
+        | UserBuffer.Unmapped _ -> Ok (GetGroupsAnswer.Failed UnixError.EFAULT)
+        | UserBuffer.Opaque -> Error (GetGroupsRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+        | UserBuffer.Addressless -> Error (GetGroupsRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
 
     /// `dup(2)`: the lowest non-negative descriptor not in use, sharing `fd`'s
     /// open file description. EBADF is its only failure.

@@ -10,6 +10,7 @@ open System.Collections.Immutable
 /// per flavour. Arguments only the client can classify arrive classified.
 type Syscall =
     | GetEffectiveUserId
+    | GetEffectiveGroupId
     | GetProcessId
     | Dup of fd : int
     | LSeek of fd : int * offset : int64 * whence : int
@@ -320,6 +321,13 @@ module UnixSystem =
             Ok (
                 SyscallOutcome.Answered (
                     SyscallAnswer.Completed (int64 (UserId.toUInt32 (UnixDescriptor.effectiveUserId system)))
+                ),
+                system
+            )
+        | Syscall.GetEffectiveGroupId ->
+            Ok (
+                SyscallOutcome.Answered (
+                    SyscallAnswer.Completed (int64 (GroupId.toUInt32 (UnixDescriptor.effectiveGroupId system)))
                 ),
                 system
             )

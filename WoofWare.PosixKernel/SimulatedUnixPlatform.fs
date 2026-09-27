@@ -595,6 +595,13 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> NewInodeGroupRule.CreatorsUnlessParentSetGroupId
         | SimulatedUnixFlavour.Darwin -> NewInodeGroupRule.Parents
 
+    /// Which groups this platform's `getgroups(2)` reports for a process's
+    /// credentials. See `Credentials.reportedGroups` for the measurements.
+    let groupListReport (platform : SimulatedUnixPlatform) : GroupListReport =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> GroupListReport.SortedSupplementaryGroups
+        | SimulatedUnixFlavour.Darwin -> GroupListReport.Unmeasured
+
     /// Everything this platform's `mkdir(2)` does differently. See `MkDirRules`
     /// for the measurements; note in particular that `ModeMask` is not
     /// `creatingOpenRules`' one on Linux.

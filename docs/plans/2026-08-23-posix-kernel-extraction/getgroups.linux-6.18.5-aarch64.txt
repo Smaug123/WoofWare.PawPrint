@@ -1,0 +1,199 @@
+Linux 6.18.5 aarch64
+ngroups_max=65536
+this process:
+  egid=0 rgid=0 euid=0 count(getgroups(0,NULL))=1
+  size 0                             -> 1  | . . .
+  size 1                             -> 1  | 0 . .
+  size 2                             -> 1  | 0 . .
+  size 3                             -> 1  | 0 . .
+  size CAP                           -> 1  | 0 . .
+  size -1                            -> -1 EINVAL | . . .
+  size -2                            -> -1 EINVAL | . . .
+  size -16                           -> -1 EINVAL | . . .
+  size -65536                        -> -1 EINVAL | . . .
+  size -2147483647                   -> -1 EINVAL | . . .
+  size -2147483648                   -> -1 EINVAL | . . .
+  size count, NULL                   -> -1 EFAULT
+  size count+1, NULL                 -> -1 EFAULT
+  size count-1, NULL                 -> 1 
+  size -1, NULL                      -> -1 EINVAL
+  size count, PROT_READ              -> -1 EFAULT
+empty: setgroups() egid 1000
+  egid=1000 rgid=1000 euid=1000 count(getgroups(0,NULL))=0
+  size 0                             -> 0  | . .
+  size 1                             -> 0  | . .
+  size 2                             -> 0  | . .
+  size CAP                           -> 0  | . .
+  size -1                            -> -1 EINVAL | . .
+  size -2                            -> -1 EINVAL | . .
+  size -16                           -> -1 EINVAL | . .
+  size -65536                        -> -1 EINVAL | . .
+  size -2147483647                   -> -1 EINVAL | . .
+  size -2147483648                   -> -1 EINVAL | . .
+  size count, NULL                   -> 0 
+  size count+1, NULL                 -> 0 
+  size -1, NULL                      -> -1 EINVAL
+  size count, PROT_READ              -> 0 
+one: setgroups(5) egid 1000
+  egid=1000 rgid=1000 euid=1000 count(getgroups(0,NULL))=1
+  size 0                             -> 1  | . . .
+  size 1                             -> 1  | 5 . .
+  size 2                             -> 1  | 5 . .
+  size 3                             -> 1  | 5 . .
+  size CAP                           -> 1  | 5 . .
+  size -1                            -> -1 EINVAL | . . .
+  size -2                            -> -1 EINVAL | . . .
+  size -16                           -> -1 EINVAL | . . .
+  size -65536                        -> -1 EINVAL | . . .
+  size -2147483647                   -> -1 EINVAL | . . .
+  size -2147483648                   -> -1 EINVAL | . . .
+  size count, NULL                   -> -1 EFAULT
+  size count+1, NULL                 -> -1 EFAULT
+  size count-1, NULL                 -> 1 
+  size -1, NULL                      -> -1 EINVAL
+  size count, PROT_READ              -> -1 EFAULT
+unsorted: setgroups(30,10,20) egid 1000
+  egid=1000 rgid=1000 euid=1000 count(getgroups(0,NULL))=3
+  size 0                             -> 3  | . . . . .
+  size 1                             -> -1 EINVAL | . . . . .
+  size 2                             -> -1 EINVAL | . . . . .
+  size 3                             -> 3  | 10 20 30 . .
+  size 4                             -> 3  | 10 20 30 . .
+  size 5                             -> 3  | 10 20 30 . .
+  size CAP                           -> 3  | 10 20 30 . .
+  size -1                            -> -1 EINVAL | . . . . .
+  size -2                            -> -1 EINVAL | . . . . .
+  size -16                           -> -1 EINVAL | . . . . .
+  size -65536                        -> -1 EINVAL | . . . . .
+  size -2147483647                   -> -1 EINVAL | . . . . .
+  size -2147483648                   -> -1 EINVAL | . . . . .
+  size count, NULL                   -> -1 EFAULT
+  size count+1, NULL                 -> -1 EFAULT
+  size count-1, NULL                 -> -1 EINVAL
+  size -1, NULL                      -> -1 EINVAL
+  size count, straddling PROT_NONE   -> -1 EFAULT | first element written
+  size count, PROT_READ              -> -1 EFAULT
+duplicates: setgroups(7,7,3,7) egid 1000
+  egid=1000 rgid=1000 euid=1000 count(getgroups(0,NULL))=4
+  size 0                             -> 4  | . . . . . .
+  size 1                             -> -1 EINVAL | . . . . . .
+  size 2                             -> -1 EINVAL | . . . . . .
+  size 3                             -> -1 EINVAL | . . . . . .
+  size 4                             -> 4  | 3 7 7 7 . .
+  size 5                             -> 4  | 3 7 7 7 . .
+  size 6                             -> 4  | 3 7 7 7 . .
+  size CAP                           -> 4  | 3 7 7 7 . .
+  size -1                            -> -1 EINVAL | . . . . . .
+  size -2                            -> -1 EINVAL | . . . . . .
+  size -16                           -> -1 EINVAL | . . . . . .
+  size -65536                        -> -1 EINVAL | . . . . . .
+  size -2147483647                   -> -1 EINVAL | . . . . . .
+  size -2147483648                   -> -1 EINVAL | . . . . . .
+  size count, NULL                   -> -1 EFAULT
+  size count+1, NULL                 -> -1 EFAULT
+  size count-1, NULL                 -> -1 EINVAL
+  size -1, NULL                      -> -1 EINVAL
+  size count, straddling PROT_NONE   -> -1 EFAULT | first element written
+  size count, PROT_READ              -> -1 EFAULT
+with-egid: setgroups(1000,5,1000) egid 1000
+  egid=1000 rgid=1000 euid=1000 count(getgroups(0,NULL))=3
+  size 0                             -> 3  | . . . . .
+  size 1                             -> -1 EINVAL | . . . . .
+  size 2                             -> -1 EINVAL | . . . . .
+  size 3                             -> 3  | 5 1000 1000 . .
+  size 4                             -> 3  | 5 1000 1000 . .
+  size 5                             -> 3  | 5 1000 1000 . .
+  size CAP                           -> 3  | 5 1000 1000 . .
+  size -1                            -> -1 EINVAL | . . . . .
+  size -2                            -> -1 EINVAL | . . . . .
+  size -16                           -> -1 EINVAL | . . . . .
+  size -65536                        -> -1 EINVAL | . . . . .
+  size -2147483647                   -> -1 EINVAL | . . . . .
+  size -2147483648                   -> -1 EINVAL | . . . . .
+  size count, NULL                   -> -1 EFAULT
+  size count+1, NULL                 -> -1 EFAULT
+  size count-1, NULL                 -> -1 EINVAL
+  size -1, NULL                      -> -1 EINVAL
+  size count, straddling PROT_NONE   -> -1 EFAULT | first element written
+  size count, PROT_READ              -> -1 EFAULT
+descending-20: setgroups(20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1) egid 1000
+  egid=1000 rgid=1000 euid=1000 count(getgroups(0,NULL))=20
+  size 0                             -> 20  | . . . . . . . . . . . . . . . . . . . . . .
+  size 1                             -> -1 EINVAL | . . . . . . . . . . . . . . . . . . . . . .
+  size 2                             -> -1 EINVAL | . . . . . . . . . . . . . . . . . . . . . .
+  size 3                             -> -1 EINVAL | . . . . . . . . . . . . . . . . . . . . . .
+  size 4                             -> -1 EINVAL | . . . . . . . . . . . . . . . . . . . . . .
+  size 5                             -> -1 EINVAL | . . . . . . . . . . . . . . . . . . . . . .
+  size 6                             -> -1 EINVAL | . . . . . . . . . . . . . . . . . . . . . .
+  size 7                             -> -1 EINVAL | . . . . . . . . . . . . . . . . . . . . . .
+  size 8                             -> -1 EINVAL | . . . . . . . . . . . . . . . . . . . . . .
+  size 9                             -> -1 EINVAL | . . . . . . . . . . . . . . . . . . . . . .
+  size 10                            -> -1 EINVAL | . . . . . . . . . . . . . . . . . . . . . .
+  size 11                            -> -1 EINVAL | . . . . . . . . . . . . . . . . . . . . . .
+  size 12                            -> -1 EINVAL | . . . . . . . . . . . . . . . . . . . . . .
+  size 13                            -> -1 EINVAL | . . . . . . . . . . . . . . . . . . . . . .
+  size 14                            -> -1 EINVAL | . . . . . . . . . . . . . . . . . . . . . .
+  size 15                            -> -1 EINVAL | . . . . . . . . . . . . . . . . . . . . . .
+  size 16                            -> -1 EINVAL | . . . . . . . . . . . . . . . . . . . . . .
+  size 17                            -> -1 EINVAL | . . . . . . . . . . . . . . . . . . . . . .
+  size 18                            -> -1 EINVAL | . . . . . . . . . . . . . . . . . . . . . .
+  size 19                            -> -1 EINVAL | . . . . . . . . . . . . . . . . . . . . . .
+  size 20                            -> 20  | 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 . .
+  size 21                            -> 20  | 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 . .
+  size 22                            -> 20  | 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 . .
+  size CAP                           -> 20  | 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 . .
+  size -1                            -> -1 EINVAL | . . . . . . . . . . . . . . . . . . . . . .
+  size -2                            -> -1 EINVAL | . . . . . . . . . . . . . . . . . . . . . .
+  size -16                           -> -1 EINVAL | . . . . . . . . . . . . . . . . . . . . . .
+  size -65536                        -> -1 EINVAL | . . . . . . . . . . . . . . . . . . . . . .
+  size -2147483647                   -> -1 EINVAL | . . . . . . . . . . . . . . . . . . . . . .
+  size -2147483648                   -> -1 EINVAL | . . . . . . . . . . . . . . . . . . . . . .
+  size count, NULL                   -> -1 EFAULT
+  size count+1, NULL                 -> -1 EFAULT
+  size count-1, NULL                 -> -1 EINVAL
+  size -1, NULL                      -> -1 EINVAL
+  size count, straddling PROT_NONE   -> -1 EFAULT | first element written
+  size count, PROT_READ              -> -1 EFAULT
+large-ids: setgroups(4294967294,0,2147483648,65536) egid 1000
+  egid=1000 rgid=1000 euid=1000 count(getgroups(0,NULL))=4
+  size 0                             -> 4  | . . . . . .
+  size 1                             -> -1 EINVAL | . . . . . .
+  size 2                             -> -1 EINVAL | . . . . . .
+  size 3                             -> -1 EINVAL | . . . . . .
+  size 4                             -> 4  | 0 65536 2147483648 4294967294 . .
+  size 5                             -> 4  | 0 65536 2147483648 4294967294 . .
+  size 6                             -> 4  | 0 65536 2147483648 4294967294 . .
+  size CAP                           -> 4  | 0 65536 2147483648 4294967294 . .
+  size -1                            -> -1 EINVAL | . . . . . .
+  size -2                            -> -1 EINVAL | . . . . . .
+  size -16                           -> -1 EINVAL | . . . . . .
+  size -65536                        -> -1 EINVAL | . . . . . .
+  size -2147483647                   -> -1 EINVAL | . . . . . .
+  size -2147483648                   -> -1 EINVAL | . . . . . .
+  size count, NULL                   -> -1 EFAULT
+  size count+1, NULL                 -> -1 EFAULT
+  size count-1, NULL                 -> -1 EINVAL
+  size -1, NULL                      -> -1 EINVAL
+  size count, straddling PROT_NONE   -> -1 EFAULT | first element written
+  size count, PROT_READ              -> -1 EFAULT
+egid-not-listed: setgroups(30,10,20) egid 4242
+  egid=4242 rgid=4242 euid=1000 count(getgroups(0,NULL))=3
+  size 0                             -> 3  | . . . . .
+  size 1                             -> -1 EINVAL | . . . . .
+  size 2                             -> -1 EINVAL | . . . . .
+  size 3                             -> 3  | 10 20 30 . .
+  size 4                             -> 3  | 10 20 30 . .
+  size 5                             -> 3  | 10 20 30 . .
+  size CAP                           -> 3  | 10 20 30 . .
+  size -1                            -> -1 EINVAL | . . . . .
+  size -2                            -> -1 EINVAL | . . . . .
+  size -16                           -> -1 EINVAL | . . . . .
+  size -65536                        -> -1 EINVAL | . . . . .
+  size -2147483647                   -> -1 EINVAL | . . . . .
+  size -2147483648                   -> -1 EINVAL | . . . . .
+  size count, NULL                   -> -1 EFAULT
+  size count+1, NULL                 -> -1 EFAULT
+  size count-1, NULL                 -> -1 EINVAL
+  size -1, NULL                      -> -1 EINVAL
+  size count, straddling PROT_NONE   -> -1 EFAULT | first element written
+  size count, PROT_READ              -> -1 EFAULT
