@@ -147,8 +147,8 @@ module TruncationRefusal =
 
 /// Why this kernel will not close a descriptor.
 ///
-/// Generic in what names a task because two of the three are about a task
-/// parked in a wait, and which one that is cannot be recomputed by the client:
+/// Generic in what names a task because most of them are about a task parked
+/// in a wait, and which one that is cannot be recomputed by the client:
 /// nothing stops two tasks parking on the same port, so a client repeating the
 /// search could name a different one from the one this refusal is about.
 [<RequireQualifiedAccess>]
@@ -180,6 +180,12 @@ type CloseRefusal<'Task> =
     /// can still wake it, and it then looks the number up again and reports
     /// what the number names by then.
     | PolledDescriptor of fd : int * task : 'Task
+    /// The last descriptor onto a listening socket that `task` is parked in an
+    /// `accept(2)` on, under the Linux flavour.
+    | LinuxLastListenerDescriptorWithAccepter of listener : OpenFileDescriptionId * task : 'Task
+    /// Any descriptor onto a listening socket that `task` is parked in an
+    /// `accept(2)` on, under the Darwin flavour.
+    | DarwinListenerDescriptorWithAccepter of listener : OpenFileDescriptionId * task : 'Task
 
 [<RequireQualifiedAccess>]
 module CloseRefusal =
@@ -196,6 +202,10 @@ module CloseRefusal =
             $"the descriptor is the last one onto open file description %O{description}, and task %O{task} is parked on an `flock` of it. A real kernel's blocked `flock` holds a reference to the file, so the description outlives every descriptor onto it and the waiter is eventually granted its lock; this table has no such reference to represent, so destroying the description would either strand the waiter for ever or wake it into an EBADF no kernel produces."
         | CloseRefusal.PolledDescriptor (fd, task) ->
             $"task %O{task} is parked in a poll(2) watching fd %d{fd}. Measured on Linux (poll-timeout.c), the sleeping poll keeps the file it found: the close does not wake it, the closed file can still wake it (a datagram sent to a closed UDP socket's address did), and when it wakes it looks the number up again, answering POLLNVAL if the number is free and the new file's readiness if another open took the number. Representing that needs the file to outlive its descriptor while the poll sleeps, which this kernel's descriptor table cannot express."
+        | CloseRefusal.LinuxLastListenerDescriptorWithAccepter (listener, task) ->
+            $"it is the last descriptor onto the listening socket of open file description %O{listener}, and task %O{task} is parked in an accept on it. Measured on Linux (blocking-accept.c), the sleeping accept holds the file: the close does not wake it, the socket goes on listening, and a later connect completes and wakes it with a new descriptor. Representing that needs the listener to outlive its last descriptor, which this kernel's descriptor table cannot express."
+        | CloseRefusal.DarwinListenerDescriptorWithAccepter (listener, task) ->
+            $"the descriptor names the listening socket of open file description %O{listener}, and task %O{task} is parked in an accept on it. Measured on Darwin (blocking-accept.c), closing the descriptor the accept was entered through ends it at once with ECONNABORTED, even while a dup keeps the listener open, and closing another descriptor onto it does not; this kernel models neither a close ending a sleeping call nor which descriptor a call was entered through."
         | CloseRefusal.ListenerWouldResetUnacceptedClient (listener, connection, client) ->
             $"the close destroys listening socket %O{listener} while connection %O{connection} sits unaccepted in its queue, and that connection's client (socket %O{client}) is still open. A real kernel RSTs the unaccepted client on listener close, leaving it in a state this kernel has not measured: its readiness level, and what connect(2) then answers, are both unknown, and it would otherwise be indistinguishable from a cleanly FIN'd peer."
 
@@ -1119,6 +1129,9 @@ module UnixDescriptor =
             | Some (ParkedSyscall.Poll poll) ->
                 failwith
                     $"UnixDescriptor.flockAcquire: task %O{task} is parked in a poll of %A{poll.Entries}, not in an flock, so there is no acquisition to finish (this is a bug in the client)."
+            | Some (ParkedSyscall.Accept accept) ->
+                failwith
+                    $"UnixDescriptor.flockAcquire: task %O{task} is parked in an accept on %O{accept.Listener}, not in an flock, so there is no acquisition to finish (this is a bug in the client)."
             | None ->
                 failwith
                     $"UnixDescriptor.flockAcquire: task %O{task} is not parked, so there is no acquisition to finish. A blocked `flock` records the park; only a task it answered `WouldBlock` finishes here (this is a bug in the client)."
@@ -1270,8 +1283,8 @@ module UnixDescriptor =
     /// named is a question about the filesystem. Closing one of several
     /// descriptors onto a description destroys nothing, and so frees neither.
     ///
-    /// EBADF is its only errno; see `CloseRefusal` for the three inputs it
-    /// declines to answer at all.
+    /// EBADF is its only errno; see `CloseRefusal` for the inputs it declines
+    /// to answer at all.
     let close<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (system : UnixSystem<'Task, 'Handler>)
@@ -1341,6 +1354,43 @@ module UnixDescriptor =
         | Some refusal -> Error refusal
         | None ->
 
+        // The same question for a listening socket with a task parked in
+        // `accept` on it, and each side is measured (`blocking-accept.c`,
+        // section C): Linux's accept holds the file, so a close that leaves
+        // another descriptor changes nothing and the last close leaves the
+        // socket listening under the sleeping call, which this table cannot
+        // represent; Darwin's ends with ECONNABORTED when the descriptor it was
+        // entered through closes, which it models no way to deliver.
+        let accepterRefusal : CloseRefusal<'Task> option =
+            match closing with
+            | None -> None
+            | Some (closingId, _) ->
+
+            let accepter =
+                system.Tasks
+                |> Map.tryPick (fun task state ->
+                    match state.Parked |> Option.map (fun park -> park.Syscall) with
+                    | Some (ParkedSyscall.Accept accept) when accept.Listener = closingId -> Some task
+                    | Some _
+                    | None -> None
+                )
+
+            match accepter with
+            | None -> None
+            | Some task ->
+                match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+                | SimulatedUnixFlavour.Linux ->
+                    if destroyed.IsSome then
+                        Some (CloseRefusal.LinuxLastListenerDescriptorWithAccepter (closingId, task))
+                    else
+                        None
+                | SimulatedUnixFlavour.Darwin ->
+                    Some (CloseRefusal.DarwinListenerDescriptorWithAccepter (closingId, task))
+
+        match accepterRefusal with
+        | Some refusal -> Error refusal
+        | None ->
+
         // The same question for a lock rather than a port, and the reason
         // `WakeCondition.satisfied` may treat a vanished description as a
         // broken precondition rather than as something to answer.
@@ -1398,6 +1448,7 @@ module UnixDescriptor =
                         None
                 | Some (ParkedSyscall.Flock _)
                 | Some (ParkedSyscall.SocketWait _)
+                | Some (ParkedSyscall.Accept _)
                 | None -> None
             )
 

@@ -229,6 +229,10 @@ module DebuggerServer =
                 match parked.Deadline with
                 | None -> ()
                 | Some deadline -> writer.WriteNumber ("deadlineTicks", ClockPal.firstTickAtOrAfter deadline)
+            | Some (ParkedSyscall.Accept parked) ->
+                writer.WriteString ("kind", "blockedInAccept")
+                let (OpenFileDescriptionId listener) = parked.Listener
+                writer.WriteNumber ("listener", listener)
             | None -> writer.WriteString ("kind", "blockedInSyscall")
 
             writer.WriteEndObject ()

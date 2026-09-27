@@ -9,9 +9,9 @@ type ConnectOutcome =
     | Completed
     | Failed of UnixError
 
-/// What an `accept(2)` answered.
+/// What became of an `accept(2)` this kernel could answer.
 [<RequireQualifiedAccess>]
-type AcceptAnswer =
+type AcceptOutcome =
     /// The call failed with this errno, and nothing about the listener changed.
     /// The accept queue in particular is untouched: measured on both flavours,
     /// a failed `accept` leaves a queued connection queued.
@@ -25,6 +25,12 @@ type AcceptAnswer =
     /// what is reported: a call declaring 8 writes eight bytes of the encoded
     /// address and still reports 16.
     | Accepted of fd : int * peer : InternetEndpoint * reportedLength : int
+    /// The call did not return: the listener is blocking and its accept queue
+    /// is empty. The calling task is parked, and sleeps until
+    /// `WakeCondition.satisfied` of this condition is non-empty and
+    /// `UnixWait.wakes` wakes it; then `UnixConnection.finishAccept` finishes
+    /// the call.
+    | WouldBlock of WakeCondition
 
 /// Why this kernel will not answer an `accept`.
 ///
@@ -42,15 +48,6 @@ type AcceptRefusal =
     /// rather than measuring would be the difference between an answer and a
     /// state change.
     | UnmeasuredKind of socket : SocketId * kind : SocketKind
-    /// `listener` is a *blocking* listening socket with an empty accept queue,
-    /// which a real kernel sleeps in until a connection arrives.
-    ///
-    /// Not `SyscallOutcome.WouldBlock`, and the difference is the point:
-    /// blocking is an outcome only where there is a `WakeCondition` to hand
-    /// back, and this library has none for the accept side. A kernel wakes such
-    /// a sleeper when a connection arrives; nothing here would, so parking one
-    /// would be a deadlock rather than a park.
-    | WouldPark of listener : SocketId
     /// The accept would succeed and copy the peer address out, but the
     /// destination is one this library has no answer for: its bytes cannot be
     /// produced, or it is not an address at all.
@@ -81,8 +78,6 @@ module AcceptRefusal =
             $"the descriptor is socket %O{socket}, whose domain is %O{domain}. This kernel models a peer address only for IPv4: an IPv6 socket's is sixteen bytes of address plus a scope id, and a Unix-domain socket's is a *path* in the filesystem rather than a transport endpoint. Neither is a wider version of what is modelled here, so there is nothing to truncate or widen into an answer."
         | AcceptRefusal.UnmeasuredKind (socket, kind) ->
             $"the descriptor is socket %O{socket}, which is a %O{kind} socket, and what `accept(2)` answers for one is unmeasured. Measure it rather than guessing: SOCK_SEQPACKET does accept connections, so a guess of EOPNOTSUPP there would be a wrong answer rather than an approximate one."
-        | AcceptRefusal.WouldPark listener ->
-            $"socket %O{listener} is a blocking listener with an empty accept queue, which a real kernel sleeps in. Nothing in this kernel delivers a connection to a sleeping accepter, so a park here would never end. Complete a connect before the accept, or make the listener non-blocking."
         | AcceptRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | AcceptRefusal.UnmeasuredCopyOutFault listener ->
             $"socket %O{listener} has a connection to hand over, so this call succeeds and copies the peer address out -- but the destination is unmapped, so that copy faults. Whether a real kernel loses the connection when it faults, having already taken it off the queue, is unmeasured, so EFAULT is not available here as it is for `getsockname`."
@@ -1112,7 +1107,7 @@ module UnixConnection =
     /// been accepted. `accept` is what a syscall goes through.
     ///
     /// Partial: `socketId` must be a listening socket with a non-empty queue.
-    /// `accept` answers EAGAIN (or refuses to park) for an empty one, and
+    /// `accept` answers EAGAIN (or parks) for an empty one, and
     /// EINVAL/EOPNOTSUPP for a socket that is not a listening stream socket, so
     /// reaching this in any other state is a bug in the caller.
     let acceptConnection<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -1186,106 +1181,27 @@ module UnixConnection =
                                     Queue = []
                                 } ->
             failwith
-                "UnixConnection.acceptConnection: the accept queue is empty; `accept` answers EAGAIN (or refuses to park) before reaching this (this is a bug in the caller)."
+                "UnixConnection.acceptConnection: the accept queue is empty; `accept` answers EAGAIN (or parks) before reaching this (this is a bug in the caller)."
         | phase ->
             failwith
                 $"UnixConnection.acceptConnection: socket %O{socketId} is in %A{phase}, not listening; `accept` screens this (this is a bug in the caller)."
 
-    /// `accept(2)`: take the oldest completed connection off `fd`'s accept queue
-    /// and hand back a descriptor onto the server side of it.
+    /// Hand the oldest connection on `socketId`'s queue over to the caller: the
+    /// half of `accept(2)` that follows the choice of a connection, shared by a
+    /// call that finds one at once and a parked call that finds one on waking.
     ///
-    /// `destination` is where the peer address would be copied out, and
-    /// `declaredLength` how much of it may be written. As for `getsockname`, the
-    /// declared length **does not bound what is reported**: a call declaring 8
-    /// writes eight bytes and still reports 16. It must not be negative -- a
-    /// kernel never sees one, because a foreign-function layer that casts it to
-    /// `socklen_t` would make the bound `SIZE_MAX` rather than passing it on --
-    /// so a caller that has not screened it is asking a question no kernel this
-    /// library models was ever asked.
-    ///
-    /// A call that writes nothing never looks at `destination`: at a declared
-    /// length of zero every buffer succeeds, including one naming no storage.
-    ///
-    /// Every failure leaves the listener exactly as it was, the queue included,
-    /// which is why the failing arms hand back the system they were given.
-    ///
-    /// The accepted descriptor inherits `O_NONBLOCK` from the description this
-    /// call was made through, on the flavours whose kernels do that: see
-    /// `SimulatedUnixPlatform.acceptedSocketInheritsNonBlocking`. A client whose
-    /// own sockets want one answer on every platform clears it itself, which is
-    /// what CoreCLR's `SystemNative_Accept` does.
-    let accept<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (fd : int)
+    /// `nonBlocking` is the listening description's `O_NONBLOCK` as the
+    /// connection is handed over, which is what Darwin's accepted socket
+    /// inherits (measured, `blocking-accept.c` section F: a flag set while the
+    /// call slept was inherited).
+    let private handOver<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (socketId : SocketId)
+        (nonBlocking : bool)
         (destination : UserBuffer)
         (declaredLength : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<AcceptAnswer * UnixSystem<'Task, 'Handler>, AcceptRefusal>
+        : Result<AcceptOutcome * UnixSystem<'Task, 'Handler>, AcceptRefusal>
         =
-        if declaredLength < 0 then
-            failwith
-                $"UnixConnection.accept: declared length %d{declaredLength} is negative, which no kernel is ever asked -- a shim that casts it to `socklen_t` makes the bound SIZE_MAX rather than passing it on. Screen this in the client (this is a bug in the caller)."
-
-        // The descriptor is classified before the destination is looked at, and
-        // before the accept queue is: measured on both flavours, a closed
-        // descriptor answers EBADF and a non-socket ENOTSOCK whatever the
-        // destination and whatever the listener would have said.
-        match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
-        | None -> Ok (AcceptAnswer.Failed UnixError.EBADF, system)
-        | Some description ->
-
-        match description.Target with
-        | OpenFileTarget.File _
-        | OpenFileTarget.Directory _
-        | OpenFileTarget.StandardStream _
-        | OpenFileTarget.Pipe _
-        | OpenFileTarget.SocketEventPort _ -> Ok (AcceptAnswer.Failed UnixError.ENOTSOCK, system)
-        | OpenFileTarget.Socket socketId ->
-
-        let socket = UnixMachineState.socket socketId system.Machine
-
-        match socket.Domain with
-        | SocketDomain.Inet6
-        | SocketDomain.Unix -> Error (AcceptRefusal.UnmodelledDomain (socketId, socket.Domain))
-        | SocketDomain.Inet ->
-
-        match socket.Kind with
-        | SocketKind.Datagram ->
-            // The kind check beats the listening check: measured on both, a
-            // datagram socket -- which is also "not listening" -- answers
-            // EOPNOTSUPP, blocking or not.
-            Ok (AcceptAnswer.Failed UnixError.EOPNOTSUPP, system)
-        | SocketKind.SeqPacket -> Error (AcceptRefusal.UnmeasuredKind (socketId, socket.Kind))
-        | SocketKind.Stream ->
-
-        match socket.Phase with
-        | SocketPhase.DatagramPeer _ ->
-            failwith
-                $"UnixConnection.accept: socket %O{socketId} is a stream socket holding SocketPhase.DatagramPeer, a pairing this kernel's socket invariants forbid (this is a bug in the caller's state construction)."
-        | SocketPhase.Idle
-        | SocketPhase.EstablishedPendingReport _
-        | SocketPhase.Established _
-        | SocketPhase.RefusedPendingDelivery
-        | SocketPhase.Dead ->
-            // ...and the listening check beats blocking behaviour: measured on
-            // both, a *blocking* non-listening socket answers EINVAL
-            // immediately rather than parking. Measured for idle sockets, bound
-            // or not; the other non-listening phases share the answer because it
-            // is the same kernel test (Linux's TCP_LISTEN check, Darwin's
-            // SO_ACCEPTCONN check).
-            Ok (AcceptAnswer.Failed UnixError.EINVAL, system)
-        | SocketPhase.Listening listenState ->
-
-        match listenState.Queue with
-        | [] ->
-            // `O_NONBLOCK` is a fact about the open file description `fd` came
-            // through, not about the socket, so an accept through a `dup` of a
-            // non-blocking listener answers EAGAIN too.
-            if description.NonBlocking then
-                Ok (AcceptAnswer.Failed UnixError.EAGAIN, system)
-            else
-                Error (AcceptRefusal.WouldPark socketId)
-        | _ :: _ ->
-
         let reportedLength = SimulatedUnixPlatform.internetSocketAddressSize
 
         // The destination is screened after the queue and before the dequeue,
@@ -1312,11 +1228,11 @@ module UnixConnection =
         // kernel's convenience: Darwin's `accept(2)` copies the listening
         // description's flag onto the accepted socket and Linux's does not
         // (measured; see `acceptedSocketInheritsNonBlocking`). It is inherited
-        // from the description this call was made through, so a `dup` of a
+        // from the description the call was made through, so a `dup` of a
         // non-blocking listener passes the flag on too.
         let system =
             if
-                description.NonBlocking
+                nonBlocking
                 && SimulatedUnixPlatform.acceptedSocketInheritsNonBlocking system.Machine.UnixPlatform
             then
                 { system with
@@ -1329,4 +1245,198 @@ module UnixConnection =
             else
                 system
 
-        Ok (AcceptAnswer.Accepted (acceptedFd, connection.ClientAddress, reportedLength), system)
+        Ok (AcceptOutcome.Accepted (acceptedFd, connection.ClientAddress, reportedLength), system)
+
+    /// `accept(2)`, made by `task`: take the oldest completed connection off
+    /// `fd`'s accept queue and hand back a descriptor onto the server side of
+    /// it; or, for a blocking listener with nothing queued, sleep until a
+    /// connection arrives.
+    ///
+    /// `destination` is where the peer address would be copied out, and
+    /// `declaredLength` how much of it may be written. As for `getsockname`, the
+    /// declared length **does not bound what is reported**: a call declaring 8
+    /// writes eight bytes and still reports 16. It must not be negative -- a
+    /// kernel never sees one, because a foreign-function layer that casts it to
+    /// `socklen_t` would make the bound `SIZE_MAX` rather than passing it on --
+    /// so a caller that has not screened it is asking a question no kernel this
+    /// library models was ever asked.
+    ///
+    /// A call that writes nothing never looks at `destination`: at a declared
+    /// length of zero every buffer succeeds, including one naming no storage.
+    ///
+    /// Every failure leaves the listener exactly as it was, the queue included,
+    /// which is why the failing arms hand back the system they were given.
+    ///
+    /// A listener whose description is blocking and whose queue is empty parks
+    /// `task` until a connection is queued, and the call is finished with
+    /// `finishAccept`. It waits for ever: `SO_RCVTIMEO`, which bounds such a
+    /// wait on Linux (and not on Darwin), is an option `setsockopt` refuses to
+    /// set. Of several tasks parked on one listener, a connection wakes the one
+    /// that parked first (see `UnixWait.wakes`). The destination is not looked
+    /// at before the call sleeps.
+    ///
+    /// The accepted descriptor inherits `O_NONBLOCK` from the description this
+    /// call was made through, on the flavours whose kernels do that: see
+    /// `SimulatedUnixPlatform.acceptedSocketInheritsNonBlocking`. A client whose
+    /// own sockets want one answer on every platform clears it itself.
+    ///
+    /// `task` must not already be parked.
+    let accept<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (fd : int)
+        (destination : UserBuffer)
+        (declaredLength : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<AcceptOutcome * UnixSystem<'Task, 'Handler>, AcceptRefusal>
+        =
+        match UnixTaskTable.parkedFor task system.Tasks with
+        | Some parked ->
+            failwith
+                $"UnixConnection.accept: task %O{task} is parked in %A{parked}, and is issuing an accept. A task blocks in one syscall at a time; a parked accept is finished with `finishAccept` (this is a bug in the client)."
+        | None ->
+
+        if declaredLength < 0 then
+            failwith
+                $"UnixConnection.accept: declared length %d{declaredLength} is negative, which no kernel is ever asked -- a shim that casts it to `socklen_t` makes the bound SIZE_MAX rather than passing it on. Screen this in the client (this is a bug in the caller)."
+
+        // The descriptor is classified before the destination is looked at, and
+        // before the accept queue is: measured on both flavours, a closed
+        // descriptor answers EBADF and a non-socket ENOTSOCK whatever the
+        // destination and whatever the listener would have said.
+        match FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors with
+        | None -> Ok (AcceptOutcome.Failed UnixError.EBADF, system)
+        | Some (descriptionId, description) ->
+
+        match description.Target with
+        | OpenFileTarget.File _
+        | OpenFileTarget.Directory _
+        | OpenFileTarget.StandardStream _
+        | OpenFileTarget.Pipe _
+        | OpenFileTarget.SocketEventPort _ -> Ok (AcceptOutcome.Failed UnixError.ENOTSOCK, system)
+        | OpenFileTarget.Socket socketId ->
+
+        let socket = UnixMachineState.socket socketId system.Machine
+
+        match socket.Domain with
+        | SocketDomain.Inet6
+        | SocketDomain.Unix -> Error (AcceptRefusal.UnmodelledDomain (socketId, socket.Domain))
+        | SocketDomain.Inet ->
+
+        match socket.Kind with
+        | SocketKind.Datagram ->
+            // The kind check beats the listening check: measured on both, a
+            // datagram socket -- which is also "not listening" -- answers
+            // EOPNOTSUPP, blocking or not.
+            Ok (AcceptOutcome.Failed UnixError.EOPNOTSUPP, system)
+        | SocketKind.SeqPacket -> Error (AcceptRefusal.UnmeasuredKind (socketId, socket.Kind))
+        | SocketKind.Stream ->
+
+        match socket.Phase with
+        | SocketPhase.DatagramPeer _ ->
+            failwith
+                $"UnixConnection.accept: socket %O{socketId} is a stream socket holding SocketPhase.DatagramPeer, a pairing this kernel's socket invariants forbid (this is a bug in the caller's state construction)."
+        | SocketPhase.Idle
+        | SocketPhase.EstablishedPendingReport _
+        | SocketPhase.Established _
+        | SocketPhase.RefusedPendingDelivery
+        | SocketPhase.Dead ->
+            // ...and the listening check beats blocking behaviour: measured on
+            // both, a *blocking* non-listening socket answers EINVAL
+            // immediately rather than parking. Measured for idle sockets, bound
+            // or not; the other non-listening phases share the answer because it
+            // is the same kernel test (Linux's TCP_LISTEN check, Darwin's
+            // SO_ACCEPTCONN check).
+            Ok (AcceptOutcome.Failed UnixError.EINVAL, system)
+        | SocketPhase.Listening listenState ->
+
+        match listenState.Queue with
+        | [] ->
+            // `O_NONBLOCK` is a fact about the open file description `fd` came
+            // through, not about the socket, so an accept through a `dup` of a
+            // non-blocking listener answers EAGAIN too.
+            if description.NonBlocking then
+                Ok (AcceptOutcome.Failed UnixError.EAGAIN, system)
+            else
+                let parked =
+                    ParkedSyscall.Accept
+                        {
+                            Listener = descriptionId
+                            Destination = destination
+                            DeclaredLength = declaredLength
+                        }
+
+                Ok (AcceptOutcome.WouldBlock (WakeCondition.ofPark parked), UnixWait.park task parked system)
+        | _ :: _ -> handOver socketId description.NonBlocking destination declaredLength system
+
+    /// Finish the `accept` `task` is parked in: look at the listener's queue
+    /// again, as a woken real accept does, and answer.
+    ///
+    /// Hands over the oldest connection on the queue, copying its peer address
+    /// out to the destination the call was entered with; see `accept` for the
+    /// destinations that refuses. A queue found empty again (another caller
+    /// took the connection) parks the task again, behind every other park,
+    /// which on a real kernel puts it at the back of the listener's queue of
+    /// accepters. So does a listener whose description has become non-blocking
+    /// while the call slept: measured on both flavours (`blocking-accept.c`
+    /// section F), a sleeping accept is not woken by that, and goes on waiting.
+    ///
+    /// On the flavours whose accepted socket inherits `O_NONBLOCK`, it inherits
+    /// the listening description's flag as it stands when the call finishes.
+    /// An answer clears the park.
+    ///
+    /// Never answers `Failed`. `task` must be parked in an accept.
+    let finishAccept<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<AcceptOutcome * UnixSystem<'Task, 'Handler>, AcceptRefusal>
+        =
+        let parked =
+            match UnixTaskTable.parkedFor task system.Tasks with
+            | Some (ParkedSyscall.Accept parked) -> parked
+            | Some other ->
+                failwith
+                    $"UnixConnection.finishAccept: task %O{task} is parked in %A{other}, not in an accept, so there is no accept to finish (this is a bug in the client)."
+            | None ->
+                failwith
+                    $"UnixConnection.finishAccept: task %O{task} is not parked, so there is no accept to finish. Only a task `accept` answered `WouldBlock` finishes here (this is a bug in the client)."
+
+        let description =
+            match
+                FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+                |> Map.tryFind parked.Listener
+            with
+            | Some description -> description
+            | None ->
+                failwith
+                    $"UnixConnection.finishAccept: task %O{task}'s accept waits on open file description %O{parked.Listener}, which is not in the table, so it was closed underneath the wait. `close` refuses such a close (this is a bug in this library, or in a caller that destroyed the description without UnixDescriptor.close)."
+
+        let socketId =
+            match description.Target with
+            | OpenFileTarget.Socket socketId -> socketId
+            | OpenFileTarget.File _
+            | OpenFileTarget.Directory _
+            | OpenFileTarget.StandardStream _
+            | OpenFileTarget.Pipe _
+            | OpenFileTarget.SocketEventPort _ ->
+                failwith
+                    $"UnixConnection.finishAccept: task %O{task}'s accept waits on open file description %O{parked.Listener}, which names %A{description.Target} rather than a socket. `accept` parks only on a listening socket (this is a bug in the caller that recorded the park)."
+
+        match (UnixMachineState.socket socketId system.Machine).Phase with
+        | SocketPhase.Listening {
+                                    Queue = _ :: _
+                                } ->
+            handOver socketId description.NonBlocking parked.Destination parked.DeclaredLength system
+            |> Result.map (fun (outcome, system) ->
+                outcome,
+                { system with
+                    Tasks = UnixTaskTable.unpark task system.Tasks
+                }
+            )
+        | SocketPhase.Listening {
+                                    Queue = []
+                                } ->
+            let parkedAgain = ParkedSyscall.Accept parked
+            Ok (AcceptOutcome.WouldBlock (WakeCondition.ofPark parkedAgain), UnixWait.park task parkedAgain system)
+        | phase ->
+            failwith
+                $"UnixConnection.finishAccept: task %O{task}'s accept waits on socket %O{socketId}, which is in %A{phase} rather than listening. Nothing takes a live listener out of listening, so the park was recorded on a socket that was never one (this is a bug in the caller that recorded it)."

@@ -333,6 +333,8 @@ module GuestLocation =
                             Some $"for events on open file description %O{wait.Port}"
                         | Some (ParkedSyscall.Flock parked) ->
                             Some $"for a lock on open file description %O{parked.Requester}, %O{parked.Mode}"
+                        | Some (ParkedSyscall.Accept parked) ->
+                            Some $"for a connection on the listener of open file description %O{parked.Listener}"
                         | Some (ParkedSyscall.Poll parked) ->
                             let watched =
                                 parked.Entries

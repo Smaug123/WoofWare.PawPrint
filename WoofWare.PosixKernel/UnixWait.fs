@@ -1,5 +1,13 @@
 namespace WoofWare.PosixKernel
 
+/// A wait queue whose waiters a real kernel wakes one at a time.
+[<RequireQualifiedAccess>]
+type internal ExclusiveWaitQueue =
+    /// The waiters in `epoll_wait` on the socket event port this description names.
+    | SocketEventPort of OpenFileDescriptionId
+    /// The waiters in `accept` on the listening socket this description names.
+    | Listener of OpenFileDescriptionId
+
 /// Parking a task in a syscall, and deciding which parked tasks a system wakes.
 ///
 /// Wakes are pulled rather than pushed: nothing that makes a condition true
@@ -45,11 +53,13 @@ module UnixWait =
     ///
     /// A waiter whose `flock` has become grantable, whose polled descriptor is
     /// ready, or whose deadline has passed wakes, whoever else is waiting for
-    /// the same thing. A deliverable event on a socket event port wakes one of
-    /// the waiters on that port: the one that parked last. It wakes none of
-    /// them while any task parked on that port has been woken and has not yet
+    /// the same thing. Waiters on a socket event port, and waiters in `accept`
+    /// on a listener, queue exclusively: something to take wakes one of them,
+    /// the one that parked *last* on a socket event port and the one that
+    /// parked *first* on a listener. It wakes none of them while any task
+    /// parked on the same port or listener has been woken and has not yet
     /// finished its call (that is, is parked but not in `asleep`), since that
-    /// task will take the event.
+    /// task will take it.
     ///
     /// A woken task is owed no success: several waiters for one lock all wake,
     /// and all but one find it taken again and re-park.
@@ -83,15 +93,22 @@ module UnixWait =
         // it, one per datagram, in 60 trials of 60, and a thread that waited
         // again went back to the front every time.
         //
+        // Measured on Linux 6.18.5 and Darwin 27.0.0 (`blocking-accept.c`,
+        // section B): a blocking `accept` is the other way round. Each
+        // connection woke exactly one of three accepters, the one that parked
+        // *first*, in 60 trials of 60 on each; and a thread that accepted again
+        // went to the back of the queue every time, in 20 of 20.
+        //
         // A real kernel wakes one waiter per *signal*, and this sweep sees only
         // states, so it cannot tell a second signal from the first one seen
         // again. So a woken waiter that has yet to finish stands for every
-        // signal since it was woken, and nobody else on its port wakes until it
-        // has taken the events or parked again. Where a real second signal
-        // would have woken another waiter, whichever of the two ran first would
-        // have taken the events; this answers the schedule in which the first
-        // one ran first. Every answer is one a real kernel gives, and the
-        // schedules in which the second waiter runs first are not reached.
+        // signal since it was woken, and nobody else on its queue wakes until
+        // it has taken what woke it or parked again. Where a real second signal
+        // would have woken another waiter (two connections back to back woke
+        // two accepters, in 50 of 50 on each flavour), whichever of the two ran
+        // first would have taken the first; this answers the schedule in which
+        // the first one ran first. Every answer is one a real kernel gives, and
+        // the schedules in which the second waiter runs first are not reached.
         //
         // Waiters on an `flock` are the opposite, deliberately: a release
         // wakes every blocker and they race, as `flock(2)` does, and which of
@@ -100,7 +117,15 @@ module UnixWait =
         // client's scheduler. A `poll` queues itself on each description it
         // watches non-exclusively, so every poller of a description that
         // becomes ready wakes; and a deadline is each waiter's own.
-        let finishing : Set<OpenFileDescriptionId> =
+        let exclusiveQueueOf (primitive : WakePrimitive) : ExclusiveWaitQueue option =
+            match primitive with
+            | WakePrimitive.SocketEventDeliverable port -> Some (ExclusiveWaitQueue.SocketEventPort port)
+            | WakePrimitive.AcceptQueueNonEmpty listener -> Some (ExclusiveWaitQueue.Listener listener)
+            | WakePrimitive.FlockGrantable _
+            | WakePrimitive.DescriptorReady _
+            | WakePrimitive.DeadlinePassed _ -> None
+
+        let finishing : Set<ExclusiveWaitQueue> =
             system.Tasks
             |> Map.toSeq
             |> Seq.choose (fun (task, state) ->
@@ -110,7 +135,10 @@ module UnixWait =
                     match state.Parked with
                     | Some {
                                Syscall = ParkedSyscall.SocketWait wait
-                           } -> Some wait.Port
+                           } -> Some (ExclusiveWaitQueue.SocketEventPort wait.Port)
+                    | Some {
+                               Syscall = ParkedSyscall.Accept accept
+                           } -> Some (ExclusiveWaitQueue.Listener accept.Listener)
                     | Some {
                                Syscall = ParkedSyscall.Flock _ | ParkedSyscall.Poll _
                            }
@@ -118,26 +146,28 @@ module UnixWait =
             )
             |> Set.ofSeq
 
-        let chosen : Map<OpenFileDescriptionId, 'Task> =
+        let chosen : Map<ExclusiveWaitQueue, 'Task> =
             satisfied
             |> List.collect (fun (ordinal, task, fired) ->
                 fired
                 |> Set.toList
                 |> List.choose (fun primitive ->
-                    match primitive with
-                    | WakePrimitive.SocketEventDeliverable port -> Some (port, (ordinal, task))
-                    | WakePrimitive.FlockGrantable _
-                    | WakePrimitive.DescriptorReady _
-                    | WakePrimitive.DeadlinePassed _ -> None
+                    exclusiveQueueOf primitive |> Option.map (fun queue -> queue, (ordinal, task))
                 )
             )
             |> List.groupBy fst
-            |> List.choose (fun (port, waiters) ->
-                if Set.contains port finishing then
+            |> List.choose (fun (queue, waiters) ->
+                if Set.contains queue finishing then
                     None
                 else
-                    let _, (_, last) = waiters |> List.maxBy (fun (_, (ordinal, _)) -> ordinal)
-                    Some (port, last)
+                    let waiters = waiters |> List.map snd
+
+                    let _, woken =
+                        match queue with
+                        | ExclusiveWaitQueue.SocketEventPort _ -> List.maxBy fst waiters
+                        | ExclusiveWaitQueue.Listener _ -> List.minBy fst waiters
+
+                    Some (queue, woken)
             )
             |> Map.ofList
 
@@ -145,11 +175,9 @@ module UnixWait =
         |> List.filter (fun (_, task, fired) ->
             fired
             |> Set.exists (fun primitive ->
-                match primitive with
-                | WakePrimitive.SocketEventDeliverable port -> Map.tryFind port chosen = Some task
-                | WakePrimitive.FlockGrantable _
-                | WakePrimitive.DescriptorReady _
-                | WakePrimitive.DeadlinePassed _ -> true
+                match exclusiveQueueOf primitive with
+                | Some queue -> Map.tryFind queue chosen = Some task
+                | None -> true
             )
         )
         |> List.map (fun (_, task, fired) -> task, fired)
