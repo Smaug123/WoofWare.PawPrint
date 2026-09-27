@@ -1,7 +1,5 @@
 namespace WoofWare.PosixKernel
 
-open System.Collections.Immutable
-
 /// What a process does with a signal delivered to it: the handler half of
 /// what `sigaction(2)` sets, without its mask or flags.
 [<RequireQualifiedAccess>]
@@ -28,28 +26,26 @@ type CoreDumps =
     /// Every death by a signal whose default action dumps core writes one.
     | Written
 
-/// A signal sitting in the simulator's pending queue, waiting to be
-/// dispatched. `Target = ValueNone` is the POSIX "kill the process" case
-/// (any live thread that isn't blocking the signal may receive it);
-/// `ValueSome` is `pthread_kill`-style directed delivery, where only the
-/// named thread is eligible.
+/// A pending signal, and the set it is pending in. `Target = ValueNone` is the
+/// process's own set, which `kill(2)` adds to; `ValueSome task` is `task`'s
+/// own set, which `pthread_kill(3)` adds to, and which only `task` can take a
+/// signal from.
 type PendingSignal<'Task> =
     {
         Signal : Signal
         Target : 'Task voption
     }
 
-/// What the kernel does with the next receivable pending signal, as decided
-/// by `SignalState.nextDelivery`: deliver it to a chosen receiver thread, so
-/// that the handler the client installed for it runs, or apply the signal's
-/// kernel default. The client interprets it — runs its handler, terminates
-/// the simulated process by the signal, or refuses what it does not model.
+/// What the kernel does with the next signal a task takes, as decided by
+/// `SignalState.nextDelivery`: run the handler the client installed for it on
+/// that task, or apply the signal's kernel default. The client interprets it:
+/// runs its handler, terminates the simulated process by the signal, or
+/// refuses what it does not model.
 [<RequireQualifiedAccess>]
 type SignalDelivery<'Task, 'Handler> =
-    /// `handler` is installed for `entry`'s signal: the client runs it.
-    /// `receiver` is the thread the kernel chose to take the signal, which is
-    /// the thread the handler interrupts.
-    | RunHandler of entry : PendingSignal<'Task> * receiver : 'Task * handler : 'Handler
+    /// `handler` is installed for `entry`'s signal: the client runs it on the
+    /// task that took the signal, interrupting it.
+    | RunHandler of entry : PendingSignal<'Task> * handler : 'Handler
     /// No handler claims the signal and its kernel default is to terminate
     /// the process. A parent's `wait` then reports the process as killed by
     /// the signal (`WIFSIGNALED`, `WTERMSIG`), with the core flag set iff
@@ -60,10 +56,10 @@ type SignalDelivery<'Task, 'Handler> =
     /// the whole process.
     | DefaultStop of Signal
     /// No handler claims the signal and its kernel default is to resume a
-    /// stopped process. Unlike the other cases this one is not gated on
-    /// masks or receivers: resumption happens at generation on a real
-    /// kernel, whatever any thread's mask says — a mask defers only the
-    /// handler delivery.
+    /// stopped process. Unlike the other cases this one is not gated on the
+    /// task's mask: resumption happens at generation on a real kernel,
+    /// whatever any thread's mask says — a mask defers only the handler
+    /// delivery.
     | DefaultContinue of Signal
 
 /// Pure, deterministic model of the simulator's signal-handling state.
@@ -74,12 +70,13 @@ type SignalDelivery<'Task, 'Handler> =
 ///     from the map has its default.
 ///   * `Blocked` — per-thread sigprocmask. A signal in a thread's set is
 ///     blocked for that thread and cannot be delivered to it.
-///   * `Pending` — FIFO queue of generated signals waiting for delivery.
+///   * `Pending` — the signals generated and not yet delivered: the process's
+///     own set, and each task's.
 ///
 /// One instance of this type belongs to each simulated process. A client
-/// polls it for deliverable signals and dispatches out of it; the data shape
-/// is exercised by property tests against a structurally-different reference
-/// oracle.
+/// asks it, one task at a time, which signal that task takes next; the data
+/// shape is exercised by property tests against a structurally-different
+/// reference oracle.
 ///
 /// Every `Signal` stored here is canonical under `Numbering`, and every
 /// operation canonicalises the signal it is handed before touching the state:
@@ -103,20 +100,20 @@ type SignalState<'Task, 'Handler when 'Task : comparison and 'Handler : equality
             /// identically compare unequal.
             Dispositions : Map<Signal, SignalDisposition<'Handler>>
             Blocked : Map<'Task, Set<Signal>>
-            /// Pending entries in FIFO order (head = next candidate for
-            /// dispatch). A plain list rather than `ImmutableQueue<T>`
-            /// because the queue type uses reference equality, which would
-            /// break the structural equality a client relies on to decide
-            /// whether a step changed anything. Enqueue is O(n) on append,
-            /// which is fine: signal queues are tiny in practice (typically
-            /// 0–3 entries), and this model trades performance for determinism
-            /// throughout.
+            /// Every pending entry, sorted by its set and then by `pickRank`,
+            /// which is the order a task takes the signals of one set in; the
+            /// instances of one real-time signal, the only entries that can tie,
+            /// stay in the order they were generated. Kept sorted rather than in
+            /// generation order because no kernel delivers in generation order,
+            /// so two states holding the same signals would otherwise compare
+            /// unequal while behaving identically. Pending sets are tiny in
+            /// practice, so a sorted list does.
             Pending : PendingSignal<'Task> list
         }
 
 /// What generating a signal does to the process at once, as decided by
 /// `SignalState.generate`. Anything else it does happens later, through the
-/// pending queue and `SignalState.nextDelivery`.
+/// pending sets and `SignalState.nextDelivery`.
 [<RequireQualifiedAccess>]
 type SignalGeneration<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
     /// The process carries on, with these signals. The signal is pending, or
@@ -124,14 +121,25 @@ type SignalGeneration<'Task, 'Handler when 'Task : comparison and 'Handler : equ
     /// ignored.
     | ProcessContinues of SignalState<'Task, 'Handler>
     /// The signal terminates the process: its disposition is the default,
-    /// which is to terminate, and some live thread could receive it. A
+    /// which is to terminate, and some task could receive it. A
     /// parent's `wait` reports the core flag iff `coreDumped`. There is no
     /// state to carry on with, because the process has ended.
     | ProcessTerminated of signal : Signal * coreDumped : bool
     /// The signal stops the whole process, which has these signals: its
-    /// disposition is the default, which is to stop, and some live thread
-    /// could receive it.
+    /// disposition is the default, which is to stop, and some task could
+    /// receive it.
     | ProcessStopped of signal : Signal * SignalState<'Task, 'Handler>
+
+/// Why this library will not say what a process's signal does: a case it does
+/// not model, rather than one a kernel refuses.
+[<RequireQualifiedAccess>]
+type SignalReceiverRefusal =
+    /// `signal` is sent to the process as a whole and caught, and its leader
+    /// blocks it while another task does not, so some task other than the leader
+    /// would take it. Which one differs between flavours, and on Linux depends on
+    /// which tasks took earlier signals; this library delivers a process's own
+    /// signals to its leader only.
+    | LeaderBlocks of signal : Signal
 
 [<RequireQualifiedAccess>]
 module SignalState =
@@ -460,9 +468,36 @@ module SignalState =
                         Pending = pending
                     }
 
+    /// Where `signal` comes in the order a task takes the signals of one pending
+    /// set, lowest first.
+    let private pickRank (numbering : SignalNumbering) (signal : Signal) : int * int =
+        // Measured by `docs/plans/2026-08-23-posix-kernel-extraction/signal-pick-order.c`
+        // on Linux 6.18.5 (aarch64) and Darwin 25.6.0 and 27.0.0, whose rows
+        // `TestSignalPickOrder` replays: every standard catchable signal, blocked,
+        // generated in 42 orders, process- and thread-directed, then drained by
+        // sigwait and by handlers that block each other; on Linux also with every
+        // real-time signal, in 20 orders. Generation order never mattered. Darwin
+        // took the lowest number first; Linux took SIGILL, SIGTRAP, SIGBUS, SIGFPE,
+        // SIGSEGV and SIGSYS first (its `next_signal` calls them synchronous), then
+        // the lowest number, so every real-time signal after every standard one.
+        let signo = Signal.toRawSignoUnder numbering signal
+
+        match numbering with
+        | SignalNumbering.Linux ->
+            match signo with
+            | 4
+            | 5
+            | 7
+            | 8
+            | 11
+            | 31 -> 0, signo
+            | _ -> 1, signo
+        | SignalNumbering.Darwin -> 0, signo
+
     /// The queueing half of generation, on an entry `beginGeneration` let
     /// through: coalesce a standard signal already pending in its set, and
-    /// append anything else.
+    /// otherwise add it to its set in its place in the pick order, after any
+    /// instance of the same real-time signal already there.
     let private admit
         (entry : PendingSignal<'Task>)
         (state : SignalState<'Task, 'Handler>)
@@ -476,19 +511,28 @@ module SignalState =
         if coalesced then
             state
         else
+            let key (pending : PendingSignal<'Task>) : 'Task voption * (int * int) =
+                pending.Target, pickRank state.Numbering pending.Signal
+
+            let entryKey = key entry
+
+            let precedes (pending : PendingSignal<'Task>) : bool = compare (key pending) entryKey <= 0
+
             { state with
-                Pending = state.Pending @ [ entry ]
+                Pending =
+                    List.takeWhile precedes state.Pending
+                    @ (entry :: List.skipWhile precedes state.Pending)
             }
 
-    /// Add a generated signal to the pending queue, canonicalising its
-    /// spelling first, without deciding whether it takes effect at once (see
-    /// `generate`, which does).
+    /// Add a generated signal to its pending set, canonicalising its spelling
+    /// first, without deciding whether it takes effect at once (see `generate`,
+    /// which does).
     ///
     /// A signal whose disposition at generation is "ignore" — `SIG_IGN`, or
-    /// the default where that discards it — never enters the queue under
+    /// the default where that discards it — never becomes pending under
     /// Darwin's rule, whatever any mask says, unless it is SIGCONT; under
-    /// Linux's it enters and survives exactly as long as no receiver could
-    /// take it (see `nextDelivery` for the delivery half of the rule).
+    /// Linux's it becomes pending and stays so exactly as long as no receiver
+    /// could take it (see `nextDelivery` for the delivery half of the rule).
     ///
     /// A stop signal discards any pending SIGCONT as it is generated, and
     /// SIGCONT discards any pending stop signal, on every thread and on the
@@ -523,32 +567,63 @@ module SignalState =
         | None -> state
         | Some state -> admit entry state
 
-    /// Whether a live thread could take `entry` now: its target, if it names
-    /// one, is live and not blocking the signal; or, for a process-directed
-    /// signal, some live thread is not blocking it. The receiver is the target,
-    /// or the lowest-ordered eligible thread.
+    /// Which task could take a pending signal now.
+    [<RequireQualifiedAccess>]
+    type private Receiver<'Task> =
+        /// This task would take it.
+        | Task of 'Task
+        /// It is the process's own, the leader blocks it, and another task does not.
+        | BeyondLeader
+        /// Every task that could take it blocks it.
+        | Nobody
+
+    /// Fails loudly unless `leader` and `task` are both among `tasks`: each is a
+    /// bug in the client.
+    let private checkTask (operation : string) (tasks : Set<'Task>) (role : string) (task : 'Task) : unit =
+        if not (Set.contains task tasks) then
+            failwith $"SignalState.%s{operation}: the %s{role} %O{task} is not one of the process's tasks %O{tasks}."
+
+    /// Which task could take `entry` now: its target, for a signal pending on
+    /// one task; and for one pending on the process, the leader, unless it blocks
+    /// the signal.
     let private receiverFor
-        (liveThreads : ImmutableArray<'Task>)
+        (leader : 'Task)
+        (tasks : Set<'Task>)
         (entry : PendingSignal<'Task>)
         (state : SignalState<'Task, 'Handler>)
-        : 'Task option
+        : Receiver<'Task>
         =
-        let blocks (thread : 'Task) : bool =
-            match Map.tryFind thread state.Blocked with
+        let blocks (task : 'Task) : bool =
+            match Map.tryFind task state.Blocked with
             | None -> false
             | Some set -> Set.contains entry.Signal set
 
         match entry.Target with
         | ValueSome target ->
-            if liveThreads.Contains target && not (blocks target) then
-                Some target
+            if not (Set.contains target tasks) then
+                failwith
+                    $"SignalState: %O{entry.Signal} is pending on %O{target} alone, which is not one of the process's tasks %O{tasks}; a task's own signals should have left with it (forgetTask)."
+
+            if blocks target then
+                Receiver.Nobody
             else
-                None
+                Receiver.Task target
         | ValueNone ->
-            liveThreads
-            |> Seq.filter (fun t -> not (blocks t))
-            |> Seq.sortWith compare
-            |> Seq.tryHead
+            // Measured by `docs/plans/2026-08-23-posix-kernel-extraction/signal-receiver.c`
+            // on Linux 6.18.5 (aarch64, and x86-64 under Rosetta) and Darwin 25.6.0
+            // and 27.0.0: with four threads handling SIGUSR1, each set of them
+            // blocking it, each sender, and eight sends in a row, every send went to
+            // the main thread whenever it did not block the signal (192 rows, 1536
+            // sends, per flavour), whoever sent it and whether the others slept or
+            // spun. When the main thread blocked it, Darwin chose the first-created
+            // thread that did not, and Linux the next such thread from a cursor that
+            // earlier deliveries move (`curr_target`).
+            if not (blocks leader) then
+                Receiver.Task leader
+            elif tasks |> Set.exists (fun task -> not (blocks task)) then
+                Receiver.BeyondLeader
+            else
+                Receiver.Nobody
 
     /// Whether a death by `signal` writes a core dump under `coreDumps`.
     let private dumpsCore (coreDumps : CoreDumps) (numbering : SignalNumbering) (signal : Signal) : bool =
@@ -559,29 +634,42 @@ module SignalState =
     /// Generate `entry`: decide what it does to the process at once, and queue
     /// it (see `enqueue`) if its effect, if any, comes later.
     ///
-    /// A signal at its default disposition, which some thread in
-    /// `liveThreads` could receive, takes that default here rather than being
-    /// queued: it terminates the process (writing a core dump if its default
-    /// dumps core and `coreDumps` allows one), stops it, or, if the default
-    /// is to discard it, is discarded. An ignored signal some thread could
-    /// receive is discarded too. Every other signal is queued, including one
-    /// that every thread blocks, which takes effect once a thread can receive
-    /// it; generation discards pending signals of the opposite kind first,
-    /// as `enqueue` describes.
+    /// `tasks` are the process's tasks, and `leader` is the one of them that
+    /// takes the signals sent to the process as a whole: a signal pending on the
+    /// process can be received by the leader, and by no other task while the
+    /// leader does not block it.
+    ///
+    /// A signal at its default disposition, which some task could receive,
+    /// takes that default here rather than being queued: it terminates the
+    /// process (writing a core dump if its default dumps core and `coreDumps`
+    /// allows one), stops it, or, if the default is to discard it, is
+    /// discarded. An ignored signal some task could receive is discarded too.
+    /// Every other signal is queued, including one that every task blocks,
+    /// which takes effect once a task can receive it; generation discards
+    /// pending signals of the opposite kind first, as `enqueue` describes.
+    ///
+    /// Refuses a caught signal sent to the process that only a task other than
+    /// the leader could receive.
+    ///
+    /// Fails loudly unless `leader` is among `tasks`, and on a signal aimed at a
+    /// task that is not.
     let generate
         (coreDumps : CoreDumps)
-        (liveThreads : ImmutableArray<'Task>)
+        (leader : 'Task)
+        (tasks : Set<'Task>)
         (entry : PendingSignal<'Task>)
         (state : SignalState<'Task, 'Handler>)
-        : SignalGeneration<'Task, 'Handler>
+        : Result<SignalGeneration<'Task, 'Handler>, SignalReceiverRefusal>
         =
+        checkTask "generate" tasks "leader" leader
+
         let entry =
             { entry with
                 Signal = parse "generate" state entry.Signal
             }
 
         match beginGeneration entry.Signal state with
-        | None -> SignalGeneration.ProcessContinues state
+        | None -> Ok (SignalGeneration.ProcessContinues state)
         | Some state ->
 
         // Linux decides this at generation (`complete_signal` takes the whole
@@ -591,60 +679,77 @@ module SignalState =
         // next returns to user mode, which for a self-directed signal is the
         // return from the very call that generated it. They differ only in what
         // *other* threads could run in between, which this approximates as
-        // nothing.
-        let immediate =
-            if (receiverFor liveThreads entry state).IsNone then
-                None
-            else
-                match disposition entry.Signal state with
-                | SignalDisposition.Catch _ -> None
-                // Discarded without ever being pending, on both kernels. Were it
-                // queued instead, it would sit there until the client next
-                // polled `nextDelivery`, and a handler installed in between
-                // would receive a signal that was ignored when it was sent.
-                | SignalDisposition.Ignore -> Some (SignalGeneration.ProcessContinues state)
-                | SignalDisposition.Default ->
-                    match Signal.defaultDispositionUnder state.Numbering entry.Signal with
-                    | DefaultDisposition.Terminate ->
-                        Some (
-                            SignalGeneration.ProcessTerminated (
-                                entry.Signal,
-                                dumpsCore coreDumps state.Numbering entry.Signal
-                            )
-                        )
-                    | DefaultDisposition.Stop -> Some (SignalGeneration.ProcessStopped (entry.Signal, state))
-                    | DefaultDisposition.Ignore -> Some (SignalGeneration.ProcessContinues state)
-                    | DefaultDisposition.Continue -> None
+        // nothing. Which task receives such a signal does not matter, since it
+        // acts on the whole process, so it is answered even when the leader
+        // blocks it.
+        match receiverFor leader tasks entry state, disposition entry.Signal state with
+        | Receiver.Nobody, _ -> Ok (SignalGeneration.ProcessContinues (admit entry state))
+        | Receiver.BeyondLeader, SignalDisposition.Catch _ -> Error (SignalReceiverRefusal.LeaderBlocks entry.Signal)
+        | Receiver.Task _, SignalDisposition.Catch _ -> Ok (SignalGeneration.ProcessContinues (admit entry state))
+        // Discarded without ever being pending, on both kernels. Were it
+        // queued instead, it would sit there until the client next asked
+        // `nextDelivery`, and a handler installed in between would receive a
+        // signal that was ignored when it was sent.
+        | _, SignalDisposition.Ignore -> Ok (SignalGeneration.ProcessContinues state)
+        | _, SignalDisposition.Default ->
+            match Signal.defaultDispositionUnder state.Numbering entry.Signal with
+            | DefaultDisposition.Terminate ->
+                Ok (SignalGeneration.ProcessTerminated (entry.Signal, dumpsCore coreDumps state.Numbering entry.Signal))
+            | DefaultDisposition.Stop -> Ok (SignalGeneration.ProcessStopped (entry.Signal, state))
+            | DefaultDisposition.Ignore -> Ok (SignalGeneration.ProcessContinues state)
+            | DefaultDisposition.Continue -> Ok (SignalGeneration.ProcessContinues (admit entry state))
 
-        match immediate with
-        | Some effect -> effect
-        | None -> SignalGeneration.ProcessContinues (admit entry state)
-
-    /// Snapshot of the pending queue, in FIFO order (head = next candidate),
-    /// every entry's signal in its canonical spelling.
+    /// Every pending entry, every signal in its canonical spelling: the
+    /// process's own set first, then each task's, each set in the order a task
+    /// takes its signals (see `pendingFor`).
     let pending (state : SignalState<'Task, 'Handler>) : PendingSignal<'Task> list = state.Pending
 
-    /// Walk the pending queue in FIFO order and decide what the kernel does
-    /// next: deliver a caught signal to a chosen receiver, or apply a default
-    /// disposition. Returns the possibly-updated state in every case, because
-    /// a scan can change the state without producing an action (see the
-    /// Ignore rule below), and a client that dropped the no-action state
-    /// would replay those discards forever.
+    /// The pending signals `task` could take, in the order it would take them
+    /// were it to block none: its own, and if it is the process's `leader`, the
+    /// process's too.
     ///
-    /// An entry is *receivable* iff either it is `pthread_kill`-directed at a
-    /// thread that is live and not blocking the signal, or it is
-    /// process-directed (`Target = ValueNone`) and at least one live thread
-    /// is not blocking it — in which case the lowest-id eligible thread
-    /// receives it (the choice is arbitrary but must be deterministic, and
-    /// "lowest id" composes well with the existing thread-scheduling
-    /// conventions). A non-receivable entry stays queued; skipped entries
-    /// keep their relative order.
+    /// Within one set, Darwin takes the lowest-numbered signal first, and Linux
+    /// takes SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV and SIGSYS first and then
+    /// the lowest-numbered; several instances of one real-time signal come in
+    /// the order they were generated. Linux takes every signal of the task's own
+    /// set before any of the process's; Darwin takes the two as one set.
+    let pendingFor (leader : 'Task) (task : 'Task) (state : SignalState<'Task, 'Handler>) : PendingSignal<'Task> list =
+        let own = state.Pending |> List.filter (fun entry -> entry.Target = ValueSome task)
+
+        let shared =
+            if task = leader then
+                state.Pending |> List.filter (fun entry -> entry.Target.IsNone)
+            else
+                []
+
+        match state.Numbering with
+        // Measured by the pair sweep of `signal-pick-order.c` (see `pickRank`):
+        // every ordered pair of distinct standard signals, the first directed at
+        // the main thread and the second at the process, both blocked by it.
+        // Linux delivered the thread's first in all 806 pairs that the
+        // stop/continue flush left both of; Darwin, the lower-numbered first.
+        | SignalNumbering.Linux -> own @ shared
+        // A stable sort, so the task's own instance of a signal comes before the
+        // process's; nothing measured decides between the two, and no other
+        // signal can fall between them.
+        | SignalNumbering.Darwin -> own @ shared |> List.sortBy (fun entry -> pickRank state.Numbering entry.Signal)
+
+    /// Decide what the kernel does next with `task`'s pending signals: deliver
+    /// a caught one to it, or apply a default disposition. `tasks` and `leader`
+    /// are as `generate` takes them, so `task` takes the process's own signals
+    /// as well as its own only if it is the leader.
     ///
-    /// What happens to a receivable entry is its signal's disposition *now*,
-    /// not at generation:
+    /// Returns the possibly-updated state in every case, because an answer can
+    /// change the state without producing an action (see the Ignore rule
+    /// below), and a client that dropped the no-action state would replay those
+    /// discards forever.
+    ///
+    /// The signals are walked in `pendingFor`'s order, skipping any that `task`
+    /// blocks, and what happens to the first it does not block is its
+    /// disposition *now*, not at generation:
     ///   * caught — `RunHandler`, with the handler;
     ///   * ignored, whether by `SIG_IGN` or by a default of Ignore — it is
-    ///     discarded silently, the scan continuing past it. That discard is
+    ///     discarded silently, the walk continuing past it. That discard is
     ///     the delivery half of the generation rule on `enqueue`: under
     ///     Linux numbering an ignored-but-blocked signal stays pending
     ///     (measured; `Signal.blockedIgnoredSignalStaysPendingUnder`), and
@@ -655,76 +760,108 @@ module SignalState =
     ///     case for the client to act on, a termination with its core flag
     ///     as `coreDumps` decides.
     ///
-    /// A pending default-disposition `Continue` signal is the exception to
-    /// receivability: it surfaces as `DefaultContinue` without consulting
-    /// masks or receivers, because resumption is a generation-time effect no
+    /// A pending signal whose default is to continue the process, at its
+    /// default, is the exception: it surfaces as `DefaultContinue` whether or
+    /// not `task` blocks it, because resumption is a generation-time effect no
     /// mask can hold back (see the case's own docstring).
+    ///
+    /// Refuses, whichever task is asked, while any signal pending on the process
+    /// could be received by a task other than the leader but not by the leader,
+    /// unless it is one that continues the process at its default; the refusal
+    /// names the first such signal in `pending`'s order.
+    ///
+    /// Fails loudly unless `leader` and `task` are among `tasks`, and on a
+    /// signal pending on a task that is not.
     let nextDelivery
         (coreDumps : CoreDumps)
-        (liveThreads : ImmutableArray<'Task>)
+        (leader : 'Task)
+        (tasks : Set<'Task>)
+        (task : 'Task)
         (state : SignalState<'Task, 'Handler>)
-        : SignalDelivery<'Task, 'Handler> option * SignalState<'Task, 'Handler>
+        : Result<SignalDelivery<'Task, 'Handler> option * SignalState<'Task, 'Handler>, SignalReceiverRefusal>
         =
-        let pickReceiver (entry : PendingSignal<'Task>) : 'Task option = receiverFor liveThreads entry state
+        checkTask "nextDelivery" tasks "leader" leader
+        checkTask "nextDelivery" tasks "task asked" task
 
-        let rec scan
-            (skipped : PendingSignal<'Task> list)
-            (rest : PendingSignal<'Task> list)
+        let continuesAtDefault (signal : Signal) : bool =
+            disposition signal state = SignalDisposition.Default
+            && Signal.defaultDispositionUnder state.Numbering signal = DefaultDisposition.Continue
+
+        let beyondLeader =
+            state.Pending
+            |> List.tryFind (fun entry ->
+                match receiverFor leader tasks entry state with
+                | Receiver.BeyondLeader -> not (continuesAtDefault entry.Signal)
+                | Receiver.Task _
+                | Receiver.Nobody -> false
+            )
+
+        match beyondLeader with
+        | Some entry -> Error (SignalReceiverRefusal.LeaderBlocks entry.Signal)
+        | None ->
+
+        let blocks (signal : Signal) : bool =
+            match Map.tryFind task state.Blocked with
+            | None -> false
+            | Some set -> Set.contains signal set
+
+        // The first entry equal to `entry` gone from `pending`: within one set,
+        // the order `pendingFor` walks is the order `Pending` holds, so this is
+        // the instance the walk reached.
+        let rec without
+            (entry : PendingSignal<'Task>)
+            (pending : PendingSignal<'Task> list)
+            : PendingSignal<'Task> list
+            =
+            match pending with
+            | [] -> failwith $"SignalState.nextDelivery: walked to %O{entry}, which is not pending."
+            | head :: tail when head = entry -> tail
+            | head :: tail -> head :: without entry tail
+
+        let rec walk
+            (pending : PendingSignal<'Task> list)
+            (candidates : PendingSignal<'Task> list)
             : SignalDelivery<'Task, 'Handler> option * PendingSignal<'Task> list
             =
-            match rest with
-            | [] -> None, List.rev skipped
-            | head :: tail ->
+            match candidates with
+            | [] -> None, pending
+            | entry :: rest ->
 
-            let remaining () : PendingSignal<'Task> list = List.rev skipped @ tail
+            let deliver (delivery : SignalDelivery<'Task, 'Handler>) = Some delivery, without entry pending
 
-            match disposition head.Signal state with
-            | SignalDisposition.Catch handler ->
-                match pickReceiver head with
-                | None -> scan (head :: skipped) tail
-                | Some receiver -> Some (SignalDelivery.RunHandler (head, receiver, handler)), remaining ()
-            | SignalDisposition.Ignore ->
-                match pickReceiver head with
-                | None -> scan (head :: skipped) tail
-                // Discarded with no action: drop the entry and keep scanning —
-                // a later entry may still deliver this tick.
-                | Some _ -> scan skipped tail
+            if continuesAtDefault entry.Signal then
+                // Resumption is a generation-time effect and unmaskable: a
+                // kernel continues a stopped process the moment the signal is
+                // generated, whatever any thread's mask says — the mask defers
+                // only the *handler* delivery, which the caught arm below gates
+                // correctly. One approximation until a stopped-process state
+                // exists: a real kernel keeps a blocked instance pending after
+                // the resume (measured on Linux 6.18.5 and Darwin 25.6.0,
+                // visible to `sigpending`), where this consumes the entry with
+                // the event.
+                deliver (SignalDelivery.DefaultContinue entry.Signal)
+            elif blocks entry.Signal then
+                walk pending rest
+            else
+
+            match disposition entry.Signal state with
+            | SignalDisposition.Catch handler -> deliver (SignalDelivery.RunHandler (entry, handler))
+            // Discarded with no action: drop the entry and keep walking — a
+            // later entry may still deliver now.
+            | SignalDisposition.Ignore -> walk (without entry pending) rest
             | SignalDisposition.Default ->
-                match Signal.defaultDispositionUnder state.Numbering head.Signal with
-                | DefaultDisposition.Continue ->
-                    // Resumption is a generation-time effect and unmaskable:
-                    // a kernel continues a stopped process the moment the
-                    // signal is generated, whatever any thread's mask says —
-                    // the mask defers only the *handler* delivery, which the
-                    // caught arm above gates correctly. So this surfaces
-                    // without consulting masks or receivers at all. One
-                    // approximation until a stopped-process state exists: a
-                    // real kernel keeps a blocked instance pending after the
-                    // resume (measured on Linux 6.18.5 and Darwin 25.6.0,
-                    // visible to `sigpending`), where this consumes the entry
-                    // with the event.
-                    Some (SignalDelivery.DefaultContinue head.Signal), remaining ()
-                | DefaultDisposition.Ignore ->
-                    match pickReceiver head with
-                    | None -> scan (head :: skipped) tail
-                    | Some _ -> scan skipped tail
+                match Signal.defaultDispositionUnder state.Numbering entry.Signal with
+                | DefaultDisposition.Ignore -> walk (without entry pending) rest
                 | DefaultDisposition.Terminate ->
-                    match pickReceiver head with
-                    | None -> scan (head :: skipped) tail
-                    | Some _ ->
-                        Some (
-                            SignalDelivery.DefaultTerminate (
-                                head.Signal,
-                                dumpsCore coreDumps state.Numbering head.Signal
-                            )
-                        ),
-                        remaining ()
-                | DefaultDisposition.Stop ->
-                    match pickReceiver head with
-                    | None -> scan (head :: skipped) tail
-                    | Some _ -> Some (SignalDelivery.DefaultStop head.Signal), remaining ()
+                    deliver (
+                        SignalDelivery.DefaultTerminate (entry.Signal, dumpsCore coreDumps state.Numbering entry.Signal)
+                    )
+                | DefaultDisposition.Stop -> deliver (SignalDelivery.DefaultStop entry.Signal)
+                | DefaultDisposition.Continue ->
+                    failwith
+                        "SignalState.nextDelivery: a signal that continues the process at its default was walked past its own arm."
 
-        let delivery, pending = scan [] state.Pending
+        let delivery, pending = walk state.Pending (pendingFor leader task state)
 
         let state =
             if List.length pending = List.length state.Pending then
@@ -734,4 +871,4 @@ module SignalState =
                     Pending = pending
                 }
 
-        delivery, state
+        Ok (delivery, state)

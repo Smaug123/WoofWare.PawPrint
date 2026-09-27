@@ -1644,15 +1644,8 @@ module EmulatedKernel =
     /// how the runtime ends a process that failed fast or let an exception escape.
     /// How the process ended is the answer; the kernel is left as it stood.
     ///
-    /// `liveThreads` are the threads that could receive a signal, as
-    /// `UnixSignal.kill` takes them. Fails loudly if the process survives, or dies
-    /// of anything but SIGABRT.
-    let abort
-        (thread : ThreadId)
-        (liveThreads : ImmutableArray<ThreadId>)
-        (kernel : EmulatedKernel)
-        : ProcessTermination
-        =
+    /// Fails loudly if the process survives, or dies of anything but SIGABRT.
+    let abort (thread : ThreadId) (kernel : EmulatedKernel) : ProcessTermination =
         let system = unix kernel
 
         // `PROCAbort` first restores the dispositions CoreCLR's own handlers
@@ -1680,7 +1673,7 @@ module EmulatedKernel =
 
         let signo = Signal.toRawSignoUnder (SignalState.numbering signals) Signal.SIGABRT
 
-        match UnixSignal.kill liveThreads pid signo system with
+        match UnixSignal.kill pid signo system with
         | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
             match ended.Termination with
             | ProcessTermination.Signaled (Signal.SIGABRT, _) -> ended.Termination

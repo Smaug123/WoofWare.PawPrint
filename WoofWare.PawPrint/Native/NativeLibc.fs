@@ -1,6 +1,5 @@
 namespace WoofWare.PawPrint
 
-open System.Collections.Immutable
 open WoofWare.PosixKernel
 
 /// Why PawPrint will not send a signal to its own process, although the kernel
@@ -28,6 +27,13 @@ type UnmodelledSelfSignal =
     /// already taken that instance and passed it on to its dispatcher, so a
     /// real process still runs its managed handler; the model would drop it.
     | WouldDiscardQueued of sent : Signal * queued : Signal
+    /// Sending `sent` would put it ahead of `queued`, a pending signal a
+    /// handler is registered for: the model delivers pending signals in the
+    /// order the kernel takes them, and that order puts `sent` first. The
+    /// runtime's native handler has already taken `queued` and passed it on
+    /// to its dispatcher, which calls into managed code in the order signals
+    /// arrive, so a real process gets to `queued` first.
+    | WouldOvertake of sent : Signal * queued : Signal
 
 [<RequireQualifiedAccess>]
 module UnmodelledSelfSignal =
@@ -48,6 +54,8 @@ module UnmodelledSelfSignal =
             $"%O{signal} has a handler registered and is already pending. The runtime's native handler would pass both instances to its dispatcher, where PawPrint's pending set would merge them into one."
         | UnmodelledSelfSignal.WouldDiscardQueued (sent, queued) ->
             $"%O{sent} would discard the pending %O{queued}, which has a handler registered. The runtime's native handler has already passed that instance to its dispatcher, which still runs the managed handler for it; PawPrint's pending set does not hold the dispatcher's queue apart from the kernel's, and would drop it."
+        | UnmodelledSelfSignal.WouldOvertake (sent, queued) ->
+            $"%O{sent} would be delivered before the pending %O{queued}, which has a handler registered, because the kernel takes %O{sent} first. The runtime's native handler has already passed %O{queued} to its dispatcher, which reaches it first; PawPrint's pending set does not hold the dispatcher's queue apart from the kernel's, and would reorder them."
 
 /// Entry points of the C library itself, which a guest reaches only through a
 /// P/Invoke of its own naming the library `libc`: the BCL calls none of them
@@ -123,13 +131,42 @@ module NativeLibc =
             )
         )
 
+    /// Whether generating `sent`, which took the signal state from `before` to
+    /// `after`, put it ahead of a pending signal System.Native's handler
+    /// catches in the order `leader` takes its signals. `None` if it did not.
+    ///
+    /// Such a signal is one the dispatcher has not yet run the managed handler
+    /// for, and which on a real process the dispatcher reaches first; see
+    /// `UnmodelledSelfSignal.WouldOvertake`.
+    let screenOrder<'Task when 'Task : comparison>
+        (leader : 'Task)
+        (sent : Signal)
+        (before : SignalState<'Task, NativeSignalHandler>)
+        (after : SignalState<'Task, NativeSignalHandler>)
+        : UnmodelledSelfSignal option
+        =
+        let sent = Signal.canonicalUnder (SignalState.numbering before) sent
+        let order = SignalState.pendingFor leader leader after
+
+        match order |> List.tryFindIndexBack (fun entry -> entry.Signal = sent) with
+        | None -> None
+        | Some position ->
+            order
+            |> List.skip (position + 1)
+            |> List.tryFind (fun entry ->
+                entry.Signal <> sent
+                && SignalState.disposition entry.Signal before = SignalDisposition.Catch
+                    NativeSignalHandler.SystemNative
+            )
+            |> Option.map (fun entry -> UnmodelledSelfSignal.WouldOvertake (sent, entry.Signal))
+
     /// `kill(2)`, issued by the thread `ctx` is executing, pushing its `int`
     /// result: 0, or -1 with errno set.
     ///
     /// A signal whose kernel default ends the process ends the run here, with
     /// the call never returning. A target other than the calling process, and
-    /// anything `screenSelfSignal` or `screenGeneration` refuses, fail the
-    /// run: the model has no answer to give.
+    /// anything `screenSelfSignal`, `screenGeneration` or `screenOrder`
+    /// refuses, fail the run: the model has no answer to give.
     let kill (operation : string) (ctx : NativeCallContext) (pid : int) (signo : int) : NativeHandlerResult =
         let state = ctx.State
         let system = EmulatedKernel.unix state.Kernel
@@ -139,17 +176,7 @@ module NativeLibc =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 value)) ctx.Thread
             |> NativeHandlerResult.completed
 
-        let liveThreads =
-            state.ThreadState
-            |> Seq.choose (fun (KeyValue (thread, ts)) ->
-                if ThreadStatus.canReceiveSignal ts.Status then
-                    Some thread
-                else
-                    None
-            )
-            |> ImmutableArray.CreateRange
-
-        match UnixSignal.kill liveThreads pid signo system with
+        match UnixSignal.kill pid signo system with
         | Error refusal ->
             failwith
                 $"%s{operation}: kill(%d{pid}, %d{signo}) from process %O{UnixSystem.processId system} is not modelled (%O{refusal}); only a signal to the calling process itself is."
@@ -177,7 +204,11 @@ module NativeLibc =
                 | Some refusal -> ValueSome refusal
                 | None ->
                     signalsAfter
-                    |> Option.bind (screenGeneration sent system.Process.Signals)
+                    |> Option.bind (fun after ->
+                        match screenGeneration sent system.Process.Signals after with
+                        | Some refusal -> Some refusal
+                        | None -> screenOrder system.Leader sent system.Process.Signals after
+                    )
                     |> ValueOption.ofOption
             )
         with

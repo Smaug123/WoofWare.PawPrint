@@ -15,13 +15,12 @@ open WoofWare.PosixKernel
 /// `ThreadStatus`:
 ///
 ///   * `trySpawnHandler` — Parked → Runnable. Polled between every guest IL
-///     step from `Program.stepPrepared`. If a pending entry in
-///     `SignalState.Pending` is deliverable now (caught by System.Native's
-///     handler, target alive and not blocking it, or no specific target but
-///     at least one such live thread exists), and the dispatcher itself is
-///     currently Parked, we pop the entry off the queue and install a fresh
-///     bottom frame on the dispatcher that calls the registered
-///     handler with `(int signo, int posixSignalEnumValue)`. The frame has no
+///     step from `Program.stepPrepared`. If the process's leader, the main
+///     thread, takes a signal System.Native's handler catches now (see
+///     `UnixSignal.nextDelivery`), and the dispatcher itself is currently
+///     Parked, we take that signal and install a fresh bottom frame on the
+///     dispatcher that calls the registered handler with
+///     `(int signo, int posixSignalEnumValue)`. The frame has no
 ///     `ReturnState`, so when the handler eventually `ret`urns, the bottom
 ///     frame's exit surfaces as `ExecutionResult.Terminated` — that's the
 ///     signal for `reParkAfterHandler` to fire.
@@ -32,16 +31,12 @@ open WoofWare.PosixKernel
 ///     stale frames, resets the sentinel frame id, and flips the status back
 ///     to `Parked` so the next deliverable signal can wake it again.
 ///
-/// The dispatcher is the *recipient* the runtime hands the signal to — never
-/// itself a candidate recipient of the next signal: `nextDelivery` is
-/// called with the live-thread set with the dispatcher removed, so a
-/// process-directed signal whose mask is vacuously empty on the dispatcher
-/// cannot pick the dispatcher as its receiver. The receiver chosen by
-/// `nextDelivery` is intentionally discarded today; this module models the
-/// "handler runs on the runtime-owned dispatcher thread" branch (which matches
-/// CoreCLR's `SignalHandlerLoop`). When PawPrint grows the
-/// `pthread_kill`-style branch where the receiver thread itself takes the
-/// hit, the receiver id will be needed and this discard goes away.
+/// The kernel delivers a signal sent to the process to its leader, and there
+/// System.Native's native handler passes it on to the dispatcher, which runs
+/// the managed handler: so the leader is the task asked, and the dispatcher,
+/// which is never the leader, never receives a signal itself. Only the leader
+/// is asked, because nothing PawPrint answers aims a signal at any other
+/// thread: its one generator is `kill(2)`, which aims at the whole process.
 ///
 /// The handler's `int` return value is real CoreCLR's "0 = not handled,
 /// 1 = handled": on 0, `SignalHandlerLoop` goes on to call
@@ -53,23 +48,6 @@ open WoofWare.PosixKernel
 /// later, after an unblock, and nothing sets a signal mask yet.
 [<RequireQualifiedAccess>]
 module SignalDispatch =
-
-    /// Pull the eligible-receiver thread ids out of state: every thread
-    /// `ThreadStatus.canReceiveSignal` admits, other than the dispatcher.
-    let private liveExcludingDispatcher (dispatcher : ThreadId) (state : IlMachineState) : ImmutableArray<ThreadId> =
-        let builder = ImmutableArray.CreateBuilder<ThreadId> ()
-
-        for KeyValue (tid, ts) in state.ThreadState do
-            // The explicit `tid <> dispatcher` exclusion is redundant while
-            // the dispatcher is `Parked` between invocations (which
-            // `canReceiveSignal` already refuses), but enforces an invariant
-            // that must survive refactoring: the dispatcher runs the handler
-            // *for* a receiver and is never itself a candidate, even while it
-            // is running one.
-            if tid <> dispatcher && ThreadStatus.canReceiveSignal ts.Status then
-                builder.Add tid
-
-        builder.ToImmutable ()
 
     /// Build the arguments the handler expects: the modelled `OnPosixSignal`
     /// shape is `static int OnPosixSignal(int signo, PosixSignal signal)`.
@@ -175,31 +153,32 @@ module SignalDispatch =
             state
         else
 
-        let liveThreads = liveExcludingDispatcher dispatcher state
+        let leader = state.Kernel.Leader
 
-        let delivery, signalsAfter =
-            SignalState.nextDelivery state.Kernel.Process.CoreDumps liveThreads state.Kernel.Signals
+        if dispatcher = leader then
+            failwith
+                $"SignalDispatch.trySpawnHandler: the dispatcher %O{dispatcher} is the process's leader, which the kernel delivers the process's signals to; the dispatcher runs handlers for the leader and is always a thread of its own."
 
-        // Persist the scan's state whether or not it produced an action:
+        let delivery, systemAfter =
+            match UnixSignal.nextDelivery leader (EmulatedKernel.unix state.Kernel) with
+            | Ok answer -> answer
+            | Error refusal ->
+                failwith
+                    $"SignalDispatch.trySpawnHandler: the kernel will not say which thread takes a signal: %O{refusal}"
+
+        // Persist the walk's state whether or not it produced an action:
         // discarding a receivable ignored signal is a state change with no
         // delivery, and dropping it would replay the discard every tick.
         let state =
-            if signalsAfter = state.Kernel.Signals then
+            if systemAfter.Process.Signals = state.Kernel.Signals then
                 state
             else
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        Process =
-                            { kernel.Process with
-                                Signals = signalsAfter
-                            }
-                    }
-                )
+                state.MapKernel (EmulatedKernel.withUnix systemAfter)
 
         match delivery with
         | None ->
-            // Nothing receivable now (queue empty, target dead/blocking, or —
-            // for a process-directed signal — no eligible live thread).
+            // Nothing the leader takes now: nothing pending, or everything
+            // pending is blocked.
             state
         | Some (SignalDelivery.DefaultTerminate (signal, _))
         | Some (SignalDelivery.DefaultStop signal)
@@ -215,13 +194,13 @@ module SignalDispatch =
             // rather than half-modelled.
             failwith
                 $"SignalDispatch.trySpawnHandler: pending %O{signal} is at its default disposition, and its kernel default is not Ignore; applying a default disposition at delivery rather than at generation is not modelled."
-        | Some (SignalDelivery.RunHandler (entry, _receiver, NativeSignalHandler.CoreClrPal))
-        | Some (SignalDelivery.RunHandler (entry, _receiver, NativeSignalHandler.GlibcSetXid)) ->
+        | Some (SignalDelivery.RunHandler (entry, NativeSignalHandler.CoreClrPal))
+        | Some (SignalDelivery.RunHandler (entry, NativeSignalHandler.GlibcSetXid)) ->
             // `NativeLibc.kill` refuses to generate these, so this is a test
             // driving the queue by hand.
             failwith
                 $"SignalDispatch.trySpawnHandler: %O{entry.Signal} is caught by a native handler the runtime or libc installed before Main, which PawPrint does not model."
-        | Some (SignalDelivery.RunHandler (entry, _receiver, NativeSignalHandler.SystemNative)) ->
+        | Some (SignalDelivery.RunHandler (entry, NativeSignalHandler.SystemNative)) ->
 
         let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
 
