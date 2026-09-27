@@ -211,6 +211,7 @@ module TestTaskState =
             {
                 ParkedSocketWait.Port = OpenFileDescriptionId 3L
                 MaxEvents = 8
+                Buffer = UserBuffer.Mapped
                 Deadline = None
             }
 
@@ -421,6 +422,7 @@ module TestTaskState =
             {
                 Port = OpenFileDescriptionId 5L
                 MaxEvents = 8
+                Buffer = UserBuffer.Mapped
                 Deadline = None
             }
 

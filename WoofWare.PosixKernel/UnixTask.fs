@@ -55,6 +55,9 @@ type ParkedSocketWait =
         /// even if the guest overwrites the cell mid-wait.
         /// </remarks>
         MaxEvents : int
+        /// The buffer the call was given to copy events out to, as the caller
+        /// classified it when the call was entered.
+        Buffer : UserBuffer
         /// The instant, in nanoseconds since boot, at which the wait stops and
         /// returns no events; or `None` for a wait that lasts until an event is
         /// deliverable.

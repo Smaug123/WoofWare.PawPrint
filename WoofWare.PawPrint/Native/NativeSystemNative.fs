@@ -5214,7 +5214,7 @@ module NativeSystemNative =
                     | Some pointer -> pointer
                     | None ->
                         failwith
-                            $"%s{operation}: the event buffer is %O{buffer}, which names no storage. A real epoll_wait passes access_ok at wait time and fails only when the copy-out faults (EFAULT with the consumed events lost), behaviour PawPrint does not model. Pass a real buffer."
+                            $"%s{operation}: the kernel delivered events to the event buffer %O{buffer}, which names no storage. The kernel refuses a delivery to any buffer but a mapped one, so this buffer's classification disagrees with its pointer (this is an interpreter bug)."
 
                 let elementSize =
                     SocketEventsPal.socketEventBufferElementSize state.Kernel.UnixPlatform
@@ -5252,7 +5252,19 @@ module NativeSystemNative =
             // the call from the task's park record and writes the event batch
             // through the caller's own `buffer`, rather than the wake having to
             // reach into a frame it does not own from some other thread's step.
-            let settle (outcome : EpollWaitOutcome) (system : UnixSystem<ThreadId, NativeSignalHandler>) =
+            let refuse (refusal : EpollWaitRefusal) : NativeHandlerResult option =
+                match refusal with
+                | EpollWaitRefusal.Buffer refusal -> failwith (BufferPointer.refusalMessage buffer refusal)
+                | EpollWaitRefusal.UnmeasuredCopyOutFault _
+                | EpollWaitRefusal.UnmodelledFlavour _
+                | EpollWaitRefusal.DeadlineBeyondClock _ ->
+                    failwith $"%s{operation}: %s{EpollWaitRefusal.describe refusal} The event buffer was %O{buffer}."
+
+            let settle
+                (outcome : EpollWaitOutcome)
+                (system : UnixSystem<ThreadId, NativeSignalHandler>)
+                : NativeHandlerResult option
+                =
                 let state = state.MapKernel (EmulatedKernel.withUnix system)
 
                 match outcome with
@@ -5275,8 +5287,9 @@ module NativeSystemNative =
             // the park.
             match UnixTaskTable.parkedFor ctx.Thread state.Kernel.Tasks with
             | Some (ParkedSyscall.SocketWait _) ->
-                UnixPoll.finishSocketWait ctx.Thread (EmulatedKernel.unix state.Kernel)
-                ||> settle
+                match UnixPoll.finishSocketWait ctx.Thread (EmulatedKernel.unix state.Kernel) with
+                | Error refusal -> refuse refusal
+                | Ok (outcome, system) -> settle outcome system
             | Some (ParkedSyscall.Flock _) ->
                 // Unreachable, and refused rather than treated as a first entry
                 // for the reason `SystemNative_FLock`'s mirror of this gives: a
@@ -5311,8 +5324,7 @@ module NativeSystemNative =
                 // `epoll_wait(port, events, *count, -1)`: the shim always waits
                 // for ever.
                 match UnixPoll.epollWait ctx.Thread fd requestedCount (BufferPointer.toUserBuffer buffer) -1 system with
-                | Error (EpollWaitRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
-                | Error refusal -> failwith $"%s{operation}: %s{EpollWaitRefusal.describe refusal}"
+                | Error refusal -> refuse refusal
                 | Ok (outcome, system) -> settle outcome system
             | SimulatedUnixFlavour.Darwin ->
 
@@ -5347,6 +5359,7 @@ module NativeSystemNative =
                         {
                             ParkedSocketWait.Port = port
                             MaxEvents = maxEvents
+                            Buffer = BufferPointer.toUserBuffer buffer
                             Deadline = None
                         }
 

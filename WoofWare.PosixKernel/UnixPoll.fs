@@ -168,6 +168,13 @@ type EpollWaitRefusal =
     /// The buffer reached the up-front address screen and has no address to
     /// screen.
     | Buffer of BufferRefusal
+    /// The wait has events to deliver, and the buffer is unmapped, so copying
+    /// them out faults.
+    ///
+    /// Linux answers EFAULT only when the first event's copy faults, and a
+    /// real buffer can be partly mapped; which of the walked entries stay
+    /// pending after a fault is unmeasured.
+    | UnmeasuredCopyOutFault of port : OpenFileDescriptionId
     /// Nothing is deliverable, and the timeout ends past the last instant the
     /// machine's monotonic clock (`UnixMachineState.NanosecondsSinceBoot`, an
     /// `int64` of nanoseconds) can represent: `nanosecondsSinceBoot` plus
@@ -183,6 +190,8 @@ module EpollWaitRefusal =
         | EpollWaitRefusal.UnmodelledFlavour flavour ->
             $"this kernel is %O{flavour}-flavoured, and epoll_wait exists on Linux only. A wait on this flavour's socket event port is a kevent, which this library does not answer through a call of its own."
         | EpollWaitRefusal.Buffer refusal -> BufferRefusal.describe refusal
+        | EpollWaitRefusal.UnmeasuredCopyOutFault port ->
+            $"the socket event port %O{port} has events to deliver, so this call copies them out -- but the buffer is unmapped, so that copy faults. Which of the events the walk took stay pending after the fault, and whether the call answers EFAULT or the count copied before it, are unmeasured."
         | EpollWaitRefusal.DeadlineBeyondClock (now, timeoutMilliseconds) ->
             $"the machine has been up for %d{now} ns and the timeout is %d{timeoutMilliseconds}ms, which ends past the last nanosecond the monotonic clock can represent. Linux's source saturates such a deadline, making the wait infinite, but that is unmeasured."
 
@@ -1049,12 +1058,30 @@ module UnixPoll =
             )
         )
 
+    /// Whether the events `delivered` can be copied out to `buffer`: a call
+    /// that delivers nothing copies nothing, and so never looks at the buffer.
+    let private copyOut
+        (port : OpenFileDescriptionId)
+        (buffer : UserBuffer)
+        (delivered : (uint64 * uint32) list)
+        : Result<unit, EpollWaitRefusal>
+        =
+        if List.isEmpty delivered then
+            Ok ()
+        else
+            match buffer with
+            | UserBuffer.Mapped -> Ok ()
+            | UserBuffer.Unmapped _ -> Error (EpollWaitRefusal.UnmeasuredCopyOutFault port)
+            | UserBuffer.Opaque -> Error (EpollWaitRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+            | UserBuffer.Addressless -> Error (EpollWaitRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
+
     /// Park `task` in a wait on the socket event port `port` for up to
     /// `maxEvents` events, until `deadline`.
     let private parkSocketWait<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (port : OpenFileDescriptionId)
         (maxEvents : int)
+        (buffer : UserBuffer)
         (deadline : int64 option)
         (system : UnixSystem<'Task, 'Handler>)
         : EpollWaitOutcome * UnixSystem<'Task, 'Handler>
@@ -1064,6 +1091,7 @@ module UnixPoll =
                 {
                     Port = port
                     MaxEvents = maxEvents
+                    Buffer = buffer
                     Deadline = deadline
                 }
 
@@ -1090,6 +1118,11 @@ module UnixPoll =
     /// timeout, which is infinite. A parked wait is finished with
     /// `finishSocketWait`. The walk's consumption stands whether or not the call
     /// then sleeps.
+    ///
+    /// A call that delivers events copies them out to `buffer`, which must be
+    /// `Mapped`: this library does not answer for a copy that faults or a buffer
+    /// whose bytes it cannot hold (see `EpollWaitRefusal`). A call that delivers
+    /// nothing never looks at the buffer past the screen.
     ///
     /// Of several tasks parked on one port, one event wakes one of them (see
     /// `UnixWait.wakes`).
@@ -1140,14 +1173,15 @@ module UnixPoll =
         // something answers at once whatever the timeout, and one that finds
         // nothing answers at once for a timeout of 0.
         if not (List.isEmpty delivered) || milliseconds = 0 then
-            Ok (EpollWaitOutcome.Answered delivered, system)
+            copyOut port buffer delivered
+            |> Result.map (fun () -> EpollWaitOutcome.Answered delivered, system)
         else
 
         let now = system.Machine.NanosecondsSinceBoot
 
         match relativeDeadline now milliseconds with
         | Error () -> Error (EpollWaitRefusal.DeadlineBeyondClock (now, milliseconds))
-        | Ok deadline -> Ok (parkSocketWait task port maxEvents deadline system)
+        | Ok deadline -> Ok (parkSocketWait task port maxEvents buffer deadline system)
 
     /// Finish the wait on a socket event port that `task` is parked in: walk
     /// the port again, as a woken real wait does, and answer.
@@ -1165,11 +1199,14 @@ module UnixPoll =
     /// back of park order, which puts it first in line for the port's next
     /// event. An answer clears the park.
     ///
+    /// Delivering events copies them out to the buffer the call was made with;
+    /// see `epollWait` for the buffers that refuses.
+    ///
     /// Never answers `Failed`. `task` must be parked in a socket event wait.
     let finishSocketWait<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
-        : EpollWaitOutcome * UnixSystem<'Task, 'Handler>
+        : Result<EpollWaitOutcome * UnixSystem<'Task, 'Handler>, EpollWaitRefusal>
         =
         let parked =
             match UnixTaskTable.parkedFor task system.Tasks with
@@ -1189,9 +1226,12 @@ module UnixPoll =
             | None -> false
 
         if not (List.isEmpty delivered) || timedOut then
-            EpollWaitOutcome.Answered delivered,
-            { system with
-                Tasks = UnixTaskTable.unpark task system.Tasks
-            }
+            copyOut parked.Port parked.Buffer delivered
+            |> Result.map (fun () ->
+                EpollWaitOutcome.Answered delivered,
+                { system with
+                    Tasks = UnixTaskTable.unpark task system.Tasks
+                }
+            )
         else
-            parkSocketWait task parked.Port parked.MaxEvents parked.Deadline system
+            Ok (parkSocketWait task parked.Port parked.MaxEvents parked.Buffer parked.Deadline system)

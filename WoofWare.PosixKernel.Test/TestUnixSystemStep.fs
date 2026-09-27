@@ -3219,6 +3219,7 @@ module TestUnixSystemStep =
                 {
                     ParkedSocketWait.Port = descriptionOf fd system
                     MaxEvents = 8
+                    Buffer = UserBuffer.Mapped
                     Deadline = None
                 })
             system
@@ -3484,6 +3485,7 @@ module TestUnixSystemStep =
                 {
                     ParkedSocketWait.Port = descriptionOf fd system
                     MaxEvents = 8
+                    Buffer = UserBuffer.Mapped
                     Deadline = None
                 }
 
@@ -3523,6 +3525,7 @@ module TestUnixSystemStep =
                     {
                         ParkedSocketWait.Port = descriptionOf fd system
                         MaxEvents = 8
+                        Buffer = UserBuffer.Mapped
                         Deadline = None
                     })
         )
@@ -3570,6 +3573,7 @@ module TestUnixSystemStep =
                     {
                         ParkedSocketWait.Port = descriptionOf ready system
                         MaxEvents = 8
+                        Buffer = UserBuffer.Mapped
                         Deadline = None
                     })
                 parked

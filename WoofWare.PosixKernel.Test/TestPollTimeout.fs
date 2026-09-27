@@ -520,6 +520,7 @@ module TestPollTimeout =
                     {
                         Port = idOf listener idle
                         MaxEvents = 1
+                        Buffer = UserBuffer.Mapped
                         Deadline = None
                     }
             ] do

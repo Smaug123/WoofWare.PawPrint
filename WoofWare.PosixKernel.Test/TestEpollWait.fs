@@ -218,12 +218,12 @@ module TestEpollWait =
 
     let private finishes (system : UnixSystem<int, string>) : (uint64 * uint32) list * UnixSystem<int, string> =
         match UnixPoll.finishSocketWait task system with
-        | EpollWaitOutcome.Answered events, finished -> events, finished
+        | Ok (EpollWaitOutcome.Answered events, finished) -> events, finished
         | other -> failwith $"expected the wait to finish, got %A{other}"
 
     let private reparks (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         match UnixPoll.finishSocketWait task system with
-        | EpollWaitOutcome.WouldBlock _, parked -> parked
+        | Ok (EpollWaitOutcome.WouldBlock _, parked) -> parked
         | other -> failwith $"expected the wait to park again, got %A{other}"
 
     let private woken (system : UnixSystem<int, string>) : Set<WakePrimitive> option =
@@ -424,6 +424,7 @@ module TestEpollWait =
                     {
                         Port = portId
                         MaxEvents = 8
+                        Buffer = UserBuffer.Mapped
                         Deadline = None
                     }
             | other -> failwith $"expected a socket wait, got %A{other}"
@@ -521,6 +522,60 @@ module TestEpollWait =
         exn.Message |> shouldContainText "is not parked"
 
     // ------------------------------------------------------------------
+    // The copy-out
+    // ------------------------------------------------------------------
+
+    /// Buffers every screen passes, but that this library cannot copy events out to, with
+    /// the refusal each earns: an address in user space that names no storage, and real
+    /// memory whose bytes the caller cannot produce.
+    let private uncopyable : (UserBuffer * EpollWaitRefusal) list =
+        [
+            UserBuffer.Unmapped 0x1000UL, EpollWaitRefusal.UnmeasuredCopyOutFault portId
+            UserBuffer.Opaque, EpollWaitRefusal.Buffer BufferRefusal.OpaqueAtTransfer
+        ]
+
+    [<Test>]
+    let ``a delivery to a buffer the library cannot copy to is refused, and a wait that delivers nothing is not``
+        ()
+        : unit
+        =
+        let property (milliseconds : int, now : int64) : unit =
+            let started = after now idle
+
+            for buffer, refusal in uncopyable do
+                UnixPoll.epollWait task port 8 buffer milliseconds (signal started)
+                |> shouldEqual (Error refusal)
+
+                // Nothing to copy: the buffer is never looked at past the screen.
+                match UnixPoll.epollWait task port 8 buffer milliseconds started with
+                | Ok (EpollWaitOutcome.Answered [], _) -> milliseconds |> shouldEqual 0
+                | Ok (EpollWaitOutcome.WouldBlock _, _) -> milliseconds |> shouldNotEqual 0
+                | other -> failwith $"expected no delivery, got %A{other}"
+
+        let bounded = Gen.zip anyTimeout (Gen.choose64 (0L, 1_000_000L))
+        Check.One (config, Prop.forAll (Arb.fromGen bounded) property)
+
+    [<Test>]
+    let ``a parked wait finishes by copying to the buffer it was entered with`` () : unit =
+        for buffer, refusal in uncopyable do
+            let _, parked =
+                match UnixPoll.epollWait task port 8 buffer 5 idle with
+                | Ok (EpollWaitOutcome.WouldBlock condition, parked) -> condition, parked
+                | other -> failwith $"expected a park, got %A{other}"
+
+            match UnixTaskTable.parkedFor task parked.Tasks with
+            | Some (ParkedSyscall.SocketWait wait) -> wait.Buffer |> shouldEqual buffer
+            | other -> failwith $"expected a socket wait, got %A{other}"
+
+            UnixPoll.finishSocketWait task (signal parked) |> shouldEqual (Error refusal)
+
+            // Timing out copies nothing, so it answers.
+            match UnixPoll.finishSocketWait task (after (5L * nanosecondsPerMillisecond) parked) with
+            | Ok (EpollWaitOutcome.Answered [], finished) ->
+                UnixTaskTable.parkedFor task finished.Tasks |> shouldEqual None
+            | other -> failwith $"expected the wait to time out, got %A{other}"
+
+    // ------------------------------------------------------------------
     // Several waiters on one port
     // ------------------------------------------------------------------
 
@@ -608,6 +663,7 @@ module TestEpollWait =
                             {
                                 Port = ports.[park.Port]
                                 MaxEvents = 1
+                                Buffer = UserBuffer.Mapped
                                 Deadline = park.Deadline
                             })
                         system

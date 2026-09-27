@@ -84,6 +84,7 @@ module TestUnixWait =
                 {
                     Port = blocked
                     MaxEvents = 1
+                    Buffer = UserBuffer.Mapped
                     Deadline = None
                 }
         else

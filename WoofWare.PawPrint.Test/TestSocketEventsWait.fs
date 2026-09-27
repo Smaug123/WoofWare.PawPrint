@@ -140,6 +140,7 @@ class WaitsOnADuplicatedPort
                     {
                         ParkedSocketWait.Port = OpenFileDescriptionId 3L
                         MaxEvents = 1
+                        Buffer = UserBuffer.Mapped
                         Deadline = None
                     }
             )
