@@ -35,6 +35,14 @@ type Opacity =
     /// An instruction <c>OpcodeFaults</c> declines to classify.
     | UnmodelledOpcode
 
+/// Something that happens outside a method's body, so that none of its own handlers can catch it.
+[<RequireQualifiedAccess>]
+type internal OutsideBodyFact =
+    | Raises of ThrownType
+    /// What happens turns on something the analysis cannot see, such as how a type variable of the
+    /// method is instantiated when the JIT binds a member of it.
+    | Opaque of Opacity
+
 /// What one method body does by itself: the exceptions it raises, the places it cannot see
 /// through, and the methods it calls, each at the IL offset where it happens, so that the body's
 /// own exception clauses can be applied to all three alike.
@@ -44,12 +52,12 @@ type internal LocalFacts =
         Opaque : (int * Opacity) list
         Calls : (int * MethodKey) list
         Regions : ExceptionRegion list
-        /// What can be raised outside the body, so that none of its own handlers can catch it:
-        /// what binding the tokens the body names and the types of its locals and `catch`
-        /// clauses throws before it runs (a member or type the assembly it is looked for in does
-        /// not have, or a module initializer that fails), and what taking and releasing a
-        /// synchronized method's monitor throws.
-        OutsideBody : Set<ThrownType>
+        /// What happens outside the body, so that none of its own handlers can catch it: what
+        /// binding the tokens the body names and the types of its locals and `catch` clauses
+        /// throws before it runs (a member or type the assembly it is looked for in does not have,
+        /// a module initializer that fails, or a member of a type variable, which turns on the
+        /// instantiation), and what taking and releasing a synchronized method's monitor throws.
+        OutsideBody : Set<OutsideBodyFact>
     }
 
 /// What a call instruction's token names.
@@ -698,10 +706,14 @@ module EscapeAnalysis =
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
         (token : MetadataToken)
-        : EscapeAnalysisState * CallTarget option * ThrownType list
+        : EscapeAnalysisState * CallTarget option * OutsideBodyFact list
         =
         let typeLoad () =
-            [ ThrownType.Exactly (corelibException state "TypeLoadException") ]
+            [
+                OutsideBodyFact.Raises (ThrownType.Exactly (corelibException state "TypeLoadException"))
+            ]
+
+        let dependsOnInstantiation = OutsideBodyFact.Opaque Opacity.DependsOnInstantiation
 
         match token with
         | MetadataToken.MethodDef handle ->
@@ -743,9 +755,11 @@ module EscapeAnalysis =
                     | state, CallTarget.Missing ->
                         state,
                         Some CallTarget.Missing,
-                        ThrownType.Exactly (corelibException state "MissingMethodException")
+                        OutsideBodyFact.Raises (ThrownType.Exactly (corelibException state "MissingMethodException"))
                         :: signatureFailures
                     | state, CallTarget.TypeMissing -> state, Some CallTarget.TypeMissing, typeLoad ()
+                    | state, CallTarget.DependsOnInstantiation ->
+                        state, Some CallTarget.DependsOnInstantiation, dependsOnInstantiation :: signatureFailures
                     | state, target -> state, Some target, signatureFailures
                 | MemberSignature.Field _ ->
                     let assemblies, target =
@@ -761,10 +775,14 @@ module EscapeAnalysis =
 
                     match target with
                     | FieldReferenceTarget.Missing ->
-                        state, None, [ ThrownType.Exactly (corelibException state "MissingFieldException") ]
+                        state,
+                        None,
+                        [
+                            OutsideBodyFact.Raises (ThrownType.Exactly (corelibException state "MissingFieldException"))
+                        ]
                     | FieldReferenceTarget.ParentTypeMissing _ -> state, None, typeLoad ()
-                    | FieldReferenceTarget.Defined _
-                    | FieldReferenceTarget.DependsOnInstantiation -> state, None, []
+                    | FieldReferenceTarget.DependsOnInstantiation -> state, None, [ dependsOnInstantiation ]
+                    | FieldReferenceTarget.Defined _ -> state, None, []
 
             state, target, (if parentBinds then failures else typeLoad () @ failures)
         | MetadataToken.TypeReference handle ->
@@ -926,7 +944,7 @@ module EscapeAnalysis =
                 raises : (int * ThrownType) list,
                 opaque : (int * Opacity) list,
                 calls : (int * MethodKey) list,
-                bindingFailures : Set<ThrownType>
+                bindingFailures : Set<OutsideBodyFact>
             )
             (index : int)
             =
@@ -955,7 +973,9 @@ module EscapeAnalysis =
 
                     let failures =
                         if initializes then
-                            ThrownType.Exactly (corelibException state "TypeInitializationException")
+                            OutsideBodyFact.Raises (
+                                ThrownType.Exactly (corelibException state "TypeInitializationException")
+                            )
                             :: failures
                         else
                             failures
@@ -1079,7 +1099,10 @@ module EscapeAnalysis =
                 match spellingBinds state assembly local with
                 | state, true -> state, failures
                 | state, false ->
-                    state, Set.add (ThrownType.Exactly (corelibException state "TypeLoadException")) failures
+                    state,
+                    Set.add
+                        (OutsideBodyFact.Raises (ThrownType.Exactly (corelibException state "TypeLoadException")))
+                        failures
             )
 
         let state, localFailures =
@@ -1108,7 +1131,7 @@ module EscapeAnalysis =
                     if not method.IsStatic then
                         corelibException state "ArgumentNullException"
                 ]
-                |> List.map ThrownType.Exactly
+                |> List.map (ThrownType.Exactly >> OutsideBodyFact.Raises)
                 |> Set.ofList
                 |> Set.union localFailures
             else
@@ -1171,9 +1194,26 @@ module EscapeAnalysis =
         let seedOf (state : EscapeAnalysisState) (key : MethodKey) : EscapeAnalysisState * Escapes =
             let facts = state.Facts.[key]
 
-            // What is raised outside the body is past all its handlers.
+            // What happens outside the body is past all its handlers.
+            let outside =
+                facts.OutsideBody
+                |> Seq.choose (fun fact ->
+                    match fact with
+                    | OutsideBodyFact.Raises thrown -> Some thrown
+                    | OutsideBodyFact.Opaque _ -> None
+                )
+                |> Set.ofSeq
+
+            let opaqueOutside =
+                facts.OutsideBody
+                |> Set.exists (fun fact ->
+                    match fact with
+                    | OutsideBodyFact.Raises _ -> false
+                    | OutsideBodyFact.Opaque _ -> true
+                )
+
             let state, types =
-                ((state, facts.OutsideBody), facts.Raises)
+                ((state, outside), facts.Raises)
                 ||> List.fold (fun (state, types) (offset, thrown) ->
                     match escapesAt state key offset (Some thrown) with
                     | state, true -> state, Set.add thrown types
@@ -1181,7 +1221,7 @@ module EscapeAnalysis =
                 )
 
             let state, unknown =
-                ((state, false), facts.Opaque)
+                ((state, opaqueOutside), facts.Opaque)
                 ||> List.fold (fun (state, unknown) (offset, _) ->
                     if unknown then
                         state, true

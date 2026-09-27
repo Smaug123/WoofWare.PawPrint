@@ -21,7 +21,8 @@ method, a `rethrow`) may add more:
 * every token a body names, the type of every local and `catch` clause it declares, and the
   signature of every method it calls, directly or through `calli`, is bound against the assemblies actually loaded, and a member
   or type that is not there contributes the `MissingMethodException`, `MissingFieldException` or
-  `TypeLoadException` the JIT would throw;
+  `TypeLoadException` the JIT would throw. A member of one of the method's type variables
+  (`!!0::Value`) exists or not depending on the instantiation, so binding it is "unknown";
 * binding a token into another assembly that has a module initializer runs it, which may throw
   `TypeInitializationException`;
 * a synchronized method takes a monitor around its body, whose wait may throw

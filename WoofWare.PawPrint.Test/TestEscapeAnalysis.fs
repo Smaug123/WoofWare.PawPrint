@@ -1146,6 +1146,202 @@ public static class Uses
         throughInterface.Unknown |> shouldEqual true
         throughClass.Unknown |> shouldEqual false
 
+    [<Test>]
+    let ``binding a member of a type variable turns on the instantiation, past the method's handlers`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let metadata = MetadataBuilder ()
+        let ilStream = BlobBuilder ()
+        let bodies = MethodBodyStreamEncoder ilStream
+
+        metadata.AddModule (
+            0,
+            metadata.GetOrAddString "Binds.dll",
+            metadata.GetOrAddGuid (Guid "3b5d7f91-2a4c-4e6b-8d0f-1a3c5e7b9d2f"),
+            Unchecked.defaultof<GuidHandle>,
+            Unchecked.defaultof<GuidHandle>
+        )
+        |> ignore<ModuleDefinitionHandle>
+
+        metadata.AddAssembly (
+            metadata.GetOrAddString "Binds",
+            Version (1, 0, 0, 0),
+            Unchecked.defaultof<StringHandle>,
+            Unchecked.defaultof<BlobHandle>,
+            Unchecked.defaultof<AssemblyFlags>,
+            AssemblyHashAlgorithm.None
+        )
+        |> ignore<AssemblyDefinitionHandle>
+
+        let corelibName = typeof<obj>.Assembly.GetName ()
+
+        let corelibRef =
+            metadata.AddAssemblyReference (
+                metadata.GetOrAddString corelibName.Name,
+                corelibName.Version,
+                Unchecked.defaultof<StringHandle>,
+                metadata.GetOrAddBlob (corelibName.GetPublicKeyToken ()),
+                Unchecked.defaultof<AssemblyFlags>,
+                Unchecked.defaultof<BlobHandle>
+            )
+
+        let objectRef : EntityHandle =
+            metadata.AddTypeReference (
+                (AssemblyReferenceHandle.op_Implicit corelibRef : EntityHandle),
+                metadata.GetOrAddString "System",
+                metadata.GetOrAddString "Object"
+            )
+            |> TypeReferenceHandle.op_Implicit
+
+        // `!!0`, the method's own type parameter, as a MemberRef parent.
+        let typeVariable : EntityHandle =
+            let blob = BlobBuilder ()
+            BlobEncoder(blob).TypeSpecificationSignature().GenericMethodTypeParameter 0
+            TypeSpecificationHandle.op_Implicit (metadata.AddTypeSpecification (metadata.GetOrAddBlob blob))
+
+        let staticVoid (genericParameters : int) : BlobHandle =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature(genericParameterCount = genericParameters)
+                .Parameters (0, (fun returnType -> returnType.Void ()), ignore<ParametersEncoder>)
+
+            metadata.GetOrAddBlob blob
+
+        let valueField : EntityHandle =
+            let blob = BlobBuilder ()
+            BlobEncoder(blob).Field().Type().Int32 ()
+
+            metadata.AddMemberReference (typeVariable, metadata.GetOrAddString "Value", metadata.GetOrAddBlob blob)
+            |> MemberReferenceHandle.op_Implicit
+
+        let methodM : EntityHandle =
+            metadata.AddMemberReference (typeVariable, metadata.GetOrAddString "M", staticVoid 0)
+            |> MemberReferenceHandle.op_Implicit
+
+        // `try { <use> } catch (object) { }`: a catch-all around the only use of the member.
+        let catchingAll (usesMember : InstructionEncoder -> unit) : int =
+            let flow = ControlFlowBuilder ()
+            let code = InstructionEncoder (BlobBuilder (), flow)
+            let tryStart = code.DefineLabel ()
+            let handlerStart = code.DefineLabel ()
+            let handlerEnd = code.DefineLabel ()
+            code.MarkLabel tryStart
+            usesMember code
+            code.Branch (ILOpCode.Leave_s, handlerEnd)
+            code.MarkLabel handlerStart
+            code.OpCode ILOpCode.Pop
+            code.Branch (ILOpCode.Leave_s, handlerEnd)
+            code.MarkLabel handlerEnd
+            code.OpCode ILOpCode.Ret
+            flow.AddCatchRegion (tryStart, handlerStart, handlerStart, handlerEnd, objectRef)
+            bodies.AddMethodBody code
+
+        let readField =
+            metadata.AddMethodDefinition (
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                MethodImplAttributes.IL,
+                metadata.GetOrAddString "ReadField",
+                staticVoid 1,
+                catchingAll (fun code ->
+                    code.OpCode ILOpCode.Ldsfld
+                    code.Token valueField
+                    code.OpCode ILOpCode.Pop
+                ),
+                MetadataTokens.ParameterHandle 1
+            )
+
+        let callMethod =
+            metadata.AddMethodDefinition (
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                MethodImplAttributes.IL,
+                metadata.GetOrAddString "CallMethod",
+                staticVoid 1,
+                catchingAll (fun code -> code.Call methodM),
+                MetadataTokens.ParameterHandle 1
+            )
+
+        for method in [ readField ; callMethod ] do
+            metadata.AddGenericParameter (
+                (MethodDefinitionHandle.op_Implicit method : EntityHandle),
+                GenericParameterAttributes.None,
+                metadata.GetOrAddString "T",
+                0
+            )
+            |> ignore<GenericParameterHandle>
+
+        metadata.AddTypeDefinition (
+            TypeAttributes.Class,
+            Unchecked.defaultof<StringHandle>,
+            metadata.GetOrAddString "<Module>",
+            Unchecked.defaultof<EntityHandle>,
+            MetadataTokens.FieldDefinitionHandle 1,
+            readField
+        )
+        |> ignore<TypeDefinitionHandle>
+
+        metadata.AddTypeDefinition (
+            TypeAttributes.Public
+            ||| TypeAttributes.Class
+            ||| TypeAttributes.Abstract
+            ||| TypeAttributes.Sealed,
+            metadata.GetOrAddString "W",
+            metadata.GetOrAddString "Binds",
+            objectRef,
+            MetadataTokens.FieldDefinitionHandle 1,
+            readField
+        )
+        |> ignore<TypeDefinitionHandle>
+
+        let peBuilder =
+            ManagedPEBuilder (
+                PEHeaderBuilder (imageCharacteristics = Characteristics.Dll),
+                MetadataRootBuilder metadata,
+                ilStream
+            )
+
+        let image =
+            let blob = BlobBuilder ()
+            peBuilder.Serialize blob |> ignore<BlobContentId>
+            blob.ToArray ()
+
+        // The real runtime, at an instantiation lacking the member, shared (`object`) and not
+        // (`int`): the binding failure gets past the catch-all.
+        let context =
+            System.Runtime.Loader.AssemblyLoadContext ("Binds", isCollectible = true)
+
+        try
+            let binds = context.LoadFromStream(new MemoryStream (image)).GetType "W.Binds"
+
+            for name, missing in
+                [
+                    "ReadField", typeof<MissingFieldException>
+                    "CallMethod", typeof<MissingMethodException>
+                ] do
+                for instantiation in [ typeof<obj> ; typeof<int> ] do
+                    let e =
+                        Assert.Throws<TargetInvocationException> (fun () ->
+                            binds
+                                .GetMethod(name)
+                                .MakeGenericMethod(instantiation)
+                                .Invoke ((null : obj), Array.empty<obj>)
+                            |> ignore<obj>
+                        )
+
+                    e.InnerException.GetType () |> shouldEqual missing
+        finally
+            context.Unload ()
+
+        let assembly =
+            Assembly.read loggerFactory (Some "Binds.dll") (new MemoryStream (image))
+
+        let analysis = analysisOver [ assembly ] id
+
+        for name in [ "ReadField" ; "CallMethod" ] do
+            let _, escapes =
+                EscapeAnalysis.escapes analysis (methodNamed assembly "W.Binds" name)
+
+            escapes.Unknown |> shouldEqual true
+
     /// Where the object a `throw` raises comes from, in an emitted method.
     [<RequireQualifiedAccess>]
     type private Raise =
