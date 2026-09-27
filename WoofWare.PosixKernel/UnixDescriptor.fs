@@ -128,6 +128,9 @@ type TruncationRefusal =
     /// model, and refusing beats reporting an errno no kernel would produce for
     /// that length.
     | ExceedsRepresentableLength of inode : InodeNumber * length : int64
+    /// What truncating the file at `inode` would do to its set-ID bits has
+    /// not been measured for this process.
+    | UnmeasuredSetIdChange of inode : InodeNumber * refusal : SetIdChangeRefusal
 
 [<RequireQualifiedAccess>]
 module TruncationRefusal =
@@ -135,6 +138,8 @@ module TruncationRefusal =
         match refusal with
         | TruncationRefusal.ExceedsRepresentableLength (inode, length) ->
             $"inode %O{inode} was asked to become %d{length} bytes, which is longer than the %d{VirtualFileSystem.maxFileLength} bytes this kernel can represent. A real filesystem answers this without difficulty -- measured on ext4 and APFS alike, ftruncate to three gigabytes succeeds and leaves a sparse file -- so this is a limit of the model, and refusing is better than reporting an errno no kernel would have produced for that length."
+        | TruncationRefusal.UnmeasuredSetIdChange (inode, refusal) ->
+            $"truncating inode %O{inode}: %s{SetIdChangeRefusal.describe refusal}"
 
 /// Why this kernel will not close a descriptor.
 ///
@@ -652,6 +657,8 @@ module UnixDescriptor =
                 }
         | Error (FileTruncationRefusal.WouldExceedMaxLength length) ->
             Error (TruncationRefusal.ExceedsRepresentableLength (inode, length))
+        | Error (FileTruncationRefusal.UnmeasuredSetIdChange refusal) ->
+            Error (TruncationRefusal.UnmeasuredSetIdChange (inode, refusal))
 
     /// `ftruncate(2)`: set a regular file's length through a descriptor open for
     /// writing.

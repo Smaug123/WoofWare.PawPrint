@@ -96,11 +96,17 @@ type WriteRefusal =
     /// empty pipe holds. The answer is a short write of `taken`, and this
     /// kernel's writes to a standard stream are whole.
     | NonBlockingStandardStreamShortWrite of role : FileDescriptorRole * count : int * taken : int
+    /// What writing to the file at `inode` would do to its set-ID bits has not
+    /// been measured for this writer.
+    | UnmeasuredSetIdChange of inode : InodeNumber * refusal : SetIdChangeRefusal
 
 [<RequireQualifiedAccess>]
 module WriteRefusal =
     // Its own function because `write` and `pwrite` reach the same limit from
     // different offsets and must say the same thing about it.
+    let internal describeUnmeasuredSetIdChange (inode : InodeNumber) (refusal : SetIdChangeRefusal) : string =
+        $"writing to inode %O{inode}: %s{SetIdChangeRefusal.describe refusal}"
+
     let internal describeExceedsRepresentableLength (inode : InodeNumber) (offset : int64) (count : int) : string =
         $"writing %d{count} bytes at offset %d{offset} of inode %O{inode} would leave the file longer than the %d{VirtualFileSystem.maxFileLength} bytes this kernel can represent. A real filesystem answers this without difficulty -- measured on ext4 and APFS alike, a one-byte write at offset 2^40 succeeds and leaves a sparse 1 TB file -- so this is a limit of the model, and refusing beats reporting an errno no kernel would have produced."
 
@@ -116,6 +122,7 @@ module WriteRefusal =
             describeExceedsRepresentableLength inode offset count
         | WriteRefusal.NonBlockingStandardStreamShortWrite (role, count, taken) ->
             $"the descriptor is the standard stream %O{role}, whose description carries O_NONBLOCK, and the write is of %d{count} bytes. Measured on both flavours with the far reader draining as fast as it can (stdio-nonblock.c), a real kernel takes %d{taken} of them, which is what an empty pipe holds, and returns that short count. This kernel records each write to a standard stream whole, so it refuses rather than answer a count different from the bytes it recorded. Write at most %d{taken} bytes per call, or clear O_NONBLOCK first."
+        | WriteRefusal.UnmeasuredSetIdChange (inode, refusal) -> describeUnmeasuredSetIdChange inode refusal
 
 /// Why this kernel will not answer a `pwrite`.
 ///
@@ -132,6 +139,9 @@ type PWriteRefusal =
     /// represent. Easier to reach than `write`'s: the offset is an argument
     /// rather than a position the description was walked to.
     | ExceedsRepresentableLength of inode : InodeNumber * offset : int64 * count : int
+    /// What writing to the file at `inode` would do to its set-ID bits has not
+    /// been measured for this writer.
+    | UnmeasuredSetIdChange of inode : InodeNumber * refusal : SetIdChangeRefusal
 
 [<RequireQualifiedAccess>]
 module PWriteRefusal =
@@ -145,6 +155,8 @@ module PWriteRefusal =
             // The same fact `write` reports, reached from an argument rather than
             // from the description's offset, so it says the same sentence.
             WriteRefusal.describeExceedsRepresentableLength inode offset count
+        | PWriteRefusal.UnmeasuredSetIdChange (inode, refusal) ->
+            WriteRefusal.describeUnmeasuredSetIdChange inode refusal
 
 /// What a `read` will operate on, once the descriptor's access mode has been
 /// checked and before its buffer is screened.
@@ -979,6 +991,8 @@ module UnixReadWrite =
         with
         | Error (FileWriteRefusal.WouldExceedMaxLength (offset, count)) ->
             Error (WriteRefusal.ExceedsRepresentableLength (inode, offset, count))
+        | Error (FileWriteRefusal.UnmeasuredSetIdChange refusal) ->
+            Error (WriteRefusal.UnmeasuredSetIdChange (inode, refusal))
         | Ok filesystem ->
 
         // At the description's own offset, and advancing it by what moved — the
@@ -1242,6 +1256,8 @@ module UnixReadWrite =
         with
         | Error (FileWriteRefusal.WouldExceedMaxLength (offset, count)) ->
             Error (PWriteRefusal.ExceedsRepresentableLength (inode, offset, count))
+        | Error (FileWriteRefusal.UnmeasuredSetIdChange refusal) ->
+            Error (PWriteRefusal.UnmeasuredSetIdChange (inode, refusal))
         | Ok filesystem ->
 
         // The description is left exactly where it was — the whole of what

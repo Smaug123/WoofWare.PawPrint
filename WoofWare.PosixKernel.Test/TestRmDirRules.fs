@@ -154,6 +154,7 @@ module TestRmDirRules =
         | Error error -> RmDirVerdict.Refuse error
         | Ok resolution ->
             RmDirRules.verdict (SimulatedUnixPlatform.flavour platform) (Owners.caller privilege) resolution tree
+            |> Answered.unrefused
 
     let private linux : SimulatedUnixPlatform = SimulatedUnixPlatform.linuxX64
 

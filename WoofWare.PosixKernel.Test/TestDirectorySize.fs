@@ -306,7 +306,7 @@ module TestDirectorySize =
         match op with
         | DirectorySizeOp.Create path ->
             let fd, system =
-                UnixNamespace.openPath creating (rooted path) 0o644 system
+                Answered.openPath creating (rooted path) 0o644 system
                 |> completed $"creat %s{path}"
 
             closeFd (int fd) system
@@ -314,10 +314,9 @@ module TestDirectorySize =
             UnixNamespace.mkdir (rooted path) 0o755 system
             |> completed $"mkdir %s{path}"
             |> snd
-        | DirectorySizeOp.Unlink path ->
-            UnixNamespace.unlink (rooted path) system |> completed $"unlink %s{path}" |> snd
+        | DirectorySizeOp.Unlink path -> Answered.unlink (rooted path) system |> completed $"unlink %s{path}" |> snd
         | DirectorySizeOp.RemoveDirectory path ->
-            UnixNamespace.rmdir (rooted path) system |> completed $"rmdir %s{path}" |> snd
+            Answered.rmdir (rooted path) system |> completed $"rmdir %s{path}" |> snd
         | DirectorySizeOp.Rename (source, destination) ->
             match UnixNamespace.rename (argument source) (argument destination) system with
             | Ok result -> result |> completed $"rename %s{source} %s{destination}" |> snd
@@ -343,7 +342,7 @@ module TestDirectorySize =
             |> applyToModel (DirectorySizeOp.MakeDirectory "o")
 
         let fd, system =
-            UnixNamespace.openPath reading (rooted "d") 0 system |> completed "open d"
+            Answered.openPath reading (rooted "d") 0 system |> completed "open d"
 
         int fd, system
 

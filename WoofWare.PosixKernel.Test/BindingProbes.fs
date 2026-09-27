@@ -144,9 +144,8 @@ module BindingProbes =
     let runModel (call : BindingProbeCall) (system : UnixSystem<int, string>) : UnixError option =
         match call with
         | BindingProbeCall.Mkdir path -> UnixNamespace.mkdir (rooted path) 0o777 system |> fst |> ofAnswer
-        | BindingProbeCall.OpenCreate path ->
-            UnixNamespace.openPath creating (rooted path) 0o666 system |> fst |> ofAnswer
-        | BindingProbeCall.OpenRead path -> UnixNamespace.openPath reading (rooted path) 0 system |> fst |> ofAnswer
+        | BindingProbeCall.OpenCreate path -> Answered.openPath creating (rooted path) 0o666 system |> fst |> ofAnswer
+        | BindingProbeCall.OpenRead path -> Answered.openPath reading (rooted path) 0 system |> fst |> ofAnswer
         | BindingProbeCall.Exists path ->
             match UnixPathResolution.stat SymlinkPolicy.Follow (rooted path) system with
             | Ok (FileStatusAnswer.Reported _) -> None
@@ -157,8 +156,8 @@ module BindingProbes =
             | Ok (ReadLinkAnswer.Reported _) -> None
             | Ok (ReadLinkAnswer.Failed error) -> Some error
             | Error refusal -> failwith $"readlink refused its buffer: %A{refusal}"
-        | BindingProbeCall.Unlink path -> UnixNamespace.unlink (rooted path) system |> fst |> ofAnswer
-        | BindingProbeCall.RmDir path -> UnixNamespace.rmdir (rooted path) system |> fst |> ofAnswer
+        | BindingProbeCall.Unlink path -> Answered.unlink (rooted path) system |> fst |> ofAnswer
+        | BindingProbeCall.RmDir path -> Answered.rmdir (rooted path) system |> fst |> ofAnswer
         | BindingProbeCall.Rename (source, destination) ->
             let argument (path : byte list) =
                 PathArgumentBytes.Bytes (ImmutableArray.CreateRange (UnixPathText.separatorByte :: path))

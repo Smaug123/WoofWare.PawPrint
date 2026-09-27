@@ -26,7 +26,7 @@ module DirectoryReading =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<int, UnixError> * UnixSystem<'Task, 'Handler>
         =
-        match UnixNamespace.openPath flags path 0 system with
+        match Answered.openPath flags path 0 system with
         | SyscallAnswer.Completed fd, system -> Ok (int fd), system
         | SyscallAnswer.Failed error, system -> Error error, system
 

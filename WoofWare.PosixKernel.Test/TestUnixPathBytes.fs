@@ -211,7 +211,7 @@ module TestUnixPathBytes =
             |> completed
             |> UnixPathResolution.chdir (pathOf (text "/gone"))
             |> completed
-            |> UnixNamespace.rmdir (pathOf (text "../gone"))
+            |> Answered.rmdir (pathOf (text "../gone"))
             |> completed
 
         let creating : OpenFlags =
@@ -230,7 +230,7 @@ module TestUnixPathBytes =
             fst (UnixNamespace.mkdir (pathOf name) 0o777 orphaned)
             |> shouldEqual (SyscallAnswer.Failed UnixError.ENOENT)
 
-            fst (UnixNamespace.openPath creating (pathOf name) 0o666 orphaned)
+            fst (Answered.openPath creating (pathOf name) 0o666 orphaned)
             |> shouldEqual (SyscallAnswer.Failed UnixError.ENOENT)
 
             match

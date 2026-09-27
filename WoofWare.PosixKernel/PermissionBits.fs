@@ -124,7 +124,7 @@ type SetGroupIdOnWrite =
     /// Only a writer who owns the file has been measured, and only a writer in the file's
     /// group when the file is set-group-ID. Asked about a set-user-ID or set-group-ID file
     /// on behalf of any other writer, privileged or not, <c>PermissionBits.afterContentChangingWrite</c>
-    /// throws rather than guess.
+    /// answers <c>SetIdChangeRefusal.UnmeasuredDarwinWrite</c> rather than guess.
     /// </remarks>
     /// <example>
     /// This is the case on Darwin.
@@ -159,7 +159,7 @@ type SetIdBitsOnTruncation =
     /// Only a truncating process that owns the file has been measured, and only one in the
     /// file's group when the file is set-group-ID. Asked about a set-user-ID or set-group-ID
     /// file on behalf of any other process, privileged or not, <c>PermissionBits.afterTruncation</c>
-    /// throws rather than guess.
+    /// answers <c>SetIdChangeRefusal.UnmeasuredDarwinTruncation</c> rather than guess.
     /// </remarks>
     /// <example>
     /// Darwin behaves this way.
@@ -193,6 +193,32 @@ type PermissionBits =
     override this.ToString () : string =
         match this with
         | PermissionBits bits -> "0o" + System.Convert.ToString(bits, 8).PadLeft (4, '0')
+
+/// Why this library will not say what a write or a truncation does to a file's
+/// set-user-ID and set-group-ID bits: the kernel's answer for that caller and
+/// that mode has not been measured.
+[<RequireQualifiedAccess>]
+type SetIdChangeRefusal =
+    /// A content-changing write, under `SetGroupIdOnWrite.StripAlways`, by a
+    /// caller standing as `standing` towards a file whose bits are `bits`.
+    | UnmeasuredDarwinWrite of standing : Standing * bits : PermissionBits
+    /// A truncation, under `SetIdBitsOnTruncation.Preserve`, by a caller
+    /// standing as `standing` towards a file whose bits are `bits`.
+    | UnmeasuredDarwinTruncation of standing : Standing * bits : PermissionBits
+
+[<RequireQualifiedAccess>]
+module SetIdChangeRefusal =
+    /// What this library knows about why it will not answer. A client adds
+    /// which call it was answering and which file it was.
+    let describe (refusal : SetIdChangeRefusal) : string =
+        let measured =
+            "What has been measured: a file with neither set-ID bit, a caller that owns the file and is in its group, and an unprivileged owner outside the group of a file without S_ISGID. Measuring the rest needs root or a second user on Darwin."
+
+        match refusal with
+        | SetIdChangeRefusal.UnmeasuredDarwinWrite (standing, bits) ->
+            $"what Darwin does to the set-ID bits of a %O{bits} file written to by a caller standing %A{standing} towards it has not been measured. %s{measured}"
+        | SetIdChangeRefusal.UnmeasuredDarwinTruncation (standing, bits) ->
+            $"what Darwin does to the set-ID bits of a %O{bits} file truncated by a caller standing %A{standing} towards it has not been measured. %s{measured}"
 
 [<RequireQualifiedAccess>]
 module PermissionBits =
@@ -374,18 +400,13 @@ module PermissionBits =
     // set-group-ID: an ordinary user cannot give a file it does not own a
     // set-ID bit, nor set `S_ISGID` on a file outside its groups. A file with
     // neither set-ID bit has nothing either rule could clear.
-    let private assertDarwinMeasured (context : string) (standing : Standing) (bits : PermissionBits) : unit =
+    let private darwinMeasured (standing : Standing) (bits : PermissionBits) : bool =
         let raw = toInt bits
 
-        let measured =
-            raw &&& (setUserId ||| setGroupId) = 0
-            || standing.Owns
-               && (standing.InGroup
-                   || raw &&& setGroupId = 0 && standing.Privilege = CallerPrivilege.Unprivileged)
-
-        if not measured then
-            failwith
-                $"%s{context}: what Darwin does to the set-ID bits of a %O{bits} file changed by a caller standing %O{standing} towards it has not been measured. What has been: a file with neither set-ID bit, a caller who owns the file and is in its group, and an unprivileged owner outside the group of a file without S_ISGID."
+        raw &&& (setUserId ||| setGroupId) = 0
+        || standing.Owns
+           && (standing.InGroup
+               || raw &&& setGroupId = 0 && standing.Privilege = CallerPrivilege.Unprivileged)
 
     /// <summary>
     /// After a content-changing write to a regular file by a process standing as <c>standing</c>
@@ -403,8 +424,8 @@ module PermissionBits =
     /// sticky bit is never touched on either. The whole of the disagreement is
     /// `S_ISGID` on a file that is not group-executable.
     ///
-    /// Throws for a write whose answer under <c>SetGroupIdOnWrite.StripAlways</c> has not been
-    /// measured; see that case.
+    /// Answers <c>SetIdChangeRefusal.UnmeasuredDarwinWrite</c> for a write whose answer under
+    /// <c>SetGroupIdOnWrite.StripAlways</c> has not been measured; see that case.
     /// </remarks>
     /// <param name="rule">
     /// Different platforms do different things to the set-group-ID on an unprivileged write.
@@ -421,7 +442,7 @@ module PermissionBits =
         (rule : SetGroupIdOnWrite)
         (standing : Standing)
         (bits : PermissionBits)
-        : PermissionBits
+        : Result<PermissionBits, SetIdChangeRefusal>
         =
         // Measured on Linux 6.18.5 (`permission-standing.c`): every one of the
         // 4096 modes, written through a descriptor by the owner in and out of
@@ -447,11 +468,13 @@ module PermissionBits =
         //
         // ...and as root every row is left exactly as it was, on both.
         match rule with
-        | SetGroupIdOnWrite.StripAlways -> assertDarwinMeasured "PermissionBits.afterContentChangingWrite" standing bits
-        | SetGroupIdOnWrite.StripWhenGroupExecutableOrWriterOutsideGroup -> ()
+        | SetGroupIdOnWrite.StripAlways when not (darwinMeasured standing bits) ->
+            Error (SetIdChangeRefusal.UnmeasuredDarwinWrite (standing, bits))
+        | SetGroupIdOnWrite.StripAlways
+        | SetGroupIdOnWrite.StripWhenGroupExecutableOrWriterOutsideGroup ->
 
         match standing.Privilege with
-        | CallerPrivilege.Privileged -> bits
+        | CallerPrivilege.Privileged -> Ok bits
         | CallerPrivilege.Unprivileged ->
 
         let raw = toInt bits
@@ -461,7 +484,7 @@ module PermissionBits =
             | SetGroupIdOnWrite.StripWhenGroupExecutableOrWriterOutsideGroup -> setIdBitsLinuxClears standing raw
             | SetGroupIdOnWrite.StripAlways -> setUserId ||| setGroupId
 
-        parseOrFail "PermissionBits.afterContentChangingWrite" (raw &&& ~~~cleared)
+        Ok (parseOrFail "PermissionBits.afterContentChangingWrite" (raw &&& ~~~cleared))
 
     /// <summary>
     /// After a truncation of a regular file by a process standing as <c>standing</c> towards it,
@@ -477,10 +500,15 @@ module PermissionBits =
     /// (This is by contrast to the situation with <c>afterContentChangingWrite</c>, which
     /// explicitly only applies to writes of at least one byte.)
     ///
-    /// Throws for a truncation whose answer under <c>SetIdBitsOnTruncation.Preserve</c> has not
-    /// been measured; see that case.
+    /// Answers <c>SetIdChangeRefusal.UnmeasuredDarwinTruncation</c> for a truncation whose answer
+    /// under <c>SetIdBitsOnTruncation.Preserve</c> has not been measured; see that case.
     /// </remarks>
-    let afterTruncation (rule : SetIdBitsOnTruncation) (standing : Standing) (bits : PermissionBits) : PermissionBits =
+    let afterTruncation
+        (rule : SetIdBitsOnTruncation)
+        (standing : Standing)
+        (bits : PermissionBits)
+        : Result<PermissionBits, SetIdChangeRefusal>
+        =
         // Measured as `afterContentChangingWrite` was, with `ftruncate(0)`,
         // `ftruncate` to the length the file already has, and (over the modes
         // the truncating process may open for writing) `open(O_TRUNC)`. For
@@ -500,14 +528,12 @@ module PermissionBits =
         // | `01755` | `01755` | `01755` |
         //
         // ...and as root every row is left exactly as it was, on both.
-        match rule with
-        | SetIdBitsOnTruncation.Preserve -> assertDarwinMeasured "PermissionBits.afterTruncation" standing bits
-        | SetIdBitsOnTruncation.Strip -> ()
-
         match rule, standing.Privilege with
+        | SetIdBitsOnTruncation.Preserve, _ when not (darwinMeasured standing bits) ->
+            Error (SetIdChangeRefusal.UnmeasuredDarwinTruncation (standing, bits))
         | SetIdBitsOnTruncation.Preserve, _
-        | _, CallerPrivilege.Privileged -> bits
+        | _, CallerPrivilege.Privileged -> Ok bits
         | SetIdBitsOnTruncation.Strip, CallerPrivilege.Unprivileged ->
 
         let raw = toInt bits
-        parseOrFail "PermissionBits.afterTruncation" (raw &&& ~~~(setIdBitsLinuxClears standing raw))
+        Ok (parseOrFail "PermissionBits.afterTruncation" (raw &&& ~~~(setIdBitsLinuxClears standing raw)))

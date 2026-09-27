@@ -143,6 +143,7 @@ module TestUnlinkRules =
         | Error error -> UnlinkVerdict.Refuse error
         | Ok resolution ->
             UnlinkRules.verdict (SimulatedUnixPlatform.flavour platform) (Owners.caller privilege) resolution tree
+            |> Answered.unrefused
 
     let private linux : SimulatedUnixPlatform = SimulatedUnixPlatform.linuxX64
 

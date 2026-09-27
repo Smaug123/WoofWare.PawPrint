@@ -1288,6 +1288,7 @@ module TestVirtualFileSystemAgainstHost =
                 let modelSaid =
                     PermissionBits.parseOrFail "test" mode
                     |> PermissionBits.afterTruncation rule (Owners.owning privilege)
+                    |> Answered.unrefused
                     |> PermissionBits.toInt
 
                 if kernelSaid <> modelSaid then
@@ -1342,6 +1343,7 @@ module TestVirtualFileSystemAgainstHost =
                 let modelSaid =
                     PermissionBits.parseOrFail "test" mode
                     |> PermissionBits.afterContentChangingWrite rule (Owners.owning privilege)
+                    |> Answered.unrefused
                     |> PermissionBits.toInt
 
                 if kernelSaid <> modelSaid then
@@ -1912,6 +1914,7 @@ module TestVirtualFileSystemAgainstHost =
                 (Owners.caller (hostPrivilege ()))
                 resolution
                 vfs
+            |> Answered.unrefused
         with
         | UnlinkVerdict.Refuse error -> UnlinkOutcome.Failed (hostErrno error)
         | UnlinkVerdict.Remove (directory, name) ->
@@ -2121,6 +2124,7 @@ module TestVirtualFileSystemAgainstHost =
                 (Owners.caller (hostPrivilege ()))
                 resolution
                 vfs
+            |> Answered.unrefused
         with
         | RmDirVerdict.Refuse error -> UnlinkOutcome.Failed (hostErrno error)
         | RmDirVerdict.Remove (directory, name) ->

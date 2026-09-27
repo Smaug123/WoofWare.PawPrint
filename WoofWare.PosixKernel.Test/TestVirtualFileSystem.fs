@@ -1762,6 +1762,7 @@ module TestVirtualFileSystem =
         let after (rule : SetIdBitsOnTruncation) (privilege : CallerPrivilege) (mode : int) : int =
             PermissionBits.parseOrFail "test" mode
             |> PermissionBits.afterTruncation rule (Owners.owning privilege)
+            |> Answered.unrefused
             |> PermissionBits.toInt
 
         let linux = after SetIdBitsOnTruncation.Strip CallerPrivilege.Unprivileged
@@ -1810,6 +1811,7 @@ module TestVirtualFileSystem =
         let after (rule : SetGroupIdOnWrite) (privilege : CallerPrivilege) (mode : int) : int =
             PermissionBits.parseOrFail "test" mode
             |> PermissionBits.afterContentChangingWrite rule (Owners.owning privilege)
+            |> Answered.unrefused
             |> PermissionBits.toInt
 
         let linux =
@@ -1861,6 +1863,7 @@ module TestVirtualFileSystem =
         let after (rule : SetGroupIdOnWrite) (mode : int) : int =
             PermissionBits.parseOrFail "test" mode
             |> PermissionBits.afterContentChangingWrite rule (Owners.owning CallerPrivilege.Unprivileged)
+            |> Answered.unrefused
             |> PermissionBits.toInt
 
         after SetGroupIdOnWrite.StripAlways 0o6644 |> shouldEqual 0o0644
@@ -1873,6 +1876,7 @@ module TestVirtualFileSystem =
         // acquire it.
         PermissionBits.parseOrFail "test" 0o6644
         |> PermissionBits.afterTruncation SetIdBitsOnTruncation.Preserve (Owners.owning CallerPrivilege.Unprivileged)
+        |> Answered.unrefused
         |> PermissionBits.toInt
         |> shouldEqual 0o6644
 

@@ -1849,10 +1849,10 @@ module TestUnixSystemStep =
                  | Ok (FileStatusAnswer.Failed error) -> error
                  | other -> failwith $"expected a failure, got %A{other}")
                 UnixNamespace.mkdir path 0o777 system |> answer
-                UnixNamespace.unlink path system |> answer
-                UnixNamespace.rmdir path system |> answer
+                Answered.unlink path system |> answer
+                Answered.rmdir path system |> answer
                 UnixPathResolution.chdir path system |> answer
-                UnixNamespace.openPath
+                Answered.openPath
                     {
                         Access = FileAccessMode.ReadOnly
                         Create = false
@@ -1971,7 +1971,7 @@ module TestUnixSystemStep =
     let ``unlink removes the name, and the inode with it when nothing holds it`` () : unit =
         let _, target, _, system = withTree linux
 
-        let after = UnixNamespace.unlink (statPath "/d/inner/t") system |> completed
+        let after = Answered.unlink (statPath "/d/inner/t") system |> completed
 
         UnixPathResolution.stat SymlinkPolicy.Follow (statPath "/d/inner/t") after
         |> shouldEqual (Ok (FileStatusAnswer.Failed UnixError.ENOENT))
@@ -1998,7 +1998,7 @@ module TestUnixSystemStep =
                     }
             }
 
-        let after = UnixNamespace.unlink (statPath "/d/inner/t") system |> completed
+        let after = Answered.unlink (statPath "/d/inner/t") system |> completed
 
         // The name has gone...
         UnixPathResolution.stat SymlinkPolicy.Follow (statPath "/d/inner/t") after
@@ -2020,14 +2020,14 @@ module TestUnixSystemStep =
     let ``rmdir refuses a directory that still holds something`` () : unit =
         let _, _, _, system = withTree linux
 
-        UnixNamespace.rmdir (statPath "/d") system |> failedAs UnixError.ENOTEMPTY
+        Answered.rmdir (statPath "/d") system |> failedAs UnixError.ENOTEMPTY
 
         // The leaf is empty, so it goes; and then its parent is empty too.
         let after =
-            UnixNamespace.unlink (statPath "/d/inner/t") system
+            Answered.unlink (statPath "/d/inner/t") system
             |> completed
-            |> fun system -> UnixNamespace.rmdir (statPath "/d/inner") system |> completed
-            |> fun system -> UnixNamespace.rmdir (statPath "/d") system |> completed
+            |> fun system -> Answered.rmdir (statPath "/d/inner") system |> completed
+            |> fun system -> Answered.rmdir (statPath "/d") system |> completed
 
         UnixPathResolution.stat SymlinkPolicy.Follow (statPath "/d") after
         |> shouldEqual (Ok (FileStatusAnswer.Failed UnixError.ENOENT))
@@ -2053,7 +2053,7 @@ module TestUnixSystemStep =
                     Machine = UnixMachineState.advanceClock 5_000_000_000L system.Machine
                 }
 
-            let after = UnixNamespace.rmdir (statPath "/d") system |> completed
+            let after = Answered.rmdir (statPath "/d") system |> completed
 
             match UnixPathResolution.statOf inode after with
             | Some (Ok status) -> status.StatusChangeTime |> shouldEqual expected
@@ -2066,11 +2066,11 @@ module TestUnixSystemStep =
         // points are not one syscall with a flag.
         let _, _, _, system = withTree linux
 
-        match UnixNamespace.unlink (statPath "/d/inner") system with
+        match Answered.unlink (statPath "/d/inner") system with
         | SyscallAnswer.Failed _, _ -> ()
         | other -> failwith $"unlink should not remove a directory, got %A{other}"
 
-        UnixNamespace.rmdir (statPath "/d/inner/t") system |> failedAs UnixError.ENOTDIR
+        Answered.rmdir (statPath "/d/inner/t") system |> failedAs UnixError.ENOTDIR
 
     [<Test>]
     let ``the path syscalls through step agree with the primitives`` () : unit =
@@ -2085,8 +2085,8 @@ module TestUnixSystemStep =
                 // as 0o777: with umask 0o022 both 0o755 and 0o777 become 0o755,
                 // so a dispatcher that dropped the mode would agree.
                 Syscall.MkDir (statPath "/new", 0o700), UnixNamespace.mkdir (statPath "/new") 0o700 system
-                Syscall.Unlink (statPath "/d/inner/t"), UnixNamespace.unlink (statPath "/d/inner/t") system
-                Syscall.RmDir (statPath "/d"), UnixNamespace.rmdir (statPath "/d") system
+                Syscall.Unlink (statPath "/d/inner/t"), Answered.unlink (statPath "/d/inner/t") system
+                Syscall.RmDir (statPath "/d"), Answered.rmdir (statPath "/d") system
                 // A *successful* chdir, so the comparison covers the state it
                 // moves rather than only an errno: this one changes both the
                 // current directory inode and the cached path, and a dispatcher
@@ -3603,11 +3603,11 @@ module TestUnixSystemStep =
         // `/d/inner/t` first: `rmdir` refuses a directory that still has names
         // in it, which is also what keeps an orphan empty for ever after.
         let system =
-            match UnixNamespace.unlink (statPath "/d/inner/t") system with
+            match Answered.unlink (statPath "/d/inner/t") system with
             | SyscallAnswer.Completed 0L, system -> system
             | other -> failwith $"could not empty /d/inner: %O{other}"
 
-        match UnixNamespace.rmdir (statPath "/d/inner") system with
+        match Answered.rmdir (statPath "/d/inner") system with
         | SyscallAnswer.Completed 0L, system -> system
         | other -> failwith $"could not orphan the current directory: %O{other}"
 
@@ -3806,11 +3806,11 @@ module TestUnixSystemStep =
                     Exclusive = true
                 }
 
-            UnixNamespace.openPath exclusiveOnly (statPath "/d/inner/t") 0o666 system
+            Answered.openPath exclusiveOnly (statPath "/d/inner/t") 0o666 system
             |> openedFd
             |> shouldBeGreaterThan 2
 
-            UnixNamespace.openPath exclusiveOnly (statPath "/d/inner/nope") 0o666 system
+            Answered.openPath exclusiveOnly (statPath "/d/inner/nope") 0o666 system
             |> openFailed
             |> shouldEqual UnixError.ENOENT
 
@@ -3820,13 +3820,13 @@ module TestUnixSystemStep =
             // that read `Exclusive` without `Create` would answer ELOOP here.
             // Measured on both: `open(link, O_RDONLY|O_EXCL)` follows to the
             // file and succeeds, exactly as without the flag.
-            UnixNamespace.openPath exclusiveOnly (statPath "/l") 0o666 system
+            Answered.openPath exclusiveOnly (statPath "/l") 0o666 system
             |> openedFd
             |> shouldBeGreaterThan 2
 
             // And with `Create` it bites, which is what says the field is read
             // at all.
-            UnixNamespace.openPath
+            Answered.openPath
                 { exclusiveOnly with
                     Create = true
                 }
@@ -3852,7 +3852,7 @@ module TestUnixSystemStep =
                 }
 
             let answer, after =
-                UnixNamespace.openPath creatingExclusive (statPath "/dangling") 0o666 system
+                Answered.openPath creatingExclusive (statPath "/dangling") 0o666 system
 
             answer |> shouldEqual (SyscallAnswer.Failed UnixError.EEXIST)
 
@@ -3868,11 +3868,11 @@ module TestUnixSystemStep =
         for flavour in [ linux ; darwin ] do
             let _, _, _, system = withTree flavour
 
-            UnixNamespace.openPath plainOpen (statPath "/d/inner") 0o666 system
+            Answered.openPath plainOpen (statPath "/d/inner") 0o666 system
             |> openedFd
             |> shouldBeGreaterThan 2
 
-            UnixNamespace.openPath
+            Answered.openPath
                 { plainOpen with
                     Access = FileAccessMode.WriteOnly
                 }
@@ -3889,7 +3889,7 @@ module TestUnixSystemStep =
         for flavour in [ linux ; darwin ] do
             let _, _, _, system = withTree flavour
 
-            UnixNamespace.openPath
+            Answered.openPath
                 { plainOpen with
                     Truncate = true
                 }
@@ -3909,7 +3909,7 @@ module TestUnixSystemStep =
             let _, target, _, system = withTree flavour
 
             let _, after =
-                UnixNamespace.openPath
+                Answered.openPath
                     { plainOpen with
                         Truncate = true
                     }
@@ -3953,11 +3953,11 @@ module TestUnixSystemStep =
                         }
                 }
 
-            UnixNamespace.openPath plainOpen (statPath "/readable") 0o666 system
+            Answered.openPath plainOpen (statPath "/readable") 0o666 system
             |> openedFd
             |> shouldBeGreaterThan 2
 
-            UnixNamespace.openPath
+            Answered.openPath
                 { plainOpen with
                     Truncate = true
                 }
@@ -4004,7 +4004,7 @@ module TestUnixSystemStep =
                 }
 
             let openAs (access : FileAccessMode) (path : string) =
-                UnixNamespace.openPath
+                Answered.openPath
                     { plainOpen with
                         Access = access
                     }
@@ -4032,11 +4032,11 @@ module TestUnixSystemStep =
         for flavour in [ linux ; darwin ] do
             let _, _, _, system = withTree flavour
 
-            UnixNamespace.openPath plainOpen (statPath "/l") 0o666 system
+            Answered.openPath plainOpen (statPath "/l") 0o666 system
             |> openedFd
             |> shouldBeGreaterThan 2
 
-            UnixNamespace.openPath
+            Answered.openPath
                 { plainOpen with
                     NoFollow = true
                 }
@@ -4056,10 +4056,10 @@ module TestUnixSystemStep =
         for flavour in [ linux ; darwin ] do
             let _, _, _, system = withTree flavour
 
-            let plain = UnixNamespace.openPath plainOpen (statPath "/d/inner/t") 0o666 system
+            let plain = Answered.openPath plainOpen (statPath "/d/inner/t") 0o666 system
 
             let withBoth =
-                UnixNamespace.openPath
+                Answered.openPath
                     { plainOpen with
                         CloseOnExec = true
                         Synchronous = true
@@ -4082,7 +4082,7 @@ module TestUnixSystemStep =
             let _, _, _, system = withTree flavour
 
             let _, after =
-                UnixNamespace.openPath
+                Answered.openPath
                     { plainOpen with
                         Create = true
                         Access = FileAccessMode.WriteOnly
@@ -4107,7 +4107,7 @@ module TestUnixSystemStep =
         for flavour in [ linux ; darwin ] do
             let _, _, _, system = withTree flavour
 
-            UnixNamespace.openPath plainOpen (statPath "/d/inner/t") 0o666 system
+            Answered.openPath plainOpen (statPath "/d/inner/t") 0o666 system
             |> openedFd
             |> shouldBeGreaterThan 2
 
@@ -4129,7 +4129,7 @@ module TestUnixSystemStep =
         for flavour, expected in [ linux, UnixError.EISDIR ; darwin, UnixError.ENOENT ] do
             let _, _, _, system = withTree flavour
 
-            let answer, after = UnixNamespace.openPath creating (statPath "/new/") 0o666 system
+            let answer, after = Answered.openPath creating (statPath "/new/") 0o666 system
 
             answer |> shouldEqual (SyscallAnswer.Failed expected)
 
@@ -4140,7 +4140,7 @@ module TestUnixSystemStep =
 
             // The same name *without* the separator creates, so the row above is
             // about the separator rather than about the name being unreachable.
-            UnixNamespace.openPath creating (statPath "/new") 0o666 system
+            Answered.openPath creating (statPath "/new") 0o666 system
             |> openedFd
             |> shouldBeGreaterThan 2
 
@@ -4156,7 +4156,7 @@ module TestUnixSystemStep =
 
             let writeOnlyFd, afterWriteOnly =
                 match
-                    UnixNamespace.openPath
+                    Answered.openPath
                         { plainOpen with
                             Access = FileAccessMode.WriteOnly
                         }
@@ -4172,7 +4172,7 @@ module TestUnixSystemStep =
             | other -> failwith $"a write-only descriptor should refuse read: %O{other}"
 
             let readOnlyFd, afterReadOnly =
-                match UnixNamespace.openPath plainOpen (statPath "/d/inner/t") 0o666 system with
+                match Answered.openPath plainOpen (statPath "/d/inner/t") 0o666 system with
                 | SyscallAnswer.Completed fd, after -> int fd, after
                 | other -> failwith $"expected a descriptor, got %O{other}"
 
@@ -4325,14 +4325,14 @@ module TestUnixSystemStep =
             let _, _, _, system = withTree flavour
 
             let withoutStream =
-                match UnixNamespace.openPath plainOpen (statPath "/d/inner/t") 0o666 system with
+                match Answered.openPath plainOpen (statPath "/d/inner/t") 0o666 system with
                 | SyscallAnswer.Completed fd, _ -> int fd
                 | other -> failwith $"expected a descriptor, got %O{other}"
 
             let _, afterStream = openedStream system "/d/inner"
 
             let withStream =
-                match UnixNamespace.openPath plainOpen (statPath "/d/inner/t") 0o666 afterStream with
+                match Answered.openPath plainOpen (statPath "/d/inner/t") 0o666 afterStream with
                 | SyscallAnswer.Completed fd, _ -> int fd
                 | other -> failwith $"expected a descriptor, got %O{other}"
 
@@ -4347,12 +4347,12 @@ module TestUnixSystemStep =
             let fd, system = openedStream system "/d/inner"
 
             let system =
-                match UnixNamespace.unlink (statPath "/d/inner/t") system with
+                match Answered.unlink (statPath "/d/inner/t") system with
                 | SyscallAnswer.Completed 0L, system -> system
                 | other -> failwith $"could not empty the directory: %O{other}"
 
             let system =
-                match UnixNamespace.rmdir (statPath "/d/inner") system with
+                match Answered.rmdir (statPath "/d/inner") system with
                 | SyscallAnswer.Completed 0L, system -> system
                 | other -> failwith $"could not remove the directory: %O{other}"
 
@@ -5203,7 +5203,7 @@ module TestUnixSystemStep =
                     }
             }
 
-        match UnixNamespace.rmdir (statPath "/gone") inCwd with
+        match Answered.rmdir (statPath "/gone") inCwd with
         | SyscallAnswer.Completed 0L, removed -> removed
         | other -> failwith $"could not remove /gone: %A{other}"
 
@@ -5259,14 +5259,14 @@ module TestUnixSystemStep =
         // than swallowed — otherwise the two rows above would pass for a kernel
         // that never copies anything in.
         UnixNamespace.rename (arg "f") unreadable (withRenameTree linux)
-        |> shouldEqual (Error (PathArgumentRefusal.InteriorNul 1))
+        |> shouldEqual (Error (RenameRefusal.PathArgument (PathArgumentRefusal.InteriorNul 1)))
 
         UnixNamespace.rename (arg "f") unreadable (withRenameTree darwin)
-        |> shouldEqual (Error (PathArgumentRefusal.InteriorNul 1))
+        |> shouldEqual (Error (RenameRefusal.PathArgument (PathArgumentRefusal.InteriorNul 1)))
 
         // A bad *source* is refused on both, being copied in first either way.
         UnixNamespace.rename unreadable (arg "x") (withRenameTree linux)
-        |> shouldEqual (Error (PathArgumentRefusal.InteriorNul 1))
+        |> shouldEqual (Error (RenameRefusal.PathArgument (PathArgumentRefusal.InteriorNul 1)))
 
     [<Test>]
     let ``a call the source phase finishes never asks for a destination`` () : unit =
@@ -5551,7 +5551,7 @@ module TestUnixSystemStep =
         let held = moved.Process.CurrentDirectoryInode
 
         let removed =
-            match UnixNamespace.rmdir (statPath "/d/sub") moved with
+            match Answered.rmdir (statPath "/d/sub") moved with
             | SyscallAnswer.Completed 0L, removed -> removed
             | other -> failwith $"expected the rmdir to succeed, got %A{other}"
 
@@ -5587,7 +5587,7 @@ module TestUnixSystemStep =
             | other -> failwith $"expected a success, got %A{other}"
 
         let orphaned =
-            match UnixNamespace.rmdir (statPath "/d/sub") inSub with
+            match Answered.rmdir (statPath "/d/sub") inSub with
             | SyscallAnswer.Completed 0L, removed -> removed
             | other -> failwith $"expected the rmdir to succeed, got %A{other}"
 

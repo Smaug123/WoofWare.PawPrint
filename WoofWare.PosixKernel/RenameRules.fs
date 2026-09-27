@@ -437,7 +437,7 @@ module RenameRules =
         (source : Resolution)
         (destination : Resolution)
         (vfs : VirtualFileSystem)
-        : RenameVerdict
+        : Result<RenameVerdict, StickyRefusal>
         =
         let destinationParentIsOrphan =
             match destination.Target with
@@ -446,13 +446,13 @@ module RenameRules =
             | ResolvedTarget.Directory _ -> false
 
         if destinationParentIsOrphan then
-            RenameVerdict.Refuse UnixError.ENOENT
+            Ok (RenameVerdict.Refuse UnixError.ENOENT)
         else
 
         match source.Target with
         | ResolvedTarget.Directory (_, reachedBy) ->
             match reachedBy with
-            | FinalNavigation.Root -> RenameVerdict.Refuse UnixError.EISDIR
+            | FinalNavigation.Root -> Ok (RenameVerdict.Refuse UnixError.EISDIR)
             // No root special case, unlike Darwin's `unlink` and `rmdir`, which
             // each give the root its own EBUSY arm. Establishing that took some
             // care, because the obvious measurement is masked: a filesystem root
@@ -472,11 +472,11 @@ module RenameRules =
             // This library has one filesystem and no mounts, so nothing here can
             // produce EXDEV and the EINVAL readings are the applicable ones.
             | FinalNavigation.Current
-            | FinalNavigation.Parent -> RenameVerdict.Refuse UnixError.EINVAL
+            | FinalNavigation.Parent -> Ok (RenameVerdict.Refuse UnixError.EINVAL)
         | ResolvedTarget.Entry (sourceDirectory, sourceName, sourceExisting) ->
 
         match sourceExisting with
-        | None -> RenameVerdict.Refuse UnixError.ENOENT
+        | None -> Ok (RenameVerdict.Refuse UnixError.ENOENT)
         | Some moved ->
 
         let movedIsDirectory = RemovalChecks.isDirectory moved vfs
@@ -485,69 +485,78 @@ module RenameRules =
         | ResolvedTarget.Directory (_, reachedBy) ->
             match reachedBy with
             | FinalNavigation.Current
-            | FinalNavigation.Parent -> RenameVerdict.Refuse UnixError.EINVAL
+            | FinalNavigation.Parent -> Ok (RenameVerdict.Refuse UnixError.EINVAL)
             | FinalNavigation.Root ->
                 if movedIsDirectory then
-                    RenameVerdict.Refuse UnixError.EINVAL
+                    Ok (RenameVerdict.Refuse UnixError.EINVAL)
                 else
-                    RenameVerdict.Refuse UnixError.EISDIR
+                    Ok (RenameVerdict.Refuse UnixError.EISDIR)
         | ResolvedTarget.Entry (destinationDirectory, destinationName, destinationExisting) ->
 
         let displacedDirectory = RenameChecks.existingDirectory destinationExisting vfs
         let displacesNonDirectory = RenameChecks.namesNonDirectory destinationExisting vfs
 
         if movedIsDirectory && displacesNonDirectory then
-            RenameVerdict.Refuse UnixError.ENOTDIR
+            Ok (RenameVerdict.Refuse UnixError.ENOTDIR)
         elif not movedIsDirectory && displacedDirectory.IsSome then
-            RenameVerdict.Refuse UnixError.EISDIR
+            Ok (RenameVerdict.Refuse UnixError.EISDIR)
         elif
             destination.TrailingSeparatorDemanded
             && destinationExisting.IsNone
             && not movedIsDirectory
         then
-            RenameVerdict.Refuse UnixError.ENOENT
+            Ok (RenameVerdict.Refuse UnixError.ENOENT)
         elif
             movedIsDirectory
             && VirtualFileSystem.isWithinSubtree moved destinationDirectory vfs
         then
-            RenameVerdict.Refuse UnixError.EINVAL
+            Ok (RenameVerdict.Refuse UnixError.EINVAL)
         elif RenameChecks.lacksWrite "the source's parent" credentials sourceDirectory vfs then
-            RenameVerdict.Refuse UnixError.EACCES
-        elif
-            RemovalChecks.sticky credentials sourceDirectory sourceName moved vfs
-            |> RemovalChecks.darwinStickyRefuses "RenameRules.verdict (the source)"
-        then
-            RenameVerdict.Refuse UnixError.EACCES
-        elif
-            // Which directory this asks about is the measured oddity. A
-            // directory displacing a directory is the one shape where Darwin
-            // consults the displaced object rather than the directory holding
-            // it -- and `displacedDirectory` being `Some` here already implies
-            // the source is a directory, because the EISDIR arm above refused
-            // the only other way to reach this line with one.
+            Ok (RenameVerdict.Refuse UnixError.EACCES)
+        else
+
+        match RemovalChecks.darwinStickyRefuses credentials sourceDirectory sourceName moved vfs with
+        | Error refusal -> Error refusal
+        | Ok true -> Ok (RenameVerdict.Refuse UnixError.EACCES)
+        | Ok false ->
+
+        // Which directory this asks about is the measured oddity. A directory
+        // displacing a directory is the one shape where Darwin consults the
+        // displaced object rather than the directory holding it -- and
+        // `displacedDirectory` being `Some` here already implies the source is
+        // a directory, because the EISDIR arm above refused the only other way
+        // to reach this line with one.
+        let destinationRefuses : Result<bool, StickyRefusal> =
             match displacedDirectory with
             | Some displaced ->
                 match RemovalChecks.sticky credentials destinationDirectory destinationName displaced vfs with
-                | StickyRemoval.Unrestricted -> ()
                 | StickyRemoval.Forbidden
                 | StickyRemoval.ForbiddenButPrivileged ->
-                    failwith
-                        "RenameRules.verdict: on Darwin, a directory displacing a directory the caller owns neither of, in a sticky directory the caller does not own. Whether Darwin's sticky rule applies there, where it consults the displaced directory's write bit rather than its parent's, has not been measured."
-
-                RenameChecks.lacksWrite "the displaced directory" credentials displaced vfs
+                    Error (
+                        StickyRefusal.DarwinDirectoryDisplacingDirectory (
+                            destinationDirectory,
+                            displaced,
+                            RemovalChecks.standingTowards credentials displaced vfs
+                        )
+                    )
+                | StickyRemoval.Unrestricted ->
+                    Ok (RenameChecks.lacksWrite "the displaced directory" credentials displaced vfs)
             | None ->
-                RenameChecks.lacksWrite "the destination's parent" credentials destinationDirectory vfs
-                || (
+                if RenameChecks.lacksWrite "the destination's parent" credentials destinationDirectory vfs then
+                    Ok true
+                else
                     match destinationExisting with
                     | Some displaced ->
-                        RemovalChecks.sticky credentials destinationDirectory destinationName displaced vfs
-                        |> RemovalChecks.darwinStickyRefuses "RenameRules.verdict (the destination)"
-                    | None -> false
-                )
-        then
-            RenameVerdict.Refuse UnixError.EACCES
-        elif destinationExisting = Some moved then
-            RenameVerdict.NoOp
+                        RemovalChecks.darwinStickyRefuses credentials destinationDirectory destinationName displaced vfs
+                    | None -> Ok false
+
+        match destinationRefuses with
+        | Error refusal -> Error refusal
+        | Ok true -> Ok (RenameVerdict.Refuse UnixError.EACCES)
+        | Ok false ->
+
+        if destinationExisting = Some moved then
+            Ok RenameVerdict.NoOp
         elif
             // Two occasions, not one, and this is where Darwin parts from Linux
             // a second time. Linux wants this bit only when the parent changes,
@@ -564,14 +573,14 @@ module RenameRules =
             && (sourceDirectory <> destinationDirectory || displacedDirectory.IsSome)
             && RenameChecks.lacksWrite "the moved directory" credentials moved vfs
         then
-            RenameVerdict.Refuse UnixError.EACCES
+            Ok (RenameVerdict.Refuse UnixError.EACCES)
         else
 
         match displacedDirectory with
         | Some displaced when not (RemovalChecks.isEmptyDirectory displaced vfs) ->
-            RenameVerdict.Refuse UnixError.ENOTEMPTY
+            Ok (RenameVerdict.Refuse UnixError.ENOTEMPTY)
         | Some _
-        | None -> RenameVerdict.Move (sourceDirectory, sourceName, destinationDirectory, destinationName)
+        | None -> Ok (RenameVerdict.Move (sourceDirectory, sourceName, destinationDirectory, destinationName))
 
     /// Decide what a `rename(2)` owes, given how its two paths resolved.
     ///
@@ -595,6 +604,9 @@ module RenameRules =
     /// unwritable parent or moved directory, a trailing separator over a file,
     /// and a move into the source's own subtree each beat it. The source name is
     /// only looked up, so it is never refused this way.
+    ///
+    /// Refused where Darwin's sticky rule has not been measured for this caller;
+    /// see `StickyRefusal`.
     let verdict
         (flavour : SimulatedUnixFlavour)
         (bindable : BindableEntryNames)
@@ -602,16 +614,21 @@ module RenameRules =
         (source : Resolution)
         (destination : Resolution)
         (vfs : VirtualFileSystem)
-        : RenameVerdict
+        : Result<RenameVerdict, StickyRefusal>
         =
         let verdict =
             match flavour with
-            | SimulatedUnixFlavour.Linux -> linuxVerdict credentials source destination vfs
+            | SimulatedUnixFlavour.Linux -> Ok (linuxVerdict credentials source destination vfs)
             | SimulatedUnixFlavour.Darwin -> darwinVerdict credentials source destination vfs
 
-        match verdict with
-        | RenameVerdict.Move (_, _, _, destinationName) when not (BindableEntryNames.admits bindable destinationName) ->
-            RenameVerdict.Refuse UnixError.EILSEQ
-        | RenameVerdict.Move _
-        | RenameVerdict.NoOp
-        | RenameVerdict.Refuse _ -> verdict
+        verdict
+        |> Result.map (fun verdict ->
+            match verdict with
+            | RenameVerdict.Move (_, _, _, destinationName) when
+                not (BindableEntryNames.admits bindable destinationName)
+                ->
+                RenameVerdict.Refuse UnixError.EILSEQ
+            | RenameVerdict.Move _
+            | RenameVerdict.NoOp
+            | RenameVerdict.Refuse _ -> verdict
+        )

@@ -265,10 +265,10 @@ module TestPermissionStanding =
                     SetGroupIdOnWrite.StripWhenGroupExecutableOrWriterOutsideGroup
                     standing
                     (mode bits)
-                |> shouldEqual (mode expected)
+                |> shouldEqual (Ok (mode expected))
 
                 PermissionBits.afterTruncation SetIdBitsOnTruncation.Strip standing (mode bits)
-                |> shouldEqual (mode expected)
+                |> shouldEqual (Ok (mode expected))
 
     [<Test>]
     let ``Darwin's write and truncation answer the measured rows and refuse the rest, over every mode`` () : unit =
@@ -286,11 +286,14 @@ module TestPermissionStanding =
                         | CallerPrivilege.Privileged -> bits
                         | CallerPrivilege.Unprivileged -> bits &&& ~~~0o6000
 
-                    write () |> shouldEqual (mode written)
-                    truncate () |> shouldEqual (mode bits)
+                    write () |> shouldEqual (Ok (mode written))
+                    truncate () |> shouldEqual (Ok (mode bits))
                 else
-                    (fun () -> write () |> ignore<PermissionBits>) |> shouldFail
-                    (fun () -> truncate () |> ignore<PermissionBits>) |> shouldFail
+                    write ()
+                    |> shouldEqual (Error (SetIdChangeRefusal.UnmeasuredDarwinWrite (standing, mode bits)))
+
+                    truncate ()
+                    |> shouldEqual (Error (SetIdChangeRefusal.UnmeasuredDarwinTruncation (standing, mode bits)))
 
     [<Test>]
     let ``the measured Linux write rows, by writer`` () : unit =
@@ -319,10 +322,10 @@ module TestPermissionStanding =
                 SetGroupIdOnWrite.StripWhenGroupExecutableOrWriterOutsideGroup
                 standing
                 (mode before)
-            |> shouldEqual (mode after)
+            |> shouldEqual (Ok (mode after))
 
             PermissionBits.afterTruncation SetIdBitsOnTruncation.Strip standing (mode before)
-            |> shouldEqual (mode after)
+            |> shouldEqual (Ok (mode after))
 
         // Root, not in the file's group: nothing moves.
         let root =
@@ -336,7 +339,7 @@ module TestPermissionStanding =
             SetGroupIdOnWrite.StripWhenGroupExecutableOrWriterOutsideGroup
             root
             (mode 0o2666)
-        |> shouldEqual (mode 0o2666)
+        |> shouldEqual (Ok (mode 0o2666))
 
     // ------------------------------------------------------------- the creation strip
 
@@ -430,16 +433,16 @@ module TestPermissionStanding =
                     SetGroupIdOnWrite.StripWhenGroupExecutableOrWriterOutsideGroup
                     standing
                     (mode bits)
-                |> shouldEqual (mode (ownerOnlyStrip privilege true bits))
+                |> shouldEqual (Ok (mode (ownerOnlyStrip privilege true bits)))
 
                 PermissionBits.afterContentChangingWrite SetGroupIdOnWrite.StripAlways standing (mode bits)
-                |> shouldEqual (mode (ownerOnlyStrip privilege false bits))
+                |> shouldEqual (Ok (mode (ownerOnlyStrip privilege false bits)))
 
                 PermissionBits.afterTruncation SetIdBitsOnTruncation.Strip standing (mode bits)
-                |> shouldEqual (mode (ownerOnlyStrip privilege true bits))
+                |> shouldEqual (Ok (mode (ownerOnlyStrip privilege true bits)))
 
                 PermissionBits.afterTruncation SetIdBitsOnTruncation.Preserve standing (mode bits)
-                |> shouldEqual (mode bits)
+                |> shouldEqual (Ok (mode bits))
 
                 PermissionBits.stickyRemoval standing standing (mode bits)
                 |> shouldEqual StickyRemoval.Unrestricted
@@ -529,17 +532,29 @@ module TestPermissionStanding =
         | Rename of string * string
 
     /// Run `call`, reporting its errno (`None` for success) and the system after it.
-    let private run (call : Call) (system : UnixSystem<int, string>) : UnixError option * UnixSystem<int, string> =
-        let answer, system =
+    /// What a call came to: an answer (its errno, `None` for success), or a
+    /// refusal of the sticky rule.
+    [<RequireQualifiedAccess>]
+    type private Outcome =
+        | Answered of error : UnixError option
+        | Refused of refusal : StickyRefusal
+
+    /// Run `call`, reporting what it came to and the system after it.
+    let private run (call : Call) (system : UnixSystem<int, string>) : Outcome * UnixSystem<int, string> =
+        let result =
             match call with
             | Call.Unlink p -> UnixNamespace.unlink (path p) system
             | Call.RmDir p -> UnixNamespace.rmdir (path p) system
             | Call.Rename (source, destination) ->
-                UnixNamespace.rename (argument source) (argument destination) system |> ok
+                match UnixNamespace.rename (argument source) (argument destination) system with
+                | Ok answer -> Ok answer
+                | Error (RenameRefusal.Sticky refusal) -> Error refusal
+                | Error (RenameRefusal.PathArgument refusal) -> failwith $"%A{call}: %A{refusal}"
 
-        match answer with
-        | SyscallAnswer.Completed _ -> None, system
-        | SyscallAnswer.Failed error -> Some error, system
+        match result with
+        | Error refusal -> Outcome.Refused refusal, system
+        | Ok (SyscallAnswer.Completed _, system) -> Outcome.Answered None, system
+        | Ok (SyscallAnswer.Failed error, system) -> Outcome.Answered (Some error), system
 
     /// Run `rows` one after another on one system, as the probe ran them in one
     /// tree, and check each answer.
@@ -549,7 +564,7 @@ module TestPermissionStanding =
             (fun system (call, expected) ->
                 let actual, system = run call system
 
-                if actual <> expected then
+                if actual <> Outcome.Answered expected then
                     failwith $"%A{call}: expected %A{expected}, got %A{actual}"
 
                 system
@@ -754,21 +769,29 @@ module TestPermissionStanding =
             |> file "/tmp/base/own-sticky/theirs" (owner 7u 7u) 0o644
             |> directory "/tmp/base/own-sticky/theirdir" (owner 7u 7u) 0o755
 
-        let system =
-            systemOn SimulatedUnixPlatform.macOsArm64 (Credentials.ofIds UserId.root (gid 0u) []) tree
+        let root = Credentials.ofIds UserId.root (gid 0u) []
+        let system = systemOn SimulatedUnixPlatform.macOsArm64 root tree
+        let directory = inodeAt tree "/tmp/base/own-sticky"
+        let theirs = inodeAt tree "/tmp/base/own-sticky/theirs"
+        let theirDirectory = inodeAt tree "/tmp/base/own-sticky/theirdir"
+        let standing = Standing.toward root (owner 7u 7u)
 
-        for call in
+        for call, entry in
             [
-                Call.Unlink "/tmp/base/own-sticky/theirs"
-                Call.RmDir "/tmp/base/own-sticky/theirdir"
-                Call.Rename ("/tmp/base/own-sticky/theirs", "/tmp/elsewhere")
-                Call.Rename ("/tmp/root", "/tmp/base/own-sticky/theirs")
+                Call.Unlink "/tmp/base/own-sticky/theirs", theirs
+                Call.RmDir "/tmp/base/own-sticky/theirdir", theirDirectory
+                // The source's sticky directory...
+                Call.Rename ("/tmp/base/own-sticky/theirs", "/tmp/elsewhere"), theirs
+                // ...and the destination's.
+                Call.Rename ("/tmp/root", "/tmp/base/own-sticky/theirs"), theirs
             ] do
-            (fun () -> run call system |> ignore<UnixError option * UnixSystem<int, string>>)
-            |> shouldFail
+            (call, run call system |> fst)
+            |> shouldEqual (call, Outcome.Refused (StickyRefusal.DarwinPrivilegedCaller (directory, entry, standing)))
 
         // An entry root owns, in the same directory, is answered.
-        run (Call.Unlink "/tmp/base/own-sticky/L3") system |> fst |> shouldEqual None
+        run (Call.Unlink "/tmp/base/own-sticky/L3") system
+        |> fst
+        |> shouldEqual (Outcome.Answered None)
 
     [<Test>]
     let ``Darwin refuses a directory displacing a foreign directory in a sticky directory`` () : unit =
@@ -782,11 +805,28 @@ module TestPermissionStanding =
 
         let system = systemOn SimulatedUnixPlatform.macOsArm64 darwinCaller tree
 
-        (fun () ->
-            run (Call.Rename ("/tmp/emptydir", "/tmp/theirs")) system
-            |> ignore<UnixError option * UnixSystem<int, string>>
+        run (Call.Rename ("/tmp/emptydir", "/tmp/theirs")) system
+        |> fst
+        |> shouldEqual (
+            Outcome.Refused (
+                StickyRefusal.DarwinDirectoryDisplacingDirectory (
+                    inodeAt tree "/tmp",
+                    inodeAt tree "/tmp/theirs",
+                    Standing.toward darwinCaller (owner 7u 7u)
+                )
+            )
         )
-        |> shouldFail
+
+        // Root, too, whose answer there has not been measured either.
+        systemOn
+            SimulatedUnixPlatform.macOsArm64
+            (Credentials.ofIds UserId.root (gid 0u) [])
+            (tree |> directory "/tmp/base/own-sticky/d" (owner 7u 7u) 0o777)
+        |> run (Call.Rename ("/tmp/emptydir", "/tmp/base/own-sticky/d"))
+        |> fst
+        |> function
+            | Outcome.Refused (StickyRefusal.DarwinDirectoryDisplacingDirectory _) -> ()
+            | other -> failwith $"expected a refusal, got %A{other}"
 
         // Displacing one the caller owns is answered as before.
         let tree = tree |> directory "/tmp/mine2" (owner 501u 0u) 0o755
@@ -794,7 +834,7 @@ module TestPermissionStanding =
         systemOn SimulatedUnixPlatform.macOsArm64 darwinCaller tree
         |> run (Call.Rename ("/tmp/emptydir", "/tmp/mine2"))
         |> fst
-        |> shouldEqual None
+        |> shouldEqual (Outcome.Answered None)
 
     // ------------------------------------------------------------- access, end to end
 
@@ -862,10 +902,10 @@ module TestPermissionStanding =
                         let triple = (bits >>> (6 - 3 * standing)) &&& 7
                         triple &&& request = request
 
-                let read, _ = UnixNamespace.openPath readOnly (path "/f") 0 system |> opened
+                let read, _ = Answered.openPath readOnly (path "/f") 0 system |> opened
 
                 let write, _ =
-                    UnixNamespace.openPath
+                    Answered.openPath
                         { readOnly with
                             Access = FileAccessMode.WriteOnly
                         }
@@ -881,7 +921,7 @@ module TestPermissionStanding =
                     | other -> failwith $"stat: %A{other}"
 
                 let listed, _ =
-                    UnixNamespace.openPath
+                    Answered.openPath
                         { readOnly with
                             Directory = true
                         }
@@ -890,8 +930,7 @@ module TestPermissionStanding =
                         system
                     |> opened
 
-                let created, _ =
-                    UnixNamespace.openPath creating (path "/d/new") 0o600 system |> opened
+                let created, _ = Answered.openPath creating (path "/d/new") 0o600 system |> opened
 
                 let expected = predicted 4, predicted 2, predicted 1, predicted 4, predicted 3
                 let actual = read, write, searched, listed, created
@@ -929,7 +968,7 @@ module TestPermissionStanding =
         search "/other0700" |> shouldEqual (Some UnixError.EACCES)
 
         let listed (p : string) : bool =
-            UnixNamespace.openPath
+            Answered.openPath
                 { readOnly with
                     Directory = true
                 }
@@ -944,7 +983,7 @@ module TestPermissionStanding =
         listed "/staff0555" |> shouldEqual true
 
         let openFor (access : FileAccessMode) (p : string) : bool =
-            UnixNamespace.openPath
+            Answered.openPath
                 { readOnly with
                     Access = access
                 }
@@ -992,7 +1031,7 @@ module TestPermissionStanding =
                     Access = FileAccessMode.ReadWrite
                 }
 
-            match UnixNamespace.openPath readWrite (path p) 0 system with
+            match Answered.openPath readWrite (path p) 0 system with
             | SyscallAnswer.Completed fd, system -> change (int fd) system |> modeOf p
             | other -> failwith $"open %s{p}: %A{other}"
 
@@ -1016,9 +1055,124 @@ module TestPermissionStanding =
             }
 
         for p, expected in [ "/outside", 0o0666 ; "/inside", 0o2666 ] do
-            match UnixNamespace.openPath truncating (path p) 0 system with
+            match Answered.openPath truncating (path p) 0 system with
             | SyscallAnswer.Completed _, system -> modeOf p system |> shouldEqual expected
             | other -> failwith $"open O_TRUNC %s{p}: %A{other}"
+
+    [<Test>]
+    let ``write, pwrite, ftruncate and O_TRUNC refuse a Darwin set-ID change nobody has measured`` () : unit =
+        // uid 501 is in group 20 but does not own the file: a set-ID file
+        // changed by a non-owner has not been measured on Darwin.
+        let vfs =
+            VirtualFileSystem.empty epoch (owner 0u 0u)
+            |> file "/f" (owner 1001u 20u) 0o4666
+
+        let system = systemOn SimulatedUnixPlatform.macOsArm64 darwinCaller vfs
+        let inode = inodeAt vfs "/f"
+        let standing = Standing.toward darwinCaller (owner 1001u 20u)
+        let written = SetIdChangeRefusal.UnmeasuredDarwinWrite (standing, mode 0o4666)
+
+        let truncated =
+            SetIdChangeRefusal.UnmeasuredDarwinTruncation (standing, mode 0o4666)
+
+        let fd, opened =
+            match
+                Answered.openPath
+                    { readOnly with
+                        Access = FileAccessMode.ReadWrite
+                    }
+                    (path "/f")
+                    0
+                    system
+            with
+            | SyscallAnswer.Completed fd, opened -> int fd, opened
+            | other -> failwith $"open: %A{other}"
+
+        let one = ImmutableArray.Create 9uy
+
+        match UnixReadWrite.write fd one opened with
+        | Error refusal -> refusal |> shouldEqual (WriteRefusal.UnmeasuredSetIdChange (inode, written))
+        | Ok (answer, _) -> failwith $"write answered %A{answer}"
+
+        match UnixReadWrite.pwrite fd one 0L opened with
+        | Error refusal -> refusal |> shouldEqual (PWriteRefusal.UnmeasuredSetIdChange (inode, written))
+        | Ok (answer, _) -> failwith $"pwrite answered %A{answer}"
+
+        match UnixDescriptor.ftruncate fd 0L opened with
+        | Error refusal ->
+            refusal
+            |> shouldEqual (TruncationRefusal.UnmeasuredSetIdChange (inode, truncated))
+        | Ok (answer, _) -> failwith $"ftruncate answered %A{answer}"
+
+        match UnixSystem.step 1 (Syscall.FTruncate (fd, 0L)) opened with
+        | Error refusal ->
+            refusal
+            |> shouldEqual (SyscallRefusal.FTruncate (TruncationRefusal.UnmeasuredSetIdChange (inode, truncated)))
+        | Ok (outcome, _) -> failwith $"step answered %A{outcome}"
+
+        let truncating =
+            { readOnly with
+                Access = FileAccessMode.WriteOnly
+                Truncate = true
+            }
+
+        match UnixNamespace.openPath truncating (path "/f") 0 system with
+        | Error refusal -> refusal |> shouldEqual (OpenRefusal.UnmeasuredSetIdChange (inode, truncated))
+        | Ok (answer, _) -> failwith $"open(O_TRUNC) answered %A{answer}"
+
+        // Without a set-ID bit there is nothing to strip, and the same calls
+        // are answered.
+        let plain =
+            VirtualFileSystem.empty epoch (owner 0u 0u)
+            |> file "/f" (owner 1001u 20u) 0o666
+            |> systemOn SimulatedUnixPlatform.macOsArm64 darwinCaller
+
+        Answered.openPath truncating (path "/f") 0 plain
+        |> fst
+        |> function
+            | SyscallAnswer.Completed _ -> ()
+            | other -> failwith $"open(O_TRUNC) of a plain file: %A{other}"
+
+    [<Test>]
+    let ``unlink and rmdir surface Darwin's sticky refusal through the syscall step`` () : unit =
+        let root = Credentials.ofIds UserId.root (gid 0u) []
+
+        let tree =
+            darwinStickyTree
+            |> file "/tmp/base/own-sticky/theirs" (owner 7u 7u) 0o644
+            |> directory "/tmp/base/own-sticky/theirdir" (owner 7u 7u) 0o755
+
+        let system = systemOn SimulatedUnixPlatform.macOsArm64 root tree
+        let directory = inodeAt tree "/tmp/base/own-sticky"
+        let standing = Standing.toward root (owner 7u 7u)
+
+        UnixSystem.step 1 (Syscall.Unlink (path "/tmp/base/own-sticky/theirs")) system
+        |> Result.map fst
+        |> shouldEqual (
+            Error (
+                SyscallRefusal.Unlink (
+                    StickyRefusal.DarwinPrivilegedCaller (
+                        directory,
+                        inodeAt tree "/tmp/base/own-sticky/theirs",
+                        standing
+                    )
+                )
+            )
+        )
+
+        UnixSystem.step 1 (Syscall.RmDir (path "/tmp/base/own-sticky/theirdir")) system
+        |> Result.map fst
+        |> shouldEqual (
+            Error (
+                SyscallRefusal.RmDir (
+                    StickyRefusal.DarwinPrivilegedCaller (
+                        directory,
+                        inodeAt tree "/tmp/base/own-sticky/theirdir",
+                        standing
+                    )
+                )
+            )
+        )
 
     [<Test>]
     let ``Linux open(O_CREAT) strips S_ISGID in a set-group-ID directory the creator is not in, end to end`` () : unit =
@@ -1054,7 +1208,7 @@ module TestPermissionStanding =
                 // From the same system each time, which leaves `/p` holding one
                 // entry at most.
                 for requested in allModes do
-                    match UnixNamespace.openPath creating (path "/p/c") requested system with
+                    match Answered.openPath creating (path "/p/c") requested system with
                     | SyscallAnswer.Completed _, next ->
                         let expected = linuxCreated (parentBits &&& 0o2000 <> 0) standing requested umask
                         let actual = modeOf "/p/c" next
@@ -1111,7 +1265,7 @@ module TestPermissionStanding =
                 "chdir /d", fun system -> UnixPathResolution.chdir (path "/d") system |> succeeds
                 "opendir /d",
                 fun system ->
-                    UnixNamespace.openPath
+                    Answered.openPath
                         { readOnly with
                             Directory = true
                         }
@@ -1120,10 +1274,10 @@ module TestPermissionStanding =
                         system
                     |> succeeds
                 "open(O_CREAT) /d/new",
-                fun system -> UnixNamespace.openPath creating (path "/d/new") 0o600 system |> succeeds
+                fun system -> Answered.openPath creating (path "/d/new") 0o600 system |> succeeds
                 "mkdir /d/new", fun system -> UnixNamespace.mkdir (path "/d/new") 0o755 system |> succeeds
-                "unlink /d/f", fun system -> UnixNamespace.unlink (path "/d/f") system |> succeeds
-                "rmdir /d/e", fun system -> UnixNamespace.rmdir (path "/d/e") system |> succeeds
+                "unlink /d/f", fun system -> Answered.unlink (path "/d/f") system |> succeeds
+                "rmdir /d/e", fun system -> Answered.rmdir (path "/d/e") system |> succeeds
                 "rename /d/f out of /d", renamed "/d/f" "/o/f"
                 "rename into /d", renamed "/o/x" "/d/x"
             ]

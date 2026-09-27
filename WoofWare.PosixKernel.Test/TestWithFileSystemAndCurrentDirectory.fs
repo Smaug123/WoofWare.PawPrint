@@ -462,7 +462,7 @@ module TestWithFileSystemAndCurrentDirectory =
         // afterwards name a graph that no longer exists -- measured before the
         // guard existed, `checkInvariants` reported `DanglingOpenInode`.
         let _, withHandle =
-            UnixNamespace.openPath plainOpen (UnixPath.ofAbsolute (absolute "/outer/file")) 0 (booted "/")
+            Answered.openPath plainOpen (UnixPath.ofAbsolute (absolute "/outer/file")) 0 (booted "/")
 
         // The handle really is filesystem-backed, so the guard below has
         // something to see. Without this the row would pass against a system
