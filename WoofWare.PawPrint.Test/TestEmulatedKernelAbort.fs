@@ -1,6 +1,5 @@
 namespace WoofWare.PawPrint.Test
 
-open System.Collections.Immutable
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -32,7 +31,7 @@ module TestEmulatedKernelAbort =
             SignalState.disposition Signal.SIGABRT kernel.Process.Signals
             |> shouldEqual (SignalDisposition.Catch NativeSignalHandler.CoreClrPal)
 
-            EmulatedKernel.abort thread (ImmutableArray.Create thread) kernel
+            EmulatedKernel.abort thread kernel
             |> shouldEqual (ProcessTermination.Signaled (Signal.SIGABRT, false))
 
     [<Test>]
@@ -46,12 +45,12 @@ module TestEmulatedKernelAbort =
                     }
                 )
 
-            EmulatedKernel.abort thread (ImmutableArray.Create thread) kernel
+            EmulatedKernel.abort thread kernel
             |> shouldEqual (ProcessTermination.Signaled (Signal.SIGABRT, false))
 
     [<Test>]
     let ``an abort dumps core exactly when the process writes dumps`` () : unit =
         for platform in platforms do
             for coreDumps in [ CoreDumps.Suppressed ; CoreDumps.Written ] do
-                EmulatedKernel.abort thread (ImmutableArray.Create thread) (kernelOn platform coreDumps)
+                EmulatedKernel.abort thread (kernelOn platform coreDumps)
                 |> shouldEqual (ProcessTermination.Signaled (Signal.SIGABRT, coreDumps = CoreDumps.Written))

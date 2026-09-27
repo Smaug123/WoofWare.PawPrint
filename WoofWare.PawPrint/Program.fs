@@ -687,17 +687,7 @@ module Program =
     /// How the process ends when the runtime aborts it on `thread`: CoreCLR's `PROCAbort`
     /// ends in `abort()`, which the kernel answers with a death by SIGABRT.
     let private abortTermination (thread : ThreadId) (state : IlMachineState) : ProcessTermination =
-        let receivers =
-            state.ThreadState
-            |> Seq.choose (fun (KeyValue (tid, ts)) ->
-                if ThreadStatus.canReceiveSignal ts.Status then
-                    Some tid
-                else
-                    None
-            )
-            |> ImmutableArray.CreateRange
-
-        EmulatedKernel.abort thread receivers state.Kernel
+        EmulatedKernel.abort thread state.Kernel
 
     /// What one scheduler tick did. `Stepped` is every outcome a caller of `stepPrepared`
     /// sees; `StartupCallReturned` is the entry thread's `EntryFrameKind.StartupCall`

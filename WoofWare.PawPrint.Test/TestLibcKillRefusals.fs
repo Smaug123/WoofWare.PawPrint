@@ -130,6 +130,38 @@ class Program
 }
 """
 
+    /// Holds System.Native's dispatcher in a SIGWINCH handler while two
+    /// registered signals, `args[0]` and then `args[1]`, are sent: the first
+    /// is still waiting for the dispatcher when the second is generated.
+    let private queuedThenAnotherGuest : string =
+        """
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+class Program
+{
+    [DllImport("libc", EntryPoint = "kill", SetLastError = true)]
+    static extern int Kill(int pid, int sig);
+
+    static int Main(string[] args)
+    {
+        int pid = Environment.ProcessId;
+        using var release = new ManualResetEventSlim(false);
+        using var busy = PosixSignalRegistration.Create(PosixSignal.SIGWINCH, _ => release.Wait());
+        using var term = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context => context.Cancel = true);
+        using var interrupt = PosixSignalRegistration.Create(PosixSignal.SIGINT, context => context.Cancel = true);
+
+        if (Kill(pid, 28) != 0) return 1;
+        if (Kill(pid, int.Parse(args[0])) != 0) return 2;
+        if (Kill(pid, int.Parse(args[1])) != 0) return 3;
+
+        release.Set();
+        return 42;
+    }
+}
+"""
+
     let private runSourceWith (source : string) (platform : SimulatedUnixPlatform) (argv : string list) : RunOutcome =
         let arguments = String.concat " " argv
         let description = $"kill(self, %s{arguments})"
@@ -237,3 +269,22 @@ class Program
 
         exn.Message |> shouldContainText "SystemNative_DisablePosixSignalHandling"
         exn.Message |> shouldContainText "still queued"
+
+    [<Test>]
+    let ``a signal the kernel takes ahead of one queued for the dispatcher is refused`` () : unit =
+        // On the real runtime the dispatcher reaches SIGTERM (15) first, having
+        // been handed it first; the kernel takes SIGINT (2) first, so PawPrint's
+        // pending set would hand them over the other way round.
+        let exn =
+            Assert.Catch<exn> (fun () ->
+                runSourceWith queuedThenAnotherGuest SimulatedUnixPlatform.linuxX64 [ "15" ; "2" ]
+                |> ignore<RunOutcome>
+            )
+
+        exn.Message |> shouldContainText "would be delivered before the pending SIGTERM"
+
+    [<Test>]
+    let ``a signal the kernel takes after one queued for the dispatcher is answered`` () : unit =
+        match runSourceWith queuedThenAnotherGuest SimulatedUnixPlatform.linuxX64 [ "2" ; "15" ] with
+        | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 42
+        | other -> failwith $"expected both signals to be answered and the guest to exit 42, got %O{other}"

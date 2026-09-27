@@ -305,16 +305,11 @@ module TestNativeLibc =
                 |> fst
 
             let generate (sent : Signal) (before : SignalState<int, NativeSignalHandler>) =
-                SignalState.generate
-                    CoreDumps.Suppressed
-                    (System.Collections.Immutable.ImmutableArray.Create 0)
-                    (processDirected sent)
-                    before
+                SignalState.generate CoreDumps.Suppressed 0 (Set.singleton 0) (processDirected sent) before
                 |> function
-                    | SignalGeneration.ProcessContinues after
-                    | SignalGeneration.ProcessStopped (_, after) -> after
-                    | SignalGeneration.ProcessTerminated _ as ended ->
-                        failwith $"expected %O{sent} not to kill the process, got %A{ended}"
+                    | Ok (SignalGeneration.ProcessContinues after)
+                    | Ok (SignalGeneration.ProcessStopped (_, after)) -> after
+                    | other -> failwith $"expected %O{sent} to leave the process running, got %A{other}"
 
             let stopPending = SignalState.enqueue (processDirected Signal.SIGTSTP) registered
 
@@ -341,3 +336,84 @@ module TestNativeLibc =
 
             NativeLibc.screenGeneration Signal.SIGUSR2 usr2Pending (generate Signal.SIGUSR2 usr2Pending)
             |> shouldEqual None
+
+    [<Test>]
+    let ``a send the kernel would take ahead of a signal queued for System.Native's dispatcher is refused`` () : unit =
+        for numbering in everyNumbering do
+            let registered =
+                fresh numbering
+                |> register numbering Signal.SIGTERM
+                |> register numbering Signal.SIGINT
+                |> register numbering Signal.SIGWINCH
+                |> fst
+
+            let generate (sent : Signal) (before : SignalState<int, NativeSignalHandler>) =
+                match SignalState.generate CoreDumps.Suppressed 0 (Set.singleton 0) (processDirected sent) before with
+                | Ok (SignalGeneration.ProcessContinues after) -> after
+                | other -> failwith $"expected %O{sent} to leave the process running, got %A{other}"
+
+            let screenSend (sent : Signal) (before : SignalState<int, NativeSignalHandler>) =
+                NativeLibc.screenOrder 0 sent before (generate sent before)
+
+            // SIGINT (2) is taken before SIGTERM (15), which the dispatcher
+            // already has.
+            let termPending = SignalState.enqueue (processDirected Signal.SIGTERM) registered
+
+            screenSend Signal.SIGINT termPending
+            |> shouldEqual (Some (UnmodelledSelfSignal.WouldOvertake (Signal.SIGINT, Signal.SIGTERM)))
+
+            // SIGWINCH is taken after SIGTERM, which is the order it was sent in.
+            screenSend Signal.SIGWINCH termPending |> shouldEqual None
+
+            // Ahead of a pending signal nothing is registered for, which sits
+            // in the kernel's own pending set rather than the dispatcher's.
+            let kernelPending =
+                registered
+                |> SignalState.block 0 Signal.SIGUSR2
+                |> SignalState.enqueue (processDirected Signal.SIGUSR2)
+
+            screenSend Signal.SIGINT kernelPending |> shouldEqual None
+
+            // A signal the send leaves pending on nothing, because it is
+            // discarded as ignored, overtakes nothing.
+            screenSend Signal.SIGCHLD termPending |> shouldEqual None
+
+    [<Test>]
+    let ``a send the kernel would take after every queued signal is no reason to refuse`` () : unit =
+        // Against a queue of registered signals, sending any registered signal
+        // is refused exactly when some queued one is taken after it.
+        for numbering in everyNumbering do
+            let candidates =
+                [
+                    Signal.SIGHUP
+                    Signal.SIGINT
+                    Signal.SIGQUIT
+                    Signal.SIGTERM
+                    Signal.SIGWINCH
+                ]
+
+            let registered =
+                (fresh numbering, candidates)
+                ||> List.fold (fun state signal -> register numbering signal state)
+                |> fst
+
+            let signo (signal : Signal) : int = Signal.toRawSignoUnder numbering signal
+
+            for queued in candidates do
+                for sent in candidates |> List.filter (fun s -> s <> queued) do
+                    let before = SignalState.enqueue (processDirected queued) registered
+
+                    let after =
+                        match
+                            SignalState.generate CoreDumps.Suppressed 0 (Set.singleton 0) (processDirected sent) before
+                        with
+                        | Ok (SignalGeneration.ProcessContinues after) -> after
+                        | other -> failwith $"%A{other}"
+
+                    let expected =
+                        if signo sent < signo queued then
+                            Some (UnmodelledSelfSignal.WouldOvertake (sent, queued))
+                        else
+                            None
+
+                    NativeLibc.screenOrder 0 sent before after |> shouldEqual expected
