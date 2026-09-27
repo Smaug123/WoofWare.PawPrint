@@ -23,8 +23,10 @@ type Opacity =
     | NativeBody
     /// The method is abstract.
     | AbstractBody
-    /// The method is an <c>[Intrinsic]</c> whose IL is not its semantics: a placeholder the JIT
-    /// expands, or a body the VM replaces.
+    /// Something CoreCLR runs for an <c>[Intrinsic]</c> in place of its IL that the analysis does not
+    /// model: the JIT's expansion of the method's call to itself into a hardware instruction or a
+    /// capability query, whose outcome depends on the CPU, or a body the VM substitutes that is not
+    /// transcribed.
     | IntrinsicExpansion
     /// A MemberRef whose target turns on how a type variable of this method is instantiated.
     | DependsOnInstantiation
@@ -68,6 +70,17 @@ type internal CallTarget =
     | Missing
     | TypeMissing
     | DependsOnInstantiation
+
+/// What CoreCLR runs when a method is called (`IntrinsicBody.classify`).
+[<RequireQualifiedAccess>]
+type internal Runs =
+    /// IL: the method's own, or what CoreCLR's VM substitutes for it. `selfCall` is the JIT's
+    /// expansion of the IL's call to the method itself, where it has one; that call is not a call.
+    | Il of MethodInstructions<TypeDefn> * selfCall : JitExpansion option
+    /// One of the runtime's own operations, the whole of the method.
+    | Primitive of IntrinsicPrimitive
+    /// Nothing the analysis can see into.
+    | Opaque of Opacity
 
 /// An escape analysis in progress: the assemblies loaded so far and every answer computed so far.
 /// Immutable; each query returns the state to ask the next one of.
@@ -836,26 +849,70 @@ module EscapeAnalysis =
             OutsideBody = Set.empty
         }
 
+    /// The exceptions an intrinsic primitive can raise. Its contract says under which conditions on
+    /// its arguments; the analysis does not track their values, so each may be raised.
+    let private primitiveRaises (state : EscapeAnalysisState) (primitive : IntrinsicPrimitive) : ThrownType list =
+        (IntrinsicPrimitive.contract primitive).Raises
+        |> List.map (fun (fault, _) ->
+            match fault with
+            | PrimitiveFault.NullReference -> ThrownType.Exactly (corelibException state "NullReferenceException")
+            | PrimitiveFault.DataMisaligned -> ThrownType.Exactly (corelibException state "DataMisalignedException")
+        )
+
+    /// What CoreCLR runs when `key` is called. The VM's substitute for an intrinsic runs whatever IL
+    /// CoreLib ships in its place, working or not.
+    let private runsFor (assembly : DumpedAssembly) (key : MethodKey) : Runs =
+        let method = assembly.Methods.[key.Method.Get]
+
+        let intrinsic =
+            if IntrinsicBody.isIntrinsic assembly key.Method.Get then
+                Some (IntrinsicBody.classify assembly key.Method.Get)
+            else
+                None
+
+        let substituted =
+            match intrinsic with
+            | Some _ -> VmSubstitution.unsafeStub assembly key.Method.Get
+            | None -> None
+
+        match substituted, intrinsic with
+        | Some stub, _ -> Runs.Il (stub, None)
+        | None, Some IntrinsicBody.VmSubstitution ->
+            // A substitute the VM chooses by instantiation, which may be one of the runtime's own
+            // operations.
+            match IntrinsicPrimitive.recognise assembly key.Method.Get with
+            | Some primitive -> Runs.Primitive primitive
+            | None -> Runs.Opaque Opacity.IntrinsicExpansion
+        | None, Some (IntrinsicBody.JitExpansion expansion) ->
+            match method.Body with
+            | MethodBody.Il body -> Runs.Il (body, Some expansion)
+            | _ ->
+                failwith
+                    $"%O{key}: IntrinsicBody classifies it as a JIT expansion, whose IL calls itself, but it has no IL"
+        | None, _ ->
+            match method.Body with
+            | MethodBody.Abstract -> Runs.Opaque Opacity.AbstractBody
+            | MethodBody.InternalCall
+            | MethodBody.PInvoke
+            | MethodBody.RuntimeProvided _ -> Runs.Opaque Opacity.NativeBody
+            | MethodBody.Il body -> Runs.Il (body, None)
+
     /// What one body does by itself.
     let private factsOf (state : EscapeAnalysisState) (key : MethodKey) : EscapeAnalysisState * LocalFacts =
         let assembly, method = methodOf state key
 
-        let intrinsicWithoutSemantics =
-            IntrinsicBody.isIntrinsic assembly key.Method.Get
-            && match IntrinsicBody.classify assembly key.Method.Get with
-               | IntrinsicBody.OwnIl -> false
-               | _ -> true
-
-        if intrinsicWithoutSemantics then
-            state, opaqueFromEntry Opacity.IntrinsicExpansion
-        else
-
-        match method.Body with
-        | MethodBody.Abstract -> state, opaqueFromEntry Opacity.AbstractBody
-        | MethodBody.InternalCall
-        | MethodBody.PInvoke
-        | MethodBody.RuntimeProvided _ -> state, opaqueFromEntry Opacity.NativeBody
-        | MethodBody.Il body ->
+        match runsFor assembly key with
+        | Runs.Opaque reason -> state, opaqueFromEntry reason
+        | Runs.Primitive primitive ->
+            state,
+            {
+                Raises = primitiveRaises state primitive |> List.map (fun thrown -> 0, thrown)
+                Opaque = []
+                Calls = []
+                Regions = []
+                OutsideBody = Set.empty
+            }
+        | Runs.Il (body, selfCall) ->
 
         let ops = body.Instructions |> Array.ofList
 
@@ -1063,6 +1120,21 @@ module EscapeAnalysis =
                     match operand, methodTarget with
                     | MetadataOperand.FromDynamicScope _, _ ->
                         state, raises, (offset, Opacity.IndirectCall) :: opaque, calls
+                    | MetadataOperand.FromMetadata _, Some (CallTarget.Method callee) when
+                        callee = key
+                        && selfCall.IsSome
+                        && call <> UnaryMetadataTokenIlOp.Newobj
+                        && call <> UnaryMetadataTokenIlOp.Jmp
+                        ->
+                        // The body's call to itself, which the JIT expands where it stands
+                        // (`gtIsRecursiveCall`): no call happens, so the raises are this offset's.
+                        match selfCall with
+                        | Some (JitExpansion.Primitive primitive) ->
+                            let raised =
+                                primitiveRaises state primitive |> List.map (fun thrown -> offset, thrown)
+
+                            state, raised @ raises, opaque, calls
+                        | _ -> state, raises, (offset, Opacity.IntrinsicExpansion) :: opaque, calls
                     | MetadataOperand.FromMetadata _, Some (CallTarget.Method callee) ->
                         // A static virtual is dispatched on the type a `constrained.` prefix names,
                         // which is how the only legal call to one is written.
