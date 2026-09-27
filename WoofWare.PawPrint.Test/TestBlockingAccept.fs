@@ -314,3 +314,37 @@ class RewrittenLength
     [<Test>]
     let ``a woken accept writes the address through the length the shim copied before sleeping`` () : unit =
         run "RewrittenLength.cs" rewrittenLengthSource |> exitCodeOf |> shouldEqual 0
+
+    /// A background thread sleeps in an accept whose `acceptedSocket` names no storage, and the
+    /// entry thread exits without connecting. The shim stores through that pointer only once
+    /// `accept4` returns, so a call that never returns never faults on it, and the process exits
+    /// normally, as it does on a real runtime.
+    let private unreadOutPointerSource : string =
+        """
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+class UnreadOutPointer
+{
+    static unsafe void Accepter()
+    {
+        byte* peer = stackalloc byte[16];
+        int len = 16;
+        Sys.Accept(Sys.Listener, peer, &len, (IntPtr*)123);
+    }
+
+    static int Main()
+    {
+        int setup = Sys.Setup();
+        if (setup != 0) return setup;
+        new Thread(Accepter) { IsBackground = true }.Start();
+        Thread.Sleep(100);
+        return 7;
+    }
+}
+"""
+
+    [<Test>]
+    let ``a sleeping accept does not touch its out-pointer`` () : unit =
+        run "UnreadOutPointer.cs" unreadOutPointerSource |> exitCodeOf |> shouldEqual 7

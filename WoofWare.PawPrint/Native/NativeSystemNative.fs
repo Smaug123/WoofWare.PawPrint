@@ -4416,16 +4416,25 @@ module NativeSystemNative =
                 (outcome : Result<AcceptOutcome * UnixSystem<ThreadId, NativeSignalHandler>, AcceptRefusal>)
                 : NativeHandlerResult option
                 =
-                let lengthCell = requireStorage operation "socketAddressLen" lengthArgument
+                // The C touches both of these only once `accept4` has returned,
+                // so a call that sleeps must not resolve them: a guest whose
+                // accept never returns never faults on a stray pointer.
+                let lengthCell = lazy (requireStorage operation "socketAddressLen" lengthArgument)
 
-                // Resolved ahead of every answer: each of them stores through
-                // `acceptedSocket` -- the C writes -1 there on every syscall
-                // failure, before returning the PAL error -- so a stray pointer
-                // is the SIGSEGV `requireStorage` explains, whichever answer it
-                // would have accompanied. The address buffer is different: the
-                // kernel writes it only on *success*, so it is resolved below
-                // and only when there is something to write.
-                let acceptedCell = requireStorage operation "acceptedSocket" acceptedArgument
+                // Resolved ahead of every answer the kernel returns: each of them
+                // stores through `acceptedSocket` -- the C writes -1 there on
+                // every syscall failure, before returning the PAL error -- so a
+                // stray pointer is the SIGSEGV `requireStorage` explains,
+                // whichever answer it would have accompanied. The address buffer
+                // is different: the kernel writes it only on *success*, so it is
+                // resolved below and only when there is something to write.
+                let acceptedCell = lazy (requireStorage operation "acceptedSocket" acceptedArgument)
+
+                match outcome with
+                | Ok (AcceptOutcome.WouldBlock _, _) -> ()
+                | Ok (AcceptOutcome.Failed _, _)
+                | Ok (AcceptOutcome.Accepted _, _)
+                | Error _ -> acceptedCell.Force () |> ignore<ManagedPointerSource>
 
                 // `toRawErrnoUnder` rather than `toRawErrno`: EOPNOTSUPP is 95 on
                 // Linux against 102 on Darwin, and ENOTSOCK 88 against 38.
@@ -4438,7 +4447,7 @@ module NativeSystemNative =
                     let bytes = Array.zeroCreate<byte> 8
                     BinaryPrimitives.WriteInt64LittleEndian (Span<byte> bytes, -1L)
 
-                    writeBytesThrough ctx operation acceptedCell (ImmutableArray.CreateRange bytes) state
+                    writeBytesThrough ctx operation (acceptedCell.Force ()) (ImmutableArray.CreateRange bytes) state
                     |> fun state -> state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread raw)
                     |> complete (UnixErrorPal.toPal error)
 
@@ -4538,8 +4547,8 @@ module NativeSystemNative =
                 BinaryPrimitives.WriteInt64LittleEndian (System.Span<byte> acceptedBytes, int64 acceptedFd)
 
                 state
-                |> writeBytesThrough ctx operation lengthCell (ImmutableArray.CreateRange reported)
-                |> writeBytesThrough ctx operation acceptedCell (ImmutableArray.CreateRange acceptedBytes)
+                |> writeBytesThrough ctx operation (lengthCell.Force ()) (ImmutableArray.CreateRange reported)
+                |> writeBytesThrough ctx operation (acceptedCell.Force ()) (ImmutableArray.CreateRange acceptedBytes)
                 |> complete UnixErrorPal.palSuccess
 
             // A re-entry is told apart from a first entry by the record, not by
