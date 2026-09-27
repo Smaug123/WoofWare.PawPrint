@@ -146,7 +146,16 @@ module TestEpollCtl =
         | Ok (EpollCtlAnswer.Failed reason, _) -> failwith $"expected the change to apply, got %O{reason}"
         | Error refusal -> failwith $"expected the change to apply, got a refusal: %s{EpollCtlRefusal.describe refusal}"
 
-    let private errnoName (error : UnixError) : string = $"%A{error}"
+    // `%A` of each errno, formatted once: `%A` is reflection over the union and
+    // costs far more than the `epoll_ctl` call whose answer it names, and the
+    // ladder and the EPOLLEXCLUSIVE screen name tens of thousands of answers.
+    let private errnoNames : Map<UnixError, string> =
+        UnixError.all |> List.map (fun error -> error, $"%A{error}") |> Map.ofList
+
+    let private errnoName (error : UnixError) : string =
+        match Map.tryFind error errnoNames with
+        | Some name -> name
+        | None -> $"%A{error}"
 
     let private edge : uint32 = EpollEvents.EdgeTriggered
 
@@ -337,23 +346,27 @@ module TestEpollCtl =
         let mismatches =
             [
                 for row in reachable do
+                    // A row's starting state does not depend on the event mask, and
+                    // systems are immutable, so each row builds it once.
+                    let epfd, system = make row.Epfd (-1) linux
+                    let fd, system = make row.Target epfd system
+
+                    let system =
+                        if row.Registered then
+                            applied epfd add fd (EpollEvents.In ||| edge) system
+                        else
+                            system
+
                     for events, measured in List.zip ladderEvents row.Answers do
-                        let epfd, system = make row.Epfd (-1) linux
-                        let fd, system = make row.Target epfd system
-
-                        let system =
-                            if row.Registered then
-                                applied epfd add fd (EpollEvents.In ||| edge) system
-                            else
-                                system
-
                         let argument =
                             if row.NullEvent then
                                 EpollEventArgument.Unreadable
                             else
                                 EpollEventArgument.Readable (events, 42UL)
 
-                        let describe = $"%A{row} events 0x%08x{events}"
+                        // Built only for a mismatch: `%A` over the row costs more
+                        // than the call it describes, and there are ~68,000 cells.
+                        let describe () = $"%A{row} events 0x%08x{events}"
 
                         match UnixPoll.epollCtl epfd row.Op fd argument system with
                         | Ok (EpollCtlAnswer.Changed, _) ->
@@ -361,22 +374,24 @@ module TestEpollCtl =
                                 answeredCommits <- answeredCommits + 1
 
                             if measured <> "ok" then
-                                yield $"%s{describe}: measured %s{measured}, answered ok"
+                                yield $"%s{describe ()}: measured %s{measured}, answered ok"
                         | Ok (EpollCtlAnswer.Failed reason, after) ->
-                            if after <> system then
-                                yield $"%s{describe}: a failure changed the system"
+                            // The same object is unchanged by definition; only a
+                            // new one needs the (costly) structural comparison.
+                            if not (obj.ReferenceEquals (after, system)) && after <> system then
+                                yield $"%s{describe ()}: a failure changed the system"
 
                             let answered = errnoName (EpollCtlError.toErrno reason)
 
                             if measured <> answered then
-                                yield $"%s{describe}: measured %s{measured}, answered %s{answered}"
+                                yield $"%s{describe ()}: measured %s{measured}, answered %s{answered}"
                         | Error refusal ->
                             refusals <- refusals + 1
                             let owed = owedRefusal row.Op (row.Target = "epoll") fd events
 
                             if measured <> "ok" || owed <> Some refusal then
                                 yield
-                                    $"%s{describe}: measured %s{measured}, refused %s{EpollCtlRefusal.describe refusal} (owed %A{owed})"
+                                    $"%s{describe ()}: measured %s{measured}, refused %s{EpollCtlRefusal.describe refusal} (owed %A{owed})"
             ]
 
         mismatches |> List.truncate 20 |> shouldEqual []
