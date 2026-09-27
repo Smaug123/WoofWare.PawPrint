@@ -4,7 +4,10 @@ open System.Collections.Immutable
 
 /// Bytes in first-in, first-out order, kept as the chunks they arrived in, so
 /// that neither appending nor taking copies what stays behind.
-[<NoEquality ; NoComparison>]
+///
+/// Two queues are equal when they hold the same bytes in the same order,
+/// however those bytes are chunked.
+[<CustomEquality ; NoComparison>]
 type internal ByteQueue =
     private
         {
@@ -17,6 +20,24 @@ type internal ByteQueue =
             Rest : ImmutableQueue<ImmutableArray<byte>>
             Length : int
         }
+
+    /// Every byte held, oldest first.
+    member private this.Bytes : byte seq =
+        seq {
+            if this.Length > 0 then
+                for i in this.HeadTaken .. this.Head.Length - 1 do
+                    yield this.Head.[i]
+
+                for chunk in this.Rest do
+                    yield! chunk
+        }
+
+    override this.Equals (other : obj) : bool =
+        match other with
+        | :? ByteQueue as other -> this.Length = other.Length && Seq.forall2 (=) this.Bytes other.Bytes
+        | _ -> false
+
+    override this.GetHashCode () : int = this.Length
 
 [<RequireQualifiedAccess>]
 module internal ByteQueue =
@@ -87,7 +108,7 @@ module internal ByteQueue =
         }
 
 /// One of a Linux pipe's page-sized slots.
-[<NoEquality ; NoComparison>]
+[<NoComparison>]
 type internal LinuxPipeSlot =
     {
         /// Where in the page the slot's first unread byte sits. Reading advances
@@ -99,7 +120,7 @@ type internal LinuxPipeSlot =
     }
 
 /// A Linux pipe's buffer: a ring of sixteen page-sized slots, the oldest first.
-[<NoEquality ; NoComparison>]
+[<NoComparison>]
 type internal LinuxPipeBuffer =
     {
         PageSize : int
@@ -156,7 +177,7 @@ module internal DarwinPipeBufferSize =
         |> Option.defaultValue DarwinPipeBufferSize.B65536
 
 /// A Darwin pipe's buffer: the bytes it holds, and the size it has grown to.
-[<NoEquality ; NoComparison>]
+[<NoComparison>]
 type internal DarwinPipeBuffer =
     {
         Size : DarwinPipeBufferSize
@@ -172,7 +193,10 @@ type internal DarwinPipeBuffer =
 /// This is only the buffer. Whether the other end is still open, and so whether
 /// an empty read is end-of-file or would block, and whether a write is EPIPE,
 /// is a question about the pipe's ends, not about its buffer.
-[<NoEquality ; NoComparison>]
+///
+/// Two buffers are equal when a process could tell neither apart from the other
+/// by any sequence of reads and writes: the same bytes, stored the same way.
+[<NoComparison>]
 type PipeBuffer =
     private
     | Linux of LinuxPipeBuffer
@@ -219,6 +243,18 @@ module PipeBuffer =
                     Bytes = ByteQueue.empty
                 }
 
+    /// Whether `buffer` is one a pipe on `platform`'s kernel could hold: the
+    /// flavour's kind of buffer, with the platform's page size and transfer
+    /// limit where the flavour's rule uses them.
+    let isOf (platform : SimulatedUnixPlatform) (buffer : PipeBuffer) : bool =
+        match buffer, SimulatedUnixPlatform.flavour platform with
+        | PipeBuffer.Linux linux, SimulatedUnixFlavour.Linux ->
+            linux.PageSize = SimulatedPageSize.bytes (SimulatedUnixPlatform.pageSize platform)
+            && linux.MaxTransfer = TransferCountLimit.maxTransfer (SimulatedUnixPlatform.transferCountLimit platform)
+        | PipeBuffer.Darwin _, SimulatedUnixFlavour.Darwin -> true
+        | PipeBuffer.Linux _, SimulatedUnixFlavour.Darwin
+        | PipeBuffer.Darwin _, SimulatedUnixFlavour.Linux -> false
+
     /// How many bytes the buffer holds: what `FIONREAD` on the read end reports.
     let held (buffer : PipeBuffer) : int =
         match buffer with
@@ -250,6 +286,83 @@ module PipeBuffer =
             max DarwinReadyFloor (DarwinPipeBufferSize.bytes darwin.Size)
             - ByteQueue.length darwin.Bytes
             >= DarwinPipeBuf
+
+    /// How many bytes a non-blocking write of `count` bytes would take now: the
+    /// count `write` answers, without the bytes themselves.
+    ///
+    /// For a caller that must know whether a write would take anything before
+    /// it has read the bytes to be written, such as one that answers `EAGAIN`
+    /// without touching the caller's buffer.
+    let wouldTake (count : int) (buffer : PipeBuffer) : int =
+        if count < 0 then
+            failwith
+                $"PipeBuffer.wouldTake: a count of %d{count} is not a request a kernel ever sees; the caller must answer a negative count before asking."
+
+        if count = 0 then
+            0
+        else
+
+        match buffer with
+        | PipeBuffer.Linux linux ->
+            if count > linux.MaxTransfer then
+                failwith
+                    $"PipeBuffer.wouldTake: a count of %d{count} exceeds Linux's per-call limit of %d{linux.MaxTransfer}, which the kernel applies before the pipe sees the write; clamp the count first (this is a bug in the caller of PipeBuffer.wouldTake)."
+
+            let page = linux.PageSize
+            let remainder = count % page
+
+            let merged =
+                match List.tryLast linux.Slots with
+                | Some newest when
+                    remainder > 0
+                    && newest.Offset + ByteQueue.length newest.Bytes + remainder <= page
+                    ->
+                    remainder
+                | Some _
+                | None -> 0
+
+            let freeSlots = LinuxSlots - List.length linux.Slots
+            merged + int (min (int64 (count - merged)) (int64 freeSlots * int64 page))
+        | PipeBuffer.Darwin darwin ->
+            let holding = ByteQueue.length darwin.Bytes
+
+            let size =
+                if count > DarwinPipeBufferSize.bytes darwin.Size - holding then
+                    DarwinPipeBufferSize.grownFor darwin.Size (int64 holding + int64 count)
+                else
+                    darwin.Size
+
+            let free = DarwinPipeBufferSize.bytes size - holding
+
+            if count <= DarwinPipeBuf then
+                (if free >= count then count else 0)
+            else
+                min count free
+
+    /// The buffer as a write of `count` bytes leaves it when it takes none of
+    /// them: because nothing fits, or because the bytes could not be read.
+    ///
+    /// On Linux, unchanged. On Darwin, grown as the write would have grown it,
+    /// since the buffer grows before any byte is copied: measured, a write
+    /// through a bad pointer answers EFAULT and leaves the buffer at the size
+    /// that write needed.
+    let withoutTaking (count : int) (buffer : PipeBuffer) : PipeBuffer =
+        if count < 0 then
+            failwith
+                $"PipeBuffer.withoutTaking: a count of %d{count} is not a request a kernel ever sees; the caller must answer a negative count before asking."
+
+        match buffer with
+        | PipeBuffer.Linux _ -> buffer
+        | PipeBuffer.Darwin darwin ->
+            let holding = ByteQueue.length darwin.Bytes
+
+            if count > DarwinPipeBufferSize.bytes darwin.Size - holding then
+                PipeBuffer.Darwin
+                    { darwin with
+                        Size = DarwinPipeBufferSize.grownFor darwin.Size (int64 holding + int64 count)
+                    }
+            else
+                buffer
 
     /// A non-blocking write of `bytes`: how many of them, from the start, the
     /// buffer takes now, and the buffer after taking them.

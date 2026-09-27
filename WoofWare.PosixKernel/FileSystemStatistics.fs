@@ -412,7 +412,8 @@ module FileSystemStatistics =
         | OpenFileObject.File _ -> FileSystemStatisticsAnswer.Reported (ofMount platform mount)
         // This library models the standard streams as pipes (see
         // `FileDescriptorRegistry.initial`).
-        | OpenFileObject.StandardStream _ -> pseudoFileSystem PseudoFileSystem.Pipe
+        | OpenFileObject.StandardStream _
+        | OpenFileObject.Pipe _ -> pseudoFileSystem PseudoFileSystem.Pipe
         | OpenFileObject.Socket _ -> pseudoFileSystem PseudoFileSystem.Socket
         // An epoll port. `OpenFileObject` folding every anonymous object into
         // one case costs nothing here: they share one filesystem.

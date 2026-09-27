@@ -10,6 +10,7 @@ are facts about *upstream source being misleading*.
 | socket | `TestFileDescriptorRegistry`: `two sockets are two descriptions and two flock objects`, `dup of a socket names the same socket`; `sourcesImpure/SocketCreate{Linux,Darwin}.cs` |
 | the creatable socket triples | `TestSocketCreation` against `socketMatrix/{linux,darwin}.tsv` |
 | standard streams, regular files, directories | `TestVirtualFileSystem` and `TestVirtualFileSystemAgainstHost` |
+| pipe (`pipe2`) | `TestPipe` and `TestPipeAgainstHost`; `sourcesImpure/PipeRaw.cs` for the wiring |
 
 ## Three things reading the kernel source gets wrong
 

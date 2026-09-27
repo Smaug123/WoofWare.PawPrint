@@ -414,6 +414,10 @@ module UnixPathResolution =
     /// implementation: a real `fstat` records no access, and neither does this
     /// one, so there is nothing for a caller to write back.
     ///
+    /// An end of a pipe reports `S_IFIFO`, and each flavour's own permission
+    /// bits, size, timestamps and identity: see `PipeInodes`, `PipeTimes` and
+    /// `UnixMachineState.PipeDevice`.
+    ///
     /// Refuses for a descriptor this kernel holds no inode for — the standard
     /// streams, a socket event port, a socket. That is a limit of the model
     /// rather than an absent kernel answer; see `FStatRefusal`. Also refuses
@@ -423,12 +427,73 @@ module UnixPathResolution =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<FileStatusAnswer, FStatRefusal>
         =
-        match FileDescriptorRegistry.tryFindObject fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
         | None -> Ok (FileStatusAnswer.Failed UnixError.EBADF)
-        | Some (OpenFileObject.StandardStream role) -> Error (FStatRefusal.StandardStream role)
-        | Some OpenFileObject.AnonymousInode -> Error FStatRefusal.SocketEventPort
-        | Some (OpenFileObject.Socket socketId) -> Error (FStatRefusal.Socket socketId)
-        | Some (OpenFileObject.File inode) ->
+        | Some (OpenFileTarget.StandardStream role) -> Error (FStatRefusal.StandardStream role)
+        | Some (OpenFileTarget.SocketEventPort _) -> Error FStatRefusal.SocketEventPort
+        | Some (OpenFileTarget.Socket socketId) -> Error (FStatRefusal.Socket socketId)
+        | Some (OpenFileTarget.Pipe (pipeId, pipeEnd)) ->
+            let pipe = UnixMachineState.pipe pipeId system.Machine
+            let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+            let fifo = 0o010000
+
+            // Measured by pipe-syscalls.c and pipe-states.c, and
+            // held to the host by `TestPipeAgainstHost`. Neither flavour applies
+            // the umask: the bits are the same under umask 0 and 0777.
+            let permissions =
+                match flavour with
+                | SimulatedUnixFlavour.Linux -> 0o600
+                | SimulatedUnixFlavour.Darwin -> 0o660
+
+            // Linux reports 0 always. Darwin reports the bytes held, through the
+            // write end too -- but not once the read end has closed, when the
+            // write end reports 0 while FIONREAD on a surviving read end would
+            // still see them.
+            let size =
+                match flavour, pipeEnd with
+                | SimulatedUnixFlavour.Linux, _ -> 0L
+                | SimulatedUnixFlavour.Darwin, PipeEnd.Read -> int64 (PipeBuffer.held pipe.Buffer)
+                | SimulatedUnixFlavour.Darwin, PipeEnd.Write ->
+                    if UnixProcessState.pipeEndOpen pipeId PipeEnd.Read system.Process then
+                        int64 (PipeBuffer.held pipe.Buffer)
+                    else
+                        0L
+
+            let inode =
+                match pipe.Inodes, pipeEnd with
+                | PipeInodes.Shared inode, _ -> inode
+                | PipeInodes.PerEnd (readEnd, _), PipeEnd.Read -> readEnd
+                | PipeInodes.PerEnd (_, writeEnd), PipeEnd.Write -> writeEnd
+
+            let access =
+                match pipeEnd with
+                | PipeEnd.Read -> pipe.Times.ReadEndAccess
+                | PipeEnd.Write -> pipe.Times.Created
+
+            // Darwin reports a pipe's birth time as 0: the epoch, not its
+            // creation.
+            let birthTime =
+                if SimulatedUnixPlatform.reportsBirthTime system.Machine.UnixPlatform then
+                    Some UnixTimestamp.epoch
+                else
+                    None
+
+            {
+                Mode = fifo ||| permissions
+                UserId = pipe.Owner.User
+                GroupId = pipe.Owner.Group
+                Size = size
+                AccessTime = access
+                ModificationTime = pipe.Times.Modification
+                StatusChangeTime = pipe.Times.StatusChange
+                BirthTime = birthTime
+                DeviceId = system.Machine.PipeDevice
+                Inode = inode
+            }
+            |> FileStatusAnswer.Reported
+            |> Ok
+        | Some (OpenFileTarget.File (inode, _))
+        | Some (OpenFileTarget.Directory (inode, _)) ->
 
         match statOf inode system with
         | Some (Ok status) -> Ok (FileStatusAnswer.Reported status)

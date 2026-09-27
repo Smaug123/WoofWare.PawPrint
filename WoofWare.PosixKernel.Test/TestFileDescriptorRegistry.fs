@@ -1273,7 +1273,8 @@ module TestFileDescriptorRegistry =
         | None -> failwith $"fd %d{fd} is not live"
         | Some (OpenFileTarget.StandardStream _)
         | Some (OpenFileTarget.SocketEventPort _)
-        | Some (OpenFileTarget.Socket _) -> None
+        | Some (OpenFileTarget.Socket _)
+        | Some (OpenFileTarget.Pipe _) -> None
         | Some (OpenFileTarget.File (_, offset)) -> Some offset
         | Some (OpenFileTarget.Directory _) ->
             failwith $"fd %d{fd} names a directory, whose position is not a byte offset"

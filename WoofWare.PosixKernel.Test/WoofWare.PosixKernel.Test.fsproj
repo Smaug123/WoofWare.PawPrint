@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <Compile Include="HostPlatform.fs" />
+    <Compile Include="WriteAdmissions.fs" />
     <Compile Include="NewSocket.fs" />
     <Compile Include="TestDarwinReleaseAgainstHost.fs" />
     <Compile Include="TestGcHeapHardLimit.fs" />
@@ -108,6 +109,8 @@
     <Compile Include="TestPipeBuffer.fs" />
     <Compile Include="TestPipeBufferCorpus.fs" />
     <Compile Include="TestPipeBufferAgainstHost.fs" />
+    <Compile Include="TestPipe.fs" />
+    <Compile Include="TestPipeAgainstHost.fs" />
     <Compile Include="TestSockaddrField.fs" />
     <Compile Include="TestSockaddrLayoutAgainstHost.fs" />
   </ItemGroup>

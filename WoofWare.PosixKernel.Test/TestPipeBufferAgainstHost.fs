@@ -78,7 +78,7 @@ module TestPipeBufferAgainstHost =
     /// `fs.pipe-user-pages-soft`, and a kernel with larger pages starts larger;
     /// all three are this machine's configuration rather than the rule under
     /// test.
-    let private requireDefaultLinuxCapacity (platform : SimulatedUnixPlatform) : unit =
+    let requireDefaultLinuxCapacity (platform : SimulatedUnixPlatform) : unit =
         match SimulatedUnixPlatform.flavour platform with
         | SimulatedUnixFlavour.Darwin -> ()
         | SimulatedUnixFlavour.Linux ->

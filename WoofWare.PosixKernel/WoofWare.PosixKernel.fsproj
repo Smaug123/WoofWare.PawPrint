@@ -51,6 +51,7 @@
         <Compile Include="SimulatedUnixPlatform.fs" />
         <Compile Include="ProcessTermination.fs" />
         <Compile Include="PipeBuffer.fs" />
+        <Compile Include="PipeState.fs" />
         <Compile Include="FileSystemStatistics.fs" />
         <Compile Include="EntropyPool.fs" />
         <Compile Include="UnixProcess.fs" />
@@ -67,6 +68,7 @@
         <Compile Include="UnixDescriptor.fs" />
         <Compile Include="UnixPathResolution.fs" />
         <Compile Include="UnixReadWrite.fs" />
+        <Compile Include="UnixPipe.fs" />
         <Compile Include="UnixEntropy.fs" />
         <Compile Include="UnixNamespace.fs" />
         <Compile Include="UnixSystem.fs" />

@@ -3538,6 +3538,9 @@ module NativeSystemNative =
             | Error (ReadRefusal.ScannedDirectoryPosition _ as refusal) ->
                 failwith
                     $"%s{operation}: fd %d{fd}: %s{ReadRefusal.describe refusal} CoreLib never reads a directory through `SystemNative_Read` (it enumerates with `SystemNative_OpenDir` and `SystemNative_ReadDir`, whose descriptor it never sees), so this is a hand-rolled P/Invoke reading a directory it has partly enumerated. Rewind it with `lseek(fd, 0, SEEK_SET)`, or read before enumerating."
+            | Error (ReadRefusal.PipeWouldBlock _ as refusal) ->
+                failwith
+                    $"%s{operation}: fd %d{fd}: %s{ReadRefusal.describe refusal} PawPrint parks no task in a read yet. A guest reaching this reads a pipe it made with `SystemNative_Pipe` before anything was written to it; give the read end O_NONBLOCK, or write before reading."
             | Ok (ReadAnswer.Failed error, system) ->
                 withErrno ctx error system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
@@ -3823,6 +3826,58 @@ module NativeSystemNative =
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim resultCode)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+        // `int32_t SystemNative_Pipe(int32_t pipeFds[2], int32_t flags)`
+        // (pal_io.c:557). The flags parameter is matched loosely for the reason
+        // `SystemNative_FLock`'s operation is: CoreLib declares it as the
+        // `Interop.Sys.PipeFlags` enum.
+        | Some "SystemNative_Pipe",
+          [ ConcretePointer _ ; _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "SystemNative_Pipe"
+            let flags = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            match PipeFlagsPal.decode state.Kernel.UnixPlatform flags with
+            | None ->
+                // The shim's `default` arm: EINVAL without reaching the kernel,
+                // and so without looking at the array.
+                withErrnoOnly ctx UnixError.EINVAL state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | Some kernelFlags ->
+
+            let pipeFds = bufferPointerArgument operation "pipeFds" instruction.Arguments.[0]
+
+            match
+                UnixPipe.pipe2 kernelFlags (BufferPointer.toUserBuffer pipeFds) (EmulatedKernel.unix state.Kernel)
+            with
+            | Error (Pipe2Refusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage pipeFds refusal)
+            | Error refusal ->
+                failwith
+                    $"%s{operation}: %s{Pipe2Refusal.describe refusal} CoreLib passes only 0 or PAL_O_CLOEXEC and a two-int array of its own, so this is a hand-rolled P/Invoke."
+            | Ok (Pipe2Answer.Failed error, system) ->
+                withErrno ctx error system state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | Ok (Pipe2Answer.Created (readFd, writeFd), system) ->
+
+            let destination =
+                match BufferPointer.dereferenceable pipeFds with
+                | Some destination -> destination
+                | None ->
+                    failwith
+                        $"%s{operation}: the kernel made a pipe for an array that names no storage. Every such array is answered or refused before the pipe is made (this is an interpreter bug)."
+
+            let bytes = Array.zeroCreate<byte> 8
+            BinaryPrimitives.WriteInt32LittleEndian (bytes.AsSpan (0, 4), readFd)
+            BinaryPrimitives.WriteInt32LittleEndian (bytes.AsSpan (4, 4), writeFd)
+
+            withAnswered system state
+            |> writeBytesThrough ctx operation destination (ImmutableArray.Create<byte> bytes)
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_FcntlSetIsNonBlocking",
@@ -5639,29 +5694,24 @@ module NativeSystemNative =
           [ ConcreteIntPtr state.ConcreteTypes ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             // `int32_t SystemNative_IsATty(intptr_t fd)` (pal_console.c:43)
-            // delegates to libc `isatty(3)`. PawPrint models a headless
-            // simulated process: no fd ever refers to a terminal, so we
-            // always return 0. CoreLib's only consumer is
-            // `ConsolePal.Unix.cs:IsHandleRedirected`, which therefore sees
-            // every standard stream as redirected — matching how this
-            // interpreter is run in practice (piped/captured output).
+            // delegates to libc `isatty(3)`, which is `tcgetattr` reduced to 1
+            // or 0. Nothing the kernel models is a terminal, so this always
+            // returns 0, with the kernel's errno for why. CoreLib's only
+            // consumer is `ConsolePal.Unix.cs:IsHandleRedirected`, which
+            // therefore sees every standard stream as redirected.
             //
-            // errno mirrors libc: `ENOTTY` for live fds, `EBADF` for
-            // unknown fds. The BCL's `[LibraryImport]` wrapper for IsATty
-            // does not currently read this back, but a guest that calls
-            // the entry point directly may observe `LastSystemError` via
-            // `Marshal.GetLastSystemError`, so we set it honestly.
+            // The BCL's `[LibraryImport]` wrapper for IsATty does not read the
+            // errno back, but a guest that calls the entry point directly may
+            // observe it through `Marshal.GetLastSystemError`.
             let fd = fdArgument "SystemNative_IsATty" instruction.Arguments.[0]
 
             let error =
-                match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
-                | Some _ -> UnixError.ENOTTY
-                | None -> UnixError.EBADF
+                match UnixDescriptor.terminalAttributes fd (EmulatedKernel.unix state.Kernel) with
+                | TerminalAttributesAnswer.NotATerminal error -> error
 
-            let state =
-                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
-
-            state
+            // In the simulated flavour's own numbering: Darwin's EOPNOTSUPP for a
+            // Unix-domain socket is a number Linux gives another error.
+            withErrnoOnly ctx error state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -5674,10 +5724,12 @@ module NativeSystemNative =
             // delegates to `Common_Write` in `pal_io_common.h`. The C path:
             //   * negative `bufferSize`            -> errno = ERANGE, return -1
             //   * otherwise call real `write(2)`   -> may return short, may EINTR (retried)
-            // The emulated kernel never returns short, never returns EINTR and
-            // never blocks. A guest depending on EAGAIN or a partial write from
-            // a non-blocking socket would need connection state PawPrint does
-            // not model, which `UnixReadWrite.write` refuses rather than guesses.
+            // The emulated kernel never returns EINTR and never blocks, and
+            // returns short only for a non-blocking write into a pipe with room
+            // for part of it. A guest depending on EAGAIN or a partial write
+            // from a non-blocking socket would need connection state PawPrint
+            // does not model, which `UnixReadWrite.write` refuses rather than
+            // guesses.
             let operation = "SystemNative_Write"
             let fd = fdArgument operation instruction.Arguments.[0]
             let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
@@ -5693,6 +5745,10 @@ module NativeSystemNative =
                         "Write less, or raise the model's file-length limit (issue #956)."
                     | WriteRefusal.NonBlockingStandardStreamShortWrite _ ->
                         "Reachable from the BCL once the guest has set O_NONBLOCK on the stream: `ConsolePal.Unix.Write` hands `write` the whole buffer a `Stream.Write` on `Console.OpenStandardOutput()` was given, and loops over a short count. Answering needs the kernel's log to record the bytes a short write took rather than the bytes offered, and this handler's `WroteToFd` to follow it."
+                    | WriteRefusal.PipeWouldBlock _ ->
+                        "PawPrint parks no task in a write yet. A guest reaching this writes more into a pipe it made with `SystemNative_Pipe` than the pipe has room for; give the write end O_NONBLOCK, or read from the pipe first."
+                    | WriteRefusal.BrokenPipe _ ->
+                        "PawPrint's startup ignores SIGPIPE, as CoreCLR does, so a real run would see EPIPE here; the kernel does not yet hold the disposition that says so."
                     | WriteRefusal.Buffer _ -> "Pass a buffer that names guest storage."
                     | WriteRefusal.UnmeasuredSetIdChange _ ->
                         "(WriteRefusal.UnmeasuredSetIdChange) A seed owned by anyone but the configured user and group is refused (`EmulatedKernel.withFileSystemAndCurrentDirectory`), so no guest file should reach this; if one did, that refusal was lifted without modelling this row."
@@ -5741,10 +5797,10 @@ module NativeSystemNative =
                 with
                 | Error (WriteRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
                 | Error refusal -> refused refusal
-                | Ok (WriteAdmission.Answered answer) ->
-                    let result, state = answered answer (EmulatedKernel.unix state.Kernel) state
+                | Ok (WriteAdmission.Answered answer, admitted) ->
+                    let result, state = answered answer admitted state
                     result, StepEffect.NoEffect, state
-                | Ok (WriteAdmission.Transfer count) ->
+                | Ok (WriteAdmission.Transfer count, admitted) ->
 
                 let source =
                     match BufferPointer.dereferenceable buffer with
@@ -5755,7 +5811,7 @@ module NativeSystemNative =
 
                 let bytes = readBytesThrough ctx operation source count state
 
-                match UnixReadWrite.write fd bytes (EmulatedKernel.unix state.Kernel) with
+                match UnixReadWrite.write fd bytes admitted with
                 | Error refusal -> refused refusal
                 | Ok (answer, system) ->
 
@@ -5773,7 +5829,8 @@ module NativeSystemNative =
                         | OpenFileTarget.File _
                         | OpenFileTarget.Directory _
                         | OpenFileTarget.Socket _
-                        | OpenFileTarget.SocketEventPort _ -> StepEffect.NoEffect
+                        | OpenFileTarget.SocketEventPort _
+                        | OpenFileTarget.Pipe _ -> StepEffect.NoEffect
                     | None -> StepEffect.NoEffect
 
                 result, effect, state
