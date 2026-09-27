@@ -21,7 +21,8 @@ module TestListen =
 
     /// A simulated process on the flavour asked for, before anything has
     /// happened to it.
-    let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> = UnixSystem.initial platform
+    let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
+        UnixSystem.initial platform 0 (CpuId 0)
 
 
     let private platforms : SimulatedUnixPlatform list =

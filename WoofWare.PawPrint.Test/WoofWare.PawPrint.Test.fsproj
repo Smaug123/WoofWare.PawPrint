@@ -224,6 +224,7 @@
     <Compile Include="TestNativeLibc.fs" />
     <Compile Include="TestStartupSignalDispositions.fs" />
     <Compile Include="TestSocketEventsPal.fs" />
+    <Compile Include="KernelTasks.fs" />
     <Compile Include="TestPollEventsPal.fs" />
     <Compile Include="TestFileAdvicePal.fs" />
     <Compile Include="TestFileSystemTypePal.fs" />

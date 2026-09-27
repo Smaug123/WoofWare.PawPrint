@@ -30,7 +30,7 @@ module TestEpollCtl =
     /// A simulated process on the flavour asked for, before anything has
     /// happened to it.
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform
+        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
 
         { system with
             Machine =

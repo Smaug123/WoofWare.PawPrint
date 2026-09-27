@@ -14,14 +14,9 @@ module TestEmulatedKernelAbort =
 
     let private thread : ThreadId = ThreadId 0
 
-    /// A process as the runtime starts it, with one task.
+    /// A process as the runtime starts it, with one task: `thread`, its leader.
     let private kernelOn (platform : SimulatedUnixPlatform) (coreDumps : CoreDumps) : EmulatedKernel =
-        let kernel = EmulatedKernel.create platform
-
-        kernel
-        |> EmulatedKernel.mapTasks (
-            UnixTaskTable.register thread (CpuId 0) (EmulatedKernel.osThreadId kernel.Process.ProcessId thread)
-        )
+        EmulatedKernel.create platform
         |> EmulatedKernel.mapProcess (UnixProcessState.withCoreDumps coreDumps)
 
     let private platforms : SimulatedUnixPlatform list =

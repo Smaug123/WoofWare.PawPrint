@@ -69,7 +69,7 @@ module TestSocketSyscallAgainstHost =
     let ``every call the library answers is answered the same by this host`` () : unit =
         HostPlatform.onUnixHost (fun flavour ->
             let platform = HostPlatform.platformOf flavour
-            let system : UnixSystem<int, string> = UnixSystem.initial platform
+            let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
 
             let numbering =
                 match flavour with

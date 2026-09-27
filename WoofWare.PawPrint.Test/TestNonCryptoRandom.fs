@@ -150,7 +150,8 @@ module TestNonCryptoRandom =
         // boots, rather than restating the seed.
         EmulatedKernel.initial.Machine.EntropyPool
         |> shouldEqual
-            (UnixSystem.initial<ThreadId, NativeSignalHandler> UnixSystem.defaultUnixPlatform).Machine.EntropyPool
+            (UnixSystem.initial<ThreadId, NativeSignalHandler> UnixSystem.defaultUnixPlatform (ThreadId 0) (CpuId 0))
+                .Machine.EntropyPool
 
         // And that seed is part of PawPrint's replay contract, because every
         // `Guid.NewGuid` draws from the pool.

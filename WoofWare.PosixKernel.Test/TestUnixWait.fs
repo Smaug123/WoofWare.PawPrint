@@ -32,14 +32,13 @@ module TestUnixWait =
         | None -> failwith $"fd %d{fd} names no description"
 
     let private withTask (name : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        { system with
-            Tasks = UnixTaskTable.register name (CpuId 0) (OsThreadId (uint32 name + 1u)) system.Tasks
-        }
+        Tasks.ensure name system
 
     /// Two socket event ports, which contend under `flock` because they share one
     /// anonymous inode, with an exclusive lock held through `locker`; and tasks 1 to 4.
     let private world : UnixSystem<int, string> * int * OpenFileDescriptionId * OpenFileDescriptionId =
-        let system = UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+        let system =
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
 
         let lockerFd, registry =
             FileDescriptorRegistry.createSocketEventPort system.Process.FileDescriptors

@@ -7,21 +7,24 @@ open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
-/// `EmulatedKernel` stores the POSIX state as three fields and hands it to
+/// `EmulatedKernel` stores the POSIX state as four fields and hands it to
 /// `UnixSystem.step` as one record. The two directions have to be inverses, and
 /// nothing else in the suite can tell if they stop being: a syscall's answer is
 /// silently lost if `withUnix` drops a part, and a state is silently resurrected
 /// if it writes back a part the syscall did not touch.
 ///
-/// The obligation grows: a fourth part of `UnixSystem` that `unix` fills but
+/// The obligation grows: a fifth part of `UnixSystem` that `unix` fills but
 /// `withUnix` forgets compiles, and only these rows notice.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestUnixSystemProjection =
 
-    /// A kernel differing from the default in each of the three parts at once,
+    /// A kernel differing from the default in each of the four parts at once,
     /// so that a round trip which preserved only some of them fails. All-default
     /// inputs cannot tell "carried across" from "left alone".
+    ///
+    /// Its leader is a thread no process would have as one, because PawPrint's
+    /// leader is always `ThreadId 0`; nothing here reads it but the projection.
     let private distinctive : EmulatedKernel =
         EmulatedKernel.initial
         |> EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount 4)
@@ -30,7 +33,11 @@ module TestUnixSystemProjection =
                 "test"
                 (Credentials.ofIds (UserId.parseOrFail "test" 7u) (GroupId.parseOrFail "test" 9u) [])
         )
-        |> EmulatedKernel.mapTasks (UnixTaskTable.register (ThreadId 3) (CpuId 2) (OsThreadId 11u))
+        |> KernelTasks.ensure (ThreadId 3)
+        |> fun kernel ->
+            { kernel with
+                Leader = ThreadId 3
+            }
 
     [<Test>]
     let ``writing back what was read changes nothing`` () : unit =
@@ -48,12 +55,14 @@ module TestUnixSystemProjection =
         system.Machine |> shouldEqual distinctive.Machine
         system.Process |> shouldEqual distinctive.Process
         system.Tasks |> shouldEqual distinctive.Tasks
+        system.Leader |> shouldEqual distinctive.Leader
 
         let restored = EmulatedKernel.withUnix system EmulatedKernel.initial
 
         restored.Machine |> shouldEqual distinctive.Machine
         restored.Process |> shouldEqual distinctive.Process
         restored.Tasks |> shouldEqual distinctive.Tasks
+        restored.Leader |> shouldEqual distinctive.Leader
 
     [<Test>]
     let ``the CLR half is left alone`` () : unit =
@@ -78,20 +87,27 @@ module TestUnixSystemProjection =
         let changed =
             distinctive
             |> EmulatedKernel.mapUnix (fun system ->
+                let spawned =
+                    match UnixTaskLifecycle.spawn system.Leader (ThreadId 4) (CpuId 1) system with
+                    | Ok (_, spawned) -> spawned
+                    | Error error -> failwith $"spawn failed: %O{error}"
+
                 {
-                    Machine = UnixMachineState.withProcessorCount 5 system.Machine
+                    Machine = UnixMachineState.withProcessorCount 5 spawned.Machine
                     Process =
-                        { system.Process with
+                        { spawned.Process with
                             Credentials =
                                 Credentials.ofIds (UserId.parseOrFail "test" 11u) (GroupId.parseOrFail "test" 13u) []
                         }
-                    Tasks = UnixTaskTable.register (ThreadId 4) (CpuId 1) (OsThreadId 12u) system.Tasks
+                    Tasks = spawned.Tasks
+                    Leader = ThreadId 4
                 }
             )
 
         changed.Machine.ProcessorCount |> shouldEqual 5
         changed.Credentials.EffectiveUser |> shouldEqual (UserId.parseOrFail "test" 11u)
         changed.Tasks.ContainsKey (ThreadId 4) |> shouldEqual true
+        changed.Leader |> shouldEqual (ThreadId 4)
 
         // And the part the operation left alone is still the one it was handed,
         // rather than the default a whole-kernel replacement would restore.
@@ -117,6 +133,7 @@ module TestUnixSystemProjection =
             after.Machine.ProcessorCount = count
             && after.Process = before.Process
             && after.Tasks = before.Tasks
+            && after.Leader = before.Leader
             && after.Machine = UnixMachineState.withProcessorCount count before.Machine
 
         Check.QuickThrowOnFailure property

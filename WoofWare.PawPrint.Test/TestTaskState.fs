@@ -26,80 +26,10 @@ module TestTaskState =
         let _, loggerFactory = LoggerFactory.makeTest ()
         Assembly.readFile loggerFactory corelibPath
 
-    let private machine () : IlMachineState =
+    /// A machine before `addThread` has given the leader its thread.
+    let private bare () : IlMachineState =
         let _, loggerFactory = LoggerFactory.makeTest ()
         IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
-
-    let private threads (state : IlMachineState) : Map<ThreadId, ThreadStatus> =
-        state.ThreadState |> Map.map (fun _ ts -> ts.Status)
-
-    /// The invariant this whole change rests on.
-    let private agrees (state : IlMachineState) : unit =
-        EmulatedKernel.checkTaskInvariants (threads state) state.Kernel |> shouldBeEmpty
-
-    [<Test>]
-    let ``a fresh machine's tasks agree with its threads`` () : unit = agrees (machine ())
-
-    [<Test>]
-    let ``an unstarted guest thread gets a task`` () : unit =
-        let state, thread =
-            machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
-
-        agrees state
-
-        UnixTaskTable.osThreadIdOf thread state.Kernel.Tasks
-        |> shouldEqual (EmulatedKernel.osThreadId state.Kernel.Process.ProcessId thread)
-
-        UnixTaskTable.parkedFor thread state.Kernel.Tasks |> shouldEqual None
-
-    [<Test>]
-    let ``a parked interpreter thread gets a task too`` () : unit =
-        // It runs guest code when a signal is dispatched, so it needs a real OS
-        // thread id; only its core is a placeholder.
-        let state, thread = machine () |> IlMachineState.allocateParkedThread
-
-        agrees state
-        UnixTaskTable.cpuOf thread state.Kernel.Tasks |> shouldEqual (CpuId 0)
-
-        UnixTaskTable.osThreadIdOf thread state.Kernel.Tasks
-        |> shouldEqual (EmulatedKernel.osThreadId state.Kernel.Process.ProcessId thread)
-
-    [<Test>]
-    let ``several threads of both kinds keep the sets in step`` () : unit =
-        let state = machine ()
-        let state, _ = IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1) state
-        let state, parked = IlMachineState.allocateParkedThread state
-        let state, _ = IlMachineState.allocateUnstartedThread (ManagedHeapAddress 2) state
-
-        agrees state
-        state.Kernel.Tasks.Count |> shouldEqual (Map.count state.ThreadState)
-
-        // Distinct OS thread ids: an alias would let one thread be mistaken for
-        // another as a `Lock` owner.
-        let ids =
-            threads state
-            |> Map.toList
-            |> List.map (fun (t, _) -> UnixTaskTable.osThreadIdOf t state.Kernel.Tasks)
-
-        ids |> List.distinct |> List.length |> shouldEqual ids.Length
-
-        ids
-        |> List.contains (EmulatedKernel.osThreadId state.Kernel.Process.ProcessId parked)
-        |> shouldEqual true
-
-    [<Test>]
-    let ``guest threads take successive cores in the rotation`` () : unit =
-        let state =
-            (machine ()).MapKernel (EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount 4))
-
-        let state, first =
-            IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1) state
-
-        let state, second =
-            IlMachineState.allocateUnstartedThread (ManagedHeapAddress 2) state
-
-        UnixTaskTable.cpuOf first state.Kernel.Tasks |> shouldEqual (CpuId 0)
-        UnixTaskTable.cpuOf second state.Kernel.Tasks |> shouldEqual (CpuId 1)
 
     let private baseClassTypes : BaseClassTypes<DumpedAssembly> =
         BaseClassTypes.ofCorelib corelib
@@ -143,28 +73,132 @@ module TestTaskState =
         | Ok methodState -> state, methodState
         | Error missing -> failwith $"unexpected missing assembly references creating frame: %O{missing}"
 
+    /// A machine whose leader has its thread, as `Program` leaves it before `Main` runs.
+    let private machine () : IlMachineState =
+        let state, frame = aFrame (bare ())
+        IlMachineState.addThread frame state |> fst
+
+    let private threads (state : IlMachineState) : Map<ThreadId, ThreadStatus> =
+        state.ThreadState |> Map.map (fun _ ts -> ts.Status)
+
+    /// The invariant this whole change rests on.
+    let private agrees (state : IlMachineState) : unit =
+        EmulatedKernel.checkTaskInvariants (threads state) state.Kernel |> shouldBeEmpty
+
     [<Test>]
-    let ``addThread places on the rotation, not on core zero`` () : unit =
-        // `addThread` has one production caller — the entry thread, always at
-        // rotation 0, where `cpuForRotation 0` and `CpuId 0` agree. So its
-        // placement is currently indistinguishable from the constant, and a
-        // second caller would silently land on core 0. This pins the contract
-        // instead: the second thread through here takes the next slot.
+    let ``a fresh machine's one task is the leader, whose thread addThread makes`` () : unit =
+        let state = bare ()
+        state.Kernel.Leader |> shouldEqual (ThreadId 0)
+        state.Kernel.Tasks |> Map.keys |> List.ofSeq |> shouldEqual [ ThreadId 0 ]
+
+        UnixTaskTable.osThreadIdOf (ThreadId 0) state.Kernel.Tasks
+        |> OsThreadId.toUInt64
+        |> shouldEqual (uint64 (ProcessId.toInt32 state.Kernel.Process.ProcessId))
+
+        EmulatedKernel.checkTaskInvariants (threads state) state.Kernel
+        |> shouldEqual [ EmulatedKernelDefect.TaskWithoutThread (ThreadId 0) ]
+
+        let state, frame = aFrame state
+        let state, thread = IlMachineState.addThread frame state
+        thread |> shouldEqual (ThreadId 0)
+        agrees state
+
+    [<Test>]
+    let ``an unstarted guest thread gets a task`` () : unit =
+        let state, thread =
+            machine ()
+            |> IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1)
+
+        agrees state
+        thread |> shouldEqual (ThreadId 1)
+
+        // The id after the leader's, which is the process ID.
+        UnixTaskTable.osThreadIdOf thread state.Kernel.Tasks
+        |> OsThreadId.toUInt64
+        |> shouldEqual 4243UL
+
+        UnixTaskTable.parkedFor thread state.Kernel.Tasks |> shouldEqual None
+
+    [<Test>]
+    let ``a parked interpreter thread gets a task too`` () : unit =
+        // It runs guest code when a signal is dispatched, so it needs a real OS
+        // thread id; only its core is a placeholder.
+        let state, thread = machine () |> IlMachineState.allocateParkedThread (ThreadId 0)
+
+        agrees state
+        UnixTaskTable.cpuOf thread state.Kernel.Tasks |> shouldEqual (CpuId 0)
+
+        UnixTaskTable.osThreadIdOf thread state.Kernel.Tasks
+        |> OsThreadId.toUInt64
+        |> shouldEqual 4243UL
+
+    [<Test>]
+    let ``several threads of both kinds keep the sets in step`` () : unit =
+        let state = machine ()
+
+        let state, _ =
+            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1) state
+
+        let state, parked = IlMachineState.allocateParkedThread (ThreadId 0) state
+
+        let state, _ =
+            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 2) state
+
+        agrees state
+        state.Kernel.Tasks.Count |> shouldEqual (Map.count state.ThreadState)
+
+        // Distinct OS thread ids: an alias would let one thread be mistaken for
+        // another as a `Lock` owner.
+        let ids =
+            threads state
+            |> Map.toList
+            |> List.map (fun (t, _) -> UnixTaskTable.osThreadIdOf t state.Kernel.Tasks)
+
+        ids |> List.distinct |> List.length |> shouldEqual ids.Length
+
+        ids
+        |> List.contains (UnixTaskTable.osThreadIdOf parked state.Kernel.Tasks)
+        |> shouldEqual true
+
+    [<Test>]
+    let ``guest threads take successive cores in the rotation`` () : unit =
         let state =
             (machine ()).MapKernel (EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount 4))
 
+        let state, first =
+            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1) state
+
+        let state, second =
+            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 2) state
+
+        // The entry thread took the rotation's first slot.
+        UnixTaskTable.cpuOf first state.Kernel.Tasks |> shouldEqual (CpuId 1)
+        UnixTaskTable.cpuOf second state.Kernel.Tasks |> shouldEqual (CpuId 2)
+
+    [<Test>]
+    let ``addThread gives the leader its thread once, on the rotation's first slot`` () : unit =
+        let state =
+            (bare ()).MapKernel (EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount 4))
+
         let state, frame = aFrame state
         let state, first = IlMachineState.addThread frame state
-        let state, second = IlMachineState.addThread frame state
 
+        first |> shouldEqual state.Kernel.Leader
         UnixTaskTable.cpuOf first state.Kernel.Tasks |> shouldEqual (CpuId 0)
-        UnixTaskTable.cpuOf second state.Kernel.Tasks |> shouldEqual (CpuId 1)
+        state.NextCpuRotation |> shouldEqual 1
         agrees state
+
+        // A process has one first thread; every other is created by a running one.
+        let exn =
+            Assert.Throws<exn> (fun () -> IlMachineState.addThread frame state |> ignore<IlMachineState * ThreadId>)
+
+        exn.Message |> shouldContainText "already has a thread"
 
     [<Test>]
     let ``a thread with no task is refused`` () : unit =
         let state, thread =
-            machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
+            machine ()
+            |> IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1)
 
         let stripped =
             state.MapKernel (fun kernel ->
@@ -186,15 +220,7 @@ module TestTaskState =
         let state = machine ()
         let ghost = ThreadId 99
 
-        let haunted =
-            state.MapKernel (
-                EmulatedKernel.mapTasks (
-                    UnixTaskTable.register
-                        ghost
-                        (CpuId 0)
-                        (EmulatedKernel.osThreadId state.Kernel.Process.ProcessId ghost)
-                )
-            )
+        let haunted = state.MapKernel (KernelTasks.ensure ghost)
 
         EmulatedKernel.checkTaskInvariants (threads haunted) haunted.Kernel
         |> shouldEqual [ EmulatedKernelDefect.TaskWithoutThread ghost ]
@@ -224,7 +250,8 @@ module TestTaskState =
     /// A thread with a task, and `parked` written on it.
     let private threadParkedIn (parked : ParkedSyscall) : IlMachineState * ThreadId =
         let state, thread =
-            machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
+            machine ()
+            |> IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1)
 
         state.MapKernel (EmulatedKernel.mapUnix (UnixWait.park thread parked)), thread
 
@@ -234,7 +261,8 @@ module TestTaskState =
         // A thread with the one and not the other is a state nothing can act on: no sweep can
         // decide whether to wake it, and no re-entered handler could decide what to finish.
         let state, thread =
-            machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
+            machine ()
+            |> IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1)
 
         let statuses = threads state |> Map.add thread ThreadStatus.BlockedInSyscall
 
@@ -259,7 +287,8 @@ module TestTaskState =
         // A thread's exit removes its task, so a terminated thread holding one is a thread whose
         // exit the kernel was never told of.
         let state, thread =
-            machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
+            machine ()
+            |> IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1)
 
         let statuses = threads state |> Map.add thread ThreadStatus.Terminated
 
@@ -273,10 +302,10 @@ module TestTaskState =
         let state = machine ()
 
         let state, first =
-            IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1) state
+            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1) state
 
         let state, second =
-            IlMachineState.allocateUnstartedThread (ManagedHeapAddress 2) state
+            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 2) state
 
         let before = state.Kernel.Tasks
         let state = Scheduler.onThreadTerminated first state
@@ -294,10 +323,11 @@ module TestTaskState =
     let ``a terminated worker's signal mask goes with it`` () : unit =
         // A second thread, so that the worker is not the kernel's last task.
         let state, _ =
-            machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
+            machine ()
+            |> IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1)
 
         let state, worker =
-            IlMachineState.allocateUnstartedThread (ManagedHeapAddress 2) state
+            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 2) state
 
         let state =
             state.MapKernel (
@@ -374,16 +404,17 @@ module TestTaskState =
         |> shouldEqual (Some other)
 
     [<Test>]
-    let ``registering a thread twice is refused`` () : unit =
-        // Re-registration would silently discard the first registration's core
-        // and OS thread id, which is how a thread would end up aliasing another.
+    let ``spawning a thread's task twice is refused`` () : unit =
+        // A second spawn would silently discard the first one's core and OS thread
+        // id, which is how a thread would end up aliasing another.
         let state, thread =
-            machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
+            machine ()
+            |> IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1)
 
         let exn =
             Assert.Throws<exn> (fun () ->
-                EmulatedKernel.mapTasks (UnixTaskTable.register thread (CpuId 3) (OsThreadId 7u)) state.Kernel
-                |> ignore<EmulatedKernel>
+                UnixTaskLifecycle.spawn (ThreadId 0) thread (CpuId 3) (EmulatedKernel.unix state.Kernel)
+                |> ignore<Result<OsThreadId * UnixSystem<ThreadId, NativeSignalHandler>, UnixError>>
             )
 
         exn.Message |> shouldContainText "already names a task"
@@ -395,7 +426,8 @@ module TestTaskState =
         // it anyway would set a thread Runnable that some *other* mechanism had meanwhile put to
         // sleep, losing that wait with nothing to say so.
         let state, thread =
-            machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
+            machine ()
+            |> IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1)
 
         let exn =
             Assert.Throws<exn> (fun () -> Scheduler.wakeFromSyscall thread state |> ignore<IlMachineState>)
@@ -404,17 +436,15 @@ module TestTaskState =
 
     [<Test>]
     let ``a park and its release round-trip`` () : unit =
-        // On a machine with several cores, and on the *second* thread, so that
-        // the task under test is not on core 0: a fixture whose thread already
-        // sits there cannot tell "parking left the core alone" from "parking
-        // reset it to zero".
+        // On a machine with several cores, and on a thread after the entry
+        // thread, so that the task under test is not on core 0: a fixture whose
+        // thread already sits there cannot tell "parking left the core alone"
+        // from "parking reset it to zero".
         let state =
             (machine ()).MapKernel (EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount 4))
 
-        let state, _ = IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1) state
-
         let state, thread =
-            IlMachineState.allocateUnstartedThread (ManagedHeapAddress 2) state
+            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1) state
 
         UnixTaskTable.cpuOf thread state.Kernel.Tasks |> shouldEqual (CpuId 1)
 

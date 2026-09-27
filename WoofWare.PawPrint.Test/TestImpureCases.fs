@@ -924,10 +924,10 @@ module TestImpureCases =
             // Small enough to fit in a byte, so the case above is not the only
             // one that pins the handler to the configuration.
             processIdCase (Some 3)
-            // Linux's largest possible `pid_max` (`PID_MAX_LIMIT` on 64-bit),
-            // which needs all but the top byte: a handler truncating to 16 bits
-            // is caught here.
-            processIdCase (Some 4194304)
+            // The largest process ID Linux hands out: one below the largest
+            // `pid_max` it accepts. It needs all but the top byte, so a handler
+            // truncating to 16 bits is caught here.
+            processIdCase (Some 4194303)
             {
                 // The replay contract for the two random streams: under the
                 // default configuration these bytes are what every run hands

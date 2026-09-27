@@ -19,7 +19,7 @@ module TestClock =
         [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ]
 
     let private machineOn (flavour : SimulatedUnixFlavour) : UnixMachineState =
-        (UnixSystem.initial<int, string> (HostPlatform.platformOf flavour)).Machine
+        (UnixSystem.initial<int, string> (HostPlatform.platformOf flavour) 0 (CpuId 0)).Machine
 
     /// A value in `[low, high]`, weighted towards both ends as well as spread across
     /// the whole range: the ends are where the arithmetic can overflow, and a uniform

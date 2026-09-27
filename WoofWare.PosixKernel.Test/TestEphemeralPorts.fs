@@ -37,7 +37,7 @@ module TestEphemeralPorts =
     /// A fresh system whose ephemeral range is `low..high`, so that the
     /// allocator wraps within a test.
     let private systemOn (platform : SimulatedUnixPlatform) (low : uint16, high : uint16) : UnixSystem<int, string> =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform
+        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
 
         { system with
             Machine = UnixMachineState.withEphemeralPortRange (low, high) system.Machine

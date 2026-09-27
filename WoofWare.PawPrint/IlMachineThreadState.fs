@@ -341,7 +341,8 @@ module IlMachineThreadState =
                 _ZeroValues = Map.empty
                 Logger = logger
                 LoggerFactory = lf
-                NextThreadId = 0
+                // `ThreadId 0` is the kernel's leader, whose thread `addThread` makes.
+                NextThreadId = 1
                 NextCpuRotation = 0
                 // CallStack = []
                 ManagedHeap = ManagedHeap.empty
@@ -373,24 +374,49 @@ module IlMachineThreadState =
 
         state.WithLoadedAssembly entryAssembly
 
+    /// Give the process's first thread, the kernel's leader, its first frame: the
+    /// thread `Main` runs on. Its task already exists, made with the kernel.
+    ///
+    /// Fails if the leader already has a thread: a process has one first thread.
     let addThread (newThreadState : MethodState) (state : IlMachineState) : IlMachineState * ThreadId =
-        let thread = ThreadId state.NextThreadId
+        let thread = state.Kernel.Leader
 
-        // Guest-visible, so it takes the next slot in the CPU rotation. Its OS
-        // thread id, by contrast, comes from the `ThreadId` just allocated:
-        // every thread has one of those, so `osThreadId` needs no cursor.
+        if Map.containsKey thread state.ThreadState then
+            failwith
+                $"IlMachineState.addThread: the leader %O{thread} already has a thread; a process has one first thread, and every later one is created by a running thread"
+
+        // Guest-visible, so it takes the first slot in the CPU rotation, which is
+        // the processor the kernel put the leader on.
         let cpu = EmulatedKernel.cpuForRotation state.NextCpuRotation state.Kernel
-        let osThreadId = EmulatedKernel.osThreadId state.Kernel.Process.ProcessId thread
+        let leaderCpu = UnixTaskTable.cpuOf thread state.Kernel.Tasks
+
+        if cpu <> leaderCpu then
+            failwith
+                $"IlMachineState.addThread: the CPU rotation would place the leader on %O{cpu}, but the kernel has it on %O{leaderCpu}; the leader's thread must be the first placed"
 
         let newState =
             { state with
-                NextThreadId = state.NextThreadId + 1
                 NextCpuRotation = state.NextCpuRotation + 1
                 ThreadState = state.ThreadState |> Map.add thread (ThreadState.New newThreadState)
-                Kernel = EmulatedKernel.mapTasks (UnixTaskTable.register thread cpu osThreadId) state.Kernel
             }
 
         newState, thread
+
+    /// Spawn `thread`'s task, created by `parent` on `cpu`. Fails if the kernel
+    /// has no thread ID left to give it, which with Linux's default `pid_max`
+    /// takes four million live threads.
+    let private spawnTask
+        (parent : ThreadId)
+        (thread : ThreadId)
+        (cpu : CpuId)
+        (kernel : EmulatedKernel)
+        : EmulatedKernel
+        =
+        match UnixTaskLifecycle.spawn parent thread cpu (EmulatedKernel.unix kernel) with
+        | Ok (_, system) -> EmulatedKernel.withUnix system kernel
+        | Error error ->
+            failwith
+                $"%O{parent} creating %O{thread}: the kernel answered clone with %O{error}, because every thread ID below pid_max is in use; PawPrint does not model a failing thread creation"
 
     /// Allocate a fresh `ThreadId` for a Thread heap object that the guest has
     /// just constructed (i.e. its `Initialize` ran) but not yet started. The
@@ -400,7 +426,14 @@ module IlMachineThreadState =
     /// Binds the new ThreadId to `threadAddr` in `ManagedThreadObjects` so
     /// helpers like `threadIdFromThreadAddr` can reverse-look-up the thread
     /// during the pre-Start window (notably for the `IsBackground` QCalls).
-    let allocateUnstartedThread (threadAddr : ManagedHeapAddress) (state : IlMachineState) : IlMachineState * ThreadId =
+    ///
+    /// `parent` is the thread constructing it.
+    let allocateUnstartedThread
+        (parent : ThreadId)
+        (threadAddr : ManagedHeapAddress)
+        (state : IlMachineState)
+        : IlMachineState * ThreadId
+        =
         let thread = ThreadId state.NextThreadId
 
         // Frame-less stub mirroring the test helpers in TestLowLevelMonitor /
@@ -434,11 +467,10 @@ module IlMachineThreadState =
                 // constructor. A guest that constructs a thread and never starts
                 // it therefore still consumes a rotation slot.
                 Kernel =
-                    EmulatedKernel.mapTasks
-                        (UnixTaskTable.register
-                            thread
-                            (EmulatedKernel.cpuForRotation state.NextCpuRotation state.Kernel)
-                            (EmulatedKernel.osThreadId state.Kernel.Process.ProcessId thread))
+                    spawnTask
+                        parent
+                        thread
+                        (EmulatedKernel.cpuForRotation state.NextCpuRotation state.Kernel)
                         state.Kernel
             }
 
@@ -451,7 +483,9 @@ module IlMachineThreadState =
     /// `ManagedThreadObjects` — and its `ThreadState` is frameless with
     /// status `ThreadStatus.Parked`, so the scheduler never picks it until
     /// `startParkedDispatcher` gives it a frame.
-    let allocateParkedThread (state : IlMachineState) : IlMachineState * ThreadId =
+    ///
+    /// `parent` is the thread whose native call creates it.
+    let allocateParkedThread (parent : ThreadId) (state : IlMachineState) : IlMachineState * ThreadId =
         let thread = ThreadId state.NextThreadId
 
         let parkedState : ThreadState =
@@ -494,15 +528,9 @@ module IlMachineThreadState =
                     // handler — and that handler may take a
                     // `System.Threading.Lock`, which treats a matching thread id
                     // as the same thread re-entering. It needs no special-casing
-                    // to stay distinct: `osThreadId` is a function of the
-                    // `ThreadId` allocated just above, which is unique to this
-                    // thread like any other's.
-                    EmulatedKernel.mapTasks
-                        (UnixTaskTable.register
-                            thread
-                            (CpuId 0)
-                            (EmulatedKernel.osThreadId state.Kernel.Process.ProcessId thread))
-                        state.Kernel
+                    // to stay distinct: the kernel mints it, and no two live
+                    // tasks share one.
+                    spawnTask parent thread (CpuId 0) state.Kernel
             }
 
         newState, thread

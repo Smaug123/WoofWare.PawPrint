@@ -73,6 +73,9 @@ type IlMachineState =
         /// logging sink only — nothing about a run's behaviour may depend on it, on pain of
         /// making replays depend on how the host configured logging.
         LoggerFactory : ILoggerFactory
+        /// The `ThreadId` the next thread created from a running one gets. Starts
+        /// at 1: `ThreadId 0` is the kernel's leader, which `addThread` gives its
+        /// first frame.
         NextThreadId : int
         /// Round-robin cursor for `EmulatedKernel.cpuForRotation`: the number
         /// of *guest-visible* threads created so far, and hence the rotation
@@ -87,9 +90,9 @@ type IlMachineState =
         /// leaves this cursor alone.
         ///
         /// The one cursor with that property, and it stays specific to CPU
-        /// placement: `EmulatedKernel.osThreadId` deliberately keys off
-        /// `NextThreadId` instead, because which id a non-leader thread gets is
-        /// opaque to the guest where a core index is not. See `osThreadId` for the argument.
+        /// placement. A thread's OS thread id is the kernel's to mint
+        /// (`UnixTaskLifecycle.spawn`), and every thread consumes one, as the
+        /// signal-handling thread a real runtime creates does.
         ///
         /// Advanced when a thread is *created*, not when it is started: a guest
         /// that constructs a `Thread` and never calls `Start` still consumes a

@@ -64,7 +64,7 @@ module TestFileSystemType =
 
     /// The machine a simulated process boots with on `flavour`'s platform.
     let private machineOn (flavour : SimulatedUnixFlavour) : UnixMachineState =
-        (UnixSystem.initial<int, string> (HostPlatform.platformOf flavour)).Machine
+        (UnixSystem.initial<int, string> (HostPlatform.platformOf flavour) 0 (CpuId 0)).Machine
 
     let private everyFlavour : SimulatedUnixFlavour list =
         [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ]
@@ -247,7 +247,7 @@ module TestFileSystemType =
             ]
 
     let private systemWith (platform : SimulatedUnixPlatform) (mount : EmulatedMount) : UnixSystem<int, string> =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform
+        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
 
         let system =
             { system with

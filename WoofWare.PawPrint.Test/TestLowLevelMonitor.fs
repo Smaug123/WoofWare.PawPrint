@@ -155,10 +155,6 @@ module TestLowLevelMonitor =
             |> List.fold
                 (fun (state : IlMachineState, acc : Map<ThreadId, ThreadState>) (tid : ThreadId) ->
                     let state, methodState = mintFrame state
-                    // Distinct OS thread ids, minted by the same policy the
-                    // real allocation sites use: these stand in for guest
-                    // threads, and no two threads may share an id.
-                    let osThreadId = EmulatedKernel.osThreadId state.Kernel.Process.ProcessId tid
 
                     state, acc |> Map.add tid (ThreadState.New methodState)
                 )

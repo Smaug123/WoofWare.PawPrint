@@ -16,24 +16,6 @@ type CpuId =
         match this with
         | CpuId.CpuId i -> $"<cpu #%i{i}>"
 
-/// <summary>
-/// The operating-system thread identifier which the simulated kernel reports for a
-/// thread.
-/// </summary>
-/// <example>
-/// This is what <c>gettid(2)</c> returns on Linux, and what
-/// <c>pthread_threadid_np(3)</c> returns on Darwin.
-/// </example>
-type OsThreadId =
-    | OsThreadId of uint32
-
-    /// <summary>
-    /// A human-readable description of the thread ID.
-    /// </summary>
-    override this.ToString () =
-        match this with
-        | OsThreadId.OsThreadId i -> $"<os thread #%i{i}>"
-
 /// One thread's in-flight wait on a socket event port (`epoll_wait` or
 /// `kevent`): the state the syscall captured when it was entered, which
 /// outlives anything the process does to its arguments afterwards. The port is held by *description
@@ -169,8 +151,8 @@ type TaskPark =
 /// What the emulated kernel knows about one task — one scheduling entity, what
 /// `gettid(2)` names.
 ///
-/// A client registers one for every thread when the thread is created
-/// (`UnixTaskTable.register`), and the thread's exit removes it
+/// A process starts with one (`UnixSystem.initial`), every thread it creates adds
+/// one (`UnixTaskLifecycle.spawn`), and the thread's exit removes it
 /// (`UnixTaskLifecycle.exitThread`), so the table holds a task for each thread
 /// from its creation until its exit. That is what makes the record total:
 /// `Cpu` and `OsThreadId` have no truthful default, so a `Map` of each would
@@ -192,12 +174,11 @@ type UnixTaskState =
         Cpu : CpuId
         /// The OS thread identifier this task reports, as `gettid(2)` does.
         ///
-        /// Chosen by the client when it registers the task, and fixed from then
-        /// on. This library does not check that it differs from every other
-        /// task's, nor from the id of a task that has exited. A real kernel
-        /// recycles an exited thread's id; a client that does the same lets a
-        /// stale owner identity recorded by a user-space lock be mistaken for a
-        /// live owner.
+        /// Minted by the machine's `ThreadIdAllocator` when the task is created,
+        /// and fixed from then on. No two live tasks share one. On Linux an exited
+        /// task's id comes back once the counter wraps at `pid_max`, so a stale
+        /// owner identity recorded by a user-space lock can then be mistaken for a
+        /// live owner, as it can on a real Linux.
         OsThreadId : OsThreadId
         /// The syscall this task is blocked in, and where that park stands in park
         /// order, if it is blocked in one.
@@ -227,7 +208,7 @@ module UnixTaskTable =
 
     /// The task `name` is.
     ///
-    /// Total, and loudly partial rather than an option: every task is registered
+    /// Total, and loudly partial rather than an option: every task is added
     /// when it is created and removed only when it exits, so a name that
     /// resolves to nothing is a client bug rather than anything a guest did.
     let get<'Task when 'Task : comparison> (name : 'Task) (tasks : Map<'Task, UnixTaskState>) : UnixTaskState =
@@ -235,13 +216,13 @@ module UnixTaskTable =
         | Some task -> task
         | None ->
             failwith
-                $"UnixTaskTable.get: %O{name} names no task. Every task is registered with `UnixTaskTable.register` when it is created, so this one was built without that (this is a bug in the client)."
+                $"UnixTaskTable.get: %O{name} names no task. Every task enters the table when its thread is created, by `UnixSystem.initial` or `UnixTaskLifecycle.spawn`, and leaves it when the thread exits, so this one was never created or has already exited (this is a bug in the client)."
 
-    /// Mint the task for a newly-created scheduling entity.
+    /// Add the task for a newly-created scheduling entity.
     ///
-    /// The one route by which a task enters the table, as
-    /// `UnixTaskLifecycle.exitThread` is the one by which it leaves.
-    let register<'Task when 'Task : comparison>
+    /// Internal so that the only routes by which a task enters the table are
+    /// `UnixSystem.initial` and `UnixTaskLifecycle.spawn`, which mint its id.
+    let internal add<'Task when 'Task : comparison>
         (name : 'Task)
         (cpu : CpuId)
         (osThreadId : OsThreadId)
@@ -250,7 +231,7 @@ module UnixTaskTable =
         =
         if Map.containsKey name tasks then
             failwith
-                $"UnixTaskTable.register: %O{name} already names a task. A task is created once, and re-registering would silently discard whatever the first registration recorded (this is a bug in the client)."
+                $"UnixTaskTable.add: %O{name} already names a task. A task is created once, and adding it again would silently discard whatever the first creation recorded (this is a bug in the client)."
 
         Map.add
             name

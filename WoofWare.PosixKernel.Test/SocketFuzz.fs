@@ -560,10 +560,7 @@ module SocketFuzz =
 
             // `poll` is made by a task; a timeout of 0 never parks, so the one
             // registered here for the call is never left behind in the state.
-            let polling =
-                { state.Kernel with
-                    Tasks = UnixTaskTable.register pollTask (CpuId 0) (OsThreadId 1u) state.Kernel.Tasks
-                }
+            let polling = Tasks.ensure pollTask state.Kernel
 
             match UnixPoll.poll pollTask [ entry ] 0 polling with
             | Error refusal -> raise (ModelRefusal $"poll of fd %d{fd} refused: %s{PollRefusal.describe refusal}")
@@ -580,7 +577,7 @@ module SocketFuzz =
     let executeEmulated (ops : FuzzOp list) : EmulatedRun =
         let mutable state =
             {
-                Kernel = UnixSystem.initial SimulatedUnixPlatform.linuxX64
+                Kernel = UnixSystem.initial SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
                 SlotFd = Map.empty
                 NextListenerPort = listenerPortBase
             }

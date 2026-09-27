@@ -178,6 +178,21 @@ type UnixSystemDefect<'Task> =
     /// The process holds more supplementary groups than its machine's
     /// platform lets any process hold (`SimulatedUnixPlatform.supplementaryGroupLimit`).
     | TooManySupplementaryGroups of count : int * limit : int
+    /// The process's leader is not one of its tasks. A running process always has
+    /// its leader, since the leader cannot exit while another task lives.
+    | LeaderWithoutTask of leader : 'Task
+    /// Two live tasks report the same thread ID, so a lock that records its owner
+    /// by thread ID would take either for the other.
+    | DuplicateOsThreadId of id : OsThreadId * tasks : 'Task list
+    /// On Linux, the leader's thread ID is not the process ID, which it always is.
+    | LeaderThreadIdNotProcessId of leader : 'Task * id : OsThreadId * pid : ProcessId
+    /// A task's thread ID is one the machine's counter could not have handed out:
+    /// at or above `pid_max` on Linux, or not yet reached on Darwin. A later
+    /// thread could be given the same ID.
+    | OsThreadIdNotMintable of task : 'Task * id : OsThreadId * allocator : ThreadIdAllocator
+    /// The machine's thread ID counter is not its flavour's: a Linux counter on a
+    /// Darwin machine, or the other way about.
+    | ThreadIdAllocatorNotOfFlavour of flavour : SimulatedUnixFlavour * allocator : ThreadIdAllocator
 
 /// Why the directory a host named cannot be the one a simulated process starts
 /// in. `UnixSystem.withFileSystemAndCurrentDirectory` returns one instead of
@@ -697,6 +712,62 @@ module UnixSystem =
             else
                 []
 
+        // The task table against the process and the machine's thread ID
+        // counter: the leader is a task, no two tasks share an ID, and every ID is
+        // one the counter could have handed out, so none can be handed out again
+        // while its task lives.
+        let threadIds =
+            let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+            let allocator = system.Machine.ThreadIds
+
+            let allocatorFlavour =
+                match flavour, allocator with
+                | SimulatedUnixFlavour.Linux, ThreadIdAllocator.Linux _
+                | SimulatedUnixFlavour.Darwin, ThreadIdAllocator.Darwin _ -> []
+                | SimulatedUnixFlavour.Linux, ThreadIdAllocator.Darwin _
+                | SimulatedUnixFlavour.Darwin, ThreadIdAllocator.Linux _ ->
+                    [ UnixSystemDefect.ThreadIdAllocatorNotOfFlavour (flavour, allocator) ]
+
+            let leader =
+                match Map.tryFind system.Leader system.Tasks with
+                | None -> [ UnixSystemDefect.LeaderWithoutTask system.Leader ]
+                | Some state ->
+                    match flavour with
+                    | SimulatedUnixFlavour.Linux when
+                        OsThreadId.toUInt64 state.OsThreadId
+                        <> uint64 (ProcessId.toInt32 system.Process.ProcessId)
+                        ->
+                        [
+                            UnixSystemDefect.LeaderThreadIdNotProcessId (
+                                system.Leader,
+                                state.OsThreadId,
+                                system.Process.ProcessId
+                            )
+                        ]
+                    | SimulatedUnixFlavour.Linux
+                    | SimulatedUnixFlavour.Darwin -> []
+
+            let duplicates =
+                system.Tasks
+                |> Map.toList
+                |> List.groupBy (fun (_, state) -> state.OsThreadId)
+                |> List.choose (fun (id, holders) ->
+                    match holders with
+                    | []
+                    | [ _ ] -> None
+                    | _ -> Some (UnixSystemDefect.DuplicateOsThreadId (id, List.map fst holders))
+                )
+
+            let unmintable =
+                system.Tasks
+                |> Map.toList
+                |> List.filter (fun (_, state) -> not (ThreadIdAllocator.couldHaveMinted state.OsThreadId allocator))
+                |> List.map (fun (task, state) ->
+                    UnixSystemDefect.OsThreadIdNotMintable (task, state.OsThreadId, allocator)
+                )
+
+            allocatorFlavour @ leader @ duplicates @ unmintable
+
         dangling
         @ unreferenced
         @ freshness
@@ -717,6 +788,7 @@ module UnixSystem =
         @ fileSystemType
         @ userBufferCheck
         @ supplementaryGroups
+        @ threadIds
 
     /// Logical-processor count a freshly-minted simulated process reports.
     /// One, because only single-processor behaviour has been exercised
@@ -852,7 +924,7 @@ module UnixSystem =
     /// not delivered to it from inside its own namespace, so `kill -9` on
     /// itself does nothing — and a default that took that branch would be
     /// modelling a container's entry point rather than an ordinary process.
-    /// A client chooses otherwise with `UnixProcessState.withProcessId`.
+    /// A client chooses otherwise with `withProcessId`.
     let defaultProcessId : ProcessId =
         // Measured on Linux 6.18.5 in a container: `sh` running as pid 1
         // survives both `kill -9 $$` and `kill -TERM $$`, where the same
@@ -869,9 +941,25 @@ module UnixSystem =
     /// value, because every byte the pool hands out follows from it.
     let defaultEntropySeed : uint64 = 0x243F6A8885A308D3UL
 
+    /// The `pid_max` a freshly-minted Linux machine has: 4194304, the most Linux
+    /// allows, so that thread IDs are reused only after that many have been
+    /// handed out. A client chooses otherwise with `withPidMax`.
+    ///
+    /// A Darwin machine has no such setting.
+    let defaultPidMax : int32 =
+        // Measured in Apple's `container` VM (Linux 6.18.5, 2026-09-26), where
+        // `kernel.pid_max` reads 4194304; `pid-allocation.c` measured that this is
+        // the greatest value the sysctl accepts.
+        ThreadIdAllocator.linuxPidMaxCeiling
+
     /// A simulated process on a machine of the given platform, before anything
     /// has happened to it: no sockets, no connections, an empty filesystem, and
     /// only the three standard streams open.
+    ///
+    /// It has one task, `leader`, on the logical processor `leaderCpu`. The
+    /// leader's thread ID is the process ID, `defaultProcessId`: on Linux because
+    /// it always is, and on Darwin as the start of a quiet machine's counter,
+    /// which a client moves with `withLeaderThreadId`.
     ///
     /// The three fields the platform *fixes* are derived from it rather than
     /// taken as arguments — `SoMaxConn`, `Mount`, and the platform
@@ -891,6 +979,8 @@ module UnixSystem =
     /// non-empty filesystem or a different address list.
     let initial<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (platform : SimulatedUnixPlatform)
+        (leader : 'Task)
+        (leaderCpu : CpuId)
         : UnixSystem<'Task, 'Handler>
         =
         // `SimulatedUnixPlatform.create` validates at construction, so a value
@@ -907,6 +997,13 @@ module UnixSystem =
                 (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
                 (InodeOwner.ofProcess (defaultCredentials flavour))
 
+        let leaderThreadId, threadIds =
+            match flavour with
+            | SimulatedUnixFlavour.Linux ->
+                ThreadIdAllocator.startLinux "UnixSystem.initial" defaultPidMax defaultProcessId
+            | SimulatedUnixFlavour.Darwin ->
+                ThreadIdAllocator.startDarwin "UnixSystem.initial" (uint64 (ProcessId.toInt32 defaultProcessId))
+
         {
             Machine =
                 {
@@ -915,6 +1012,7 @@ module UnixSystem =
                     NextConnectionId = ConnectionId 0L
                     NextSocketEventRegistrationOrdinal = 0L
                     NextParkOrdinal = ParkOrdinal 0L
+                    ThreadIds = threadIds
                     NextSocketId = SocketId 0L
                     NextEphemeralPort = fst (defaultEphemeralPortRange flavour)
                     EphemeralPortRange = defaultEphemeralPortRange flavour
@@ -946,7 +1044,138 @@ module UnixSystem =
                     Signals = SignalState.initial (SimulatedUnixPlatform.signalNumbering platform) Set.empty
                     CoreDumps = defaultCoreDumps
                 }
-            Tasks = Map.empty
+            Tasks = UnixTaskTable.add leader leaderCpu leaderThreadId Map.empty
+            Leader = leader
+        }
+
+    // The process's leader and the only task it has, failing with `context` if it
+    // has created a thread, even one that has since exited: every setter below is
+    // a boot-time setting, and moving the counter back after a thread has taken an
+    // id would hand that id out again.
+    let private soleTask<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (context : string)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixTaskState
+        =
+        let leader = UnixTaskTable.get system.Leader system.Tasks
+
+        if
+            system.Tasks.Count <> 1
+            || not (ThreadIdAllocator.untouchedSince leader.OsThreadId system.Machine.ThreadIds)
+        then
+            failwith
+                $"%s{context}: the process has created a thread, but this can only be set before any thread has been created."
+
+        leader
+
+    /// Set the ID `getpid(2)` reports for the simulated process. On Linux this is
+    /// also the leader's thread ID, and the thread IDs the process's threads get
+    /// follow on from it.
+    ///
+    /// `context` prefixes the rejection a configuration earns; see
+    /// `withCredentials`.
+    ///
+    /// Refuses a process that has already created a thread, and on Linux a
+    /// process ID that is not below the machine's `pid_max`.
+    let withProcessId<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (context : string)
+        (pid : ProcessId)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        let pid = ProcessId.assertValid context pid
+        let leader = soleTask context system
+
+        let tasks, machine =
+            match system.Machine.ThreadIds with
+            | ThreadIdAllocator.Linux (_, pidMax) ->
+                let leaderThreadId, threadIds = ThreadIdAllocator.startLinux context pidMax pid
+
+                Map.add
+                    system.Leader
+                    { leader with
+                        OsThreadId = leaderThreadId
+                    }
+                    system.Tasks,
+                { system.Machine with
+                    ThreadIds = threadIds
+                }
+            | ThreadIdAllocator.Darwin _ -> system.Tasks, system.Machine
+
+        { system with
+            Machine = machine
+            Process =
+                { system.Process with
+                    ProcessId = pid
+                }
+            Tasks = tasks
+        }
+
+    /// Set the leader's thread ID on Darwin, where it is unrelated to the process
+    /// ID; the IDs the process's threads get follow on from it.
+    ///
+    /// Refuses a Linux machine, where the leader's thread ID is the process ID
+    /// (set that with `withProcessId`); a process that has already created a
+    /// thread; and 0.
+    let withLeaderThreadId<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (context : string)
+        (id : uint64)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        match system.Machine.ThreadIds with
+        | ThreadIdAllocator.Linux _ ->
+            failwith
+                $"%s{context}: on Linux the leader's thread ID is the process ID, so it cannot be set apart from it; set the process ID instead."
+        | ThreadIdAllocator.Darwin _ ->
+
+        let leader = soleTask context system
+        let leaderThreadId, threadIds = ThreadIdAllocator.startDarwin context id
+
+        { system with
+            Machine =
+                { system.Machine with
+                    ThreadIds = threadIds
+                }
+            Tasks =
+                Map.add
+                    system.Leader
+                    { leader with
+                        OsThreadId = leaderThreadId
+                    }
+                    system.Tasks
+        }
+
+    /// Set Linux's `pid_max`: thread IDs are below it, and once they reach it they
+    /// start again from 300, skipping those still in use.
+    ///
+    /// Refuses a Darwin machine, which has no such setting; a value Linux does not
+    /// accept, which is anything outside 301 to 4194304; and a value at or below a
+    /// live task's thread ID.
+    let withPidMax<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (context : string)
+        (pidMax : int32)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        let threadIds = ThreadIdAllocator.withPidMax context pidMax system.Machine.ThreadIds
+
+        // What Linux does with a live ID at or above a lowered `pid_max` has not
+        // been measured.
+        match
+            system.Tasks
+            |> Map.tryFindKey (fun _ state -> not (ThreadIdAllocator.couldHaveMinted state.OsThreadId threadIds))
+        with
+        | Some task ->
+            failwith
+                $"%s{context}: task %O{task} has thread ID %O{(UnixTaskTable.osThreadIdOf task system.Tasks)}, which is not below pid_max %d{pidMax}."
+        | None ->
+
+        { system with
+            Machine =
+                { system.Machine with
+                    ThreadIds = threadIds
+                }
         }
 
     /// Set who the simulated process is.

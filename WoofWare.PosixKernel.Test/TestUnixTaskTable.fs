@@ -15,43 +15,53 @@ module TestUnixTaskTable =
 
     let private empty : Map<int, UnixTaskState> = Map.empty
 
+    /// A Linux process whose leader is task 0, with process ID 4242.
     let private initial : UnixSystem<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.linuxX64
+        UnixSystem.initial SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
 
-    let private withTask (name : int) (cpu : int) (tasks : Map<int, UnixTaskState>) : Map<int, UnixTaskState> =
-        UnixTaskTable.register name (CpuId cpu) (OsThreadId (uint32 name + 1u)) tasks
+    let private withTask (name : int) (cpu : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        match UnixTaskLifecycle.spawn system.Leader name (CpuId cpu) system with
+        | Ok (_, system) -> system
+        | Error error -> failwith $"spawning %d{name} failed with %O{error}"
+
+    let private idOf (name : int) (tasks : Map<int, UnixTaskState>) : uint64 =
+        OsThreadId.toUInt64 (UnixTaskTable.osThreadIdOf name tasks)
 
     [<Test>]
-    let ``a registered task is readable`` () : unit =
-        let tasks = empty |> withTask 7 3
+    let ``a spawned task is readable`` () : unit =
+        let tasks = (initial |> withTask 7 3).Tasks
 
         UnixTaskTable.cpuOf 7 tasks |> shouldEqual (CpuId 3)
-        UnixTaskTable.osThreadIdOf 7 tasks |> shouldEqual (OsThreadId 8u)
+        idOf 7 tasks |> shouldEqual 4243UL
         UnixTaskTable.parkedFor 7 tasks |> shouldEqual None
 
     [<Test>]
-    let ``a name that was never registered is refused loudly`` () : unit =
+    let ``a name that was never spawned is refused loudly`` () : unit =
         let exn =
             Assert.Throws<exn> (fun () -> UnixTaskTable.get 7 empty |> ignore<UnixTaskState>)
 
         exn.Message |> shouldContainText "names no task"
 
     [<Test>]
-    let ``registering one name twice is refused`` () : unit =
-        // Re-registration would discard the first registration's processor and OS
-        // thread id, which is how two tasks end up sharing an id.
-        let tasks = empty |> withTask 7 3
+    let ``spawning one name twice is refused`` () : unit =
+        // A second spawn would discard the first one's processor and OS thread id.
+        let system = initial |> withTask 7 3
 
         let exn =
-            Assert.Throws<exn> (fun () -> withTask 7 5 tasks |> ignore<Map<int, UnixTaskState>>)
+            Assert.Throws<exn> (fun () -> withTask 7 5 system |> ignore<UnixSystem<int, string>>)
 
         exn.Message |> shouldContainText "already names a task"
+
+        let leader =
+            Assert.Throws<exn> (fun () -> withTask 0 5 system |> ignore<UnixSystem<int, string>>)
+
+        leader.Message |> shouldContainText "already names a task"
 
     [<Test>]
     let ``parking and releasing leave the rest of the task alone`` () : unit =
         // On a task that is *not* on processor 0, so that "left alone" and "reset
         // to zero" are distinguishable.
-        let tasks = empty |> withTask 7 3
+        let system = initial |> withTask 7 3
 
         let wait : ParkedSocketWait =
             {
@@ -61,20 +71,13 @@ module TestUnixTaskTable =
                 Deadline = None
             }
 
-        let parked =
-            (UnixWait.park
-                7
-                (ParkedSyscall.SocketWait wait)
-                { initial with
-                    Tasks = tasks
-                })
-                .Tasks
+        let parked = (UnixWait.park 7 (ParkedSyscall.SocketWait wait) system).Tasks
 
         UnixTaskTable.parkedFor 7 parked
         |> shouldEqual (Some (ParkedSyscall.SocketWait wait))
 
         UnixTaskTable.cpuOf 7 parked |> shouldEqual (CpuId 3)
-        UnixTaskTable.osThreadIdOf 7 parked |> shouldEqual (OsThreadId 8u)
+        idOf 7 parked |> shouldEqual 4243UL
 
         let released = UnixTaskTable.unpark 7 parked
         UnixTaskTable.parkedFor 7 released |> shouldEqual None
@@ -82,27 +85,28 @@ module TestUnixTaskTable =
 
     [<Test>]
     let ``reconcile is silent when the table matches`` () : unit =
-        let tasks = empty |> withTask 1 0 |> withTask 2 1
+        let tasks = (initial |> withTask 1 0 |> withTask 2 1).Tasks
 
-        UnixTaskTable.reconcile (Set.ofList [ 1 ; 2 ]) tasks |> shouldEqual ([], [])
+        UnixTaskTable.reconcile (Set.ofList [ 0 ; 1 ; 2 ]) tasks |> shouldEqual ([], [])
 
     [<Test>]
     let ``reconcile reports a live task the table has no entry for`` () : unit =
-        let tasks = empty |> withTask 1 0
+        let tasks = (initial |> withTask 1 0).Tasks
 
-        UnixTaskTable.reconcile (Set.ofList [ 1 ; 2 ]) tasks |> shouldEqual ([ 2 ], [])
+        UnixTaskTable.reconcile (Set.ofList [ 0 ; 1 ; 2 ]) tasks
+        |> shouldEqual ([ 2 ], [])
 
     [<Test>]
     let ``reconcile reports an entry no live task claims`` () : unit =
-        let tasks = empty |> withTask 1 0 |> withTask 2 1
+        let tasks = (initial |> withTask 1 0 |> withTask 2 1).Tasks
 
-        UnixTaskTable.reconcile (Set.ofList [ 1 ]) tasks |> shouldEqual ([], [ 2 ])
+        UnixTaskTable.reconcile (Set.ofList [ 0 ; 1 ]) tasks |> shouldEqual ([], [ 2 ])
 
     [<Test>]
     let ``reconcile reports both directions at once`` () : unit =
         // The row that separates "reports both" from "reports whichever it
         // happens to check first".
-        let tasks = empty |> withTask 1 0 |> withTask 3 1
+        let tasks = (initial |> withTask 1 0 |> withTask 3 1).Tasks
 
-        UnixTaskTable.reconcile (Set.ofList [ 1 ; 2 ]) tasks
+        UnixTaskTable.reconcile (Set.ofList [ 0 ; 1 ; 2 ]) tasks
         |> shouldEqual ([ 2 ], [ 3 ])

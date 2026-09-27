@@ -6,8 +6,9 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// Tasks leaving a process, and the process ending: `UnixTaskLifecycle.exitThread`
-/// and `UnixTaskLifecycle.exitGroup`.
+/// Tasks joining and leaving a process, and the process ending:
+/// `UnixTaskLifecycle.spawn`, `UnixTaskLifecycle.exitThread` and
+/// `UnixTaskLifecycle.exitGroup`. Every system here has task 0 as its leader.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestUnixTaskLifecycle =
@@ -16,9 +17,7 @@ module TestUnixTaskLifecycle =
         [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ]
 
     let private withTask (name : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        { system with
-            Tasks = UnixTaskTable.register name (CpuId 0) (OsThreadId (uint32 name + 1u)) system.Tasks
-        }
+        Tasks.ensure name system
 
     let private mapSignals
         (f : SignalState<int, string> -> SignalState<int, string>)
@@ -35,7 +34,7 @@ module TestUnixTaskLifecycle =
     /// A system with one socket event port, which a task can park on in `flock`, and
     /// that port's description.
     let private world (platform : SimulatedUnixPlatform) : UnixSystem<int, string> * OpenFileDescriptionId =
-        let system = UnixSystem.initial<int, string> platform
+        let system = UnixSystem.initial<int, string> platform 0 (CpuId 0)
 
         let fd, registry =
             FileDescriptorRegistry.createSocketEventPort system.Process.FileDescriptors
@@ -124,7 +123,7 @@ module TestUnixTaskLifecycle =
 
             let after = exitOrFail 1 system
 
-            after.Tasks |> Map.keys |> List.ofSeq |> shouldEqual [ 2 ]
+            after.Tasks |> Map.keys |> List.ofSeq |> shouldEqual [ 0 ; 2 ]
 
             SignalState.pending after.Process.Signals
             |> shouldEqual
@@ -161,22 +160,21 @@ module TestUnixTaskLifecycle =
             UnixTaskLifecycle.exitThread 2 0 system
             |> shouldEqual (Error (ThreadExitRefusal.Parked (2, park)))
 
-    /// Two tasks, one of which leaves, so that what follows is about being *last*
-    /// rather than about being the first registered. The one that stays blocks a
-    /// signal and has one pending on it alone.
+    /// The leader and one other task, which leaves, so that what follows is about
+    /// being *last* rather than about being alone from the start. The leader, which
+    /// stays, blocks a signal and has one pending on it alone.
     let private lastTaskStanding (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
         let system, _ = world platform
 
         system
         |> withTask 1
-        |> withTask 2
         |> exitOrFail 1
-        |> mapSignals (SignalState.block 2 Signal.SIGUSR1)
+        |> mapSignals (SignalState.block 0 Signal.SIGUSR1)
         |> mapSignals (
             SignalState.enqueue
                 {
                     Signal = Signal.SIGUSR1
-                    Target = ValueSome 2
+                    Target = ValueSome 0
                 }
         )
 
@@ -185,12 +183,13 @@ module TestUnixTaskLifecycle =
         // Measured on Linux 6.18.5 (aarch64 and x86-64) by
         // `docs/plans/2026-08-23-posix-kernel-extraction/last-thread-exit-status.c`: the
         // raw thread-exit syscall of the last thread ends the process, with its own
-        // argument's low 8 bits, whether that thread is the leader or a worker.
+        // argument's low 8 bits. The last thread here is the leader, since a leader
+        // cannot exit before the others.
         for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.linuxArm64 ] do
             let system = lastTaskStanding platform
 
             for status, kept in [ 0, 0 ; 5, 5 ; 256, 0 ; 263, 7 ; -1, 255 ; System.Int32.MinValue, 0 ] do
-                match UnixTaskLifecycle.exitThread 2 status system with
+                match UnixTaskLifecycle.exitThread 0 status system with
                 | Ok (TaskOutcome.ProcessEnded ended) ->
                     match ended.Termination with
                     | ProcessTermination.Exited exitStatus ->
@@ -208,8 +207,44 @@ module TestUnixTaskLifecycle =
 
     [<Test>]
     let ``on Darwin the last task's exit is refused`` () : unit =
-        UnixTaskLifecycle.exitThread 2 0 (lastTaskStanding SimulatedUnixPlatform.macOsArm64)
-        |> shouldEqual (Error (ThreadExitRefusal.LastTaskOnDarwin 2))
+        UnixTaskLifecycle.exitThread 0 0 (lastTaskStanding SimulatedUnixPlatform.macOsArm64)
+        |> shouldEqual (Error (ThreadExitRefusal.LastTaskOnDarwin 0))
+
+    [<Test>]
+    let ``the leader's exit is refused while another task lives, and answered once it is last`` () : unit =
+        // Measured on Linux 6.18.5 and Darwin 27.0.0 by
+        // `docs/plans/2026-08-23-posix-kernel-extraction/leader-exits-first.c`: the
+        // process carries on without its leader, which this library does not model.
+        for platform in platforms do
+            let system, _ = world platform
+            let system = system |> withTask 1 |> withTask 2
+
+            UnixTaskLifecycle.exitThread 0 0 system
+            |> shouldEqual (Error (ThreadExitRefusal.LeaderBeforeOthers 0))
+
+            let system = system |> exitOrFail 1
+
+            UnixTaskLifecycle.exitThread 0 0 system
+            |> shouldEqual (Error (ThreadExitRefusal.LeaderBeforeOthers 0))
+
+            let system = system |> exitOrFail 2
+
+            match SimulatedUnixPlatform.flavour platform, UnixTaskLifecycle.exitThread 0 0 system with
+            | SimulatedUnixFlavour.Linux, Ok (TaskOutcome.ProcessEnded _) -> ()
+            | SimulatedUnixFlavour.Darwin, Error (ThreadExitRefusal.LastTaskOnDarwin 0) -> ()
+            | flavour, other ->
+                failwith $"%O{flavour}: expected the lone leader's exit to be the last task's, got %A{other}"
+
+    [<Test>]
+    let ``a parked leader's exit is refused as parked`` () : unit =
+        // The park is the first thing a task in a syscall is refused for, whoever it is.
+        for platform in platforms do
+            let system, port = world platform
+            let system = system |> withTask 1 |> UnixWait.park 0 (flockOn port)
+            let park = UnixTaskTable.parkOf 0 system.Tasks |> Option.get
+
+            UnixTaskLifecycle.exitThread 0 0 system
+            |> shouldEqual (Error (ThreadExitRefusal.Parked (0, park)))
 
     [<Test>]
     let ``exit_group ends the process with the flavour's status, parked tasks included`` () : unit =
@@ -292,7 +327,7 @@ module TestUnixTaskLifecycle =
 
     [<RequireQualifiedAccess>]
     type private Op =
-        | Register of task : int
+        | Spawn of parent : int * child : int
         | Block of task : int * Signal
         | Unblock of task : int * Signal
         | EnqueueOnTask of task : int * Signal
@@ -335,7 +370,7 @@ module TestUnixTaskLifecycle =
 
         Gen.frequency
             [
-                4, task |> Gen.map Op.Register
+                4, Gen.zip task task |> Gen.map Op.Spawn
                 3, Gen.zip task signal |> Gen.map Op.Block
                 1, Gen.zip task signal |> Gen.map Op.Unblock
                 3, Gen.zip task signal |> Gen.map Op.EnqueueOnTask
@@ -347,7 +382,7 @@ module TestUnixTaskLifecycle =
             ]
 
     /// What the table must say about which tasks exist, kept by a model that knows
-    /// nothing of signals: the tasks registered and not since exited, and the ones of
+    /// nothing of signals: the tasks spawned and not since exited, and the ones of
     /// those that are parked.
     type private Model =
         {
@@ -363,6 +398,8 @@ module TestUnixTaskLifecycle =
             mutable ExitsDroppingOwnPending : int
             mutable ExitsKeepingProcessPending : int
             mutable RefusedParked : int
+            mutable RefusedLeaderFirst : int
+            mutable SpawnsInheritingAMask : int
             mutable RefusedLast : int
             mutable EndedByLastExit : int
             mutable EndedByExitGroup : int
@@ -435,14 +472,28 @@ module TestUnixTaskLifecycle =
 
             let after, model' =
                 match op with
-                | Op.Register task ->
-                    if live task then
-                        system, model
-                    else
-                        withTask task system,
-                        { model with
-                            Live = Set.add task model.Live
-                        }
+                | Op.Spawn (parent, child) when
+                    live parent && not (Set.contains parent model.Parked) && not (live child)
+                    ->
+                    let after =
+                        match UnixTaskLifecycle.spawn parent child (CpuId 0) system with
+                        | Ok (_, after) -> after
+                        | Error error -> failwith $"spawning %d{child} from %d{parent} failed with %O{error}"
+
+                    // The child starts with its parent's mask, and nothing pending on it.
+                    let parentMask = SignalState.blockedFor parent system.Process.Signals
+                    SignalState.blockedFor child after.Process.Signals |> shouldEqual parentMask
+
+                    SignalState.pending after.Process.Signals
+                    |> shouldEqual (SignalState.pending system.Process.Signals)
+
+                    if not parentMask.IsEmpty then
+                        coverage.SpawnsInheritingAMask <- coverage.SpawnsInheritingAMask + 1
+
+                    after,
+                    { model with
+                        Live = Set.add child model.Live
+                    }
                 | Op.Block (task, signal) when live task -> mapSignals (SignalState.block task signal) system, model
                 | Op.Unblock (task, signal) when live task -> mapSignals (SignalState.unblock task signal) system, model
                 | Op.EnqueueOnTask (task, signal) when live task ->
@@ -493,6 +544,10 @@ module TestUnixTaskLifecycle =
                         let park = UnixTaskTable.parkOf task system.Tasks |> Option.get
                         result |> shouldEqual (Error (ThreadExitRefusal.Parked (task, park)))
                         coverage.RefusedParked <- coverage.RefusedParked + 1
+                        system, model
+                    elif task = 0 && model.Live.Count > 1 then
+                        result |> shouldEqual (Error (ThreadExitRefusal.LeaderBeforeOthers task))
+                        coverage.RefusedLeaderFirst <- coverage.RefusedLeaderFirst + 1
                         system, model
                     elif model.Live.Count = 1 then
                         match SimulatedUnixPlatform.flavour platform with
@@ -566,7 +621,9 @@ module TestUnixTaskLifecycle =
                         { model with
                             Live = Set.remove task model.Live
                         }
-                // Every other op names a task that does not exist, which no client does.
+                // Every other op names a task that does not exist, or spawns from a
+                // parked task or onto a live one, which no client does.
+                | Op.Spawn _
                 | Op.Block _
                 | Op.Unblock _
                 | Op.EnqueueOnTask _
@@ -587,17 +644,17 @@ module TestUnixTaskLifecycle =
             <| fun ops ->
                 ((initial,
                   {
-                      Live = Set.empty
+                      Live = Set.singleton 0
                       Parked = Set.empty
                   }),
                  ops)
                 ||> List.fold step
                 |> ignore<UnixSystem<int, string> * Model>
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 500, property)
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 1000, property)
 
     [<TestCaseSource(nameof platforms)>]
-    let ``the task set follows registrations and exits, no per-task entry outlives its task, and the process ends as its flavour says``
+    let ``the task set follows spawns and exits, no per-task entry outlives its task, and the process ends as its flavour says``
         (platform : SimulatedUnixPlatform)
         : unit
         =
@@ -607,6 +664,8 @@ module TestUnixTaskLifecycle =
                 ExitsDroppingOwnPending = 0
                 ExitsKeepingProcessPending = 0
                 RefusedParked = 0
+                RefusedLeaderFirst = 0
+                SpawnsInheritingAMask = 0
                 RefusedLast = 0
                 EndedByLastExit = 0
                 EndedByExitGroup = 0
@@ -619,6 +678,8 @@ module TestUnixTaskLifecycle =
         coverage.ExitsDroppingOwnPending |> shouldBeGreaterThan 50
         coverage.ExitsKeepingProcessPending |> shouldBeGreaterThan 20
         coverage.RefusedParked |> shouldBeGreaterThan 20
+        coverage.RefusedLeaderFirst |> shouldBeGreaterThan 20
+        coverage.SpawnsInheritingAMask |> shouldBeGreaterThan 20
         coverage.EndedByExitGroup |> shouldBeGreaterThan 50
         coverage.EndedWithParkedTask |> shouldBeGreaterThan 20
 

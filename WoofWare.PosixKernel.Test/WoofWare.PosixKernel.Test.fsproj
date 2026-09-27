@@ -20,6 +20,7 @@
     <Compile Include="DirectoryReading.fs" />
     <Compile Include="Owners.fs" />
     <Compile Include="BindingProbes.fs" />
+    <Compile Include="Tasks.fs" />
     <Compile Include="TestUnixTaskTable.fs" />
     <Compile Include="CredentialsGen.fs" />
     <Compile Include="TestCredentials.fs" />
@@ -28,6 +29,7 @@
     <Compile Include="TestWakeCondition.fs" />
     <Compile Include="TestUnixWait.fs" />
     <Compile Include="TestUnixTaskLifecycle.fs" />
+    <Compile Include="TestThreadIds.fs" />
     <Compile Include="TestProcessTermination.fs" />
     <Compile Include="TestProcessTerminationAgainstHost.fs" />
     <Compile Include="TestUnixProcessState.fs" />

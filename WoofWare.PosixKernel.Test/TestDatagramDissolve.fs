@@ -26,7 +26,7 @@ module TestDatagramDissolve =
     let private wildcard : uint32 = InternetEndpoint.WildcardAddress
 
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform
+        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
 
         { system with
             Machine = UnixMachineState.withEphemeralPortRange (40000us, 40009us) system.Machine

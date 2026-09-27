@@ -184,7 +184,11 @@ module NativeThreading =
     /// the constructor and `Start` — find a per-thread record to store their value on. The
     /// scheduler ignores `NotStarted` threads, so the slot stays inert until `StartInternal`
     /// populates a bottom frame and flips the status to `Runnable`.
+    ///
+    /// `constructing` is the thread running the `Thread` constructor, which is the one that
+    /// creates the new thread's task.
     let private initializeThreadObject
+        (constructing : ThreadId)
         (threadAddr : ManagedHeapAddress)
         (state : IlMachineState)
         : IlMachineState * ThreadId
@@ -213,7 +217,7 @@ module NativeThreading =
                 NextManagedThreadId = state.NextManagedThreadId + 1
             }
 
-        IlMachineState.allocateUnstartedThread threadAddr state
+        IlMachineState.allocateUnstartedThread constructing threadAddr state
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
@@ -289,7 +293,7 @@ module NativeThreading =
                     failwith $"%s{operation}: ObjectHandleOnStack pointed to a null Thread reference"
                 | other -> failwith $"%s{operation}: expected ObjectRef in ObjectHandleOnStack, got %O{other}"
 
-            let state, _newThreadId = initializeThreadObject threadAddr state
+            let state, _newThreadId = initializeThreadObject ctx.Thread threadAddr state
             NativeHandlerResult.completed state |> Some
         | "ThreadNative_Join",
           "System.Private.CoreLib",
@@ -836,7 +840,7 @@ module NativeThreading =
                 | EvalStackValue.ObjectRef addr -> addr
                 | other -> failwith $"Thread.Initialize: expected ObjectRef for 'this', got %O{other}"
 
-            let state, _newThreadId = initializeThreadObject threadAddr state
+            let state, _newThreadId = initializeThreadObject ctx.Thread threadAddr state
             NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib", "System.Threading", "Thread", "StartInternal", _, MethodReturnType.Void ->
             // StartInternal (ThreadHandle t, int stackSize, int priority, Interop.BOOL isThreadPool, char* pThreadName) -> void

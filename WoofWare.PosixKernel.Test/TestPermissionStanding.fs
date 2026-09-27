@@ -506,7 +506,7 @@ module TestPermissionStanding =
         (vfs : VirtualFileSystem)
         : UnixSystem<int, string>
         =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform
+        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
 
         { system with
             Machine =

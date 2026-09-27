@@ -18,10 +18,10 @@ module TestUnixEntropy =
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
     let private linux () : UnixSystem<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.linuxX64
+        UnixSystem.initial SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
 
     let private darwin () : UnixSystem<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.macOsArm64
+        UnixSystem.initial SimulatedUnixPlatform.macOsArm64 0 (CpuId 0)
 
     /// Every kind of buffer, with an unmapped address at each end of the space.
     let private bufferGen : Gen<UserBuffer> =
