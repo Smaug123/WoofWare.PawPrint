@@ -48,6 +48,12 @@ jobs:
     # proportional to what a developer machine measures.
     - name: Test
       run: nix develop --command dotnet test --no-build --configuration Release --logger "trx;LogFilePrefix=default" --results-directory TestResults
+    # The `LargeMemory` fixtures are `[<Explicit>]` for the same reason, and also because
+    # they peak at several gigabytes: beside another test host they exhaust the runner,
+    # which then dies without a test failure ("The operation was canceled"). So they get
+    # a step of their own, in which no other test host is running.
+    - name: Test (large-memory fixtures)
+      run: nix develop --command dotnet test --no-build --configuration Release --filter "TestCategory=LargeMemory" --logger "trx;LogFilePrefix=large" --results-directory TestResults
     - name: Upload test results
       if: ${{ always() }}
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

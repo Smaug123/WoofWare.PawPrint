@@ -22,20 +22,20 @@ open WoofWare.PosixKernel
 [<Parallelizable(ParallelScope.All)>]
 module TestTransferCounts =
 
-    let private context : string = "TestTransferCounts"
+    let internal context : string = "TestTransferCounts"
 
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 3000
 
-    let private epoch : UnixTimestamp = UnixTimestamp.ofMillisecondsSinceEpoch 0L
+    let internal epoch : UnixTimestamp = UnixTimestamp.ofMillisecondsSinceEpoch 0L
 
-    let private rootInode : InodeNumber = InodeNumber 1L
+    let internal rootInode : InodeNumber = InodeNumber 1L
 
     /// `MAX_RW_COUNT` with 4 KiB pages, as measured.
     [<Literal>]
-    let private LinuxMaxTransfer : uint64 = 0x7FFF_F000UL
+    let internal LinuxMaxTransfer : uint64 = 0x7FFF_F000UL
 
     [<Literal>]
-    let private IntMax : uint64 = 0x7FFF_FFFFUL
+    let internal IntMax : uint64 = 0x7FFF_FFFFUL
 
     // ------------------------------------------------------------ the platform
 
@@ -68,7 +68,7 @@ module TestTransferCounts =
             SimulatedUnixPlatform.macOsArm64, None
         ]
 
-    let private systemOn (platform : SimulatedUnixPlatform, limit : uint64 option) : UnixSystem<int, string> =
+    let internal systemOn (platform : SimulatedUnixPlatform, limit : uint64 option) : UnixSystem<int, string> =
         let system : UnixSystem<int, string> = UnixSystem.initial platform
 
         match limit with
@@ -83,7 +83,7 @@ module TestTransferCounts =
 
     /// A system holding one regular file of `content`, and a read-write
     /// descriptor onto it at `position`.
-    let private withFile
+    let internal withFile
         (content : ImmutableArray<byte>)
         (position : int64)
         (system : UnixSystem<int, string>)
@@ -118,7 +118,7 @@ module TestTransferCounts =
                 }
         }
 
-    let private positionOf (fd : int) (system : UnixSystem<int, string>) : int64 =
+    let internal positionOf (fd : int) (system : UnixSystem<int, string>) : int64 =
         match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
         | Some (OpenFileTarget.File (_, offset)) -> offset
         | other -> failwith $"expected a file descriptor, got %O{other}"
@@ -592,82 +592,6 @@ module TestTransferCounts =
                 (machine, length, "pwrite", outcome (UnixReadWrite.pwrite fd bytes nearTop system))
                 |> shouldEqual (machine, length, "pwrite", expected)
 
-    // ------------------------------------------------------- one call's limit
-
-    /// A file longer than one Linux call moves, read in one call: 0x7FFFF000
-    /// bytes on Linux, whatever was asked for beyond that, and everything asked
-    /// for on Darwin. Measured with /dev/zero and a 3 GiB sparse file.
-    ///
-    /// Two gigabytes of file and as much again of answer, so this runs alone.
-    [<Test>]
-    [<NonParallelizable>]
-    let ``a read moves at most one call's worth`` () : unit =
-        let length = int LinuxMaxTransfer + 16
-
-        let content =
-            ImmutableCollectionsMarshal.AsImmutableArray (Array.zeroCreate<byte> length)
-
-        let movedBy (machine : SimulatedUnixPlatform * uint64 option) (count : uint64) : int =
-            let fd, system = withFile content 0L (systemOn machine)
-
-            let moved =
-                match UnixReadWrite.read fd UserBuffer.Mapped count system with
-                | Ok (ReadAnswer.Completed bytes, after) ->
-                    positionOf fd after |> shouldEqual (int64 bytes.Length)
-                    bytes.Length
-                | other -> failwith $"expected a completed read, got %A{other}"
-
-            GC.Collect ()
-            moved
-
-        let linux =
-            SimulatedUnixPlatform.linuxArm64, Some ObservedUserAddressLimit.Arm64FortyEightBit
-
-        for count in
-            [
-                LinuxMaxTransfer + 1UL
-                IntMax + 1UL
-                ObservedUserAddressLimit.Arm64FortyEightBit
-            ] do
-            (count, movedBy linux count) |> shouldEqual (count, int LinuxMaxTransfer)
-
-        (IntMax, movedBy (SimulatedUnixPlatform.macOsArm64, None) IntMax)
-        |> shouldEqual (IntMax, length)
-
-        GC.Collect ()
-
-    /// `write` and `pwrite` take the bytes their admission said to extract. A
-    /// caller that skipped the admission and hands over more than one call
-    /// moves is refused loudly rather than answered.
-    ///
-    /// Two gigabytes of bytes, so this runs alone.
-    [<Test>]
-    [<NonParallelizable>]
-    let ``write and pwrite refuse more than one call's worth`` () : unit =
-        let bytes =
-            ImmutableCollectionsMarshal.AsImmutableArray (Array.zeroCreate<byte> (int LinuxMaxTransfer + 1))
-
-        let fd, system =
-            withFile ImmutableArray.Empty 0L (systemOn (SimulatedUnixPlatform.linuxX64, None))
-
-        let exn =
-            Assert.Throws<Exception> (fun () -> UnixReadWrite.write fd bytes system |> ignore)
-
-        exn.Message |> shouldContainText "one call moves"
-
-        let exn =
-            Assert.Throws<Exception> (fun () -> UnixReadWrite.pwrite fd bytes 0L system |> ignore)
-
-        exn.Message |> shouldContainText "one call moves"
-
-        // The same bytes are one call's worth on Darwin, whose limit is INT_MAX,
-        // and move.
-        match UnixReadWrite.write 1 bytes (systemOn (SimulatedUnixPlatform.macOsArm64, None)) with
-        | Ok (WriteAnswer.Completed written, _) -> written |> shouldEqual (int64 bytes.Length)
-        | other -> failwith $"expected a completed write, got %A{other}"
-
-        GC.Collect ()
-
     // --------------------------------------- the descriptors, as measured
 
     /// What a row of the measured grid reads as.
@@ -1012,3 +936,95 @@ module TestTransferCounts =
 
         let arb = Arb.fromGen (Gen.zip (Gen.elements machines) capacities)
         Check.One (config, Prop.forAll arb property)
+
+/// The two transfer-count tests that need a buffer longer than one Linux call
+/// moves (0x7FFFF000 bytes). Together they peak at about 6.5 GB resident, which
+/// a CI runner cannot hold beside another test host, so the fixture is
+/// `[<Explicit>]`: a bare `dotnet test` skips it, and CI selects it by category
+/// in a step of its own, with no other test host running. See AGENTS.md.
+[<TestFixture>]
+[<Category("LargeMemory")>]
+[<Explicit>]
+[<NonParallelizable>]
+module TestTransferCountsLarge =
+
+    /// A file longer than one Linux call moves, read in one call: 0x7FFFF000
+    /// bytes on Linux, whatever was asked for beyond that, and everything asked
+    /// for on Darwin. Measured with /dev/zero and a 3 GiB sparse file.
+    ///
+    /// Two gigabytes of file and as much again of answer.
+    [<Test>]
+    [<NonParallelizable>]
+    let ``a read moves at most one call's worth`` () : unit =
+        let length = int TestTransferCounts.LinuxMaxTransfer + 16
+
+        let content =
+            ImmutableCollectionsMarshal.AsImmutableArray (Array.zeroCreate<byte> length)
+
+        let movedBy (machine : SimulatedUnixPlatform * uint64 option) (count : uint64) : int =
+            let fd, system =
+                TestTransferCounts.withFile content 0L (TestTransferCounts.systemOn machine)
+
+            let moved =
+                match UnixReadWrite.read fd UserBuffer.Mapped count system with
+                | Ok (ReadAnswer.Completed bytes, after) ->
+                    TestTransferCounts.positionOf fd after |> shouldEqual (int64 bytes.Length)
+                    bytes.Length
+                | other -> failwith $"expected a completed read, got %A{other}"
+
+            GC.Collect ()
+            moved
+
+        let linux =
+            SimulatedUnixPlatform.linuxArm64, Some ObservedUserAddressLimit.Arm64FortyEightBit
+
+        for count in
+            [
+                TestTransferCounts.LinuxMaxTransfer + 1UL
+                TestTransferCounts.IntMax + 1UL
+                ObservedUserAddressLimit.Arm64FortyEightBit
+            ] do
+            (count, movedBy linux count)
+            |> shouldEqual (count, int TestTransferCounts.LinuxMaxTransfer)
+
+        (TestTransferCounts.IntMax, movedBy (SimulatedUnixPlatform.macOsArm64, None) TestTransferCounts.IntMax)
+        |> shouldEqual (TestTransferCounts.IntMax, length)
+
+        GC.Collect ()
+
+    /// `write` and `pwrite` take the bytes their admission said to extract. A
+    /// caller that skipped the admission and hands over more than one call
+    /// moves is refused loudly rather than answered.
+    ///
+    /// Two gigabytes of bytes.
+    [<Test>]
+    [<NonParallelizable>]
+    let ``write and pwrite refuse more than one call's worth`` () : unit =
+        let bytes =
+            ImmutableCollectionsMarshal.AsImmutableArray (
+                Array.zeroCreate<byte> (int TestTransferCounts.LinuxMaxTransfer + 1)
+            )
+
+        let fd, system =
+            TestTransferCounts.withFile
+                ImmutableArray.Empty
+                0L
+                (TestTransferCounts.systemOn (SimulatedUnixPlatform.linuxX64, None))
+
+        let exn =
+            Assert.Throws<Exception> (fun () -> UnixReadWrite.write fd bytes system |> ignore)
+
+        exn.Message |> shouldContainText "one call moves"
+
+        let exn =
+            Assert.Throws<Exception> (fun () -> UnixReadWrite.pwrite fd bytes 0L system |> ignore)
+
+        exn.Message |> shouldContainText "one call moves"
+
+        // The same bytes are one call's worth on Darwin, whose limit is INT_MAX,
+        // and move.
+        match UnixReadWrite.write 1 bytes (TestTransferCounts.systemOn (SimulatedUnixPlatform.macOsArm64, None)) with
+        | Ok (WriteAnswer.Completed written, _) -> written |> shouldEqual (int64 bytes.Length)
+        | other -> failwith $"expected a completed write, got %A{other}"
+
+        GC.Collect ()
