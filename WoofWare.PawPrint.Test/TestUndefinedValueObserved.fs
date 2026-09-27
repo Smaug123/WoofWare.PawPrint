@@ -2,6 +2,7 @@ namespace WoofWare.Pawprint.Test
 
 open System
 open FsUnitTyped
+open Microsoft.Extensions.Logging
 open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PawPrint.Test
@@ -44,8 +45,71 @@ module TestUndefinedValueObserved =
             | UninitialisedMemory.Native block -> failwith $"expected a localloc origin, got %O{block}"
         )
 
+    /// The observation PawPrint stops at, run step by step, and checked to be a stop at the state
+    /// from before the observing step: stepping that state again stops at the same observation,
+    /// so the stop cannot have skipped past the instruction or call that used the value.
+    let private stoppedRun (name : string) (source : string) : RunEnd =
+        let image = Roslyn.compile [ source ]
+        let messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        let logger = loggerFactory.CreateLogger "TestUndefinedValueObserved"
+        use peImage = new System.IO.MemoryStream (image)
+
+        let sameStop (first : UndefinedValueObservation) (again : UndefinedValueObservation) : unit =
+            again.Value |> shouldEqual first.Value
+            string again.Use |> shouldEqual (string first.Use)
+
+        let rec goMain (steps : int64) (prepared : Program.PreparedProgram) : RunEnd =
+            if steps > BoundedRun.defaultMaxSteps then
+                failwith $"%s{name} did not stop within the step budget"
+
+            match Program.stepPrepared loggerFactory logger prepared with
+            | Program.ProgramStepOutcome.StoppedAtUndefinedValue (stopped, thread, observation) ->
+                match Program.stepPrepared loggerFactory logger stopped with
+                | Program.ProgramStepOutcome.StoppedAtUndefinedValue (_, threadAgain, again) ->
+                    threadAgain |> shouldEqual thread
+                    sameStop observation again
+                | _ -> failwith $"%s{name}: stepping the stopped state again did not stop at %O{observation}"
+
+                RunEnd.StoppedAtUndefinedValue (stopped.State, thread, observation)
+            | Program.ProgramStepOutcome.Completed outcome -> RunEnd.Ended outcome
+            | Program.ProgramStepOutcome.Deadlocked (_, stuck) -> failwith $"%s{name} deadlocked: %s{stuck}"
+            | Program.ProgramStepOutcome.InstructionStepped (prepared, _, _, _)
+            | Program.ProgramStepOutcome.WorkerTerminated (prepared, _) -> goMain (steps + 1L) prepared
+
+        let rec goStartup (steps : int64) (startup : Program.Startup) : RunEnd =
+            match Program.stepStartup loggerFactory logger startup with
+            | Program.StartupStepOutcome.StoppedAtUndefinedValue (stopped, thread, observation) ->
+                match Program.stepStartup loggerFactory logger stopped with
+                | Program.StartupStepOutcome.StoppedAtUndefinedValue (_, threadAgain, again) ->
+                    threadAgain |> shouldEqual thread
+                    sameStop observation again
+                | _ -> failwith $"%s{name}: stepping the stopped startup again did not stop at %O{observation}"
+
+                RunEnd.StoppedAtUndefinedValue (stopped.State, thread, observation)
+            | Program.StartupStepOutcome.Completed (Program.ProgramStartResult.CompletedBeforeMain runEnd) -> runEnd
+            | Program.StartupStepOutcome.Completed (Program.ProgramStartResult.Ready prepared) ->
+                goMain (steps + 1L) prepared
+            | Program.StartupStepOutcome.Deadlocked (_, stuck) -> failwith $"%s{name} deadlocked: %s{stuck}"
+            | Program.StartupStepOutcome.Stepped (startup, _, _, _)
+            | Program.StartupStepOutcome.WorkerTerminated (startup, _)
+            | Program.StartupStepOutcome.PhaseAdvanced startup -> goStartup (steps + 1L) startup
+
+        try
+            Program.beginStartup
+                loggerFactory
+                (Some name)
+                peImage
+                (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
+            |> goStartup 0L
+        with _ ->
+            for message in messages () do
+                System.Console.Error.WriteLine $"{message}"
+
+            reraise ()
+
     let private run (name : string) (source : string) (check : UndefinedValueObservation -> unit) : unit =
-        TestPureCases.runPawPrintSource name source KernelConfig.Default (fun _ outcome -> check (observed outcome))
+        stoppedRun name source |> observed |> check
 
     /// Which way the process ended, without rendering the machine state an outcome carries.
     let private endedName (outcome : RunOutcome) : string =
@@ -1025,4 +1089,115 @@ unsafe class Program
                 observation.Value.Kind |> shouldEqual UndefinedPrimitive.Bool
                 stackOrigins observation.Value |> shouldEqual [ 0 ]
                 expectReadByRuntime "<GetValue>g__" "the hasValue field boxing a Nullable`1 decides by" observation
+            )
+
+    [<Test>]
+    let ``A delegate handing an unwritten value to an intrinsic target stops the run at the invoke`` () : unit =
+        let source =
+            """
+using System;
+using System.Numerics;
+using System.Runtime.CompilerServices;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    static int Main(string[] args)
+    {
+        Func<uint, int> popCount = BitOperations.PopCount;
+        uint* bits = stackalloc uint[1];
+        return popCount(*bits) == 3 ? 1 : 0;
+    }
+}
+"""
+
+        run
+            "UndefinedDelegateIntrinsicArgument.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.Int32
+                stackOrigins observation.Value |> shouldEqual [ 0 ; 1 ; 2 ; 3 ]
+
+                match observation.Use with
+                | UndefinedValueUse.RuntimeArgument (method, 0) -> method.Name |> shouldEqual "PopCount"
+                | other -> failwith $"expected PopCount's argument, got %O{other}"
+            )
+
+    [<Test>]
+    let ``A constrained call through an unwritten byref stops the run at the call`` () : unit =
+        let source =
+            """
+using System.Runtime.CompilerServices;
+
+[module: SkipLocalsInit]
+
+ref struct R
+{
+    public ref int X;
+}
+
+unsafe class Program
+{
+    static string Show<T>(ref T x) => x.ToString();
+
+    static int Main(string[] args)
+    {
+        byte* bytes = stackalloc byte[sizeof(nint)];
+        R r = Unsafe.Read<R>(bytes);
+        return Show(ref r.X).Length == 0 ? 1 : 0;
+    }
+}
+"""
+
+        run
+            "UndefinedConstrainedReceiver.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.RuntimePointer
+
+                match observation.Use with
+                | UndefinedValueUse.InstructionDetail (method, _, _, description) ->
+                    method.Name |> shouldEqual "Show"
+
+                    description
+                    |> shouldEqual "the receiver a callvirt null-checks and dispatches on"
+                | other -> failwith $"expected Show's constrained call to use the byref, got %O{other}"
+            )
+
+    [<Test>]
+    let ``A struct hash code over an unwritten reference field stops the run at the strategy`` () : unit =
+        let source =
+            """
+using System.Runtime.CompilerServices;
+
+[module: SkipLocalsInit]
+
+struct S
+{
+    public object X;
+}
+
+unsafe class Program
+{
+    static int Main(string[] args)
+    {
+        byte* bytes = stackalloc byte[sizeof(nint)];
+        S s = Unsafe.Read<S>(bytes);
+        return s.GetHashCode() == 7 ? 1 : 0;
+    }
+}
+"""
+
+        run
+            "UndefinedValueTypeHashCode.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.ObjectRef
+                stackOrigins observation.Value |> shouldEqual [ 0..7 ]
+
+                expectReadByRuntime
+                    "<GetHashCodeStrategy>g__"
+                    "the reference field the hash-code strategy tests for null"
+                    observation
             )

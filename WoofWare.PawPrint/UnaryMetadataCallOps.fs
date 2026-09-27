@@ -979,6 +979,8 @@ module internal UnaryMetadataCallOps =
         /// The prefix would box a `Nullable<T>` whose `hasValue` is undefined, and whether there is
         /// a box to call on depends on it, so the run ends here.
         | UndefinedHasValue of UndefinedValue
+        /// The byref the prefix loads or dispatches through is undefined, so the run ends here.
+        | UndefinedReceiver of UndefinedValue
 
     /// Enter the callee a `callvirt` has resolved: check the receiver for null, as `callvirt` always
     /// does, then dispatch on it when `dispatchesOnReceiver`, which is false only when a
@@ -1430,6 +1432,15 @@ module internal UnaryMetadataCallOps =
                 | other ->
                     failwith $"constrained.callvirt: expected ManagedPointer receiver on the eval stack, got %O{other}"
 
+            // Every case of the prefix dereferences or dispatches through the byref receiver, now on
+            // top of the stack.
+            match
+                state.ThreadState.[thread].MethodState.EvaluationStack
+                |> EvalStack.PeekNthFromTop 0
+            with
+            | Some (EvalStackValue.Undefined u) -> ConstrainedReceiver.UndefinedReceiver u
+            | _ ->
+
             let transformed =
                 match tHandle with
                 | ConcreteTypeHandle.OneDimArrayZero _
@@ -1565,7 +1576,8 @@ module internal UnaryMetadataCallOps =
 
             match transformed with
             | ConstrainedReceiver.NullDereference _
-            | ConstrainedReceiver.UndefinedHasValue _ -> transformed
+            | ConstrainedReceiver.UndefinedHasValue _
+            | ConstrainedReceiver.UndefinedReceiver _ -> transformed
             | ConstrainedReceiver.Ready (state, concretizedMethod, dispatchesOnReceiver) ->
                 // Restore the method arguments on top of the transformed receiver.
                 // argsBottomToTop has the bottom-most arg at the head; pushing left-to-right
@@ -1582,6 +1594,12 @@ module internal UnaryMetadataCallOps =
         | ConstrainedReceiver.UndefinedHasValue u ->
             IlMachineStateExecution.observeUndefinedInInstruction
                 "the hasValue field a constrained. callvirt decides by whether to box a Nullable`1"
+                u
+                thread
+                state
+        | ConstrainedReceiver.UndefinedReceiver u ->
+            IlMachineStateExecution.observeUndefinedInInstruction
+                "the receiver a callvirt null-checks and dispatches on"
                 u
                 thread
                 state

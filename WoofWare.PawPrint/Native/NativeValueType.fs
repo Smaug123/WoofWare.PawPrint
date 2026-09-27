@@ -143,6 +143,9 @@ module NativeValueType =
     /// `contents` is the receiver's storage as reached so far, and `accumulatedOffset` where that
     /// storage begins inside the boxed receiver; the two advance together as the walk descends
     /// into a nested value type.
+    ///
+    /// `Error` with an object-reference field nothing wrote: the walk tests it for null, which is a
+    /// use of it.
     let rec private walk
         (operation : string)
         (loggerFactory : ILoggerFactory)
@@ -154,16 +157,20 @@ module NativeValueType =
         (contents : CliValueType)
         (accumulatedOffset : int)
         (state : IlMachineState)
-        : IlMachineState * HashCodeStrategy
+        : IlMachineState * Result<HashCodeStrategy, UndefinedValue>
         =
         let state, fields =
             IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state methodTable
 
-        let rec step (fields : CliField list) (state : IlMachineState) : IlMachineState * HashCodeStrategy =
+        let rec step
+            (fields : CliField list)
+            (state : IlMachineState)
+            : IlMachineState * Result<HashCodeStrategy, UndefinedValue>
+            =
             match fields with
             | [] ->
                 // Every field was a null object reference, or the type declares none at all.
-                state, HashCodeStrategy.NoField
+                state, Ok HashCodeStrategy.NoField
             | field :: rest ->
                 let fieldOffset, fieldSize = CliValueType.GetFieldLayoutById field.Id contents
                 let offset = accumulatedOffset + fieldOffset
@@ -175,19 +182,20 @@ module NativeValueType =
                 | FieldClass.ObjectReference ->
                     match CliValueType.DereferenceFieldById field.Id contents with
                     | CliType.ObjectRef None -> step rest state
-                    | CliType.ObjectRef (Some _) -> state, HashCodeStrategy.ReferenceField offset
+                    | CliType.ObjectRef (Some _) -> state, Ok (HashCodeStrategy.ReferenceField offset)
+                    | CliType.Undefined u -> state, Error u
                     | other ->
                         failwith
                             $"%s{operation}: field '%s{field.Name}' of type %O{field.Type} classified as an object reference, but its storage holds %O{other}"
-                | FieldClass.R8 -> state, HashCodeStrategy.DoubleField offset
-                | FieldClass.R4 -> state, HashCodeStrategy.SingleField offset
-                | FieldClass.Bits -> state, HashCodeStrategy.FastGetHashCode (offset, fieldSize)
+                | FieldClass.R8 -> state, Ok (HashCodeStrategy.DoubleField offset)
+                | FieldClass.R4 -> state, Ok (HashCodeStrategy.SingleField offset)
+                | FieldClass.Bits -> state, Ok (HashCodeStrategy.FastGetHashCode (offset, fieldSize))
                 | FieldClass.NestedValueType ->
                     let state, canCompare =
                         canCompareBitsOrUseFastGetHashCode loggerFactory baseClassTypes thread field.Type state
 
                     if canCompare then
-                        state, HashCodeStrategy.FastGetHashCode (offset, fieldSize)
+                        state, Ok (HashCodeStrategy.FastGetHashCode (offset, fieldSize))
                     else
 
                     let state, overridesGetHashCode =
@@ -200,7 +208,7 @@ module NativeValueType =
                             state
 
                     if overridesGetHashCode then
-                        state, HashCodeStrategy.ValueTypeOverride (offset, field.Type)
+                        state, Ok (HashCodeStrategy.ValueTypeOverride (offset, field.Type))
                     else
 
                     match CliValueType.DereferenceFieldById field.Id contents with
@@ -328,6 +336,15 @@ module NativeValueType =
                     contents
                     0
                     state
+
+            match strategy with
+            | Error u ->
+                NativeHandlerResult.undefinedRead
+                    ctx.Instruction.ExecutingMethod
+                    "the reference field the hash-code strategy tests for null"
+                    u
+                |> Some
+            | Ok strategy ->
 
             // PawPrint carries a CLI `uint32` as an `Int32` preserving the low 32 bits; see
             // `PrimitiveType.UInt32`.
