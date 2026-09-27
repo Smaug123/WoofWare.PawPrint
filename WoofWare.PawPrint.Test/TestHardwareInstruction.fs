@@ -12,8 +12,8 @@ open WoofWare.PawPrint
 
 /// `HardwareInstruction.contract` against its two authorities: the JIT's own tables in the pinned
 /// runtime source, which the checked-in table must reproduce, and the real runtime, which must raise
-/// nothing a contract leaves out when every instruction this CPU has is called with null and valid
-/// addresses and with every immediate value.
+/// nothing a contract leaves out when every instruction this CPU has is called with null,
+/// misaligned and valid addresses and with every immediate value.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestHardwareInstruction =
@@ -46,7 +46,7 @@ module TestHardwareInstruction =
     /// `HARDWARE_INTRINSIC(isa, name, size, numArgs, {instructions}, category, flags)`.
     let private rowPattern =
         Regex
-            @"^HARDWARE_INTRINSIC\(\s*(\w+)\s*,\s*(\w+)\s*,\s*-?\d+\s*,\s*-?\d+\s*,\s*\{[^}]*\}\s*,\s*(\w+)\s*,\s*(.*)\)\s*$"
+            @"^HARDWARE_INTRINSIC\(\s*(\w+)\s*,\s*(\w+)\s*,\s*-?\d+\s*,\s*-?\d+\s*,\s*\{([^}]*)\}\s*,\s*(\w+)\s*,\s*(.*)\)\s*$"
 
     let private rowsOfHeader (target : JitTarget) (path : string) : HardwareIntrinsicRow list =
         File.ReadAllLines path
@@ -61,8 +61,13 @@ module TestHardwareInstruction =
                 Target = target
                 InstructionSet = m.Groups.[1].Value
                 Name = m.Groups.[2].Value
-                Category = m.Groups.[3].Value
-                Flags = m.Groups.[4].Value.Split '|' |> Seq.map (fun flag -> flag.Trim ()) |> Set.ofSeq
+                Instructions =
+                    m.Groups.[3].Value.Split ','
+                    |> Seq.map (fun instruction -> instruction.Trim ())
+                    |> Seq.filter (fun instruction -> instruction <> "INS_invalid")
+                    |> Set.ofSeq
+                Category = m.Groups.[4].Value
+                Flags = m.Groups.[5].Value.Split '|' |> Seq.map (fun flag -> flag.Trim ()) |> Set.ofSeq
             }
         )
         |> List.ofSeq
@@ -79,7 +84,14 @@ module TestHardwareInstruction =
             |> List.distinct
             |> List.sortBy HardwareIntrinsicTable.format
 
-        if HardwareIntrinsicTable.rows.Force () <> expected then
+        // A table in an older format fails to parse, and is regenerated like any other difference.
+        let checkedIn =
+            try
+                Ok (HardwareIntrinsicTable.rows.Force ())
+            with e ->
+                Error e.Message
+
+        if checkedIn <> Ok expected then
             let regenerated =
                 Path.Combine (TestContext.CurrentContext.WorkDirectory, "HardwareIntrinsicTable.tsv")
 
@@ -108,16 +120,22 @@ module TestHardwareInstruction =
         )
         |> ignore<exn>
 
-    let private hostCoreLib () : DumpedAssembly =
+    let private readCoreLib (path : string) : DumpedAssembly =
         let _, loggerFactory = LoggerFactory.makeTest ()
+        Assembly.readFile loggerFactory path
 
-        Assembly.readFile
-            loggerFactory
-            (Path.Combine (FrameworkUnderTest.sharedFrameworkDirectory (), "System.Private.CoreLib.dll"))
+    let private hostCoreLib () : DumpedAssembly =
+        readCoreLib (Path.Combine (FrameworkUnderTest.sharedFrameworkDirectory (), "System.Private.CoreLib.dll"))
 
-    let private requireArm64 () : unit =
-        if RuntimeInformation.ProcessArchitecture <> Architecture.Arm64 then
-            Assert.Ignore "The host CoreLib is not an arm64 one, whose placeholders the Arm64 table describes."
+    /// The architecture the host's JIT compiles for, and the namespace of the instruction sets it
+    /// expands.
+    let private requireHostTarget () : JitTarget * string =
+        match RuntimeInformation.ProcessArchitecture with
+        | Architecture.Arm64 -> JitTarget.Arm64, "System.Runtime.Intrinsics.Arm"
+        | Architecture.X64 -> JitTarget.X64, "System.Runtime.Intrinsics.X86"
+        | other ->
+            Assert.Ignore $"No JIT table describes the host's architecture, %O{other}."
+            failwith "unreachable: Assert.Ignore did not throw"
 
     /// Every hardware-instruction placeholder in `corelib`, with the class it is declared on.
     let private placeholders
@@ -133,33 +151,102 @@ module TestHardwareInstruction =
                     | _ -> ()
         ]
 
+    let private x86 (path : string list) : IntrinsicClass =
+        {
+            Namespace = "System.Runtime.Intrinsics.X86"
+            Path = path
+        }
+
+    let private rowSets (target : JitTarget) (intrinsicClass : IntrinsicClass) (name : string) : string list option =
+        HardwareInstruction.rows target intrinsicClass name
+        |> Option.map (List.map (fun row -> row.InstructionSet))
+
     [<Test>]
-    let ``every arm64 hardware placeholder has a contract, but for the JIT's helper and special ones`` () : unit =
-        requireArm64 ()
-        let corelib = hostCoreLib ()
+    let ``the JIT finds some x86 classes' rows by what the CPU supports, and some in a unifying search`` () : unit =
+        HardwareInstruction.instructionSet JitTarget.X64 (x86 [ "AvxVnniInt8" ])
+        |> shouldEqual (Some (JitInstructionSet.ByCpuSupport ("AVXVNNIINT", "AVXVNNIINT_V512")))
+
+        rowSets JitTarget.X64 (x86 [ "AvxVnniInt16" ]) "MultiplyWideningAndAdd"
+        |> shouldEqual (Some [ "AVXVNNIINT" ; "AVXVNNIINT_V512" ])
+
+        // Both instruction sets a CPU might pick have the same one for their 512-bit class.
+        HardwareInstruction.instructionSet JitTarget.X64 (x86 [ "AvxVnniInt8" ; "V512" ])
+        |> shouldEqual (Some (JitInstructionSet.Fixed "AVXVNNIINT_V512"))
+
+        // AVX10v1 searches the AVX-512 instruction sets in turn, and AVX512 and AVX512v3 both have
+        // `Compress`.
+        rowSets JitTarget.X64 (x86 [ "Avx10v1" ]) "Compress"
+        |> shouldEqual (Some [ "AVX512" ])
+
+        rowSets JitTarget.X64 (x86 [ "Avx10v1" ; "V512" ]) "Compress"
+        |> shouldEqual (Some [ "AVX512" ])
+
+        rowSets JitTarget.X64 (x86 [ "Avx512Vbmi2" ]) "Compress"
+        |> shouldEqual (Some [ "AVX512v3" ])
+
+    /// Every placeholder of `corelib` has a row the JIT may expand it from, on every CPU; and at
+    /// most `maxUnknown` have no contract, because such a row is a helper or special intrinsic.
+    let private checkCoverage (target : JitTarget) (corelib : DumpedAssembly) (maxUnknown : int) : unit =
         let found = placeholders corelib
+
+        let describe (placeholders : (IntrinsicClass * string * _) list) : string =
+            placeholders
+            |> List.truncate 40
+            |> List.map (fun (c, name, _) -> $"%O{c}::%s{name}")
+            |> String.concat Environment.NewLine
+
+        let withoutRow =
+            found
+            |> List.filter (fun (intrinsicClass, name, _) ->
+                HardwareInstruction.rows target intrinsicClass name |> Option.isNone
+            )
+
+        if not withoutRow.IsEmpty then
+            failwithf
+                "%d of %d placeholders have no row, including:\n%s"
+                withoutRow.Length
+                found.Length
+                (describe withoutRow)
 
         let unknown =
             found
             |> List.filter (fun (intrinsicClass, name, _) ->
-                HardwareInstruction.contract JitTarget.Arm64 intrinsicClass name = InstructionContract.Unknown
+                HardwareInstruction.contract target intrinsicClass name = InstructionContract.Unknown
             )
 
-        // Measured on the .NET 10 CoreLib: 65 of the 4,869 placeholders are the JIT's helper or
-        // special intrinsics.
-        if unknown.Length > 100 then
-            unknown
-            |> List.truncate 40
-            |> List.map (fun (c, name, _) -> $"%O{c}::%s{name}")
-            |> String.concat Environment.NewLine
-            |> failwithf "%d of %d placeholders have no contract, including:\n%s" unknown.Length found.Length
+        if unknown.Length > maxUnknown then
+            failwithf
+                "%d of %d placeholders have no contract, including:\n%s"
+                unknown.Length
+                found.Length
+                (describe unknown)
 
         found.Length |> shouldBeGreaterThan 1000
 
+    [<Test>]
+    let ``every arm64 hardware placeholder has a contract, but for the JIT's helper and special ones`` () : unit =
+        match requireHostTarget () with
+        | JitTarget.Arm64, _ -> ()
+        | _ -> Assert.Ignore "The host CoreLib is not an arm64 one, whose placeholders the Arm64 table describes."
+
+        // Measured on the .NET 10 CoreLib: 65 of the 4,869 placeholders are the JIT's helper or
+        // special intrinsics.
+        checkCoverage JitTarget.Arm64 (hostCoreLib ()) 100
+
+    [<Test>]
+    let ``every x64 hardware placeholder has a contract, but for the JIT's helper and special ones`` () : unit =
+        let corelib =
+            readCoreLib (LinuxCoreLibFlavour.corelibPath (LinuxCoreLibFlavour.requireLinuxFramework ()))
+
+        // Measured on the .NET 10 linux-x64 CoreLib: 139 of the 3,646 placeholders are the JIT's helper or
+        // special intrinsics.
+        checkCoverage JitTarget.X64 corelib 200
+
     /// Calls every public static method of every class in `namespace` whose `IsSupported` is true on
-    /// this CPU: once with every pointer valid and every other argument its default, then with each
-    /// pointer null in turn, and with each `[ConstantExpected]` operand at every value its type can
-    /// hold (or a range around zero, for a wide type).
+    /// this CPU: once with every pointer valid and aligned to 64 bytes and every other argument its
+    /// default, then with each pointer null and one byte past aligned in turn, and with each
+    /// `[ConstantExpected]` operand at every value its type can hold (or a range around zero, for a
+    /// wide type).
     ///
     /// Arguments: the output file, the namespace, the index of the first call to make, and a file of
     /// `token<TAB>parameter` lines whose parameter's alternatives are not tried. It appends to the
@@ -205,7 +292,9 @@ public static unsafe class Sweep
         return values;
     }
 
-    static string Describe(object? a) => a is Pointer p ? (Pointer.Unbox(p) == null ? "null" : "valid") : a?.ToString() ?? "null";
+    static byte* buffer;
+
+    static string Describe(object? a) => a is Pointer p ? (Pointer.Unbox(p) == null ? "null" : Pointer.Unbox(p) == buffer ? "valid" : "misaligned") : a?.ToString() ?? "null";
 
     public static int Main(string[] args)
     {
@@ -214,7 +303,7 @@ public static unsafe class Sweep
         var startAt = long.Parse(args[2]);
         var skipped = new HashSet<string>(File.ReadAllLines(args[3]), StringComparer.Ordinal);
         const int size = 1 << 16;
-        var buffer = (byte*)NativeMemory.AlignedAlloc(size, 64);
+        buffer = (byte*)NativeMemory.AlignedAlloc(size, 64);
         NativeMemory.Clear(buffer, size);
         var seen = new HashSet<string>(StringComparer.Ordinal);
         using var results = new StreamWriter(output, append: true) { AutoFlush = true };
@@ -242,7 +331,7 @@ public static unsafe class Sweep
                     if (t.IsPointer)
                     {
                         defaults[i] = Pointer.Box(buffer, t);
-                        alternatives[i] = new List<object?> { Pointer.Box(null, t) };
+                        alternatives[i] = new List<object?> { Pointer.Box(null, t), Pointer.Box(buffer + 1, t) };
                     }
                     else if (parameters[i].GetCustomAttribute<ConstantExpectedAttribute>() != null)
                     {
@@ -368,10 +457,10 @@ public static unsafe class Sweep
                 File.Delete path
 
     [<Test>]
-    let ``no arm64 instruction raises on the real runtime what its contract leaves out`` () : unit =
-        requireArm64 ()
+    let ``no hardware instruction raises on the real runtime what its contract leaves out`` () : unit =
+        let target, ns = requireHostTarget ()
         let corelib = hostCoreLib ()
-        let lines, crashes = sweep "System.Runtime.Intrinsics.Arm"
+        let lines, crashes = sweep ns
 
         for crash in crashes do
             TestContext.Progress.WriteLine
@@ -431,7 +520,7 @@ public static unsafe class Sweep
                 | None -> ()
                 | Some intrinsicClass ->
 
-                match HardwareInstruction.contract JitTarget.Arm64 intrinsicClass name with
+                match HardwareInstruction.contract target intrinsicClass name with
                 | InstructionContract.Unknown -> ()
                 | InstructionContract.Raises faults ->
                     swept <- Set.add (ComparableMethodDefinitionHandle.Make handle) swept
@@ -441,6 +530,8 @@ public static unsafe class Sweep
                         | "ok" -> None
                         | "System.NullReferenceException" -> Some (Ok InstructionFault.NullAddress)
                         | "System.ArgumentOutOfRangeException" -> Some (Ok InstructionFault.ImmediateOutOfRange)
+                        | "System.DivideByZeroException" -> Some (Ok InstructionFault.ZeroDivisor)
+                        | "System.OverflowException" -> Some (Ok InstructionFault.QuotientOverflow)
                         | other -> Some (Error other)
 
                     match fault with
@@ -461,13 +552,30 @@ public static unsafe class Sweep
             |> String.concat Environment.NewLine
             |> failwith
 
-        // Vacuity: the sweep reached the instructions, and provoked both kinds of fault.
-        swept.Count |> shouldBeGreaterThan 1000
+        // Vacuity: the sweep reached the instructions, and provoked each fault it can in many of
+        // them. Its arguments never make a quotient overflow. Measured, in methods swept and methods
+        // raising each fault: on an Apple M-series CPU, 2,663 swept, 520 NullAddress and 635
+        // ImmediateOutOfRange; under Rosetta's x86-64, which stops at AVX2, 1,240 swept, 174
+        // NullAddress, 54 ImmediateOutOfRange and 6 ZeroDivisor.
+        let minimumSwept, minimumObserved =
+            match target with
+            | JitTarget.Arm64 ->
+                1000,
+                [
+                    InstructionFault.NullAddress, 100
+                    InstructionFault.ImmediateOutOfRange, 100
+                ]
+            | JitTarget.X64 ->
+                1000,
+                [
+                    InstructionFault.NullAddress, 100
+                    InstructionFault.ImmediateOutOfRange, 40
+                    InstructionFault.ZeroDivisor, 0
+                ]
 
-        Map.tryFind InstructionFault.NullAddress observed
-        |> Option.defaultValue 0
-        |> shouldBeGreaterThan 100
+        swept.Count |> shouldBeGreaterThan minimumSwept
 
-        Map.tryFind InstructionFault.ImmediateOutOfRange observed
-        |> Option.defaultValue 0
-        |> shouldBeGreaterThan 100
+        for fault, minimum in minimumObserved do
+            Map.tryFind fault observed
+            |> Option.defaultValue 0
+            |> shouldBeGreaterThan minimum
