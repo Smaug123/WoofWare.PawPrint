@@ -103,6 +103,9 @@ type internal LinuxPipeSlot =
 type internal LinuxPipeBuffer =
     {
         PageSize : int
+        /// The most bytes one write moves (`MAX_RW_COUNT`), from
+        /// `SimulatedUnixPlatform.transferCountLimit`.
+        MaxTransfer : int
         Slots : LinuxPipeSlot list
     }
 
@@ -206,6 +209,7 @@ module PipeBuffer =
             PipeBuffer.Linux
                 {
                     PageSize = SimulatedPageSize.bytes (SimulatedUnixPlatform.pageSize platform)
+                    MaxTransfer = TransferCountLimit.maxTransfer (SimulatedUnixPlatform.transferCountLimit platform)
                     Slots = []
                 }
         | SimulatedUnixFlavour.Darwin ->
@@ -274,9 +278,9 @@ module PipeBuffer =
         | PipeBuffer.Linux linux ->
             let page = linux.PageSize
 
-            // MAX_RW_COUNT: the same limit `UnixEntropy.getRandomMaxTransfer`
-            // states for getrandom. Measured with pipe-buffer-huge-write.c.
-            let maxTransfer = System.Int32.MaxValue &&& ~~~(page - 1)
+            // MAX_RW_COUNT, which the platform states once for every transfer.
+            // Measured for pipes with pipe-buffer-huge-write.c.
+            let maxTransfer = linux.MaxTransfer
 
             if n > maxTransfer then
                 failwith
