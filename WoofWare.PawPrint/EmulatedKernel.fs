@@ -611,11 +611,14 @@ type EmulatedKernel =
         PosixSignalShim : PosixSignalShim
         /// Every task the kernel knows about, by the thread that is it.
         ///
-        /// Exactly the live threads: `IlMachineState.checkInvariants` refuses a
-        /// state where a thread has no task or a task no thread. An absent key is
-        /// therefore a bug rather than a default, which is what lets
-        /// `UnixTaskState` be total.
+        /// Exactly the live threads: `checkTaskInvariants` reports a thread with
+        /// no task or a task with no thread. An absent key is therefore a bug
+        /// rather than a default, which is what lets `UnixTaskState` be total.
         Tasks : Map<ThreadId, UnixTaskState>
+        /// The process's first task, which `create` makes: always `ThreadId 0`,
+        /// the thread `IlMachineState.addThread` runs `Main` on. See
+        /// `UnixSystem.Leader`.
+        Leader : ThreadId
         /// Registry of `System.Threading.LowLevelMonitor` instances minted by
         /// `SystemNative_LowLevelMonitor_Create`. The handle held by the
         /// guest (as an `IntPtr` in `LowLevelMonitor._nativeMonitor`) is the
@@ -857,6 +860,7 @@ module EmulatedKernel =
             Machine = kernel.Machine
             Process = kernel.Process
             Tasks = kernel.Tasks
+            Leader = kernel.Leader
         }
 
     /// The path of the directory the simulated process is standing in, as
@@ -875,6 +879,7 @@ module EmulatedKernel =
             Machine = system.Machine
             Process = system.Process
             Tasks = system.Tasks
+            Leader = system.Leader
         }
 
     /// Apply an operation that spans this kernel's whole POSIX half. Those
@@ -1003,6 +1008,10 @@ module EmulatedKernel =
     /// life: every field derived from it is derived once, by this constructor
     /// and the setters that read it back.
     ///
+    /// Its one task is the thread `Main` will run on, `ThreadId 0`, on processor 0:
+    /// `IlMachineState.addThread` gives that thread its first frame, and every
+    /// other thread is created by a running one.
+    ///
     /// The POSIX half is `UnixSystem.initial`'s, entropy pool included; what is
     /// added here is the CoreCLR-shaped state no POSIX kernel has, the signal
     /// dispositions a CoreCLR process has installed by Main
@@ -1015,7 +1024,10 @@ module EmulatedKernel =
     /// `UnixSystem.defaultEntropySeed`, is part of the same contract, and
     /// PawPrint's tests pin it rather than a second copy of the value.
     let create (platform : SimulatedUnixPlatform) : EmulatedKernel =
-        let system : UnixSystem<ThreadId, NativeSignalHandler> = UnixSystem.initial platform
+        // Processor 0 is where the CPU rotation puts the first thread it places
+        // (`cpuForRotation 0`), which is this one.
+        let system : UnixSystem<ThreadId, NativeSignalHandler> =
+            UnixSystem.initial platform (ThreadId 0) (CpuId 0)
 
         let signals =
             StartupSignalDispositions.initial (SimulatedUnixPlatform.signalNumbering platform) Set.empty
@@ -1028,7 +1040,8 @@ module EmulatedKernel =
             NonCryptoRandomState = NonCryptoRandom.initialState
             PosixSignalShim = PosixSignalShim.initial
             DirectoryStreamFds = Map.empty
-            Tasks = Map.empty
+            Tasks = system.Tasks
+            Leader = system.Leader
             LowLevelMonitors = Map.empty
             NextLowLevelMonitorId = 1
             WaitHandles = Map.empty
@@ -1513,8 +1526,7 @@ module EmulatedKernel =
     /// lands on — an interpreter detail leaking into guest-observable state.
     /// The caller therefore threads a separate cursor
     /// (`IlMachineState.NextCpuRotation`) that only guest-visible thread
-    /// creation advances. (`osThreadId`, below, makes the opposite choice for
-    /// the opposite reason; see there.)
+    /// creation advances.
     let cpuForRotation (rotation : int) (kernel : EmulatedKernel) : CpuId =
         if rotation < 0 then
             failwith
@@ -1533,61 +1545,6 @@ module EmulatedKernel =
                 $"effective ProcessorCount is %d{count}, but must be at least 1 for a simulated thread to be placed on a processor"
 
         CpuId (rotation % count)
-
-    /// OS thread id policy: the id `thread` of the process `pid` reports to the
-    /// guest through `SystemNative_TryGetUInt32OSThreadId` and
-    /// `SystemNative_GetUInt64OSThreadId`.
-    ///
-    /// The sole producer, and `pid + ThreadId`, where `ThreadId` is the
-    /// interpreter's own allocation counter. Two properties matter:
-    ///
-    /// * Uniqueness across live threads. `ThreadId`s are already unique and
-    ///   never reused, and the process id is fixed for the run, so it comes for
-    ///   free; every thread PawPrint creates has one, guest-visible and
-    ///   interpreter-internal alike, so there is no second namespace to stay
-    ///   disjoint from.
-    /// * The entry thread, which is `ThreadId 0`, reports the process id. On
-    ///   Linux a thread-group leader's `gettid(2)` *is* its `getpid(2)`, and a
-    ///   guest can compare the two. Later threads then get `pid + 1`, `pid + 2`,
-    ///   and so on, which is how Linux hands out ids on a quiet machine. On
-    ///   Darwin `pthread_threadid_np(3)` is unrelated to the pid, and the same
-    ///   formula is as good an opaque id as any.
-    ///
-    /// Deliberately unlike `cpuForRotation`, which must *not* key off
-    /// `ThreadId`. The difference is what the guest can do with the number. A
-    /// `CpuId` is drawn from a small cyclic range and is compared against other
-    /// threads' (two threads sharing a core is a meaningful, observable fact),
-    /// so letting an interpreter-internal allocation shift the rotation would
-    /// change guest-observable behaviour. Past the leader's equality with the
-    /// pid, a thread id is opaque: no BCL code does anything with it but test
-    /// it for equality — `System.Threading.Lock` uses it as an owner identity —
-    /// so *which* number a later thread gets is not observable, only whether
-    /// two threads share one. Real Linux agrees: its
-    /// signal-handling thread is an ordinary `pthread_create` and consumes a
-    /// tid like any other, shifting every tid minted after it.
-    ///
-    /// A negative `ThreadId` is rejected rather than wrapped, because it could
-    /// mint the `0` that must never be an id. No allocator produces one
-    /// (`NextThreadId` counts up from `0`), but `FrameId -1` is an established
-    /// sentinel in this codebase, so a `ThreadId -1` is a mistake someone could
-    /// plausibly make.
-    let osThreadId (pid : ProcessId) (thread : ThreadId) : OsThreadId =
-        let (ThreadId.ThreadId i) = thread
-
-        if i < 0 then
-            failwith
-                $"thread id must be non-negative to mint an OS thread id (a negative id could wrap onto the fatal 0, which CoreLib maps to the (uint32)-1 sentinel); got %d{i}"
-
-        // Neither sentinel is reachable. Not `0`, which CoreLib's
-        // `Lock.ThreadId.InitializeForCurrentThread` (Lock.NonNativeAot.cs) maps
-        // to `0xFFFF_FFFF` by decrement, so that every thread minting it would
-        // share one id: a process id is at least 1 and `i` is non-negative. Not
-        // the `(uint32)-1` that `TryGetUInt32OSThreadId` returns to mean "this
-        // platform cannot determine a thread id": both summands are at most
-        // `Int32.MaxValue`, so the sum is at most `0xFFFF_FFFE`.
-        OsThreadId (uint32 (ProcessId.toInt32 pid) + uint32 i)
-
-
 
     /// The descriptor the `DIR*` backed by `block` reads through.
     ///
@@ -1741,14 +1698,19 @@ module EmulatedKernel =
     /// because `EmulatedKernel` compiles before `IlMachineState` and so cannot
     /// reach `ThreadState` to ask. Callers that have both should call both.
     ///
-    /// A thread is registered as a task when it is created and leaves the table
+    /// A thread's task is spawned when the thread is created and leaves the table
     /// when it terminates (`Scheduler.onThreadTerminated`), so this catches a
-    /// thread created without a task, a task minted for a thread that was never
+    /// thread created without a task, a task spawned for a thread that was never
     /// created, and a thread that terminated without the kernel being told.
     ///
+    /// The leader's task is the exception to the first half: `create` makes it
+    /// with the kernel, before `IlMachineState.addThread` makes its thread, so
+    /// until then this reports it as a task with no thread.
+    ///
     /// A `NotStarted` thread has a task too, although a real process has no
-    /// kernel task for a thread that has not been started: PawPrint registers a
-    /// guest thread when the guest constructs its `Thread`, not when it starts it.
+    /// kernel task for a thread that has not been started: PawPrint spawns a
+    /// guest thread's task when the guest constructs its `Thread`, not when it
+    /// starts it.
     /// That stays so until stage 4 of the process-lifecycle plan moves
     /// registration to `Start`, which will narrow this check to started threads.
     let checkTaskInvariants
@@ -2032,6 +1994,18 @@ type KernelConfig =
         /// Defaults to `Suppressed`, as under an `RLIMIT_CORE` of 0; see
         /// `UnixProcessState.CoreDumps`.
         CoreDumps : CoreDumps
+        /// Linux's `kernel.pid_max`: thread IDs are below it, and once they reach
+        /// it they start again from 300, skipping those in use. `None` takes
+        /// `UnixSystem.defaultPidMax`, the largest Linux allows, so an ID is reused
+        /// only after four million threads. Refused on Darwin, which has no such
+        /// setting.
+        PidMax : int32 option
+        /// On Darwin, the thread ID `Main`'s thread reports; the threads it
+        /// creates take the IDs after it. `None` takes `ProcessId`, which keeps
+        /// Darwin's thread IDs what they are on Linux, although a real Darwin's
+        /// are unrelated to the process ID. Refused on Linux, where the leader's
+        /// thread ID is the process ID.
+        LeaderThreadId : uint64 option
     }
 
     /// Configuration a host gets if it expresses no preference: no environment
@@ -2063,6 +2037,8 @@ type KernelConfig =
             LocalRoutes = UnixSystem.defaultLocalRoutes
             InheritedSignalIgnores = Set.empty
             CoreDumps = UnixSystem.defaultCoreDumps
+            PidMax = None
+            LeaderThreadId = None
         }
 
 [<RequireQualifiedAccess>]
@@ -2129,4 +2105,23 @@ module KernelConfig =
         |> EmulatedKernel.mapMachine (UnixMachineState.withSoMaxConn config.SoMaxConn)
         |> EmulatedKernel.mapMachine (UnixMachineState.withLocalAddresses config.LocalAddresses config.LocalRoutes)
         |> EmulatedKernel.mapProcess (UnixProcessState.withUmask "KernelConfig.Umask" config.Umask)
-        |> EmulatedKernel.mapProcess (UnixProcessState.withProcessId "KernelConfig.ProcessId" config.ProcessId)
+        // The process ID before `pid_max`: the default `pid_max` is the largest
+        // Linux has, so any process ID a Linux kernel could have is admitted here,
+        // and `withPidMax` then refuses a `pid_max` at or below it.
+        |> EmulatedKernel.mapUnix (UnixSystem.withProcessId "KernelConfig.ProcessId" config.ProcessId)
+        |> EmulatedKernel.mapUnix (fun system ->
+            match config.PidMax with
+            | None -> system
+            | Some pidMax -> UnixSystem.withPidMax "KernelConfig.PidMax" pidMax system
+        )
+        |> EmulatedKernel.mapUnix (fun system ->
+            match flavour, config.LeaderThreadId with
+            | SimulatedUnixFlavour.Linux, None -> system
+            | SimulatedUnixFlavour.Linux, Some _ ->
+                failwith
+                    "KernelConfig.LeaderThreadId: on Linux the leader's thread ID is the process ID; set KernelConfig.ProcessId instead."
+            | SimulatedUnixFlavour.Darwin, id ->
+                let id = id |> Option.defaultValue (uint64 (ProcessId.toInt32 config.ProcessId))
+
+                UnixSystem.withLeaderThreadId "KernelConfig.LeaderThreadId" id system
+        )

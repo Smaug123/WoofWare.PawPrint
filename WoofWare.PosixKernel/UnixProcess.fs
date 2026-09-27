@@ -117,8 +117,9 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         Umask : PermissionBits
         /// The ID `getpid(2)` reports for the simulated process.
         ///
-        /// Fixed for the whole run: a process keeps its ID from `fork` to exit,
-        /// and nothing here models either end.
+        /// Fixed for the whole run: a process keeps its ID from `fork` to exit.
+        /// `UnixSystem.withProcessId` sets it before the process has created a
+        /// thread.
         ProcessId : ProcessId
         /// Pure data model of the simulated process's signal disposition,
         /// per-thread sigprocmasks, and pending-signal queue.
@@ -167,20 +168,6 @@ module UnixProcessState =
         =
         { proc with
             Umask = PermissionBits.assertValid context umask
-        }
-
-    /// Set the ID `getpid(2)` reports for the simulated process.
-    ///
-    /// `context` prefixes the rejection a forged ID earns; see
-    /// `withProcessPath` for why the client supplies it.
-    let withProcessId<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (context : string)
-        (pid : ProcessId)
-        (proc : UnixProcessState<'Task, 'Handler>)
-        : UnixProcessState<'Task, 'Handler>
-        =
-        { proc with
-            ProcessId = ProcessId.assertValid context pid
         }
 
     /// Set whether the process writes a core dump when a signal whose default

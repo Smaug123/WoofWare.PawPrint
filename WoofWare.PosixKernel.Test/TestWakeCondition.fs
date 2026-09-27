@@ -41,7 +41,8 @@ module TestWakeCondition =
     /// The world, and the two ports' descriptions: `locker` holds an exclusive lock and
     /// `blocked` contends with it.
     let private world : UnixSystem<int, string> * OpenFileDescriptionId * OpenFileDescriptionId =
-        let system = UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+        let system =
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
 
         let lockerFd, registry =
             FileDescriptorRegistry.createSocketEventPort system.Process.FileDescriptors

@@ -71,7 +71,7 @@ module TestWithFileSystemAndCurrentDirectory =
         (dir : string)
         : Result<UnixSystem<int, string>, CurrentDirectoryFault>
         =
-        UnixSystem.initial<int, string> platform
+        UnixSystem.initial<int, string> platform 0 (CpuId 0)
         |> UnixSystem.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault entries (absolute dir)
 
     /// A system booted on `seed`, standing at `dir`.
@@ -178,7 +178,7 @@ module TestWithFileSystemAndCurrentDirectory =
                 SimulatedUnixPlatform.linuxX64, SimulatedUnixFlavour.Linux
                 SimulatedUnixPlatform.macOsArm64, SimulatedUnixFlavour.Darwin
             ] do
-            UnixSystem.initial<int, string> platform
+            UnixSystem.initial<int, string> platform 0 (CpuId 0)
             |> UnixSystem.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault nested (absolute "/outer")
             |> shouldEqual (Error (CurrentDirectoryFault.SeedNameTooLong (name overlong, flavour)))
 
@@ -188,12 +188,12 @@ module TestWithFileSystemAndCurrentDirectory =
         let wide = String.replicate 255 "中"
         let wideSeed = Map.ofList [ name wide, SeedEntry.file noBytes ]
 
-        UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+        UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
         |> UnixSystem.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault wideSeed (absolute "/")
         |> shouldEqual (Error (CurrentDirectoryFault.SeedNameTooLong (name wide, SimulatedUnixFlavour.Linux)))
 
         match
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 0 (CpuId 0)
             |> UnixSystem.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault wideSeed (absolute "/")
         with
         | Ok _ -> ()
@@ -204,7 +204,7 @@ module TestWithFileSystemAndCurrentDirectory =
 
         for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
             match
-                UnixSystem.initial<int, string> platform
+                UnixSystem.initial<int, string> platform 0 (CpuId 0)
                 |> UnixSystem.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault atLimit (absolute "/")
             with
             | Ok _ -> ()
@@ -239,7 +239,7 @@ module TestWithFileSystemAndCurrentDirectory =
         let asLink = Map.ofList [ undecodable, SeedEntry.Symlink (target "outer", None) ]
 
         for entries in [ atRoot ; nested ; asLink ] do
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 0 (CpuId 0)
             |> UnixSystem.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault entries (absolute "/")
             |> shouldEqual (
                 Error (CurrentDirectoryFault.SeedNameNotBindable (undecodable, SimulatedUnixFlavour.Darwin))
@@ -247,7 +247,7 @@ module TestWithFileSystemAndCurrentDirectory =
 
             // Linux binds any NUL-free bytes, so the same seed is a filesystem it could hold.
             match
-                UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+                UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
                 |> UnixSystem.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault entries (absolute "/")
             with
             | Ok _ -> ()
@@ -262,7 +262,7 @@ module TestWithFileSystemAndCurrentDirectory =
             Map.ofList [ name (string (char 0xFFFF)), SeedEntry.file noBytes ]
 
         match
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 0 (CpuId 0)
             |> UnixSystem.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault nonCharacter (absolute "/")
         with
         | Ok _ -> ()
@@ -273,7 +273,7 @@ module TestWithFileSystemAndCurrentDirectory =
         // walk would reach it before the encoding.
         let both = nameOfBytes (List.replicate 766 0xFFuy)
 
-        UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
+        UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 0 (CpuId 0)
         |> UnixSystem.withFileSystemAndCurrentDirectory
             createdAt
             Owners.linuxDefault
@@ -290,7 +290,7 @@ module TestWithFileSystemAndCurrentDirectory =
 
         let exn =
             Assert.Throws<exn> (fun () ->
-                UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+                UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
                 |> UnixSystem.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault forged (absolute "/")
                 |> ignore<Result<UnixSystem<int, string>, CurrentDirectoryFault>>
             )
@@ -339,14 +339,14 @@ module TestWithFileSystemAndCurrentDirectory =
         let entries = Map.ofList [ name wide, SeedEntry.directory FileSystemSeed.empty ]
         let path = "/" + wide
 
-        UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+        UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
         |> UnixSystem.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault entries (absolute path)
         |> shouldEqual (Error (CurrentDirectoryFault.SeedNameTooLong (name wide, SimulatedUnixFlavour.Linux)))
 
         // And the accepting direction, which a guard that simply refused
         // every wide name would pass the row above without.
         match
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 0 (CpuId 0)
             |> UnixSystem.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault entries (absolute path)
         with
         | Error fault -> failwith $"Darwin's NAME_MAX admits this name, but it answered %O{fault}."

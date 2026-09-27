@@ -28,7 +28,7 @@ module TestUnixSystemInvariants =
     /// platform.
     let private system : UnixSystem<int, string> =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial SimulatedUnixPlatform.linuxX64
+            UnixSystem.initial SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
 
         { system with
             Machine =
@@ -247,7 +247,7 @@ module TestUnixSystemInvariants =
                 ]
 
         match
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
             |> UnixSystem.withFileSystemAndCurrentDirectory
                 epoch
                 Owners.linuxDefault
@@ -308,10 +308,7 @@ module TestUnixSystemInvariants =
 
     /// `system` with one registered task, parked as `parked` says.
     let private withTask (parked : ParkedSyscall option) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        let registered =
-            { system with
-                Tasks = UnixTaskTable.register task (CpuId 0) (OsThreadId 1u) Map.empty
-            }
+        let registered = Tasks.ensure task system
 
         match parked with
         | None -> registered
@@ -389,12 +386,9 @@ module TestUnixSystemInvariants =
                     Mode = FlockMode.Shared
                 }
 
-        { system with
-            Tasks =
-                Map.empty
-                |> UnixTaskTable.register 1 (CpuId 0) (OsThreadId 1u)
-                |> UnixTaskTable.register 2 (CpuId 0) (OsThreadId 2u)
-        }
+        system
+        |> Tasks.ensure 1
+        |> Tasks.ensure 2
         |> UnixWait.park 1 parked
         |> UnixWait.park 2 parked
 
@@ -654,7 +648,8 @@ module TestUnixSystemInvariants =
         // derives the type from the flavour, and
         // `UnixMachineState.withMount` refuses one the machine's
         // flavour cannot mount.
-        let linux = UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+        let linux =
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
 
         { linux with
             Machine =
@@ -669,7 +664,7 @@ module TestUnixSystemInvariants =
             ]
 
         // A hand-built machine whose pair does describe one system is sound.
-        UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
+        UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 0 (CpuId 0)
         |> fun darwin ->
             { darwin with
                 Machine =
@@ -679,3 +674,143 @@ module TestUnixSystemInvariants =
             }
         |> UnixSystem.checkInvariants
         |> shouldEqual []
+
+    // ------------------------------------------------------------------
+    // Thread IDs. Every one of these is reachable only by a record copy past
+    // `UnixSystem.initial`, `UnixTaskLifecycle.spawn` and the identity setters.
+
+    let private spawned (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
+        match UnixTaskLifecycle.spawn 0 1 (CpuId 0) (UnixSystem.initial<int, string> platform 0 (CpuId 0)) with
+        | Ok (_, system) -> system
+        | Error error -> failwith $"spawn failed: %O{error}"
+
+    [<Test>]
+    let ``a leader that is not a task is a defect`` () : unit =
+        let system = spawned SimulatedUnixPlatform.linuxX64
+
+        { system with
+            Leader = 7
+        }
+        |> UnixSystem.checkInvariants
+        |> shouldEqual [ UnixSystemDefect.LeaderWithoutTask 7 ]
+
+    [<Test>]
+    let ``two tasks with one thread ID are a defect`` () : unit =
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            let system = spawned platform
+            let leader = UnixTaskTable.get 0 system.Tasks
+
+            { system with
+                Tasks =
+                    Map.add
+                        1
+                        { UnixTaskTable.get 1 system.Tasks with
+                            OsThreadId = leader.OsThreadId
+                        }
+                        system.Tasks
+            }
+            |> UnixSystem.checkInvariants
+            |> shouldEqual [ UnixSystemDefect.DuplicateOsThreadId (leader.OsThreadId, [ 0 ; 1 ]) ]
+
+    [<Test>]
+    let ``on Linux a leader whose thread ID is not the process ID is a defect, and on Darwin it is not`` () : unit =
+        let moved (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+            { system with
+                Process =
+                    { system.Process with
+                        ProcessId = ProcessId.parseOrFail "test" 17
+                    }
+            }
+
+        let linux = spawned SimulatedUnixPlatform.linuxX64
+
+        moved linux
+        |> UnixSystem.checkInvariants
+        |> shouldEqual
+            [
+                UnixSystemDefect.LeaderThreadIdNotProcessId (
+                    0,
+                    UnixTaskTable.osThreadIdOf 0 linux.Tasks,
+                    ProcessId.parseOrFail "test" 17
+                )
+            ]
+
+        moved (spawned SimulatedUnixPlatform.macOsArm64)
+        |> UnixSystem.checkInvariants
+        |> shouldEqual []
+
+    [<Test>]
+    let ``a thread ID the counter could not have handed out is a defect`` () : unit =
+        // Linux: a live tid at or above pid_max, by taking a counter with a lower
+        // pid_max from another machine.
+        let linux = spawned SimulatedUnixPlatform.linuxX64
+
+        let lowered =
+            (UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
+             |> UnixSystem.withProcessId "test" (ProcessId.parseOrFail "test" 5)
+             |> UnixSystem.withPidMax "test" 1000)
+                .Machine.ThreadIds
+
+        { linux with
+            Machine =
+                { linux.Machine with
+                    ThreadIds = lowered
+                }
+        }
+        |> UnixSystem.checkInvariants
+        |> shouldEqual
+            [
+                UnixSystemDefect.OsThreadIdNotMintable (0, UnixTaskTable.osThreadIdOf 0 linux.Tasks, lowered)
+                UnixSystemDefect.OsThreadIdNotMintable (1, UnixTaskTable.osThreadIdOf 1 linux.Tasks, lowered)
+            ]
+
+        // Darwin: an id the counter has not reached, which it would hand out again.
+        let darwin = spawned SimulatedUnixPlatform.macOsArm64
+
+        let behind =
+            (UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 0 (CpuId 0)
+             |> UnixSystem.withLeaderThreadId "test" 4242UL)
+                .Machine.ThreadIds
+
+        { darwin with
+            Machine =
+                { darwin.Machine with
+                    ThreadIds = behind
+                }
+        }
+        |> UnixSystem.checkInvariants
+        |> shouldEqual
+            [
+                UnixSystemDefect.OsThreadIdNotMintable (1, UnixTaskTable.osThreadIdOf 1 darwin.Tasks, behind)
+            ]
+
+    [<Test>]
+    let ``a thread ID counter of the other flavour is a defect`` () : unit =
+        let linux =
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
+
+        let darwin =
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 0 (CpuId 0)
+
+        let swapped (system : UnixSystem<int, string>) (from : UnixSystem<int, string>) =
+            { system with
+                Machine =
+                    { system.Machine with
+                        ThreadIds = from.Machine.ThreadIds
+                    }
+            }
+            |> UnixSystem.checkInvariants
+
+        // Both leaders are 4242 and both counters are past it, so the flavour is all
+        // that is wrong.
+        swapped linux darwin
+        |> shouldEqual
+            [
+                UnixSystemDefect.ThreadIdAllocatorNotOfFlavour (SimulatedUnixFlavour.Linux, darwin.Machine.ThreadIds)
+            ]
+
+        swapped darwin linux
+        |> shouldEqual
+            [
+                UnixSystemDefect.ThreadIdAllocatorNotOfFlavour (SimulatedUnixFlavour.Darwin, linux.Machine.ThreadIds)
+            ]

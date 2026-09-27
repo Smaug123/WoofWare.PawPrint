@@ -50,12 +50,10 @@ module TestPollTimeout =
     /// A Linux-flavoured system with task 1 registered, a listening socket with an
     /// empty accept queue, and the descriptor onto it.
     let private world : int * UnixSystem<int, string> =
-        let system = UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
-
         let system =
-            { system with
-                Tasks = UnixTaskTable.register task (CpuId 0) (OsThreadId 2u) system.Tasks
-            }
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
+
+        let system = Tasks.spawn task system
 
         let socketId = system.Machine.NextSocketId
         let (SocketId raw) = socketId
@@ -530,12 +528,10 @@ module TestPollTimeout =
 
     [<Test>]
     let ``a Darwin-flavoured poll with a timeout is refused, as every Darwin poll is`` () : unit =
-        let darwin = UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
-
         let darwin =
-            { darwin with
-                Tasks = UnixTaskTable.register task (CpuId 0) (OsThreadId 2u) darwin.Tasks
-            }
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 0 (CpuId 0)
+
+        let darwin = Tasks.spawn task darwin
 
         for milliseconds in [ -1 ; 0 ; 10 ] do
             UnixPoll.poll task [ entry 1 pollIn ] milliseconds darwin

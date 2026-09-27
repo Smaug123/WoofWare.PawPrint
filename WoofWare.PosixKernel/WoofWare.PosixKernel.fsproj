@@ -40,6 +40,8 @@
         <Compile Include="SimulatedUnixArchitecture.fs" />
         <Compile Include="EmulatedFileSystemType.fs" />
         <Compile Include="UserBuffer.fs" />
+        <Compile Include="ProcessId.fs" />
+        <Compile Include="OsThreadId.fs" />
         <Compile Include="UnixTask.fs" />
         <Compile Include="Sockaddr.fs" />
         <Compile Include="CreatingOpenRules.fs" />
@@ -51,7 +53,6 @@
         <Compile Include="PipeBuffer.fs" />
         <Compile Include="FileSystemStatistics.fs" />
         <Compile Include="EntropyPool.fs" />
-        <Compile Include="ProcessId.fs" />
         <Compile Include="UnixProcess.fs" />
         <Compile Include="UnixMachine.fs" />
         <Compile Include="UnixClock.fs" />

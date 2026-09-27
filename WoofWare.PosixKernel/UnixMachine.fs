@@ -41,6 +41,14 @@ type UnixMachineState =
         /// by park is a wait queue on a kernel object, and processes can share
         /// one.
         NextParkOrdinal : ParkOrdinal
+        /// Where the next thread's id comes from: see `ThreadIdAllocator`.
+        ///
+        /// The machine's rather than a process's, because on both flavours the
+        /// counter is shared by every process on the machine. Set by
+        /// `UnixSystem.initial`, `UnixSystem.withProcessId`,
+        /// `UnixSystem.withLeaderThreadId` and `UnixSystem.withPidMax`, and
+        /// advanced only by `UnixTaskLifecycle.spawn`.
+        ThreadIds : ThreadIdAllocator
         /// The port a `bind(2)` of port 0 will try first.
         ///
         /// A counter rather than a draw from the seeded PRNG. Which port an

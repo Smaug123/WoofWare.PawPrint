@@ -137,7 +137,7 @@ module TestDirectoryDescription =
     /// files, and a descriptor open on `/d`.
     let private withDirectory (platform : SimulatedUnixPlatform) (names : string list) : int * UnixSystem<int, string> =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial platform |> makeDirectory "d"
+            UnixSystem.initial platform 0 (CpuId 0) |> makeDirectory "d"
 
         let system =
             (system, names) ||> List.fold (fun system n -> createFile $"d/%s{n}" system)
@@ -202,7 +202,9 @@ module TestDirectoryDescription =
     let ``a subdirectory is reported as a directory`` () : unit =
         for platform in platforms do
             let system =
-                UnixSystem.initial platform |> makeDirectory "d" |> makeDirectory "d/sub"
+                UnixSystem.initial platform 0 (CpuId 0)
+                |> makeDirectory "d"
+                |> makeDirectory "d/sub"
 
             let fd, system = openAt directoryReading "d" system
             let records, _ = drain fd system
@@ -527,7 +529,10 @@ module TestDirectoryDescription =
         // pipes, sockets and kqueues.
         for platform in platforms do
             let flavour = SimulatedUnixPlatform.flavour platform
-            let system : UnixSystem<int, string> = UnixSystem.initial platform |> createFile "f"
+
+            let system : UnixSystem<int, string> =
+                UnixSystem.initial platform 0 (CpuId 0) |> createFile "f"
+
             let readable, system = openAt reading "f" system
 
             let writeOnly, system =
@@ -586,7 +591,9 @@ module TestDirectoryDescription =
     [<Test>]
     let ``an open without O_DIRECTORY on a directory is readable as one`` () : unit =
         for platform in platforms do
-            let system = UnixSystem.initial platform |> makeDirectory "d" |> createFile "d/a"
+            let system =
+                UnixSystem.initial platform 0 (CpuId 0) |> makeDirectory "d" |> createFile "d/a"
+
             let fd, system = openAt reading "d" system
             let records, _ = drain fd system
             records |> List.map (fun r -> text r.Name) |> shouldEqual [ "a" ; ".." ; "." ]
@@ -594,7 +601,7 @@ module TestDirectoryDescription =
     [<Test>]
     let ``O_DIRECTORY on a regular file is ENOTDIR`` () : unit =
         for platform in platforms do
-            let system = UnixSystem.initial platform |> createFile "f"
+            let system = UnixSystem.initial platform 0 (CpuId 0) |> createFile "f"
 
             match Answered.openPath directoryReading (rooted "f") 0 system with
             | SyscallAnswer.Failed UnixError.ENOTDIR, _ -> ()
@@ -622,7 +629,7 @@ module TestDirectoryDescription =
             ]
 
         for platform in platforms do
-            let system = UnixSystem.initial platform |> makeDirectory "d"
+            let system = UnixSystem.initial platform 0 (CpuId 0) |> makeDirectory "d"
 
             for flags in unmeasured do
                 (fun () -> Answered.openPath flags (rooted "d") 0 system |> ignore)
@@ -659,7 +666,7 @@ module TestDirectoryDescription =
     [<Test>]
     let ``a description's kind must match the inode it names`` () : unit =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial SimulatedUnixPlatform.linuxX64
+            UnixSystem.initial SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
             |> makeDirectory "d"
             |> createFile "f"
 

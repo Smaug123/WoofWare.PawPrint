@@ -8,19 +8,17 @@ open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
-/// `EmulatedKernel.osThreadId` is the policy behind
-/// `SystemNative_TryGetUInt32OSThreadId` (Linux CoreLib) and
-/// `SystemNative_GetUInt64OSThreadId` (macOS CoreLib) — the OS thread id
+/// The OS thread id a guest reads through `SystemNative_TryGetUInt32OSThreadId`
+/// (Linux CoreLib) and `SystemNative_GetUInt64OSThreadId` (macOS CoreLib), which
 /// `System.Threading.Lock` uses as its owner identity.
 ///
-/// The main invariant is *uniqueness across every live thread*, and a collision
-/// would not crash: it would make `Lock` treat two threads as one, silently,
-/// because `Lock` reads a matching id as "the same thread re-entering".
-/// Uniqueness is inherited from `ThreadId` — for a fixed process id the policy
-/// is a function of it — so these tests establish that the function is
-/// injective, that it dodges the two fatal sentinel values, and that every
-/// allocation site feeds it a distinct `ThreadId`. The other invariant is
-/// Linux's: the entry thread's id is the process id.
+/// The kernel mints the id (`UnixTaskLifecycle.spawn`) and `OsThreadIdPal` projects
+/// it to the shim's two widths. Two things matter to a guest. No two live threads
+/// may share an id, because `Lock` reads a matching id as the same thread
+/// re-entering. And the numbers are exactly what PawPrint reported when it
+/// numbered threads itself, `pid + ThreadId`, since a guest can print them: the
+/// property `the kernel numbers threads as pid plus ThreadId` below is the oracle
+/// for that.
 ///
 /// `TestCpuPlacement` covers the sibling policy (`cpuForRotation`), which
 /// deliberately keys off a *different* cursor; the contrast is the subject of
@@ -29,142 +27,307 @@ open WoofWare.PosixKernel
 [<Parallelizable(ParallelScope.All)>]
 module TestOsThreadId =
 
-    let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
-
-    /// Exactly the values `IlMachineState.NextThreadId` can hold: non-negative.
-    let private threadIdFrom (seed : int) : ThreadId = ThreadId (abs (seed % 1_000_000))
-
-    let private raw (OsThreadId.OsThreadId i : OsThreadId) : uint32 = i
-
-    let private ints = ArbMap.defaults |> ArbMap.arbitrary<int>
-    let private intPairs = ArbMap.defaults |> ArbMap.arbitrary<int * int>
-    let private intTriples = ArbMap.defaults |> ArbMap.arbitrary<int * int * int>
-
-    /// Every valid process id is reachable, with both ends of the range weighted
-    /// in: they are where the two sentinels sit.
-    let private pidFrom (seed : int) : ProcessId =
-        let candidate =
-            match seed % 4 with
-            | 0 -> 1
-            | 1 -> System.Int32.MaxValue
-            | _ -> 1 + abs (seed % (System.Int32.MaxValue - 1))
-
-        ProcessId.parseOrFail "test" candidate
-
-    let private defaultPid : ProcessId = UnixSystem.defaultProcessId
-
-    /// `TryGetUInt32OSThreadId` returns this to mean "this platform does not
-    /// know how to get an OS thread id", so a real id must never equal it.
-    let private unknownSentinel : uint32 = 0xFFFF_FFFFu
-
-    let private succeeds (f : unit -> 'a) : bool =
-        try
-            f () |> ignore<'a>
-            true
-        with _ ->
-            false
-
-    // --- The pure minting policy ---
-
-    [<Test>]
-    let ``no minted id is either sentinel`` () =
-        // `0` and `(uint32)-1` are both fatal, and for different reasons.
-        // `(uint32)-1` is the PAL's "cannot determine" signal, so a thread that
-        // genuinely had that id would be indistinguishable from an unsupported
-        // platform. `0` is worse: CoreLib's `Lock.ThreadId.InitializeForCurrentThread`
-        // maps a zero id to `0xFFFF_FFFF` by decrementing it, so *every* thread
-        // that minted `0` would end up sharing one id.
-        let property (pidSeed : int, seed : int) : bool =
-            let id = raw (EmulatedKernel.osThreadId (pidFrom pidSeed) (threadIdFrom seed))
-            id <> 0u && id <> unknownSentinel
-
-        Check.One (propertyConfig, Prop.forAll intPairs property)
-
-    [<Test>]
-    let ``the extremes of the thread-id range are safe`` () =
-        // The property above samples; these are the values that actually sit
-        // against the two sentinels. The low end is the smallest process id with
-        // the entry thread, which is real and immediate. The high end is the
-        // largest of each summand, one short of the `0xFFFF_FFFF` sentinel, so
-        // the upper bound is unreachable by construction rather than by a check
-        // someone could later relax.
-        let minPid = ProcessId.parseOrFail "test" 1
-        let maxPid = ProcessId.parseOrFail "test" System.Int32.MaxValue
-
-        raw (EmulatedKernel.osThreadId minPid (ThreadId 0)) |> shouldEqual 1u
-
-        raw (EmulatedKernel.osThreadId maxPid (ThreadId System.Int32.MaxValue))
-        |> shouldEqual 0xFFFF_FFFEu
-
-    [<Test>]
-    let ``the policy is injective`` () =
-        // Two distinct threads must never share an id. This is the whole of the
-        // uniqueness argument for the pure policy: because every thread's id is
-        // a function of its `ThreadId`, and `ThreadId`s are unique and never
-        // reused, injectivity here is uniqueness everywhere.
-        let property (pidSeed : int, a : int, b : int) : bool =
-            let pid = pidFrom pidSeed
-            let x = threadIdFrom a
-            let y = threadIdFrom b
-
-            if x = y then
-                true
-            else
-                EmulatedKernel.osThreadId pid x <> EmulatedKernel.osThreadId pid y
-
-        Check.One (propertyConfig, Prop.forAll intTriples property)
-
-    [<Test>]
-    let ``the entry thread's id is the process id`` () =
-        // A Linux thread-group leader's gettid(2) is its getpid(2), and a guest
-        // can compare `Environment.ProcessId` with the id `Lock` reads.
-        let property (pidSeed : int) : bool =
-            let pid = pidFrom pidSeed
-            raw (EmulatedKernel.osThreadId pid (ThreadId 0)) = uint32 (ProcessId.toInt32 pid)
-
-        Check.One (propertyConfig, Prop.forAll ints property)
-
-    [<Test>]
-    let ``a negative thread id fails loudly`` () =
-        // There is a `FrameId -1` sentinel in this codebase and
-        // `allocateParkedThread` uses it, so a negative id is a mistake someone
-        // could plausibly make. Added to process id 1, `ThreadId -1` would wrap
-        // to exactly the fatal `0`. Wrapping silently is precisely the failure mode this module is
-        // about, so it must throw.
-        let property (seed : int) : bool =
-            let negative = ThreadId (-1 - abs (seed % 1_000_000))
-            not (succeeds (fun () -> EmulatedKernel.osThreadId defaultPid negative))
-
-        Check.One (propertyConfig, Prop.forAll ints property)
-
-    // --- Wiring: that the allocation sites feed the policy distinct ids ---
-
     let private corelib : DumpedAssembly =
         let corelibPath = typeof<obj>.Assembly.Location
         let _, loggerFactory = LoggerFactory.makeTest ()
         Assembly.readFile loggerFactory corelibPath
 
-    let private machine () : IlMachineState =
-        let _, loggerFactory = LoggerFactory.makeTest ()
-        IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+    let private baseClassTypes : BaseClassTypes<DumpedAssembly> =
+        BaseClassTypes.ofCorelib corelib
 
-    let private osThreadIdOf (thread : ThreadId) (state : IlMachineState) : OsThreadId =
-        UnixTaskTable.osThreadIdOf thread state.Kernel.Tasks
+    /// A frame on any concrete method, for `addThread` to start the entry thread on.
+    let private aFrame (state : IlMachineState) : IlMachineState * MethodState =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let objectToString =
+            baseClassTypes.Object.Methods
+            |> List.find (fun method -> method.Name = "ToString" && (MethodInfo.arity method = 0))
+
+        let state, signature =
+            IlMachineState.concretizeMethodSignature
+                loggerFactory
+                baseClassTypes
+                state
+                corelib.DefinitionFullName
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                objectToString.Signature
+
+        let method =
+            objectToString
+            |> MethodInfo.mapTypeGenerics (fun _ -> failwith "System.Object::ToString is not type-generic")
+            |> MethodInfo.mapMethodGenerics (fun _ _ -> failwith "System.Object::ToString is not method-generic")
+            |> MethodInfo.setMethodVars (MethodBody.Il (MethodInstructions.onlyRet ())) signature
+
+        match
+            MethodState.Empty
+                state.ConcreteTypes
+                baseClassTypes
+                state._LoadedAssemblies
+                corelib
+                method
+                ImmutableArray.Empty
+                (ImmutableArray.Create (CliType.ObjectRef None))
+                None
+        with
+        | Ok methodState -> state, methodState
+        | Error missing -> failwith $"unexpected missing assembly references creating frame: %O{missing}"
+
+    /// A machine on `config`'s kernel, as `Program` builds one, with its entry thread.
+    let private machineOn (config : KernelConfig) : IlMachineState =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state =
+            (IlMachineState.initial loggerFactory ImmutableArray.Empty corelib)
+                .MapKernel (fun _ -> KernelConfig.toKernel config)
+
+        let state, frame = aFrame state
+        let state, entry = IlMachineState.addThread frame state
+        entry |> shouldEqual (ThreadId 0)
+        state
+
+    let private machine () : IlMachineState = machineOn KernelConfig.Default
+
+    let private idOf (thread : ThreadId) (state : IlMachineState) : uint64 =
+        OsThreadId.toUInt64 (UnixTaskTable.osThreadIdOf thread state.Kernel.Tasks)
+
+    // --- What the shim reports of an id ---
+
+    /// An id the kernel minted: a Darwin leader's, which may be any of them.
+    let private darwinLeaderId (id : uint64) : OsThreadId =
+        let kernel =
+            KernelConfig.toKernel
+                { KernelConfig.Default with
+                    UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    LeaderThreadId = Some id
+                }
+
+        UnixTaskTable.osThreadIdOf kernel.Leader kernel.Tasks
 
     [<Test>]
-    let ``guest threads are numbered from their thread id`` () =
+    let ``the 64-bit shim reports the id whole, and the 32-bit one its low half with 0 as the sentinel`` () =
+        // `SystemNative_TryGetUInt32OSThreadId` returns `(uint32_t)-1` for an id whose
+        // low half is 0, because that is how it says "cannot determine"; CoreLib's
+        // `Lock` would then use the managed thread id instead.
+        let expected32 (id : uint64) : uint32 =
+            if id &&& 0xFFFF_FFFFUL = 0UL then
+                0xFFFF_FFFFu
+            else
+                uint32 (id &&& 0xFFFF_FFFFUL)
+
+        let property (id : uint64) : bool =
+            let minted = darwinLeaderId id
+
+            OsThreadIdPal.getUInt64 minted = id
+            && OsThreadIdPal.tryGetUInt32 minted = expected32 id
+
+        for id in
+            [
+                1UL
+                4242UL
+                0xFFFF_FFFEUL
+                0xFFFF_FFFFUL
+                0x1_0000_0000UL
+                0x1_0000_0007UL
+            ] do
+            property id |> shouldEqual true
+
+        OsThreadIdPal.tryGetUInt32 (darwinLeaderId 0x1_0000_0000UL)
+        |> shouldEqual 0xFFFF_FFFFu
+
+        let ids =
+            Gen.oneof
+                [
+                    Gen.choose (1, System.Int32.MaxValue) |> Gen.map uint64
+                    ArbMap.defaults
+                    |> ArbMap.generate<uint64>
+                    |> Gen.map (fun i -> max 1UL (min i (System.UInt64.MaxValue - 1UL)))
+                    ArbMap.defaults
+                    |> ArbMap.generate<uint32>
+                    |> Gen.map (fun high -> (uint64 (max high 1u) <<< 32))
+                ]
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 500, Prop.forAll (Arb.fromGen ids) property)
+
+    // --- Old numbering against new ---
+
+    /// What a run does to its threads, in order.
+    [<RequireQualifiedAccess>]
+    type private Op =
+        /// A guest constructs a `Thread`, on the `parent`th live thread.
+        | Construct of parent : int
+        /// The signal dispatcher is created, by the `parent`th live thread.
+        | Dispatcher of parent : int
+        /// The `thread`th live thread other than the entry thread terminates.
+        | Terminate of thread : int
+
+    [<Test>]
+    let ``the kernel numbers threads as pid plus ThreadId, and the shim reports what it did`` () =
+        // The oracle: before the kernel minted ids, PawPrint gave `ThreadId i` of
+        // process `pid` the id `pid + i`, reported whole by both shim entry points.
+        // Registration order is creation order and no id comes back before
+        // `pid_max`, so the kernel's counter must agree on Linux; and on Darwin the
+        // counter starts at the pid by default, so it must agree there too. Runs are
+        // short enough, and the pid far enough below Linux's default `pid_max`,
+        // that no id wraps.
+        let run (platform : SimulatedUnixPlatform, pid : int32, ops : Op list) : unit =
+            let state =
+                machineOn
+                    { KernelConfig.Default with
+                        UnixPlatform = platform
+                        ProcessId = ProcessId.parseOrFail "test" pid
+                    }
+
+            let live (state : IlMachineState) : ThreadId list =
+                state.Kernel.Tasks |> Map.keys |> List.ofSeq
+
+            let step (state : IlMachineState, address : int) (op : Op) =
+                match op with
+                | Op.Construct parent ->
+                    let parents = live state
+                    let parent = parents.[parent % parents.Length]
+
+                    IlMachineState.allocateUnstartedThread parent (ManagedHeapAddress address) state
+                    |> fst,
+                    address + 1
+                | Op.Dispatcher parent ->
+                    let parents = live state
+                    let parent = parents.[parent % parents.Length]
+                    IlMachineState.allocateParkedThread parent state |> fst, address
+                | Op.Terminate thread ->
+                    match live state |> List.filter (fun t -> t <> state.Kernel.Leader) with
+                    | [] -> state, address
+                    | others -> Scheduler.onThreadTerminated others.[thread % others.Length] state, address
+
+            let check (state : IlMachineState) : unit =
+                for thread in live state do
+                    let (ThreadId i) = thread
+                    let old = uint32 pid + uint32 i
+                    let id = UnixTaskTable.osThreadIdOf thread state.Kernel.Tasks
+
+                    (thread, OsThreadIdPal.tryGetUInt32 id) |> shouldEqual (thread, old)
+                    (thread, OsThreadIdPal.getUInt64 id) |> shouldEqual (thread, uint64 old)
+
+                EmulatedKernel.checkInvariants state.Kernel |> shouldEqual []
+
+            check state
+
+            ((state, 1), ops)
+            ||> List.fold (fun acc op ->
+                let state, address = step acc op
+                check state
+                state, address
+            )
+            |> ignore
+
+        let gen =
+            gen {
+                let! platform =
+                    Gen.elements
+                        [
+                            SimulatedUnixPlatform.linuxX64
+                            SimulatedUnixPlatform.linuxArm64
+                            SimulatedUnixPlatform.macOsArm64
+                        ]
+
+                let! length = Gen.choose (0, 40)
+
+                let! pid =
+                    Gen.oneof
+                        [
+                            Gen.choose (1, 100)
+                            Gen.choose (1, UnixSystem.defaultPidMax - 1 - length)
+                            Gen.constant (UnixSystem.defaultPidMax - 1 - length)
+                        ]
+
+                let! ops =
+                    Gen.frequency
+                        [
+                            5, Gen.choose (0, 20) |> Gen.map Op.Construct
+                            1, Gen.choose (0, 20) |> Gen.map Op.Dispatcher
+                            3, Gen.choose (0, 20) |> Gen.map Op.Terminate
+                        ]
+                    |> Gen.listOfLength length
+
+                return platform, pid, ops
+            }
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 100, Prop.forAll (Arb.fromGen gen) run)
+
+    // --- Wiring ---
+
+    [<Test>]
+    let ``guest threads take the ids after the entry thread's`` () =
         let state = machine ()
+        idOf (ThreadId 0) state |> shouldEqual 4242UL
 
         let state, first =
-            IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1) state
+            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1) state
 
         let state, second =
-            IlMachineState.allocateUnstartedThread (ManagedHeapAddress 2) state
+            IlMachineState.allocateUnstartedThread first (ManagedHeapAddress 2) state
 
-        // The machine's default process id is 4242, and nothing has taken
-        // `ThreadId 0` yet.
-        osThreadIdOf first state |> shouldEqual (OsThreadId 4242u)
-        osThreadIdOf second state |> shouldEqual (OsThreadId 4243u)
+        idOf first state |> shouldEqual 4243UL
+        idOf second state |> shouldEqual 4244UL
+
+    [<Test>]
+    let ``a Darwin configuration can start the counter away from the pid`` () =
+        let state =
+            machineOn
+                { KernelConfig.Default with
+                    UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    LeaderThreadId = Some 2897490UL
+                }
+
+        idOf (ThreadId 0) state |> shouldEqual 2897490UL
+
+        UnixSystem.processId (EmulatedKernel.unix state.Kernel)
+        |> shouldEqual UnixSystem.defaultProcessId
+
+        let state, first =
+            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1) state
+
+        idOf first state |> shouldEqual 2897491UL
+
+    [<Test>]
+    let ``the thread-id knobs refuse the other flavour`` () =
+        let linuxLeader () =
+            KernelConfig.toKernel
+                { KernelConfig.Default with
+                    LeaderThreadId = Some 7UL
+                }
+            |> ignore<EmulatedKernel>
+
+        (Assert.Throws<exn> (TestDelegate linuxLeader)).Message
+        |> shouldContainText "KernelConfig.LeaderThreadId"
+
+        let darwinPidMax () =
+            KernelConfig.toKernel
+                { KernelConfig.Default with
+                    UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    PidMax = Some 1000
+                }
+            |> ignore<EmulatedKernel>
+
+        (Assert.Throws<exn> (TestDelegate darwinPidMax)).Message
+        |> shouldContainText "KernelConfig.PidMax"
+
+    [<Test>]
+    let ``a configured pid_max wraps the ids`` () =
+        let state =
+            machineOn
+                { KernelConfig.Default with
+                    ProcessId = ProcessId.parseOrFail "test" 998
+                    PidMax = Some 1000
+                }
+
+        let state, first =
+            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1) state
+
+        let state, second =
+            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 2) state
+
+        (idOf first state, idOf second state) |> shouldEqual (999UL, 300UL)
 
     [<Test>]
     let ``a parked thread does consume an id, unlike a rotation slot`` () =
@@ -184,43 +347,27 @@ module TestOsThreadId =
         // a shift there changes which threads appear to share a core. Real
         // Linux shifts tids the same way: its signal-handling thread is an
         // ordinary `pthread_create`.
-        let idsFrom (allocateParkedFirst : bool) : OsThreadId list =
+        let idsFrom (allocateParkedFirst : bool) : uint64 list =
             let mutable state = machine ()
 
             if allocateParkedFirst then
-                let state', _ = IlMachineState.allocateParkedThread state
+                let state', _ = IlMachineState.allocateParkedThread (ThreadId 0) state
                 state <- state'
 
             [ 1..5 ]
             |> List.map (fun i ->
                 let state', thread =
-                    IlMachineState.allocateUnstartedThread (ManagedHeapAddress i) state
+                    IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress i) state
 
                 state <- state'
-                osThreadIdOf thread state
+                idOf thread state
             )
 
-        idsFrom false
-        |> shouldEqual
-            [
-                OsThreadId 4242u
-                OsThreadId 4243u
-                OsThreadId 4244u
-                OsThreadId 4245u
-                OsThreadId 4246u
-            ]
+        idsFrom false |> shouldEqual [ 4243UL .. 4247UL ]
 
         // Shifted by exactly the one id the dispatcher took, and still all
         // distinct.
-        idsFrom true
-        |> shouldEqual
-            [
-                OsThreadId 4243u
-                OsThreadId 4244u
-                OsThreadId 4245u
-                OsThreadId 4246u
-                OsThreadId 4247u
-            ]
+        idsFrom true |> shouldEqual [ 4244UL .. 4248UL ]
 
     [<Test>]
     let ``the parked dispatcher gets a real id distinct from every guest id`` () =
@@ -236,47 +383,17 @@ module TestOsThreadId =
             [ 1..3 ]
             |> List.map (fun i ->
                 let state', thread =
-                    IlMachineState.allocateUnstartedThread (ManagedHeapAddress i) state
+                    IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress i) state
 
                 state <- state'
-                osThreadIdOf thread state
+                idOf thread state
             )
 
-        let state', parked = IlMachineState.allocateParkedThread state
+        let state', parked = IlMachineState.allocateParkedThread (ThreadId 0) state
         state <- state'
 
-        let parkedId = osThreadIdOf parked state
+        let parkedId = idOf parked state
 
-        guestIds |> List.contains parkedId |> shouldEqual false
-        raw parkedId |> shouldNotEqual 0u
-
-    [<Test>]
-    let ``every live thread has a distinct id`` () =
-        // The whole point, stated end-to-end over the real allocation entry
-        // points rather than over the policy in isolation: whatever mixture of
-        // guest and interpreter-internal threads a run creates, no two of them
-        // share an id. This is the property that survives if the minting
-        // formula is ever changed, and the one `Lock` actually depends on.
-        let property (seed : int) : bool =
-            let mutable state = machine ()
-            // A deterministic but varied interleaving of the two allocators.
-            let pattern = [ 0..15 ] |> List.map (fun i -> ((seed >>> (i % 24)) &&& 1) = 1)
-
-            let ids =
-                pattern
-                |> List.mapi (fun i isParked ->
-                    if isParked then
-                        let state', thread = IlMachineState.allocateParkedThread state
-                        state <- state'
-                        osThreadIdOf thread state
-                    else
-                        let state', thread =
-                            IlMachineState.allocateUnstartedThread (ManagedHeapAddress (i + 1)) state
-
-                        state <- state'
-                        osThreadIdOf thread state
-                )
-
-            (ids |> List.distinct |> List.length) = List.length ids
-
-        Check.One (propertyConfig, Prop.forAll ints property)
+        (idOf (ThreadId 0) state :: guestIds)
+        |> List.contains parkedId
+        |> shouldEqual false

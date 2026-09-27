@@ -158,17 +158,11 @@ module TestSchedulerPct =
             Name = None
         }
 
-    /// Each thread's task, as the thread-allocation paths register one: a thread's exit
+    /// Each thread's task, as the thread-creation paths spawn one: a thread's exit
     /// removes its task, so a stub thread with none could not terminate.
     let private withTasks (threads : ThreadId list) (state : IlMachineState) : IlMachineState =
         (state, threads)
-        ||> List.fold (fun state tid ->
-            state.MapKernel (
-                EmulatedKernel.mapTasks (
-                    UnixTaskTable.register tid (CpuId 0) (EmulatedKernel.osThreadId state.Kernel.Process.ProcessId tid)
-                )
-            )
-        )
+        ||> List.fold (fun state tid -> state.MapKernel (KernelTasks.ensure tid))
 
     let private withThreads (threads : (ThreadId * ThreadStatus) list) (state : IlMachineState) : IlMachineState =
         let threadMap =
@@ -230,8 +224,10 @@ module TestSchedulerPct =
         // chosen by argmax if the terminated thread somehow appeared in `runnable`,
         // which it can't — but the invariant is easier to reason about than
         // "terminated-but-still-in-map is safe by an indirect argument".
-        let terminated = ThreadId 0
-        let survivor = ThreadId 1
+        // Not `ThreadId 0`, the leader, which the scheduler never terminates: the entry
+        // thread waits for the others instead.
+        let terminated = ThreadId 1
+        let survivor = ThreadId 0
 
         let initial =
             baseState ()
@@ -331,11 +327,12 @@ module TestSchedulerPct =
     let ``onThreadTerminated leaves a RoundRobin schedule alone`` () : unit =
         // The Pct cleanup branch must not introduce a behavioural difference for
         // RoundRobin runs.
-        let terminated = ThreadId 0
+        // Not `ThreadId 0`, the leader, which the scheduler never terminates.
+        let terminated = ThreadId 1
 
         let initial =
             baseState ()
-            |> withThreads [ terminated, ThreadStatus.Runnable ; ThreadId 1, ThreadStatus.Runnable ]
+            |> withThreads [ ThreadId 0, ThreadStatus.Runnable ; terminated, ThreadStatus.Runnable ]
 
         let after = Scheduler.onThreadTerminated terminated initial
 

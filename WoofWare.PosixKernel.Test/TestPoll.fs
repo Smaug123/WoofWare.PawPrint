@@ -40,7 +40,7 @@ module TestPoll =
     /// A simulated process on the flavour asked for, before anything has
     /// happened to it.
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform
+        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
 
         { system with
             Machine =
@@ -70,13 +70,7 @@ module TestPoll =
         (system : UnixSystem<int, string>)
         : Result<int16 list * int, PollRefusal>
         =
-        let system =
-            if Map.containsKey poller system.Tasks then
-                system
-            else
-                { system with
-                    Tasks = UnixTaskTable.register poller (CpuId 0) (OsThreadId 2u) system.Tasks
-                }
+        let system = Tasks.ensure poller system
 
         match UnixPoll.poll poller entries milliseconds system with
         | Error refusal -> Error refusal

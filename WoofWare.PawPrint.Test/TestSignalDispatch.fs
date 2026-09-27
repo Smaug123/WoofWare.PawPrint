@@ -104,7 +104,7 @@ module TestSignalDispatch =
     /// for the positive-transition tests.
     let private preparedState () : IlMachineState * ThreadId * SignalHandler =
         let state = baseState ()
-        let state, dispatcher = IlMachineState.allocateParkedThread state
+        let state, dispatcher = IlMachineState.allocateParkedThread (ThreadId 0) state
 
         let state =
             state.MapKernel (fun kernel ->
@@ -162,7 +162,7 @@ module TestSignalDispatch =
         // would call a null function pointer. The poll must refuse rather than
         // leave the entry queued.
         let state = baseState ()
-        let state, dispatcher = IlMachineState.allocateParkedThread state
+        let state, dispatcher = IlMachineState.allocateParkedThread (ThreadId 0) state
 
         let state =
             { state with
@@ -597,7 +597,7 @@ module TestSignalDispatch =
         // installing it should trip the arity check, not silently produce
         // a malformed handler frame.
         let state = baseState ()
-        let state, dispatcher = IlMachineState.allocateParkedThread state
+        let state, dispatcher = IlMachineState.allocateParkedThread (ThreadId 0) state
 
         let state =
             state.MapKernel (fun kernel ->
