@@ -237,8 +237,21 @@ module internal UnaryMetadataObjectOps =
         (declaringTypeHandle : ConcreteTypeHandle)
         (advanceProgramCounterOfCaller : bool)
         (state : IlMachineState)
-        : IlMachineState
+        : IlMachineState * WhatWeDid
         =
+        // The constructor is entered as a call is, so its arguments are checked as a call's are:
+        // one an intrinsic constructor would use undefined stops the run here.
+        let ofCommitment
+            (state : IlMachineState, commitment : IlMachineStateExecution.CallCommitment)
+            : IlMachineState * WhatWeDid
+            =
+            match commitment with
+            | IlMachineStateExecution.CallCommitment.Committed
+            | IlMachineStateExecution.CallCommitment.Raised -> state, WhatWeDid.Executed
+            | IlMachineStateExecution.CallCommitment.UndefinedValueObserved observation ->
+                state, WhatWeDid.UndefinedValueObserved observation
+            | IlMachineStateExecution.CallCommitment.Aborted fatal -> state, WhatWeDid.Aborted fatal
+
         let heapValueByref (addr : ManagedHeapAddress) : ManagedPointerSource =
             ManagedPointerSource.Byref
                 {
@@ -333,7 +346,7 @@ module internal UnaryMetadataObjectOps =
 
             let threadState = state.ThreadState.[thread]
 
-            IlMachineStateExecution.callMethod
+            IlMachineStateExecution.callMethodWithCommitment
                 loggerFactory
                 baseClassTypes
                 None
@@ -341,6 +354,7 @@ module internal UnaryMetadataObjectOps =
                 IlMachineStateExecution.CallDispatch.Direct
                 false
                 advanceProgramCounterOfCaller
+                IlMachineStateExecution.CallSiteTransition.StaysCooperative
                 concretizedCtorImplementation.Generics
                 concretizedCtorImplementation
                 thread
@@ -349,6 +363,7 @@ module internal UnaryMetadataObjectOps =
                 ReturnValueDisposition.PushToCaller
                 ExceptionEscape.Propagate
                 state
+            |> ofCommitment
         else
 
         let state, fields =
@@ -379,7 +394,7 @@ module internal UnaryMetadataObjectOps =
 
         let threadState = state.ThreadState.[thread]
 
-        IlMachineStateExecution.callMethod
+        IlMachineStateExecution.callMethodWithCommitment
             loggerFactory
             baseClassTypes
             None
@@ -387,6 +402,7 @@ module internal UnaryMetadataObjectOps =
             IlMachineStateExecution.CallDispatch.Direct
             false
             advanceProgramCounterOfCaller
+            IlMachineStateExecution.CallSiteTransition.StaysCooperative
             concretizedCtor.Generics
             concretizedCtor
             thread
@@ -395,6 +411,7 @@ module internal UnaryMetadataObjectOps =
             ReturnValueDisposition.PushToCaller
             ExceptionEscape.Propagate
             state
+        |> ofCommitment
 
     let executeNewobj (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
@@ -472,8 +489,7 @@ module internal UnaryMetadataObjectOps =
         // An allocation whose `.cctor` then throws is therefore garbage, exactly as on the real
         // runtime: the `newobj` never completes and nothing can reach the object.
 
-        constructObject loggerFactory logger baseClassTypes thread concretizedCtor declaringTypeHandle true state,
-        WhatWeDid.Executed
+        constructObject loggerFactory logger baseClassTypes thread concretizedCtor declaringTypeHandle true state
 
     let executeBox (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory

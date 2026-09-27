@@ -799,9 +799,20 @@ module IlMachineStateExecution =
                 let argumentCount =
                     MethodInfo.arity methodToCall + (if methodToCall.IsStatic then 0 else 1)
 
-                activeMethodState.EvaluationStack.Values
-                |> List.truncate argumentCount
-                |> List.rev
+                // In argument order, `this` first. A constructor `newobj` enters has `this` on top
+                // of its arguments, by `newobj`'s own convention, rather than beneath them.
+                let inArgumentOrder =
+                    let bottomFirst =
+                        activeMethodState.EvaluationStack.Values
+                        |> List.truncate argumentCount
+                        |> List.rev
+
+                    match wasConstructing, bottomFirst with
+                    | ConstructionState.Constructing _, _ when not methodToCall.IsStatic ->
+                        List.last bottomFirst :: List.take (bottomFirst.Length - 1) bottomFirst
+                    | _ -> bottomFirst
+
+                inArgumentOrder
                 |> List.indexed
                 |> List.tryPick (fun (index, value) ->
                     EvalStackValue.tryFindUndefined value |> Option.map (fun u -> index, u)

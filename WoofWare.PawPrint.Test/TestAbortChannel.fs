@@ -109,7 +109,7 @@ module TestAbortChannel =
             |> AbstractMachine.surfaceTerminatingStep thread
 
         match converted with
-        | ExecutionResult.UndefinedValueObserved (_, observingThread, observed) ->
+        | ExecutionResult.UndefinedValueObserved (observingThread, observed) ->
             observingThread |> shouldEqual thread
             obj.ReferenceEquals (observed, o) |> shouldEqual true
         | other ->

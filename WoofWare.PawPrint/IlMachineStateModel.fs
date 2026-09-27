@@ -566,9 +566,9 @@ type ExecutionResult =
     /// ended: real .NET goes on with whatever garbage the memory held, so the guest's behaviour
     /// from here is undefined, and PawPrint stops rather than choosing one of the behaviours. The
     /// driver reports this as `ProgramStepOutcome.StoppedAtUndefinedValue`, never as a
-    /// `RunOutcome`. The state is the one from before the observing step, so the thread is still
-    /// at the instruction that would have used the value.
-    | UndefinedValueObserved of IlMachineState * observingThread : ThreadId * UndefinedValueObservation
+    /// `RunOutcome`. It carries no state: the step did not happen, so the stop is at the state the
+    /// driver stepped from, which the driver holds.
+    | UndefinedValueObserved of observingThread : ThreadId * UndefinedValueObservation
 
 /// Outcome of invoking a hand-written JIT intrinsic (`Intrinsics.call`). This is the
 /// intrinsic analogue of `NativeHandlerResult` below, and exists for the same reason:
@@ -882,8 +882,9 @@ module ExecutionResult =
     /// Apply `f` to the machine state carried by any outcome, preserving the variant and its
     /// other payload.
     ///
-    /// Every `ExecutionResult` carries a state because every one of them describes a step that
-    /// was actually retired — that is the whole reason this function can be total. It exists so
+    /// Every `ExecutionResult` but a stop at an undefined value carries a state because it
+    /// describes a step that was actually retired; a stop describes one that was not, and has no
+    /// state to map. It exists so
     /// that per-step bookkeeping which must happen *whatever the step turned out to be* can be
     /// written once, at the driver's single call site of `AbstractMachine.executeOneStep`,
     /// rather than being repeated in each arm of the driver's match on the outcome.
@@ -902,8 +903,7 @@ module ExecutionResult =
         | ExecutionResult.Stepped (state, whatWeDid, effect) -> ExecutionResult.Stepped (f state, whatWeDid, effect)
         | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
             ExecutionResult.UnhandledException (f state, terminatingThread, exn)
-        | ExecutionResult.UndefinedValueObserved (state, observingThread, observation) ->
-            ExecutionResult.UndefinedValueObserved (f state, observingThread, observation)
+        | ExecutionResult.UndefinedValueObserved _ -> result
 
 [<RequireQualifiedAccess>]
 module NativeHandlerResult =
@@ -1014,13 +1014,8 @@ module NativeHandlerResult =
 
     /// Forward a `WhatWeDid.UndefinedValueObserved` outcome from a sub-call. As for `aborted`, the
     /// run is over, and the dispatcher surfaces a `Terminating` result verbatim.
-    let undefinedValueObserved
-        (thread : ThreadId)
-        (observation : UndefinedValueObservation)
-        (state : IlMachineState)
-        : NativeHandlerResult
-        =
-        NativeHandlerResult.Terminating (ExecutionResult.UndefinedValueObserved (state, thread, observation))
+    let undefinedValueObserved (thread : ThreadId) (observation : UndefinedValueObservation) : NativeHandlerResult =
+        NativeHandlerResult.Terminating (ExecutionResult.UndefinedValueObserved (thread, observation))
 
     /// The handler would use `value`, which it read through a pointer it was handed or was handed
     /// back, but it is undefined, so the run stops; `what` names it.
@@ -1067,7 +1062,7 @@ module NativeHandlerResult =
         // thread has already given up.
         | WhatWeDid.Aborted fatal -> Some (aborted thread fatal state)
         | WhatWeDid.UnhandledException exn -> Some (unhandledException thread exn state)
-        | WhatWeDid.UndefinedValueObserved observation -> Some (undefinedValueObserved thread observation state)
+        | WhatWeDid.UndefinedValueObserved observation -> Some (undefinedValueObserved thread observation)
         // A sub-call that voluntarily yielded did make forward progress, so the
         // calling native handler should continue exactly as for Executed. The yield
         // hint is meaningful only at the dispatcher/scheduler boundary; it does not

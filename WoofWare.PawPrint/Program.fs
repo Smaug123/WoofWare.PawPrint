@@ -807,7 +807,17 @@ module Program =
     /// fold the outcome back into the thread states. `prepared` must already have been through
     /// `advanceToDecision`; running this against an inter-tick value would consult the policy
     /// about a Runnable set that a deadline or a spurious wake was about to change.
-    let private stepDecided (loggerFactory : ILoggerFactory) (logger : ILogger) (prepared : PreparedProgram) : Tick =
+    ///
+    /// `beforeTick` is the program as the tick found it, before its preamble and its scheduling
+    /// decision: a stop at an undefined value is reported there, so that stepping it again runs the
+    /// same preamble and makes the same decision, and stops again.
+    let private stepDecided
+        (loggerFactory : ILoggerFactory)
+        (logger : ILogger)
+        (beforeTick : PreparedProgram)
+        (prepared : PreparedProgram)
+        : Tick
+        =
         let scheduledState, scheduledChoice =
             Scheduler.chooseNext prepared.LastRan prepared.State
 
@@ -857,13 +867,7 @@ module Program =
 
                         match latchMainReturnValue returns prepared.EntryThread state with
                         | Error observation ->
-                            ProgramStepOutcome.StoppedAtUndefinedValue (
-                                { prepared with
-                                    State = state
-                                },
-                                prepared.EntryThread,
-                                observation
-                            )
+                            ProgramStepOutcome.StoppedAtUndefinedValue (beforeTick, prepared.EntryThread, observation)
                             |> Tick.Stepped
                         | Ok state ->
 
@@ -974,17 +978,9 @@ module Program =
                         RunOutcome.GuestUnhandledException (state, terminatingThread, exn, termination)
                     )
                 )
-            | ExecutionResult.UndefinedValueObserved (state, observingThread, observation) ->
+            | ExecutionResult.UndefinedValueObserved (observingThread, observation) ->
                 // Not a process ending, so the kernel is not told anything.
-                Tick.Stepped (
-                    ProgramStepOutcome.StoppedAtUndefinedValue (
-                        { prepared with
-                            State = state
-                        },
-                        observingThread,
-                        observation
-                    )
-                )
+                Tick.Stepped (ProgramStepOutcome.StoppedAtUndefinedValue (beforeTick, observingThread, observation))
             | ExecutionResult.Stepped (state, whatWeDid, effect) ->
                 logStepOutcome logger state nextThread whatWeDid
 
@@ -1060,7 +1056,7 @@ module Program =
             prepared.State
             (fun () ->
                 match advanceToDecision prepared with
-                | Advanced.Decide advanced -> stepDecided loggerFactory logger advanced
+                | Advanced.Decide advanced -> stepDecided loggerFactory logger prepared advanced
                 | Advanced.Ended outcome -> Tick.Stepped (ProgramStepOutcome.Completed outcome)
             )
 
@@ -1915,7 +1911,7 @@ module Program =
                 }
         | None ->
 
-        match annotating advanced.State (fun () -> stepDecided loggerFactory logger advanced) with
+        match annotating advanced.State (fun () -> stepDecided loggerFactory logger prepared advanced) with
         | Tick.StartupCallReturned _ ->
             failwith
                 "Program.runToNextFork: the entry thread's startup call returned, but a fork snapshot is taken only once Main is installed"

@@ -588,7 +588,7 @@ module TestSchedulerYieldDebt =
         // mapping over whatever `executeOneStep` returned, so an outcome whose state `mapState`
         // failed to touch would silently skip the per-step bookkeeping. The compiler catches a
         // *missing* variant; this catches one that is present but wired to the wrong field, and
-        // pins that no variant is deliberately exempted later.
+        // pins that no variant but the stateless stop is exempted.
         let marked = baseState () |> withThreads (runnable 1)
 
         let mark (_ : IlMachineState) : IlMachineState = marked
@@ -620,7 +620,6 @@ module TestSchedulerYieldDebt =
                 ExecutionResult.Stepped (sentinel, WhatWeDid.Executed, StepEffect.NoEffect)
                 ExecutionResult.UnhandledException (sentinel, thread, guestException)
                 ExecutionResult.UndefinedValueObserved (
-                    sentinel,
                     thread,
                     {
                         Value =
@@ -655,15 +654,20 @@ module TestSchedulerYieldDebt =
 
             let state =
                 match mapped with
-                | ExecutionResult.UndefinedValueObserved (s, _, _)
+                // A stop describes a step that did not happen, so it carries no state, and there
+                // is no bookkeeping for `mapState` to skip.
+                | ExecutionResult.UndefinedValueObserved _ -> None
                 | ExecutionResult.Terminated (s, _)
                 | ExecutionResult.ProcessExit (s, _)
                 | ExecutionResult.Aborted (s, _, _)
                 | ExecutionResult.SignalTerminated (s, _, _)
                 | ExecutionResult.Stepped (s, _, _)
-                | ExecutionResult.UnhandledException (s, _, _) -> s
+                | ExecutionResult.UnhandledException (s, _, _) -> Some s
 
-            // Reference equality would be ideal but `IlMachineState` is a large record; the
-            // thread map is enough to tell the marked state from the sentinel.
-            state.ThreadState.Count |> shouldEqual marked.ThreadState.Count
-            state.ThreadState.Count |> shouldNotEqual sentinel.ThreadState.Count
+            match state with
+            | None -> ()
+            | Some state ->
+                // Reference equality would be ideal but `IlMachineState` is a large record; the
+                // thread map is enough to tell the marked state from the sentinel.
+                state.ThreadState.Count |> shouldEqual marked.ThreadState.Count
+                state.ThreadState.Count |> shouldNotEqual sentinel.ThreadState.Count
