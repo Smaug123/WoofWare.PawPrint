@@ -265,7 +265,13 @@ module TestResolutionSplit =
     // ------------------------------------------------------ a fixed corpus
 
     let private makeDirectory (parent : InodeNumber) (n : string) (mode : int) (vfs : VirtualFileSystem) =
-        VirtualFileSystem.createDirectory parent (name n) (PermissionBits.parseOrFail "test" mode) buildTime vfs
+        VirtualFileSystem.createDirectory
+            parent
+            (name n)
+            (PermissionBits.parseOrFail "test" mode)
+            Owners.linuxDefault
+            buildTime
+            vfs
 
     let private orFail (result : Result<'a, UnixError>) : 'a =
         match result with
@@ -278,14 +284,21 @@ module TestResolutionSplit =
     /// growing and over-long, and names that are over-long in bytes, in code
     /// units, or in neither.
     let private corpus : VirtualFileSystem =
-        let vfs = VirtualFileSystem.empty buildTime
+        let vfs = VirtualFileSystem.empty buildTime Owners.linuxDefault
         let root = VirtualFileSystem.root vfs
 
         let d, vfs = makeDirectory root "d" 0o700 vfs |> orFail
         let _, vfs = makeDirectory d "sub" 0o700 vfs |> orFail
 
         let _, vfs =
-            VirtualFileSystem.createFile d (name "f") (PermissionBits.parseOrFail "test" 0o600) buildTime noBytes vfs
+            VirtualFileSystem.createFile
+                d
+                (name "f")
+                (PermissionBits.parseOrFail "test" 0o600)
+                Owners.linuxDefault
+                buildTime
+                noBytes
+                vfs
             |> orFail
 
         let nosearch, vfs = makeDirectory root "nosearch" 0o600 vfs |> orFail
@@ -295,13 +308,21 @@ module TestResolutionSplit =
                 nosearch
                 (name "kid")
                 (PermissionBits.parseOrFail "test" 0o600)
+                Owners.linuxDefault
                 buildTime
                 noBytes
                 vfs
             |> orFail
 
         let _, vfs =
-            VirtualFileSystem.createFile root (name "f") (PermissionBits.parseOrFail "test" 0o600) buildTime noBytes vfs
+            VirtualFileSystem.createFile
+                root
+                (name "f")
+                (PermissionBits.parseOrFail "test" 0o600)
+                Owners.linuxDefault
+                buildTime
+                noBytes
+                vfs
             |> orFail
 
         let _, vfs =
@@ -309,6 +330,7 @@ module TestResolutionSplit =
                 root
                 (name longName)
                 (PermissionBits.parseOrFail "test" 0o600)
+                Owners.linuxDefault
                 buildTime
                 noBytes
                 vfs
@@ -319,13 +341,20 @@ module TestResolutionSplit =
                 root
                 (name wideName)
                 (PermissionBits.parseOrFail "test" 0o600)
+                Owners.linuxDefault
                 buildTime
                 noBytes
                 vfs
             |> orFail
 
         let link (n : string) (t : string) (vfs : VirtualFileSystem) =
-            VirtualFileSystem.createSymlink (VirtualFileSystem.root vfs) (name n) buildTime (target t) vfs
+            VirtualFileSystem.createSymlink
+                (VirtualFileSystem.root vfs)
+                (name n)
+                Owners.linuxDefault
+                buildTime
+                (target t)
+                vfs
             |> orFail
             |> snd
 
@@ -545,19 +574,26 @@ module TestResolutionSplit =
         let outcome =
             match step with
             | Step.MakeDirectory (p, n, m) ->
-                VirtualFileSystem.createDirectory (pick p) (name n) (PermissionBits.parseOrFail "test" m) buildTime vfs
+                VirtualFileSystem.createDirectory
+                    (pick p)
+                    (name n)
+                    (PermissionBits.parseOrFail "test" m)
+                    Owners.linuxDefault
+                    buildTime
+                    vfs
                 |> Result.map snd
             | Step.MakeFile (p, n) ->
                 VirtualFileSystem.createFile
                     (pick p)
                     (name n)
                     (PermissionBits.parseOrFail "test" 0o600)
+                    Owners.linuxDefault
                     buildTime
                     noBytes
                     vfs
                 |> Result.map snd
             | Step.MakeSymlink (p, n, t) ->
-                VirtualFileSystem.createSymlink (pick p) (name n) buildTime (target t) vfs
+                VirtualFileSystem.createSymlink (pick p) (name n) Owners.linuxDefault buildTime (target t) vfs
                 |> Result.map snd
 
         // A rejected step (EEXIST, mostly) leaves the filesystem alone.
@@ -582,7 +618,9 @@ module TestResolutionSplit =
 
             let vfs =
                 steps
-                |> List.fold (fun vfs step -> applyStep step vfs) (VirtualFileSystem.empty buildTime)
+                |> List.fold
+                    (fun vfs step -> applyStep step vfs)
+                    (VirtualFileSystem.empty buildTime Owners.linuxDefault)
 
             // Every inode, not only the directories: a start that is a file or a
             // symlink is ENOTDIR, and one past the end is ENOENT, and both are

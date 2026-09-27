@@ -17,10 +17,12 @@
     <Compile Include="ReuseAddress.fs" />
     <Compile Include="PathText.fs" />
     <Compile Include="DirectoryReading.fs" />
+    <Compile Include="Owners.fs" />
     <Compile Include="BindingProbes.fs" />
     <Compile Include="TestUnixTaskTable.fs" />
     <Compile Include="CredentialsGen.fs" />
     <Compile Include="TestCredentials.fs" />
+    <Compile Include="TestInodeOwner.fs" />
     <Compile Include="TestWakeCondition.fs" />
     <Compile Include="TestUnixWait.fs" />
     <Compile Include="TestUnixTaskLifecycle.fs" />

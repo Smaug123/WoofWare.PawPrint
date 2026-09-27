@@ -175,7 +175,14 @@ module TestUnixPathBytes =
     /// current directory. There is no `symlink` syscall, so seeding is how a
     /// link comes to exist.
     let private seeded (seed : (DirectoryEntryName * SeedEntry) list) (system : UnixSystem<int, string>) =
-        match UnixSystem.withFileSystemAndCurrentDirectory epoch (Map.ofList seed) AbsoluteUnixPath.root system with
+        match
+            UnixSystem.withFileSystemAndCurrentDirectory
+                epoch
+                Owners.linuxDefault
+                (Map.ofList seed)
+                AbsoluteUnixPath.root
+                system
+        with
         | Ok system -> system
         | Error fault -> failwith $"seeding failed: %A{fault}"
 
@@ -346,7 +353,7 @@ module TestUnixPathBytes =
         let property (bytes : byte list) : unit =
             for system in [ linux ; darwin ] do
                 let system =
-                    seeded [ nameOf [ byte 'l' ], SeedEntry.Symlink (targetOf bytes) ] system
+                    seeded [ nameOf [ byte 'l' ], SeedEntry.Symlink (targetOf bytes, None) ] system
 
                 match UnixNamespace.readlink (pathOf [ slash ; byte 'l' ]) UserBuffer.Mapped 8192 system with
                 | Ok (ReadLinkAnswer.Reported reported) -> List.ofSeq reported |> shouldEqual bytes
@@ -366,7 +373,7 @@ module TestUnixPathBytes =
             seeded
                 [
                     nameOf [ 0xFFuy ], SeedEntry.directory Map.empty
-                    nameOf [ byte 'l' ], SeedEntry.Symlink (targetOf [ 0xFFuy ])
+                    nameOf [ byte 'l' ], SeedEntry.Symlink (targetOf [ 0xFFuy ], None)
                 ]
                 linux
 
@@ -387,7 +394,7 @@ module TestUnixPathBytes =
 
         let lookup (length : int) : Result<FileStatusAnswer, StatRefusal> =
             let system =
-                seeded [ nameOf [ byte 'l' ], SeedEntry.Symlink (targetOf (target length)) ] darwin
+                seeded [ nameOf [ byte 'l' ], SeedEntry.Symlink (targetOf (target length), None) ] darwin
 
             UnixPathResolution.stat SymlinkPolicy.Follow (pathOf [ slash ; byte 'l' ; slash ; byte 'a' ]) system
 

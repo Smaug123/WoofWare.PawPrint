@@ -108,9 +108,9 @@ module private RenameChecks =
     /// Asked of four different directories — the source's parent, the
     /// destination's parent, the moved directory (whose ".." a change of parent
     /// rewrites) and, on Darwin only, the directory a directory displaces — so
-    /// `role` names which, for the crash message. Only the owner triple can ever
-    /// apply, since `stat` reports the caller's effective user ID as every inode's `st_uid`,
-    /// and the sticky bit can never refuse for the same reason.
+    /// `role` names which, for the crash message. Only the owner triple is
+    /// consulted, and the sticky bit never refuses, so the answer is exact only
+    /// for a caller who owns `inode`.
     ///
     /// Partial in `inode`, which every caller has just obtained from a
     /// resolution or from a directory entry.

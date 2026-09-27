@@ -36,11 +36,10 @@ type MkDirRules =
         /// A kernel fact rather than a mount one on Linux — `inode_init_owner`
         /// (fs/inode.c) is VFS-generic, and a directory inherits the bit
         /// unconditionally when its parent carries it. The group-membership
-        /// proviso beside it in that function applies only to non-directories,
-        /// which is source-derived rather than measured, and is unobservable
-        /// here anyway: this library has one process-wide gid, so a new inode's
-        /// group always matches its parent's. (`mount -o grpid` varies *gid*
-        /// inheritance, not the bit, and one gid cannot see that either.)
+        /// proviso beside it in that function applies only to non-directories.
+        /// (`mount -o grpid` varies *gid* inheritance, not the bit: measured, a
+        /// directory created in a plain directory on a `grpid` ext4 mount takes
+        /// the parent's gid and no `S_ISGID`.)
         InheritsSetGroupIdFromParent : bool
     }
 

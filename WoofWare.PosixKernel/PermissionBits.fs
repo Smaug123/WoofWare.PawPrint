@@ -163,12 +163,9 @@ module PermissionBits =
     /// object carrying <c>bits</c>.
     /// </summary>
     /// <remarks>
-    /// Consults the <b>owner</b> triple only.
-    /// (You can't use this function for a consumer whose inodes have real per-uid ownership.)
-    /// That's enough for WoofWare.PosixKernel right now, because <c>stat</c> reports
-    /// the caller's effective user ID as every inode's <c>st_uid</c>: the emulated process
-    /// owns everything it can see, so the group and other triples can never be
-    /// the applicable ones.
+    /// Consults the <b>owner</b> triple only, so the answer is exact only for a caller
+    /// who owns the object. For any other caller, the group or other triple is
+    /// the one a kernel would consult, and this function does not.
     /// </remarks>
     /// <example>
     /// A <c>CallerPrivilege.Privileged</c> caller is refused nothing that

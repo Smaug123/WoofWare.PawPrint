@@ -275,12 +275,12 @@ module VirtualFileSystem =
     /// remembered to write.
     let deviceId : int64 = 0x1000001L
 
-    /// A filesystem containing nothing but an empty root directory, created at
-    /// `now`.
+    /// A filesystem containing nothing but an empty root directory owned by
+    /// `rootOwner`, created at `now`.
     ///
     /// Takes the time rather than reading a clock: a filesystem that read the
     /// host's clock would make a replay depend on when it was recorded.
-    let empty (now : UnixTimestamp) : VirtualFileSystem =
+    let empty (now : UnixTimestamp) (rootOwner : InodeOwner) : VirtualFileSystem =
         {
             Inodes =
                 Map.ofList
@@ -295,6 +295,7 @@ module VirtualFileSystem =
                                         Permissions = SeedEntry.defaultPermsForDirectory
                                     }
                             Times = InodeTimes.createdAt now
+                            Owner = rootOwner
                         }
                     ]
             Root = firstInode
@@ -564,6 +565,7 @@ module VirtualFileSystem =
 
     let private allocate
         (content : InodeContent)
+        (owner : InodeOwner)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
         : InodeNumber * VirtualFileSystem
@@ -579,6 +581,7 @@ module VirtualFileSystem =
                         {
                             Content = content
                             Times = InodeTimes.createdAt now
+                            Owner = owner
                         }
                         vfs.Inodes
                 NextInode = InodeNumber (raw + 1L)
@@ -658,6 +661,7 @@ module VirtualFileSystem =
                                 Entries = Map.add name inode content.Entries
                             }
                     Times = InodeTimes.contentsChangedAt now existing.Times
+                    Owner = existing.Owner
                 }
 
             Ok
@@ -665,12 +669,15 @@ module VirtualFileSystem =
                     Inodes = Map.add directory updated vfs.Inodes
                 }
 
-    /// Create an empty subdirectory. Mirrors `mkdir(2)`: EEXIST if the name is
-    /// taken, ENOTDIR if `directory` is not a directory, ENOENT if it is absent.
+    /// Create an empty subdirectory owned by `owner`. Mirrors `mkdir(2)`: EEXIST
+    /// if the name is taken, ENOTDIR if `directory` is not a directory, ENOENT if
+    /// it is absent. Who a new inode belongs to is `InodeOwner.ofNewInode`'s
+    /// decision, not this function's.
     let createDirectory
         (directory : InodeNumber)
         (name : DirectoryEntryName)
         (permissions : PermissionBits)
+        (owner : InodeOwner)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
         : Result<InodeNumber * VirtualFileSystem, UnixError>
@@ -687,17 +694,19 @@ module VirtualFileSystem =
                         Parent = directory
                         Permissions = permissions
                     })
+                owner
                 now
                 vfs
 
         bind directory name inode now allocated |> Result.map (fun vfs -> inode, vfs)
 
-    /// Create a regular file with the given contents. Mirrors `open(2)` with
-    /// `O_CREAT | O_EXCL`.
+    /// Create a regular file with the given contents, owned by `owner`. Mirrors
+    /// `open(2)` with `O_CREAT | O_EXCL`.
     let createFile
         (directory : InodeNumber)
         (name : DirectoryEntryName)
         (permissions : PermissionBits)
+        (owner : InodeOwner)
         (now : UnixTimestamp)
         (contents : ImmutableArray<byte>)
         (vfs : VirtualFileSystem)
@@ -719,11 +728,11 @@ module VirtualFileSystem =
         | Ok () ->
 
         let inode, allocated =
-            allocate (InodeContent.RegularFile (contents, permissions)) now vfs
+            allocate (InodeContent.RegularFile (contents, permissions)) owner now vfs
 
         bind directory name inode now allocated |> Result.map (fun vfs -> inode, vfs)
 
-    /// Create a symbolic link holding `target` verbatim. Mirrors `symlink(2)`,
+    /// Create a symbolic link holding `target` verbatim, owned by `owner`. Mirrors `symlink(2)`,
     /// including that the target is not resolved, need not exist, and may be
     /// relative. An empty target is unrepresentable by construction; see
     /// `SymlinkTargetError.Empty`.
@@ -732,6 +741,7 @@ module VirtualFileSystem =
     let createSymlink
         (directory : InodeNumber)
         (name : DirectoryEntryName)
+        (owner : InodeOwner)
         (now : UnixTimestamp)
         (target : SymlinkTarget)
         (vfs : VirtualFileSystem)
@@ -743,7 +753,7 @@ module VirtualFileSystem =
         | Error error -> Error error
         | Ok () ->
 
-        let inode, allocated = allocate (InodeContent.Symlink target) now vfs
+        let inode, allocated = allocate (InodeContent.Symlink target) owner now vfs
         bind directory name inode now allocated |> Result.map (fun vfs -> inode, vfs)
 
     /// Bind an existing inode under a second name. Mirrors `link(2)`, including
@@ -851,6 +861,7 @@ module VirtualFileSystem =
                             Entries = Map.remove name content.Entries
                         }
                 Times = InodeTimes.contentsChangedAt now existing.Times
+                Owner = existing.Owner
             }
 
         let inodes = Map.add directory updated vfs.Inodes
@@ -1099,6 +1110,7 @@ module VirtualFileSystem =
                                     Entries = entries
                                 }
                         Times = InodeTimes.contentsChangedAt now existing.Times
+                        Owner = existing.Owner
                     }
                     vfs.Inodes
             else
@@ -1116,6 +1128,7 @@ module VirtualFileSystem =
                                 Entries = Map.remove sourceName sourceContent.Entries
                             }
                     Times = InodeTimes.contentsChangedAt now source.Times
+                    Owner = source.Owner
                 }
             |> Map.add
                 destinationDirectory
@@ -1126,6 +1139,7 @@ module VirtualFileSystem =
                                 Entries = Map.add destinationName moved destinationContent.Entries
                             }
                     Times = InodeTimes.contentsChangedAt now destination.Times
+                    Owner = destination.Owner
                 }
 
         // The moved inode's `ctime` moves and its `mtime` does not: what changed
@@ -1161,6 +1175,7 @@ module VirtualFileSystem =
                 {
                     Content = content
                     Times = InodeTimes.statusChangedAt now existing.Times
+                    Owner = existing.Owner
                 }
                 inodes
 
@@ -1720,8 +1735,13 @@ module VirtualFileSystem =
     /// filesystem springs into existence at one instant. Passed in rather than
     /// read from a clock: a filesystem that read the host's clock would make a
     /// replay depend on when it was recorded.
+    ///
+    /// `defaultOwner` owns the root directory and every entry that does not
+    /// state an owner of its own. It is not inherited from an entry's parent:
+    /// an entry without an owner belongs to `defaultOwner` wherever it is.
     let ofFileSystemSeed
         (createdAt : UnixTimestamp)
+        (defaultOwner : InodeOwner)
         (entries : Map<DirectoryEntryName, SeedEntry>)
         : VirtualFileSystem
         =
@@ -1739,20 +1759,26 @@ module VirtualFileSystem =
             |> Map.fold
                 (fun vfs name entry ->
                     match entry with
-                    | SeedEntry.File (contents, permissions) ->
-                        match createFile directory name permissions createdAt contents vfs with
+                    | SeedEntry.File (contents, permissions, owner) ->
+                        let owner = owner |> Option.defaultValue defaultOwner
+
+                        match createFile directory name permissions owner createdAt contents vfs with
                         | Ok (_, vfs) -> vfs
                         | Error error ->
                             failwith
                                 $"ofFileSystemSeed: could not create the file %s{DirectoryEntryName.toEscaped name}: %O{error}. Every name in a seed is unique within its directory by construction, so this cannot be a collision; the inode graph is inconsistent."
-                    | SeedEntry.Symlink target ->
-                        match createSymlink directory name createdAt target vfs with
+                    | SeedEntry.Symlink (target, owner) ->
+                        let owner = owner |> Option.defaultValue defaultOwner
+
+                        match createSymlink directory name owner createdAt target vfs with
                         | Ok (_, vfs) -> vfs
                         | Error error ->
                             failwith
                                 $"ofFileSystemSeed: could not create the symlink %s{DirectoryEntryName.toEscaped name}: %O{error}. Every name in a seed is unique within its directory by construction, so this cannot be a collision; the inode graph is inconsistent."
-                    | SeedEntry.Directory (children, permissions) ->
-                        match createDirectory directory name permissions createdAt vfs with
+                    | SeedEntry.Directory (children, permissions, owner) ->
+                        let owner = owner |> Option.defaultValue defaultOwner
+
+                        match createDirectory directory name permissions owner createdAt vfs with
                         | Ok (inode, vfs) -> install inode children vfs
                         | Error error ->
                             failwith
@@ -1760,7 +1786,7 @@ module VirtualFileSystem =
                 )
                 vfs
 
-        let vfs = empty createdAt
+        let vfs = empty createdAt defaultOwner
 
         install (root vfs) entries vfs
         |> assertInvariants "VirtualFileSystem.ofFileSystemSeed"

@@ -179,6 +179,72 @@ module InodeContent =
         | InodeContent.Directory _ -> 0o40000
         | InodeContent.Symlink _ -> 0o120000
 
+/// Who owns an inode: the `st_uid` and `st_gid` that `stat(2)` reports for it.
+[<Struct>]
+type InodeOwner =
+    {
+        User : UserId
+        Group : GroupId
+    }
+
+/// Where a newly created inode's group comes from.
+[<RequireQualifiedAccess>]
+type NewInodeGroupRule =
+    /// The creator's effective group, unless the directory the inode is created
+    /// in is set-group-ID, in which case that directory's group.
+    ///
+    /// This is Linux, on a filesystem not mounted `grpid`.
+    | CreatorsUnlessParentSetGroupId
+    /// Always the group of the directory the inode is created in.
+    ///
+    /// This is Darwin, as it is every BSD.
+    | Parents
+
+[<RequireQualifiedAccess>]
+module InodeOwner =
+    /// The effective user and group of a process with `credentials`: who owns
+    /// what that process creates when nothing else decides.
+    let ofProcess (credentials : Credentials) : InodeOwner =
+        {
+            User = credentials.EffectiveUser
+            Group = credentials.EffectiveGroup
+        }
+
+    /// The owner of an inode the process with `credentials` creates now, in a
+    /// directory owned by `parentOwner` whose permission bits are
+    /// `parentPermissions`.
+    ///
+    /// The user is always the creator's effective user ID.
+    let ofNewInode
+        (rule : NewInodeGroupRule)
+        (credentials : Credentials)
+        (parentOwner : InodeOwner)
+        (parentPermissions : PermissionBits)
+        : InodeOwner
+        =
+        // Measured by `docs/plans/2026-08-23-posix-kernel-extraction/new-inode-owner.c`,
+        // for `open(O_CREAT)` and `mkdir` alike. Linux 6.18.5 (tmpfs and ext4):
+        // real 1000 / effective 1001 creates uid 1001; the gid is the effective
+        // gid in a plain parent whatever the parent's group, and the parent's gid
+        // in a set-group-ID parent whether or not the creator is in that group.
+        // Darwin 27.0: the parent's gid every time, including a `wheel` parent
+        // the creator is not in, and whether or not the parent is set-group-ID.
+        let setGroupId = 0o2000
+
+        let group =
+            match rule with
+            | NewInodeGroupRule.Parents -> parentOwner.Group
+            | NewInodeGroupRule.CreatorsUnlessParentSetGroupId ->
+                if PermissionBits.toInt parentPermissions &&& setGroupId <> 0 then
+                    parentOwner.Group
+                else
+                    credentials.EffectiveGroup
+
+        {
+            User = credentials.EffectiveUser
+            Group = group
+        }
+
 /// <summary>
 /// One inode: what lives there, and the metadata every inode carries whatever
 /// kind of thing it is.
@@ -187,6 +253,8 @@ type Inode =
     {
         Content : InodeContent
         Times : InodeTimes
+        /// Who owns this inode.
+        Owner : InodeOwner
     }
 
 /// <summary>

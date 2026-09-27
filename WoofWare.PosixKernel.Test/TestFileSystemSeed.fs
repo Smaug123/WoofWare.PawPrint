@@ -42,7 +42,7 @@ module TestFileSystemSeed =
         UnixTimestamp.createOrFail "test" 1_700_000_000L 250_000_000
 
     let private realise (seed : Map<DirectoryEntryName, SeedEntry>) : VirtualFileSystem =
-        VirtualFileSystem.ofFileSystemSeed createdAt seed
+        VirtualFileSystem.ofFileSystemSeed createdAt Owners.linuxDefault seed
 
     // ----------------------------------------------------------------- basics
 
@@ -63,7 +63,7 @@ module TestFileSystemSeed =
                         Map.ofList
                             [
                                 name "hostname", SeedEntry.file (bytes "pawprint")
-                                name "localtime", SeedEntry.Symlink (target "/usr/share/zoneinfo/UTC")
+                                name "localtime", SeedEntry.Symlink (target "/usr/share/zoneinfo/UTC", None)
                             ]
                     )
                     name "empty", SeedEntry.directory Map.empty
@@ -133,7 +133,7 @@ module TestFileSystemSeed =
             Map.ofList
                 [
                     name "f", SeedEntry.file (bytes "x")
-                    name "l", SeedEntry.Symlink (target "f")
+                    name "l", SeedEntry.Symlink (target "f", None)
                     name "d", SeedEntry.directory (Map.ofList [ name "g", SeedEntry.file ImmutableArray<byte>.Empty ])
                 ]
 
@@ -159,14 +159,14 @@ module TestFileSystemSeed =
                 Gen.oneof
                     [
                         Gen.constant (SeedEntry.file ImmutableArray<byte>.Empty)
-                        Gen.constant (SeedEntry.Symlink (target "a"))
+                        Gen.constant (SeedEntry.Symlink (target "a", None))
                         Gen.constant (SeedEntry.directory Map.empty)
                     ]
             else
                 Gen.oneof
                     [
                         Gen.constant (SeedEntry.file ImmutableArray<byte>.Empty)
-                        Gen.constant (SeedEntry.Symlink (target "../a"))
+                        Gen.constant (SeedEntry.Symlink (target "../a", None))
                         Gen.zip nameGen (go (depth - 1))
                         |> Gen.listOf
                         |> Gen.map (Map.ofList >> SeedEntry.directory)
@@ -191,9 +191,9 @@ module TestFileSystemSeed =
             let here = prefix + "/" + PathText.ofName name
 
             match entry with
-            | SeedEntry.Directory (children, _) -> (here, entry) :: declared here children
+            | SeedEntry.Directory (children, _, _) -> (here, entry) :: declared here children
             | SeedEntry.File _
-            | SeedEntry.Symlink _ -> [ here, entry ]
+            | SeedEntry.Symlink (_, _) -> [ here, entry ]
         )
 
     [<Test>]
@@ -223,7 +223,7 @@ module TestFileSystemSeed =
 
                 match VirtualFileSystem.tryGetContent inode vfs, entry with
                 | Some (InodeContent.RegularFile _), SeedEntry.File _ -> observedLeaves <- observedLeaves + 1
-                | Some (InodeContent.Symlink _), SeedEntry.Symlink _ -> observedLeaves <- observedLeaves + 1
+                | Some (InodeContent.Symlink _), SeedEntry.Symlink (_, _) -> observedLeaves <- observedLeaves + 1
                 | Some (InodeContent.Directory _), SeedEntry.Directory _ ->
                     observedDirectories <- observedDirectories + 1
                 | actual, _ -> failwith $"%s{declaredPath} was declared as %A{entry} but resolved to %A{actual}"
@@ -314,12 +314,12 @@ module TestFileSystemSeed =
             Map.ofList
                 [
                     name "byDefault", SeedEntry.file (bytes "x")
-                    name "explicit", SeedEntry.File (bytes "x", mode 0o600)
+                    name "explicit", SeedEntry.File (bytes "x", mode 0o600, None)
                     name "dirByDefault", SeedEntry.directory Map.empty
-                    name "dirExplicit", SeedEntry.Directory (Map.empty, mode 0o711)
+                    name "dirExplicit", SeedEntry.Directory (Map.empty, mode 0o711, None)
                     // A symlink has no seedable mode at all; what `stat` reports
                     // for one is the platform's business, not the seed's.
-                    name "link", SeedEntry.Symlink (target "byDefault")
+                    name "link", SeedEntry.Symlink (target "byDefault", None)
                 ]
 
         let vfs = realise seed

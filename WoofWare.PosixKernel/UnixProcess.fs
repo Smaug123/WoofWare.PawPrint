@@ -98,8 +98,8 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// Who the simulated process is: its real, effective and saved user and
         /// group IDs, and its supplementary groups.
         ///
-        /// `stat` reports the effective IDs as every inode's `st_uid` and
-        /// `st_gid`, because this library stores no per-inode ownership yet.
+        /// Changing them changes nothing an inode records: an inode's owner is
+        /// its own (`Inode.Owner`), fixed when it was created or seeded.
         Credentials : Credentials
         /// The simulated process's file-mode creation mask: the permission bits
         /// `open(O_CREAT)` clears from the mode its caller asked for.
