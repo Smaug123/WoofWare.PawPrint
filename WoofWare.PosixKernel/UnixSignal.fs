@@ -17,6 +17,17 @@ type KillRefusal =
     /// handler for, SIGKILL included, and this library does not model that.
     | InitProcess
 
+/// What a `kill(2)` the kernel answered did to the calling process.
+[<RequireQualifiedAccess>]
+type KillOutcome<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    /// The process carries on, as this system: the signal is pending, or was
+    /// discarded, or there was no signal to send.
+    | ProcessContinues of UnixSystem<'Task, 'Handler>
+    /// The signal stops the whole process, which is this system.
+    | ProcessStopped of signal : Signal * UnixSystem<'Task, 'Handler>
+    /// The signal killed the process.
+    | ProcessEnded of EndedProcess<'Task, 'Handler>
+
 [<RequireQualifiedAccess>]
 module UnixSignal =
 
@@ -26,6 +37,8 @@ module UnixSignal =
     /// `liveThreads` are the process's threads that exist at the kernel level;
     /// a signal sent to the process can be received by any of them that does
     /// not block it. See `SignalState.generate` for what the signal then does.
+    /// A signal that kills the process ends it, and the answer is then the
+    /// ended process rather than a system to make another call in.
     ///
     /// Only a signal to the calling process itself is answered. Signal number 0
     /// sends nothing, and a number that is neither 0 nor a signal is `EINVAL`.
@@ -34,7 +47,7 @@ module UnixSignal =
         (pid : int32)
         (signo : int32)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<Result<SignalGeneration * UnixSystem<'Task, 'Handler>, UnixError>, KillRefusal>
+        : Result<Result<KillOutcome<'Task, 'Handler>, UnixError>, KillRefusal>
         =
         let self = ProcessId.toInt32 (UnixSystem.processId system)
 
@@ -51,13 +64,21 @@ module UnixSignal =
         elif self = 1 then
             Error KillRefusal.InitProcess
         elif signo = 0 then
-            Ok (Ok (SignalGeneration.ProcessContinues, system))
+            Ok (Ok (KillOutcome.ProcessContinues system))
         else
 
         match Signal.ofRawSignoUnder (SignalState.numbering system.Process.Signals) signo with
         | ValueNone -> Ok (Error UnixError.EINVAL)
         | ValueSome signal ->
-            let generation, signals =
+            let withSignals (signals : SignalState<'Task, 'Handler>) : UnixSystem<'Task, 'Handler> =
+                { system with
+                    Process =
+                        { system.Process with
+                            Signals = signals
+                        }
+                }
+
+            let generation =
                 SignalState.generate
                     system.Process.CoreDumps
                     liveThreads
@@ -67,14 +88,12 @@ module UnixSignal =
                     }
                     system.Process.Signals
 
-            Ok (
-                Ok (
-                    generation,
-                    { system with
-                        Process =
-                            { system.Process with
-                                Signals = signals
-                            }
-                    }
-                )
-            )
+            match generation with
+            | SignalGeneration.ProcessContinues signals -> Ok (Ok (KillOutcome.ProcessContinues (withSignals signals)))
+            | SignalGeneration.ProcessStopped (signal, signals) ->
+                Ok (Ok (KillOutcome.ProcessStopped (signal, withSignals signals)))
+            | SignalGeneration.ProcessTerminated (signal, coreDumped) ->
+                let ended =
+                    UnixTaskLifecycle.endProcess (ProcessTermination.Signaled (signal, coreDumped)) system
+
+                Ok (Ok (KillOutcome.ProcessEnded ended))

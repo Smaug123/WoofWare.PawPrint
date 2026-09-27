@@ -50,11 +50,32 @@ module TestUnixSignal =
             ]
 
     [<Test>]
-    let ``kill of the calling process with SIGKILL terminates it`` () : unit =
-        match UnixSignal.kill live self 9 linux with
-        | Ok (Ok (generation, _)) ->
-            generation
-            |> shouldEqual (SignalGeneration.ProcessTerminated (Signal.Other 9, false))
+    let ``kill of the calling process with SIGKILL ends it`` () : unit =
+        let system =
+            { linux with
+                Tasks = UnixTaskTable.register 0 (CpuId 0) (OsThreadId 1u) linux.Tasks
+            }
+            |> fun system ->
+                { system with
+                    Process =
+                        { system.Process with
+                            Signals = SignalState.block 0 Signal.SIGUSR1 system.Process.Signals
+                        }
+                }
+
+        match UnixSignal.kill live self 9 system with
+        | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
+            ended.Termination
+            |> shouldEqual (ProcessTermination.Signaled (Signal.Other 9, false))
+
+            ended.Machine |> shouldEqual system.Machine
+            // The process's end takes its tasks' per-task entries with them.
+            SignalState.blockedTasks ended.FinalProcess.Signals |> shouldBeEmpty
+
+            { ended.FinalProcess with
+                Signals = system.Process.Signals
+            }
+            |> shouldEqual system.Process
         | other -> failwith $"unexpected answer: %O{other}"
 
     [<Test>]
@@ -69,16 +90,15 @@ module TestUnixSignal =
                         Process = UnixProcessState.withCoreDumps coreDumps system.Process
                     }
 
-                let death (signo : int) : SignalGeneration =
+                let death (signo : int) : ProcessTermination =
                     match UnixSignal.kill live self signo system with
-                    | Ok (Ok (generation, _)) -> generation
+                    | Ok (Ok (KillOutcome.ProcessEnded ended)) -> ended.Termination
                     | other -> failwith $"kill(self, %d{signo}) under %O{flavour}: %O{other}"
 
                 death 3
-                |> shouldEqual (SignalGeneration.ProcessTerminated (Signal.SIGQUIT, coreDumps = CoreDumps.Written))
+                |> shouldEqual (ProcessTermination.Signaled (Signal.SIGQUIT, coreDumps = CoreDumps.Written))
 
-                death 15
-                |> shouldEqual (SignalGeneration.ProcessTerminated (Signal.SIGTERM, false))
+                death 15 |> shouldEqual (ProcessTermination.Signaled (Signal.SIGTERM, false))
 
     [<Test>]
     let ``the null signal to the calling process changes nothing`` () : unit =
@@ -86,15 +106,13 @@ module TestUnixSignal =
             let system = systemOn flavour
 
             UnixSignal.kill live self 0 system
-            |> shouldEqual (Ok (Ok (SignalGeneration.ProcessContinues, system)))
+            |> shouldEqual (Ok (Ok (KillOutcome.ProcessContinues system)))
 
     [<Test>]
     let ``a signal the calling process cannot yet receive is left pending`` () : unit =
         // No live thread, so SIGTERM waits in the process-wide pending set.
         match UnixSignal.kill ImmutableArray.Empty self 15 linux with
-        | Ok (Ok (generation, after)) ->
-            generation |> shouldEqual SignalGeneration.ProcessContinues
-
+        | Ok (Ok (KillOutcome.ProcessContinues after)) ->
             SignalState.pending after.Process.Signals
             |> shouldEqual
                 [
@@ -118,7 +136,7 @@ module TestUnixSignal =
 
         // The same pid is the caller's own once the process is configured with it.
         UnixSignal.kill live (self + 1) 0 (withPid (self + 1) linux)
-        |> shouldEqual (Ok (Ok (SignalGeneration.ProcessContinues, withPid (self + 1) linux)))
+        |> shouldEqual (Ok (Ok (KillOutcome.ProcessContinues (withPid (self + 1) linux))))
 
     [<Test>]
     let ``kill by an init process is refused`` () : unit =
@@ -179,12 +197,12 @@ module TestUnixSignal =
 
             match UnixSignal.kill live self signo system, valid with
             | Ok (Error errno), false -> errno |> shouldEqual UnixError.EINVAL
-            | Ok (Ok (generation, after)), true ->
+            | Ok (Ok outcome), true ->
                 // A valid number is sent, and sending is exactly generating
                 // the signal it names at the whole process.
                 let expected =
                     if signo = 0 then
-                        SignalGeneration.ProcessContinues, system.Process.Signals
+                        SignalGeneration.ProcessContinues system.Process.Signals
                     else
                         SignalState.generate
                             coreDumps
@@ -195,15 +213,34 @@ module TestUnixSignal =
                             }
                             system.Process.Signals
 
-                (generation, after.Process.Signals) |> shouldEqual expected
+                // Everything but the signals is untouched by a process that
+                // carries on or stops.
+                let survivor (after : UnixSystem<int, string>) : unit =
+                    { after with
+                        Process =
+                            { after.Process with
+                                Signals = system.Process.Signals
+                            }
+                    }
+                    |> shouldEqual system
 
-                { after with
-                    Process =
-                        { after.Process with
-                            Signals = system.Process.Signals
-                        }
-                }
-                |> shouldEqual system
+                match outcome, expected with
+                | KillOutcome.ProcessContinues after, SignalGeneration.ProcessContinues signals ->
+                    after.Process.Signals |> shouldEqual signals
+                    survivor after
+                | KillOutcome.ProcessStopped (stoppedBy, after), SignalGeneration.ProcessStopped (signal, signals) ->
+                    stoppedBy |> shouldEqual signal
+                    after.Process.Signals |> shouldEqual signals
+                    survivor after
+                | KillOutcome.ProcessEnded ended, SignalGeneration.ProcessTerminated (signal, coreDumped) ->
+                    ended.Termination
+                    |> shouldEqual (ProcessTermination.Signaled (signal, coreDumped))
+
+                    ended.Machine |> shouldEqual system.Machine
+                    ended.FinalProcess |> shouldEqual system.Process
+                | _ ->
+                    failwith
+                        $"kill(self, %d{signo}) under %O{flavour} answered %O{outcome}, but generating it is %O{expected}"
 
             | other, _ -> failwith $"kill(self, %d{signo}) under %O{flavour}: valid=%b{valid}, got %O{other}"
 
