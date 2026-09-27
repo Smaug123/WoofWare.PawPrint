@@ -52,7 +52,10 @@ module HardwareIntrinsicTable =
 
     let private parse (line : string) : HardwareIntrinsicRow =
         match line.Split '\t' with
-        | [| target ; instructionSet ; name ; category ; flags |] ->
+        | [| target ; instructionSet ; name ; category ; flags |] when
+            [ target ; instructionSet ; name ; category ; flags ]
+            |> List.forall (fun field -> not (Seq.exists Char.IsWhiteSpace field))
+            ->
             {
                 Target =
                     match target with
@@ -70,6 +73,19 @@ module HardwareIntrinsicTable =
             }
         | _ -> failwith $"HardwareIntrinsicTable: malformed line %s{line}"
 
+    /// The rows of a table in the checked-in format, whatever its line endings: a checkout may have
+    /// converted them, and a `\r` left on a line would change its last flag's name.
+    let ofText (text : string) : HardwareIntrinsicRow list =
+        use reader = new StringReader (text)
+
+        let rec lines (acc : string list) : string list =
+            match reader.ReadLine () with
+            | null -> List.rev acc
+            | "" -> lines acc
+            | line -> lines (line :: acc)
+
+        lines [] |> List.map parse
+
     /// Every row, in the order the checked-in table lists them.
     let rows : Lazy<HardwareIntrinsicRow list> =
         lazy
@@ -82,10 +98,7 @@ module HardwareIntrinsicTable =
                  | stream -> stream
 
              use reader = new StreamReader (stream)
-
-             reader.ReadToEnd().Split ('\n', StringSplitOptions.RemoveEmptyEntries)
-             |> Seq.map parse
-             |> List.ofSeq)
+             ofText (reader.ReadToEnd ()))
 
 /// An exception a hardware instruction can raise on a CPU that has it. Unrecoverable failures, such
 /// as an access violation at an address that is neither null nor valid, are out of scope, as for

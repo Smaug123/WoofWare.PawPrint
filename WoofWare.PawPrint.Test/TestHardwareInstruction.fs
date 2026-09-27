@@ -92,6 +92,22 @@ module TestHardwareInstruction =
 
         expected.Length |> shouldBeGreaterThan 2000
 
+    [<Test>]
+    let ``the table reads the same whatever its line endings, and refuses stray whitespace`` () : unit =
+        let rows = HardwareIntrinsicTable.rows.Force ()
+        let lines = rows |> List.map HardwareIntrinsicTable.format
+
+        HardwareIntrinsicTable.ofText (String.concat "\r\n" lines + "\r\n")
+        |> shouldEqual rows
+
+        HardwareIntrinsicTable.ofText (String.concat "\n" lines) |> shouldEqual rows
+
+        Assert.Throws<Exception> (fun () ->
+            HardwareIntrinsicTable.ofText (List.head lines + " \n")
+            |> ignore<HardwareIntrinsicRow list>
+        )
+        |> ignore<exn>
+
     let private hostCoreLib () : DumpedAssembly =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
