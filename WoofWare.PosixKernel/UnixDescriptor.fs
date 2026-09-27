@@ -638,9 +638,10 @@ module UnixDescriptor =
         =
         let now = UnixMachineState.realtime system.Machine
         let rule = SimulatedUnixPlatform.setIdBitsOnTruncation system.Machine.UnixPlatform
-        let privilege = UnixProcessState.callerPrivilege system.Process
 
-        match VirtualFileSystem.truncateFile inode length rule privilege now system.Machine.FileSystem with
+        match
+            VirtualFileSystem.truncateFile inode length rule system.Process.Credentials now system.Machine.FileSystem
+        with
         | Ok filesystem ->
             Ok
                 { system with

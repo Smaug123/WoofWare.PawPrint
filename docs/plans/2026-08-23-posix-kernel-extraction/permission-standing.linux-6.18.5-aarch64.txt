@@ -1,0 +1,210 @@
+6.18.5
+Filesystem     Type  1K-blocks    Used Available Use% Mounted on
+/dev/vdb       ext4  528432952 1523728 526892840   1% /
+tmpfs          tmpfs     65536       0     65536   0% /dev/shm
+# permission-standing: base=/tmp/standing
+ACCESS-SWEEP	owner (1000:3000)	file	modes=4096	mismatches=0
+ACCESS-SWEEP	owner (1000:3000)	dir	modes=4096	mismatches=0
+ACCESS-SWEEP	group, effective gid (1001:1000)	file	modes=4096	mismatches=0
+ACCESS-SWEEP	group, effective gid (1001:1000)	dir	modes=4096	mismatches=0
+ACCESS-SWEEP	group, supplementary (1001:2000)	file	modes=4096	mismatches=0
+ACCESS-SWEEP	group, supplementary (1001:2000)	dir	modes=4096	mismatches=0
+ACCESS-SWEEP	other (1001:3000)	file	modes=4096	mismatches=0
+ACCESS-SWEEP	other (1001:3000)	dir	modes=4096	mismatches=0
+ACCESS-SWEEP	root (1001:3000)	file	modes=4096	mismatches=0
+ACCESS-SWEEP	root (1001:3000)	dir	modes=4096	mismatches=0
+STRIP-SWEEP	owner in group (1000:1000)	write(1 byte)	modes=4096	mismatches=0
+STRIP-SWEEP	owner in group (1000:1000)	ftruncate(0)	modes=4096	mismatches=0
+STRIP-SWEEP	owner in group (1000:1000)	ftruncate(same length)	modes=4096	mismatches=0
+STRIP-SWEEP	owner not in group (1000:3000)	write(1 byte)	modes=4096	mismatches=0
+STRIP-SWEEP	owner not in group (1000:3000)	ftruncate(0)	modes=4096	mismatches=0
+STRIP-SWEEP	owner not in group (1000:3000)	ftruncate(same length)	modes=4096	mismatches=0
+STRIP-SWEEP	non-owner, effective gid (1001:1000)	write(1 byte)	modes=4096	mismatches=0
+STRIP-SWEEP	non-owner, effective gid (1001:1000)	ftruncate(0)	modes=4096	mismatches=0
+STRIP-SWEEP	non-owner, effective gid (1001:1000)	ftruncate(same length)	modes=4096	mismatches=0
+STRIP-SWEEP	non-owner, supplementary (1001:2000)	write(1 byte)	modes=4096	mismatches=0
+STRIP-SWEEP	non-owner, supplementary (1001:2000)	ftruncate(0)	modes=4096	mismatches=0
+STRIP-SWEEP	non-owner, supplementary (1001:2000)	ftruncate(same length)	modes=4096	mismatches=0
+STRIP-SWEEP	non-owner not in group (1001:3000)	write(1 byte)	modes=4096	mismatches=0
+STRIP-SWEEP	non-owner not in group (1001:3000)	ftruncate(0)	modes=4096	mismatches=0
+STRIP-SWEEP	non-owner not in group (1001:3000)	ftruncate(same length)	modes=4096	mismatches=0
+STRIP-SWEEP	root, non-owner not in group (1001:3000)	write(1 byte)	modes=4096	mismatches=0
+STRIP-SWEEP	root, non-owner not in group (1001:3000)	ftruncate(0)	modes=4096	mismatches=0
+STRIP-SWEEP	root, non-owner not in group (1001:3000)	ftruncate(same length)	modes=4096	mismatches=0
+STRIP-SWEEP	owner not in group (1000:3000)	open(O_TRUNC)	modes=2048 (those the caller may open for writing)	mismatches=0
+STRIP-SWEEP	non-owner, supplementary (1001:2000)	open(O_TRUNC)	modes=2048 (those the caller may open for writing)	mismatches=0
+STRIP-SWEEP	non-owner not in group (1001:3000)	open(O_TRUNC)	modes=2048 (those the caller may open for writing)	mismatches=0
+CREATE-SWEEP	set-group-ID parent, caller not in its group (root:3000 02777)	umask=0000	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, caller not in its group (root:3000 02777)	umask=0010	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, caller not in its group (root:3000 02777)	umask=0022	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, caller not in its group (root:3000 02777)	umask=7777	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, supplementary group (root:2000 02777)	umask=0000	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, supplementary group (root:2000 02777)	umask=0010	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, supplementary group (root:2000 02777)	umask=0022	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, supplementary group (root:2000 02777)	umask=7777	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, effective gid (root:1000 02777)	umask=0000	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, effective gid (root:1000 02777)	umask=0010	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, effective gid (root:1000 02777)	umask=0022	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, effective gid (root:1000 02777)	umask=7777	modes=4096	mismatches=0
+CREATE-SWEEP	plain parent, caller not in its group (root:3000 0777)	umask=0000	modes=4096	mismatches=0
+CREATE-SWEEP	plain parent, caller not in its group (root:3000 0777)	umask=0010	modes=4096	mismatches=0
+CREATE-SWEEP	plain parent, caller not in its group (root:3000 0777)	umask=0022	modes=4096	mismatches=0
+CREATE-SWEEP	plain parent, caller not in its group (root:3000 0777)	umask=7777	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, root not in its group (root:3000 02777)	umask=0000	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, root not in its group (root:3000 02777)	umask=0010	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, root not in its group (root:3000 02777)	umask=0022	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, root not in its group (root:3000 02777)	umask=7777	modes=4096	mismatches=0
+STICKY-SETUP	u1000 (groups 1000,2000)
+STICKY-ORDER	unlink(S/e: other's empty dir)	EPERM
+STICKY-ORDER	unlink(S/f/: other's file, trailing separator)	ENOTDIR
+STICKY-ORDER	rmdir(S/f: other's file)	EPERM
+STICKY-ORDER	rmdir(S/n: other's non-empty dir)	EPERM
+STICKY-ORDER	rename(S/f -> S/h: other's file over caller's dir)	EPERM
+STICKY-ORDER	rename(S/g -> S/e: caller's file over other's dir)	EPERM
+STICKY-ORDER	rename(S/h -> S/f: caller's dir over other's file)	EPERM
+STICKY-ORDER	rename(S/h -> S/n: caller's empty dir over other's non-empty dir)	EPERM
+STICKY-ORDER	rename(S/e -> S/e/x: other's dir into itself)	EINVAL
+STICKY-ORDER	rename(S/f -> S/f: other's file onto itself)	ok
+STICKY-ORDER	rename(S/f -> S/fl: other's file onto another name for it)	ok
+STICKY-ORDER	rename(S/e -> W/moved: other's 0755 dir to another parent)	EPERM
+STICKY-ORDER	rename(S/g -> S/f/: caller's file onto other's file, trailing separator)	ENOTDIR
+STICKY-ORDER	rename(S/T/g2 -> S/T: onto its own parent, which is other's, in sticky S)	ENOTEMPTY
+STICKY-ORDER	rename(S/f -> U/new: other's file, source sticky; U unwritable)	EPERM
+STICKY-ORDER	unlink(U/f: other's file in an unwritable sticky dir)	EACCES
+STICKY-ORDER	rmdir(U/e: other's dir in an unwritable sticky dir)	EACCES
+STICKY-ORDER	rename(U/f -> S/new2: unwritable sticky source parent)	EACCES
+STICKY-ORDER	rename(S/g -> U/f: onto other's file in an unwritable sticky dir)	EACCES
+STICKY-ORDER	rename(W/mine -> S/f: onto other's file; source parent not sticky)	EPERM
+STICKY-ORDER	rename(W/mine -> S/g: onto caller's file in sticky S)	ok
+STICKY-SETUP	root
+STICKY-ORDER	unlink(S/e: other's empty dir)	EISDIR
+STICKY-ORDER	unlink(S/f/: other's file, trailing separator)	ENOTDIR
+STICKY-ORDER	rmdir(S/f: other's file)	ENOTDIR
+STICKY-ORDER	rmdir(S/n: other's non-empty dir)	ENOTEMPTY
+STICKY-ORDER	rename(S/f -> S/h: other's file over caller's dir)	EISDIR
+STICKY-ORDER	rename(S/g -> S/e: caller's file over other's dir)	EISDIR
+STICKY-ORDER	rename(S/h -> S/f: caller's dir over other's file)	ENOTDIR
+STICKY-ORDER	rename(S/h -> S/n: caller's empty dir over other's non-empty dir)	ENOTEMPTY
+STICKY-ORDER	rename(S/e -> S/e/x: other's dir into itself)	EINVAL
+STICKY-ORDER	rename(S/f -> S/f: other's file onto itself)	ok
+STICKY-ORDER	rename(S/f -> S/fl: other's file onto another name for it)	ok
+STICKY-ORDER	rename(S/e -> W/moved: other's 0755 dir to another parent)	ok
+STICKY-ORDER	rename(S/g -> S/f/: caller's file onto other's file, trailing separator)	ENOTDIR
+STICKY-ORDER	rename(S/T/g2 -> S/T: onto its own parent, which is other's, in sticky S)	ENOTEMPTY
+STICKY-ORDER	rename(S/f -> U/new: other's file, source sticky; U unwritable)	ok
+STICKY-ORDER	unlink(U/f: other's file in an unwritable sticky dir)	ok
+STICKY-ORDER	rmdir(U/e: other's dir in an unwritable sticky dir)	ok
+STICKY-ORDER	rename(U/f -> S/new2: unwritable sticky source parent)	ENOENT
+STICKY-ORDER	rename(S/g -> U/f: onto other's file in an unwritable sticky dir)	ok
+STICKY-ORDER	rename(W/mine -> S/f: onto other's file; source parent not sticky)	ok
+STICKY-ORDER	rename(W/mine -> S/g: onto caller's file in sticky S)	ENOENT
+IDS-ROW	r1001/e1000(rg1001/eg1000;groups none) against 1000:3000 0400 (effective uid is the owner)
+IDS	open(O_RDONLY)	ok
+IDS-ROW	u1000(rg2000/eg1000;groups none) against 1001:2000 0040 (only the real gid is the file's group)
+IDS	open(O_RDONLY)	EACCES
+IDS-ROW	u1000(rg2000/eg1000;groups none) against 1001:1000 0040 (the effective gid is the file's group)
+IDS	open(O_RDONLY)	ok
+# done
+# permission-standing: base=/dev/shm/standing
+ACCESS-SWEEP	owner (1000:3000)	file	modes=4096	mismatches=0
+ACCESS-SWEEP	owner (1000:3000)	dir	modes=4096	mismatches=0
+ACCESS-SWEEP	group, effective gid (1001:1000)	file	modes=4096	mismatches=0
+ACCESS-SWEEP	group, effective gid (1001:1000)	dir	modes=4096	mismatches=0
+ACCESS-SWEEP	group, supplementary (1001:2000)	file	modes=4096	mismatches=0
+ACCESS-SWEEP	group, supplementary (1001:2000)	dir	modes=4096	mismatches=0
+ACCESS-SWEEP	other (1001:3000)	file	modes=4096	mismatches=0
+ACCESS-SWEEP	other (1001:3000)	dir	modes=4096	mismatches=0
+ACCESS-SWEEP	root (1001:3000)	file	modes=4096	mismatches=0
+ACCESS-SWEEP	root (1001:3000)	dir	modes=4096	mismatches=0
+STRIP-SWEEP	owner in group (1000:1000)	write(1 byte)	modes=4096	mismatches=0
+STRIP-SWEEP	owner in group (1000:1000)	ftruncate(0)	modes=4096	mismatches=0
+STRIP-SWEEP	owner in group (1000:1000)	ftruncate(same length)	modes=4096	mismatches=0
+STRIP-SWEEP	owner not in group (1000:3000)	write(1 byte)	modes=4096	mismatches=0
+STRIP-SWEEP	owner not in group (1000:3000)	ftruncate(0)	modes=4096	mismatches=0
+STRIP-SWEEP	owner not in group (1000:3000)	ftruncate(same length)	modes=4096	mismatches=0
+STRIP-SWEEP	non-owner, effective gid (1001:1000)	write(1 byte)	modes=4096	mismatches=0
+STRIP-SWEEP	non-owner, effective gid (1001:1000)	ftruncate(0)	modes=4096	mismatches=0
+STRIP-SWEEP	non-owner, effective gid (1001:1000)	ftruncate(same length)	modes=4096	mismatches=0
+STRIP-SWEEP	non-owner, supplementary (1001:2000)	write(1 byte)	modes=4096	mismatches=0
+STRIP-SWEEP	non-owner, supplementary (1001:2000)	ftruncate(0)	modes=4096	mismatches=0
+STRIP-SWEEP	non-owner, supplementary (1001:2000)	ftruncate(same length)	modes=4096	mismatches=0
+STRIP-SWEEP	non-owner not in group (1001:3000)	write(1 byte)	modes=4096	mismatches=0
+STRIP-SWEEP	non-owner not in group (1001:3000)	ftruncate(0)	modes=4096	mismatches=0
+STRIP-SWEEP	non-owner not in group (1001:3000)	ftruncate(same length)	modes=4096	mismatches=0
+STRIP-SWEEP	root, non-owner not in group (1001:3000)	write(1 byte)	modes=4096	mismatches=0
+STRIP-SWEEP	root, non-owner not in group (1001:3000)	ftruncate(0)	modes=4096	mismatches=0
+STRIP-SWEEP	root, non-owner not in group (1001:3000)	ftruncate(same length)	modes=4096	mismatches=0
+STRIP-SWEEP	owner not in group (1000:3000)	open(O_TRUNC)	modes=2048 (those the caller may open for writing)	mismatches=0
+STRIP-SWEEP	non-owner, supplementary (1001:2000)	open(O_TRUNC)	modes=2048 (those the caller may open for writing)	mismatches=0
+STRIP-SWEEP	non-owner not in group (1001:3000)	open(O_TRUNC)	modes=2048 (those the caller may open for writing)	mismatches=0
+CREATE-SWEEP	set-group-ID parent, caller not in its group (root:3000 02777)	umask=0000	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, caller not in its group (root:3000 02777)	umask=0010	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, caller not in its group (root:3000 02777)	umask=0022	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, caller not in its group (root:3000 02777)	umask=7777	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, supplementary group (root:2000 02777)	umask=0000	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, supplementary group (root:2000 02777)	umask=0010	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, supplementary group (root:2000 02777)	umask=0022	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, supplementary group (root:2000 02777)	umask=7777	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, effective gid (root:1000 02777)	umask=0000	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, effective gid (root:1000 02777)	umask=0010	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, effective gid (root:1000 02777)	umask=0022	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, effective gid (root:1000 02777)	umask=7777	modes=4096	mismatches=0
+CREATE-SWEEP	plain parent, caller not in its group (root:3000 0777)	umask=0000	modes=4096	mismatches=0
+CREATE-SWEEP	plain parent, caller not in its group (root:3000 0777)	umask=0010	modes=4096	mismatches=0
+CREATE-SWEEP	plain parent, caller not in its group (root:3000 0777)	umask=0022	modes=4096	mismatches=0
+CREATE-SWEEP	plain parent, caller not in its group (root:3000 0777)	umask=7777	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, root not in its group (root:3000 02777)	umask=0000	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, root not in its group (root:3000 02777)	umask=0010	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, root not in its group (root:3000 02777)	umask=0022	modes=4096	mismatches=0
+CREATE-SWEEP	set-group-ID parent, root not in its group (root:3000 02777)	umask=7777	modes=4096	mismatches=0
+STICKY-SETUP	u1000 (groups 1000,2000)
+STICKY-ORDER	unlink(S/e: other's empty dir)	EPERM
+STICKY-ORDER	unlink(S/f/: other's file, trailing separator)	ENOTDIR
+STICKY-ORDER	rmdir(S/f: other's file)	EPERM
+STICKY-ORDER	rmdir(S/n: other's non-empty dir)	EPERM
+STICKY-ORDER	rename(S/f -> S/h: other's file over caller's dir)	EPERM
+STICKY-ORDER	rename(S/g -> S/e: caller's file over other's dir)	EPERM
+STICKY-ORDER	rename(S/h -> S/f: caller's dir over other's file)	EPERM
+STICKY-ORDER	rename(S/h -> S/n: caller's empty dir over other's non-empty dir)	EPERM
+STICKY-ORDER	rename(S/e -> S/e/x: other's dir into itself)	EINVAL
+STICKY-ORDER	rename(S/f -> S/f: other's file onto itself)	ok
+STICKY-ORDER	rename(S/f -> S/fl: other's file onto another name for it)	ok
+STICKY-ORDER	rename(S/e -> W/moved: other's 0755 dir to another parent)	EPERM
+STICKY-ORDER	rename(S/g -> S/f/: caller's file onto other's file, trailing separator)	ENOTDIR
+STICKY-ORDER	rename(S/T/g2 -> S/T: onto its own parent, which is other's, in sticky S)	ENOTEMPTY
+STICKY-ORDER	rename(S/f -> U/new: other's file, source sticky; U unwritable)	EPERM
+STICKY-ORDER	unlink(U/f: other's file in an unwritable sticky dir)	EACCES
+STICKY-ORDER	rmdir(U/e: other's dir in an unwritable sticky dir)	EACCES
+STICKY-ORDER	rename(U/f -> S/new2: unwritable sticky source parent)	EACCES
+STICKY-ORDER	rename(S/g -> U/f: onto other's file in an unwritable sticky dir)	EACCES
+STICKY-ORDER	rename(W/mine -> S/f: onto other's file; source parent not sticky)	EPERM
+STICKY-ORDER	rename(W/mine -> S/g: onto caller's file in sticky S)	ok
+STICKY-SETUP	root
+STICKY-ORDER	unlink(S/e: other's empty dir)	EISDIR
+STICKY-ORDER	unlink(S/f/: other's file, trailing separator)	ENOTDIR
+STICKY-ORDER	rmdir(S/f: other's file)	ENOTDIR
+STICKY-ORDER	rmdir(S/n: other's non-empty dir)	ENOTEMPTY
+STICKY-ORDER	rename(S/f -> S/h: other's file over caller's dir)	EISDIR
+STICKY-ORDER	rename(S/g -> S/e: caller's file over other's dir)	EISDIR
+STICKY-ORDER	rename(S/h -> S/f: caller's dir over other's file)	ENOTDIR
+STICKY-ORDER	rename(S/h -> S/n: caller's empty dir over other's non-empty dir)	ENOTEMPTY
+STICKY-ORDER	rename(S/e -> S/e/x: other's dir into itself)	EINVAL
+STICKY-ORDER	rename(S/f -> S/f: other's file onto itself)	ok
+STICKY-ORDER	rename(S/f -> S/fl: other's file onto another name for it)	ok
+STICKY-ORDER	rename(S/e -> W/moved: other's 0755 dir to another parent)	ok
+STICKY-ORDER	rename(S/g -> S/f/: caller's file onto other's file, trailing separator)	ENOTDIR
+STICKY-ORDER	rename(S/T/g2 -> S/T: onto its own parent, which is other's, in sticky S)	ENOTEMPTY
+STICKY-ORDER	rename(S/f -> U/new: other's file, source sticky; U unwritable)	ok
+STICKY-ORDER	unlink(U/f: other's file in an unwritable sticky dir)	ok
+STICKY-ORDER	rmdir(U/e: other's dir in an unwritable sticky dir)	ok
+STICKY-ORDER	rename(U/f -> S/new2: unwritable sticky source parent)	ENOENT
+STICKY-ORDER	rename(S/g -> U/f: onto other's file in an unwritable sticky dir)	ok
+STICKY-ORDER	rename(W/mine -> S/f: onto other's file; source parent not sticky)	ok
+STICKY-ORDER	rename(W/mine -> S/g: onto caller's file in sticky S)	ENOENT
+IDS-ROW	r1001/e1000(rg1001/eg1000;groups none) against 1000:3000 0400 (effective uid is the owner)
+IDS	open(O_RDONLY)	ok
+IDS-ROW	u1000(rg2000/eg1000;groups none) against 1001:2000 0040 (only the real gid is the file's group)
+IDS	open(O_RDONLY)	EACCES
+IDS-ROW	u1000(rg2000/eg1000;groups none) against 1001:1000 0040 (the effective gid is the file's group)
+IDS	open(O_RDONLY)	ok
+# done

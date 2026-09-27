@@ -1135,7 +1135,12 @@ module UnixSystem =
             match
                 PathWalk.resolveExisting
                     limits
-                    CallerPrivilege.Privileged
+                    // Root, so that no directory's search bit refuses the walk:
+                    // it is privilege that exempts a caller, whoever owns what.
+                    (Credentials.ofIds
+                        UserId.root
+                        (GroupId.parseOrFail "UnixSystem.withFileSystemAndCurrentDirectory" 0u)
+                        [])
                     root
                     SymlinkPolicy.Follow
                     (UnixPath.ofAbsolute directory)

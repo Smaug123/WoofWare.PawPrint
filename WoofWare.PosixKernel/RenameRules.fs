@@ -108,23 +108,17 @@ module private RenameChecks =
     /// Asked of four different directories — the source's parent, the
     /// destination's parent, the moved directory (whose ".." a change of parent
     /// rewrites) and, on Darwin only, the directory a directory displaces — so
-    /// `role` names which, for the crash message. Only the owner triple is
-    /// consulted, and the sticky bit never refuses, so the answer is exact only
-    /// for a caller who owns `inode`.
+    /// `role` names which, for the crash message. The sticky bit is a separate
+    /// question, which `RemovalChecks.sticky` answers.
     ///
     /// Partial in `inode`, which every caller has just obtained from a
     /// resolution or from a directory entry.
-    let lacksWrite
-        (role : string)
-        (privilege : CallerPrivilege)
-        (inode : InodeNumber)
-        (vfs : VirtualFileSystem)
-        : bool
-        =
+    let lacksWrite (role : string) (credentials : Credentials) (inode : InodeNumber) (vfs : VirtualFileSystem) : bool =
         match VirtualFileSystem.tryGet inode vfs with
         | Some entry ->
             match Inode.permissions entry with
-            | InodePermissions.Stored bits -> PermissionBits.deniedTo privilege AccessRequest.Write bits
+            | InodePermissions.Stored bits ->
+                PermissionBits.deniedTo (Standing.toward credentials entry.Owner) AccessRequest.Write bits
             | InodePermissions.PlatformSymlinkDefault ->
                 failwith
                     $"RenameChecks.lacksWrite: %s{role} is inode %O{inode}, which reports platform-default symlink permissions -- but rename only asks this of a directory (this is a bug in the caller of RenameChecks.lacksWrite)."
@@ -239,6 +233,16 @@ module RenameRules =
     ///  * Each parent must grant write: EACCES. Above the type arm, which is
     ///    where Linux and Darwin part company — `rename(p/f, q/dir)` with `p`
     ///    unwritable is EACCES here and EISDIR on Darwin.
+    ///
+    ///    Each parent's sticky bit is checked straight after that parent's write
+    ///    bit: EPERM when the directory is sticky and the caller owns neither it
+    ///    nor the entry it would move or replace, unless the caller is
+    ///    privileged. So the source's EPERM beats the destination parent's
+    ///    EACCES — measured, moving another user's file out of a sticky
+    ///    directory into an unwritable one is EPERM — while an unwritable sticky
+    ///    destination parent is EACCES. Both beat the type arm, the moved
+    ///    directory's write check and ENOTEMPTY below, and lose to the
+    ///    trailing-separator, no-op, EINVAL and ancestor arms above.
     ///  * Then the type rule: a directory over a non-directory is ENOTDIR, a
     ///    non-directory over a directory is EISDIR. A symlink is a
     ///    non-directory whatever it points at, since both walks are
@@ -262,11 +266,11 @@ module RenameRules =
     /// `rename(dir, emptydir)` succeeds with the destination at mode 0. That is
     /// the arm Darwin has and this one does not.
     ///
-    /// Measured at uid 0, every row: the EACCES rows fall through to their next
-    /// check and nothing else moves, so `CallerPrivilege` gates the write bits
-    /// and nothing else.
+    /// Measured at uid 0, every row: the EACCES and EPERM rows fall through to
+    /// their next check and nothing else moves, so privilege exempts the caller
+    /// from the write bits and the sticky bits and from nothing else.
     let private linuxVerdict
-        (privilege : CallerPrivilege)
+        (credentials : Credentials)
         (source : Resolution)
         (destination : Resolution)
         (vfs : VirtualFileSystem)
@@ -315,10 +319,19 @@ module RenameRules =
              | None -> false)
         then
             RenameVerdict.Refuse UnixError.ENOTEMPTY
-        elif RenameChecks.lacksWrite "the source's parent" privilege sourceDirectory vfs then
+        elif RenameChecks.lacksWrite "the source's parent" credentials sourceDirectory vfs then
             RenameVerdict.Refuse UnixError.EACCES
-        elif RenameChecks.lacksWrite "the destination's parent" privilege destinationDirectory vfs then
+        elif RemovalChecks.sticky credentials sourceDirectory sourceName moved vfs = StickyRemoval.Forbidden then
+            RenameVerdict.Refuse UnixError.EPERM
+        elif RenameChecks.lacksWrite "the destination's parent" credentials destinationDirectory vfs then
             RenameVerdict.Refuse UnixError.EACCES
+        elif
+            (match destinationExisting with
+             | Some displaced ->
+                 RemovalChecks.sticky credentials destinationDirectory destinationName displaced vfs = StickyRemoval.Forbidden
+             | None -> false)
+        then
+            RenameVerdict.Refuse UnixError.EPERM
         elif movedIsDirectory && displacesNonDirectory then
             RenameVerdict.Refuse UnixError.ENOTDIR
         elif not movedIsDirectory && displacedDirectory.IsSome then
@@ -326,7 +339,7 @@ module RenameRules =
         elif
             movedIsDirectory
             && sourceDirectory <> destinationDirectory
-            && RenameChecks.lacksWrite "the moved directory" privilege moved vfs
+            && RenameChecks.lacksWrite "the moved directory" credentials moved vfs
         then
             RenameVerdict.Refuse UnixError.EACCES
         else
@@ -376,6 +389,14 @@ module RenameRules =
     ///    is the arm Linux orders the other way round — `rename(f, g)` with `g` a
     ///    hard link to `f` is EACCES here from an unwritable parent, and succeeds
     ///    on Linux.
+    ///
+    ///    A sticky source parent refuses an entry the caller owns neither of
+    ///    with EACCES too, where Linux spends EPERM, so the two checks cannot be
+    ///    told apart. Measured with a second name for root's file in root's
+    ///    sticky `/private/tmp`: moving it is EACCES, over another name for the
+    ///    same inode included, while the type arm, the trailing-separator arm and
+    ///    the EINVAL arm above all beat it. Whether it exempts a privileged caller
+    ///    has not been measured, and such a caller is refused.
     ///  * Then a write check on the destination side, and *which* directory it
     ///    asks about is the strangest measured fact in this syscall: when a
     ///    directory replaces an existing directory, Darwin consults the write bit
@@ -385,6 +406,13 @@ module RenameRules =
     ///    0o555 and 0o300 it succeeds, and a control confirms the parent really
     ///    does refuse an ordinary create. Every other shape consults the
     ///    destination's parent as Linux does.
+    ///
+    ///    A sticky destination parent refuses replacing an entry the caller owns
+    ///    neither of, with EACCES, beside that parent's write check: measured,
+    ///    moving the caller's own file onto root's file in `/private/tmp` is
+    ///    EACCES. Whether that holds when a directory displaces a directory,
+    ///    where the parent's write bit is not consulted at all, has not been
+    ///    measured, and such a rename is refused; so is a privileged caller.
     ///  * Both paths naming one inode changes nothing and succeeds — below the
     ///    two write checks above, which is why the self-rename of a directory
     ///    whose own write bit is missing is EACCES here and succeeds on Linux.
@@ -405,7 +433,7 @@ module RenameRules =
     /// over a directory a final symlink named, and that is the destructive row:
     /// `rename("s/", "moved")` moves the link's target.
     let private darwinVerdict
-        (privilege : CallerPrivilege)
+        (credentials : Credentials)
         (source : Resolution)
         (destination : Resolution)
         (vfs : VirtualFileSystem)
@@ -483,7 +511,12 @@ module RenameRules =
             && VirtualFileSystem.isWithinSubtree moved destinationDirectory vfs
         then
             RenameVerdict.Refuse UnixError.EINVAL
-        elif RenameChecks.lacksWrite "the source's parent" privilege sourceDirectory vfs then
+        elif RenameChecks.lacksWrite "the source's parent" credentials sourceDirectory vfs then
+            RenameVerdict.Refuse UnixError.EACCES
+        elif
+            RemovalChecks.sticky credentials sourceDirectory sourceName moved vfs
+            |> RemovalChecks.darwinStickyRefuses "RenameRules.verdict (the source)"
+        then
             RenameVerdict.Refuse UnixError.EACCES
         elif
             // Which directory this asks about is the measured oddity. A
@@ -492,9 +525,25 @@ module RenameRules =
             // it -- and `displacedDirectory` being `Some` here already implies
             // the source is a directory, because the EISDIR arm above refused
             // the only other way to reach this line with one.
-            (match displacedDirectory with
-             | Some displaced -> RenameChecks.lacksWrite "the displaced directory" privilege displaced vfs
-             | None -> RenameChecks.lacksWrite "the destination's parent" privilege destinationDirectory vfs)
+            match displacedDirectory with
+            | Some displaced ->
+                match RemovalChecks.sticky credentials destinationDirectory destinationName displaced vfs with
+                | StickyRemoval.Unrestricted -> ()
+                | StickyRemoval.Forbidden
+                | StickyRemoval.ForbiddenButPrivileged ->
+                    failwith
+                        "RenameRules.verdict: on Darwin, a directory displacing a directory the caller owns neither of, in a sticky directory the caller does not own. Whether Darwin's sticky rule applies there, where it consults the displaced directory's write bit rather than its parent's, has not been measured."
+
+                RenameChecks.lacksWrite "the displaced directory" credentials displaced vfs
+            | None ->
+                RenameChecks.lacksWrite "the destination's parent" credentials destinationDirectory vfs
+                || (
+                    match destinationExisting with
+                    | Some displaced ->
+                        RemovalChecks.sticky credentials destinationDirectory destinationName displaced vfs
+                        |> RemovalChecks.darwinStickyRefuses "RenameRules.verdict (the destination)"
+                    | None -> false
+                )
         then
             RenameVerdict.Refuse UnixError.EACCES
         elif destinationExisting = Some moved then
@@ -513,7 +562,7 @@ module RenameRules =
             // rather than a spelling of the displaced-directory one above.
             movedIsDirectory
             && (sourceDirectory <> destinationDirectory || displacedDirectory.IsSome)
-            && RenameChecks.lacksWrite "the moved directory" privilege moved vfs
+            && RenameChecks.lacksWrite "the moved directory" credentials moved vfs
         then
             RenameVerdict.Refuse UnixError.EACCES
         else
@@ -549,7 +598,7 @@ module RenameRules =
     let verdict
         (flavour : SimulatedUnixFlavour)
         (bindable : BindableEntryNames)
-        (privilege : CallerPrivilege)
+        (credentials : Credentials)
         (source : Resolution)
         (destination : Resolution)
         (vfs : VirtualFileSystem)
@@ -557,8 +606,8 @@ module RenameRules =
         =
         let verdict =
             match flavour with
-            | SimulatedUnixFlavour.Linux -> linuxVerdict privilege source destination vfs
-            | SimulatedUnixFlavour.Darwin -> darwinVerdict privilege source destination vfs
+            | SimulatedUnixFlavour.Linux -> linuxVerdict credentials source destination vfs
+            | SimulatedUnixFlavour.Darwin -> darwinVerdict credentials source destination vfs
 
         match verdict with
         | RenameVerdict.Move (_, _, _, destinationName) when not (BindableEntryNames.admits bindable destinationName) ->

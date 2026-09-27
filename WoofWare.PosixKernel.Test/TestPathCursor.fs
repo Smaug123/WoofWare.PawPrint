@@ -600,14 +600,7 @@ module TestPathCursor =
 
             let parsed = path candidate
 
-            PathWalk.resolveFull
-                limits
-                CallerPrivilege.Privileged
-                start
-                policy
-                TrailingSeparatorPolicy.Demand
-                parsed
-                vfs
+            PathWalk.resolveFull limits Owners.root start policy TrailingSeparatorPolicy.Demand parsed vfs
             |> shouldEqual (referenceResolveFull limits start policy parsed vfs)
 
         let generator =

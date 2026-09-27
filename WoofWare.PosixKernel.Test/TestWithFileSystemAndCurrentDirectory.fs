@@ -56,7 +56,7 @@ module TestWithFileSystemAndCurrentDirectory =
         match
             PathWalk.resolveExisting
                 (SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform)
-                CallerPrivilege.Privileged
+                Owners.root
                 (VirtualFileSystem.root vfs)
                 SymlinkPolicy.Follow
                 (UnixPath.parseOrFail "test" path)

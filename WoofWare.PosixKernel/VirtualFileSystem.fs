@@ -1321,8 +1321,10 @@ module VirtualFileSystem =
                 $"VirtualFileSystem.forget: inode %O{inode} is still named by %d{count} directory entry/entries, so forgetting it would leave the graph with a dangling entry (this is a bug in the caller of VirtualFileSystem.forget)."
 
     /// Write `bytes` at `offset` into the regular file at `inode`, moving its
-    /// `mtime` and `ctime` and — unless `privilege` says otherwise — stripping its
-    /// set-user-ID and set-group-ID bits.
+    /// `mtime` and `ctime` and stripping whichever of its set-user-ID and
+    /// set-group-ID bits `rule` says a writer with `credentials` strips. Throws
+    /// where `PermissionBits.afterContentChangingWrite` does, for a writer whose
+    /// answer under `rule` has not been measured.
     ///
     /// Those timestamps and no others: measured on both platforms, a write leaves
     /// `atime` where it was, and `birth` never moves at all.
@@ -1342,7 +1344,7 @@ module VirtualFileSystem =
         (offset : int64)
         (bytes : ImmutableArray<byte>)
         (rule : SetGroupIdOnWrite)
-        (privilege : CallerPrivilege)
+        (credentials : Credentials)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
         : Result<VirtualFileSystem, FileWriteRefusal>
@@ -1383,7 +1385,7 @@ module VirtualFileSystem =
         // privileged — so this is a mode change as well as a content change, and
         // the `ctime` above covers both.
         let permissions =
-            PermissionBits.afterContentChangingWrite rule privilege permissions
+            PermissionBits.afterContentChangingWrite rule (Standing.toward credentials entry.Owner) permissions
 
         Ok
             { vfs with
@@ -1398,8 +1400,10 @@ module VirtualFileSystem =
             }
 
     /// Set the length of the regular file at `inode` to `length`, moving its
-    /// `mtime` and `ctime` and — subject to `rule` and `privilege` — clearing its
-    /// set-user-ID and set-group-ID bits.
+    /// `mtime` and `ctime` and clearing whichever of its set-user-ID and
+    /// set-group-ID bits `rule` says a truncation by a process with
+    /// `credentials` clears. Throws where `PermissionBits.afterTruncation` does,
+    /// for a process whose answer under `rule` has not been measured.
     ///
     /// **Unconditionally**, which is the whole of what separates this from
     /// `writeFile`. A write of no bytes is not a write and the caller must
@@ -1421,7 +1425,7 @@ module VirtualFileSystem =
         (inode : InodeNumber)
         (length : int64)
         (rule : SetIdBitsOnTruncation)
-        (privilege : CallerPrivilege)
+        (credentials : Credentials)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
         : Result<VirtualFileSystem, FileTruncationRefusal>
@@ -1460,7 +1464,8 @@ module VirtualFileSystem =
 
         // A truncation is a mode change as well as a content change on one of the
         // two platforms, and the `ctime` below covers both either way.
-        let permissions = PermissionBits.afterTruncation rule privilege permissions
+        let permissions =
+            PermissionBits.afterTruncation rule (Standing.toward credentials entry.Owner) permissions
 
         Ok
             { vfs with

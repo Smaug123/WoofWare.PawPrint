@@ -133,7 +133,7 @@ module TestUnlinkRules =
         match
             PathWalk.resolveFull
                 (SimulatedUnixPlatform.pathLimits platform)
-                privilege
+                (Owners.caller privilege)
                 (VirtualFileSystem.root tree)
                 SymlinkPolicy.NoFollowFinal
                 rules.TrailingSeparator
@@ -141,7 +141,8 @@ module TestUnlinkRules =
                 tree
         with
         | Error error -> UnlinkVerdict.Refuse error
-        | Ok resolution -> UnlinkRules.verdict (SimulatedUnixPlatform.flavour platform) privilege resolution tree
+        | Ok resolution ->
+            UnlinkRules.verdict (SimulatedUnixPlatform.flavour platform) (Owners.caller privilege) resolution tree
 
     let private linux : SimulatedUnixPlatform = SimulatedUnixPlatform.linuxX64
 

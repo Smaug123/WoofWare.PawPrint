@@ -74,8 +74,9 @@ module CreatingOpenRules =
     ///    `RootNavigation` says, which is Darwin's EEXIST.
     ///  * A creating open landing on an existing directory is EISDIR on Linux.
     ///  * Binding a name needs the *write* bit on the directory that will hold
-    ///    it: measured at uid 1000, 0o333 and 0o300 succeed while 0o644 and
-    ///    0o555 are EACCES. Root bypasses it.
+    ///    it, in the triple the caller's standing towards that directory
+    ///    selects: measured as its owner at uid 1000, 0o333 and 0o300 succeed
+    ///    while 0o644 and 0o555 are EACCES. Root bypasses it.
     ///
     ///    Binding needs the directory's *search* bit too — 0o111 is EACCES on
     ///    both kernels — but that half is not checked here: no resolution can
@@ -95,7 +96,7 @@ module CreatingOpenRules =
     let verdict
         (rules : CreatingOpenRules)
         (bindable : BindableEntryNames)
-        (privilege : CallerPrivilege)
+        (credentials : Credentials)
         (creating : bool)
         (exclusive : bool)
         (resolution : Resolution)
@@ -147,11 +148,11 @@ module CreatingOpenRules =
 
         // Write alone: the search half of the rule is the walk's, and a
         // resolution that reached here has already passed it.
-        let parentBits =
+        let parent, parentBits =
             match VirtualFileSystem.tryGet directory vfs with
             | Some parent ->
                 match Inode.permissions parent with
-                | InodePermissions.Stored bits -> bits
+                | InodePermissions.Stored bits -> parent, bits
                 | InodePermissions.PlatformSymlinkDefault ->
                     failwith
                         $"CreatingOpenRules.verdict: the walk resolved \"%s{DirectoryEntryName.toEscaped name}\" inside inode %O{directory}, which reports platform-default symlink permissions -- but only a directory can hold an entry (this is a bug in this library's path walk, or in a caller that assembled the resolution itself)."
@@ -159,7 +160,7 @@ module CreatingOpenRules =
                 failwith
                     $"CreatingOpenRules.verdict: resolution named inode %O{directory} as the directory to create \"%s{DirectoryEntryName.toEscaped name}\" in, but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
 
-        if PermissionBits.deniedTo privilege AccessRequest.Write parentBits then
+        if PermissionBits.deniedTo (Standing.toward credentials parent.Owner) AccessRequest.Write parentBits then
             CreatingOpenVerdict.Refuse UnixError.EACCES
         elif not (BindableEntryNames.admits bindable name) then
             CreatingOpenVerdict.Refuse UnixError.EILSEQ
@@ -167,15 +168,46 @@ module CreatingOpenRules =
             CreatingOpenVerdict.Create (directory, name)
 
     /// <summary>
-    /// The permission bits you get under <c>umask</c> when you create a file with this <c>mode</c>.
+    /// The permission bits you get under <c>umask</c> when you create a file with this <c>mode</c>,
+    /// in a directory carrying <c>parentPermissions</c> towards which the caller stands as
+    /// <c>parentStanding</c>.
     /// </summary>
     /// <remarks>
     /// See <c>PermissionBits.fromCreationMode</c>, which is the general method to which <c>CreatingOpenRules</c>
     /// supplies platform-specific information.
     ///
-    /// Not modelled: Linux also clears a requested <c>S_ISGID</c> (with <c>S_IXGRP</c>) when the file is
-    /// created in a set-group-ID directory whose group the unprivileged caller is not in. So the answer is
-    /// exact only when the caller is in the group of the directory it creates in.
+    /// A requested <c>S_ISGID</c> is dropped when the file is created in a set-group-ID directory whose
+    /// group the caller is not in, unless the caller is privileged, and only if the request also asked for
+    /// <c>S_IXGRP</c>: a set-group-ID bit without group execute means mandatory locking rather than privilege.
+    /// The request is judged before the umask is applied, so a umask that clears <c>S_IXGRP</c> does not
+    /// save the bit.
+    /// This matters only where <c>ModeMask</c> lets a caller request <c>S_ISGID</c> at all, which is Linux.
     /// </remarks>
-    let createdPermissions (rules : CreatingOpenRules) (umask : PermissionBits) (mode : int) : PermissionBits =
+    let createdPermissions
+        (rules : CreatingOpenRules)
+        (parentStanding : Standing)
+        (parentPermissions : PermissionBits)
+        (umask : PermissionBits)
+        (mode : int)
+        : PermissionBits
+        =
+        // Measured on Linux 6.18.5 (`permission-standing.c`, ext4 and tmpfs):
+        // every one of the 4096 modes under umasks 0, 010, 022 and 07777, in a
+        // 02777 parent of a group the creator is not in, of its supplementary
+        // group and of its effective group, in a plain 0777 parent of a group it
+        // is not in, and as root in the first. Umask 010 is the row that shows
+        // the order: 02775 there gives 0765, where judging after the umask would
+        // keep the bit.
+        let setGroupId = 0o2000
+        let groupExecute = 0o0010
+
+        let requested = mode &&& PermissionBits.toInt rules.ModeMask
+
+        let stripsSetGroupId =
+            requested &&& (setGroupId ||| groupExecute) = (setGroupId ||| groupExecute)
+            && PermissionBits.toInt parentPermissions &&& setGroupId <> 0
+            && parentStanding.Privilege = CallerPrivilege.Unprivileged
+            && not parentStanding.InGroup
+
+        let mode = if stripsSetGroupId then mode &&& ~~~setGroupId else mode
         PermissionBits.fromCreationMode rules.ModeMask umask mode

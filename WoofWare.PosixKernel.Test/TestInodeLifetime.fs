@@ -74,7 +74,7 @@ module TestInodeLifetime =
         match
             PathWalk.resolveExisting
                 (SimulatedUnixPlatform.pathLimits kernel.Machine.UnixPlatform)
-                CallerPrivilege.Privileged
+                Owners.root
                 (VirtualFileSystem.root kernel.Machine.FileSystem)
                 SymlinkPolicy.Follow
                 (UnixPath.parseOrFail "test" path)

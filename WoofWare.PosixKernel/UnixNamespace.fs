@@ -240,7 +240,7 @@ module UnixNamespace =
         : SyscallAnswer * UnixSystem<'Task, 'Handler>
         =
         let rules = SimulatedUnixPlatform.creatingOpenRules system.Machine.UnixPlatform
-        let privilege = UnixProcessState.callerPrivilege system.Process
+        let credentials = system.Process.Credentials
 
         // `O_EXCL` on its own is neither an error nor a refusal: both kernels
         // ignore it entirely, measured. So it is read
@@ -295,7 +295,7 @@ module UnixNamespace =
             | Error error -> SyscallAnswer.Failed error, system
             | Ok resolution ->
 
-            match OpenDirRules.verdict privilege resolution system.Machine.FileSystem with
+            match OpenDirRules.verdict credentials resolution system.Machine.FileSystem with
             | OpenDirVerdict.Refuse error -> SyscallAnswer.Failed error, system
             | OpenDirVerdict.Open inode -> opened inode system
         else
@@ -325,7 +325,7 @@ module UnixNamespace =
             CreatingOpenRules.verdict
                 rules
                 (SimulatedUnixPlatform.bindableEntryNames system.Machine.UnixPlatform)
-                privilege
+                credentials
                 flags.Create
                 exclusive
                 resolution
@@ -333,8 +333,23 @@ module UnixNamespace =
         with
         | CreatingOpenVerdict.Refuse error -> SyscallAnswer.Failed error, system
         | CreatingOpenVerdict.Create (directory, name) ->
+            let parent =
+                match VirtualFileSystem.tryGet directory system.Machine.FileSystem with
+                | Some ({
+                            Content = InodeContent.Directory parent
+                        } as entry) -> entry, parent
+                | Some _
+                | None ->
+                    failwith
+                        $"UnixNamespace.openPath: about to create \"%s{DirectoryEntryName.toEscaped name}\" in inode %O{directory}, which the walk had established was a directory, but it is now absent or not a directory (this is a bug in this library)."
+
             let permissions =
-                CreatingOpenRules.createdPermissions rules system.Process.Umask mode
+                CreatingOpenRules.createdPermissions
+                    rules
+                    (Standing.toward credentials (fst parent).Owner)
+                    (snd parent).Permissions
+                    system.Process.Umask
+                    mode
 
             let now = UnixMachineState.realtime system.Machine
 
@@ -417,8 +432,8 @@ module UnixNamespace =
         //   0200   EACCES    ok        EACCES
         //   0000   EACCES    EACCES    EACCES
         //
-        // Only the owner triple is consulted (`PermissionBits.deniedTo`), which
-        // is exact only for a caller who owns the file.
+        // The triple consulted is the one the caller's standing towards the
+        // file selects (`PermissionBits.deniedTo`).
         //
         // `O_TRUNC` adds the write bit to whatever the access mode already asked
         // for, and adds nothing else. Measured at uid 1000 on both:
@@ -433,11 +448,13 @@ module UnixNamespace =
         // Both halves, where the mode asks for both: `O_RDWR` on a 0o400 file is
         // refused for want of the write bit even though the read bit is there,
         // which is what the disjunction says.
+        let standing = Standing.toward credentials entry.Owner
+
         let denied =
             (FileAccessMode.permitsRead flags.Access
-             && PermissionBits.deniedTo privilege AccessRequest.Read permissionBits)
+             && PermissionBits.deniedTo standing AccessRequest.Read permissionBits)
             || ((FileAccessMode.permitsWrite flags.Access || flags.Truncate)
-                && PermissionBits.deniedTo privilege AccessRequest.Write permissionBits)
+                && PermissionBits.deniedTo standing AccessRequest.Write permissionBits)
 
         if denied then
             SyscallAnswer.Failed UnixError.EACCES, system
@@ -686,7 +703,7 @@ module UnixNamespace =
         match
             MkDirRules.verdict
                 (SimulatedUnixPlatform.bindableEntryNames system.Machine.UnixPlatform)
-                (UnixProcessState.callerPrivilege system.Process)
+                system.Process.Credentials
                 resolution
                 system.Machine.FileSystem
         with
@@ -740,7 +757,7 @@ module UnixNamespace =
         match
             UnlinkRules.verdict
                 (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform)
-                (UnixProcessState.callerPrivilege system.Process)
+                system.Process.Credentials
                 resolution
                 system.Machine.FileSystem
         with
@@ -793,7 +810,7 @@ module UnixNamespace =
         match
             RmDirRules.verdict
                 (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform)
-                (UnixProcessState.callerPrivilege system.Process)
+                system.Process.Credentials
                 resolution
                 system.Machine.FileSystem
         with
@@ -1010,7 +1027,7 @@ module UnixNamespace =
             RenameRules.verdict
                 (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform)
                 (SimulatedUnixPlatform.bindableEntryNames system.Machine.UnixPlatform)
-                (UnixProcessState.callerPrivilege system.Process)
+                system.Process.Credentials
                 sourceResolution
                 destinationResolution
                 system.Machine.FileSystem

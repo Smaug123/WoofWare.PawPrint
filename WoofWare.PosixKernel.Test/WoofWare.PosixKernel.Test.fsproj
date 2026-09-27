@@ -23,6 +23,7 @@
     <Compile Include="CredentialsGen.fs" />
     <Compile Include="TestCredentials.fs" />
     <Compile Include="TestInodeOwner.fs" />
+    <Compile Include="TestPermissionStanding.fs" />
     <Compile Include="TestWakeCondition.fs" />
     <Compile Include="TestUnixWait.fs" />
     <Compile Include="TestUnixTaskLifecycle.fs" />

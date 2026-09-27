@@ -400,13 +400,13 @@ module TestInodeOwner =
                 0L
                 (ImmutableArray.Create 1uy)
                 SetGroupIdOnWrite.StripAlways
-                CallerPrivilege.Unprivileged
+                Owners.linuxDefaultCaller
                 later
                 vfs
             |> ok
 
         let vfs =
-            VirtualFileSystem.truncateFile file 0L SetIdBitsOnTruncation.Strip CallerPrivilege.Unprivileged later vfs
+            VirtualFileSystem.truncateFile file 0L SetIdBitsOnTruncation.Strip Owners.linuxDefaultCaller later vfs
             |> ok
 
         let after = VirtualFileSystem.inodes vfs |> Map.map (fun _ inode -> inode.Owner)

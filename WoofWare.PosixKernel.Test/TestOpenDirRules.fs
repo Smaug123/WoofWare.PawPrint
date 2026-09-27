@@ -117,7 +117,7 @@ module TestOpenDirRules =
         match
             PathWalk.resolveFull
                 (SimulatedUnixPlatform.pathLimits platform)
-                privilege
+                (Owners.caller privilege)
                 (VirtualFileSystem.root tree)
                 SymlinkPolicy.Follow
                 TrailingSeparatorPolicy.Demand
@@ -125,7 +125,7 @@ module TestOpenDirRules =
                 tree
         with
         | Error error -> OpenDirVerdict.Refuse error
-        | Ok resolution -> OpenDirRules.verdict privilege resolution tree
+        | Ok resolution -> OpenDirRules.verdict (Owners.caller privilege) resolution tree
 
     let private linux : SimulatedUnixPlatform = SimulatedUnixPlatform.linuxX64
 

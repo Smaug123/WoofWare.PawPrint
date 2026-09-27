@@ -178,7 +178,7 @@ module TestUnixPathBytes =
         match
             UnixSystem.withFileSystemAndCurrentDirectory
                 epoch
-                Owners.linuxDefault
+                (InodeOwner.ofProcess system.Process.Credentials)
                 (Map.ofList seed)
                 AbsoluteUnixPath.root
                 system

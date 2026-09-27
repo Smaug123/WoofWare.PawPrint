@@ -973,9 +973,10 @@ module UnixReadWrite =
         // bits unless the writer is root; measured on both platforms, which
         // disagree only about `S_ISGID` on a file that is not group-executable.
         let rule = SimulatedUnixPlatform.setGroupIdOnWrite system.Machine.UnixPlatform
-        let privilege = UnixProcessState.callerPrivilege system.Process
 
-        match VirtualFileSystem.writeFile inode offset bytes rule privilege now system.Machine.FileSystem with
+        match
+            VirtualFileSystem.writeFile inode offset bytes rule system.Process.Credentials now system.Machine.FileSystem
+        with
         | Error (FileWriteRefusal.WouldExceedMaxLength (offset, count)) ->
             Error (WriteRefusal.ExceedsRepresentableLength (inode, offset, count))
         | Ok filesystem ->
@@ -1235,9 +1236,10 @@ module UnixReadWrite =
         // bits unless the writer is root, exactly as `write`'s does: the bits
         // follow the content changing, not which syscall changed it.
         let rule = SimulatedUnixPlatform.setGroupIdOnWrite system.Machine.UnixPlatform
-        let privilege = UnixProcessState.callerPrivilege system.Process
 
-        match VirtualFileSystem.writeFile inode offset bytes rule privilege now system.Machine.FileSystem with
+        match
+            VirtualFileSystem.writeFile inode offset bytes rule system.Process.Credentials now system.Machine.FileSystem
+        with
         | Error (FileWriteRefusal.WouldExceedMaxLength (offset, count)) ->
             Error (PWriteRefusal.ExceedsRepresentableLength (inode, offset, count))
         | Ok filesystem ->
