@@ -2,6 +2,8 @@ namespace WoofWare.PawPrint.Test
 
 open System
 open System.Collections.Immutable
+open FsCheck
+open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -240,44 +242,137 @@ module TestKernelConfig =
                 }
             |> ignore<EmulatedKernel>
 
+    /// The owner of the inode `path` names, walked as root without following
+    /// a final symlink, so that a link's own owner is what is read.
+    let private ownerAt (kernel : EmulatedKernel) (path : string) : InodeOwner =
+        let vfs = kernel.FileSystem
+
+        match
+            PathWalk.resolveExisting
+                (SimulatedUnixPlatform.pathLimits kernel.UnixPlatform)
+                (Credentials.ofIds UserId.root (GroupId.parseOrFail "test" 0u) [])
+                (VirtualFileSystem.root vfs)
+                SymlinkPolicy.NoFollowFinal
+                (UnixPath.parseOrFail "test" path)
+                vfs
+        with
+        | Ok inode ->
+            match VirtualFileSystem.tryGet inode vfs with
+            | Some inode -> inode.Owner
+            | None -> failwith $"%s{path} resolved to an inode the filesystem does not hold"
+        | Error error -> failwith $"could not resolve %s{path} in the seed: %O{error}"
+
     [<Test>]
-    let ``KernelConfig refuses a seed entry owned by anyone else, naming the entry`` () : unit =
-        let foreign : InodeOwner =
+    let ``KernelConfig realises every owner a seed states, and the configured one elsewhere`` () : unit =
+        // Four users and groups, one of which is the configured pair, so that a
+        // stated owner is sometimes the configured one and usually not.
+        let configured : InodeOwner =
             {
-                User = UserId.parseOrFail "test" 0u
-                Group = GroupId.parseOrFail "test" 1000u
+                User = UserId.parseOrFail "test" 37u
+                Group = GroupId.parseOrFail "test" 38u
             }
 
-        let seed =
-            Map.ofList
+        let ownerGen : Gen<InodeOwner> =
+            Gen.elements
                 [
-                    DirectoryEntryName.parseOrFail "test" "d",
-                    SeedEntry.directory (
-                        Map.ofList
-                            [
-                                DirectoryEntryName.parseOrFail "test" "f",
-                                SeedEntry.File (
-                                    System.Collections.Immutable.ImmutableArray.Empty,
-                                    SeedEntry.defaultPermsForRegularFile,
-                                    Some foreign
-                                )
-                            ]
-                    )
+                    configured
+                    {
+                        User = UserId.root
+                        Group = GroupId.parseOrFail "test" 0u
+                    }
+                    {
+                        User = UserId.parseOrFail "test" 37u
+                        Group = GroupId.parseOrFail "test" 0u
+                    }
+                    {
+                        User = UserId.parseOrFail "test" 1001u
+                        Group = GroupId.parseOrFail "test" 38u
+                    }
                 ]
 
-        let failure =
-            Assert.Throws<System.Exception> (fun () ->
-                KernelConfig.toKernel
-                    { KernelConfig.Default with
-                        FileSystem = seed
-                    }
-                |> ignore<EmulatedKernel>
+        let statedGen : Gen<InodeOwner option> =
+            Gen.oneof [ Gen.constant None ; ownerGen |> Gen.map Some ]
+
+        let rec entriesGen (depth : int) : Gen<Map<DirectoryEntryName, SeedEntry>> =
+            gen {
+                let! count = Gen.choose (0, (if depth = 0 then 1 else 3))
+                let! kinds = Gen.listOfLength count (Gen.choose (0, 2))
+                let! owners = Gen.listOfLength count statedGen
+
+                let! entries =
+                    List.zip kinds owners
+                    |> List.mapi (fun i (kind, stated) ->
+                        let entryName = name $"e%d{i}"
+
+                        match kind with
+                        | 0 ->
+                            Gen.constant (
+                                entryName,
+                                SeedEntry.File (noBytes, SeedEntry.defaultPermsForRegularFile, stated)
+                            )
+                        | 1 ->
+                            Gen.constant (
+                                entryName,
+                                SeedEntry.Symlink (SymlinkTarget.parseOrFail "test" "nowhere", stated)
+                            )
+                        | _ ->
+                            entriesGen (depth - 1)
+                            |> Gen.map (fun children ->
+                                entryName, SeedEntry.Directory (children, SeedEntry.defaultPermsForDirectory, stated)
+                            )
+                    )
+                    |> Gen.sequenceToList
+
+                return Map.ofList entries
+            }
+
+        /// Every path the seed names, with the owner it states or the
+        /// configured one: an entry's owner is never its directory's.
+        let rec expected (prefix : string) (entries : Map<DirectoryEntryName, SeedEntry>) : (string * InodeOwner) list =
+            entries
+            |> Map.toList
+            |> List.collect (fun (entryName, entry) ->
+                let path = prefix + "/" + DirectoryEntryName.toEscaped entryName
+
+                match entry with
+                | SeedEntry.File (_, _, stated)
+                | SeedEntry.Symlink (_, stated) -> [ path, Option.defaultValue configured stated ]
+                | SeedEntry.Directory (children, _, stated) ->
+                    (path, Option.defaultValue configured stated) :: expected path children
             )
 
-        failure.Message.StartsWith ("EmulatedKernel.FileSystem: ", System.StringComparison.Ordinal)
-        |> shouldEqual true
+        let property (seed : Map<DirectoryEntryName, SeedEntry>, rootOwner : InodeOwner option) : unit =
+            for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+                let kernel =
+                    KernelConfig.toKernel
+                        { KernelConfig.Default with
+                            UnixPlatform = platform
+                            UserId = Some 37u
+                            GroupId = Some 38u
+                            FileSystem = seed
+                            FileSystemRootOwner = rootOwner
+                        }
 
-        failure.Message |> shouldContainText "\"/d/f\""
+                ownerAt kernel "/" |> shouldEqual (Option.defaultValue configured rootOwner)
+
+                let paths = expected "" seed
+
+                for path, owner in paths do
+                    (path, ownerAt kernel path) |> shouldEqual (path, owner)
+
+                // Nothing but the root and the seed's own entries.
+                VirtualFileSystem.inodes kernel.FileSystem
+                |> Map.count
+                |> shouldEqual (List.length paths + 1)
+
+        let gen =
+            gen {
+                let! seed = entriesGen 3
+                let! rootOwner = statedGen
+                return seed, rootOwner
+            }
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 200, Prop.forAll (Arb.fromGen gen) property)
 
     [<Test>]
     let ``KernelConfig refuses credentials no process could hold, naming the knob`` () : unit =

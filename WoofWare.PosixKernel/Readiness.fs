@@ -15,8 +15,9 @@ namespace WoofWare.PosixKernel
 /// `uint32` states both.
 ///
 /// Answers for the socket phases `UnixMachineState.socketReadinessLevel`
-/// answers, the launch shape's standard streams, and regular files and
-/// directories (which epoll will not register, but `poll` answers). A socket
+/// answers, the launch shape's standard streams, both ends of a pipe, and
+/// regular files and directories (which epoll will not register, but `poll`
+/// answers). A socket
 /// event port is refused: what either waiter reports for one is not modelled.
 [<RequireQualifiedAccess>]
 module LinuxReadiness =
@@ -101,6 +102,36 @@ module LinuxReadiness =
             // Write ends of pipes with space and a live reader. No WRBAND:
             // a pipe's handler does not set it.
             EpollEvents.Out ||| EpollEvents.WrNorm
+        | OpenFileTarget.Pipe (pipeId, PipeEnd.Read) ->
+            // Measured on Linux 6.18.5 (`pipe-states.c` in
+            // docs/plans/2026-08-23-posix-kernel-extraction, and the live
+            // comparison in `TestPipeAgainstHost`): IN|RDNORM while
+            // the pipe holds anything, and HUP once no write end is open, data
+            // or none. No PRI or RDBAND: a pipe's handler sets neither.
+            let pipe = UnixMachineState.pipe pipeId system.Machine
+
+            (if PipeBuffer.readable pipe.Buffer then
+                 EpollEvents.In ||| EpollEvents.RdNorm
+             else
+                 0u)
+            ||| (if UnixProcessState.pipeEndOpen pipeId PipeEnd.Write system.Process then
+                     0u
+                 else
+                     EpollEvents.Hup)
+        | OpenFileTarget.Pipe (pipeId, PipeEnd.Write) ->
+            // Measured likewise: OUT|WRNORM while a slot is free (see
+            // `PipeBuffer.writable`), and ERR once no read end is open, whether
+            // or not a slot is. No WRBAND.
+            let pipe = UnixMachineState.pipe pipeId system.Machine
+
+            (if PipeBuffer.writable pipe.Buffer then
+                 EpollEvents.Out ||| EpollEvents.WrNorm
+             else
+                 0u)
+            ||| (if UnixProcessState.pipeEndOpen pipeId PipeEnd.Read system.Process then
+                     0u
+                 else
+                     EpollEvents.Err)
         | OpenFileTarget.SocketEventPort _ ->
             failwith
                 $"LinuxReadiness.ofDescription: %O{targetId} is a socket event port, and what a waiter reports for one is not modelled. `poll` refuses such an entry and `epoll_ctl` refuses to nest one, both before reaching here (this is a bug in this library)."
@@ -165,7 +196,8 @@ module SocketEventPort =
         | OpenFileTarget.StandardStream _
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
-        | OpenFileTarget.Socket _ ->
+        | OpenFileTarget.Socket _
+        | OpenFileTarget.Pipe _ ->
             failwith
                 $"SocketEventPort.hasDeliverableEvent: %O{portId} is not a socket event port, so no wait can be parked on it (this is a bug in the caller of SocketEventPort.hasDeliverableEvent)."
         | OpenFileTarget.SocketEventPort portState ->
@@ -206,7 +238,8 @@ module SocketEventPort =
         | OpenFileTarget.StandardStream _
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
-        | OpenFileTarget.Socket _ ->
+        | OpenFileTarget.Socket _
+        | OpenFileTarget.Pipe _ ->
             failwith
                 $"SocketEventPort.drain: %O{portId} is not a socket event port (this is a bug in the caller of SocketEventPort.drain)."
         | OpenFileTarget.SocketEventPort portState ->

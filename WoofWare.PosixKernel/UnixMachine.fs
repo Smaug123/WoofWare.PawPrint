@@ -2,7 +2,7 @@ namespace WoofWare.PosixKernel
 
 /// The kernel-image facts a POSIX simulator owns: the platform it is
 /// impersonating, its filesystem, its clock and entropy, its network
-/// configuration and socket table, and the two numbers a process reads back
+/// configuration, its socket and pipe tables, and the two numbers a process reads back
 /// about the machine it is running on.
 ///
 /// Everything here is state any client of a POSIX simulator would have.
@@ -75,6 +75,32 @@ type UnixMachineState =
         /// address inside and Darwin ignores. See
         /// `UnixSystem.defaultLocalRoutes`.
         LocalRoutes : Ipv4Prefix list
+        /// Every pipe the simulated process holds an end of, by identity.
+        ///
+        /// Separate from the descriptor table for the reason `Sockets` is: an
+        /// `OpenFileTarget.Pipe` holds only the `PipeId`, and both ends' descriptions
+        /// name the one pipe. A pipe is in the table exactly while some
+        /// description names one of its ends (`UnixSystem.checkInvariants`
+        /// states both halves), and `UnixDescriptor.close` removes it with the
+        /// last one.
+        Pipes : Map<PipeId, PipeState>
+        /// The identity the next `UnixPipe.pipe2` will allocate. Monotonic and
+        /// never reused, for the replay-trace reason `NextSocketId` gives.
+        NextPipeId : PipeId
+        /// The inode number the next pipe end will be given, as `fstat(2)`
+        /// reports it. Monotonic and never reused: a process can compare the
+        /// numbers two descriptors report to decide whether they name one pipe,
+        /// so a reused number would make a dead pipe and a live one look the
+        /// same.
+        NextPipeInode : InodeNumber
+        /// The `st_dev` every end of every pipe reports.
+        ///
+        /// On Linux this is the anonymous device the kernel gave its pipe
+        /// filesystem at boot, which depends on what else was mounted before
+        /// it: configuration of this machine rather than a fact of the kernel.
+        /// On Darwin it is 0 for every pipe on every machine (measured, 27.0.0).
+        /// See `UnixMachineState.withPipeDevice`.
+        PipeDevice : int64
         /// The identity the next `UnixSocket.socket` will allocate.
         ///
         /// Monotonic, and never reused: no syscall reports a
@@ -373,6 +399,53 @@ module UnixMachineState =
         | None ->
             failwith
                 $"UnixMachineState.socket: %O{socketId} names no socket in this kernel's socket table. Every SocketId reachable by a caller comes from an open file description, and UnixSystemDefect.DanglingSocket exists to make that unreachable, so the system breaks UnixSystem.checkInvariants: this is a bug in this library, or in a caller that assembled the state by hand, rather than anything the simulated process did."
+
+    /// The pipe `pipeId` names.
+    ///
+    /// Loudly partial rather than an option, as `socket` is: every `PipeId` a
+    /// caller can hold came out of an `OpenFileTarget.Pipe`, and
+    /// `UnixSystem.checkInvariants` rejects a machine in which one of those
+    /// names nothing.
+    let pipe (pipeId : PipeId) (machine : UnixMachineState) : PipeState =
+        match Map.tryFind pipeId machine.Pipes with
+        | Some pipe -> pipe
+        | None ->
+            failwith
+                $"UnixMachineState.pipe: %O{pipeId} names no pipe in this kernel's pipe table. Every PipeId reachable by a caller comes from an open file description, and UnixSystemDefect.DanglingPipe exists to make that unreachable, so the system breaks UnixSystem.checkInvariants: this is a bug in this library, or in a caller that assembled the state by hand."
+
+    /// The `st_dev` a pipe reports on a machine of `flavour` that has not
+    /// configured one.
+    ///
+    /// On Linux, 0xc: the pipe filesystem's device on the Linux 6.18.5 machine
+    /// its pipes were measured on. Any other small number would do as well,
+    /// since each boot numbers it afresh. On Darwin, 0, which is what every
+    /// Darwin pipe reports.
+    let defaultPipeDevice (flavour : SimulatedUnixFlavour) : int64 =
+        match flavour with
+        | SimulatedUnixFlavour.Linux -> 0xcL
+        | SimulatedUnixFlavour.Darwin -> 0L
+
+    /// Set the `st_dev` every pipe reports. `None` takes the flavour's default
+    /// (`defaultPipeDevice`).
+    ///
+    /// Refuses anything but 0 on Darwin, whose pipes all report 0, and a
+    /// negative device on Linux, which no `dev_t` is.
+    let withPipeDevice (device : int64 option) (machine : UnixMachineState) : UnixMachineState =
+        let flavour = SimulatedUnixPlatform.flavour machine.UnixPlatform
+
+        let resolved =
+            match device, flavour with
+            | None, _ -> defaultPipeDevice flavour
+            | Some device, SimulatedUnixFlavour.Darwin when device <> 0L ->
+                failwith
+                    $"UnixMachineState.PipeDevice: %d{device} is not a device a Darwin pipe reports; every pipe on Darwin reports st_dev 0 (measured on 27.0.0). Pass None, or 0."
+            | Some device, _ when device < 0L ->
+                failwith $"UnixMachineState.PipeDevice: %d{device} is negative, which no dev_t is."
+            | Some device, _ -> device
+
+        { machine with
+            PipeDevice = resolved
+        }
 
     /// The connection `connectionId` names.
     ///

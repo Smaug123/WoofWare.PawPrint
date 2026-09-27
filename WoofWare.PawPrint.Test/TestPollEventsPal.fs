@@ -337,6 +337,7 @@ module TestPollEventsPal =
                     Out = true
                 }
             | OpenFileTarget.SocketEventPort _ -> failwith "TestPollEventsPal: no row polls a socket event port."
+            | OpenFileTarget.Pipe _ -> failwith "TestPollEventsPal: no row polls a pipe."
 
         (if level.In && palEvents &&& pal.["PAL_POLLIN"] <> 0s then
              pal.["PAL_POLLIN"]

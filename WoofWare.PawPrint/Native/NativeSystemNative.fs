@@ -159,6 +159,12 @@ module NativeSystemNative =
         | NamedType concreteTypes ("", "Error", generics) when generics.IsEmpty -> Some ()
         | _ -> None
 
+    /// What a guest did to reach one of the kernel's refusals of a Darwin row
+    /// nobody has measured, and what would lift it. The kernel names the row;
+    /// every handler that can meet one adds this.
+    let private unmeasuredDarwinRow : string =
+        "Only a Darwin kernel refuses this, and only for an inode whose owner or group is not the caller's, which a guest meets when `KernelConfig.FileSystem` or `KernelConfig.FileSystemRootOwner` states another owner. Measuring the row needs root, or a second user, on Darwin; the flavour-divergence table in the emulated-posix-kernel skill lists what has been measured."
+
     /// Store the errno a failed syscall earned, in the raw numbering this
     /// kernel's flavour uses, and hand back the state to push a sentinel from.
     ///
@@ -1126,7 +1132,7 @@ module NativeSystemNative =
             match outcome with
             | Error (RenameRefusal.Sticky refusal) ->
                 failwith
-                    $"%s{operation}: RenameRefusal.Sticky: %s{StickyRefusal.describe refusal} A seed owned by anyone but the configured user and group is refused (`EmulatedKernel.withFileSystemAndCurrentDirectory`), so no guest file should reach this; if one did, that refusal was lifted without modelling this row."
+                    $"%s{operation}: RenameRefusal.Sticky: %s{StickyRefusal.describe refusal} %s{unmeasuredDarwinRow}"
             | Error (RenameRefusal.PathArgument (PathArgumentRefusal.InteriorNul offset)) ->
                 failwith
                     $"%s{operation}: the bytes read for one of the guest's paths hold a NUL at offset %d{offset}, which a C string cannot: the read ran past the string's end (this is an interpreter bug)."
@@ -2479,30 +2485,10 @@ module NativeSystemNative =
             // `uint32_t SystemNative_GetEUid(void)` (pal_uid.c:91) is
             // `return geteuid();` — infallible, as `geteuid(2)` is.
             //
-            // The same user ID `Stat`/`LStat` below report as every inode's
-            // `st_uid`: every inode belongs to the configured user and group,
-            // because `EmulatedKernel.withFileSystemAndCurrentDirectory` refuses a
-            // seed entry owned by anyone else, and no reachable syscall could give
-            // an inode another owner (`SystemNative_ChOwn` is not in the interop
-            // surface at all).
-            //
-            // That equality is why its `GetEGid` and `GetGroups` neighbours are
-            // *not* implemented here. Within CoreLib the only route to them is
-            // `Interop.Sys.IsMemberOfGroup` — managed code, not an entry point —
-            // whose sole caller is `FileStatus.IsModeReadOnlyCore` behind
-            // `if (_fileCache.Uid == Interop.Sys.GetEUid())`
-            // (FileStatus.Unix.cs:106). While every inode belongs to the effective
-            // uid that guard always holds, so the group path is dead by
-            // construction, and `KernelConfig.SupplementaryGroups` is state no
-            // guest can observe until a seed can give an inode another owner.
-            // Implementing `GetEGid` alone would be worse than either: it
-            // short-circuits `IsMemberOfGroup` on `gid == GetEGid()`
-            // (Interop.IsMemberOfGroup.cs:13), which while every inode belongs
-            // to the effective IDs is also always true — so the branch would start *succeeding*, on the
-            // strength of the very invariant that must have broken for it to be
-            // reachable. Leaving them unimplemented means a guest that gets
-            // there stops loudly instead, naming the entry point.
-            // `sourcesImpure/EffectiveUserIdConfigured.cs` pins the premise.
+            // CoreLib compares it with a file's `st_uid` in
+            // `FileStatus.IsModeReadOnlyCore` (FileStatus.Unix.cs:106), and asks
+            // `GetEGid` and `GetGroups` below only for a file this user does not
+            // own.
             let uid =
                 UserId.toUInt32 (UnixDescriptor.effectiveUserId (EmulatedKernel.unix state.Kernel))
 
@@ -2510,6 +2496,71 @@ module NativeSystemNative =
             |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 uid) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_GetEGid",
+          [],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32) ->
+            // `uint32_t SystemNative_GetEGid(void)` (pal_uid.c:96) is
+            // `return getegid();`, infallible as `getegid(2)` is. CoreLib's
+            // `Interop.Sys.IsMemberOfGroup` asks it first, and asks `GetGroups`
+            // only for a group that is not this one.
+            let gid =
+                GroupId.toUInt32 (UnixDescriptor.effectiveGroupId (EmulatedKernel.unix state.Kernel))
+
+            state
+            |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 gid) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+        | Some "SystemNative_GetGroups",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ; ConcretePointer _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // `int32_t SystemNative_GetGroups(int32_t ngroups, uint32_t* groups)`
+            // (pal_uid.c:234) is `return getgroups(ngroups, groups);`. It also
+            // asserts `ngroups >= 0` and `groups != NULL`, which a retail build
+            // compiles out, so a guest sees what `getgroups` answers to both.
+            //
+            // CoreLib's `IsMemberOfGroup` passes a buffer of 64 (1 in a Debug
+            // build), doubling it on EINVAL, and reads the first `rv` elements.
+            let operation = "SystemNative_GetGroups"
+            let size = NativeCall.int32Argument operation instruction.Arguments.[0]
+            let buffer = bufferPointerArgument operation "groups" instruction.Arguments.[1]
+
+            let answered (returned : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 returned)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            match
+                UnixDescriptor.getgroups (BufferPointer.toUserBuffer buffer) size (EmulatedKernel.unix state.Kernel)
+            with
+            | Error (GetGroupsRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
+            | Error (GetGroupsRefusal.UnmeasuredGroupList _ as refusal) ->
+                failwith
+                    $"%s{operation}: GetGroupsRefusal.UnmeasuredGroupList: %s{GetGroupsRefusal.describe refusal} CoreLib reaches this from `File.GetAttributes` and every other read-only check, for a file this user does not own whose group is not its effective group: on Darwin, that is a seeded entry owned by another user and group (`KernelConfig.FileSystem`)."
+            | Ok (GetGroupsAnswer.Counted count) -> answered count state
+            | Ok (GetGroupsAnswer.Failed error) -> withErrnoOnly ctx error state |> answered -1
+            | Ok (GetGroupsAnswer.Copied []) ->
+                // Nothing is copied, so the buffer is never resolved: a real
+                // `getgroups` of an empty list writes nothing through it.
+                answered 0 state
+            | Ok (GetGroupsAnswer.Copied groups) ->
+                let destination =
+                    match BufferPointer.dereferenceable buffer with
+                    | Some destination -> destination
+                    | None ->
+                        failwith
+                            $"%s{operation}: the kernel copied groups into %O{buffer}, which names no storage. It answers EFAULT or refuses for every such buffer before the copy (this is an interpreter bug)."
+
+                let bytes = Array.zeroCreate<byte> (4 * List.length groups)
+
+                groups
+                |> List.iteri (fun i group ->
+                    BinaryPrimitives.WriteUInt32LittleEndian (Span<byte> (bytes, 4 * i, 4), GroupId.toUInt32 group)
+                )
+
+                // A successful call leaves errno alone.
+                writeBytesThrough ctx operation destination (ImmutableArray.CreateRange bytes) state
+                |> answered (List.length groups)
         // `int32_t SystemNative_Stat(const char* path, FileStatus* output)` and
         // its `LStat` twin, from `pal_io.c`. CoreLib declares each of them
         // twice — `Interop.Stat.cs` takes a `string`, `Interop.Stat.Span.cs` a
@@ -2641,8 +2692,7 @@ module NativeSystemNative =
 
             match UnixNamespace.openPath openFlags path mode (EmulatedKernel.unix state.Kernel) with
             | Error refusal ->
-                failwith
-                    $"%s{operation}: OpenRefusal: %s{OpenRefusal.describe refusal} A seed owned by anyone but the configured user and group is refused (`EmulatedKernel.withFileSystemAndCurrentDirectory`), so no guest file should reach this; if one did, that refusal was lifted without modelling this row."
+                failwith $"%s{operation}: OpenRefusal: %s{OpenRefusal.describe refusal} %s{unmeasuredDarwinRow}"
             | Ok (SyscallAnswer.Failed error, system) ->
                 withErrno ctx error system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim -1L)) ctx.Thread
@@ -2685,7 +2735,7 @@ module NativeSystemNative =
                 (fun path system ->
                     UnixNamespace.unlink path system
                     |> Result.mapError (fun refusal ->
-                        $"StickyRefusal: %s{StickyRefusal.describe refusal} A seed owned by anyone but the configured user and group is refused (`EmulatedKernel.withFileSystemAndCurrentDirectory`), so no guest file should reach this; if one did, that refusal was lifted without modelling this row."
+                        $"StickyRefusal: %s{StickyRefusal.describe refusal} %s{unmeasuredDarwinRow}"
                     )
                 )
                 state
@@ -2709,7 +2759,7 @@ module NativeSystemNative =
                 (fun path system ->
                     UnixNamespace.rmdir path system
                     |> Result.mapError (fun refusal ->
-                        $"StickyRefusal: %s{StickyRefusal.describe refusal} A seed owned by anyone but the configured user and group is refused (`EmulatedKernel.withFileSystemAndCurrentDirectory`), so no guest file should reach this; if one did, that refusal was lifted without modelling this row."
+                        $"StickyRefusal: %s{StickyRefusal.describe refusal} %s{unmeasuredDarwinRow}"
                     )
                 )
                 state
@@ -2787,7 +2837,7 @@ module NativeSystemNative =
             match UnixNamespace.openPath flags path 0 (EmulatedKernel.unix state.Kernel) with
             | Error refusal ->
                 failwith
-                    $"%s{operation}: OpenRefusal: %s{OpenRefusal.describe refusal} A seed owned by anyone but the configured user and group is refused (`EmulatedKernel.withFileSystemAndCurrentDirectory`), so no guest file should reach this; if one did, that refusal was lifted without modelling this row."
+                    $"%s{operation}: OpenRefusal: %s{OpenRefusal.describe refusal} This open does not ask for O_TRUNC, and a truncation is the only thing the kernel refuses an open for (this is an interpreter bug)."
             | Ok (SyscallAnswer.Failed error, system) ->
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
@@ -3078,7 +3128,7 @@ module NativeSystemNative =
             match UnixDescriptor.ftruncate fd length (EmulatedKernel.unix state.Kernel) with
             | Error (TruncationRefusal.UnmeasuredSetIdChange _ as refusal) ->
                 failwith
-                    $"%s{operation}: TruncationRefusal.UnmeasuredSetIdChange: %s{TruncationRefusal.describe refusal} A seed owned by anyone but the configured user and group is refused (`EmulatedKernel.withFileSystemAndCurrentDirectory`), so no guest file should reach this; if one did, that refusal was lifted without modelling this row."
+                    $"%s{operation}: TruncationRefusal.UnmeasuredSetIdChange: %s{TruncationRefusal.describe refusal} %s{unmeasuredDarwinRow}"
             | Error refusal -> failwith $"%s{operation}: %s{TruncationRefusal.describe refusal}"
             | Ok (SyscallAnswer.Failed error, system) ->
                 withErrno ctx error system state
@@ -3411,7 +3461,7 @@ module NativeSystemNative =
                         $"%s{operation}: fd %d{fd}: %s{PWriteRefusal.describe refusal} Reachable from the BCL: `RandomAccess.WriteAtOffset` passes the guest's own offset through, so a guest writing far past the end of a file gets here. Represent file contents sparsely (issue #956) before answering it."
                 | PWriteRefusal.UnmeasuredSetIdChange _ ->
                     failwith
-                        $"%s{operation}: fd %d{fd}: PWriteRefusal.UnmeasuredSetIdChange: %s{PWriteRefusal.describe refusal} A seed owned by anyone but the configured user and group is refused (`EmulatedKernel.withFileSystemAndCurrentDirectory`), so no guest file should reach this; if one did, that refusal was lifted without modelling this row."
+                        $"%s{operation}: fd %d{fd}: PWriteRefusal.UnmeasuredSetIdChange: %s{PWriteRefusal.describe refusal} %s{unmeasuredDarwinRow}"
 
             match
                 UnixReadWrite.admitPWrite
@@ -3538,6 +3588,9 @@ module NativeSystemNative =
             | Error (ReadRefusal.ScannedDirectoryPosition _ as refusal) ->
                 failwith
                     $"%s{operation}: fd %d{fd}: %s{ReadRefusal.describe refusal} CoreLib never reads a directory through `SystemNative_Read` (it enumerates with `SystemNative_OpenDir` and `SystemNative_ReadDir`, whose descriptor it never sees), so this is a hand-rolled P/Invoke reading a directory it has partly enumerated. Rewind it with `lseek(fd, 0, SEEK_SET)`, or read before enumerating."
+            | Error (ReadRefusal.PipeWouldBlock _ as refusal) ->
+                failwith
+                    $"%s{operation}: fd %d{fd}: %s{ReadRefusal.describe refusal} PawPrint parks no task in a read yet. A guest reaching this reads a pipe it made with `SystemNative_Pipe` before anything was written to it; give the read end O_NONBLOCK, or write before reading."
             | Ok (ReadAnswer.Failed error, system) ->
                 withErrno ctx error system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
@@ -3823,6 +3876,58 @@ module NativeSystemNative =
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim resultCode)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+        // `int32_t SystemNative_Pipe(int32_t pipeFds[2], int32_t flags)`
+        // (pal_io.c:557). The flags parameter is matched loosely for the reason
+        // `SystemNative_FLock`'s operation is: CoreLib declares it as the
+        // `Interop.Sys.PipeFlags` enum.
+        | Some "SystemNative_Pipe",
+          [ ConcretePointer _ ; _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "SystemNative_Pipe"
+            let flags = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            match PipeFlagsPal.decode state.Kernel.UnixPlatform flags with
+            | None ->
+                // The shim's `default` arm: EINVAL without reaching the kernel,
+                // and so without looking at the array.
+                withErrnoOnly ctx UnixError.EINVAL state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | Some kernelFlags ->
+
+            let pipeFds = bufferPointerArgument operation "pipeFds" instruction.Arguments.[0]
+
+            match
+                UnixPipe.pipe2 kernelFlags (BufferPointer.toUserBuffer pipeFds) (EmulatedKernel.unix state.Kernel)
+            with
+            | Error (Pipe2Refusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage pipeFds refusal)
+            | Error refusal ->
+                failwith
+                    $"%s{operation}: %s{Pipe2Refusal.describe refusal} CoreLib passes only 0 or PAL_O_CLOEXEC and a two-int array of its own, so this is a hand-rolled P/Invoke."
+            | Ok (Pipe2Answer.Failed error, system) ->
+                withErrno ctx error system state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | Ok (Pipe2Answer.Created (readFd, writeFd), system) ->
+
+            let destination =
+                match BufferPointer.dereferenceable pipeFds with
+                | Some destination -> destination
+                | None ->
+                    failwith
+                        $"%s{operation}: the kernel made a pipe for an array that names no storage. Every such array is answered or refused before the pipe is made (this is an interpreter bug)."
+
+            let bytes = Array.zeroCreate<byte> 8
+            BinaryPrimitives.WriteInt32LittleEndian (bytes.AsSpan (0, 4), readFd)
+            BinaryPrimitives.WriteInt32LittleEndian (bytes.AsSpan (4, 4), writeFd)
+
+            withAnswered system state
+            |> writeBytesThrough ctx operation destination (ImmutableArray.Create<byte> bytes)
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_FcntlSetIsNonBlocking",
@@ -5639,29 +5744,24 @@ module NativeSystemNative =
           [ ConcreteIntPtr state.ConcreteTypes ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             // `int32_t SystemNative_IsATty(intptr_t fd)` (pal_console.c:43)
-            // delegates to libc `isatty(3)`. PawPrint models a headless
-            // simulated process: no fd ever refers to a terminal, so we
-            // always return 0. CoreLib's only consumer is
-            // `ConsolePal.Unix.cs:IsHandleRedirected`, which therefore sees
-            // every standard stream as redirected — matching how this
-            // interpreter is run in practice (piped/captured output).
+            // delegates to libc `isatty(3)`, which is `tcgetattr` reduced to 1
+            // or 0. Nothing the kernel models is a terminal, so this always
+            // returns 0, with the kernel's errno for why. CoreLib's only
+            // consumer is `ConsolePal.Unix.cs:IsHandleRedirected`, which
+            // therefore sees every standard stream as redirected.
             //
-            // errno mirrors libc: `ENOTTY` for live fds, `EBADF` for
-            // unknown fds. The BCL's `[LibraryImport]` wrapper for IsATty
-            // does not currently read this back, but a guest that calls
-            // the entry point directly may observe `LastSystemError` via
-            // `Marshal.GetLastSystemError`, so we set it honestly.
+            // The BCL's `[LibraryImport]` wrapper for IsATty does not read the
+            // errno back, but a guest that calls the entry point directly may
+            // observe it through `Marshal.GetLastSystemError`.
             let fd = fdArgument "SystemNative_IsATty" instruction.Arguments.[0]
 
             let error =
-                match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
-                | Some _ -> UnixError.ENOTTY
-                | None -> UnixError.EBADF
+                match UnixDescriptor.terminalAttributes fd (EmulatedKernel.unix state.Kernel) with
+                | TerminalAttributesAnswer.NotATerminal error -> error
 
-            let state =
-                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
-
-            state
+            // In the simulated flavour's own numbering: Darwin's EOPNOTSUPP for a
+            // Unix-domain socket is a number Linux gives another error.
+            withErrnoOnly ctx error state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -5674,10 +5774,12 @@ module NativeSystemNative =
             // delegates to `Common_Write` in `pal_io_common.h`. The C path:
             //   * negative `bufferSize`            -> errno = ERANGE, return -1
             //   * otherwise call real `write(2)`   -> may return short, may EINTR (retried)
-            // The emulated kernel never returns short, never returns EINTR and
-            // never blocks. A guest depending on EAGAIN or a partial write from
-            // a non-blocking socket would need connection state PawPrint does
-            // not model, which `UnixReadWrite.write` refuses rather than guesses.
+            // The emulated kernel never returns EINTR and never blocks, and
+            // returns short only for a non-blocking write into a pipe with room
+            // for part of it. A guest depending on EAGAIN or a partial write
+            // from a non-blocking socket would need connection state PawPrint
+            // does not model, which `UnixReadWrite.write` refuses rather than
+            // guesses.
             let operation = "SystemNative_Write"
             let fd = fdArgument operation instruction.Arguments.[0]
             let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
@@ -5693,9 +5795,13 @@ module NativeSystemNative =
                         "Write less, or raise the model's file-length limit (issue #956)."
                     | WriteRefusal.NonBlockingStandardStreamShortWrite _ ->
                         "Reachable from the BCL once the guest has set O_NONBLOCK on the stream: `ConsolePal.Unix.Write` hands `write` the whole buffer a `Stream.Write` on `Console.OpenStandardOutput()` was given, and loops over a short count. Answering needs the kernel's log to record the bytes a short write took rather than the bytes offered, and this handler's `WroteToFd` to follow it."
+                    | WriteRefusal.PipeWouldBlock _ ->
+                        "PawPrint parks no task in a write yet. A guest reaching this writes more into a pipe it made with `SystemNative_Pipe` than the pipe has room for; give the write end O_NONBLOCK, or read from the pipe first."
+                    | WriteRefusal.BrokenPipe _ ->
+                        "PawPrint's startup ignores SIGPIPE, as CoreCLR does, so a real run would see EPIPE here; the kernel does not yet hold the disposition that says so."
                     | WriteRefusal.Buffer _ -> "Pass a buffer that names guest storage."
                     | WriteRefusal.UnmeasuredSetIdChange _ ->
-                        "(WriteRefusal.UnmeasuredSetIdChange) A seed owned by anyone but the configured user and group is refused (`EmulatedKernel.withFileSystemAndCurrentDirectory`), so no guest file should reach this; if one did, that refusal was lifted without modelling this row."
+                        $"(WriteRefusal.UnmeasuredSetIdChange) %s{unmeasuredDarwinRow}"
 
                 failwith $"%s{operation}: fd %d{fd}: %s{WriteRefusal.describe refusal} %s{reachability}"
 
@@ -5741,10 +5847,10 @@ module NativeSystemNative =
                 with
                 | Error (WriteRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
                 | Error refusal -> refused refusal
-                | Ok (WriteAdmission.Answered answer) ->
-                    let result, state = answered answer (EmulatedKernel.unix state.Kernel) state
+                | Ok (WriteAdmission.Answered answer, admitted) ->
+                    let result, state = answered answer admitted state
                     result, StepEffect.NoEffect, state
-                | Ok (WriteAdmission.Transfer count) ->
+                | Ok (WriteAdmission.Transfer count, admitted) ->
 
                 let source =
                     match BufferPointer.dereferenceable buffer with
@@ -5755,7 +5861,7 @@ module NativeSystemNative =
 
                 let bytes = readBytesThrough ctx operation source count state
 
-                match UnixReadWrite.write fd bytes (EmulatedKernel.unix state.Kernel) with
+                match UnixReadWrite.write fd bytes admitted with
                 | Error refusal -> refused refusal
                 | Ok (answer, system) ->
 
@@ -5773,7 +5879,8 @@ module NativeSystemNative =
                         | OpenFileTarget.File _
                         | OpenFileTarget.Directory _
                         | OpenFileTarget.Socket _
-                        | OpenFileTarget.SocketEventPort _ -> StepEffect.NoEffect
+                        | OpenFileTarget.SocketEventPort _
+                        | OpenFileTarget.Pipe _ -> StepEffect.NoEffect
                     | None -> StepEffect.NoEffect
 
                 result, effect, state
@@ -6120,17 +6227,7 @@ module NativeSystemNative =
 
                 let system = EmulatedKernel.unix restored.Kernel
 
-                let liveThreads =
-                    restored.ThreadState
-                    |> Seq.choose (fun (KeyValue (thread, ts)) ->
-                        if ThreadStatus.canReceiveSignal ts.Status then
-                            Some thread
-                        else
-                            None
-                    )
-                    |> ImmutableArray.CreateRange
-
-                match UnixSignal.kill liveThreads (ProcessId.toInt32 (UnixSystem.processId system)) signo system with
+                match UnixSignal.kill (ProcessId.toInt32 (UnixSystem.processId system)) signo system with
                 | Ok (Ok (KillOutcome.ProcessContinues after)) ->
                     restored.MapKernel (EmulatedKernel.withUnix after)
                     |> NativeHandlerResult.completed

@@ -1,7 +1,6 @@
 namespace WoofWare.PosixKernel.Test
 
 open System
-open System.Collections.Immutable
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
@@ -24,8 +23,6 @@ module TestUnixSignal =
 
     let private withPid (pid : int32) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         UnixSystem.withProcessId "test" (ProcessId.parseOrFail "test" pid) system
-
-    let private live : ImmutableArray<int> = ImmutableArray.Create 0
 
     let private self : int32 = ProcessId.toInt32 (UnixSystem.processId linux)
 
@@ -59,7 +56,7 @@ module TestUnixSignal =
                         }
                 }
 
-        match UnixSignal.kill live self 9 system with
+        match UnixSignal.kill self 9 system with
         | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
             ended.Termination
             |> shouldEqual (ProcessTermination.Signaled (Signal.Other 9, false))
@@ -87,7 +84,7 @@ module TestUnixSignal =
                     }
 
                 let death (signo : int) : ProcessTermination =
-                    match UnixSignal.kill live self signo system with
+                    match UnixSignal.kill self signo system with
                     | Ok (Ok (KillOutcome.ProcessEnded ended)) -> ended.Termination
                     | other -> failwith $"kill(self, %d{signo}) under %O{flavour}: %O{other}"
 
@@ -101,13 +98,22 @@ module TestUnixSignal =
         for flavour in flavours do
             let system = systemOn flavour
 
-            UnixSignal.kill live self 0 system
+            UnixSignal.kill self 0 system
             |> shouldEqual (Ok (Ok (KillOutcome.ProcessContinues system)))
 
     [<Test>]
     let ``a signal the calling process cannot yet receive is left pending`` () : unit =
-        // No live thread, so SIGTERM waits in the process-wide pending set.
-        match UnixSignal.kill ImmutableArray.Empty self 15 linux with
+        // Its only task blocks SIGTERM, so SIGTERM waits in the process-wide
+        // pending set.
+        let blocking =
+            { linux with
+                Process =
+                    { linux.Process with
+                        Signals = SignalState.block 0 Signal.SIGTERM linux.Process.Signals
+                    }
+            }
+
+        match UnixSignal.kill self 15 blocking with
         | Ok (Ok (KillOutcome.ProcessContinues after)) ->
             SignalState.pending after.Process.Signals
             |> shouldEqual
@@ -123,22 +129,22 @@ module TestUnixSignal =
     let ``kill is answered only for the calling process`` () : unit =
         // A pid that differs from the caller's by one, so a comparison against
         // the wrong field (or an off-by-one) is caught.
-        UnixSignal.kill live (self + 1) 0 linux
+        UnixSignal.kill (self + 1) 0 linux
         |> shouldEqual (Error (KillRefusal.OtherProcess (self + 1)))
 
         for pid in [ 0 ; -1 ; -self ; Int32.MinValue ] do
-            UnixSignal.kill live pid 0 linux
+            UnixSignal.kill pid 0 linux
             |> shouldEqual (Error (KillRefusal.ProcessGroup pid))
 
         // The same pid is the caller's own once the process is configured with it.
-        UnixSignal.kill live (self + 1) 0 (withPid (self + 1) linux)
+        UnixSignal.kill (self + 1) 0 (withPid (self + 1) linux)
         |> shouldEqual (Ok (Ok (KillOutcome.ProcessContinues (withPid (self + 1) linux))))
 
     [<Test>]
     let ``kill by an init process is refused`` () : unit =
         let init = withPid 1 linux
 
-        UnixSignal.kill live 1 9 init |> shouldEqual (Error KillRefusal.InitProcess)
+        UnixSignal.kill 1 9 init |> shouldEqual (Error KillRefusal.InitProcess)
 
     /// Measured by `docs/plans/2026-08-23-posix-kernel-extraction/kill-arguments.c`
     /// on Linux 6.18.5 and Darwin 25.6.0: the rows with the calling process as
@@ -148,7 +154,7 @@ module TestUnixSignal =
     [<Test>]
     let ``kill of the calling process answers the measured rows`` () : unit =
         let answer (flavour : SimulatedUnixFlavour) (signo : int) : string =
-            match UnixSignal.kill live self signo (systemOn flavour) with
+            match UnixSignal.kill self signo (systemOn flavour) with
             | Ok (Ok _) -> "OK"
             | Ok (Error errno) -> $"%O{errno}"
             | Error refusal -> $"refused %O{refusal}"
@@ -191,7 +197,7 @@ module TestUnixSignal =
 
             let valid = signo >= 0 && signo <= highestSigno flavour
 
-            match UnixSignal.kill live self signo system, valid with
+            match UnixSignal.kill self signo system, valid with
             | Ok (Error errno), false -> errno |> shouldEqual UnixError.EINVAL
             | Ok (Ok outcome), true ->
                 // A valid number is sent, and sending is exactly generating
@@ -200,14 +206,19 @@ module TestUnixSignal =
                     if signo = 0 then
                         SignalGeneration.ProcessContinues system.Process.Signals
                     else
-                        SignalState.generate
-                            coreDumps
-                            live
-                            {
-                                Signal = Signal.Other signo
-                                Target = ValueNone
-                            }
-                            system.Process.Signals
+                        match
+                            SignalState.generate
+                                coreDumps
+                                0
+                                (Set.singleton 0)
+                                {
+                                    Signal = Signal.Other signo
+                                    Target = ValueNone
+                                }
+                                system.Process.Signals
+                        with
+                        | Ok generation -> generation
+                        | Error refusal -> failwith $"generating %d{signo} was refused: %O{refusal}"
 
                 // Everything but the signals is untouched by a process that
                 // carries on or stops.
@@ -258,7 +269,7 @@ module TestUnixSignal =
             }
 
         let property (flavour : SimulatedUnixFlavour, pid : int, signo : int) : unit =
-            match UnixSignal.kill live pid signo (systemOn flavour) with
+            match UnixSignal.kill pid signo (systemOn flavour) with
             | Error (KillRefusal.OtherProcess refused) when pid > 0 -> refused |> shouldEqual pid
             | Error (KillRefusal.ProcessGroup refused) when pid <= 0 -> refused |> shouldEqual pid
             | other -> failwith $"kill(%d{pid}, %d{signo}) under %O{flavour}: expected a refusal, got %O{other}"

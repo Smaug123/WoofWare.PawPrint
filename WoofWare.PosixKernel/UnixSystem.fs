@@ -10,6 +10,7 @@ open System.Collections.Immutable
 /// per flavour. Arguments only the client can classify arrive classified.
 type Syscall =
     | GetEffectiveUserId
+    | GetEffectiveGroupId
     | GetProcessId
     | Dup of fd : int
     | LSeek of fd : int * offset : int64 * whence : int
@@ -193,6 +194,27 @@ type UnixSystemDefect<'Task> =
     /// The machine's thread ID counter is not its flavour's: a Linux counter on a
     /// Darwin machine, or the other way about.
     | ThreadIdAllocatorNotOfFlavour of flavour : SimulatedUnixFlavour * allocator : ThreadIdAllocator
+    /// A live open file description names a pipe the pipe table does not hold.
+    | DanglingPipe of description : OpenFileDescriptionId * pipe : PipeId
+    /// The pipe table holds a pipe no live description names either end of: a
+    /// close that should have freed it did not.
+    | UnreferencedPipe of pipe : PipeId
+    /// A pipe in the table has an identity at or above the next one to
+    /// allocate, so a future `pipe2` would mint a duplicate.
+    | NextPipeIdNotFresh of nextPipeId : PipeId * existing : PipeId
+    /// A pipe end reports an inode number at or above the next one to mint, so
+    /// a future pipe would report it too.
+    | PipeInodeNotFresh of next : InodeNumber * pipe : PipeId * inode : InodeNumber
+    /// Two pipe ends that are not two ends of one Linux pipe report the same
+    /// inode number, so a process comparing them would take them for one pipe.
+    | DuplicatePipeInode of inode : InodeNumber
+    /// A pipe holds a buffer, or reports inode numbers, of a shape its
+    /// machine's flavour does not give a pipe: see `PipeBuffer.isOf` and
+    /// `PipeInodes`.
+    | PipeNotOfPlatform of pipe : PipeId * platform : SimulatedUnixPlatform
+    /// The machine's pipes report a device no machine of its flavour reports
+    /// for them: a negative one, or on Darwin anything but 0.
+    | PipeDeviceNotOfFlavour of device : int64 * flavour : SimulatedUnixFlavour
 
 /// Why the directory a host named cannot be the one a simulated process starts
 /// in. `UnixSystem.withFileSystemAndCurrentDirectory` returns one instead of
@@ -302,6 +324,13 @@ module UnixSystem =
                 ),
                 system
             )
+        | Syscall.GetEffectiveGroupId ->
+            Ok (
+                SyscallOutcome.Answered (
+                    SyscallAnswer.Completed (int64 (GroupId.toUInt32 (UnixDescriptor.effectiveGroupId system)))
+                ),
+                system
+            )
         | Syscall.GetProcessId ->
             Ok (
                 SyscallOutcome.Answered (SyscallAnswer.Completed (int64 (ProcessId.toInt32 (processId system)))),
@@ -335,7 +364,8 @@ module UnixSystem =
         | Syscall.ChDir path -> Ok (UnixPathResolution.chdir path system) |> answered
 
     /// Every way this system's tables disagree with each other: the socket table
-    /// against the descriptor table, the connection table against the sockets
+    /// and the pipe table against the descriptor table, each pipe and the pipe
+    /// device against the platform, the connection table against the sockets
     /// that reference it, the descriptor table against the filesystem, the
     /// current directory against both, each task's park against the descriptor
     /// table, the signal state against the task table, and the machine's
@@ -362,7 +392,8 @@ module UnixSystem =
                 | OpenFileTarget.StandardStream _
                 | OpenFileTarget.SocketEventPort _
                 | OpenFileTarget.File _
-                | OpenFileTarget.Directory _ -> None
+                | OpenFileTarget.Directory _
+                | OpenFileTarget.Pipe _ -> None
                 | OpenFileTarget.Socket socketId -> Some (id, socketId)
             )
 
@@ -410,7 +441,8 @@ module UnixSystem =
                     | Some (InodeContent.Symlink _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
                 | OpenFileTarget.StandardStream _
                 | OpenFileTarget.SocketEventPort _
-                | OpenFileTarget.Socket _ -> None
+                | OpenFileTarget.Socket _
+                | OpenFileTarget.Pipe _ -> None
             )
 
         let currentDirectory =
@@ -506,7 +538,8 @@ module UnixSystem =
                 | OpenFileTarget.StandardStream _
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
-                | OpenFileTarget.Socket _ -> []
+                | OpenFileTarget.Socket _
+                | OpenFileTarget.Pipe _ -> []
                 | OpenFileTarget.SocketEventPort portState ->
                     portState.Registrations
                     |> Map.toList
@@ -557,7 +590,8 @@ module UnixSystem =
                         | OpenFileTarget.StandardStream _
                         | OpenFileTarget.File _
                         | OpenFileTarget.Directory _
-                        | OpenFileTarget.Socket _ ->
+                        | OpenFileTarget.Socket _
+                        | OpenFileTarget.Pipe _ ->
                             [
                                 UnixSystemDefect.ParkedSocketWaitOnNonPort (task, wait.Port, description.Target)
                             ]
@@ -577,7 +611,8 @@ module UnixSystem =
                                     | OpenFileTarget.StandardStream _
                                     | OpenFileTarget.File _
                                     | OpenFileTarget.Directory _
-                                    | OpenFileTarget.Socket _ -> []
+                                    | OpenFileTarget.Socket _
+                                    | OpenFileTarget.Pipe _ -> []
 
                                 let rebound =
                                     match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
@@ -768,6 +803,106 @@ module UnixSystem =
 
             allocatorFlavour @ leader @ duplicates @ unmintable
 
+        // The pipe table against the descriptions naming its pipes, and each
+        // pipe against its machine, as for sockets above.
+        let pipes =
+            let platform = system.Machine.UnixPlatform
+            let flavour = SimulatedUnixPlatform.flavour platform
+
+            let named =
+                FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+                |> Map.toList
+                |> List.choose (fun (id, description) ->
+                    match description.Target with
+                    | OpenFileTarget.Pipe (pipeId, _) -> Some (id, pipeId)
+                    | OpenFileTarget.StandardStream _
+                    | OpenFileTarget.SocketEventPort _
+                    | OpenFileTarget.File _
+                    | OpenFileTarget.Directory _
+                    | OpenFileTarget.Socket _ -> None
+                )
+
+            let dangling =
+                named
+                |> List.filter (fun (_, pipeId) -> not (Map.containsKey pipeId system.Machine.Pipes))
+                |> List.map UnixSystemDefect.DanglingPipe
+
+            let namedIds = named |> List.map snd |> Set.ofList
+
+            let unreferenced =
+                system.Machine.Pipes
+                |> Map.toList
+                |> List.map fst
+                |> List.filter (fun pipeId -> not (Set.contains pipeId namedIds))
+                |> List.map UnixSystemDefect.UnreferencedPipe
+
+            let freshness =
+                system.Machine.Pipes
+                |> Map.toList
+                |> List.map fst
+                |> List.filter (fun pipeId -> pipeId >= system.Machine.NextPipeId)
+                |> List.map (fun pipeId -> UnixSystemDefect.NextPipeIdNotFresh (system.Machine.NextPipeId, pipeId))
+
+            let inodes =
+                system.Machine.Pipes
+                |> Map.toList
+                |> List.collect (fun (pipeId, pipe) ->
+                    match pipe.Inodes with
+                    | PipeInodes.Shared inode -> [ pipeId, inode ]
+                    | PipeInodes.PerEnd (readEnd, writeEnd) -> [ pipeId, readEnd ; pipeId, writeEnd ]
+                )
+
+            let inodeFreshness =
+                inodes
+                |> List.filter (fun (_, inode) -> inode >= system.Machine.NextPipeInode)
+                |> List.map (fun (pipeId, inode) ->
+                    UnixSystemDefect.PipeInodeNotFresh (system.Machine.NextPipeInode, pipeId, inode)
+                )
+
+            let inodeDuplicates =
+                inodes
+                |> List.countBy snd
+                |> List.filter (fun (_, count) -> count > 1)
+                |> List.map (fun (inode, _) -> UnixSystemDefect.DuplicatePipeInode inode)
+
+            let shapes =
+                system.Machine.Pipes
+                |> Map.toList
+                |> List.choose (fun (pipeId, pipe) ->
+                    let inodesOfFlavour =
+                        match pipe.Inodes, flavour with
+                        | PipeInodes.Shared _, SimulatedUnixFlavour.Linux
+                        | PipeInodes.PerEnd _, SimulatedUnixFlavour.Darwin -> true
+                        | PipeInodes.Shared _, SimulatedUnixFlavour.Darwin
+                        | PipeInodes.PerEnd _, SimulatedUnixFlavour.Linux -> false
+
+                    if inodesOfFlavour && PipeBuffer.isOf platform pipe.Buffer then
+                        None
+                    else
+                        Some (UnixSystemDefect.PipeNotOfPlatform (pipeId, platform))
+                )
+
+            let device =
+                let device = system.Machine.PipeDevice
+
+                let ofFlavour =
+                    match flavour with
+                    | SimulatedUnixFlavour.Linux -> device >= 0L
+                    | SimulatedUnixFlavour.Darwin -> device = 0L
+
+                if ofFlavour then
+                    []
+                else
+                    [ UnixSystemDefect.PipeDeviceNotOfFlavour (device, flavour) ]
+
+            dangling
+            @ unreferenced
+            @ freshness
+            @ inodeFreshness
+            @ inodeDuplicates
+            @ shapes
+            @ device
+
         dangling
         @ unreferenced
         @ freshness
@@ -789,6 +924,7 @@ module UnixSystem =
         @ userBufferCheck
         @ supplementaryGroups
         @ threadIds
+        @ pipes
 
     /// Logical-processor count a freshly-minted simulated process reports.
     /// One, because only single-processor behaviour has been exercised
@@ -1008,6 +1144,12 @@ module UnixSystem =
             Machine =
                 {
                     Sockets = Map.empty
+                    Pipes = Map.empty
+                    NextPipeId = PipeId 0L
+                    // Any start would do; one, because no filesystem hands out
+                    // inode 0.
+                    NextPipeInode = InodeNumber 1L
+                    PipeDevice = UnixMachineState.defaultPipeDevice flavour
                     Connections = Map.empty
                     NextConnectionId = ConnectionId 0L
                     NextSocketEventRegistrationOrdinal = 0L
@@ -1320,7 +1462,8 @@ module UnixSystem =
                 | OpenFileTarget.Directory (inode, _) -> Some $"description %O{id} onto %O{inode}"
                 | OpenFileTarget.StandardStream _
                 | OpenFileTarget.SocketEventPort _
-                | OpenFileTarget.Socket _ -> None
+                | OpenFileTarget.Socket _
+                | OpenFileTarget.Pipe _ -> None
             )
 
         match strandedDescriptions with

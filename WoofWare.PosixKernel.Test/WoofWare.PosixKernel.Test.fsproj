@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <Compile Include="HostPlatform.fs" />
+    <Compile Include="WriteAdmissions.fs" />
     <Compile Include="NewSocket.fs" />
     <Compile Include="TestDarwinReleaseAgainstHost.fs" />
     <Compile Include="TestGcHeapHardLimit.fs" />
@@ -26,6 +27,7 @@
     <Compile Include="TestCredentials.fs" />
     <Compile Include="TestInodeOwner.fs" />
     <Compile Include="TestPermissionStanding.fs" />
+    <Compile Include="TestGetGroups.fs" />
     <Compile Include="TestWakeCondition.fs" />
     <Compile Include="TestUnixWait.fs" />
     <Compile Include="TestUnixTaskLifecycle.fs" />
@@ -69,6 +71,8 @@
     <Compile Include="TestSignalState.fs" />
     <Compile Include="TestSignalDispositions.fs" />
     <Compile Include="TestUnixSignal.fs" />
+    <Compile Include="TestSignalPickOrder.fs" />
+    <Compile Include="TestSignalReceiver.fs" />
     <Compile Include="TestDirectoryEnumeration.fs" />
     <Compile Include="TestDirectoryDescription.fs" />
     <Compile Include="TestDirectoryReadAgainstHost.fs" />
@@ -106,6 +110,8 @@
     <Compile Include="TestPipeBuffer.fs" />
     <Compile Include="TestPipeBufferCorpus.fs" />
     <Compile Include="TestPipeBufferAgainstHost.fs" />
+    <Compile Include="TestPipe.fs" />
+    <Compile Include="TestPipeAgainstHost.fs" />
     <Compile Include="TestSockaddrField.fs" />
     <Compile Include="TestSockaddrLayoutAgainstHost.fs" />
   </ItemGroup>
@@ -115,6 +121,16 @@
          docs/plans/2026-08-23-posix-kernel-extraction/socket-arguments.c.
          `TestSocketSyscall` holds `UnixSocket.socket` to it. -->
     <EmbeddedResource Include="socketSyscall\*.tsv" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The order a task took its pending signals in, and which thread took a
+         signal sent to the process, measured per flavour by
+         docs/plans/2026-08-23-posix-kernel-extraction/signal-pick-order.c and
+         signal-receiver.c. `TestSignalPickOrder` and `TestSignalReceiver` hold
+         `SignalState` to them. -->
+    <EmbeddedResource Include="signalOrder\*.txt" />
+    <EmbeddedResource Include="signalReceiver\*.txt" />
   </ItemGroup>
 
   <ItemGroup>

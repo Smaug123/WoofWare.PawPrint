@@ -1,0 +1,25 @@
+ngroups_max=16
+this process:
+  egid=20 rgid=20 euid=501 count(getgroups(0,NULL))=5
+  size 0                             -> 5  | . . . . . . .
+  size 1                             -> -1 EINVAL | . . . . . . .
+  size 2                             -> -1 EINVAL | . . . . . . .
+  size 3                             -> -1 EINVAL | . . . . . . .
+  size 4                             -> -1 EINVAL | . . . . . . .
+  size 5                             -> 5  | 20 12 61 100 701 . .
+  size 6                             -> 5  | 20 12 61 100 701 . .
+  size 7                             -> 5  | 20 12 61 100 701 . .
+  size CAP                           -> 5  | 20 12 61 100 701 . .
+  size -1                            -> -1 EINVAL | . . . . . . .
+  size -2                            -> -1 EINVAL | . . . . . . .
+  size -16                           -> -1 EINVAL | . . . . . . .
+  size -65536                        -> -1 EINVAL | . . . . . . .
+  size -2147483647                   -> -1 EINVAL | . . . . . . .
+  size -2147483648                   -> -1 EINVAL | . . . . . . .
+  size count, NULL                   -> -1 EFAULT
+  size count+1, NULL                 -> -1 EFAULT
+  size count-1, NULL                 -> -1 EINVAL
+  size -1, NULL                      -> -1 EINVAL
+  size count, straddling PROT_NONE   -> -1 EFAULT | first element untouched
+  size count, PROT_READ              -> -1 EFAULT
+not root: the setgroups rows need root

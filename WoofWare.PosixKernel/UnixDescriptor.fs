@@ -70,6 +70,8 @@ type FLockRefusal =
     | DarwinMalformedOperation of operation : int
     /// A pipe, which is what this kernel models the standard streams as.
     | DarwinStandardStream of role : FileDescriptorRole
+    /// A pipe.
+    | DarwinPipe of pipe : PipeId
     /// A socket event port: an epoll descriptor on Linux, a kqueue on Darwin.
     | DarwinSocketEventPort
     | DarwinSocket of socket : SocketId
@@ -90,6 +92,8 @@ module FLockRefusal =
             $"operation %d{operation} is malformed (not exactly one of LOCK_SH/LOCK_EX/LOCK_UN, optionally with LOCK_NB), which Linux rejects with EINVAL unless LOCK_MAND (bit 32) is set, in which case it ignores the request and answers 0, and which Darwin does not treat uniformly -- measured, Darwin answers EBADF for 0, a bare LOCK_NB and unknown bits alone, but *succeeds* for LOCK_SH|LOCK_EX, LOCK_UN|LOCK_SH and LOCK_SH with an unknown bit."
         | FLockRefusal.DarwinStandardStream role ->
             $"the descriptor is the standard stream %O{role}, which this kernel models as a pipe. Linux permits `flock` on a pipe and returns 0; Darwin refuses it with ENOTSUP (raw 45, and note Darwin numbers ENOTSUP and EOPNOTSUPP differently, 45 against 102, while Linux gives both 95)."
+        | FLockRefusal.DarwinPipe pipe ->
+            $"the descriptor is an end of pipe %O{pipe}. Linux permits `flock` on a pipe, with both ends contending as one object; Darwin refuses it with ENOTSUP (raw 45) on every pipe."
         | FLockRefusal.DarwinSocketEventPort ->
             "the descriptor is a socket event port. Linux permits `flock` on an epoll descriptor and returns 0; Darwin refuses it on a kqueue with ENOTSUP (raw 45), for every operation including LOCK_UN."
         | FLockRefusal.DarwinSocket socket ->
@@ -194,6 +198,76 @@ module CloseRefusal =
             $"task %O{task} is parked in a poll(2) watching fd %d{fd}. Measured on Linux (poll-timeout.c), the sleeping poll keeps the file it found: the close does not wake it, the closed file can still wake it (a datagram sent to a closed UDP socket's address did), and when it wakes it looks the number up again, answering POLLNVAL if the number is free and the new file's readiness if another open took the number. Representing that needs the file to outlive its descriptor while the poll sleeps, which this kernel's descriptor table cannot express."
         | CloseRefusal.ListenerWouldResetUnacceptedClient (listener, connection, client) ->
             $"the close destroys listening socket %O{listener} while connection %O{connection} sits unaccepted in its queue, and that connection's client (socket %O{client}) is still open. A real kernel RSTs the unaccepted client on listener close, leaving it in a state this kernel has not measured: its readiness level, and what connect(2) then answers, are both unknown, and it would otherwise be indistinguishable from a cleanly FIN'd peer."
+
+/// What `ioctl(fd, FIONREAD, &count)` answered.
+[<RequireQualifiedAccess>]
+type BytesAvailableAnswer =
+    /// The call returned 0, having written `count` into the caller's `int`.
+    | Reported of count : int
+    /// The call returned -1 with this errno, and wrote nothing.
+    | Failed of error : UnixError
+
+/// Why this kernel will not answer an `ioctl(FIONREAD)`.
+[<RequireQualifiedAccess>]
+type BytesAvailableRefusal =
+    /// The destination has no answer at the copy.
+    | Buffer of BufferRefusal
+    /// The descriptor `fd` names something other than a pipe, for which what
+    /// `FIONREAD` answers is not modelled.
+    | UnmodelledTarget of fd : int
+
+[<RequireQualifiedAccess>]
+module BytesAvailableRefusal =
+    /// What this kernel knows about why it cannot answer. The client supplies
+    /// its own half -- which entry point asked.
+    let describe (refusal : BytesAvailableRefusal) : string =
+        match refusal with
+        | BytesAvailableRefusal.Buffer refusal -> BufferRefusal.describe refusal
+        | BytesAvailableRefusal.UnmodelledTarget fd ->
+            $"fd %d{fd} is not an end of a pipe, and FIONREAD is answered here for pipes only. The other kinds answer per kind and per flavour (measured, pipe-syscalls.c): a regular file reports its size less the offset on both; a directory is ENOTTY on Linux and reports a number of its own on Darwin; a socket reports what it has queued; an epoll port is EINVAL and a kqueue ENOTTY. Model the kind before answering."
+
+/// What `tcgetattr(3)` answered, which is also what `isatty(3)` answers: it is
+/// `tcgetattr` with the answer reduced to 1 or 0 and the errno left as it was.
+///
+/// Nothing this kernel models is a terminal, so the one case is a failure.
+[<RequireQualifiedAccess>]
+type TerminalAttributesAnswer =
+    /// `tcgetattr` returns -1 and `isatty` returns 0, each with this errno.
+    | NotATerminal of error : UnixError
+
+/// What `getgroups(2)` does with the caller's buffer and what it returns.
+[<RequireQualifiedAccess>]
+type GetGroupsAnswer =
+    /// The call was asked only how many groups there are (a size of 0). It
+    /// returns `count` and writes nothing, whatever the buffer is.
+    | Counted of count : int
+    /// Place these groups in the caller's buffer, in this order, and return how
+    /// many there are. They fit: the size has already been compared with this
+    /// list. An empty list writes nothing and so never faults.
+    | Copied of groups : GroupId list
+    /// The call returns -1 and the caller stores `error` wherever its libc
+    /// keeps errno. Nothing was written.
+    | Failed of error : UnixError
+
+/// Why this kernel will not answer a `getgroups(2)`.
+[<RequireQualifiedAccess>]
+type GetGroupsRefusal =
+    /// The buffer has no answer at the copy, which is the only step that
+    /// reads it.
+    | Buffer of BufferRefusal
+    /// This flavour's list for these credentials has not been measured; see
+    /// `GroupListReport.Unmeasured`.
+    | UnmeasuredGroupList of flavour : SimulatedUnixFlavour
+
+[<RequireQualifiedAccess>]
+module GetGroupsRefusal =
+    /// What this kernel knows about why it will not answer. A client adds which
+    /// entry point asked, and what the buffer was.
+    let describe (refusal : GetGroupsRefusal) : string =
+        match refusal with
+        | GetGroupsRefusal.Buffer refusal -> BufferRefusal.describe refusal
+        | GetGroupsRefusal.UnmeasuredGroupList flavour ->
+            $"which groups %O{flavour}'s getgroups(2) reports for these credentials has not been measured. It depends on what setgroups(2) does with the list it is given, and setting that needs root. A login process reports its effective group first and the rest unsorted, which fits both of two rules (the effective group added in front of the supplementary groups, or a list that already began with it reported as given), and the two disagree about every other list."
 
 /// Why a file descriptor cannot be seeked, as a *fault* rather than as the errno
 /// it becomes.
@@ -327,6 +401,63 @@ module UnixDescriptor =
         =
         system.Process.Credentials.EffectiveUser
 
+    /// The effective group ID, as `getegid(2)` reports it.
+    ///
+    /// Total, and changes nothing: `getegid` cannot fail.
+    let effectiveGroupId<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : GroupId
+        =
+        system.Process.Credentials.EffectiveGroup
+
+    /// `getgroups(2)`: the process's groups, into `destination`, which has room
+    /// for `size` of them.
+    ///
+    /// Changes nothing, so it returns no system.
+    let getgroups<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (destination : UserBuffer)
+        (size : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<GetGroupsAnswer, GetGroupsRefusal>
+        =
+        // Measured on Linux 6.18.5 and Darwin 27.0 (`getgroups.c`), in this
+        // order: a negative size is EINVAL on both (-1, -2, -16, -65536,
+        // INT_MIN + 1 and INT_MIN, and -1 with a NULL buffer); a size of 0 returns the count and writes nothing,
+        // even through NULL; a size below the count is EINVAL, NULL or not; and
+        // only then is the buffer written, so NULL is EFAULT. Linux copies
+        // nothing for an empty list, so no buffer faults then. Linux writes
+        // element by element up to a fault (a buffer one element short of a
+        // PROT_NONE page had its first element written), which an `Unmapped`
+        // buffer, holding no storage at all, never shows.
+        if size < 0 then
+            Ok (GetGroupsAnswer.Failed UnixError.EINVAL)
+        else
+
+        match
+            Credentials.reportedGroups
+                (SimulatedUnixPlatform.groupListReport system.Machine.UnixPlatform)
+                system.Process.Credentials
+        with
+        | None ->
+            Error (GetGroupsRefusal.UnmeasuredGroupList (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform))
+        | Some groups ->
+
+        let count = List.length groups
+
+        if size = 0 then
+            Ok (GetGroupsAnswer.Counted count)
+        elif size < count then
+            Ok (GetGroupsAnswer.Failed UnixError.EINVAL)
+        elif count = 0 then
+            Ok (GetGroupsAnswer.Copied [])
+        else
+
+        match destination with
+        | UserBuffer.Mapped -> Ok (GetGroupsAnswer.Copied groups)
+        | UserBuffer.Unmapped _ -> Ok (GetGroupsAnswer.Failed UnixError.EFAULT)
+        | UserBuffer.Opaque -> Error (GetGroupsRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+        | UserBuffer.Addressless -> Error (GetGroupsRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
+
     /// `dup(2)`: the lowest non-negative descriptor not in use, sharing `fd`'s
     /// open file description. EBADF is its only failure.
     let dup<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -390,10 +521,11 @@ module UnixDescriptor =
         let descriptorFault : DescriptorFault option =
             match target with
             | None -> Some DescriptorFault.NotOpen
-            | Some (OpenFileTarget.StandardStream _) ->
-                // Not seekable: this kernel models the standard streams as
-                // pipes, and `lseek` on a pipe is ESPIPE on both platforms
-                // whichever end it is.
+            | Some (OpenFileTarget.StandardStream _)
+            | Some (OpenFileTarget.Pipe _) ->
+                // Not seekable: `lseek` on a pipe is ESPIPE on both platforms
+                // whichever end it is, and this kernel models the standard
+                // streams as pipes.
                 Some DescriptorFault.NotSeekable
             | Some (OpenFileTarget.SocketEventPort _) ->
                 // The one target whose *seekability* depends on the platform,
@@ -459,7 +591,15 @@ module UnixDescriptor =
         // whence 5 and above were rejected as EINVAL.
         match target with
         | Some (OpenFileTarget.SocketEventPort _) -> Ok (SyscallAnswer.Completed 0L, system)
-        | _ ->
+        // Each of these answered EBADF or ESPIPE above.
+        | None
+        | Some (OpenFileTarget.StandardStream _)
+        | Some (OpenFileTarget.Pipe _)
+        | Some (OpenFileTarget.Socket _) ->
+            failwith
+                $"UnixDescriptor.lseek: fd %d{fd} names %A{target}, which the descriptor checks above should have answered (this is a bug in this library)"
+        | Some (OpenFileTarget.File _)
+        | Some (OpenFileTarget.Directory _) ->
 
         // Whence *validity* is settled; whence *semantics* is not, and the two
         // sit at different points in Linux's order — which is why refusing 3 and
@@ -682,6 +822,7 @@ module UnixDescriptor =
 
         match description.Target with
         | OpenFileTarget.StandardStream _
+        | OpenFileTarget.Pipe _
         | OpenFileTarget.SocketEventPort _
         | OpenFileTarget.Socket _ ->
             // EINVAL on both platforms for every object that is not a regular
@@ -751,8 +892,10 @@ module UnixDescriptor =
         | Some description ->
 
         match description.Target with
-        | OpenFileTarget.StandardStream _ ->
-            // A pipe, which is what this kernel models the standard streams as.
+        | OpenFileTarget.StandardStream _
+        | OpenFileTarget.Pipe _ ->
+            // A pipe, which is also what this kernel models the standard streams
+            // as.
             // Measured on both ends of a real pipe, and ahead of the length and
             // advice screens below: the pipe test sits in the syscall entry,
             // where the range and advice checks belong to the generic path it
@@ -864,6 +1007,7 @@ module UnixDescriptor =
             | SimulatedUnixFlavour.Darwin, Some description ->
                 match OpenFileDescription.object description with
                 | OpenFileObject.StandardStream role -> Some (FLockRefusal.DarwinStandardStream role)
+                | OpenFileObject.Pipe pipeId -> Some (FLockRefusal.DarwinPipe pipeId)
                 | OpenFileObject.AnonymousInode -> Some FLockRefusal.DarwinSocketEventPort
                 | OpenFileObject.Socket socketId -> Some (FLockRefusal.DarwinSocket socketId)
                 | OpenFileObject.File _ ->
@@ -1029,6 +1173,93 @@ module UnixDescriptor =
 
             Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), granted)
 
+    /// `ioctl(fd, FIONREAD, &count)`: how many bytes a read of the pipe end `fd`
+    /// names could take now, written into the caller's `int` at `destination`.
+    ///
+    /// On Linux both ends report the bytes the pipe holds, even once the read
+    /// end has closed; on Darwin the read end reports them and the write end
+    /// reports 0. EBADF for a descriptor that is not open, whatever the
+    /// destination; EFAULT for an unmapped destination, whatever the pipe
+    /// holds. Refused for every descriptor that is not a pipe end.
+    ///
+    /// Changes nothing.
+    let bytesAvailable<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (destination : UserBuffer)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<BytesAvailableAnswer, BytesAvailableRefusal>
+        =
+        // Measured by pipe-syscalls.c on both flavours: a descriptor that is not
+        // open is EBADF through a bad pointer, and a pipe end is EFAULT through
+        // one -- NULL included, and the write end included, though it reports 0
+        // on Darwin.
+        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        | None -> Ok (BytesAvailableAnswer.Failed UnixError.EBADF)
+        | Some (OpenFileTarget.StandardStream _)
+        | Some (OpenFileTarget.File _)
+        | Some (OpenFileTarget.Directory _)
+        | Some (OpenFileTarget.SocketEventPort _)
+        | Some (OpenFileTarget.Socket _) -> Error (BytesAvailableRefusal.UnmodelledTarget fd)
+        | Some (OpenFileTarget.Pipe (pipeId, pipeEnd)) ->
+
+        let held = PipeBuffer.held (UnixMachineState.pipe pipeId system.Machine).Buffer
+
+        let count =
+            match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform, pipeEnd with
+            | SimulatedUnixFlavour.Linux, _
+            | SimulatedUnixFlavour.Darwin, PipeEnd.Read -> held
+            | SimulatedUnixFlavour.Darwin, PipeEnd.Write -> 0
+
+        match destination with
+        | UserBuffer.Unmapped _ -> Ok (BytesAvailableAnswer.Failed UnixError.EFAULT)
+        | UserBuffer.Opaque -> Error (BytesAvailableRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+        | UserBuffer.Addressless -> Error (BytesAvailableRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
+        | UserBuffer.Mapped -> Ok (BytesAvailableAnswer.Reported count)
+
+    /// `tcgetattr(3)`, and so `isatty(3)`: whether `fd` is a terminal. None of
+    /// the objects this kernel models is one, so the answer is always the errno
+    /// saying why not, which depends on the object and the flavour.
+    ///
+    /// Changes nothing.
+    let terminalAttributes<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : TerminalAttributesAnswer
+        =
+        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+
+        // Measured by pipe-syscalls.c, through isatty, tcgetattr and
+        // TIOCGWINSZ alike, which agree on every row:
+        //
+        //   descriptor                          Linux    Darwin
+        //   not open                            EBADF    EBADF
+        //   regular file, directory, pipe end   ENOTTY   ENOTTY
+        //   TCP or UDP socket, IPv4 or IPv6     ENOTTY   ENXIO
+        //   Unix-domain socket, either kind     ENOTTY   EOPNOTSUPP
+        //   epoll port / kqueue                 EINVAL   ENOTTY
+        //
+        // The standard streams are pipes in the launch shape this kernel
+        // models.
+        let error =
+            match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+            | None -> UnixError.EBADF
+            | Some (OpenFileTarget.StandardStream _)
+            | Some (OpenFileTarget.File _)
+            | Some (OpenFileTarget.Directory _)
+            | Some (OpenFileTarget.Pipe _) -> UnixError.ENOTTY
+            | Some (OpenFileTarget.SocketEventPort _) ->
+                match flavour with
+                | SimulatedUnixFlavour.Linux -> UnixError.EINVAL
+                | SimulatedUnixFlavour.Darwin -> UnixError.ENOTTY
+            | Some (OpenFileTarget.Socket socketId) ->
+                match flavour, (UnixMachineState.socket socketId system.Machine).Domain with
+                | SimulatedUnixFlavour.Linux, _ -> UnixError.ENOTTY
+                | SimulatedUnixFlavour.Darwin, SocketDomain.Inet
+                | SimulatedUnixFlavour.Darwin, SocketDomain.Inet6 -> UnixError.ENXIO
+                | SimulatedUnixFlavour.Darwin, SocketDomain.Unix -> UnixError.EOPNOTSUPP
+
+        TerminalAttributesAnswer.NotATerminal error
+
     /// `close(2)`: drop `fd` from the process's table, together with the kernel
     /// objects the description it named was the last reference to — the socket,
     /// the connections nothing else references, and the inode whose last name
@@ -1082,7 +1313,8 @@ module UnixDescriptor =
             | OpenFileTarget.StandardStream _
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
-            | OpenFileTarget.Socket _ -> None
+            | OpenFileTarget.Socket _
+            | OpenFileTarget.Pipe _ -> None
             | OpenFileTarget.SocketEventPort _ ->
 
             let waiter =
@@ -1186,7 +1418,8 @@ module UnixDescriptor =
             | OpenFileTarget.StandardStream _
             | OpenFileTarget.SocketEventPort _
             | OpenFileTarget.File _
-            | OpenFileTarget.Directory _ -> Ok (system.Machine.Sockets, system.Machine.Connections, [])
+            | OpenFileTarget.Directory _
+            | OpenFileTarget.Pipe _ -> Ok (system.Machine.Sockets, system.Machine.Connections, [])
             | OpenFileTarget.Socket socketId ->
 
             let dying =
@@ -1339,6 +1572,22 @@ module UnixDescriptor =
             match description.Target with
             | OpenFileTarget.File (inode, _)
             | OpenFileTarget.Directory (inode, _) -> forgetIfUnheld inode closed
+            | OpenFileTarget.Pipe (pipeId, _) ->
+                // The pipe goes when neither end is open any more: it is the
+                // last description onto either end that frees it, not the last
+                // onto both.
+                if
+                    UnixProcessState.pipeEndOpen pipeId PipeEnd.Read closed.Process
+                    || UnixProcessState.pipeEndOpen pipeId PipeEnd.Write closed.Process
+                then
+                    closed
+                else
+                    { closed with
+                        Machine =
+                            { closed.Machine with
+                                Pipes = Map.remove pipeId closed.Machine.Pipes
+                            }
+                    }
             | OpenFileTarget.StandardStream _
             | OpenFileTarget.SocketEventPort _
             | OpenFileTarget.Socket _ -> closed

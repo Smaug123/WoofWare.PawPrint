@@ -431,6 +431,7 @@ module UnixSocket =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.StandardStream _
+        | OpenFileTarget.Pipe _
         | OpenFileTarget.SocketEventPort _ -> answered (UnixError.ENOTSOCK)
         | OpenFileTarget.Socket socketId ->
 
@@ -931,6 +932,12 @@ module UnixSocket =
             // models (stdio-nonblock.c): `F_SETFL` answers 0 on each of the
             // three streams, and `F_GETFL` reads the flag back.
             SetNonBlockingAnswer.Set, stored system
+        | Some (OpenFileTarget.Pipe _) ->
+            // Measured on both ends, on both flavours (pipe-states.c and
+            // `TestPipeAgainstHost`): `F_SETFL` answers 0 and
+            // the flag governs whether a read or write that would wait answers
+            // EAGAIN instead.
+            SetNonBlockingAnswer.Set, stored system
         | Some (OpenFileTarget.File _)
         | Some (OpenFileTarget.Directory _)
         | Some (OpenFileTarget.Socket _) -> SetNonBlockingAnswer.Set, stored system
@@ -1181,6 +1188,7 @@ module UnixSocket =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.StandardStream _
+        | OpenFileTarget.Pipe _
         | OpenFileTarget.SocketEventPort _ -> Ok (ListenAnswer.Failed UnixError.ENOTSOCK, system)
         | OpenFileTarget.Socket socketId ->
 
@@ -1325,6 +1333,7 @@ module UnixSocket =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.StandardStream _
+        | OpenFileTarget.Pipe _
         | OpenFileTarget.SocketEventPort _ -> Ok (GetSockNameAnswer.Failed (UnixError.ENOTSOCK, None))
         | OpenFileTarget.Socket socketId ->
 
@@ -1404,6 +1413,7 @@ module UnixSocket =
         | Some (OpenFileTarget.File _)
         | Some (OpenFileTarget.Directory _)
         | Some (OpenFileTarget.StandardStream _)
+        | Some (OpenFileTarget.Pipe _)
         | Some (OpenFileTarget.SocketEventPort _) -> Error UnixError.ENOTSOCK
         | Some (OpenFileTarget.Socket socketId) -> Ok socketId
 

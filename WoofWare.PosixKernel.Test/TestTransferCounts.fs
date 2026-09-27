@@ -470,7 +470,7 @@ module TestTransferCounts =
                 expectedAdmission platform limit case.Position case.Buffer case.Count
 
             let actual =
-                match UnixReadWrite.admitWrite fd case.Buffer case.Count system with
+                match WriteAdmissions.unchanged fd case.Buffer case.Count system with
                 | Ok admission -> Ok admission
                 | Error (WriteRefusal.Buffer refusal) -> Error refusal
                 | Error other ->
@@ -754,7 +754,7 @@ module TestTransferCounts =
             | Ok (ReadAnswer.Completed bytes) -> Seen.Moved bytes.Length
             | Error _ -> Seen.Refused
         | "write" ->
-            match UnixReadWrite.admitWrite fd buffer count system with
+            match WriteAdmissions.unchanged fd buffer count system with
             | Ok (WriteAdmission.Answered (WriteAnswer.Failed error)) -> Seen.Errno error
             | Ok (WriteAdmission.Answered (WriteAnswer.Completed written)) -> Seen.Moved (int written)
             | Ok (WriteAdmission.Transfer count) -> Seen.Moved count

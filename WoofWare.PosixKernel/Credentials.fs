@@ -105,11 +105,32 @@ type Credentials =
         /// The groups `setgroups(2)` was given, in the order it was given
         /// them, duplicates and all.
         ///
-        /// Not necessarily what `getgroups(2)` reports: Linux reports these
-        /// sorted, and a Darwin process's list usually starts with its
-        /// effective group.
+        /// Not necessarily what `getgroups(2)` reports, which is
+        /// `Credentials.reportedGroups`: Linux reports these sorted, and a
+        /// Darwin process's list usually starts with its effective group.
         SupplementaryGroups : GroupId list
     }
+
+/// Which groups a flavour's `getgroups(2)` reports for a process's credentials,
+/// and in what order.
+[<RequireQualifiedAccess>]
+type GroupListReport =
+    /// The supplementary groups in ascending numeric order, duplicates kept,
+    /// and nothing else: the effective group is not added.
+    ///
+    /// This is Linux, which sorts the list when `setgroups(2)` installs it.
+    | SortedSupplementaryGroups
+    /// Not measured. Which list this flavour reports depends on what its
+    /// `setgroups(2)` does with the list it is given, and setting that needs
+    /// root.
+    ///
+    /// This is Darwin. A login process there reports its effective group
+    /// first and the rest in directory-service order, not sorted (measured
+    /// `20,12,61,100,701` at effective group 20), which is what either of two
+    /// rules would give: the effective group added in front of the
+    /// supplementary groups, or a `setgroups` list that already began with it
+    /// reported as given. The two disagree for any other list.
+    | Unmeasured
 
 [<RequireQualifiedAccess>]
 module Credentials =
@@ -148,3 +169,15 @@ module Credentials =
             CallerPrivilege.Privileged
         else
             CallerPrivilege.Unprivileged
+
+    /// The groups `getgroups(2)` reports for a process with these credentials,
+    /// under `report`, or `None` where `report` is `GroupListReport.Unmeasured`.
+    let reportedGroups (report : GroupListReport) (credentials : Credentials) : GroupId list option =
+        match report with
+        | GroupListReport.SortedSupplementaryGroups ->
+            // Measured on Linux 6.18.5 (`getgroups.c`): `setgroups(30,10,20)`
+            // reports `10,20,30`; `(7,7,3,7)` reports `3,7,7,7`; an effective
+            // group of 4242 that is not in the list is not reported; and IDs
+            // above 2^31 sort as unsigned (`0,65536,2147483648,4294967294`).
+            credentials.SupplementaryGroups |> List.sortBy GroupId.toUInt32 |> Some
+        | GroupListReport.Unmeasured -> None
