@@ -961,6 +961,8 @@ module TestSocketEventDelivery =
                         {
                             ParkedSocketWait.Port = portId
                             MaxEvents = 8
+                            Buffer = UserBuffer.Mapped
+                            Deadline = None
                         })
 
             portFd, dupFd, kernel

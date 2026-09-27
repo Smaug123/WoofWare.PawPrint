@@ -211,6 +211,8 @@ module TestTaskState =
             {
                 ParkedSocketWait.Port = OpenFileDescriptionId 3L
                 MaxEvents = 8
+                Buffer = UserBuffer.Mapped
+                Deadline = None
             }
 
     /// Every kind of park, so that the rows below say the invariant is about *whether* a thread
@@ -420,6 +422,8 @@ module TestTaskState =
             {
                 Port = OpenFileDescriptionId 5L
                 MaxEvents = 8
+                Buffer = UserBuffer.Mapped
+                Deadline = None
             }
 
         // The status goes with the record, because a park writes both and `checkTaskInvariants`
