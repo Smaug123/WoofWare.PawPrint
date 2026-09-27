@@ -2767,6 +2767,29 @@ module NativeSystemNative =
                     )
                 )
                 state
+        // `int32_t SystemNative_ChMod(const char* path, int32_t mode)`
+        // (pal_io.c): an EINTR-retrying `chmod(2)` and nothing else. The mode is
+        // raw, cast to `mode_t`: 16 bits on Darwin and 32 on Linux, which makes
+        // no difference, since both kernels read only the low twelve. CoreLib
+        // reaches it from `File.SetUnixFileMode`, `FileSystemInfo.UnixFileMode`'s
+        // setter and `File.SetAttributes`, each given a path.
+        | Some "SystemNative_ChMod",
+          [ ConcretePointer _ ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "SystemNative_ChMod"
+            // Read before the path, harmlessly, as `SystemNative_MkDir`'s is.
+            let mode = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            pathSyscall
+                ctx
+                operation
+                (fun path system ->
+                    UnixPathResolution.chmod path mode system
+                    |> Result.mapError (fun refusal ->
+                        $"ChModRefusal: %s{ChModRefusal.describe refusal} Configure a user other than root (KernelConfig.UserId) or the Linux platform to run this guest."
+                    )
+                )
+                state
         // `int32_t SystemNative_Rename(const char* oldPath, const char* newPath)`
         // (pal_io.c): `rename(2)` and nothing else -- not even an EINTR retry,
         // which `rename` cannot return. CoreLib declares both a UTF-8 `string`
@@ -3134,6 +3157,36 @@ module NativeSystemNative =
                 failwith
                     $"%s{operation}: TruncationRefusal.UnmeasuredSetIdChange: %s{TruncationRefusal.describe refusal} %s{unmeasuredDarwinRow}"
             | Error refusal -> failwith $"%s{operation}: %s{TruncationRefusal.describe refusal}"
+            | Ok (SyscallAnswer.Failed error, system) ->
+                withErrno ctx error system state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | Ok (SyscallAnswer.Completed _, system) ->
+                withAnswered system state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+        | Some "SystemNative_FChMod",
+          [ ConcreteIntPtr state.ConcreteTypes ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // `int32_t SystemNative_FChMod(intptr_t fd, int32_t mode)`
+            // (pal_io.c): an EINTR-retrying `fchmod(2)` and nothing else, the
+            // mode raw as `SystemNative_ChMod`'s is. CoreLib reaches it from
+            // `File.SetUnixFileMode` and `File.SetAttributes` given a
+            // `SafeFileHandle`.
+            let operation = "SystemNative_FChMod"
+            let fd = fdArgument operation instruction.Arguments.[0]
+            let mode = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            match UnixPathResolution.fchmod fd mode (EmulatedKernel.unix state.Kernel) with
+            | Error (FChModRefusal.UnmeasuredModeChange _ as refusal) ->
+                failwith
+                    $"%s{operation}: fd %d{fd}: %s{FChModRefusal.describe refusal} Configure a user other than root (KernelConfig.UserId) or the Linux platform to run this guest."
+            | Error (FChModRefusal.StandardStream _ as refusal)
+            | Error (FChModRefusal.Socket _ as refusal) ->
+                failwith
+                    $"%s{operation}: fd %d{fd}: %s{FChModRefusal.describe refusal} The BCL reaches FChMod only through a SafeFileHandle, which a guest can wrap around a standard stream or a socket by hand; decide what their mode is (issue #956) rather than guessing."
             | Ok (SyscallAnswer.Failed error, system) ->
                 withErrno ctx error system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread

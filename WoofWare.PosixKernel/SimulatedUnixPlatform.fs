@@ -538,6 +538,21 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> SetIdBitsOnTruncation.Strip
         | SimulatedUnixFlavour.Darwin -> SetIdBitsOnTruncation.Preserve
 
+    /// What this platform's `chmod(2)` and `fchmod(2)` do for a privileged
+    /// caller.
+    ///
+    /// Everything else about a mode change is unanimous: who may make one, the
+    /// `S_ISGID` an owner outside the inode's group loses, the bits above
+    /// `0o7777` that are ignored, and the `ctime` that moves.
+    let privilegedModeChange (platform : SimulatedUnixPlatform) : PrivilegedModeChange =
+        // Measured by `docs/plans/2026-08-23-posix-kernel-extraction/chmod-rules.c`:
+        // on Linux 6.18.5 root sets all 4096 modes exactly, on a file and on a
+        // directory, whether it owns the inode or not and whether it is in the
+        // inode's group or not. Darwin 27.0 was measured at uid 501 only.
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> PrivilegedModeChange.SetsRequestedBits
+        | SimulatedUnixFlavour.Darwin -> PrivilegedModeChange.Unmeasured
+
     /// Whether this platform's content-changing `write(2)` clears `S_ISGID` on a
     /// file that is not group-executable.
     ///

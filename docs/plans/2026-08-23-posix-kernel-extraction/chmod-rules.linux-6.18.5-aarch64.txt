@@ -1,0 +1,193 @@
+RUN	uid=0 gid=0	base=/tmp/chmodp
+RUN	u1000	uid=1000 egid=1000
+HIGH-SWEEP	file	rows=86016	mismatches=0
+HIGH-SWEEP	dir	rows=86016	mismatches=0
+HIGH-ALL-ONES	file	chmod((mode_t)-1)	ok	after=7777
+PATH	a link to a file: the target changes	chmod(0640)	ok	paths/f: 0600 -> 0640
+PATH	the link itself	mode 0777 -> 0777	atime=moved mtime=kept ctime=kept
+PATH	the target	atime=kept mtime=kept ctime=moved
+PATH	a link to a directory	chmod(0750)	ok	paths/d: 0700 -> 0750
+PATH	a link to a directory, trailing separator	chmod(0755)	ok	paths/d: 0750 -> 0755
+PATH	a directory, trailing separator	chmod(0700)	ok	paths/d: 0755 -> 0700
+PATH	a file, trailing separator	chmod(0644)	ENOTDIR	paths/f: 0640 -> 0640
+PATH	a link to a file, trailing separator	chmod(0644)	ENOTDIR	paths/f: 0640 -> 0640
+PATH	a dangling link	chmod(0644)	ENOENT
+PATH	a link to itself	chmod(0644)	ELOOP
+PATH	an absent name	chmod(0644)	ENOENT
+PATH	the empty path	chmod(0644)	ENOENT
+PATH	a file as a directory	chmod(0644)	ENOTDIR
+FCHMOD	a file open O_RDONLY	fchmod(0640)	ok	st_mode 0100600 -> 0100640
+FCHMOD	a file open O_WRONLY	fchmod(0600)	ok	st_mode 0100640 -> 0100600
+FCHMOD	a file open O_RDWR	fchmod(0644)	ok	st_mode 0100600 -> 0100644
+FCHMOD	a directory	fchmod(0750)	ok	st_mode 040755 -> 040750
+FCHMOD	an unlinked file	fchmod(0400)	ok	st_mode 0100644 -> 0100400
+FCHMOD	a file someone else owns, open O_RDONLY, to its own mode	fchmod(0644)	EPERM	st_mode 0100644 -> 0100644
+FCHMOD	a closed descriptor	fchmod(0644)	EBADF
+FCHMOD	descriptor -1	fchmod(0644)	EBADF
+FCHMOD	a pipe's read end	fchmod(0600)	ok	st_mode 010600 -> 010600
+FCHMOD	a pipe's write end	fchmod(2750)	ok	st_mode 010600 -> 012750
+FCHMOD	an AF_INET stream socket	fchmod(0600)	ok	st_mode 0140777 -> 0140600
+FCHMOD	an AF_INET stream socket	fchmod(2750)	ok	st_mode 0140600 -> 0142750
+FCHMOD	an AF_INET datagram socket	fchmod(0600)	ok	st_mode 0140777 -> 0140600
+FCHMOD	an AF_INET datagram socket	fchmod(2750)	ok	st_mode 0140600 -> 0142750
+FCHMOD	an AF_INET6 stream socket	fchmod(0600)	ok	st_mode 0140777 -> 0140600
+FCHMOD	an AF_INET6 stream socket	fchmod(2750)	ok	st_mode 0140600 -> 0142750
+FCHMOD	an AF_UNIX stream socket	fchmod(0600)	ok	st_mode 0140777 -> 0140600
+FCHMOD	an AF_UNIX stream socket	fchmod(2750)	ok	st_mode 0140600 -> 0142750
+FCHMOD	a listening AF_INET socket	fchmod(0600)	ok	st_mode 0140777 -> 0140600
+FCHMOD	an epoll instance	fchmod(0600)	EOPNOTSUPP	st_mode 0600 -> 0600
+FCHMOD	an epoll instance	fchmod(0644)	EOPNOTSUPP	st_mode 0600 -> 0600
+STANDING-SWEEP	owner, group = egid	file	modes=4096	mismatches=0
+STANDING-SWEEP	owner, group = egid	dir	modes=4096	mismatches=0
+TIMES	owner, group = egid	file	chmod(different 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = egid	file	chmod(same 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = egid	file	chmod(02755 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = egid	file	fchmod(same 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = egid	dir	chmod(different 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = egid	dir	chmod(same 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = egid	dir	chmod(02755 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = egid	dir	fchmod(same 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+STANDING-SWEEP	owner, group = supplementary	file	modes=4096	mismatches=0
+STANDING-SWEEP	owner, group = supplementary	dir	modes=4096	mismatches=0
+TIMES	owner, group = supplementary	file	chmod(different 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = supplementary	file	chmod(same 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = supplementary	file	chmod(02755 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = supplementary	file	fchmod(same 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = supplementary	dir	chmod(different 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = supplementary	dir	chmod(same 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = supplementary	dir	chmod(02755 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = supplementary	dir	fchmod(same 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+STANDING-SWEEP	owner, group not a member	file	modes=4096	mismatches=0
+STANDING-SWEEP	owner, group not a member	dir	modes=4096	mismatches=0
+TIMES	owner, group not a member	file	chmod(different 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	owner, group not a member	file	chmod(same 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	owner, group not a member	file	chmod(02755 2755)	ok	after=0755	atime=kept mtime=kept ctime=moved
+TIMES	owner, group not a member	file	fchmod(same 0755)	ok	after=0755	atime=kept mtime=kept ctime=moved
+TIMES	owner, group not a member	dir	chmod(different 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	owner, group not a member	dir	chmod(same 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	owner, group not a member	dir	chmod(02755 2755)	ok	after=0755	atime=kept mtime=kept ctime=moved
+TIMES	owner, group not a member	dir	fchmod(same 0755)	ok	after=0755	atime=kept mtime=kept ctime=moved
+STANDING-SWEEP	non-owner, group = egid	file	modes=4096	mismatches=0
+STANDING-SWEEP	non-owner, group = egid	dir	modes=4096	mismatches=0
+TIMES	non-owner, group = egid	file	chmod(different 0644)	EPERM	after=0600	atime=kept mtime=kept ctime=kept
+TIMES	non-owner, group = egid	file	chmod(same 0600)	EPERM	after=0600	atime=kept mtime=kept ctime=kept
+TIMES	non-owner, group = egid	file	chmod(02755 2755)	EPERM	after=0600	atime=kept mtime=kept ctime=kept
+TIMES	non-owner, group = egid	file	fchmod: open EACCES
+TIMES	non-owner, group = egid	dir	chmod(different 0644)	EPERM	after=0700	atime=kept mtime=kept ctime=kept
+TIMES	non-owner, group = egid	dir	chmod(same 0700)	EPERM	after=0700	atime=kept mtime=kept ctime=kept
+TIMES	non-owner, group = egid	dir	chmod(02755 2755)	EPERM	after=0700	atime=kept mtime=kept ctime=kept
+TIMES	non-owner, group = egid	dir	fchmod: open EACCES
+STANDING-SWEEP	non-owner, group = supplementary	file	modes=4096	mismatches=0
+STANDING-SWEEP	non-owner, group = supplementary	dir	modes=4096	mismatches=0
+TIMES	non-owner, group = supplementary	file	chmod(different 0644)	EPERM	after=0600	atime=kept mtime=kept ctime=kept
+TIMES	non-owner, group = supplementary	file	chmod(same 0600)	EPERM	after=0600	atime=kept mtime=kept ctime=kept
+TIMES	non-owner, group = supplementary	file	chmod(02755 2755)	EPERM	after=0600	atime=kept mtime=kept ctime=kept
+TIMES	non-owner, group = supplementary	file	fchmod: open EACCES
+TIMES	non-owner, group = supplementary	dir	chmod(different 0644)	EPERM	after=0700	atime=kept mtime=kept ctime=kept
+TIMES	non-owner, group = supplementary	dir	chmod(same 0700)	EPERM	after=0700	atime=kept mtime=kept ctime=kept
+TIMES	non-owner, group = supplementary	dir	chmod(02755 2755)	EPERM	after=0700	atime=kept mtime=kept ctime=kept
+TIMES	non-owner, group = supplementary	dir	fchmod: open EACCES
+STANDING-SWEEP	non-owner, group not a member	file	modes=4096	mismatches=0
+STANDING-SWEEP	non-owner, group not a member	dir	modes=4096	mismatches=0
+TIMES	non-owner, group not a member	file	chmod(different 0644)	EPERM	after=0600	atime=kept mtime=kept ctime=kept
+TIMES	non-owner, group not a member	file	chmod(same 0600)	EPERM	after=0600	atime=kept mtime=kept ctime=kept
+TIMES	non-owner, group not a member	file	chmod(02755 2755)	EPERM	after=0600	atime=kept mtime=kept ctime=kept
+TIMES	non-owner, group not a member	file	fchmod: open EACCES
+TIMES	non-owner, group not a member	dir	chmod(different 0644)	EPERM	after=0700	atime=kept mtime=kept ctime=kept
+TIMES	non-owner, group not a member	dir	chmod(same 0700)	EPERM	after=0700	atime=kept mtime=kept ctime=kept
+TIMES	non-owner, group not a member	dir	chmod(02755 2755)	EPERM	after=0700	atime=kept mtime=kept ctime=kept
+TIMES	non-owner, group not a member	dir	fchmod: open EACCES
+STANDING-SWEEP	root, owner, in group	file	modes=4096	mismatches=0
+STANDING-SWEEP	root, owner, in group	dir	modes=4096	mismatches=0
+TIMES	root, owner, in group	file	chmod(different 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	root, owner, in group	file	chmod(same 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	root, owner, in group	file	chmod(02755 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+TIMES	root, owner, in group	file	fchmod(same 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+TIMES	root, owner, in group	dir	chmod(different 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	root, owner, in group	dir	chmod(same 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	root, owner, in group	dir	chmod(02755 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+TIMES	root, owner, in group	dir	fchmod(same 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+STANDING-SWEEP	root, owner, group not a member	file	modes=4096	mismatches=0
+STANDING-SWEEP	root, owner, group not a member	dir	modes=4096	mismatches=0
+TIMES	root, owner, group not a member	file	chmod(different 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	root, owner, group not a member	file	chmod(same 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	root, owner, group not a member	file	chmod(02755 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+TIMES	root, owner, group not a member	file	fchmod(same 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+TIMES	root, owner, group not a member	dir	chmod(different 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	root, owner, group not a member	dir	chmod(same 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	root, owner, group not a member	dir	chmod(02755 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+TIMES	root, owner, group not a member	dir	fchmod(same 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+STANDING-SWEEP	root, non-owner, in group	file	modes=4096	mismatches=0
+STANDING-SWEEP	root, non-owner, in group	dir	modes=4096	mismatches=0
+TIMES	root, non-owner, in group	file	chmod(different 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	root, non-owner, in group	file	chmod(same 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	root, non-owner, in group	file	chmod(02755 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+TIMES	root, non-owner, in group	file	fchmod(same 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+TIMES	root, non-owner, in group	dir	chmod(different 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	root, non-owner, in group	dir	chmod(same 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	root, non-owner, in group	dir	chmod(02755 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+TIMES	root, non-owner, in group	dir	fchmod(same 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+STANDING-SWEEP	root, non-owner, group not a member	file	modes=4096	mismatches=0
+STANDING-SWEEP	root, non-owner, group not a member	dir	modes=4096	mismatches=0
+TIMES	root, non-owner, group not a member	file	chmod(different 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	root, non-owner, group not a member	file	chmod(same 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	root, non-owner, group not a member	file	chmod(02755 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+TIMES	root, non-owner, group not a member	file	fchmod(same 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+TIMES	root, non-owner, group not a member	dir	chmod(different 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	root, non-owner, group not a member	dir	chmod(same 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	root, non-owner, group not a member	dir	chmod(02755 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+TIMES	root, non-owner, group not a member	dir	fchmod(same 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+PIPE	made by uid=0 egid=0	uid=0 gid=0 mode=010600
+PIPE-SWEEP	pipe: owner, group = egid	modes=4096	mismatches=0
+PIPE-TIMES	pipe: owner, group = egid	fchmod(read end, same 0600)	ok	that end: atime=kept mtime=kept ctime=moved	the other end: atime=kept mtime=kept ctime=moved
+PIPE-TIMES	pipe: owner, group = egid	fchmod(write end, same 0600)	ok	that end: atime=kept mtime=kept ctime=moved	the other end: atime=kept mtime=kept ctime=moved
+PIPE-SWEEP	pipe: owner, group = supplementary	modes=4096	mismatches=0
+PIPE-TIMES	pipe: owner, group = supplementary	fchmod(read end, same 0600)	ok	that end: atime=kept mtime=kept ctime=kept	the other end: atime=kept mtime=kept ctime=kept
+PIPE-TIMES	pipe: owner, group = supplementary	fchmod(write end, same 0600)	ok	that end: atime=kept mtime=kept ctime=moved	the other end: atime=kept mtime=kept ctime=moved
+PIPE-SWEEP	pipe: owner, group not a member	modes=4096	mismatches=0
+PIPE-TIMES	pipe: owner, group not a member	fchmod(read end, same 0600)	ok	that end: atime=kept mtime=kept ctime=moved	the other end: atime=kept mtime=kept ctime=moved
+PIPE-TIMES	pipe: owner, group not a member	fchmod(write end, same 0600)	ok	that end: atime=kept mtime=kept ctime=moved	the other end: atime=kept mtime=kept ctime=moved
+PIPE-SWEEP	pipe: non-owner, group = egid	modes=4096	mismatches=0
+PIPE-TIMES	pipe: non-owner, group = egid	fchmod(read end, same 0600)	EPERM	that end: atime=kept mtime=kept ctime=kept	the other end: atime=kept mtime=kept ctime=kept
+PIPE-TIMES	pipe: non-owner, group = egid	fchmod(write end, same 0600)	EPERM	that end: atime=kept mtime=kept ctime=kept	the other end: atime=kept mtime=kept ctime=kept
+PIPE-SWEEP	pipe: non-owner, group not a member	modes=4096	mismatches=0
+PIPE-TIMES	pipe: non-owner, group not a member	fchmod(read end, same 0600)	EPERM	that end: atime=kept mtime=kept ctime=kept	the other end: atime=kept mtime=kept ctime=kept
+PIPE-TIMES	pipe: non-owner, group not a member	fchmod(write end, same 0600)	EPERM	that end: atime=kept mtime=kept ctime=kept	the other end: atime=kept mtime=kept ctime=kept
+PIPE-SWEEP	pipe: root, non-owner, group not a member	modes=4096	mismatches=0
+PIPE-TIMES	pipe: root, non-owner, group not a member	fchmod(read end, same 0600)	ok	that end: atime=kept mtime=kept ctime=moved	the other end: atime=kept mtime=kept ctime=moved
+PIPE-TIMES	pipe: root, non-owner, group not a member	fchmod(write end, same 0600)	ok	that end: atime=kept mtime=kept ctime=moved	the other end: atime=kept mtime=kept ctime=moved
+RUN	as root
+RUN	root	uid=0 egid=0
+PATH	a link to a file: the target changes	chmod(0640)	ok	paths/f: 0600 -> 0640
+PATH	the link itself	mode 0777 -> 0777	atime=moved mtime=kept ctime=kept
+PATH	the target	atime=kept mtime=kept ctime=moved
+PATH	a link to a directory	chmod(0750)	ok	paths/d: 0700 -> 0750
+PATH	a link to a directory, trailing separator	chmod(0755)	ok	paths/d: 0750 -> 0755
+PATH	a directory, trailing separator	chmod(0700)	ok	paths/d: 0755 -> 0700
+PATH	a file, trailing separator	chmod(0644)	ENOTDIR	paths/f: 0640 -> 0640
+PATH	a link to a file, trailing separator	chmod(0644)	ENOTDIR	paths/f: 0640 -> 0640
+PATH	a dangling link	chmod(0644)	ENOENT
+PATH	a link to itself	chmod(0644)	ELOOP
+PATH	an absent name	chmod(0644)	ENOENT
+PATH	the empty path	chmod(0644)	ENOENT
+PATH	a file as a directory	chmod(0644)	ENOTDIR
+FCHMOD	a file open O_RDONLY	fchmod(0640)	ok	st_mode 0100600 -> 0100640
+FCHMOD	a file open O_WRONLY	fchmod(0600)	ok	st_mode 0100640 -> 0100600
+FCHMOD	a file open O_RDWR	fchmod(0644)	ok	st_mode 0100600 -> 0100644
+FCHMOD	a directory	fchmod(0750)	ok	st_mode 040755 -> 040750
+FCHMOD	an unlinked file	fchmod(0400)	ok	st_mode 0100644 -> 0100400
+FCHMOD	a closed descriptor	fchmod(0644)	EBADF
+FCHMOD	descriptor -1	fchmod(0644)	EBADF
+FCHMOD	a pipe's read end	fchmod(0600)	ok	st_mode 010600 -> 010600
+FCHMOD	a pipe's write end	fchmod(2750)	ok	st_mode 010600 -> 012750
+FCHMOD	an AF_INET stream socket	fchmod(0600)	ok	st_mode 0140777 -> 0140600
+FCHMOD	an AF_INET stream socket	fchmod(2750)	ok	st_mode 0140600 -> 0142750
+FCHMOD	an AF_INET datagram socket	fchmod(0600)	ok	st_mode 0140777 -> 0140600
+FCHMOD	an AF_INET datagram socket	fchmod(2750)	ok	st_mode 0140600 -> 0142750
+FCHMOD	an AF_INET6 stream socket	fchmod(0600)	ok	st_mode 0140777 -> 0140600
+FCHMOD	an AF_INET6 stream socket	fchmod(2750)	ok	st_mode 0140600 -> 0142750
+FCHMOD	an AF_UNIX stream socket	fchmod(0600)	ok	st_mode 0140777 -> 0140600
+FCHMOD	an AF_UNIX stream socket	fchmod(2750)	ok	st_mode 0140600 -> 0142750
+FCHMOD	a listening AF_INET socket	fchmod(0600)	ok	st_mode 0140777 -> 0140600
+FCHMOD	an epoll instance	fchmod(0600)	EOPNOTSUPP	st_mode 0600 -> 0600
+FCHMOD	an epoll instance	fchmod(0644)	EOPNOTSUPP	st_mode 0600 -> 0600

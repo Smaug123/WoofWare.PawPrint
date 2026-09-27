@@ -52,6 +52,10 @@ type PipeState =
         /// group of the process that created the pipe. Measured on Linux 6.18.5
         /// with real IDs 0 and effective IDs 1000 and 2000: 1000 and 2000.
         Owner : InodeOwner
+        /// The permission bits both ends report: `UnixPipe.pipe2` creates a
+        /// pipe with its flavour's, and on Linux `fchmod(2)` through either end
+        /// changes them for both.
+        Permissions : PermissionBits
         /// The timestamps both ends report.
         Times : PipeTimes
     }

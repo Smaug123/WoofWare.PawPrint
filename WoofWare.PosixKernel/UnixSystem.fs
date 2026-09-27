@@ -27,6 +27,11 @@ type Syscall =
     | Unlink of path : UnixPath
     | RmDir of path : UnixPath
     | ChDir of path : UnixPath
+    /// `mode` is raw, as `chmod(2)` takes it: which of its bits the inode gets
+    /// is behaviour this kernel models.
+    | ChMod of path : UnixPath * mode : int
+    /// `mode` is raw, as `fchmod(2)` takes it.
+    | FChMod of fd : int * mode : int
 
 /// Why this kernel will not answer a syscall at all. The client decides what a
 /// refusal means for it; nothing here is recoverable by retrying.
@@ -37,6 +42,8 @@ type SyscallRefusal<'Task> =
     | FTruncate of TruncationRefusal
     | Unlink of StickyRefusal
     | RmDir of StickyRefusal
+    | ChMod of ChModRefusal
+    | FChMod of FChModRefusal
     | Close of CloseRefusal<'Task>
 
 /// A way this system's tables disagree with each other — a state no kernel
@@ -366,6 +373,14 @@ module UnixSystem =
             |> answered
             |> Result.mapError SyscallRefusal.RmDir
         | Syscall.ChDir path -> Ok (UnixPathResolution.chdir path system) |> answered
+        | Syscall.ChMod (path, mode) ->
+            UnixPathResolution.chmod path mode system
+            |> answered
+            |> Result.mapError SyscallRefusal.ChMod
+        | Syscall.FChMod (fd, mode) ->
+            UnixPathResolution.fchmod fd mode system
+            |> answered
+            |> Result.mapError SyscallRefusal.FChMod
 
     /// Every way this system's tables disagree with each other: the socket table
     /// and the pipe table against the descriptor table, each pipe and the pipe
