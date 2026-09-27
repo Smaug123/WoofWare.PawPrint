@@ -43,7 +43,8 @@ module TestImpureCases =
                 { KernelConfig.Default with
                     UserId = Some uid
                     GroupId = Some gid
-                    // One file, for the guest's `st_uid == GetEUid()` check.
+                    // One file that states no owner, for the guest's
+                    // `st_uid == GetEUid()` check.
                     FileSystem =
                         Map.ofList
                             [
@@ -70,6 +71,61 @@ module TestImpureCases =
                             byte ((uid >>> 24) &&& 0xFFu)
                         |]
                 )
+        }
+
+    /// The seed `ForeignOwnedSeed.cs` reads: a root-owned `etc/` holding a
+    /// root-owned `passwd`, and three files of root's in the process's
+    /// effective group (1500), one of its supplementary groups (3000), and a
+    /// group it is not in (5000). Every mode is one of the probe-measured shapes
+    /// the permission rules already answer; what is new is only who owns them.
+    let private foreignOwnedSeed : Map<DirectoryEntryName, SeedEntry> =
+        let owner (user : uint32) (group : uint32) : InodeOwner option =
+            Some
+                {
+                    User = UserId.parseOrFail "test seed" user
+                    Group = GroupId.parseOrFail "test seed" group
+                }
+
+        let bytes (text : string) : ImmutableArray<byte> =
+            Text.Encoding.UTF8.GetBytes text |> ImmutableArray.CreateRange
+
+        let entry (name : string) (mode : int) (group : uint32) (contents : string) : DirectoryEntryName * SeedEntry =
+            DirectoryEntryName.parseOrFail "test seed" name,
+            SeedEntry.File (bytes contents, PermissionBits.parseOrFail "test seed" mode, owner 0u group)
+
+        Map.ofList
+            [
+                DirectoryEntryName.parseOrFail "test seed" "etc",
+                SeedEntry.Directory (
+                    Map.ofList
+                        [
+                            entry "passwd" 0o644 0u "root:x:0:0::/root:/bin/sh\n"
+                            entry "egid-group" 0o464 1500u "g"
+                            entry "extra-group" 0o464 3000u "g"
+                            entry "other-group" 0o464 5000u "g"
+                        ],
+                    PermissionBits.parseOrFail "test seed" 0o755,
+                    owner 0u 0u
+                )
+            ]
+
+    /// The configuration `ForeignOwnedSeed.cs` runs under on `platform`: uid
+    /// 1000 in group 1500 (distinct, so that an effective group read from the
+    /// user ID shows), with supplementary groups given out of order, and the
+    /// root directory root's.
+    let private foreignOwnedConfig (platform : SimulatedUnixPlatform) : KernelConfig =
+        { KernelConfig.Default with
+            UnixPlatform = platform
+            UserId = Some 1000u
+            GroupId = Some 1500u
+            SupplementaryGroups = [ 4000u ; 3000u ; 2000u ]
+            FileSystem = foreignOwnedSeed
+            FileSystemRootOwner =
+                Some
+                    {
+                        User = UserId.root
+                        Group = GroupId.parseOrFail "test seed" 0u
+                    }
         }
 
     /// Build one registration of `ProcessIdConfigured.cs`, whose guest echoes the
@@ -939,6 +995,35 @@ module TestImpureCases =
             // high bit set and neither fits in sixteen bits, which is what
             // makes a truncating or sign-confusing handler visible at all.
             effectiveUserIdCase 4294967294u 4294967293u
+            {
+                // A Linux process on a filesystem it does not own: EACCES on
+                // writing and on creating, and CoreLib's read-only check through
+                // `GetEGid` and `GetGroups`. The guest echoes the effective group
+                // and the reported groups, which Linux sorts although they were
+                // configured out of order.
+                FileName = "ForeignOwnedSeed.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = foreignOwnedConfig SimulatedUnixPlatform.linuxX64
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState =
+                    Some (fun state ->
+                        OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
+                        |> Seq.toArray
+                        |> shouldEqual (
+                            [| 1500u ; 3u ; 2000u ; 3000u ; 4000u |]
+                            |> Array.collect (fun value ->
+                                [|
+                                    byte (value &&& 0xFFu)
+                                    byte ((value >>> 8) &&& 0xFFu)
+                                    byte ((value >>> 16) &&& 0xFFu)
+                                    byte ((value >>> 24) &&& 0xFFu)
+                                |]
+                            )
+                        )
+                    )
+            }
             // Both flavours: they answered every row alike, so a handler that
             // branched on the flavour for a standard stream would show here.
             stdioNonBlockingCase SimulatedUnixPlatform.linuxX64
@@ -3440,6 +3525,41 @@ module TestImpureCases =
                 System.Console.Error.WriteLine $"{message}"
 
             reraise ()
+
+    [<Test>]
+    let ``a Darwin guest that asks for its groups stops, naming the unmeasured list`` () : unit =
+        // The same guest on a Darwin kernel reaches `File.GetAttributes` of a
+        // root-owned file in a group that is not its effective one, so CoreLib
+        // asks `GetGroups`; which list Darwin reports has not been measured, and
+        // the run must stop saying so rather than answer.
+        let source = Assembly.getEmbeddedResourceAsString "ForeignOwnedSeed.cs" assy
+        let image = Roslyn.compile [ source ]
+
+        let _messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", "ForeignOwnedSeed.cs" ]
+
+        use _loggerFactoryResource = loggerFactory
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
+        use peImage = new MemoryStream (image)
+
+        let exn =
+            Assert.Catch (fun () ->
+                BoundedRun.run
+                    loggerFactory
+                    "ForeignOwnedSeed.cs"
+                    (Some "ForeignOwnedSeed.cs")
+                    peImage
+                    { HostConfig.Default dotnetRuntimes with
+                        Guest =
+                            { GuestConfig.Default dotnetRuntimes with
+                                Kernel = foreignOwnedConfig SimulatedUnixPlatform.macOsArm64
+                            }
+                    }
+                |> ignore<RunOutcome>
+            )
+
+        exn.Message |> shouldContainText "SystemNative_GetGroups"
+        exn.Message |> shouldContainText "GetGroupsRefusal.UnmeasuredGroupList"
 
     [<TestCaseSource(nameof unimplemented)>]
     [<Explicit>]

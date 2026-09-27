@@ -1157,10 +1157,8 @@ module EmulatedKernel =
     /// would blame a guest path that does not exist yet — and there is nothing
     /// for the run to go on and do.
     ///
-    /// `owner` owns every inode of the seed. A seed entry that states any other
-    /// owner is refused: a file the process does not own would reach
-    /// CoreLib's group-membership check (`FileStatus.IsModeReadOnlyCore`), whose
-    /// `SystemNative_GetEGid` and `GetGroups` are not implemented.
+    /// `owner` owns the root directory and every seed entry that states no
+    /// owner of its own; an entry that states one keeps it.
     let withFileSystemAndCurrentDirectory
         (createdAt : UnixTimestamp)
         (owner : InodeOwner)
@@ -1174,35 +1172,6 @@ module EmulatedKernel =
         // library function received it.
         let directory =
             AbsoluteUnixPath.assertValid "EmulatedKernel.CurrentDirectory" directory
-
-        let rec firstOwned
-            (path : DirectoryEntryName list)
-            (entries : Map<DirectoryEntryName, SeedEntry>)
-            : (DirectoryEntryName list * InodeOwner) option
-            =
-            entries
-            |> Map.toSeq
-            |> Seq.tryPick (fun (name, entry) ->
-                let stated =
-                    match entry with
-                    | SeedEntry.File (_, _, stated)
-                    | SeedEntry.Symlink (_, stated)
-                    | SeedEntry.Directory (_, _, stated) -> stated
-
-                match stated, entry with
-                | Some stated, _ when stated <> owner -> Some (List.rev (name :: path), stated)
-                | _, SeedEntry.Directory (children, _, _) -> firstOwned (name :: path) children
-                | _, SeedEntry.File _
-                | _, SeedEntry.Symlink _ -> None
-            )
-
-        match firstOwned [] seed with
-        | Some (path, stated) ->
-            let described = path |> List.map DirectoryEntryName.toEscaped |> String.concat "/"
-
-            failwith
-                $"EmulatedKernel.FileSystem: KernelConfig.FileSystem gives \"/%s{described}\" the owner %O{stated}, but PawPrint does not yet model a file owned by anyone but the configured user and group, %O{owner}. Leave the entry's owner as None, and it will belong to them."
-        | None ->
 
         let described = AbsoluteUnixPath.toEscaped directory
 
@@ -1905,24 +1874,37 @@ type KernelConfig =
         /// This, and not any host directory, is the replay input: PawPrint
         /// never reads the real filesystem, so two runs of the same seed see
         /// the same tree whatever the machine.
+        ///
+        /// An entry whose owner is `None` belongs to the configured `UserId`
+        /// and `GroupId`; one that states an owner keeps it, whoever that is.
         FileSystem : Map<DirectoryEntryName, SeedEntry>
+        /// Who owns the root directory of `FileSystem`, or `None` for the
+        /// configured `UserId` and `GroupId`, as an entry without an owner
+        /// does. The root's mode is 0755 either way, so `Some` root and group
+        /// 0 gives the `/` of a real system, in which only root may create an
+        /// entry.
+        FileSystemRootOwner : InodeOwner option
         /// User ID the simulated process runs as (its real, effective and saved
-        /// user IDs alike), and the owner of every inode `FileSystem` seeds, or `None` for
-        /// the flavour's first interactive user (1000 on Linux, 501 on Darwin).
+        /// user IDs alike), and the owner of every inode `FileSystem` seeds
+        /// without stating an owner, or `None` for the flavour's first
+        /// interactive user (1000 on Linux, 501 on Darwin).
         /// See `UnixSystem.defaultUserId` for why the default is not root.
         /// `(uid_t)-1` is refused: no process can hold it.
         UserId : uint32 option
         /// Group ID the simulated process runs as (its real, effective and saved
-        /// group IDs alike), and the group of every inode `FileSystem` seeds, or `None` for
-        /// the flavour's default (1000 on Linux, 20 on Darwin). `(gid_t)-1` is
-        /// refused.
+        /// group IDs alike), and the group of every inode `FileSystem` seeds
+        /// without stating an owner, or `None` for the flavour's default (1000
+        /// on Linux, 20 on Darwin). `(gid_t)-1` is refused.
         GroupId : uint32 option
         /// The simulated process's supplementary groups, in the order
         /// `setgroups(2)` would have been given them. More than the platform's
         /// `NGROUPS_MAX` (65536 on Linux, 16 on Darwin) is refused.
         ///
-        /// No guest can observe these yet: `SystemNative_GetGroups` is not
-        /// implemented, for the reason given at `SystemNative_GetEUid`.
+        /// A guest sees them through `SystemNative_GetGroups`, which CoreLib
+        /// calls to decide whether a file it does not own is read-only to it.
+        /// Linux reports them sorted; which list Darwin reports has not been
+        /// measured, so there the call stops the run (see
+        /// `GroupListReport.Unmeasured`).
         SupplementaryGroups : uint32 list
         /// The file-mode creation mask `open(O_CREAT)` applies to the mode its
         /// caller asked for. See `EmulatedKernel.Umask`; it does not affect the
@@ -2018,6 +2000,7 @@ type KernelConfig =
             CurrentDirectory = UnixSystem.defaultCurrentDirectory
             ProcessPath = UnixSystem.defaultProcessPath
             FileSystem = FileSystemSeed.empty
+            FileSystemRootOwner = None
             UserId = None
             GroupId = None
             SupplementaryGroups = []
@@ -2036,6 +2019,27 @@ type KernelConfig =
 
 [<RequireQualifiedAccess>]
 module KernelConfig =
+    /// `entries`, with `owner` stated for every entry that states no owner of
+    /// its own, at every depth.
+    let private stateSeedOwners
+        (owner : InodeOwner)
+        (entries : Map<DirectoryEntryName, SeedEntry>)
+        : Map<DirectoryEntryName, SeedEntry>
+        =
+        let rec go (entries : Map<DirectoryEntryName, SeedEntry>) : Map<DirectoryEntryName, SeedEntry> =
+            entries
+            |> Map.map (fun _ entry ->
+                match entry with
+                | SeedEntry.File (contents, permissions, stated) ->
+                    SeedEntry.File (contents, permissions, Some (Option.defaultValue owner stated))
+                | SeedEntry.Symlink (target, stated) ->
+                    SeedEntry.Symlink (target, Some (Option.defaultValue owner stated))
+                | SeedEntry.Directory (children, permissions, stated) ->
+                    SeedEntry.Directory (go children, permissions, Some (Option.defaultValue owner stated))
+            )
+
+        go entries
+
     /// The kernel a host configuration describes: a fresh kernel on the
     /// configured platform, with every other field applied through its own
     /// `EmulatedKernel` setter, so the validation those setters perform (e.g.
@@ -2081,12 +2085,15 @@ module KernelConfig =
         |> EmulatedKernel.withWallClockEpochMs config.WallClockEpochMs
         |> EmulatedKernel.mapMachine (UnixMachineState.withMount config.Mount)
         |> EmulatedKernel.mapProcess (UnixProcessState.withProcessPath "KernelConfig.ProcessPath" config.ProcessPath)
-        // The seed is owned by the configured user and group, named here rather
-        // than read back off the process, which only takes them below.
+        // The configured user and group, named here rather than read back off
+        // the process, which only takes them below. Every entry is given its
+        // owner before the seed is realised, so that the library's default
+        // owner is left to mean the root's alone.
         |> EmulatedKernel.withFileSystemAndCurrentDirectory
             (UnixTimestamp.ofMillisecondsSinceEpoch config.WallClockEpochMs)
-            (InodeOwner.ofProcess credentials)
-            config.FileSystem
+            (config.FileSystemRootOwner
+             |> Option.defaultValue (InodeOwner.ofProcess credentials))
+            (stateSeedOwners (InodeOwner.ofProcess credentials) config.FileSystem)
             config.CurrentDirectory
         |> EmulatedKernel.mapUnix (UnixSystem.withCredentials "KernelConfig" credentials)
         |> EmulatedKernel.mapMachine (

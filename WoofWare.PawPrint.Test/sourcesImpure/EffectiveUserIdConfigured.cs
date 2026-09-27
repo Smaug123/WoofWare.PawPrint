@@ -32,15 +32,13 @@ using System.Text;
 //  2. stat("/f") succeeds at all, so that check 3 below is never satisfied by
 //     an untouched output buffer.
 //
-//  3. stat reports this same identity as st_uid. That is not decoration: it is
-//     the premise on which SystemNative_GetEGid and SystemNative_GetGroups are
-//     deliberately *not* implemented. Within CoreLib, IsMemberOfGroup is
-//     reachable only from FileStatus.IsModeReadOnlyCore, behind
-//     `if (_fileCache.Uid == Interop.Sys.GetEUid())` (FileStatus.Unix.cs:106),
-//     so one process-wide identity makes that branch dead by construction. If a
-//     later slice gives an inode an owner of its own, this fails and says so,
-//     rather than the group path quietly becoming reachable and aborting the
-//     interpreter somewhere unrelated.
+//  3. stat reports this same identity as st_uid for /f, whose seed entry states
+//     no owner. A seed entry without an owner belongs to the configured user,
+//     which is what keeps every seed that never mentions owners on CoreLib's
+//     owner branch of FileStatus.IsModeReadOnlyCore
+//     (`if (_fileCache.Uid == Interop.Sys.GetEUid())`, FileStatus.Unix.cs:106)
+//     rather than its group branch. ForeignOwnedSeed.cs covers a seed that
+//     states other owners.
 class Program
 {
     // Must match Interop.Sys.FileStatus exactly: 17 sequential fields, 120

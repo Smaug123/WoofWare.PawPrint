@@ -174,6 +174,49 @@ module TestOraclePolicy =
         |> shouldEqual []
 
     [<Test>]
+    let ``compared cases leave their seed's root to whoever runs the tests`` () : unit =
+        comparedCases
+        |> List.filter (fun case -> case.KernelConfig.FileSystemRootOwner.IsSome)
+        |> List.map (fun case -> case.FileName)
+        |> shouldEqual []
+
+    [<Test>]
+    let ``the oracle refuses a case that gives its seed's root an owner`` () : unit =
+        let case =
+            TestImpureCases.cases
+            |> List.find (fun case -> case.FileName = "AssemblyLocationEmpty.cs")
+
+        let rootOwned =
+            { case with
+                Oracle = OraclePolicy.Always
+                KernelConfig =
+                    { case.KernelConfig with
+                        FileSystemRootOwner =
+                            Some
+                                {
+                                    User = UserId.root
+                                    Group = GroupId.parseOrFail "test" 0u
+                                }
+                    }
+            }
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> DifferentialOracle.assertComparable rootOwned)
+
+        exn.Message |> shouldContainText "AssemblyLocationEmpty.cs"
+        exn.Message |> shouldContainText "FileSystemRootOwner"
+
+        // The same case with no root owner is comparable, so the refusal above is
+        // the owner's and not something else about the case.
+        DifferentialOracle.assertComparable
+            { rootOwned with
+                KernelConfig =
+                    { rootOwned.KernelConfig with
+                        FileSystemRootOwner = None
+                    }
+            }
+
+    [<Test>]
     let ``no impure case expects an unhandled exception`` () : unit =
         // The impure fixture reads an exit code off the terminating thread, which a
         // guest that died of an escaping exception never produces, so it refuses the
