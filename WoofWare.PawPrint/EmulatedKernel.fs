@@ -817,8 +817,9 @@ type EmulatedKernelDefect =
     /// A thread exists with no task, so anything asking the kernel which
     /// processor it runs on or what OS thread id it reports would crash.
     | ThreadWithoutTask of thread : ThreadId
-    /// A task exists for a thread that does not, so its processor placement and
-    /// OS thread id are held for a thread that can never read them.
+    /// A task exists for a thread that does not, or that has terminated, so its
+    /// processor placement and OS thread id are held for a thread that can never
+    /// read them.
     | TaskWithoutThread of thread : ThreadId
     /// A thread is parked in `ThreadStatus.BlockedInSyscall` but its task records
     /// no park, so nothing says what it is waiting for: no sweep can decide
@@ -1574,23 +1575,46 @@ module EmulatedKernel =
         let fd, connection, system = UnixConnection.acceptConnection socketId (unix kernel)
         fd, connection, withUnix system kernel
 
-    /// Check that the kernel knows exactly the tasks that `liveThreads` are.
+    /// `UnixTaskLifecycle.exitThread` through this kernel: `thread` has finished,
+    /// so its task leaves the kernel, taking its signal mask and the signals
+    /// pending on it alone.
     ///
-    /// Separate from `checkInvariants`, and taking the thread set as an argument,
+    /// Fails loudly on the library's refusals. None is reachable from a guest:
+    /// a thread finishes by returning from its bottom frame, so it is not parked
+    /// in a syscall, and the entry thread, which never goes through here, keeps
+    /// the process's task set from ever emptying.
+    let exitThread (thread : ThreadId) (kernel : EmulatedKernel) : EmulatedKernel =
+        match UnixTaskLifecycle.exitThread thread (unix kernel) with
+        | Ok system -> withUnix system kernel
+        | Error refusal -> failwith $"EmulatedKernel.exitThread: %s{ThreadExitRefusal.describe refusal}"
+
+    /// Check that the kernel has a task for exactly the threads in `threads`
+    /// that have not terminated, and that each task's park agrees with its
+    /// thread's status.
+    ///
+    /// `threads` is every thread with its status, terminated ones included.
+    /// Separate from `checkInvariants`, and taking the threads as an argument,
     /// because `EmulatedKernel` compiles before `IlMachineState` and so cannot
     /// reach `ThreadState` to ask. Callers that have both should call both.
     ///
-    /// This is what makes `UnixTaskState` total: `Cpu` and `OsThreadId` were
-    /// fields on `ThreadState` because a `Map` has no truthful default for an
-    /// absent key, and the replacement for that guarantee is that a key is never
-    /// absent. Nothing removes a thread today, so this is not a leak check —
-    /// it catches a thread created without `registerTask`, and a task minted for
-    /// a thread that was never created.
+    /// A thread is registered as a task when it is created and leaves the table
+    /// when it terminates (`Scheduler.onThreadTerminated`), so this catches a
+    /// thread created without a task, a task minted for a thread that was never
+    /// created, and a thread that terminated without the kernel being told.
+    ///
+    /// A `NotStarted` thread has a task too, although a real process has no
+    /// kernel task for a thread that has not been started: PawPrint registers a
+    /// guest thread when the guest constructs its `Thread`, not when it starts it.
+    /// That stays so until stage 4 of the process-lifecycle plan moves
+    /// registration to `Start`, which will narrow this check to started threads.
     let checkTaskInvariants
-        (liveThreads : Map<ThreadId, ThreadStatus>)
+        (threads : Map<ThreadId, ThreadStatus>)
         (kernel : EmulatedKernel)
         : EmulatedKernelDefect list
         =
+        let liveThreads =
+            threads |> Map.filter (fun _ status -> status <> ThreadStatus.Terminated)
+
         // The comparison is the library's; naming the two failures is this
         // kernel's, because `EmulatedKernelDefect` is PawPrint's vocabulary.
         let missing, extra =
