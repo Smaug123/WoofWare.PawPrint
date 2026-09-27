@@ -35,6 +35,58 @@ type ValueByte =
         | ValueByte.Defined b -> $"0x%02x{b}"
         | ValueByte.Undefined origin -> $"<undefined: %O{origin}>"
 
+/// The bytes of a range of storage, as a read of a typed value needs them.
+[<RequireQualifiedAccess>]
+type ImageBytes =
+    /// Every byte has content. A byte may name a native int rather than hold a number (see
+    /// `UInt8Source`).
+    | Defined of UInt8Source[]
+    /// At least one byte is undefined: nothing ever wrote it, or what was written there was
+    /// itself undefined. Every other byte is a number.
+    | SomeUndefined of ValueByte[]
+
+[<RequireQualifiedAccess>]
+module ImageBytes =
+    /// Each byte as a number or undefined. Fails on a byte that names a native int, which has
+    /// neither form.
+    let toValueBytes (context : string) (bytes : ImageBytes) : ValueByte[] =
+        match bytes with
+        | ImageBytes.SomeUndefined bytes -> bytes
+        | ImageBytes.Defined bytes ->
+            bytes
+            |> Array.map (fun b ->
+                match b with
+                | UInt8Source.Verbatim b -> ValueByte.Defined b
+                | UInt8Source.NativeIntByte _ ->
+                    failwith
+                        $"%s{context}: refusing to combine the named byte %O{b} with undefined bytes; a byte of an unmodelled native int has no number to sit beside them"
+            )
+
+    /// The image of consecutive ranges, in order. Defined exactly when every part is.
+    let concat (context : string) (parts : ImageBytes list) : ImageBytes =
+        let allDefined =
+            parts
+            |> List.forall (fun part ->
+                match part with
+                | ImageBytes.Defined _ -> true
+                | ImageBytes.SomeUndefined _ -> false
+            )
+
+        if allDefined then
+            parts
+            |> List.map (fun part ->
+                match part with
+                | ImageBytes.Defined bytes -> bytes
+                | ImageBytes.SomeUndefined _ -> failwith "unreachable: every part was just checked to be defined"
+            )
+            |> Array.concat
+            |> ImageBytes.Defined
+        else
+            parts
+            |> List.map (toValueBytes context)
+            |> Array.concat
+            |> ImageBytes.SomeUndefined
+
 /// The primitive storage shape an undefined value stands in for: one case per leaf shape of
 /// `CliType`. A value type is never undefined as a whole; its fields are, one leaf at a time.
 [<RequireQualifiedAccess>]

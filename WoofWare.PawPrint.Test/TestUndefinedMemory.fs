@@ -196,14 +196,14 @@ module TestUndefinedMemory =
 
         let value =
             match read with
-            | BlockBytes.Defined bytes ->
+            | ImageBytes.Defined bytes ->
                 Array.exists isUndefined expected |> shouldEqual false
 
                 bytes
                 |> shouldEqual (expected |> Array.map (definedByte >> UInt8Source.Verbatim))
 
                 CliType.OfSymbolicBytesLike (CliType.ZeroOfPrimitive kind) bytes
-            | BlockBytes.SomeUndefined bytes ->
+            | ImageBytes.SomeUndefined bytes ->
                 bytes |> shouldEqual expected
                 CliType.OfValueBytesLike (CliType.ZeroOfPrimitive kind) bytes
 
@@ -301,8 +301,8 @@ module TestUndefinedMemory =
                 ||> List.fold (fun pool i ->
                     let value =
                         match StackMemoryPool.readValueBytes (memoryOf source) (sourceStart + i) 1 pool with
-                        | BlockBytes.Defined bytes -> CliType.OfSymbolicBytesLike byteTemplate bytes
-                        | BlockBytes.SomeUndefined bytes -> CliType.OfValueBytesLike byteTemplate bytes
+                        | ImageBytes.Defined bytes -> CliType.OfSymbolicBytesLike byteTemplate bytes
+                        | ImageBytes.SomeUndefined bytes -> CliType.OfValueBytesLike byteTemplate bytes
 
                     destinationModel.[destinationStart + i] <- sourceModel.[sourceStart + i]
                     StackMemoryPool.writeCell destination (destinationStart + i) value pool
@@ -406,3 +406,88 @@ module TestUndefinedMemory =
             UndefinedPrimitive.Float32
             (value UndefinedPrimitive.Float64 (origin 5 :: List.replicate 7 (ValueByte.Defined 0uy)))
         |> shouldEqual (List.replicate 4 (origin 5))
+
+    /// A primitive cell of managed storage — a local, an argument, an array element, a field —
+    /// read and written a byte range at a time, as a byte view through a pointer or reinterpreting
+    /// byref does. The model is the cell's image: every byte a number or undefined.
+    [<Test>]
+    let ``A managed cell read and written in byte ranges keeps each byte's definedness`` () : unit =
+        let mutable undefinedReads = 0
+        let mutable definedReads = 0
+
+        let genCellCase =
+            gen {
+                let! kind = Gen.elements primitiveKinds
+                let size = UndefinedPrimitive.size kind
+                let! initial = Gen.arrayOfLength size genValueByte
+
+                let genRange =
+                    gen {
+                        let! offset = Gen.choose (0, size - 1)
+                        let! count = Gen.choose (1, size - offset)
+                        return offset, count
+                    }
+
+                let! writes =
+                    Gen.listOf (
+                        gen {
+                            let! offset, count = genRange
+                            let! bytes = Gen.arrayOfLength count genValueByte
+                            return offset, bytes
+                        }
+                    )
+
+                let! reads = Gen.nonEmptyListOf genRange
+                return kind, initial, writes, reads
+            }
+
+        let property (kind : UndefinedPrimitive, initial : ValueByte[], writes, reads) : unit =
+            let model = Array.copy initial
+
+            let cell = CliType.OfValueBytesLike (CliType.ZeroOfPrimitive kind) initial
+
+            let cell =
+                (cell, writes)
+                ||> List.fold (fun cell (offset : int, bytes : ValueByte[]) ->
+                    Array.blit bytes 0 model offset bytes.Length
+
+                    let updated =
+                        CliType.WithValueBytesAtIfChanged offset bytes cell |> Option.defaultValue cell
+
+                    // The cell keeps its shape whatever is written.
+                    CliType.TryPrimitiveShape updated |> shouldEqual (Some kind)
+                    CliType.ValueBytesOf updated |> shouldEqual model
+                    updated
+                )
+
+            for offset, count in reads do
+                let expected = Array.sub model offset count
+
+                // Read back as bytes, one byte-typed value at a time.
+                for i in 0 .. count - 1 do
+                    let b =
+                        CliType.ImageBytesAt (offset + i) 1 cell
+                        |> CliType.OfImageBytesLike (CliType.ZeroOfPrimitive UndefinedPrimitive.UInt8)
+
+                    match b, expected.[i] with
+                    | CliType.Undefined u, (ValueByte.Undefined _ as e) -> u.Bytes |> shouldEqual [ e ]
+                    | CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim n)), ValueByte.Defined e ->
+                        n |> shouldEqual e
+                    | actual, e -> failwith $"byte %d{offset + i}: read %O{actual}, model %O{e}"
+
+                match CliType.ImageBytesAt offset count cell with
+                | ImageBytes.Defined bytes ->
+                    Array.exists isUndefined expected |> shouldEqual false
+
+                    bytes
+                    |> shouldEqual (expected |> Array.map (definedByte >> UInt8Source.Verbatim))
+
+                    definedReads <- definedReads + 1
+                | ImageBytes.SomeUndefined bytes ->
+                    bytes |> shouldEqual expected
+                    undefinedReads <- undefinedReads + 1
+
+        Check.One (config, Prop.forAll (Arb.fromGen genCellCase) property)
+
+        if undefinedReads < 100 || definedReads < 100 then
+            failwith $"generator was unbalanced: %d{undefinedReads} undefined reads, %d{definedReads} defined"
