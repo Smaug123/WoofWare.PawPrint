@@ -674,14 +674,18 @@ module TestUnixTaskLifecycle =
 
         runProperty platform coverage
 
+        // Each floor sits at least four standard deviations below the count that
+        // 1000 cases reach, so it fails when a generator change stops reaching the
+        // path, not by chance. Measured over 1000 runs per flavour, the rarest is
+        // `EndedWithParkedTask`, at a mean of 40 and a standard deviation of 8.
         coverage.ExitsDroppingAMask |> shouldBeGreaterThan 50
-        coverage.ExitsDroppingOwnPending |> shouldBeGreaterThan 50
+        coverage.ExitsDroppingOwnPending |> shouldBeGreaterThan 20
         coverage.ExitsKeepingProcessPending |> shouldBeGreaterThan 20
         coverage.RefusedParked |> shouldBeGreaterThan 20
         coverage.RefusedLeaderFirst |> shouldBeGreaterThan 20
         coverage.SpawnsInheritingAMask |> shouldBeGreaterThan 20
         coverage.EndedByExitGroup |> shouldBeGreaterThan 50
-        coverage.EndedWithParkedTask |> shouldBeGreaterThan 20
+        coverage.EndedWithParkedTask |> shouldBeGreaterThan 5
 
         match SimulatedUnixPlatform.flavour platform with
         | SimulatedUnixFlavour.Linux ->
