@@ -157,10 +157,6 @@ module UnixTaskLifecycle =
                 $"UnixTaskLifecycle.spawn: task %O{parent} is parked in %A{park.Syscall}, so it cannot be making the clone syscall"
         | None ->
 
-        if Map.containsKey child system.Tasks then
-            failwith
-                $"UnixTaskLifecycle.spawn: %O{child} already names a task, so it cannot name a new one (this is a bug in the client)"
-
         let held =
             system.Tasks
             |> Map.fold (fun held _ state -> Set.add state.OsThreadId held) Set.empty
