@@ -455,6 +455,7 @@ class TwoPortsOneEdge
                 | Some (ParkedSyscall.SocketWait wait) -> Some (tid, wait.Port)
                 | Some (ParkedSyscall.Flock _)
                 | Some (ParkedSyscall.Poll _)
+                | Some (ParkedSyscall.Accept _)
                 | None -> None
             | _ -> None
         )

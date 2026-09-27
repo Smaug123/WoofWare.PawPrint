@@ -273,6 +273,7 @@
     <Compile Include="TestSocketEventsWaitReason.fs" />
     <Compile Include="TestSyscallPark.fs" />
     <Compile Include="TestSocketEventsWait.fs" />
+    <Compile Include="TestBlockingAccept.fs" />
     <Compile Include="TestSocketEventBuffer.fs" />
     <Compile Include="TestEffectiveProcessorCount.fs" />
     <Compile Include="TestEnvironmentEntryInvariant.fs" />

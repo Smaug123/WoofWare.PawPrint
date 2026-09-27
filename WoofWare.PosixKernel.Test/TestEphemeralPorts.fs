@@ -112,9 +112,10 @@ module TestEphemeralPorts =
         | Error refusal -> failwith $"connect refused: %s{ConnectRefusal.describe refusal}"
 
     let private acceptFrom (fd : int) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        match UnixConnection.accept fd UserBuffer.Mapped 16 system with
-        | Ok (AcceptAnswer.Accepted (accepted, _, _), system) -> accepted, system
-        | Ok (AcceptAnswer.Failed error, _) -> failwith $"accept failed with %A{error}"
+        match UnixConnection.accept 0 fd UserBuffer.Mapped 16 system with
+        | Ok (AcceptOutcome.Accepted (accepted, _, _), system) -> accepted, system
+        | Ok (AcceptOutcome.Failed error, _) -> failwith $"accept failed with %A{error}"
+        | Ok (AcceptOutcome.WouldBlock _, _) -> failwith "accept parked"
         | Error refusal -> failwith $"accept refused: %A{refusal}"
 
     let private closeFd (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =

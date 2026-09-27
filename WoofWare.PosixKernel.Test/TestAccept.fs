@@ -153,9 +153,9 @@ module TestAccept =
         (destination : UserBuffer)
         (declaredLength : int)
         (system : UnixSystem<int, string>)
-        : AcceptAnswer * UnixSystem<int, string>
+        : AcceptOutcome * UnixSystem<int, string>
         =
-        match UnixConnection.accept fd destination declaredLength system with
+        match UnixConnection.accept 0 fd destination declaredLength system with
         | Ok result -> result
         | Error refusal -> failwith $"expected an answer, got a refusal: %s{AcceptRefusal.describe refusal}"
 
@@ -176,8 +176,9 @@ module TestAccept =
         let fd, connections, system = listenerWith platform 2
 
         match acceptOrFail fd UserBuffer.Mapped 16 system with
-        | AcceptAnswer.Failed error, _ -> failwith $"expected an accept, got %O{error}"
-        | AcceptAnswer.Accepted (acceptedFd, peer, reportedLength), system ->
+        | AcceptOutcome.Failed error, _ -> failwith $"expected an accept, got %O{error}"
+        | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
+        | AcceptOutcome.Accepted (acceptedFd, peer, reportedLength), system ->
 
         peer |> shouldEqual (loopback 40000us)
         reportedLength |> shouldEqual 16
@@ -224,8 +225,9 @@ module TestAccept =
         let fd, system = withSocket (SocketId 0L) listener system
 
         match acceptOrFail fd UserBuffer.Mapped 16 system with
-        | AcceptAnswer.Failed error, _ -> failwith $"expected an accept, got %O{error}"
-        | AcceptAnswer.Accepted (acceptedFd, _, _), system ->
+        | AcceptOutcome.Failed error, _ -> failwith $"expected an accept, got %O{error}"
+        | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
+        | AcceptOutcome.Accepted (acceptedFd, _, _), system ->
 
         let acceptedId =
             match FileDescriptorRegistry.tryFindTarget acceptedFd system.Process.FileDescriptors with
@@ -243,8 +245,9 @@ module TestAccept =
             List.fold
                 (fun (peers, system) (_ : int) ->
                     match acceptOrFail fd UserBuffer.Mapped 16 system with
-                    | AcceptAnswer.Failed error, _ -> failwith $"expected an accept, got %O{error}"
-                    | AcceptAnswer.Accepted (_, peer, _), system -> peers @ [ peer ], system
+                    | AcceptOutcome.Failed error, _ -> failwith $"expected an accept, got %O{error}"
+                    | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
+                    | AcceptOutcome.Accepted (_, peer, _), system -> peers @ [ peer ], system
                 )
                 ([], system)
                 [ 0..2 ]
@@ -263,8 +266,9 @@ module TestAccept =
             let fd, _, system = listenerWith platform 1
 
             match acceptOrFail fd UserBuffer.Mapped declaredLength system with
-            | AcceptAnswer.Failed error, _ -> failwith $"expected an accept at %d{declaredLength}, got %O{error}"
-            | AcceptAnswer.Accepted (_, _, reportedLength), _ -> reportedLength |> shouldEqual 16
+            | AcceptOutcome.Failed error, _ -> failwith $"expected an accept at %d{declaredLength}, got %O{error}"
+            | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
+            | AcceptOutcome.Accepted (_, _, reportedLength), _ -> reportedLength |> shouldEqual 16
 
     /// A call that writes nothing never looks at the destination, so every
     /// buffer succeeds at a declared length of zero — including the three that a
@@ -281,8 +285,9 @@ module TestAccept =
             let fd, _, system = listenerWith platform 1
 
             match acceptOrFail fd destination 0 system with
-            | AcceptAnswer.Failed error, _ -> failwith $"expected an accept through %A{destination}, got %O{error}"
-            | AcceptAnswer.Accepted (_, _, reportedLength), system ->
+            | AcceptOutcome.Failed error, _ -> failwith $"expected an accept through %A{destination}, got %O{error}"
+            | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
+            | AcceptOutcome.Accepted (_, _, reportedLength), system ->
 
             reportedLength |> shouldEqual 16
             queueOf (SocketId 0L) system |> shouldEqual []
@@ -297,7 +302,7 @@ module TestAccept =
 
         acceptOrFail 99 UserBuffer.Mapped 16 system
         |> fst
-        |> shouldEqual (AcceptAnswer.Failed UnixError.EBADF)
+        |> shouldEqual (AcceptOutcome.Failed UnixError.EBADF)
 
     [<TestCaseSource(nameof platforms)>]
     let ``a descriptor that is not a socket is ENOTSOCK`` (platform : SimulatedUnixPlatform) : unit =
@@ -321,7 +326,7 @@ module TestAccept =
         for fd in [ 0 ; fileFd ; portFd ] do
             acceptOrFail fd UserBuffer.Mapped 16 system
             |> fst
-            |> shouldEqual (AcceptAnswer.Failed UnixError.ENOTSOCK)
+            |> shouldEqual (AcceptOutcome.Failed UnixError.ENOTSOCK)
 
     /// The kind check beats the listening check: a datagram socket is also "not
     /// listening", and answers EOPNOTSUPP rather than EINVAL — blocking or not.
@@ -347,7 +352,7 @@ module TestAccept =
 
             acceptOrFail fd UserBuffer.Mapped 16 system
             |> fst
-            |> shouldEqual (AcceptAnswer.Failed UnixError.EOPNOTSUPP)
+            |> shouldEqual (AcceptOutcome.Failed UnixError.EOPNOTSUPP)
 
     /// ...and the listening check beats blocking behaviour: a *blocking* stream
     /// socket that is not listening answers EINVAL immediately rather than
@@ -368,7 +373,7 @@ module TestAccept =
 
             acceptOrFail fd UserBuffer.Mapped 16 system
             |> fst
-            |> shouldEqual (AcceptAnswer.Failed UnixError.EINVAL)
+            |> shouldEqual (AcceptOutcome.Failed UnixError.EINVAL)
 
     [<TestCaseSource(nameof platforms)>]
     let ``an empty queue on a non-blocking listener is EAGAIN`` (platform : SimulatedUnixPlatform) : unit =
@@ -384,7 +389,7 @@ module TestAccept =
 
         acceptOrFail fd UserBuffer.Mapped 16 system
         |> fst
-        |> shouldEqual (AcceptAnswer.Failed UnixError.EAGAIN)
+        |> shouldEqual (AcceptOutcome.Failed UnixError.EAGAIN)
 
     /// `O_NONBLOCK` is a fact about the open file description rather than about
     /// the socket, so an accept through a `dup` of a non-blocking listener
@@ -412,7 +417,7 @@ module TestAccept =
 
         acceptOrFail duplicate UserBuffer.Mapped 16 system
         |> fst
-        |> shouldEqual (AcceptAnswer.Failed UnixError.EAGAIN)
+        |> shouldEqual (AcceptOutcome.Failed UnixError.EAGAIN)
 
     /// Every failing arm hands back the system it was given, which is what makes
     /// the queue survivable: measured on both flavours, a failed `accept` leaves
@@ -442,7 +447,7 @@ module TestAccept =
 
             let fd, system = withSocket (SocketId 0L) socket (systemOn platform)
 
-            UnixConnection.accept fd UserBuffer.Mapped 16 system
+            UnixConnection.accept 0 fd UserBuffer.Mapped 16 system
             |> shouldEqual (Error (AcceptRefusal.UnmodelledDomain (SocketId 0L, domain)))
 
     [<TestCaseSource(nameof platforms)>]
@@ -455,15 +460,25 @@ module TestAccept =
 
             let fd, system = withSocket (SocketId 0L) socket (systemOn platform)
 
-            UnixConnection.accept fd UserBuffer.Mapped 16 system
+            UnixConnection.accept 0 fd UserBuffer.Mapped 16 system
             |> shouldEqual (Error (AcceptRefusal.UnmeasuredKind (SocketId 0L, kind)))
 
+    /// The park itself, and what finishes it, are `TestBlockingAccept`'s.
     [<TestCaseSource(nameof platforms)>]
-    let ``an empty queue on a blocking listener is refused`` (platform : SimulatedUnixPlatform) : unit =
+    let ``an empty queue on a blocking listener parks the caller`` (platform : SimulatedUnixPlatform) : unit =
         let fd, _, system = listenerWith platform 0
 
-        UnixConnection.accept fd UserBuffer.Mapped 16 system
-        |> shouldEqual (Error (AcceptRefusal.WouldPark (SocketId 0L)))
+        match UnixConnection.accept 0 fd UserBuffer.Mapped 16 system with
+        | Ok (AcceptOutcome.WouldBlock condition, _) ->
+            condition
+            |> shouldEqual (
+                WakeCondition.Primitive (
+                    WakePrimitive.AcceptQueueNonEmpty (
+                        FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors |> Option.get
+                    )
+                )
+            )
+        | other -> failwith $"expected the accept to park, got %A{other}"
 
     /// An unmapped destination faults the copy-out, and the fault happens once a
     /// connection has already been taken off the queue -- which is the case
@@ -472,7 +487,7 @@ module TestAccept =
     let ``a copy-out through an unmapped destination is refused`` (platform : SimulatedUnixPlatform) : unit =
         let fd, _, system = listenerWith platform 1
 
-        UnixConnection.accept fd (UserBuffer.Unmapped 4096UL) 16 system
+        UnixConnection.accept 0 fd (UserBuffer.Unmapped 4096UL) 16 system
         |> shouldEqual (Error (AcceptRefusal.UnmeasuredCopyOutFault (SocketId 0L)))
 
     /// A destination whose bytes the client cannot produce is a different
@@ -493,7 +508,7 @@ module TestAccept =
         for destination, expected in rows do
             let fd, _, system = listenerWith platform 1
 
-            UnixConnection.accept fd destination 16 system
+            UnixConnection.accept 0 fd destination 16 system
             |> shouldEqual (Error (AcceptRefusal.Buffer expected))
 
     /// A refusal carries no system, so the connection it would have handed over
@@ -503,20 +518,21 @@ module TestAccept =
     let ``a refused copy-out leaves the connection queued`` (platform : SimulatedUnixPlatform) : unit =
         let fd, connections, system = listenerWith platform 1
 
-        UnixConnection.accept fd UserBuffer.Opaque 16 system
+        UnixConnection.accept 0 fd UserBuffer.Opaque 16 system
         |> shouldEqual (Error (AcceptRefusal.Buffer BufferRefusal.OpaqueAtTransfer))
 
         queueOf (SocketId 0L) system |> shouldEqual connections
 
     /// The buffer is screened only once a connection is there to hand over: a
     /// buffer naming no storage is not what an accept with an empty queue
-    /// complains about.
+    /// complains about, and the call sleeps without looking at it.
     [<TestCaseSource(nameof platforms)>]
     let ``an empty queue outranks an unwritable buffer`` (platform : SimulatedUnixPlatform) : unit =
         let fd, _, system = listenerWith platform 0
 
-        UnixConnection.accept fd UserBuffer.Opaque 16 system
-        |> shouldEqual (Error (AcceptRefusal.WouldPark (SocketId 0L)))
+        match UnixConnection.accept 0 fd UserBuffer.Opaque 16 system with
+        | Ok (AcceptOutcome.WouldBlock _, _) -> ()
+        | other -> failwith $"expected the accept to park, got %A{other}"
 
 
     // ------------------------------------------------------------------
@@ -565,8 +581,9 @@ module TestAccept =
             }
 
         match acceptOrFail fd UserBuffer.Mapped 16 system with
-        | AcceptAnswer.Failed error, _ -> failwith $"expected an accept, got %O{error}"
-        | AcceptAnswer.Accepted (acceptedFd, _, _), system ->
+        | AcceptOutcome.Failed error, _ -> failwith $"expected an accept, got %O{error}"
+        | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
+        | AcceptOutcome.Accepted (acceptedFd, _, _), system ->
 
         (acceptedDescription acceptedFd system).NonBlocking |> shouldEqual inherits
 
@@ -579,8 +596,9 @@ module TestAccept =
         let fd, _, system = listenerWith platform 1
 
         match acceptOrFail fd UserBuffer.Mapped 16 system with
-        | AcceptAnswer.Failed error, _ -> failwith $"expected an accept, got %O{error}"
-        | AcceptAnswer.Accepted (acceptedFd, _, _), system ->
+        | AcceptOutcome.Failed error, _ -> failwith $"expected an accept, got %O{error}"
+        | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
+        | AcceptOutcome.Accepted (acceptedFd, _, _), system ->
 
         (acceptedDescription acceptedFd system).NonBlocking |> shouldEqual false
 
@@ -612,8 +630,9 @@ module TestAccept =
             }
 
         match acceptOrFail duplicate UserBuffer.Mapped 16 system with
-        | AcceptAnswer.Failed error, _ -> failwith $"expected an accept, got %O{error}"
-        | AcceptAnswer.Accepted (acceptedFd, _, _), system ->
+        | AcceptOutcome.Failed error, _ -> failwith $"expected an accept, got %O{error}"
+        | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
+        | AcceptOutcome.Accepted (acceptedFd, _, _), system ->
 
         (acceptedDescription acceptedFd system).NonBlocking |> shouldEqual inherits
 
@@ -646,7 +665,7 @@ module TestAccept =
         let fd, _, system = listenerWith SimulatedUnixPlatform.linuxX64 1
 
         let e =
-            Assert.Throws<exn> (fun () -> UnixConnection.accept fd UserBuffer.Mapped -1 system |> ignore<_>)
+            Assert.Throws<exn> (fun () -> UnixConnection.accept 0 fd UserBuffer.Mapped -1 system |> ignore<_>)
 
         e.Message |> shouldContainText "is negative, which no kernel is ever asked"
 
@@ -658,7 +677,7 @@ module TestAccept =
             withSocket (SocketId 0L) socket (systemOn SimulatedUnixPlatform.linuxX64)
 
         let e =
-            Assert.Throws<exn> (fun () -> UnixConnection.accept fd UserBuffer.Mapped 16 system |> ignore<_>)
+            Assert.Throws<exn> (fun () -> UnixConnection.accept 0 fd UserBuffer.Mapped 16 system |> ignore<_>)
 
         e.Message |> shouldContainText "socket invariants forbid"
 

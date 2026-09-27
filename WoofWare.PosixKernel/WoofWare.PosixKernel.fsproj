@@ -59,10 +59,10 @@
         <Compile Include="UnixClock.fs" />
         <Compile Include="UnixSystemState.fs" />
         <Compile Include="UnixSocket.fs" />
-        <Compile Include="UnixConnection.fs" />
         <Compile Include="Readiness.fs" />
         <Compile Include="WakeCondition.fs" />
         <Compile Include="UnixWait.fs" />
+        <Compile Include="UnixConnection.fs" />
         <Compile Include="UnixPoll.fs" />
         <Compile Include="UnixTaskLifecycle.fs" />
         <Compile Include="UnixDescriptor.fs" />

@@ -290,6 +290,10 @@ module NativeSystemNative =
                 "Accept the connection or close the client before closing the listener."
             | CloseRefusal.PolledDescriptor _ ->
                 "Model a sleeping poll's reference to the files it watches before closing one out from under it."
+            | CloseRefusal.LinuxLastListenerDescriptorWithAccepter _ ->
+                "Model a sleeping accept's reference to its listener before closing the listener out from under it."
+            | CloseRefusal.DarwinListenerDescriptorWithAccepter _ ->
+                "Model a close ending a sleeping accept with ECONNABORTED before closing the listener out from under it, or configure a Linux platform."
 
         $"%s{operation}: fd %d{fd}: %s{CloseRefusal.describe refusal} %s{remedy}"
 
@@ -3299,6 +3303,10 @@ module NativeSystemNative =
                 // Unreachable, for the same reason.
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered an flock while its task is parked in a poll. A task blocks in one syscall at a time, so the poll's completion failed to clear its record (this is an interpreter bug)."
+            | Some (ParkedSyscall.Accept _) ->
+                // Unreachable, for the same reason.
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread} entered an flock while its task is parked in an accept. A task blocks in one syscall at a time, so the accept's completion failed to clear its record (this is an interpreter bug)."
             | Some (ParkedSyscall.Flock parked) ->
                 match UnixDescriptor.flockAcquire ctx.Thread (EmulatedKernel.unix state.Kernel) with
                 | Error refusal -> refused refusal
@@ -4398,6 +4406,166 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
+            // Answer the call from the library's outcome. `declaredLength` is the
+            // shim's own `socklen_t addrLen`, which it copies out of
+            // `*socketAddressLen` before calling `accept4` and writes back after:
+            // the kernel reads and writes that local, never the guest's cell.
+            let settle
+                (fd : int)
+                (declaredLength : int)
+                (outcome : Result<AcceptOutcome * UnixSystem<ThreadId, NativeSignalHandler>, AcceptRefusal>)
+                : NativeHandlerResult option
+                =
+                let lengthCell = requireStorage operation "socketAddressLen" lengthArgument
+
+                // Resolved ahead of every answer: each of them stores through
+                // `acceptedSocket` -- the C writes -1 there on every syscall
+                // failure, before returning the PAL error -- so a stray pointer
+                // is the SIGSEGV `requireStorage` explains, whichever answer it
+                // would have accompanied. The address buffer is different: the
+                // kernel writes it only on *success*, so it is resolved below
+                // and only when there is something to write.
+                let acceptedCell = requireStorage operation "acceptedSocket" acceptedArgument
+
+                // `toRawErrnoUnder` rather than `toRawErrno`: EOPNOTSUPP is 95 on
+                // Linux against 102 on Darwin, and ENOTSOCK 88 against 38.
+                let failFromSyscall (error : UnixError) (state : IlMachineState) : NativeHandlerResult option =
+                    let raw =
+                        UnixError.toRawErrnoUnder
+                            (SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform)
+                            error
+
+                    let bytes = Array.zeroCreate<byte> 8
+                    BinaryPrimitives.WriteInt64LittleEndian (Span<byte> bytes, -1L)
+
+                    writeBytesThrough ctx operation acceptedCell (ImmutableArray.CreateRange bytes) state
+                    |> fun state -> state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread raw)
+                    |> complete (UnixErrorPal.toPal error)
+
+                match outcome with
+                | Error (AcceptRefusal.UnmodelledDomain (_, domain) as refusal) ->
+                    // The library says why no kernel answer exists; PawPrint says how
+                    // a guest could be holding such a socket, which is a fact about
+                    // CoreLib rather than about any kernel.
+                    let reachedBy =
+                        match domain with
+                        | SocketDomain.Inet6 ->
+                            "No *managed* guest can hold one -- `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket and `SystemNative_SetSockOpt` is unimplemented -- so this is a hand-rolled P/Invoke. Implement SetSockOpt first: the cross-family bind-conflict rules measured so far are facts about IPV6_V6ONLY=0, and Linux inverts several of them at 1."
+                        | SocketDomain.Unix -> "That belongs with the filesystem work (issue #956), not here."
+                        | SocketDomain.Inet ->
+                            failwith
+                                $"%s{operation}: the library refused an IPv4 socket's domain, which it models. This is an interpreter bug."
+
+                    failwith $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal} %s{reachedBy}"
+                | Error (AcceptRefusal.Buffer refusal) ->
+                    failwith (BufferPointer.refusalMessage addressArgument refusal)
+                | Error (AcceptRefusal.UnmeasuredCopyOutFault _ as refusal) ->
+                    // The library never saw the pointer, only how PawPrint
+                    // classified it, so naming the argument is PawPrint's half.
+                    failwith
+                        $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal} `socketAddress` is %O{addressArgument}; pass a real buffer."
+                | Error (AcceptRefusal.UnmeasuredKind _ as refusal) ->
+                    failwith $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal}"
+                | Ok (AcceptOutcome.Failed error, _) ->
+                    // No system is carried back: the library documents that a failing
+                    // accept changes nothing, so writing one would be a no-op that
+                    // hid a future change to that contract.
+                    failFromSyscall error state
+                | Ok (AcceptOutcome.WouldBlock _, system) ->
+                    // Park re-entrantly, as `SystemNative_Poll` does: the native
+                    // frame stays and the caller's program counter still names the
+                    // call, so a wake re-enters this handler, which finishes the
+                    // call from the task's park record and writes the answer
+                    // through the caller's own pointers. Nothing is written before
+                    // the kernel returns, as the C writes nothing either.
+                    state.MapKernel (EmulatedKernel.withUnix system)
+                    |> Scheduler.parkInSyscall ctx.Thread
+                    |> NativeHandlerResult.blockedRetainingFrame
+                    |> Some
+                | Ok (AcceptOutcome.Accepted (acceptedFd, peer, reportedLength), unix) ->
+
+                // `#if !defined(__linux__)`: "On macOS and FreeBSD new socket
+                // inherits flags from accepting fd. Our socket code expects new
+                // socket to be in blocking mode by default"
+                // (pal_networking.c:1733). Applied on every flavour rather than
+                // under a platform test, because on Linux the kernel never set the
+                // flag and clearing it is a no-op. The shim closes the accepted
+                // socket if the `fcntl` fails; nothing here can fail.
+                let unix =
+                    { unix with
+                        Process =
+                            { unix.Process with
+                                FileDescriptors =
+                                    FileDescriptorRegistry.setNonBlocking acceptedFd false unix.Process.FileDescriptors
+                            }
+                    }
+
+                let state = state.MapKernel (EmulatedKernel.withUnix unix)
+
+                let blob =
+                    SimulatedUnixPlatform.encodeInternetSockaddr state.Kernel.UnixPlatform peer
+
+                // The caller's declared length bounds what is *written* and not
+                // what is *reported*, exactly as for `getsockname(2)`: both come
+                // out of the kernel's one sockaddr copy-out helper.
+                let written = min declaredLength reportedLength
+
+                let state =
+                    if written = 0 then
+                        // A call that writes nothing never resolves the destination,
+                        // which is why a declared length of zero succeeds through a
+                        // pointer naming no storage.
+                        state
+                    else
+                        let storage =
+                            match BufferPointer.dereferenceable addressArgument with
+                            | Some storage -> storage
+                            | None ->
+                                failwith
+                                    $"%s{operation}: `socketAddress` is %O{addressArgument}, which names no storage, yet the library accepted a connection rather than refusing the copy-out. This is an interpreter bug."
+
+                        writeBytesThrough
+                            ctx
+                            operation
+                            storage
+                            (ImmutableArray.CreateRange (Array.sub blob 0 written))
+                            state
+
+                let reported = Array.zeroCreate<byte> 4
+                BinaryPrimitives.WriteInt32LittleEndian (System.Span<byte> reported, reportedLength)
+
+                let acceptedBytes = Array.zeroCreate<byte> 8
+                BinaryPrimitives.WriteInt64LittleEndian (System.Span<byte> acceptedBytes, int64 acceptedFd)
+
+                state
+                |> writeBytesThrough ctx operation lengthCell (ImmutableArray.CreateRange reported)
+                |> writeBytesThrough ctx operation acceptedCell (ImmutableArray.CreateRange acceptedBytes)
+                |> complete UnixErrorPal.palSuccess
+
+            // A re-entry is told apart from a first entry by the record, not by
+            // anything about the frame: the wake leaves the call site exactly as
+            // the park found it. It runs none of the shim's screens and reads
+            // nothing from the guest's length cell, which the guest may have
+            // written since: the shim screened and copied it before `accept4`
+            // slept, and the park holds the copy.
+            match UnixTaskTable.parkedFor ctx.Thread state.Kernel.Tasks with
+            | Some (ParkedSyscall.Accept parked) ->
+                let fd = fdArgument operation instruction.Arguments.[0]
+
+                settle
+                    fd
+                    parked.DeclaredLength
+                    (UnixConnection.finishAccept ctx.Thread (EmulatedKernel.unix state.Kernel))
+            | Some (ParkedSyscall.SocketWait _)
+            | Some (ParkedSyscall.Flock _)
+            | Some (ParkedSyscall.Poll _) ->
+                // Unreachable: a task parked in another syscall is not running
+                // IL. Refused rather than treated as a first entry, which would
+                // park over the stale record and destroy the evidence.
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread} entered an accept while its task is parked in %A{UnixTaskTable.parkedFor ctx.Thread state.Kernel.Tasks}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
+            | None ->
+
             // The wrapper's own screens, which precede the descriptor lookup —
             // even decoding the fd, whose argument may be a pointer no fd
             // integer could equal — and store nothing: any of the three
@@ -4423,120 +4591,13 @@ module NativeSystemNative =
 
             let fd = fdArgument operation instruction.Arguments.[0]
 
-            // Resolved ahead of every remaining answer: each of them stores
-            // through `acceptedSocket` — the C writes -1 there on every syscall
-            // failure, before returning the PAL error — so a stray pointer is
-            // the SIGSEGV `requireStorage` explains, whichever answer it would
-            // have accompanied. The address buffer is different: the kernel
-            // writes it only on *success*, so it is resolved below and only
-            // when there is something to write.
-            let acceptedCell = requireStorage operation "acceptedSocket" acceptedArgument
-
-            // `toRawErrnoUnder` rather than `toRawErrno`: EOPNOTSUPP is 95 on
-            // Linux against 102 on Darwin, and ENOTSOCK 88 against 38.
-            let failFromSyscall (error : UnixError) (state : IlMachineState) : NativeHandlerResult option =
-                let raw =
-                    UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform) error
-
-                let bytes = Array.zeroCreate<byte> 8
-                BinaryPrimitives.WriteInt64LittleEndian (Span<byte> bytes, -1L)
-
-                writeBytesThrough ctx operation acceptedCell (ImmutableArray.CreateRange bytes) state
-                |> fun state -> state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread raw)
-                |> complete (UnixErrorPal.toPal error)
-
-            match
-                UnixConnection.accept
-                    fd
-                    (BufferPointer.toUserBuffer addressArgument)
-                    declaredLength
-                    (EmulatedKernel.unix state.Kernel)
-            with
-            | Error (AcceptRefusal.UnmodelledDomain (_, domain) as refusal) ->
-                // The library says why no kernel answer exists; PawPrint says how
-                // a guest could be holding such a socket, which is a fact about
-                // CoreLib rather than about any kernel.
-                let reachedBy =
-                    match domain with
-                    | SocketDomain.Inet6 ->
-                        "No *managed* guest can hold one -- `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket and `SystemNative_SetSockOpt` is unimplemented -- so this is a hand-rolled P/Invoke. Implement SetSockOpt first: the cross-family bind-conflict rules measured so far are facts about IPV6_V6ONLY=0, and Linux inverts several of them at 1."
-                    | SocketDomain.Unix -> "That belongs with the filesystem work (issue #956), not here."
-                    | SocketDomain.Inet ->
-                        failwith
-                            $"%s{operation}: the library refused an IPv4 socket's domain, which it models. This is an interpreter bug."
-
-                failwith $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal} %s{reachedBy}"
-            | Error (AcceptRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage addressArgument refusal)
-            | Error (AcceptRefusal.UnmeasuredCopyOutFault _ as refusal) ->
-                // The library never saw the pointer, only how PawPrint
-                // classified it, so naming the argument is PawPrint's half.
-                failwith
-                    $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal} `socketAddress` is %O{addressArgument}; pass a real buffer."
-            | Error refusal -> failwith $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal}"
-            | Ok (AcceptAnswer.Failed error, _) ->
-                // No system is carried back: the library documents that a failing
-                // accept changes nothing, so writing one would be a no-op that
-                // hid a future change to that contract.
-                failFromSyscall error state
-            | Ok (AcceptAnswer.Accepted (acceptedFd, peer, reportedLength), unix) ->
-
-            // `#if !defined(__linux__)`: "On macOS and FreeBSD new socket
-            // inherits flags from accepting fd. Our socket code expects new
-            // socket to be in blocking mode by default"
-            // (pal_networking.c:1733). Applied on every flavour rather than
-            // under a platform test, because on Linux the kernel never set the
-            // flag and clearing it is a no-op. The shim closes the accepted
-            // socket if the `fcntl` fails; nothing here can fail.
-            let unix =
-                { unix with
-                    Process =
-                        { unix.Process with
-                            FileDescriptors =
-                                FileDescriptorRegistry.setNonBlocking acceptedFd false unix.Process.FileDescriptors
-                        }
-                }
-
-            let state = state.MapKernel (EmulatedKernel.withUnix unix)
-
-            let blob =
-                SimulatedUnixPlatform.encodeInternetSockaddr state.Kernel.UnixPlatform peer
-
-            // The caller's declared length bounds what is *written* and not
-            // what is *reported*, exactly as for `getsockname(2)`: both come
-            // out of the kernel's one sockaddr copy-out helper.
-            let written = min declaredLength reportedLength
-
-            let state =
-                if written = 0 then
-                    // A call that writes nothing never resolves the destination,
-                    // which is why a declared length of zero succeeds through a
-                    // pointer naming no storage.
-                    state
-                else
-                    let storage =
-                        match BufferPointer.dereferenceable addressArgument with
-                        | Some storage -> storage
-                        | None ->
-                            failwith
-                                $"%s{operation}: `socketAddress` is %O{addressArgument}, which names no storage, yet the library accepted a connection rather than refusing the copy-out. This is an interpreter bug."
-
-                    writeBytesThrough
-                        ctx
-                        operation
-                        storage
-                        (ImmutableArray.CreateRange (Array.sub blob 0 written))
-                        state
-
-            let reported = Array.zeroCreate<byte> 4
-            BinaryPrimitives.WriteInt32LittleEndian (System.Span<byte> reported, reportedLength)
-
-            let acceptedBytes = Array.zeroCreate<byte> 8
-            BinaryPrimitives.WriteInt64LittleEndian (System.Span<byte> acceptedBytes, int64 acceptedFd)
-
-            state
-            |> writeBytesThrough ctx operation lengthCell (ImmutableArray.CreateRange reported)
-            |> writeBytesThrough ctx operation acceptedCell (ImmutableArray.CreateRange acceptedBytes)
-            |> complete UnixErrorPal.palSuccess
+            UnixConnection.accept
+                ctx.Thread
+                fd
+                (BufferPointer.toUserBuffer addressArgument)
+                declaredLength
+                (EmulatedKernel.unix state.Kernel)
+            |> settle fd declaredLength
         // `int32_t SystemNative_Connect(intptr_t socket, uint8_t* socketAddress,
         // int32_t socketAddressLen)` (pal_networking.c:1785):
         //
@@ -5430,6 +5491,10 @@ module NativeSystemNative =
                 // Unreachable, for the same reason.
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered a socket wait while its task is parked in a poll. A task blocks in one syscall at a time, so the poll's completion failed to clear its record (this is an interpreter bug)."
+            | Some (ParkedSyscall.Accept _) ->
+                // Unreachable, for the same reason.
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread} entered a socket wait while its task is parked in an accept. A task blocks in one syscall at a time, so the accept's completion failed to clear its record (this is an interpreter bug)."
             | None ->
 
             let requestedCount =
@@ -5698,7 +5763,8 @@ module NativeSystemNative =
 
                 settle (PollEventsPal.finish ctx.Thread (EmulatedKernel.unix state.Kernel))
             | Some (ParkedSyscall.SocketWait _)
-            | Some (ParkedSyscall.Flock _) ->
+            | Some (ParkedSyscall.Flock _)
+            | Some (ParkedSyscall.Accept _) ->
                 // Unreachable: a task parked in another syscall is not running
                 // IL. Refused rather than treated as a first entry, which would
                 // park over the stale record and destroy the evidence.
