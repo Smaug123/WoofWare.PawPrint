@@ -459,11 +459,11 @@ public static class Program
                             reraise ()
 
                     match outcome with
-                    | RunOutcome.NormalExit (terminalState, _)
-                    | RunOutcome.ProcessExit (terminalState, _) -> terminalState.LatchedExitCode
-                    | RunOutcome.GuestUnhandledException (_, _, exn) ->
+                    | RunOutcome.NormalExit (terminalState, _, _)
+                    | RunOutcome.ProcessExit (terminalState, _, _) -> terminalState.LatchedExitCode
+                    | RunOutcome.GuestUnhandledException (_, _, exn, _) ->
                         failwith $"%s{sourceName}: guest threw an unhandled exception: %O{exn.ExceptionObject}"
-                    | RunOutcome.Aborted (_, _, fatal) -> failwith $"%s{sourceName}: guest aborted: %O{fatal}"
+                    | RunOutcome.Aborted (_, _, fatal, _) -> failwith $"%s{sourceName}: guest aborted: %O{fatal}"
                     | RunOutcome.SignalTerminated (_, signal, _) ->
                         failwith $"%s{sourceName}: guest was signalled: %O{signal}"
                 )

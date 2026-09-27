@@ -100,7 +100,7 @@ class Terminates
 """
 
         match runSource BoundedRun.defaultMaxSteps "Terminates.cs" source with
-        | RunOutcome.NormalExit (state, _) -> state.LatchedExitCode |> shouldEqual 0
+        | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 0
         | other -> failwith $"expected a normal exit, got %O{other}"
 
     let private spinsForEver =
@@ -256,7 +256,7 @@ class CompletesButNotCheaply
         // retired steps, so this is the guest's cost rather than an assumption about it.
         let total =
             match runSource BoundedRun.defaultMaxSteps "CompletesButNotCheaply.cs" source with
-            | RunOutcome.NormalExit (state, _) -> state.Kernel.StepCounter
+            | RunOutcome.NormalExit (state, _, _) -> state.Kernel.StepCounter
             | other -> failwith $"expected a normal exit, got %O{other}"
 
         // The slack must be smaller than startup (~3,300 steps) for the two designs to disagree

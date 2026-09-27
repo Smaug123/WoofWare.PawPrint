@@ -137,7 +137,7 @@ module TestFabricatedEntryPoint =
         | other -> failwith $"%s{name}: real runtime did not exit normally: %O{other}"
 
         match runOnPawPrint name image with
-        | RunOutcome.NormalExit (state, _) -> state.LatchedExitCode |> shouldEqual expected
+        | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual expected
         | other -> failwith $"%s{name}: PawPrint did not exit normally: %O{other}"
 
     /// The real runtime dies of an unhandled `InvalidProgramException`, and PawPrint refuses the

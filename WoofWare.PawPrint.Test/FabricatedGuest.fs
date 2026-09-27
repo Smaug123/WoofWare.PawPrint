@@ -75,11 +75,11 @@ module FabricatedGuest =
             FrameworkUnderTest.assertOutcomeServes outcome
 
             match outcome with
-            | RunOutcome.NormalExit (state, _)
-            | RunOutcome.ProcessExit (state, _) -> FabricatedOutcome.Exited state.LatchedExitCode
-            | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+            | RunOutcome.NormalExit (state, _, _)
+            | RunOutcome.ProcessExit (state, _, _) -> FabricatedOutcome.Exited state.LatchedExitCode
+            | RunOutcome.GuestUnhandledException (finalState, _, exn, _) ->
                 failwith $"guest threw:\n%s{UnhandledExceptionReport.describe finalState exn}"
-            | RunOutcome.Aborted (_, _, fatal) ->
+            | RunOutcome.Aborted (_, _, fatal, _) ->
                 let message = fatal.Message |> Option.defaultValue "<none>"
                 failwith $"guest aborted (%O{fatal.Code}): %s{message}"
             | RunOutcome.SignalTerminated (_, signal, _) -> failwith $"guest was signalled: %O{signal}"

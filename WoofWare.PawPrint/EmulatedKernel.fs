@@ -2030,7 +2030,7 @@ type KernelConfig =
         InheritedSignalIgnores : Set<Signal>
         /// Whether the simulated process writes a core dump when a signal
         /// whose default action dumps core kills it (`Signal.dumpsCoreUnder`),
-        /// which a host sees as `RunOutcome.SignalTerminated`'s core flag.
+        /// which a host sees as the core flag of `RunOutcome.termination`.
         /// Defaults to `Suppressed`, as under an `RLIMIT_CORE` of 0; see
         /// `UnixProcessState.CoreDumps`.
         CoreDumps : CoreDumps

@@ -91,7 +91,7 @@ class CommandLineArgsWithArguments
     /// The exit code a `RunOutcome` carries, read the way the App reads it.
     let private exitCodeOf (outcome : RunOutcome) : int =
         match outcome with
-        | RunOutcome.NormalExit (state, _) -> state.LatchedExitCode
+        | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode
         | other -> failwith $"guest did not exit normally: %O{other}"
 
     [<Test>]
@@ -170,7 +170,7 @@ class EchoArgv0
         // where the host read the image from, and a test that let it reach the guest would be
         // asserting the very conflation `GuestConfig.AssemblyPath` exists to prevent.
         match Program.run loggerFactory (Some "EchoArgv0.cs") peImage hostConfig with
-        | RunOutcome.NormalExit (state, _) as outcome ->
+        | RunOutcome.NormalExit (state, _, _) as outcome ->
             exitCodeOf outcome |> shouldEqual 0
 
             OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
