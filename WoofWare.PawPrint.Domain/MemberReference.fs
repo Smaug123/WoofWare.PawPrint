@@ -5,7 +5,9 @@ open System.Reflection
 open System.Reflection.Metadata
 
 type MemberSignature =
-    | Field of TypeDefn
+    /// A field's signature: its header, which is FIELD possibly with further bits set, and its
+    /// type. CoreCLR compares both when matching a reference to a definition.
+    | Field of header : SignatureHeader * fieldType : TypeDefn
     | Method of TypeMethodSignature<TypeDefn>
 
 type MemberReference<'parent> =
@@ -43,7 +45,7 @@ module MemberReference =
         let signature =
             match signature with
             | Choice1Of2 methodSignature -> TypeMethodSignature.make methodSignature |> MemberSignature.Method
-            | Choice2Of2 typeDefn -> MemberSignature.Field typeDefn
+            | Choice2Of2 typeDefn -> MemberSignature.Field (header, typeDefn)
 
         {
             Name = name

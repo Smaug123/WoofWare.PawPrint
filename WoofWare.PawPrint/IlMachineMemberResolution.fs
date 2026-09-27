@@ -76,7 +76,7 @@ module IlMachineMemberResolution =
             |> Tuple.rmap (fun x -> x.ToImmutable ())
 
         match mem.Signature with
-        | MemberSignature.Field fieldSig ->
+        | MemberSignature.Field (_, fieldSig) ->
             // Concretize the field signature from the member reference
             let state, concreteFieldSig =
                 IlMachineTypeResolution.concretizeType

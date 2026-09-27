@@ -152,7 +152,8 @@ module TestFieldReferenceResolution =
         | Vector
         /// `Twins`, which declares, in this order: `[ThreadStatic] static a`, `static a`, `a`,
         /// `[ThreadStatic] static b` and `static b`, all `int32`; then
-        /// `g : int32 modopt(System.Gone)`, whose modifier names a type CoreLib does not declare.
+        /// `g : int32 modopt(System.Gone)`, whose modifier names a type CoreLib does not declare;
+        /// then `h : int32`, whose signature's header also sets HASTHIS (0x26 rather than 0x06).
         | Twins
 
     [<RequireQualifiedAccess>]
@@ -164,6 +165,8 @@ module TestFieldReferenceResolution =
         | ModifiedByAbsentType
         /// `int32 modopt(System.Gone)`, the modifier scoped to an assembly that does not exist.
         | ModifiedByUnboundAssembly
+        /// `int32`, under the header 0x26: FIELD with HASTHIS set. Only a definition uses it.
+        | Int32WithHasThis
 
     let private cases : (Parent * string * FieldType) list =
         [
@@ -186,6 +189,9 @@ module TestFieldReferenceResolution =
             // The definition's modifier is resolved first. It names no type, so nothing matches,
             // and the assembly the reference's modifier names is never bound.
             Parent.Twins, "g", FieldType.ModifiedByUnboundAssembly
+            // The header byte is compared too. Only the definition's can differ here: reflection
+            // refuses a field MemberRef whose header is not exactly 0x06, so it cannot be asked.
+            Parent.Twins, "h", FieldType.Int32
         ]
 
     let private emit () : byte[] * MemberReferenceHandle list =
@@ -254,6 +260,10 @@ module TestFieldReferenceResolution =
             |> TypeReferenceHandle.op_Implicit
 
         let fieldSignature (fieldType : FieldType) : BlobHandle =
+            match fieldType with
+            | FieldType.Int32WithHasThis -> metadata.GetOrAddBlob [| 0x26uy ; 0x08uy |]
+            | _ ->
+
             let blob = BlobBuilder ()
             let encoder = BlobEncoder(blob).Field().Type ()
 
@@ -275,6 +285,7 @@ module TestFieldReferenceResolution =
                 |> ignore<CustomModifiersEncoder>
 
                 encoder.Int32 ()
+            | FieldType.Int32WithHasThis -> failwith "unreachable: encoded above"
 
             metadata.GetOrAddBlob blob
 
@@ -355,6 +366,9 @@ module TestFieldReferenceResolution =
         |> ignore<FieldDefinitionHandle>
 
         addField FieldAttributes.Public "g" FieldType.ModifiedByAbsentType
+        |> ignore<FieldDefinitionHandle>
+
+        addField FieldAttributes.Public "h" FieldType.Int32WithHasThis
         |> ignore<FieldDefinitionHandle>
 
         metadata.AddTypeDefinition (

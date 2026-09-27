@@ -62,6 +62,12 @@ type FieldInfo<'typeGeneric, 'fieldGeneric> =
         Signature : 'fieldGeneric
 
         /// <summary>
+        /// The header of the field's signature blob: FIELD, possibly with further bits set, which
+        /// CoreCLR compares as well as the type when matching a field reference to this field.
+        /// </summary>
+        SignatureHeader : SignatureHeader
+
+        /// <summary>
         /// The attributes applied to this field, including visibility, static/instance,
         /// literal, and other characteristics.
         /// </summary>
@@ -230,6 +236,7 @@ module FieldInfo =
         =
         let name = mr.GetString def.Name
         let fieldSig = def.DecodeSignature (TypeDefn.typeProvider assembly, ())
+        let signatureHeader = mr.GetBlobReader(def.Signature).ReadSignatureHeader ()
         let declaringType = def.GetDeclaringType ()
 
         let decType = mr.GetTypeDefinition declaringType
@@ -275,6 +282,7 @@ module FieldInfo =
         {
             Name = name
             Signature = fieldSig
+            SignatureHeader = signatureHeader
             DeclaringType = declaringType
             Handle = handle
             Attributes = def.Attributes
@@ -292,6 +300,7 @@ module FieldInfo =
             Name = input.Name
             DeclaringType = declaringType
             Signature = input.Signature
+            SignatureHeader = input.SignatureHeader
             Attributes = input.Attributes
             Offset = input.Offset
             RelativeVirtualAddress = input.RelativeVirtualAddress

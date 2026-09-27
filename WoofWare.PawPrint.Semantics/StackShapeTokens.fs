@@ -376,7 +376,7 @@ module StackShapeTokens =
             match assembly.Members.TryGetValue handle with
             | true, reference ->
                 match reference.Signature with
-                | MemberSignature.Field ty ->
+                | MemberSignature.Field (_, ty) ->
                     Some (
                         ty,
                         { GenericSubstitution.None with

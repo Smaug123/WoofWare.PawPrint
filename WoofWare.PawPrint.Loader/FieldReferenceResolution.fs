@@ -33,8 +33,8 @@ module FieldReferenceResolution =
     /// <remarks>
     /// The search is of the parent's own fields and no others: fields are not inherited, an array
     /// has none, and a literal field has no <c>FieldDesc</c> to find. A field matches by name and by
-    /// its type as <c>MetaSig::CompareFieldSigs</c> compares it: exactly, custom modifiers
-    /// included, with type variables left standing. Where several fields match, the first in
+    /// its signature as <c>MetaSig::CompareFieldSigs</c> compares it: the header byte, then the
+    /// type exactly, custom modifiers included, with type variables left standing. Where several fields match, the first in
     /// CoreCLR's <c>FieldDesc</c> order is the answer: the instance fields, then the ordinary
     /// statics, then the <c>[ThreadStatic]</c> ones, each in metadata order.
     /// </remarks>
@@ -50,9 +50,9 @@ module FieldReferenceResolution =
         let row = referencingAssembly.Members.[reference]
         let name = referencingAssembly.Strings row.Name
 
-        let fieldType =
+        let header, fieldType =
             match row.Signature with
-            | MemberSignature.Field ty -> ty
+            | MemberSignature.Field (header, ty) -> header, ty
             | MemberSignature.Method _ ->
                 failwith $"MemberRef %s{name} in %s{referencingAssembly.DefinitionFullName} names a method, not a field"
 
@@ -78,7 +78,8 @@ module FieldReferenceResolution =
                 =
                 match fields with
                 | [] -> assemblies, FieldReferenceTarget.Missing
-                | field :: rest when field.Name <> name -> search assemblies rest
+                | field :: rest when field.Name <> name || field.SignatureHeader.RawValue <> header.RawValue ->
+                    search assemblies rest
                 | field :: rest ->
                     // `CompareFieldSigs` is handed the definition first, and resolving a nominal
                     // type stops at the first side that names nothing, so the order decides which
