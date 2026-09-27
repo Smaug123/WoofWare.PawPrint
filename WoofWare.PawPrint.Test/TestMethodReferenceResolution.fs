@@ -5,7 +5,9 @@ open System.IO
 open System.Reflection
 open System.Reflection.Metadata
 open System.Reflection.Metadata.Ecma335
+open System.Collections.Immutable
 open FsUnitTyped
+open Microsoft.CodeAnalysis
 open NUnit.Framework
 open WoofWare.PawPrint
 
@@ -220,3 +222,122 @@ module TestMethodReferenceResolution =
         // oracle that cannot be asked is no oracle.
         agreed |> shouldBeGreaterThan 100
         noAnswer * 100 |> shouldBeSmallerThan agreed
+
+    /// Loads each image of `images` by its simple name, so that one refers to another.
+    type ImagesContext (images : Map<string, byte[]>) =
+        inherit System.Runtime.Loader.AssemblyLoadContext ("Images", isCollectible = true)
+
+        override this.Load (name : AssemblyName) : Assembly =
+            match images.TryFind name.Name with
+            | Some image -> this.LoadFromStream (new MemoryStream (image))
+            | None -> null
+
+    [<Test>]
+    let ``a reference whose parent type the provider no longer declares says so`` () : unit =
+        let frameworkDir = FrameworkUnderTest.sharedFrameworkDirectory ()
+        let runtimeDirs = FrameworkUnderTest.runtimeDirs ()
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let compile (name : string) (references : byte[] list) (text : string) : byte[] =
+            Roslyn.compileAssembly
+                name
+                OutputKind.DynamicallyLinkedLibrary
+                (references
+                 |> List.map (fun image -> MetadataReference.CreateFromImage (ImmutableArray.CreateRange image)))
+                [ text ]
+
+        let version1 =
+            compile
+                "Provider"
+                []
+                """
+namespace Provider;
+public class Gone { public static void M() { } }
+public class Kept { public static void M() { } }
+"""
+
+        let version2 =
+            compile
+                "Provider"
+                []
+                """
+namespace Provider;
+public class Kept { public static void M() { } }
+"""
+
+        let clientImage =
+            compile
+                "Client"
+                [ version1 ]
+                """
+namespace Client;
+public static class Uses
+{
+    public static void CallGone() { Provider.Gone.M(); }
+    public static void CallKept() { Provider.Kept.M(); }
+}
+"""
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let corelib =
+            Assembly.readFile loggerFactory (Path.Combine (frameworkDir, "System.Private.CoreLib.dll"))
+
+        let client = read "Client" clientImage
+        let provider = read "Provider" version2
+        let baseClassTypes = BaseClassTypes.ofCorelib corelib
+
+        let providerReference =
+            client.AssemblyReferences.Values |> Seq.find (fun r -> r.Name.Name = "Provider")
+
+        let loaded =
+            LoadedAssemblies.ofAssemblies [ corelib ; client ; provider ]
+            |> fun loaded -> fst (loaded.WithBoundReference providerReference provider)
+
+        let ctx : TypeConcretization.ConcretizationContext<DumpedAssembly> =
+            {
+                ConcreteTypes = Corelib.concretizeAll loaded baseClassTypes AllConcreteTypes.Empty
+                LoadedAssemblies = loaded
+                BaseTypes = baseClassTypes
+            }
+
+        let context =
+            new ImagesContext (Map.ofList [ "Provider", version2 ; "Client", clientImage ])
+
+        try
+            let reflected = context.LoadFromAssemblyName (AssemblyName "Client")
+            let mutable checkedParents = Set.empty
+
+            for KeyValue (handle, reference) in client.Members do
+                match reference.Parent with
+                | MetadataToken.TypeReference parent when client.TypeRefs.[parent].Namespace = "Provider" ->
+                    let parentName = client.TypeRefs.[parent].Name
+                    checkedParents <- checkedParents.Add parentName
+
+                    let token =
+                        MetadataTokens.GetToken (MemberReferenceHandle.op_Implicit handle : EntityHandle)
+
+                    let runtimeMisses =
+                        try
+                            reflected.ManifestModule.ResolveMethod token |> ignore<MethodBase>
+                            false
+                        with :? TypeLoadException ->
+                            true
+
+                    let _, ours =
+                        MethodReferenceResolution.resolve loggerFactory runtimeDirs ctx client handle
+
+                    match ours with
+                    | MethodReferenceTarget.ParentTypeMissing _ ->
+                        if not runtimeMisses then
+                            failwith $"%s{parentName}.M: the runtime binds it, the resolver says its parent is missing"
+                    | other ->
+                        if runtimeMisses then
+                            failwith
+                                $"%s{parentName}.M: the runtime cannot load its parent, the resolver says %A{other}"
+                | _ -> ()
+
+            checkedParents |> shouldEqual (Set.ofList [ "Gone" ; "Kept" ])
+        finally
+            context.Unload ()
