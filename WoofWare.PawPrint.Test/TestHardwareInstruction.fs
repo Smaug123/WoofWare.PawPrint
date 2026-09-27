@@ -147,8 +147,10 @@ module TestHardwareInstruction =
     ///
     /// Arguments: the output file, the namespace, the index of the first call to make, and a file of
     /// `token<TAB>parameter` lines whose parameter's alternatives are not tried. It appends to the
-    /// output a `#mvid` line naming CoreLib's module version id, then one line per distinct outcome
-    /// of each method: its metadata token, class, name, and the exception type or `ok`. Before each
+    /// output a `#mvid` line naming CoreLib's module version id, a `#method` line per method it
+    /// enumerates and a `#base` line per method whose first call (every pointer valid, every other
+    /// argument its default) returned or raised, and one line per distinct outcome of each method:
+    /// its metadata token, class, name, and the exception type or `ok`. Before each
     /// call it writes the call's index, token, parameter and arguments to `<output>.progress`, so
     /// that a call that kills the process can be found and stepped past.
     let private sweepSource : string =
@@ -173,6 +175,10 @@ public static unsafe class Sweep
 
     static List<object> ImmediateValues(Type t)
     {
+        if (t.IsEnum)
+        {
+            return ImmediateValues(Enum.GetUnderlyingType(t)).Select(v => Enum.ToObject(t, v)).ToList();
+        }
         var values = new List<object>();
         if (t == typeof(byte)) { for (int i = 0; i <= 255; i++) values.Add((byte)i); return values; }
         if (t == typeof(sbyte)) { for (int i = -128; i <= 127; i++) values.Add((sbyte)i); return values; }
@@ -234,10 +240,12 @@ public static unsafe class Sweep
                     }
                 }
 
+                // Every call has an index, whether or not this run makes it, so that an index names
+                // the same call in every run.
                 void Run(int parameter, object?[] arguments)
                 {
                     var index = callIndex++;
-                    if (index < startAt) return;
+                    if (index < startAt || skipped.Contains($"{method.MetadataToken}\t{parameter}")) return;
                     progress.WriteLine($"{index}\t{method.MetadataToken}\t{parameter}\t{PathOf(type)}::{method} ({string.Join(", ", arguments.Select(Describe))})");
                     string outcome;
                     try
@@ -251,12 +259,13 @@ public static unsafe class Sweep
                     }
                     var line = $"{method.MetadataToken}\t{PathOf(type)}\t{method.Name}\t{outcome}";
                     if (seen.Add(line)) results.WriteLine(line);
+                    if (parameter == -1) results.WriteLine($"#base\t{method.MetadataToken}");
                 }
 
+                results.WriteLine($"#method\t{method.MetadataToken}");
                 Run(-1, (object?[])defaults.Clone());
                 for (int i = 0; i < parameters.Length; i++)
                 {
-                    if (skipped.Contains($"{method.MetadataToken}\t{i}")) continue;
                     foreach (var alternative in alternatives[i])
                     {
                         var arguments = (object?[])defaults.Clone();
@@ -275,6 +284,8 @@ public static unsafe class Sweep
     /// A call the sweep made that killed the process, rather than returning or raising.
     type private Crash =
         {
+            Token : string
+            Parameter : string
             Call : string
             Result : RealRuntimeResult
         }
@@ -325,6 +336,8 @@ public static unsafe class Sweep
                         (int64 index + 1L)
                         skipped
                         ({
+                            Token = token
+                            Parameter = parameter
                             Call = call
                             Result = result
                          }
@@ -352,6 +365,32 @@ public static unsafe class Sweep
         for line in lines do
             if line.StartsWith "#mvid\t" then
                 Guid.Parse (line.Substring 6) |> shouldEqual corelib.ModuleVersionId
+
+        // Every method's first call was made, in some run: it returned, raised, or killed the process.
+        let tagged (tag : string) =
+            lines
+            |> List.choose (fun line ->
+                if line.StartsWith (tag + "\t") then
+                    Some (line.Substring (tag.Length + 1))
+                else
+                    None
+            )
+            |> Set.ofList
+
+        let firstCallCrashed =
+            crashes
+            |> List.filter (fun crash -> crash.Parameter = "-1")
+            |> List.map (fun crash -> crash.Token)
+            |> Set.ofList
+
+        let neverCalled =
+            Set.difference (tagged "#method") (Set.union (tagged "#base") firstCallCrashed)
+
+        if not neverCalled.IsEmpty then
+            failwith
+                $"The sweep never made the first call of %d{neverCalled.Count} methods, including %A{Seq.truncate 5 neverCalled}"
+
+        tagged "#method" |> Set.count |> shouldBeGreaterThan 1000
 
         let failures = ResizeArray<string> ()
         let mutable swept = Set.empty
