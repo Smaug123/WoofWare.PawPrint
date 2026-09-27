@@ -94,8 +94,9 @@ type MultiStepOutcome =
     /// `observingThread`, of the program whose process ID is `stoppedProgram`, was about to use a
     /// value whose content is undefined, so PawPrint stopped the whole machine there (see
     /// `ExecutionResult.UndefinedValueObserved`): what every program did next would follow a
-    /// value PawPrint does not have. No process has ended. `stoppedDriver` holds the stopped
-    /// program checked out.
+    /// value PawPrint does not have. No process has ended. `stoppedDriver` is the driver as the
+    /// tick found it, so stepping it again stops again; the stopped program need not be the one
+    /// it has checked out.
     | StoppedAtUndefinedValue of
         stoppedDriver : MultiProgram *
         stoppedProgram : ProcessId *
@@ -703,9 +704,14 @@ module MultiProgram =
     /// must already have been through `advance`, which answered `tick`.
     ///
     /// A process that ends is ended on the machine here.
+    ///
+    /// `beforeTick` is the driver as the tick found it, before `advance`: a stop at an undefined
+    /// value is reported there, so that stepping it again runs the same preamble and makes the
+    /// same choices, and stops again.
     let internal decide
         (loggerFactory : ILoggerFactory)
         (logger : ILogger)
+        (beforeTick : MultiProgram)
         (driver : MultiProgram)
         (tick : int64)
         : MultiStepOutcome
@@ -760,13 +766,8 @@ module MultiProgram =
                 | ProgramTick.StartupCallReturned program ->
                     MultiStepOutcome.Stepped (withCurrent program driver, pid, ProgramEvent.PhaseAdvanced)
                 | ProgramTick.Ended (outcome, ended) -> endCurrent driver outcome ended
-                | ProgramTick.StoppedAtUndefinedValue (stopped, observingThread, observation) ->
-                    MultiStepOutcome.StoppedAtUndefinedValue (
-                        withCurrent stopped driver,
-                        pid,
-                        observingThread,
-                        observation
-                    )
+                | ProgramTick.StoppedAtUndefinedValue (observingThread, observation) ->
+                    MultiStepOutcome.StoppedAtUndefinedValue (beforeTick, pid, observingThread, observation)
             )
 
     /// One scheduler tick of every program on the machine: the driver's preamble
@@ -777,7 +778,7 @@ module MultiProgram =
             driver.Current.State
             (fun () ->
                 match advance driver with
-                | Advanced.Decide (advanced, tick) -> decide loggerFactory logger advanced tick
+                | Advanced.Decide (advanced, tick) -> decide loggerFactory logger driver advanced tick
                 | Advanced.Settled outcome -> outcome
             )
 

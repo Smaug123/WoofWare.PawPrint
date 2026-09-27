@@ -940,7 +940,7 @@ module NativeThreading =
                 NativeHandlerResult.unhandledException newThreadId exn state |> Some
             | WhatWeDid.UndefinedValueObserved observation ->
                 // Attributed to the worker for the same reason as above.
-                NativeHandlerResult.undefinedValueObserved newThreadId observation state |> Some
+                NativeHandlerResult.undefinedValueObserved newThreadId observation |> Some
             | WhatWeDid.Executed
             | WhatWeDid.VoluntaryYield _
             | WhatWeDid.SuspendedForClassInit

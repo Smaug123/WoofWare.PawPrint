@@ -521,7 +521,7 @@ module Program =
         | None ->
 
         // `decide` annotates the step itself.
-        match MultiProgram.decide loggerFactory logger advanced tick with
+        match MultiProgram.decide loggerFactory logger prepared.Driver advanced tick with
         | MultiStepOutcome.Stepped (_, _, ProgramEvent.PhaseAdvanced) ->
             failwith
                 "Program.runToNextFork: the entry thread's startup call returned, but a fork snapshot is taken only once Main is installed"

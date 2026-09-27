@@ -654,7 +654,7 @@ module NativeCustomAttribute =
                     NativeHandlerResult.throwingTypeInitializationException state |> Some
                 | WhatWeDid.Aborted fatal -> NativeHandlerResult.aborted ctx.Thread fatal state |> Some
                 | WhatWeDid.UndefinedValueObserved observation ->
-                    NativeHandlerResult.undefinedValueObserved ctx.Thread observation state |> Some
+                    NativeHandlerResult.undefinedValueObserved ctx.Thread observation |> Some
                 | WhatWeDid.UnhandledException exn ->
                     NativeHandlerResult.unhandledException ctx.Thread exn state |> Some
                 | WhatWeDid.SuspendedForManagedCall ->

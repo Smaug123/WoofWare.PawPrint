@@ -111,11 +111,9 @@ type internal ProgramTick =
     | Ended of outcome : RunOutcome * ended : EndedProcess<ThreadId, NativeSignalHandler>
     /// `observingThread` was about to use a value whose content is undefined, so PawPrint stopped
     /// the run there (see `ExecutionResult.UndefinedValueObserved`). The process has not ended,
-    /// so the kernel is told nothing; `stopped` is the program as the step left it.
-    | StoppedAtUndefinedValue of
-        stopped : RunningProgram *
-        observingThread : ThreadId *
-        observation : UndefinedValueObservation
+    /// so the kernel is told nothing. No program is carried: the driver reports the stop at the
+    /// machine as the tick found it, so that stepping that again stops again.
+    | StoppedAtUndefinedValue of observingThread : ThreadId * observation : UndefinedValueObservation
 
 /// The operations on one program that the driver (`MultiProgram`) runs each tick: those that
 /// stay with a program, as opposed to the machine-wide ones the driver runs itself. The other
@@ -717,14 +715,7 @@ module internal RunningProgram =
                         )
 
                         match latchMainReturnValue returns program.EntryThread state with
-                        | Error observation ->
-                            ProgramTick.StoppedAtUndefinedValue (
-                                { program with
-                                    State = state
-                                },
-                                program.EntryThread,
-                                observation
-                            )
+                        | Error observation -> ProgramTick.StoppedAtUndefinedValue (program.EntryThread, observation)
                         | Ok state ->
 
                         let state = state |> Scheduler.onMainReturned program.EntryThread
@@ -826,15 +817,9 @@ module internal RunningProgram =
                     RunOutcome.GuestUnhandledException (state, terminatingThread, exn, EndedProcess.termination ended),
                     ended
                 )
-            | ExecutionResult.UndefinedValueObserved (state, observingThread, observation) ->
+            | ExecutionResult.UndefinedValueObserved (observingThread, observation) ->
                 // Not a process ending, so the kernel is not told anything.
-                ProgramTick.StoppedAtUndefinedValue (
-                    { program with
-                        State = state
-                    },
-                    observingThread,
-                    observation
-                )
+                ProgramTick.StoppedAtUndefinedValue (observingThread, observation)
             | ExecutionResult.Stepped (state, whatWeDid, effect) ->
                 logStepOutcome logger state nextThread whatWeDid
 
