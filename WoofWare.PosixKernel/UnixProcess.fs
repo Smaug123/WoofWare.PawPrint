@@ -203,8 +203,9 @@ module UnixProcessState =
     /// saying nothing about which fact it is.
     ///
     /// A client should think before making a process root: root passes every
-    /// permission check this kernel models, and programs commonly skip their own
-    /// guards when they find they are root. That is why
+    /// permission check this kernel models (on Darwin, the few whose answer for
+    /// root has not been measured are refused instead), and programs commonly
+    /// skip their own guards when they find they are root. That is why
     /// `UnixSystem.defaultUserId` is not 0.
     let callerPrivilege<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (proc : UnixProcessState<'Task, 'Handler>)

@@ -672,7 +672,9 @@ module PathWalk =
     /// short of the final lookup, which `completeResolution` performs.
     ///
     /// Everything a path's *prefix* can be refused for happens here, and the
-    /// final name's length and lookup happen there. That boundary is measured,
+    /// final name's length and lookup happen there. Each directory a component
+    /// is looked up in must grant `credentials` its search bit, in the triple
+    /// that caller's standing towards that directory selects. That boundary is measured,
     /// not chosen for tidiness: see `PausedResolution` for the pair of
     /// `rename` rows that pin it.
     ///
