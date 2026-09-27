@@ -202,6 +202,8 @@ class LockAndPortWaiters
                 | _ -> ranAfterParking
 
             match Program.stepPrepared loggerFactory logger prepared with
+            | Program.ProgramStepOutcome.StoppedAtUndefinedValue (_, thread, observation) ->
+                failwith $"PawPrint stopped the guest on %O{thread} at an undefined value: %O{observation}"
             | Program.ProgramStepOutcome.Completed outcome -> outcome, port.IsSome, bothParked, ranAfterParking
             | Program.ProgramStepOutcome.Deadlocked (_, stuck) ->
                 failwith $"guest deadlocked rather than completing. Stuck: %s{stuck}"

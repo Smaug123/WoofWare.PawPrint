@@ -173,6 +173,12 @@ module internal UnaryMetadataCallOps =
                 baseClassTypes.ArrayTypeMismatchException
                 thread
                 state
+        | IlMachineStateExecution.ArrayStoreVarianceCheck.ValueUndefined u ->
+            IlMachineStateExecution.observeUndefinedInInstruction
+                "the type check a store into an array of references makes of the reference stored"
+                u
+                thread
+                state
         | IlMachineStateExecution.ArrayStoreVarianceCheck.Allowed state ->
 
         let coerced = EvalStackValue.toCliTypeCoerced zeroOfType value
@@ -637,6 +643,8 @@ module internal UnaryMetadataCallOps =
 
         match commitment with
         | IlMachineStateExecution.CallCommitment.Aborted fatal -> state, WhatWeDid.Aborted fatal
+        | IlMachineStateExecution.CallCommitment.UndefinedValueObserved observation ->
+            state, WhatWeDid.UndefinedValueObserved observation
         | IlMachineStateExecution.CallCommitment.Committed
         | IlMachineStateExecution.CallCommitment.Raised -> state, WhatWeDid.Executed
 
@@ -948,6 +956,9 @@ module internal UnaryMetadataCallOps =
         /// The prefix loads through its byref receiver, and that byref is null, so the instruction
         /// faults. The call's arguments are popped and the program counter has not moved.
         | NullDereference of IlMachineState
+        /// The prefix would box a `Nullable<T>` whose `hasValue` is undefined, and whether there is
+        /// a box to call on depends on it, so the run ends here.
+        | UndefinedHasValue of UndefinedValue
 
     /// Enter the callee a `callvirt` has resolved: check the receiver for null, as `callvirt` always
     /// does, then dispatch on it when `dispatchesOnReceiver`, which is false only when a
@@ -976,6 +987,14 @@ module internal UnaryMetadataCallOps =
 
         // Callvirt always performs a null check on the receiver, even for non-virtual methods.
         match receiver with
+        | Some (EvalStackValue.Undefined u) ->
+            // `OperandUse` marks the receiver observed, but only the call can count the arguments
+            // above it.
+            IlMachineStateExecution.observeUndefinedInInstruction
+                "the receiver a callvirt null-checks and dispatches on"
+                u
+                ctx.Thread
+                state
         | Some EvalStackValue.NullObjectRef ->
             IlMachineStateExecution.raiseOpcodeFault
                 ctx.LoggerFactory
@@ -1024,6 +1043,8 @@ module internal UnaryMetadataCallOps =
 
         match commitment with
         | IlMachineStateExecution.CallCommitment.Aborted fatal -> state, WhatWeDid.Aborted fatal
+        | IlMachineStateExecution.CallCommitment.UndefinedValueObserved observation ->
+            state, WhatWeDid.UndefinedValueObserved observation
         | IlMachineStateExecution.CallCommitment.Committed
         | IlMachineStateExecution.CallCommitment.Raised -> state, WhatWeDid.Executed
 
@@ -1499,6 +1520,10 @@ module internal UnaryMetadataCallOps =
 
                         let derefEval = EvalStackValue.ofCliType derefCli
 
+                        match Boxing.tryUndefinedHasValue baseClassTypes tHandle derefEval state with
+                        | Some u -> ConstrainedReceiver.UndefinedHasValue u
+                        | None ->
+
                         // Box `*ptr` exactly as `box T` would (ECMA III.4.1), Nullable rule
                         // included: a value-less `Nullable<T>` becomes null, so the null check
                         // below raises NullReferenceException; one with a value boxes its `T`,
@@ -1513,7 +1538,8 @@ module internal UnaryMetadataCallOps =
                         )
 
             match transformed with
-            | ConstrainedReceiver.NullDereference _ -> transformed
+            | ConstrainedReceiver.NullDereference _
+            | ConstrainedReceiver.UndefinedHasValue _ -> transformed
             | ConstrainedReceiver.Ready (state, concretizedMethod, dispatchesOnReceiver) ->
                 // Restore the method arguments on top of the transformed receiver.
                 // argsBottomToTop has the bottom-most arg at the head; pushing left-to-right
@@ -1527,6 +1553,12 @@ module internal UnaryMetadataCallOps =
         match constrainedReceiver with
         | ConstrainedReceiver.NullDereference state ->
             IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
+        | ConstrainedReceiver.UndefinedHasValue u ->
+            IlMachineStateExecution.observeUndefinedInInstruction
+                "the hasValue field a constrained. callvirt decides by whether to box a Nullable`1"
+                u
+                thread
+                state
         | ConstrainedReceiver.Ready (state, concretizedMethod, dispatchesOnReceiver) ->
 
         enterVirtualCallee ctx concretizedMethod dispatchesOnReceiver state
@@ -2067,6 +2099,8 @@ module internal UnaryMetadataCallOps =
         // after this instruction is finished with, so there is no retry to prepare for.
         match commitment with
         | IlMachineStateExecution.CallCommitment.Aborted fatal -> state, WhatWeDid.Aborted fatal
+        | IlMachineStateExecution.CallCommitment.UndefinedValueObserved observation ->
+            state, WhatWeDid.UndefinedValueObserved observation
         | IlMachineStateExecution.CallCommitment.Committed
         | IlMachineStateExecution.CallCommitment.Raised -> state, WhatWeDid.Executed
 

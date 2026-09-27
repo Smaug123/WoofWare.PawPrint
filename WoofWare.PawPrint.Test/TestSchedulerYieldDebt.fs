@@ -541,6 +541,24 @@ module TestSchedulerYieldDebt =
                         Message = Some "boom"
                     }
                 WhatWeDid.UnhandledException (unhandledException ())
+                WhatWeDid.UndefinedValueObserved
+                    {
+                        Value =
+                            match
+                                UndefinedValue.tryOfBytes
+                                    UndefinedPrimitive.Bool
+                                    [
+                                        ValueByte.Undefined
+                                            {
+                                                Memory = UninitialisedMemory.Native (NativeMemoryBlockId 0)
+                                                Offset = 0
+                                            }
+                                    ]
+                            with
+                            | ValueSome u -> u
+                            | ValueNone -> failwith "unreachable: the image is undefined"
+                        Use = UndefinedValueUse.ExitCode
+                    }
             ]
 
         // As in `mapState reaches ...` below: the table is hand-written, so tie it to the type or
@@ -561,6 +579,7 @@ module TestSchedulerYieldDebt =
             match variant with
             | WhatWeDid.Aborted _ -> expectRefusal variant "ExecutionResult.Aborted"
             | WhatWeDid.UnhandledException _ -> expectRefusal variant "ExecutionResult.UnhandledException"
+            | WhatWeDid.UndefinedValueObserved _ -> expectRefusal variant "ExecutionResult.UndefinedValueObserved"
             | _ -> Scheduler.onStepOutcome ran variant state |> ignore
 
     [<Test>]
@@ -600,6 +619,27 @@ module TestSchedulerYieldDebt =
                 ExecutionResult.SignalTerminated (sentinel, Signal.SIGINT, false)
                 ExecutionResult.Stepped (sentinel, WhatWeDid.Executed, StepEffect.NoEffect)
                 ExecutionResult.UnhandledException (sentinel, thread, guestException)
+                ExecutionResult.UndefinedValueObserved (
+                    sentinel,
+                    thread,
+                    {
+                        Value =
+                            match
+                                UndefinedValue.tryOfBytes
+                                    UndefinedPrimitive.Bool
+                                    [
+                                        ValueByte.Undefined
+                                            {
+                                                Memory = UninitialisedMemory.Native (NativeMemoryBlockId 0)
+                                                Offset = 0
+                                            }
+                                    ]
+                            with
+                            | ValueSome u -> u
+                            | ValueNone -> failwith "unreachable: the image is undefined"
+                        Use = UndefinedValueUse.ExitCode
+                    }
+                )
             ]
 
         // The table above is hand-written, so it can fall behind the type — which is the exact
@@ -615,6 +655,7 @@ module TestSchedulerYieldDebt =
 
             let state =
                 match mapped with
+                | ExecutionResult.UndefinedValueObserved (s, _, _)
                 | ExecutionResult.Terminated (s, _)
                 | ExecutionResult.ProcessExit (s, _)
                 | ExecutionResult.Aborted (s, _, _)

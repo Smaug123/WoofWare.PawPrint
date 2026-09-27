@@ -220,6 +220,8 @@ class Program
                 sawWake || (before - parkedCount after >= 2)
 
             match Program.stepPrepared loggerFactory logger prepared with
+            | Program.ProgramStepOutcome.StoppedAtUndefinedValue (_, thread, observation) ->
+                failwith $"PawPrint stopped the guest on %O{thread} at an undefined value: %O{observation}"
             | Program.ProgramStepOutcome.Completed outcome ->
                 match outcome with
                 | RunOutcome.NormalExit (state, _, _)

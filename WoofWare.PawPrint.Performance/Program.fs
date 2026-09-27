@@ -283,6 +283,8 @@ module private Harness =
                 peImage
                 (HostConfig.Default dotnetRuntimeDirs)
         with
+        | RunEnd.StoppedAtUndefinedValue (_, _, observation) ->
+            failwith $"PawPrint stopped the benchmark guest at an undefined value: %O{observation}"
         | RunEnd.Ended (RunOutcome.NormalExit (terminalState, _, _))
         | RunEnd.Ended (RunOutcome.ProcessExit (terminalState, _, _)) -> terminalState.LatchedExitCode
         | RunEnd.Ended (RunOutcome.Aborted (_, _, fatal, _)) ->

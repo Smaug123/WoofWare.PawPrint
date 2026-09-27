@@ -364,6 +364,7 @@ module NullaryIlOp =
     let private locallocSizeBytes (value : EvalStackValue) : int =
         let size =
             match value with
+            | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "localloc" u
             | EvalStackValue.Int32 int32Source ->
                 let i = Int32Source.value "Localloc" int32Source
                 int64 i
@@ -567,6 +568,7 @@ module NullaryIlOp =
 
     let private negValue (value : EvalStackValue) (counters : PointerHashState) : EvalStackValue * PointerHashState =
         match value with
+        | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "neg" u
         | EvalStackValue.Int32 int32Source ->
             let value = Int32Source.value "Neg" int32Source
             negInt32Unchecked value |> Int32Source.Verbatim |> EvalStackValue.Int32, counters
@@ -682,6 +684,7 @@ module NullaryIlOp =
     /// expressed as `NativeIntSource` (the same slot used by `Conv_U`).
     let private convOvfU (value : EvalStackValue) : Result<NativeIntSource, unit> =
         match value with
+        | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "conv.ovf.u" u
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_ovf_u" int32Source
 
@@ -798,6 +801,7 @@ module NullaryIlOp =
     /// `Conv_I`).
     let internal convOvfI (value : EvalStackValue) : Result<NativeIntSource, unit> =
         match value with
+        | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "conv.ovf.i" u
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_ovf_i" int32Source
             NativeIntSource.Verbatim (int64 i) |> Ok
@@ -928,6 +932,7 @@ module NullaryIlOp =
             | _ -> NativeIntSource.ManagedPointer ptr |> Ok
 
         match value with
+        | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "conv.ovf.i.un" u
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_ovf_i_un" int32Source
             // Zero-extend: the 32-bit slot is the whole of the source, and every
@@ -1130,6 +1135,8 @@ module NullaryIlOp =
         | CliType.Char _
         | CliType.ObjectRef _
         | CliType.RuntimePointer _ -> false
+        // Exactly as for the defined value of its shape: a narrower load views its leading bytes.
+        | CliType.Undefined u -> CliNumericType.SizeOf target < UndefinedPrimitive.size u.Kind
 
     // Unified Ldind implementation
     let private executeLdind
@@ -1302,6 +1309,7 @@ module NullaryIlOp =
             | EvalStackValue.Int32 _
             | EvalStackValue.Int64 _
             | EvalStackValue.UserDefinedValueType _
+            | EvalStackValue.Undefined _
             | EvalStackValue.Float _ ->
                 failwith $"unexpectedly tried to store value {valueToStore} in a non-address {addr}"
             | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
@@ -1415,6 +1423,13 @@ module NullaryIlOp =
                 loggerFactory
                 baseClassTypes
                 OpcodeFault.ArrayTypeMismatch
+                currentThread
+                state
+            |> ExecutionResult.stepped
+        | IlMachineStateExecution.ArrayStoreVarianceCheck.ValueUndefined u ->
+            IlMachineStateExecution.observeUndefinedInInstruction
+                "the type check a store into an array of references makes of the reference stored"
+                u
                 currentThread
                 state
             |> ExecutionResult.stepped
@@ -2886,6 +2901,7 @@ module NullaryIlOp =
 
             let result, state =
                 match val1 with
+                | EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "not" u
                 | EvalStackValue.Int32 int32Source ->
                     let i = Int32Source.value "Not" int32Source
                     ~~~i |> Int32Source.Verbatim |> EvalStackValue.Int32, state

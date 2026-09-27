@@ -211,6 +211,8 @@ module BoundedRun =
 
             match Program.stepPrepared loggerFactory logger prepared with
             | Program.ProgramStepOutcome.Completed outcome -> RunEnd.Ended outcome
+            | Program.ProgramStepOutcome.StoppedAtUndefinedValue (prepared, thread, observation) ->
+                RunEnd.StoppedAtUndefinedValue (prepared.State, thread, observation)
             | Program.ProgramStepOutcome.Deadlocked (_, stuck) ->
                 // `Program.run` would raise from inside `pumpPrepared`, discarding the state
                 // along with any diagnostic it carries. Reported here instead, with the same
@@ -240,6 +242,8 @@ module BoundedRun =
 
             match Program.stepStartup loggerFactory logger startup with
             | Program.StartupStepOutcome.Completed (Program.ProgramStartResult.CompletedBeforeMain runEnd) -> runEnd
+            | Program.StartupStepOutcome.StoppedAtUndefinedValue (startup, thread, observation) ->
+                RunEnd.StoppedAtUndefinedValue (startup.State, thread, observation)
             // The budget is shared, not per-phase: `Main` resumes the count startup left off at,
             // so the bound is a statement about the whole run. Startup is cheap enough for that
             // to cost nothing — lazy class initialisation means a trivial guest reaches `Main`

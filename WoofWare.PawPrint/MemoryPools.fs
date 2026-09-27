@@ -6,6 +6,16 @@ type MemoryBlockInitialization =
     | ZeroInitialized
     | Uninitialized
 
+/// The bytes of a range of a block, as a read of a typed value needs them.
+[<RequireQualifiedAccess>]
+type BlockBytes =
+    /// Every byte has content: it was written, or the block was zero-initialised. A byte may
+    /// name a native int rather than hold a number (see `UInt8Source`).
+    | Defined of UInt8Source[]
+    /// At least one byte is undefined: nothing ever wrote it, or what was written there was
+    /// itself undefined. Every other byte is a number.
+    | SomeUndefined of ValueByte[]
+
 /// Frame-owned typed-cell storage for `localloc`. A block stores typed CliType
 /// "cells" at known offsets together with a sparse byte overlay for raw byte
 /// writes that don't correspond to a typed cell. Bytes that are not covered by
@@ -25,10 +35,12 @@ type MemoryBlock =
         Size : int
         Initialization : MemoryBlockInitialization
         /// Offset -> typed cell. Cells must not overlap each other; cell ranges
-        /// are also disjoint from `Bytes` keys.
+        /// are also disjoint from `Bytes` keys. No cell holds an undefined value, at any depth:
+        /// an undefined value is written as its bytes.
         Cells : Map<int, CliType>
-        /// Offset -> raw byte. Keys must not lie inside any cell range.
-        Bytes : Map<int, byte>
+        /// Offset -> raw byte, which may be undefined if an undefined value was written there.
+        /// Keys must not lie inside any cell range.
+        Bytes : Map<int, ValueByte>
     }
 
 type StackMemoryPool =
@@ -62,6 +74,8 @@ type MemoryByteSource =
     | Cell of cellOffset : int * cell : CliType
     /// Byte was written through the raw byte overlay.
     | Overlay of byte
+    /// An undefined byte was written here, as part of an undefined value.
+    | OverlayUndefined of UninitialisedByte
     /// Byte was never written but the block was zero-initialised.
     | DefaultZero
     /// Byte was never written and the block is uninitialised. Reads must
@@ -172,6 +186,13 @@ module MemoryBlock =
                     $"MemoryBlock.checkInvariants: overlay byte at %d{byteOffset} lies inside the cell at %d{cellOffset} (size %d{CliType.sizeOf cell}) in %s{containerDesc}"
             | None -> ()
 
+        for KeyValue (offset, cell) in block.Cells do
+            match CliType.tryFindUndefined cell with
+            | Some u ->
+                failwith
+                    $"MemoryBlock.checkInvariants: the cell at %d{offset} in %s{containerDesc} holds the undefined %O{u}, which should have been written as bytes"
+            | None -> ()
+
     /// Classify a single byte position. Callers walking byte ranges use the
     /// `Cell` arm to dispatch through the existing typed-cell byte helpers.
     let private readByteSource (containerDesc : string) (offset : int) (block : MemoryBlock) : MemoryByteSource =
@@ -181,7 +202,8 @@ module MemoryBlock =
         | Some (cellOffset, cell) -> MemoryByteSource.Cell (cellOffset, cell)
         | None ->
             match Map.tryFind offset block.Bytes with
-            | Some b -> MemoryByteSource.Overlay b
+            | Some (ValueByte.Defined b) -> MemoryByteSource.Overlay b
+            | Some (ValueByte.Undefined origin) -> MemoryByteSource.OverlayUndefined origin
             | None ->
                 match block.Initialization with
                 | MemoryBlockInitialization.ZeroInitialized -> MemoryByteSource.DefaultZero
@@ -236,7 +258,7 @@ module MemoryBlock =
                         match CliType.TryBytesAt (keptStart - cellOffset) keptCount cell with
                         | Ok kept ->
                             for i in 0 .. keptCount - 1 do
-                                bytes <- Map.add (keptStart + i) kept.[i] bytes
+                                bytes <- Map.add (keptStart + i) (ValueByte.Defined kept.[i]) bytes
                         | Error rejection ->
                             failwith
                                 $"MemoryBlock.evictRange: byte range [%d{offset}, %d{rangeEnd}) covers only part of the cell at %d{cellOffset} (size %d{cellSize}) in %s{containerDesc}, and the bytes [%d{keptStart}, %d{keptStart + keptCount}) of that cell have no byte image to keep: %s{rejection.Description}"
@@ -259,15 +281,52 @@ module MemoryBlock =
     /// or of a live reference) fails. The caller is responsible for ensuring the value is the
     /// intended typed view; provenance carried by the value (such as
     /// `NativeIntSource.FieldHandlePtr`) is preserved.
+    ///
+    /// A value with an undefined leaf is not stored as a cell. It is stored as its bytes, each
+    /// defined byte as the number it is and each undefined one as undefined, so a later read of
+    /// any part of it sees exactly which of its bytes are defined. That needs every byte to have a
+    /// number or be undefined, and a value mixing an undefined leaf with a reference is refused.
     let writeCell (containerDesc : string) (offset : int) (value : CliType) (block : MemoryBlock) : MemoryBlock =
         let size = CliType.sizeOf value
         checkRange "MemoryBlock.writeCell" containerDesc block.Size offset size
 
         let evicted = evictRange containerDesc offset size block
 
-        { evicted with
-            Cells = evicted.Cells |> Map.add offset value
-        }
+        match CliType.tryFindUndefined value with
+        | None ->
+            { evicted with
+                Cells = evicted.Cells |> Map.add offset value
+            }
+        | Some _ ->
+            let image =
+                CliType.ByteImageAt 0 size value
+                |> Array.map (fun b ->
+                    // A byte inside a value type reports its field's obstruction wrapped once per
+                    // level of nesting.
+                    let rec undefinedOrigin (rejection : CliByteAddressabilityRejection) =
+                        match rejection with
+                        | CliByteAddressabilityRejection.UndefinedByte origin -> Some origin
+                        | CliByteAddressabilityRejection.ValueTypeContainsNonByteAddressableField (_, _, inner) ->
+                            undefinedOrigin inner
+                        | _ -> None
+
+                    match b with
+                    | Ok b -> ValueByte.Defined b
+                    | Error rejection when (undefinedOrigin rejection).IsSome ->
+                        ValueByte.Undefined (undefinedOrigin rejection).Value
+                    | Error rejection ->
+                        failwith
+                            $"MemoryBlock.writeCell: refusing to write %O{value} at offset %d{offset} of %s{containerDesc}: it has an undefined leaf, so it is stored as bytes, and a byte of it is a %s{rejection.Description}, which has no byte to store"
+                )
+
+            let mutable bytes = evicted.Bytes
+
+            for i in 0 .. size - 1 do
+                bytes <- Map.add (offset + i) image.[i] bytes
+
+            { evicted with
+                Bytes = bytes
+            }
 
     /// Replace an existing cell at `cellOffset` whose new size matches the
     /// existing cell. Used by the byte-write path to install an updated cell
@@ -315,7 +374,7 @@ module MemoryBlock =
                 $"MemoryBlock.writeOverlayByte: byte offset %d{offset} lies inside cell at %d{cellOffset} in %s{containerDesc} (this is an interpreter bug)"
         | None ->
             { block with
-                Bytes = block.Bytes |> Map.add offset value
+                Bytes = block.Bytes |> Map.add offset (ValueByte.Defined value)
             }
 
     /// Read `count` bytes starting at `offset`, returning `ValueNone` when any
@@ -351,6 +410,7 @@ module MemoryBlock =
                 | MemoryByteSource.DefaultZero ->
                     result.[i] <- 0uy
                     i <- i + 1
+                | MemoryByteSource.OverlayUndefined _
                 | MemoryByteSource.Uninitialized -> readable <- false
 
             if readable then ValueSome result else ValueNone
@@ -392,8 +452,61 @@ module MemoryBlock =
                 i <- i + 1
             | MemoryByteSource.Uninitialized ->
                 failwith $"MemoryBlock.readBytes: byte at offset %d{pos} in %s{containerDesc} is uninitialised"
+            | MemoryByteSource.OverlayUndefined origin ->
+                failwith
+                    $"MemoryBlock.readBytes: byte at offset %d{pos} in %s{containerDesc} is undefined, having been copied from %O{origin}"
 
         result
+
+    /// The bytes of `[offset, offset + count)` as a typed read needs them: `BlockBytes.Defined`,
+    /// exactly as `readNamedBytes` gives them, when every byte has content, and otherwise each
+    /// byte as a number or as undefined. A byte nothing wrote is undefined and descends from
+    /// `origin` applied to its offset. A range holding an undefined byte and also a byte with no
+    /// number (inside a cell that names a native int, or has no byte image) is refused, having
+    /// no way to say both.
+    let readValueBytes
+        (containerDesc : string)
+        (origin : int -> UninitialisedByte)
+        (offset : int)
+        (count : int)
+        (block : MemoryBlock)
+        : BlockBytes
+        =
+        checkRange "MemoryBlock.readValueBytes" containerDesc block.Size offset count
+
+        let anyUndefined =
+            Seq.init count (fun i -> offset + i)
+            |> Seq.exists (fun pos ->
+                match readByteSource containerDesc pos block with
+                | MemoryByteSource.Uninitialized
+                | MemoryByteSource.OverlayUndefined _ -> true
+                | MemoryByteSource.Cell _
+                | MemoryByteSource.Overlay _
+                | MemoryByteSource.DefaultZero -> false
+            )
+
+        if not anyUndefined then
+            readNamedBytes containerDesc offset count block |> BlockBytes.Defined
+        else
+
+        Array.init
+            count
+            (fun i ->
+                let pos = offset + i
+
+                match readByteSource containerDesc pos block with
+                | MemoryByteSource.Uninitialized -> ValueByte.Undefined (origin pos)
+                | MemoryByteSource.OverlayUndefined copied -> ValueByte.Undefined copied
+                | MemoryByteSource.Overlay b -> ValueByte.Defined b
+                | MemoryByteSource.DefaultZero -> ValueByte.Defined 0uy
+                | MemoryByteSource.Cell (cellOffset, cell) ->
+                    match CliType.TryBytesAt (pos - cellOffset) 1 cell with
+                    | Ok b -> ValueByte.Defined b.[0]
+                    | Error rejection ->
+                        failwith
+                            $"MemoryBlock.readValueBytes: the range [%d{offset}, %d{offset + count}) of %s{containerDesc} holds an undefined byte, and its byte %d{pos} is a %s{rejection.Description}, which has no number to read alongside it"
+            )
+        |> BlockBytes.SomeUndefined
 
     /// <see cref="readNamedBytes" />, for callers whose currency is a `byte[]`: a byte that names a
     /// native int rather than holding a number is refused by name. Defined in terms of it so the
@@ -526,6 +639,27 @@ module StackMemoryPool =
     let readBytes (blockId : StackMemoryBlockId) (offset : int) (count : int) (pool : StackMemoryPool) : byte[] =
         MemoryBlock.readBytes (string blockId) offset count (getBlock blockId pool)
 
+    let readValueBytes
+        (memory : UninitialisedMemory)
+        (offset : int)
+        (count : int)
+        (pool : StackMemoryPool)
+        : BlockBytes
+        =
+        let blockId =
+            match memory with
+            | UninitialisedMemory.Stack (_, _, blockId) -> blockId
+            | UninitialisedMemory.Native _ ->
+                failwith $"StackMemoryPool.readValueBytes: %O{memory} is not a localloc block"
+
+        let origin (pos : int) : UninitialisedByte =
+            {
+                Memory = memory
+                Offset = pos
+            }
+
+        MemoryBlock.readValueBytes (string blockId) origin offset count (getBlock blockId pool)
+
     /// <see cref="MemoryBlock.readNamedBytes" />.
     let readNamedBytes
         (blockId : StackMemoryBlockId)
@@ -651,6 +785,21 @@ module NativeMemoryPool =
 
     let readBytes (blockId : NativeMemoryBlockId) (offset : int) (count : int) (pool : NativeMemoryPool) : byte[] =
         MemoryBlock.readBytes (string blockId) offset count (getBlock blockId pool)
+
+    let readValueBytes
+        (blockId : NativeMemoryBlockId)
+        (offset : int)
+        (count : int)
+        (pool : NativeMemoryPool)
+        : BlockBytes
+        =
+        let origin (pos : int) : UninitialisedByte =
+            {
+                Memory = UninitialisedMemory.Native blockId
+                Offset = pos
+            }
+
+        MemoryBlock.readValueBytes (string blockId) origin offset count (getBlock blockId pool)
 
     /// <see cref="MemoryBlock.readNamedBytes" />.
     let readNamedBytes

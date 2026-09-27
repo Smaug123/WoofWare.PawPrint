@@ -29,6 +29,24 @@ class Program
 }
 """
 
+    /// A guest that branches on a byte nothing wrote.
+    let private undefinedBranchSource =
+        """
+using System.Runtime.CompilerServices;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    static int Main(string[] args)
+    {
+        bool* flags = stackalloc bool[1];
+        if (flags[0]) return 1;
+        return 0;
+    }
+}
+"""
+
     /// Guest that executes a handful of ordinary IL steps and then calls a
     /// P/Invoke PawPrint cannot possibly implement, so the interpreter throws
     /// from `NativeDispatch.failUnimplemented` partway through the run. Used by
@@ -391,6 +409,49 @@ class Program
 
             resetJson.RootElement.GetProperty("session").GetProperty("stepsExecuted").GetInt64 ()
             |> shouldEqual 0L
+        }
+
+    /// A stop at an undefined value is a session state of its own, not a finished process: the
+    /// session reports the observation, and stepping it again runs nothing.
+    [<Test>]
+    let ``Debugger HTTP reports a run stopped at an undefined value`` () : Task =
+        task {
+            use server = startServer undefinedBranchSource
+            use client = client server (Some token)
+
+            let! run = client.PostAsync ("run?maxSteps=1000000", emptyContent ())
+            run.StatusCode |> shouldEqual HttpStatusCode.OK
+            use! runJson = jsonDocument run
+            let session = runJson.RootElement.GetProperty "session"
+
+            session.GetProperty("status").GetString ()
+            |> shouldEqual "stoppedAtUndefinedValue"
+
+            session.GetProperty("observation").GetString () |> shouldContainText "Brfalse_s"
+            let stepsExecuted = session.GetProperty("stepsExecuted").GetInt64 ()
+
+            // The observing step did not retire: the stop is reported at the count of steps
+            // that did, and the run counted exactly those.
+            let lastEvent =
+                runJson.RootElement.GetProperty("recentEvents").EnumerateArray () |> Seq.last
+
+            lastEvent.GetProperty("kind").GetString ()
+            |> shouldEqual "stoppedAtUndefinedValue"
+
+            lastEvent.GetProperty("step").GetInt64 () |> shouldEqual stepsExecuted
+
+            runJson.RootElement.GetProperty("stepsRun").GetInt64 ()
+            |> shouldEqual stepsExecuted
+
+            let! step = client.PostAsync ("step?count=1", emptyContent ())
+            step.StatusCode |> shouldEqual HttpStatusCode.OK
+            use! stepJson = jsonDocument step
+
+            stepJson.RootElement.GetProperty("session").GetProperty("status").GetString ()
+            |> shouldEqual "stoppedAtUndefinedValue"
+
+            stepJson.RootElement.GetProperty("session").GetProperty("stepsExecuted").GetInt64 ()
+            |> shouldEqual stepsExecuted
         }
 
     [<Test>]
