@@ -60,6 +60,7 @@
         <Compile Include="UnixPoll.fs" />
         <Compile Include="WakeCondition.fs" />
         <Compile Include="UnixWait.fs" />
+        <Compile Include="UnixTaskLifecycle.fs" />
         <Compile Include="UnixDescriptor.fs" />
         <Compile Include="UnixPathResolution.fs" />
         <Compile Include="UnixReadWrite.fs" />

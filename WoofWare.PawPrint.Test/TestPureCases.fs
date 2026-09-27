@@ -498,6 +498,22 @@ module TestPureCases =
                 assertResult realResult pawPrintResult
             )
 
+    /// The run's terminal tasks against its threads: a task for every thread that has not
+    /// terminated, and for no other. A thread's exit is where the kernel is told it has gone,
+    /// so this is what catches a thread that ended without telling it, across every guest that
+    /// starts and ends threads, rather than only in fixtures written to look.
+    let private assertTasksMatchThreads (outcome : RunOutcome) : unit =
+        let state =
+            match outcome with
+            | RunOutcome.NormalExit (state, _)
+            | RunOutcome.ProcessExit (state, _)
+            | RunOutcome.Aborted (state, _, _)
+            | RunOutcome.SignalTerminated (state, _)
+            | RunOutcome.GuestUnhandledException (state, _, _) -> state
+
+        EmulatedKernel.checkTaskInvariants (state.ThreadState |> Map.map (fun _ ts -> ts.Status)) state.Kernel
+        |> shouldEqual []
+
     let runTest (case : EndToEndTestCase) : unit =
         // Every `sourcesPure` case is `Always`: the directory's whole premise is that
         // the guest's claims hold on any host PawPrint's oracle can run on. A case that
@@ -528,6 +544,8 @@ module TestPureCases =
                     case.ExpectsUnhandledException
                     realResult
                     pawPrintResult
+
+                assertTasksMatchThreads pawPrintResult
             )
 
     /// `calli` through a null function pointer. This cannot be a comparison test in

@@ -644,6 +644,7 @@ module Scheduler =
 
     /// Record that `terminated` has finished executing its final `ret`.
     /// - Flips its own status to Terminated.
+    /// - Tells the kernel the thread has exited, which removes its task.
     /// - Wakes every thread that was BlockedOnJoin on it; they proceed past Join.
     /// - Fails loudly if `terminated` was still the `InProgress` initializer of any
     ///   type, because every thread waiting on that init would be stuck on a dead
@@ -786,6 +787,7 @@ module Scheduler =
         { state with
             ThreadState = threadState
             Scheduling = scheduling
+            Kernel = EmulatedKernel.exitThread terminated state.Kernel
         }
 
     /// Apply the init outcome of a freshly-spawned worker to its own ThreadStatus.
