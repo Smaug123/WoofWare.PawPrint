@@ -1274,7 +1274,8 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
-                // The same reads under Darwin, which has no such check.
+                // The same reads under Darwin, which has no such check, and its
+                // answers at INT64_MAX itself.
                 FileName = "TransferPositionDarwinSeeded.cs"
                 ExpectedReturnCode = 0
                 KernelConfig =
