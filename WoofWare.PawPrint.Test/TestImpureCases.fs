@@ -445,6 +445,44 @@ module TestImpureCases =
                 name "d", SeedEntry.directory Map.empty
             ]
 
+    /// What `ChModWiringSeeded.cs` changes: two files, a directory, a dangling
+    /// link, a file root owns, and a file of uid 1000's own in a group it is not
+    /// in.
+    let private chModWiringSeed : Map<DirectoryEntryName, SeedEntry> =
+        let name (s : string) =
+            DirectoryEntryName.parseOrFail "test seed" s
+
+        let file (contents : string) =
+            SeedEntry.file (Text.Encoding.UTF8.GetBytes contents |> ImmutableArray.CreateRange)
+
+        Map.ofList
+            [
+                name "f", file "hello"
+                name "g", file "hello"
+                name "d", SeedEntry.directory Map.empty
+                name "dang", SeedEntry.Symlink (SymlinkTarget.parseOrFail "test seed" "nx", None)
+                name "theirs",
+                SeedEntry.File (
+                    Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange,
+                    PermissionBits.parseOrFail "test seed" 0o644,
+                    Some
+                        {
+                            User = UserId.root
+                            Group = GroupId.parseOrFail "test seed" 0u
+                        }
+                )
+                name "outside",
+                SeedEntry.File (
+                    Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange,
+                    PermissionBits.parseOrFail "test seed" 0o644,
+                    Some
+                        {
+                            User = UserId.parseOrFail "test seed" 1000u
+                            Group = GroupId.parseOrFail "test seed" 4242u
+                        }
+                )
+            ]
+
     /// Shared by the two `mkdir` wiring guests, so that the only thing that
     /// differs between them is the flavour.
     let private mkDirWiringSeed : Map<DirectoryEntryName, SeedEntry> =
@@ -1854,6 +1892,41 @@ module TestImpureCases =
                         Umask = PermissionBits.parseOrFail "test" 0o027
                         UserId = Some 1000u
                         FileSystem = mkDirWiringSeed
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // `chmod` and `fchmod` called directly, with what the BCL never
+                // passes: bits above 0o7777, set-group-ID, the empty path, and
+                // closed descriptors. Every row answers the same on both
+                // flavours, so one guest runs under each; the umask and the uid
+                // are away from the defaults, so a handler that applied the
+                // umask or assumed privilege fails.
+                FileName = "ChModWiringSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        Umask = PermissionBits.parseOrFail "test" 0o027
+                        UserId = Some 1000u
+                        FileSystem = chModWiringSeed
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                FileName = "ChModWiringSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        Umask = PermissionBits.parseOrFail "test" 0o027
+                        UserId = Some 1000u
+                        FileSystem = chModWiringSeed
                     }
                 AppContext = AppContextProperties.empty
                 Oracle = OraclePolicy.Never

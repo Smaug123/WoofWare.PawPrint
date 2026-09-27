@@ -364,6 +364,21 @@ module TestPureCases =
                     name "dang", SeedEntry.Symlink (target "nx", None)
                     name "cyc", SeedEntry.Symlink (target "cyc", None)
                 ]
+            "ChModSeeded.cs",
+            Map.ofList
+                [
+                    // A file per group of rows, so that each starts from the
+                    // seed's own mode rather than from whatever an earlier row
+                    // left behind.
+                    name "f", file "hello"
+                    name "g", file "hello"
+                    name "h", file "hello"
+                    name "e", file "hello"
+                    name "d", SeedEntry.directory (Map.ofList [ name "g", file "nested" ])
+                    name "lf", SeedEntry.Symlink (target "f", None)
+                    name "ld", SeedEntry.Symlink (target "d", None)
+                    name "dang", SeedEntry.Symlink (target "nx", None)
+                ]
             "FlockContentionSeeded.cs",
             Map.ofList
                 [
