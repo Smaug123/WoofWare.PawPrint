@@ -310,7 +310,11 @@ module TestNativeLibc =
                     (System.Collections.Immutable.ImmutableArray.Create 0)
                     (processDirected sent)
                     before
-                |> snd
+                |> function
+                    | SignalGeneration.ProcessContinues after
+                    | SignalGeneration.ProcessStopped (_, after) -> after
+                    | SignalGeneration.ProcessTerminated _ as ended ->
+                        failwith $"expected %O{sent} not to kill the process, got %A{ended}"
 
             let stopPending = SignalState.enqueue (processDirected Signal.SIGTSTP) registered
 

@@ -578,7 +578,7 @@ module TestDirectoryDescription =
         for platform in platforms do
             let fd, system = withDirectory platform [ "a" ]
 
-            match UnixReadWrite.read fd UserBuffer.Mapped 5 system with
+            match UnixReadWrite.read fd UserBuffer.Mapped 5UL system with
             | Ok (ReadAnswer.Failed UnixError.EISDIR, _) -> ()
             | other -> failwith $"%O{platform}: %A{other}"
 

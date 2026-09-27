@@ -26,6 +26,8 @@
     <Compile Include="TestWakeCondition.fs" />
     <Compile Include="TestUnixWait.fs" />
     <Compile Include="TestUnixTaskLifecycle.fs" />
+    <Compile Include="TestProcessTermination.fs" />
+    <Compile Include="TestProcessTerminationAgainstHost.fs" />
     <Compile Include="TestUnixProcessState.fs" />
     <Compile Include="TestClock.fs" />
     <Compile Include="TestClockAgainstHost.fs" />
@@ -39,6 +41,7 @@
     <Compile Include="TestNoPawPrintReference.fs" />
     <Compile Include="TestPathArgument.fs" />
     <Compile Include="TestUserBuffer.fs" />
+    <Compile Include="TestTransferCounts.fs" />
     <Compile Include="TestUserBufferCheckAgainstHost.fs" />
     <Compile Include="TestEntropyPool.fs" />
     <Compile Include="TestUnixEntropy.fs" />
@@ -94,6 +97,8 @@
     <Compile Include="TestSocketWait.fs" />
     <Compile Include="TestDatagramDissolve.fs" />
     <Compile Include="TestEpollCtl.fs" />
+    <Compile Include="TestEpollCreate1.fs" />
+    <Compile Include="TestEpollWait.fs" />
     <Compile Include="TestPipeBuffer.fs" />
     <Compile Include="TestPipeBufferCorpus.fs" />
     <Compile Include="TestPipeBufferAgainstHost.fs" />

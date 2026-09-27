@@ -36,24 +36,57 @@ jobs:
     # build and then ran the more expensive configuration. Debug costs ~20% more time and
     # ~20% more allocation than Release across the suite, and this was the only job that
     # tested Debug and the only one whose runner ever died of resource starvation.
-    # Two invocations because the guest-running fixtures are `[<Explicit>]`, which keeps
-    # them out of a bare `dotnet test` so that local iteration costs seconds rather than
-    # minutes. CI wants all of them, so it selects them by category as well. Splitting the
-    # run is deliberate rather than reaching for a filter that matches everything: "run the
-    # default set, then run the set we excluded from it" cannot silently stop covering
-    # something the way a clever filter expression could.
+    # The guest-running fixtures are `[<Explicit>]`, which keeps them out of a bare
+    # `dotnet test` so that local iteration costs seconds rather than minutes. CI wants all
+    # of them, so `test-guest` below selects them by category, on a runner of its own so
+    # that they run beside this step rather than after it. Two invocations rather than one
+    # filter that matches everything is deliberate: "run the default set, then run the set
+    # we excluded from it" cannot silently stop covering something the way a clever filter
+    # expression could.
     # The TRX files carry each test's duration. They're uploaded so that the tests can be
     # divided between runners by measured cost on CI's 4-vCPU hardware, which isn't
     # proportional to what a developer machine measures.
     - name: Test
       run: nix develop --command dotnet test --no-build --configuration Release --logger "trx;LogFilePrefix=default" --results-directory TestResults
+    # The `LargeMemory` fixtures are `[<Explicit>]` for the same reason, and also because
+    # they peak at several gigabytes: beside another test host they exhaust the runner,
+    # which then dies without a test failure ("The operation was canceled"). So they get
+    # a step of their own, in which no other test host is running.
+    - name: Test (large-memory fixtures)
+      run: nix develop --command dotnet test --no-build --configuration Release --filter "TestCategory=LargeMemory" --logger "trx;LogFilePrefix=large" --results-directory TestResults
+    - name: Upload test results
+      if: ${{ always() }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: test-results
+        path: TestResults/*.trx
+
+  # The guest-running fixtures, which take longer than the rest of the suite put
+  # together. They build for themselves rather than downloading `build`'s binaries: the
+  # build is under two minutes, and this way neither job waits for the other.
+  test-guest:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      with:
+        fetch-depth: 0 # so that NerdBank.GitVersioning has access to history
+    - name: Install Nix
+      uses: cachix/install-nix-action@08dcb3a5e62fa31e2da3d490afc4176ef55ecd72 # v30
+      with:
+        extra_nix_config: |
+          access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+    - name: Restore dependencies
+      run: nix develop --command dotnet restore
+    - name: Build
+      run: nix develop --command dotnet build --no-restore --configuration Release
     - name: Test (guest-running fixtures)
       run: nix develop --command dotnet test --no-build --configuration Release --filter "TestCategory=Guest" --logger "trx;LogFilePrefix=guest" --results-directory TestResults
     - name: Upload test results
       if: ${{ always() }}
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
-        name: test-results
+        name: test-results-guest
         path: TestResults/*.trx
 
   build-nix:
@@ -288,7 +321,7 @@ jobs:
 
   all-required-checks-complete:
     if: ${{ always() }}
-    needs: [check-dotnet-format, check-nix-format, check-docstring-attachment, build, build-nix, flake-check, nuget-pack, expected-pack, github-release-dry-run]
+    needs: [check-dotnet-format, check-nix-format, check-docstring-attachment, build, test-guest, build-nix, flake-check, nuget-pack, expected-pack, github-release-dry-run]
     runs-on: ubuntu-latest
     steps:
       - uses: G-Research/common-actions/check-required-lite@2b7dc49cb14f3344fbe6019c14a31165e258c059

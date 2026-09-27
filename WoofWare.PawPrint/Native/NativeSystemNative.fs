@@ -287,6 +287,19 @@ module NativeSystemNative =
 
         $"%s{operation}: fd %d{fd}: %s{CloseRefusal.describe refusal} %s{remedy}"
 
+    /// The `int32_t` a shim's transfer entry point returns for a kernel answer
+    /// of `written` bytes, when it was asked to move `bufferSize`.
+    ///
+    /// The shim casts the kernel's `ssize_t` straight to `int32_t`, asserting
+    /// that it is at most the size it asked for; a kernel never moves more than
+    /// it was asked to, so anything else is a bug here or in the library.
+    let private shimTransferCount (operation : string) (bufferSize : int) (written : int64) : int =
+        if written < 0L || written > int64 bufferSize then
+            failwith
+                $"%s{operation}: the kernel reported moving %d{written} bytes of the %d{bufferSize} it was asked for. A kernel never moves more than it was asked to, nor a negative number of bytes (this is an interpreter bug)."
+
+        int written
+
     /// Decode an `nint`-shaped Unix file-descriptor argument. CoreLib passes
     /// fds across the SystemNative boundary as plain `IntPtr` values (the low
     /// 32 bits of `SafeFileHandle.handle`); PawPrint represents these as
@@ -2389,12 +2402,11 @@ module NativeSystemNative =
                 | BufferPointer.Unstatable _ -> false
 
             if bufferSize < 0 then
-                // The shim's own guard, and the reason `UnixPathResolution.getcwd`
-                // refuses a negative capacity rather than answering one: no
-                // `getcwd(3)` sees a negative size, its argument being a
-                // `size_t`. It *also* `assert`s this, so a checked native build
-                // would abort instead; EINVAL is what a guest running against a
-                // retail runtime can observe, and it is the only one of the two
+                // The shim's own guard, ahead of `getcwd(3)`, which takes a
+                // `size_t` and so never sees a negative size. It *also*
+                // `assert`s this, so a checked native build would abort
+                // instead; EINVAL is what a guest running against a retail
+                // runtime can observe, and it is the only one of the two
                 // behaviours we can reproduce.
                 fail UnixError.EINVAL state
             elif bufferIsNull then
@@ -2415,7 +2427,7 @@ module NativeSystemNative =
             match
                 UnixPathResolution.getcwd
                     (BufferPointer.toUserBuffer bufferPointer)
-                    bufferSize
+                    (uint64 bufferSize)
                     (EmulatedKernel.unix state.Kernel)
             with
             | Error (GetCwdRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage bufferPointer refusal)
@@ -3323,7 +3335,7 @@ module NativeSystemNative =
                 UnixReadWrite.pread
                     fd
                     (BufferPointer.toUserBuffer buffer)
-                    bufferSize
+                    (uint64 bufferSize)
                     fileOffset
                     (EmulatedKernel.unix state.Kernel)
             with
@@ -3405,7 +3417,7 @@ module NativeSystemNative =
                 UnixReadWrite.admitPWrite
                     fd
                     (BufferPointer.toUserBuffer buffer)
-                    bufferSize
+                    (uint64 bufferSize)
                     fileOffset
                     (EmulatedKernel.unix state.Kernel)
             with
@@ -3418,6 +3430,8 @@ module NativeSystemNative =
             | Ok (WriteAdmission.Answered (WriteAnswer.Completed written)) ->
                 // The zero-length no-op, which changes nothing at all — so there
                 // is no system to write back, and the buffer was never resolved.
+                let written = shimTransferCount operation bufferSize written
+
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim written)) ctx.Thread
                 |> NativeHandlerResult.completed
@@ -3445,6 +3459,8 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
             | Ok (WriteAnswer.Completed written, system) ->
+                let written = shimTransferCount operation bufferSize written
+
                 withAnswered system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim written)) ctx.Thread
                 |> NativeHandlerResult.completed
@@ -3491,8 +3507,8 @@ module NativeSystemNative =
             // the C returns before `ToFileDescriptor` is ever evaluated, so
             // `Read(badfd, buf, -1)` is EINVAL rather than EBADF. That ordering
             // is a fact about the shim rather than about any kernel, which is
-            // why it is answered here rather than passed on — `UnixReadWrite.read`
-            // refuses a negative count outright.
+            // why it is answered here: `UnixReadWrite.read` takes the kernel's
+            // `size_t`, which no negative size ever becomes.
             //
             // EINVAL, not ERANGE: `Common_Write` answers ERANGE for the same
             // mistake, and the asymmetry is upstream's rather than a typo here
@@ -3507,7 +3523,11 @@ module NativeSystemNative =
             let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 
             match
-                UnixReadWrite.read fd (BufferPointer.toUserBuffer buffer) bufferSize (EmulatedKernel.unix state.Kernel)
+                UnixReadWrite.read
+                    fd
+                    (BufferPointer.toUserBuffer buffer)
+                    (uint64 bufferSize)
+                    (EmulatedKernel.unix state.Kernel)
             with
             | Error (ReadRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
             | Error (ReadRefusal.SocketConnectionState _ as refusal) ->
@@ -3515,6 +3535,9 @@ module NativeSystemNative =
                 // caller could have reached it, which is a fact about CoreLib.
                 failwith
                     $"%s{operation}: fd %d{fd}: %s{ReadRefusal.describe refusal} Nothing in the BCL waits on this — CoreLib reaches a socket through `SystemNative_Receive`, `SafeSocketHandle` not being a `SafeFileHandle` — so this is a hand-rolled P/Invoke. Model the connection state (issue #956) before answering it."
+            | Error (ReadRefusal.ScannedDirectoryPosition _ as refusal) ->
+                failwith
+                    $"%s{operation}: fd %d{fd}: %s{ReadRefusal.describe refusal} CoreLib never reads a directory through `SystemNative_Read` (it enumerates with `SystemNative_OpenDir` and `SystemNative_ReadDir`, whose descriptor it never sees), so this is a hand-rolled P/Invoke reading a directory it has partly enumerated. Rewind it with `lseek(fd, 0, SEEK_SET)`, or read before enumerating."
             | Ok (ReadAnswer.Failed error, system) ->
                 withErrno ctx error system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
@@ -4738,18 +4761,30 @@ module NativeSystemNative =
                     $"%s{operation}: `port` is %O{portArgument}, which is not null but names no storage. The C wrapper screens only `port == NULL`, so a real run would create the descriptor and then fault storing through this address; PawPrint does not model that fault. Pass a real out-parameter."
             | Some port ->
 
-            let fd, registry =
-                FileDescriptorRegistry.createSocketEventPort state.Kernel.FileDescriptors
+            let fd, state =
+                match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
+                | SimulatedUnixFlavour.Linux ->
+                    match UnixPoll.epollCreate1 EpollCreateFlags.CloseOnExec (EmulatedKernel.unix state.Kernel) with
+                    | Ok (Ok (fd, system)) -> fd, state.MapKernel (EmulatedKernel.withUnix system)
+                    | Ok (Error error) ->
+                        failwith
+                            $"%s{operation}: epoll_create1(EPOLL_CLOEXEC) answered %O{error}, which the kernel gives only for a flag other than EPOLL_CLOEXEC (this is an interpreter bug)."
+                    | Error refusal -> failwith $"%s{operation}: %s{EpollCreateRefusal.describe refusal}"
+                | SimulatedUnixFlavour.Darwin ->
+                    // `kqueue()`, which the kernel does not yet answer as a call of
+                    // its own: the allocation it makes is exactly the port's.
+                    let fd, registry =
+                        FileDescriptorRegistry.createSocketEventPort state.Kernel.FileDescriptors
 
-            let state =
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        Process =
-                            { kernel.Process with
-                                FileDescriptors = registry
-                            }
-                    }
-                )
+                    fd,
+                    state.MapKernel (fun kernel ->
+                        { kernel with
+                            Process =
+                                { kernel.Process with
+                                    FileDescriptors = registry
+                                }
+                        }
+                    )
 
             // `*port = fd`, as an `intptr_t`: eight bytes on every platform
             // PawPrint models, little-endian on both x64 and arm64. The C
@@ -5193,52 +5228,16 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
-            // Park re-entrantly: leave the native frame on the stack and the
-            // caller's program counter naming the call, so that a wake —
-            // `Program`'s readiness sweep flipping this thread back to
-            // Runnable once the port has something deliverable — re-enters
-            // this handler and writes the event batch through the caller's
-            // own `buffer`, rather than the wake having to reach into a
-            // frame it does not own from some other thread's step.
-            let park
-                (port : OpenFileDescriptionId)
-                (requestedCount : int)
-                (state : IlMachineState)
-                : NativeHandlerResult option
-                =
-                // The capture that survives the park: what the syscall was
-                // entered with, consulted by the re-entry in place of the
-                // arguments the guest may have scribbled on since. It is also
-                // the only place the port is written down — the park status
-                // carries nothing — so `Program`'s readiness sweep reads this
-                // to decide whether to wake, and cannot ask a different
-                // question from the one the delivery below answers.
-                state.MapKernel (
-                    EmulatedKernel.mapUnix (
-                        UnixWait.park
-                            ctx.Thread
-                            (ParkedSyscall.SocketWait
-                                {
-                                    ParkedSocketWait.Port = port
-                                    MaxEvents = requestedCount
-                                })
-                    )
-                )
-                |> Scheduler.parkInSyscall ctx.Thread
-                |> NativeHandlerResult.blockedRetainingFrame
-                |> Some
-
-            // What one `epoll_wait` returning does: drain up to
-            // `requestedCount` events from the port's ready list and convert
-            // each to the PAL's `SocketEvent` shape, which is
-            // `SocketEventsPal.delivered`.
-            let deliver (delivered : (uint64 * uint32) list) (kernel : EmulatedKernel) : NativeHandlerResult option =
+            // What one `epoll_wait` returning does: write each event the kernel
+            // delivered in the PAL's `SocketEvent` shape, which is
+            // `SocketEventsPal.delivered`, and the count through `count`.
+            let deliver (delivered : (uint64 * uint32) list) (state : IlMachineState) : NativeHandlerResult option =
                 let bufferPointer =
                     match BufferPointer.dereferenceable buffer with
                     | Some pointer -> pointer
                     | None ->
                         failwith
-                            $"%s{operation}: the event buffer is %O{buffer}, which names no storage. A real epoll_wait passes access_ok at wait time and fails only when the copy-out faults (EFAULT with the consumed events lost), behaviour PawPrint does not model. Pass a real buffer."
+                            $"%s{operation}: the kernel delivered events to the event buffer %O{buffer}, which names no storage. The kernel refuses a delivery to any buffer but a mapped one, so this buffer's classification disagrees with its pointer (this is an interpreter bug)."
 
                 let elementSize =
                     SocketEventsPal.socketEventBufferElementSize state.Kernel.UnixPlatform
@@ -5259,10 +5258,8 @@ module NativeSystemNative =
                 let countBytes = Array.zeroCreate<byte> 4
                 BinaryPrimitives.WriteInt32LittleEndian (Span<byte> countBytes, List.length delivered)
 
-                // A successful wait leaves errno alone. The wait is over, so
-                // the captured in-flight state (if this was a re-entry) goes
-                // with it.
-                state.MapKernel (fun _ -> EmulatedKernel.mapTasks (UnixTaskTable.unpark ctx.Thread) kernel)
+                // A successful wait leaves errno alone.
+                state
                 |> writeBytesThrough ctx operation bufferPointer (ImmutableArray.CreateRange bytes)
                 |> writeBytesThrough ctx operation countCell (ImmutableArray.CreateRange countBytes)
                 |> IlMachineState.pushToEvalStack'
@@ -5271,19 +5268,36 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
-            // Walk the port as `epoll_wait` would: report the pending
-            // entries whose re-poll is nonempty, silently consuming the
-            // stale ones — so even a walk that delivers nothing may change
-            // the kernel, and that write-back happens before any park.
-            let deliverOrPark (port : OpenFileDescriptionId) (requestedCount : int) : NativeHandlerResult option =
-                let delivered, system =
-                    SocketEventPort.drain port requestedCount (EmulatedKernel.unix state.Kernel)
+            // Park re-entrantly: leave the native frame on the stack and the
+            // caller's program counter naming the call, so that a wake —
+            // `Program`'s sweep flipping this thread back to Runnable once
+            // `UnixWait.wakes` says so — re-enters this handler, which finishes
+            // the call from the task's park record and writes the event batch
+            // through the caller's own `buffer`, rather than the wake having to
+            // reach into a frame it does not own from some other thread's step.
+            let refuse (refusal : EpollWaitRefusal) : NativeHandlerResult option =
+                match refusal with
+                | EpollWaitRefusal.Buffer refusal -> failwith (BufferPointer.refusalMessage buffer refusal)
+                | EpollWaitRefusal.UnmeasuredCopyOutFault _
+                | EpollWaitRefusal.UnmodelledFlavour _
+                | EpollWaitRefusal.DeadlineBeyondClock _ ->
+                    failwith $"%s{operation}: %s{EpollWaitRefusal.describe refusal} The event buffer was %O{buffer}."
 
-                let kernel = EmulatedKernel.withUnix system state.Kernel
+            let settle
+                (outcome : EpollWaitOutcome)
+                (system : UnixSystem<ThreadId, NativeSignalHandler>)
+                : NativeHandlerResult option
+                =
+                let state = state.MapKernel (EmulatedKernel.withUnix system)
 
-                match delivered with
-                | [] -> park port requestedCount (state.MapKernel (fun _ -> kernel))
-                | delivered -> deliver delivered kernel
+                match outcome with
+                | EpollWaitOutcome.Failed error -> failFromSyscall error
+                | EpollWaitOutcome.Answered delivered -> deliver delivered state
+                | EpollWaitOutcome.WouldBlock _ ->
+                    state
+                    |> Scheduler.parkInSyscall ctx.Thread
+                    |> NativeHandlerResult.blockedRetainingFrame
+                    |> Some
 
             // A woken thread re-enters this handler from the top, but the
             // syscall was already *entered*: the port identity and maxevents
@@ -5292,10 +5306,13 @@ module NativeSystemNative =
             // fd the wait was called through can be closed (a dup keeps the
             // description alive; `UnixDescriptor.close`'s retention refusal keeps the
             // last descriptor from destroying it). So a re-entry consults no
-            // screen and no descriptor table: it delivers from the captured
-            // description, or parks again.
+            // screen and no descriptor table: the kernel finishes the call from
+            // the park.
             match UnixTaskTable.parkedFor ctx.Thread state.Kernel.Tasks with
-            | Some (ParkedSyscall.SocketWait inFlight) -> deliverOrPark inFlight.Port inFlight.MaxEvents
+            | Some (ParkedSyscall.SocketWait _) ->
+                match UnixPoll.finishSocketWait ctx.Thread (EmulatedKernel.unix state.Kernel) with
+                | Error refusal -> refuse refusal
+                | Ok (outcome, system) -> settle outcome system
             | Some (ParkedSyscall.Flock _) ->
                 // Unreachable, and refused rather than treated as a first entry
                 // for the reason `SystemNative_FLock`'s mirror of this gives: a
@@ -5323,14 +5340,21 @@ module NativeSystemNative =
 
             // Past the wrapper, so the call really does consult `port` now.
             let fd = fdArgument operation instruction.Arguments.[0]
+            let system = EmulatedKernel.unix state.Kernel
 
-            match
-                UnixPoll.admitSocketWait
-                    fd
-                    requestedCount
-                    (BufferPointer.toUserBuffer buffer)
-                    (EmulatedKernel.unix state.Kernel)
-            with
+            match flavour with
+            | SimulatedUnixFlavour.Linux ->
+                // `epoll_wait(port, events, *count, -1)`: the shim always waits
+                // for ever.
+                match UnixPoll.epollWait ctx.Thread fd requestedCount (BufferPointer.toUserBuffer buffer) -1 system with
+                | Error refusal -> refuse refusal
+                | Ok (outcome, system) -> settle outcome system
+            | SimulatedUnixFlavour.Darwin ->
+
+            // `kevent(port, NULL, 0, events, *count, NULL)`, which the kernel
+            // does not yet answer as a call of its own: its screens are the
+            // kernel's, and the park is made here.
+            match UnixPoll.admitSocketWait fd requestedCount (BufferPointer.toUserBuffer buffer) system with
             | Error (SocketWaitRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
             | Ok (SocketWaitAdmission.Failed error) -> failFromSyscall error
             | Ok SocketWaitAdmission.NoEvents ->
@@ -5348,7 +5372,23 @@ module NativeSystemNative =
                     ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-            | Ok (SocketWaitAdmission.DeliverOrWait (port, maxEvents)) -> deliverOrPark port maxEvents
+            | Ok (SocketWaitAdmission.DeliverOrWait (port, maxEvents)) ->
+                // A Darwin port holds no registration (`admitSocketWait` asserts
+                // it, the registration arm refusing every change), so nothing is
+                // deliverable, and the wait sleeps with no deadline, as `kevent`
+                // with a NULL timeout does.
+                let parked =
+                    ParkedSyscall.SocketWait
+                        {
+                            ParkedSocketWait.Port = port
+                            MaxEvents = maxEvents
+                            Buffer = BufferPointer.toUserBuffer buffer
+                            Deadline = None
+                        }
+
+                settle
+                    (EpollWaitOutcome.WouldBlock (WakeCondition.ofPark parked))
+                    (UnixWait.park ctx.Thread parked system)
         | Some "SystemNative_Poll",
           [ ConcretePointer _
             ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32
@@ -5664,7 +5704,8 @@ module NativeSystemNative =
                 =
                 match answer with
                 | WriteAnswer.Failed error -> -1, withErrno ctx error system state
-                | WriteAnswer.Completed written -> written, withAnswered system state
+                | WriteAnswer.Completed written ->
+                    shimTransferCount operation bufferSize written, withAnswered system state
 
             let result, effect, state =
                 if bufferSize < 0 then
@@ -5693,7 +5734,7 @@ module NativeSystemNative =
                     UnixReadWrite.admitWrite
                         fd
                         (BufferPointer.toUserBuffer buffer)
-                        bufferSize
+                        (uint64 bufferSize)
                         (EmulatedKernel.unix state.Kernel)
                 with
                 | Error (WriteRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
@@ -6088,18 +6129,21 @@ module NativeSystemNative =
                     |> ImmutableArray.CreateRange
 
                 match UnixSignal.kill liveThreads (ProcessId.toInt32 (UnixSystem.processId system)) signo system with
-                | Ok (Ok (SignalGeneration.ProcessContinues, after)) ->
+                | Ok (Ok (KillOutcome.ProcessContinues after)) ->
                     restored.MapKernel (EmulatedKernel.withUnix after)
                     |> NativeHandlerResult.completed
                     |> Some
-                | Ok (Ok (SignalGeneration.ProcessTerminated (killedBy, coreDumped), after)) ->
-                    ExecutionResult.SignalTerminated (
-                        restored.MapKernel (EmulatedKernel.withUnix after),
-                        killedBy,
-                        coreDumped
-                    )
-                    |> NativeHandlerResult.ofExecutionResult
-                    |> Some
+                | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
+                    match ended.Termination with
+                    | ProcessTermination.Signaled (killedBy, coreDumped) ->
+                        // The machine as it stood when the signal was re-raised, with
+                        // the handler restored.
+                        ExecutionResult.SignalTerminated (restored, killedBy, coreDumped)
+                        |> NativeHandlerResult.ofExecutionResult
+                        |> Some
+                    | ProcessTermination.Exited _ ->
+                        failwith
+                            $"%s{operation}: re-raising %O{signal} ended the process with an exit status (%O{ended.Termination}), which only an exit can"
                 | other ->
                     failwith
                         $"%s{operation}: re-raising %O{signal} under the %O{numbering} numbering at its default did not terminate or discard it: %O{other}"

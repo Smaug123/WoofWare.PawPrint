@@ -171,7 +171,7 @@ module TestFrameworkUnderTest =
         FrameworkUnderTest.assertOutcomeServes outcome
 
         match outcome with
-        | RunOutcome.NormalExit (state, _) ->
+        | RunOutcome.NormalExit (state, _, _) ->
             state.LatchedExitCode |> shouldEqual 3
 
             (FrameworkUnderTest.loadedCoreLib state).OriginalPath

@@ -373,13 +373,13 @@ module TestSchedulerPct =
     /// promises — terminal observable state is determined by seed + program.
     let private outcomeSignature (outcome : RunOutcome) : string =
         match outcome with
-        | RunOutcome.NormalExit (state, _)
-        | RunOutcome.ProcessExit (state, _) -> $"exit %d{state.LatchedExitCode}"
-        | RunOutcome.Aborted (_, _, fatal) ->
+        | RunOutcome.NormalExit (state, _, _)
+        | RunOutcome.ProcessExit (state, _, _) -> $"exit %d{state.LatchedExitCode}"
+        | RunOutcome.Aborted (_, _, fatal, _) ->
             let msg = fatal.Message |> Option.defaultValue "<none>"
             $"aborted %O{fatal.Code} %s{msg}"
         | RunOutcome.SignalTerminated (_, signal, _) -> $"signal %O{signal}"
-        | RunOutcome.GuestUnhandledException (_, _, _) -> "unhandled exception"
+        | RunOutcome.GuestUnhandledException (_, _, _, _) -> "unhandled exception"
 
     [<Test>]
     let ``PCT runs with the same seed produce identical observable outcomes`` () : unit =
@@ -398,11 +398,11 @@ module TestSchedulerPct =
 
     let private finalScheduling (outcome : RunOutcome) : SchedulerState =
         match outcome with
-        | RunOutcome.NormalExit (state, _)
-        | RunOutcome.ProcessExit (state, _)
-        | RunOutcome.Aborted (state, _, _)
+        | RunOutcome.NormalExit (state, _, _)
+        | RunOutcome.ProcessExit (state, _, _)
+        | RunOutcome.Aborted (state, _, _, _)
         | RunOutcome.SignalTerminated (state, _, _)
-        | RunOutcome.GuestUnhandledException (state, _, _) -> state.Scheduling
+        | RunOutcome.GuestUnhandledException (state, _, _, _) -> state.Scheduling
 
     [<Test>]
     let ``a run that never forks consumes no randomness at all`` () : unit =

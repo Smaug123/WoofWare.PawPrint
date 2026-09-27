@@ -55,6 +55,13 @@ type ParkedSocketWait =
         /// even if the guest overwrites the cell mid-wait.
         /// </remarks>
         MaxEvents : int
+        /// The buffer the call was given to copy events out to, as the caller
+        /// classified it when the call was entered.
+        Buffer : UserBuffer
+        /// The instant, in nanoseconds since boot, at which the wait stops and
+        /// returns no events; or `None` for a wait that lasts until an event is
+        /// deliverable.
+        Deadline : int64 option
     }
 
 /// <summary>
@@ -154,8 +161,8 @@ type TaskPark =
         /// When the task parked, relative to every other park.
         ///
         /// A re-park (a woken waiter that finds its condition gone and sleeps
-        /// again) mints a fresh one, as a real kernel re-queues such a waiter
-        /// behind the waiters already there.
+        /// again) mints a fresh one, as a real kernel queues such a waiter
+        /// afresh.
         Ordinal : ParkOrdinal
     }
 

@@ -140,6 +140,8 @@ class WaitsOnADuplicatedPort
                     {
                         ParkedSocketWait.Port = OpenFileDescriptionId 3L
                         MaxEvents = 1
+                        Buffer = UserBuffer.Mapped
+                        Deadline = None
                     }
             )
         )
@@ -223,10 +225,12 @@ class WaitsOnADuplicatedPort
 
         exn.Message |> shouldContainText "records no park"
 
-    /// Two waiters parked on one port, and an entry thread that then makes the port
-    /// deliverable. The sleep is what makes the order deterministic: while the entry
-    /// thread sleeps, the two waiters are the only runnable threads, so both reach their
-    /// parks before the connect.
+    /// Two waiters parked on one port, the first before the second, and an entry thread that
+    /// then makes the port deliverable once. Each sleep is what makes the order deterministic:
+    /// while the entry thread sleeps, the waiter it has just started is the only runnable
+    /// thread, so it reaches its park before the next one starts. After the connect, the entry
+    /// thread sleeps again so that whichever waiter was woken returns, and then exits with 10
+    /// plus the sum of the returned waiters' ids.
     let private twoWaitersSource : string =
         """
 using System;
@@ -269,12 +273,14 @@ class TwoWaitersOnOnePort
     static extern unsafe int SetIPv4Address(byte* socketAddress, int socketAddressLen, uint address);
 
     static IntPtr Port;
+    static int Returned;
 
-    static unsafe void Waiter()
+    static unsafe void Waiter(object id)
     {
         byte* buffer = stackalloc byte[32];
         int count = 1;
-        WaitForSocketEvents(Port, buffer, &count);
+        if (WaitForSocketEvents(Port, buffer, &count) == 0 && count == 1)
+            Interlocked.Add(ref Returned, (int)id);
     }
 
     static unsafe int Main()
@@ -295,24 +301,26 @@ class TwoWaitersOnOnePort
         if (GetSockName(listener, addr, &len) != 0) return 5;
         if (TryChange(port, listener, 0, 0x3, (IntPtr)1) != 0) return 6;
 
-        new Thread(Waiter) { IsBackground = true }.Start();
-        new Thread(Waiter) { IsBackground = true }.Start();
+        new Thread(Waiter) { IsBackground = true }.Start(1);
+        Thread.Sleep(100);
+        new Thread(Waiter) { IsBackground = true }.Start(2);
         Thread.Sleep(100);
 
         IntPtr client;
         if (Socket(2, 1, 6, &client) != 0) return 7;
         if (Connect(client, addr, 16) != 0) return 8;
-        return 9;
+        Thread.Sleep(100);
+        return 10 + Volatile.Read(ref Returned);
     }
 }
 """
 
-    /// epoll parks `epoll_wait` callers exclusively, so one edge wakes one waiter, chosen
-    /// by park order — state PawPrint does not record. The sweep must refuse rather than
-    /// wake both and let the scheduler invent the winner; this pins the refusal, and
-    /// kills the mutant that wakes every waiter on the port.
+    /// epoll queues `epoll_wait` callers exclusively at the front of the port's wait queue, so
+    /// one edge wakes one waiter, the one that parked last (measured by
+    /// docs/plans/2026-08-23-posix-kernel-extraction/epoll-wait.c, section F). Exit code 12 is
+    /// the second waiter alone; waking both would give 13, and waking the first-parked 11.
     [<Test>]
-    let ``an edge arriving with two waiters parked on one port refuses`` () : unit =
+    let ``an edge arriving with two waiters parked on one port wakes the one that parked last`` () : unit =
         let image = Roslyn.compile [ twoWaitersSource ]
 
         let _messages, loggerFactory =
@@ -324,20 +332,18 @@ class TwoWaitersOnOnePort
 
         use peImage = new MemoryStream (image)
 
-        let exc =
-            Assert.Throws<GuestFailureException> (fun () ->
-                BoundedRun.runWith
-                    loggerFactory
-                    BoundedRun.defaultMaxSteps
-                    "TwoWaitersOnOnePort.cs"
-                    (Some "TwoWaitersOnOnePort.cs")
-                    peImage
-                    (HostConfig.Default dotnetRuntimes)
-                |> ignore<RunOutcome>
-            )
+        let outcome =
+            BoundedRun.runWith
+                loggerFactory
+                BoundedRun.defaultMaxSteps
+                "TwoWaitersOnOnePort.cs"
+                (Some "TwoWaitersOnOnePort.cs")
+                peImage
+                (HostConfig.Default dotnetRuntimes)
 
-        exc.Message
-        |> shouldContainText "are all parked in SystemNative_WaitForSocketEvents"
+        match outcome with
+        | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 12
+        | other -> failwith $"expected the guest to exit, got %O{other}"
 
     /// Two ports with one waiter each, and an edge on only one of them. The quiet port carries no
     /// registrations at all, so nothing can ever make it deliverable.
@@ -569,12 +575,14 @@ class ClosesAParkedPort
     static extern unsafe int WaitForSocketEvents(IntPtr port, byte* buffer, int* count);
 
     static IntPtr Port;
+    static int Returned;
 
-    static unsafe void Waiter()
+    static unsafe void Waiter(object id)
     {
         byte* buffer = stackalloc byte[32];
         int count = 1;
-        WaitForSocketEvents(Port, buffer, &count);
+        if (WaitForSocketEvents(Port, buffer, &count) == 0 && count == 1)
+            Interlocked.Add(ref Returned, (int)id);
     }
 
     static unsafe int Main()
@@ -662,12 +670,14 @@ class QuietParkedWaiter
     static extern unsafe int SetIPv4Address(byte* socketAddress, int socketAddressLen, uint address);
 
     static IntPtr Port;
+    static int Returned;
 
-    static unsafe void Waiter()
+    static unsafe void Waiter(object id)
     {
         byte* buffer = stackalloc byte[32];
         int count = 1;
-        WaitForSocketEvents(Port, buffer, &count);
+        if (WaitForSocketEvents(Port, buffer, &count) == 0 && count == 1)
+            Interlocked.Add(ref Returned, (int)id);
     }
 
     static unsafe int Main()
@@ -728,7 +738,7 @@ class QuietParkedWaiter
                 (HostConfig.Default dotnetRuntimes)
 
         match outcome with
-        | RunOutcome.NormalExit (state, _) ->
+        | RunOutcome.NormalExit (state, _, _) ->
             state.LatchedExitCode |> shouldEqual 0
             state.Kernel.StepCounter |> shouldBeSmallerThan 500_000L
         | other -> failwith $"expected a normal exit, got %O{other}"

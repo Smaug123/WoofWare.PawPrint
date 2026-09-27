@@ -275,7 +275,7 @@ unsafe class Program
                 peImage
                 (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
         with
-        | RunOutcome.NormalExit (state, _) ->
+        | RunOutcome.NormalExit (state, _, _) ->
             match state.LatchedExitCode with
             | 0 -> ()
             | code -> failwith (failure implemented code)
@@ -334,5 +334,5 @@ class Program
                 peImage
                 (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
         with
-        | RunOutcome.NormalExit (state, _) -> state.LatchedExitCode |> shouldEqual 0
+        | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 0
         | other -> failwith $"PawPrint did not run the guest to completion: %O{other}"

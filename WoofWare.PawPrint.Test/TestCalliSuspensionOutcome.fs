@@ -95,8 +95,8 @@ module TestCalliSuspensionOutcome =
             match Program.stepPrepared loggerFactory logger prepared with
             | Program.ProgramStepOutcome.Completed outcome ->
                 match outcome with
-                | RunOutcome.NormalExit (terminalState, _)
-                | RunOutcome.ProcessExit (terminalState, _) -> List.rev acc, terminalState.LatchedExitCode
+                | RunOutcome.NormalExit (terminalState, _, _)
+                | RunOutcome.ProcessExit (terminalState, _, _) -> List.rev acc, terminalState.LatchedExitCode
                 | other -> failwith $"guest did not exit normally: %O{other}"
             | Program.ProgramStepOutcome.Deadlocked (_, stuck) -> failwith $"guest deadlocked: %s{stuck}"
             | Program.ProgramStepOutcome.WorkerTerminated (p, _) -> loop p acc

@@ -104,7 +104,7 @@ public static class Program
                     failwith "guest did not terminate"
 
                 match Program.stepPrepared loggerFactory logger prepared with
-                | Program.ProgramStepOutcome.Completed (RunOutcome.NormalExit (state, _)) ->
+                | Program.ProgramStepOutcome.Completed (RunOutcome.NormalExit (state, _, _)) ->
                     if state.LatchedExitCode <> 0 then
                         failwith $"guest did not return 0: %d{state.LatchedExitCode}"
 
