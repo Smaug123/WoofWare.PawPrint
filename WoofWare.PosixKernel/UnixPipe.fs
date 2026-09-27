@@ -191,11 +191,20 @@ module UnixPipe =
 
         let now = UnixMachineState.realtime machine
 
+        // Measured by pipe-syscalls.c and pipe-states.c, and held to the host
+        // by `TestPipeAgainstHost`. Neither flavour applies the umask: the bits
+        // are the same under umask 0 and 0777.
+        let permissions =
+            match SimulatedUnixPlatform.flavour platform with
+            | SimulatedUnixFlavour.Linux -> PermissionBits.parseOrFail "UnixPipe.pipe2" 0o600
+            | SimulatedUnixFlavour.Darwin -> PermissionBits.parseOrFail "UnixPipe.pipe2" 0o660
+
         let pipe =
             {
                 Buffer = PipeBuffer.empty platform
                 Inodes = inodes
                 Owner = InodeOwner.ofProcess system.Process.Credentials
+                Permissions = permissions
                 Times =
                     {
                         Created = now

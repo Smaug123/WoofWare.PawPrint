@@ -1489,6 +1489,57 @@ module VirtualFileSystem =
                         vfs.Inodes
             }
 
+    /// Give the regular file or directory at `inode` the permission bits `bits`,
+    /// and move its `ctime`.
+    ///
+    /// `ctime` moves even when `bits` are the bits the inode already had, and
+    /// no other timestamp moves.
+    ///
+    /// Partial in the inode, which must name a regular file or a directory this
+    /// filesystem contains: a symbolic link's permission bits are the
+    /// platform's, and nothing here can change them.
+    let setPermissions
+        (inode : InodeNumber)
+        (bits : PermissionBits)
+        (now : UnixTimestamp)
+        (vfs : VirtualFileSystem)
+        : VirtualFileSystem
+        =
+        // Measured on both platforms (`chmod-rules.c`): `chmod` and `fchmod` to
+        // a different mode, to the same mode, and to one the kernel then
+        // narrows, each move `ctime` and neither `atime` nor `mtime`, on a
+        // regular file and on a directory, for the owner and for root.
+        let bits = PermissionBits.assertValid "VirtualFileSystem.setPermissions" bits
+
+        match Map.tryFind inode vfs.Inodes with
+        | None ->
+            failwith
+                $"VirtualFileSystem.setPermissions: inode %O{inode} is not in this filesystem. The caller resolved a path or a descriptor to it, and a descriptor outliving its inode means an unlink removed a still-open file (this is a bug in the caller)."
+        | Some entry ->
+
+        let content =
+            match entry.Content with
+            | InodeContent.RegularFile (contents, _) -> InodeContent.RegularFile (contents, bits)
+            | InodeContent.Directory directory ->
+                InodeContent.Directory
+                    { directory with
+                        Permissions = bits
+                    }
+            | InodeContent.Symlink _ ->
+                failwith
+                    $"VirtualFileSystem.setPermissions: inode %O{inode} is a symbolic link, whose permission bits are the platform's rather than stored. `chmod` follows a final symlink and no descriptor names one, so the caller should never have reached a link (this is a bug in the caller)."
+
+        { vfs with
+            Inodes =
+                Map.add
+                    inode
+                    { entry with
+                        Content = content
+                        Times = InodeTimes.statusChangedAt now entry.Times
+                    }
+                    vfs.Inodes
+        }
+
     // ------------------------------------------------------------ resolution
 
     /// Every (directory, name, target) binding in the graph, including those in

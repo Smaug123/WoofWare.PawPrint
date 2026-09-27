@@ -124,6 +124,49 @@ module FStatRefusal =
             $"the descriptor is socket %O{socket}, for which this kernel holds no inode — a `SocketId` is a contention key rather than an inode number. Measured, only Linux gives a socket an inode at all (`st_dev` 8 and a distinct `st_ino` per socket, on `sockfs`), a Darwin AF_INET socket reporting 0 for both; and the rest would be invented either way — `st_mode` is S_IFSOCK|0777 on Linux against S_IFSOCK|0666 on Darwin, `st_nlink` 1 against 0, and Darwin's `st_blksize` varies with the socket itself (131072 for TCP, 9216 for UDP, 8192 for a Unix-domain socket)."
         | FStatRefusal.NfsDirectorySize inode -> StatRefusal.describe (StatRefusal.NfsDirectorySize inode)
 
+/// Why this kernel will not answer a `chmod(2)`.
+[<RequireQualifiedAccess>]
+type ChModRefusal =
+    /// What the mode change would do to the inode at `inode` has not been
+    /// measured for this caller.
+    | UnmeasuredModeChange of inode : InodeNumber * refusal : ModeChangeRefusal
+
+[<RequireQualifiedAccess>]
+module ChModRefusal =
+    /// What this kernel knows about why it will not answer. A client adds which
+    /// entry point asked, and with which path.
+    let describe (refusal : ChModRefusal) : string =
+        match refusal with
+        | ChModRefusal.UnmeasuredModeChange (inode, refusal) ->
+            $"changing the mode of inode %O{inode}: %s{ModeChangeRefusal.describe refusal}"
+
+/// Why this kernel will not answer an `fchmod(2)`.
+[<RequireQualifiedAccess>]
+type FChModRefusal =
+    /// What the mode change would do to the inode at `inode` has not been
+    /// measured for this caller.
+    | UnmeasuredModeChange of inode : InodeNumber * refusal : ModeChangeRefusal
+    /// The descriptor is a standard stream, which this kernel models as one end
+    /// of a pipe, on a flavour whose pipes have a mode that `fchmod` changes.
+    /// This kernel holds no inode for a standard stream, and so no mode.
+    | StandardStream of role : FileDescriptorRole
+    /// The descriptor is a socket, on a flavour whose sockets have a mode that
+    /// `fchmod` changes. This kernel holds no such mode.
+    | Socket of socket : SocketId
+
+[<RequireQualifiedAccess>]
+module FChModRefusal =
+    /// What this kernel knows about why it will not answer. A client adds which
+    /// entry point asked, and with which descriptor.
+    let describe (refusal : FChModRefusal) : string =
+        match refusal with
+        | FChModRefusal.UnmeasuredModeChange (inode, refusal) ->
+            $"changing the mode of inode %O{inode}: %s{ModeChangeRefusal.describe refusal}"
+        | FChModRefusal.StandardStream role ->
+            $"the descriptor is standard stream %O{role}, which this kernel models as one end of a pipe. Measured on Linux, fchmod on a pipe end succeeds and changes the mode fstat then reports (0600 to 02750, say); unlike a pipe this kernel made, a standard stream has no inode here and so no mode to change, and answering success while changing nothing would be a lie the moment one is modelled."
+        | FChModRefusal.Socket socket ->
+            $"the descriptor is socket %O{socket}. Measured on Linux, fchmod on a socket of every domain and kind succeeds and changes the mode fstat then reports (0777 to 0600, say); this kernel holds no inode for a socket and so no mode to change, and answering success while changing nothing would be a lie the moment one is modelled."
+
 /// <summary>
 /// What <c>fstat(2)</c> reported.
 /// </summary>
@@ -437,14 +480,6 @@ module UnixPathResolution =
             let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
             let fifo = 0o010000
 
-            // Measured by pipe-syscalls.c and pipe-states.c, and
-            // held to the host by `TestPipeAgainstHost`. Neither flavour applies
-            // the umask: the bits are the same under umask 0 and 0777.
-            let permissions =
-                match flavour with
-                | SimulatedUnixFlavour.Linux -> 0o600
-                | SimulatedUnixFlavour.Darwin -> 0o660
-
             // Linux reports 0 always. Darwin reports the bytes held, through the
             // write end too -- but not once the read end has closed, when the
             // write end reports 0 while FIONREAD on a surviving read end would
@@ -479,7 +514,7 @@ module UnixPathResolution =
                     None
 
             {
-                Mode = fifo ||| permissions
+                Mode = fifo ||| PermissionBits.toInt pipe.Permissions
                 UserId = pipe.Owner.User
                 GroupId = pipe.Owner.Group
                 Size = size
@@ -501,6 +536,149 @@ module UnixPathResolution =
         | None ->
             failwith
                 $"UnixPathResolution.fstat: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink or rmdir removed a still-open file or directory; the open file description must keep it alive (this is a bug in this library)."
+
+    /// What `chmod` and `fchmod` do once they have reached `inode`, which is a
+    /// regular file or a directory this filesystem holds: EPERM changing
+    /// nothing, or the new bits with `ctime` moved.
+    let private changeModeOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (inode : InodeNumber)
+        (mode : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, InodeNumber * ModeChangeRefusal>
+        =
+        let entry =
+            match VirtualFileSystem.tryGet inode system.Machine.FileSystem with
+            | Some entry -> entry
+            | None ->
+                failwith
+                    $"UnixPathResolution.changeModeOf: inode %O{inode} is not in the filesystem, but a path or a descriptor resolved to it. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
+
+        let rule = SimulatedUnixPlatform.privilegedModeChange system.Machine.UnixPlatform
+
+        match PermissionBits.afterModeChange rule (Standing.toward system.Process.Credentials entry.Owner) mode with
+        | Error refusal -> Error (inode, refusal)
+        | Ok ModeChange.Forbidden -> Ok (SyscallAnswer.Failed UnixError.EPERM, system)
+        | Ok (ModeChange.Permitted bits) ->
+
+        let now = UnixMachineState.realtime system.Machine
+
+        Ok (
+            SyscallAnswer.Completed 0L,
+            { system with
+                Machine =
+                    { system.Machine with
+                        FileSystem = VirtualFileSystem.setPermissions inode bits now system.Machine.FileSystem
+                    }
+            }
+        )
+
+    /// `chmod(2)`: change the mode of the inode `path` names.
+    ///
+    /// `mode` is the raw mode word, of which only the low twelve bits are read;
+    /// see `PermissionBits.afterModeChange` for what the caller may set.
+    ///
+    /// A symbolic link in the final position is followed, so the link's target
+    /// changes and a dangling link is ENOENT. Every other failure but EPERM is
+    /// the path resolution's own.
+    ///
+    /// Refuses where the mode change has not been measured for this caller; see
+    /// `ChModRefusal`.
+    let chmod<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : UnixPath)
+        (mode : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, ChModRefusal>
+        =
+        // Measured on both platforms (`chmod-rules.c`): through a link to a
+        // file or a directory the target changes and the link does not;
+        // "d/" and "ld/" are the directory, "f/" and "lf/" ENOTDIR, a
+        // dangling link and an absent name ENOENT, a link to itself ELOOP,
+        // the empty path ENOENT and "f/under" ENOTDIR. Those are exactly what
+        // `Follow` with a demanded trailing separator answers.
+        match resolvePath SymlinkPolicy.Follow path system with
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Ok inode ->
+            changeModeOf inode mode system
+            |> Result.mapError ChModRefusal.UnmeasuredModeChange
+
+    /// `fchmod(2)`: change the mode of the inode `fd` names.
+    ///
+    /// `mode` is the raw mode word, as for `chmod`. The descriptor's access mode
+    /// plays no part: a descriptor open only for reading will do.
+    ///
+    /// A descriptor naming something other than a regular file or a directory
+    /// answers as its flavour does, which on Linux can be a refusal; see
+    /// `FChModRefusal`.
+    let fchmod<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (mode : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, FChModRefusal>
+        =
+        // Measured on both platforms (`chmod-rules.c`): a regular file open
+        // read-only, write-only and read-write, a directory, and a file whose
+        // last name has gone, all change; someone else's file is EPERM
+        // however it was opened; a closed descriptor and -1 are EBADF. The
+        // rest is per flavour: Linux changes the mode of a pipe end and of an
+        // AF_INET, AF_INET6 and AF_UNIX socket, stream or datagram, listening
+        // or not (fstat reports the new mode), and answers EOPNOTSUPP for an
+        // epoll instance; Darwin answers EINVAL for all of those and for a
+        // kqueue. A Linux pipe follows the same rule as a file, over every
+        // mode, for its owner in and out of its group, a non-owner in and out
+        // of it, and root; the change shows through both ends, and moves both
+        // ends' ctime and nothing else.
+        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+
+        match FileDescriptorRegistry.tryFindObject fd system.Process.FileDescriptors with
+        | None -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
+        | Some (OpenFileObject.File inode) ->
+            changeModeOf inode mode system
+            |> Result.mapError FChModRefusal.UnmeasuredModeChange
+        | Some OpenFileObject.AnonymousInode ->
+            match flavour with
+            | SimulatedUnixFlavour.Linux -> Ok (SyscallAnswer.Failed UnixError.EOPNOTSUPP, system)
+            | SimulatedUnixFlavour.Darwin -> Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
+        | Some (OpenFileObject.Socket socket) ->
+            match flavour with
+            | SimulatedUnixFlavour.Linux -> Error (FChModRefusal.Socket socket)
+            | SimulatedUnixFlavour.Darwin -> Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
+        | Some (OpenFileObject.StandardStream role) ->
+            match flavour with
+            | SimulatedUnixFlavour.Linux -> Error (FChModRefusal.StandardStream role)
+            | SimulatedUnixFlavour.Darwin -> Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
+        | Some (OpenFileObject.Pipe pipeId) ->
+            match flavour with
+            | SimulatedUnixFlavour.Darwin -> Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
+            | SimulatedUnixFlavour.Linux ->
+
+            let pipe = UnixMachineState.pipe pipeId system.Machine
+            let rule = SimulatedUnixPlatform.privilegedModeChange system.Machine.UnixPlatform
+
+            match PermissionBits.afterModeChange rule (Standing.toward system.Process.Credentials pipe.Owner) mode with
+            | Error refusal ->
+                failwith
+                    $"UnixPathResolution.fchmod: a Linux platform's mode-change rule refused a caller (%s{ModeChangeRefusal.describe refusal}), but Linux's rule answers every caller (this is a bug in this library)."
+            | Ok ModeChange.Forbidden -> Ok (SyscallAnswer.Failed UnixError.EPERM, system)
+            | Ok (ModeChange.Permitted bits) ->
+
+            let changed =
+                { pipe with
+                    Permissions = bits
+                    Times =
+                        { pipe.Times with
+                            StatusChange = UnixMachineState.realtime system.Machine
+                        }
+                }
+
+            Ok (
+                SyscallAnswer.Completed 0L,
+                { system with
+                    Machine =
+                        { system.Machine with
+                            Pipes = Map.add pipeId changed system.Machine.Pipes
+                        }
+                }
+            )
 
     /// `statfs(2)`: report the filesystem the inode `path` names is on.
     ///

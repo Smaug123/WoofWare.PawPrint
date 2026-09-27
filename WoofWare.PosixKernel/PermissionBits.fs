@@ -220,6 +220,52 @@ module SetIdChangeRefusal =
         | SetIdChangeRefusal.UnmeasuredDarwinTruncation (standing, bits) ->
             $"what Darwin does to the set-ID bits of a %O{bits} file truncated by a caller standing %A{standing} towards it has not been measured. %s{measured}"
 
+/// What a privileged caller's `chmod(2)` or `fchmod(2)` does to the mode it
+/// asks for.
+///
+/// An unprivileged caller's rule is the same on every modelled Unix, so it is
+/// not a parameter: see `PermissionBits.afterModeChange`.
+[<RequireQualifiedAccess>]
+type PrivilegedModeChange =
+    /// The inode gets exactly the twelve bits asked for, whether or not the
+    /// caller owns it and whether or not it is in the inode's group.
+    ///
+    /// This is Linux.
+    | SetsRequestedBits
+    /// What a privileged caller's mode change does has not been measured, so
+    /// `PermissionBits.afterModeChange` answers
+    /// `ModeChangeRefusal.UnmeasuredPrivilegedCaller` rather than guess.
+    ///
+    /// This is Darwin, where measuring it needs root.
+    | Unmeasured
+
+/// What `chmod(2)` or `fchmod(2)` does to one inode's mode, for one caller.
+[<RequireQualifiedAccess>]
+type ModeChange =
+    /// The caller may not change this inode's mode: it neither owns the inode
+    /// nor is privileged. The syscall answers `EPERM` and changes nothing.
+    | Forbidden
+    /// The inode's permission bits become `bits`, which need not be the bits
+    /// asked for.
+    | Permitted of bits : PermissionBits
+
+/// Why this library will not say what a `chmod(2)` or `fchmod(2)` does: the
+/// kernel's answer for that caller has not been measured.
+[<RequireQualifiedAccess>]
+type ModeChangeRefusal =
+    /// A privileged caller, under `PrivilegedModeChange.Unmeasured`, standing
+    /// as `standing` towards the inode and asking for `requested`.
+    | UnmeasuredPrivilegedCaller of standing : Standing * requested : PermissionBits
+
+[<RequireQualifiedAccess>]
+module ModeChangeRefusal =
+    /// What this library knows about why it will not answer. A client adds
+    /// which call it was answering and which inode it was.
+    let describe (refusal : ModeChangeRefusal) : string =
+        match refusal with
+        | ModeChangeRefusal.UnmeasuredPrivilegedCaller (standing, requested) ->
+            $"what Darwin's chmod does for a privileged caller, standing %A{standing} towards the inode and asking for %O{requested}, has not been measured. What has been measured: every unprivileged caller, owner or not, in the inode's group or not, over every mode. Measuring the privileged rows needs root on Darwin."
+
 [<RequireQualifiedAccess>]
 module PermissionBits =
     /// <summary>
@@ -384,6 +430,55 @@ module PermissionBits =
     let private setUserId : int = 0o4000
     let private setGroupId : int = 0o2000
     let private groupExecute : int = 0o0010
+
+    /// <summary>
+    /// What <c>chmod(2)</c> or <c>fchmod(2)</c>, asked for the raw mode word <c>mode</c> by a
+    /// caller standing as <c>standing</c> towards an inode, does to that inode's mode.
+    /// </summary>
+    /// <remarks>
+    /// Only the low twelve bits of <c>mode</c> are read; the rest are ignored rather than
+    /// rejected, so <c>0o170644</c> and <c>-1</c> are <c>0o0644</c> and <c>0o7777</c>.
+    ///
+    /// An unprivileged caller that does not own the inode gets <c>ModeChange.Forbidden</c>,
+    /// whatever it asks for and whether or not it is in the inode's group. One that owns it gets
+    /// every bit it asks for, except that <c>S_ISGID</c> is silently dropped when it is not in the
+    /// inode's group. That holds for directories as for regular files, and the sticky bit
+    /// is kept on a regular file.
+    ///
+    /// What a privileged caller gets is <c>rule</c>'s to say; see <c>PrivilegedModeChange</c>.
+    /// </remarks>
+    let afterModeChange
+        (rule : PrivilegedModeChange)
+        (standing : Standing)
+        (mode : int)
+        : Result<ModeChange, ModeChangeRefusal>
+        =
+        // Measured by `docs/plans/2026-08-23-posix-kernel-extraction/chmod-rules.c`,
+        // with no mismatch against this rule. Linux 6.18.5 (ext4 and tmpfs):
+        // all 4096 modes on a file and on a directory, for the owner in the
+        // inode's group by its effective gid and by a supplementary group,
+        // outside it, a non-owner in each of those three relations, and root
+        // owning or not, in the group or not. Every low word again under 21
+        // high halves from `0o10000` to `0xFFFFF000`, none of which was read.
+        // Darwin 27.0 at uid 501: the same sweeps for the owner in and out of
+        // the group; a non-owner in the group and out of it, on a file and a
+        // directory, asking for the mode the inode already had (EPERM).
+        let requested = parseOrFail "PermissionBits.afterModeChange" (mode &&& widest)
+
+        match standing.Privilege with
+        | CallerPrivilege.Privileged ->
+            match rule with
+            | PrivilegedModeChange.SetsRequestedBits -> Ok (ModeChange.Permitted requested)
+            | PrivilegedModeChange.Unmeasured ->
+                Error (ModeChangeRefusal.UnmeasuredPrivilegedCaller (standing, requested))
+        | CallerPrivilege.Unprivileged ->
+
+        if not standing.Owns then
+            Ok ModeChange.Forbidden
+        elif standing.InGroup then
+            Ok (ModeChange.Permitted requested)
+        else
+            Ok (ModeChange.Permitted (PermissionBits (toInt requested &&& ~~~setGroupId)))
 
     // When an unprivileged process changes a file's contents, Linux strips
     // `S_ISUID` whatever the execute bits say (`04644` becomes `00644`), and
