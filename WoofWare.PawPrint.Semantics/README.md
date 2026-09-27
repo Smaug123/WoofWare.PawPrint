@@ -39,12 +39,14 @@ What lives here:
 * `HardwareInstruction` — what a hardware-intrinsic placeholder's call to itself can raise when the
   JIT expands it into the instruction on a CPU that has it: `NullReferenceException` for a null
   address where the instruction touches memory, `ArgumentOutOfRangeException` where an immediate
-  operand is out of range, or unknown for the JIT's helper and special intrinsics. It is read from
-  the JIT's own tables (`hwintrinsiclist*.h`), which `HardwareIntrinsicTable.tsv` reproduces;
+  operand is out of range, `DivideByZeroException` or `OverflowException` from an x86 integer
+  divide, or unknown for the JIT's helper and special intrinsics. It is read from the JIT's own
+  tables (`hwintrinsiclist*.h`), which `HardwareIntrinsicTable.tsv` reproduces, and its mapping from
+  an intrinsic class to the table's instruction set (`lookupIsa`) is transcribed for Arm64 and x64.
   `TestHardwareInstruction` regenerates that table from the pinned runtime source and fails on a
-  difference, and on an arm64 host calls every instruction the CPU has with null and valid
-  addresses and every immediate value, and fails on any exception a contract leaves out. Only
-  Arm64's instruction sets are mapped so far.
+  difference; checks that every placeholder in the arm64 and linux-x64 CoreLibs has a row; and on an
+  arm64 or x64 host calls every instruction the CPU has with null, misaligned and valid addresses
+  and every immediate value, and fails on any exception a contract leaves out.
 * `VmSubstitution` — the IL CoreCLR's VM runs in place of CoreLib's body for each
   `System.Runtime.CompilerServices.Unsafe` method corelib.h binds, transcribed from
   `getILIntrinsicImplementationForUnsafe` (jitinterface.cpp). The interpreter runs a stub where it
