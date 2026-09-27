@@ -789,14 +789,15 @@ module NativeSystemNative =
 
     /// Drain `byteCount` bytes from a caller-supplied `byte*`: the mirror of
     /// `writeBytesThrough`, with the same room requirement and the same per-byte
-    /// walk.
+    /// walk. `Error` with the first undefined byte, which the caller uses and so must report
+    /// rather than send on.
     let internal readBytesThrough
         (ctx : NativeCallContext)
         (operation : string)
         (buffer : ManagedPointerSource)
         (byteCount : int)
         (state : IlMachineState)
-        : ImmutableArray<byte>
+        : Result<ImmutableArray<byte>, UndefinedValue>
         =
         requireBufferRoom ctx operation BufferTransfer.OutOf buffer byteCount state
 
@@ -805,7 +806,11 @@ module NativeSystemNative =
 
         let builder = ImmutableArray.CreateBuilder<byte> byteCount
 
-        for i = 0 to byteCount - 1 do
+        let rec readFrom (i : int) : Result<ImmutableArray<byte>, UndefinedValue> =
+            if i >= byteCount then
+                Ok (builder.MoveToImmutable ())
+            else
+
             let src = ManagedPointerByteView.addByteOffset state byteConcreteType i buffer
 
             let cell =
@@ -818,11 +823,13 @@ module NativeSystemNative =
             match cell with
             | CliType.Numeric (CliNumericType.UInt8 b) ->
                 builder.Add (UInt8Source.value $"%s{operation}: byte read at offset %d{i}" b)
+                readFrom (i + 1)
+            | CliType.Undefined u -> Error u
             | other ->
                 failwith
                     $"%s{operation}: byte read at offset %d{i} returned non-UInt8 cell %O{other} (this is an interpreter bug)"
 
-        builder.MoveToImmutable ()
+        readFrom 0
 
     /// The storage a buffer pointer names, for a pointer the C dereferences with
     /// no null check at all — `SystemNative_GetPort`'s `port` out-parameter, and
@@ -921,7 +928,7 @@ module NativeSystemNative =
         (platform : SimulatedUnixPlatform)
         (buffer : ManagedPointerSource)
         (state : IlMachineState)
-        : int
+        : Result<int, UndefinedValue>
         =
         let field = SimulatedUnixPlatform.sockaddrFamilyField platform
 
@@ -931,7 +938,7 @@ module NativeSystemNative =
             (bufferFieldAt ctx operation buffer (SockaddrFamilyField.offset field) state)
             (SockaddrFamilyField.width field)
             state
-        |> SimulatedUnixPlatform.decodeSockaddrFamily platform
+        |> Result.map (SimulatedUnixPlatform.decodeSockaddrFamily platform)
 
     /// `sockAddr->sa_family = (sa_family_t) value`, truncated to this platform's
     /// width exactly as the C's assignment through a `sa_family_t*` is. The
@@ -967,17 +974,18 @@ module NativeSystemNative =
     /// on Linux, because the stack below it is mapped -- so that is refused
     /// (`readBytesThrough`'s room check), as is any byte PawPrint cannot
     /// produce. Refusing is the honest answer to a question whose real one is
-    /// not a property of the program.
+    /// not a property of the program. `Error` with a byte nothing wrote: the
+    /// kernel is handed numbers, so an undefined byte has nothing it could be.
     let private copiedSockaddr
         (ctx : NativeCallContext)
         (operation : string)
         (socketAddress : BufferPointer)
         (length : int)
         (state : IlMachineState)
-        : ImmutableArray<byte>
+        : Result<ImmutableArray<byte>, UndefinedValue>
         =
         if length = 0 then
-            ImmutableArray.Empty
+            Ok ImmutableArray.Empty
         else
 
         match BufferPointer.dereferenceable socketAddress with
@@ -1239,13 +1247,13 @@ module NativeSystemNative =
         (parameter : string)
         (argument : CliType)
         (state : IlMachineState)
-        : PathArgumentBytes
+        : Result<PathArgumentBytes, UndefinedValue>
         =
         match
             bufferPointerArgument operation parameter argument
             |> BufferPointer.dereferenceable
         with
-        | None -> PathArgumentBytes.Unreadable
+        | None -> Ok PathArgumentBytes.Unreadable
         | Some pointer ->
 
         let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
@@ -1330,8 +1338,11 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
-        let source =
-            pathArgumentBytes ctx operation "oldPath" ctx.Instruction.Arguments.[0] state
+        match pathArgumentBytes ctx operation "oldPath" ctx.Instruction.Arguments.[0] state with
+        | Error u ->
+            NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the path it renames from" u
+            |> Some
+        | Ok source ->
 
         // `rename(2)` is `renameat(2)` from `AT_FDCWD` on both sides, in the
         // flavour's numbering: Linux's own `rename` syscall runs exactly that.
@@ -1344,9 +1355,11 @@ module NativeSystemNative =
         | Error refusal -> answer (Error refusal)
         | Ok (RenameProgress.Answered (syscallAnswer, system)) -> answer (Ok (syscallAnswer, system))
         | Ok (RenameProgress.NeedsDestination paused) ->
-            pathArgumentBytes ctx operation "newPath" ctx.Instruction.Arguments.[1] state
-            |> fun destination -> UnixNamespace.renameWithDestination destination paused
-            |> answer
+            match pathArgumentBytes ctx operation "newPath" ctx.Instruction.Arguments.[1] state with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the path it renames to" u
+                |> Some
+            | Ok destination -> UnixNamespace.renameWithDestination destination paused |> answer
 
     /// `SystemNative_Link`, whose two pathnames are read as `rename`'s are: the
     /// new one not until the kernel has resolved the source and reached the
@@ -1937,7 +1950,11 @@ module NativeSystemNative =
             let blobStorage = requireStorage operation "socketAddress" blob
             let familyStorage = requireStorage operation "addressFamily" familyOut
 
-            let platformFamily = readSockaddrFamily ctx operation platform blobStorage state
+            match readSockaddrFamily ctx operation platform blobStorage state with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the socket address's family" u
+                |> Some
+            | Ok platformFamily ->
 
             // A family the shim's switch has no case for is reported as
             // `AddressFamily_AF_UNKNOWN`, and the call still succeeds — upstream's
@@ -2061,7 +2078,13 @@ module NativeSystemNative =
             else
 
             let blobStorage = requireStorage operation "socketAddress" blob
-            let platformFamily = readSockaddrFamily ctx operation platform blobStorage state
+
+            match readSockaddrFamily ctx operation platform blobStorage state with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the socket address's family" u
+                |> Some
+            | Ok platformFamily ->
+
             let sizes = SocketShimPal.socketAddressSizes platform
 
             // `switch (sockAddr->sa_family)` over `AF_INET` and `AF_INET6`, on the
@@ -2087,13 +2110,18 @@ module NativeSystemNative =
 
             let portStorage = requireUnscreenedStorage operation "port" portOut
 
-            let bytes =
+            match
                 readBytesThrough
                     ctx
                     operation
                     (bufferFieldAt ctx operation blobStorage InternetSockaddr.port.Offset state)
                     2
                     state
+            with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the socket address's port" u
+                |> Some
+            | Ok bytes ->
 
             // `ntohs`: the port sits in the blob in network order and is reported
             // to the caller in the machine's own.
@@ -2132,7 +2160,13 @@ module NativeSystemNative =
             else
 
             let blobStorage = requireStorage operation "socketAddress" blob
-            let platformFamily = readSockaddrFamily ctx operation platform blobStorage state
+
+            match readSockaddrFamily ctx operation platform blobStorage state with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the socket address's family" u
+                |> Some
+            | Ok platformFamily ->
+
             let sizes = SocketShimPal.socketAddressSizes platform
 
             // `switch (sockAddr->sa_family)` over `AF_INET` and `AF_INET6`, on the
@@ -2202,22 +2236,30 @@ module NativeSystemNative =
 
             let blobStorage = requireStorage operation "socketAddress" blob
 
-            if
-                readSockaddrFamily ctx operation platform blobStorage state
-                <> SimulatedUnixPlatform.internetAddressFamily
-            then
+            match readSockaddrFamily ctx operation platform blobStorage state with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the socket address's family" u
+                |> Some
+            | Ok platformFamily ->
+
+            if platformFamily <> SimulatedUnixPlatform.internetAddressFamily then
                 complete (UnixErrorPal.toPal UnixError.EINVAL) state
             else
 
             // `*address = sin_addr.s_addr`, a whole-word copy with no `ntohl`:
             // both sides of this call hold the address in network order.
-            let bytes =
+            match
                 readBytesThrough
                     ctx
                     operation
                     (bufferFieldAt ctx operation blobStorage InternetSockaddr.address.Offset state)
                     4
                     state
+            with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the socket address's IPv4 address" u
+                |> Some
+            | Ok bytes ->
 
             writeBytesThrough ctx operation (requireStorage operation "address" addressOut) bytes state
             |> complete UnixErrorPal.palSuccess
@@ -2254,10 +2296,13 @@ module NativeSystemNative =
 
             let blobStorage = requireStorage operation "socketAddress" blob
 
-            if
-                readSockaddrFamily ctx operation platform blobStorage state
-                <> SimulatedUnixPlatform.internetAddressFamily
-            then
+            match readSockaddrFamily ctx operation platform blobStorage state with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the socket address's family" u
+                |> Some
+            | Ok platformFamily ->
+
+            if platformFamily <> SimulatedUnixPlatform.internetAddressFamily then
                 complete (UnixErrorPal.toPal UnixError.EINVAL) state
             else
 
@@ -2316,22 +2361,30 @@ module NativeSystemNative =
 
             let blobStorage = requireStorage operation "socketAddress" blob
 
-            if
-                readSockaddrFamily ctx operation platform blobStorage state
-                <> SimulatedUnixPlatform.internetV6AddressFamily platform
-            then
+            match readSockaddrFamily ctx operation platform blobStorage state with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the socket address's family" u
+                |> Some
+            | Ok platformFamily ->
+
+            if platformFamily <> SimulatedUnixPlatform.internetV6AddressFamily platform then
                 complete (UnixErrorPal.toPal UnixError.EINVAL) state
             else
 
             // `memcpy_s` of exactly `NUM_BYTES_IN_IPV6_ADDRESS`, whatever the
             // caller declared `addressLen` to be beyond that.
-            let addressBytes =
+            match
                 readBytesThrough
                     ctx
                     operation
                     (bufferFieldAt ctx operation blobStorage InternetV6Sockaddr.address.Offset state)
                     InternetV6Sockaddr.address.Width
                     state
+            with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the socket address's IPv6 address" u
+                |> Some
+            | Ok addressBytes ->
 
             let state =
                 writeBytesThrough ctx operation (requireStorage operation "address" addressOut) addressBytes state
@@ -2347,13 +2400,18 @@ module NativeSystemNative =
             // before it is read. Measured — a `fe80::` address aliased there
             // reports a scope of 33022 rather than the one that was set, on both
             // platforms alike.
-            let scopeIdBytes =
+            match
                 readBytesThrough
                     ctx
                     operation
                     (bufferFieldAt ctx operation blobStorage InternetV6Sockaddr.scopeId.Offset state)
                     4
                     state
+            with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the socket address's scope id" u
+                |> Some
+            | Ok scopeIdBytes ->
 
             state
             |> writeBytesThrough ctx operation (requireStorage operation "scopeId" scopeIdOut) scopeIdBytes
@@ -2398,10 +2456,13 @@ module NativeSystemNative =
 
             let blobStorage = requireStorage operation "socketAddress" blob
 
-            if
-                readSockaddrFamily ctx operation platform blobStorage state
-                <> SimulatedUnixPlatform.internetV6AddressFamily platform
-            then
+            match readSockaddrFamily ctx operation platform blobStorage state with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the socket address's family" u
+                |> Some
+            | Ok platformFamily ->
+
+            if platformFamily <> SimulatedUnixPlatform.internetV6AddressFamily platform then
                 complete (UnixErrorPal.toPal UnixError.EINVAL) state
             else
 
@@ -2420,7 +2481,7 @@ module NativeSystemNative =
 
             let addressBytes =
                 if oversizedAddress then
-                    ImmutableArray.CreateRange (Array.zeroCreate<byte> InternetV6Sockaddr.address.Width)
+                    Ok (ImmutableArray.CreateRange (Array.zeroCreate<byte> InternetV6Sockaddr.address.Width))
                 else
                     readBytesThrough
                         ctx
@@ -2428,6 +2489,12 @@ module NativeSystemNative =
                         (requireStorage operation "address" addressIn)
                         InternetV6Sockaddr.address.Width
                         state
+
+            match addressBytes with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the IPv6 address it copies in" u
+                |> Some
+            | Ok addressBytes ->
 
             let flowInfo = Array.zeroCreate<byte> 4
 
@@ -4243,7 +4310,11 @@ module NativeSystemNative =
                     failwith
                         $"%s{operation}: fd %d{fd}: the kernel asked for %d{count} bytes from a buffer that names no storage. Every such buffer is answered or refused by the admission (this is an interpreter bug)."
 
-            let bytes = readBytesThrough ctx operation source count state
+            match readBytesThrough ctx operation source count state with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the buffer it writes out" u
+                |> Some
+            | Ok bytes ->
 
             match UnixReadWrite.pwrite ctx.Thread fd bytes fileOffset state.Kernel.System with
             | Error refusal -> refused refusal
@@ -5080,8 +5151,14 @@ module NativeSystemNative =
                 match admission with
                 // `UnixSocket.bind` re-derives this answer. The kernel never
                 // touches the buffer on this path, so nothing is read.
-                | SockaddrCopyAdmission.Answered _ -> ImmutableArray.Empty
+                | SockaddrCopyAdmission.Answered _ -> Ok ImmutableArray.Empty
                 | SockaddrCopyAdmission.Transfer length -> copiedSockaddr ctx operation addressArgument length state
+
+            match copied with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the socket address it binds" u
+                |> Some
+            | Ok copied ->
 
             match
                 UnixSocket.bind
@@ -5521,12 +5598,18 @@ module NativeSystemNative =
                 failFromSyscall error state
             | Ok (SockaddrCopyAdmission.Transfer length) ->
 
+            match copiedSockaddr ctx operation addressArgument length state with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the socket address it connects to" u
+                |> Some
+            | Ok copied ->
+
             match
                 UnixConnection.connect
                     fd
                     (BufferPointer.toUserBuffer addressArgument)
                     (uint32 declaredLength)
-                    (copiedSockaddr ctx operation addressArgument length state)
+                    copied
                     state.Kernel.System
             with
             | Error (ConnectRefusal.Copy refusal) -> refuse refusal
@@ -5579,8 +5662,13 @@ module NativeSystemNative =
             // bad address is therefore the kernel's own EFAULT.
             let lengthCell = requireStorage operation "socketAddressLen" lengthArgument
 
-            let declaredLength =
-                BinaryPrimitives.ReadInt32LittleEndian ((readBytesThrough ctx operation lengthCell 4 state).AsSpan ())
+            match readBytesThrough ctx operation lengthCell 4 state with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the address length it reads" u
+                |> Some
+            | Ok lengthBytes ->
+
+            let declaredLength = BinaryPrimitives.ReadInt32LittleEndian (lengthBytes.AsSpan ())
 
             // The shim's own screen (`pal_networking.c:1853` and `:1873`), which
             // answers a negative length before it makes the syscall. The kernel never
@@ -7416,9 +7504,13 @@ module NativeSystemNative =
                     $"%s{operation}: thread %O{ctx.Thread} entered a socket wait while its task is parked in %A{other}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
             | None ->
 
-            let requestedCount =
-                let bytes = readBytesThrough ctx operation countCell 4 state
-                BinaryPrimitives.ReadInt32LittleEndian (bytes.AsSpan ())
+            match readBytesThrough ctx operation countCell 4 state with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the event count it reads" u
+                |> Some
+            | Ok countBytes ->
+
+            let requestedCount = BinaryPrimitives.ReadInt32LittleEndian (countBytes.AsSpan ())
 
             // A call `WaitForSocketEventsInner`'s loop makes again runs no
             // screen of the wrapper's: the syscall reads `*count` again, and
@@ -7740,30 +7832,30 @@ module NativeSystemNative =
             // converts.
             let entries : (int * int16) list =
                 match entriesStorage with
-                | None -> []
+                | None -> Ok []
                 | Some entriesStorage ->
 
                 requireBufferRoom ctx operation BufferTransfer.OutOf entriesStorage (int totalBytes) state
 
-                List.init
-                    (int eventCount)
-                    (fun i ->
-                        let fdBytes =
-                            readBytesThrough
-                                ctx
-                                operation
-                                (bufferFieldAt ctx operation entriesStorage (i * entryStride) state)
-                                4
-                                state
+                let readEntry (i : int) : Result<int * int16, UndefinedValue> =
+                    match
+                        readBytesThrough
+                            ctx
+                            operation
+                            (bufferFieldAt ctx operation entriesStorage (i * entryStride) state)
+                            4
+                            state
+                    with
+                    | Error u -> Error u
+                    | Ok fdBytes ->
 
-                        let eventsBytes =
-                            readBytesThrough
-                                ctx
-                                operation
-                                (bufferFieldAt ctx operation entriesStorage (i * entryStride + eventsOffset) state)
-                                2
-                                state
-
+                    readBytesThrough
+                        ctx
+                        operation
+                        (bufferFieldAt ctx operation entriesStorage (i * entryStride + eventsOffset) state)
+                        2
+                        state
+                    |> Result.map (fun eventsBytes ->
                         BinaryPrimitives.ReadInt32LittleEndian (fdBytes.AsSpan ()),
                         BinaryPrimitives.ReadInt16LittleEndian (eventsBytes.AsSpan ())
                     )

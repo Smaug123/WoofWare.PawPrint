@@ -39,8 +39,14 @@ module internal IntrinsicHelpers =
     val managedPointerOfPointerArgument : operation : string -> arg : EvalStackValue -> ManagedPointerSource
 
     /// Read one byte from a concrete CLI value, rejecting reference-like storage
-    /// with byte-addressability diagnostics.
-    val byteAtOffset : operation : string -> src : ManagedPointerSource -> byteOffset : int -> value : CliType -> byte
+    /// with byte-addressability diagnostics. `Error` with the byte as an undefined value when it
+    /// is undefined, for a caller that uses it.
+    val byteAtOffset :
+        operation : string ->
+        src : ManagedPointerSource ->
+        byteOffset : int ->
+        value : CliType ->
+            Result<byte, UndefinedValue>
 
     /// Check whether a candidate `SpanHelpers.SequenceEqual` method is the byte-wise overload
     /// implemented by PawPrint.
@@ -50,14 +56,15 @@ module internal IntrinsicHelpers =
             bool
 
     /// Execute PawPrint's byte-wise `SpanHelpers.SequenceEqual` intrinsic implementation,
-    /// comparing bytes through managed-pointer byte views and pushing a Boolean result.
+    /// comparing bytes through managed-pointer byte views and pushing a Boolean result. `Error`
+    /// with the first undefined byte the comparison reaches, which decides nothing.
     val spanHelpersSequenceEqual :
         baseClassTypes : BaseClassTypes<DumpedAssembly> ->
         currentThread : ThreadId ->
         advanceCaller : (IlMachineState -> IlMachineState) ->
         methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> ->
         state : IlMachineState ->
-            IlMachineState
+            Result<IlMachineState, UndefinedValue>
 
     /// Interpret an eval-stack value as a managed byref argument, treating guest null references
     /// as PawPrint's null managed-pointer source.
@@ -77,6 +84,7 @@ module internal IntrinsicHelpers =
 
     /// Execute `Span<T>.ToString` or `ReadOnlySpan<T>.ToString`, projecting character spans into
     /// managed strings and returning a deterministic summary string for non-character spans.
+    /// `Error` with an undefined field of the span, or an undefined character it would copy.
     val spanToString :
         loggerFactory : ILoggerFactory ->
         baseClassTypes : BaseClassTypes<DumpedAssembly> ->
@@ -84,17 +92,18 @@ module internal IntrinsicHelpers =
         advanceCaller : (IlMachineState -> IlMachineState) ->
         methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> ->
         state : IlMachineState ->
-            IlMachineState
+            Result<IlMachineState, UndefinedValue>
 
     /// Execute `MemoryExtensions.Equals(ReadOnlySpan<char>, ReadOnlySpan<char>, StringComparison)`
-    /// for the deterministic ordinal comparison modes PawPrint currently supports.
+    /// for the deterministic ordinal comparison modes PawPrint currently supports. `Error` with an
+    /// undefined field of either span, or an undefined character of either.
     val memoryExtensionsEquals :
         baseClassTypes : BaseClassTypes<DumpedAssembly> ->
         currentThread : ThreadId ->
         advanceCaller : (IlMachineState -> IlMachineState) ->
         methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> ->
         state : IlMachineState ->
-            IlMachineState
+            Result<IlMachineState, UndefinedValue>
 
     /// Pop `addr`, `value` and `size` from the evaluation stack and fill the block they describe,
     /// serving both the `initblk` opcode and the `Unsafe.InitBlock` / `Unsafe.InitBlockUnaligned`
