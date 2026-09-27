@@ -147,6 +147,8 @@ module TestBindingCount =
         | Hold of inode : int * directory : bool
         /// The last descriptor onto an inode closed.
         | Release of held : int
+        /// `chmod(2)`, which rewrites the inode but names nothing.
+        | Chmod of inode : int
 
     /// Which operations did something, rather than being skipped because the
     /// graph offered them nothing legal to do. Summed across a whole check, so
@@ -166,6 +168,7 @@ module TestBindingCount =
         | RenameDirectory
         | Forget
         | ForgetCascade
+        | Chmod
 
     let private opGen : Gen<Op> =
         let names = Gen.elements [ "a" ; "b" ; "c" ; "d" ; "e" ]
@@ -187,6 +190,7 @@ module TestBindingCount =
                 4, Gen.map3 (fun b d n -> Op.Rename (b, d, n)) index index names
                 4, Gen.map2 (fun i d -> Op.Hold (i, d)) index (Gen.elements [ false ; true ; true ])
                 3, Gen.map Op.Release index
+                1, Gen.map Op.Chmod index
             ]
 
     let private pick (xs : 'a list) (i : int) : 'a option =
@@ -462,6 +466,22 @@ module TestBindingCount =
             match pick candidates i with
             | None -> vfs, pinned
             | Some inode -> vfs, Set.add inode pinned
+        | Op.Chmod i ->
+            let candidates =
+                VirtualFileSystem.inodes vfs
+                |> Map.toList
+                |> List.choose (fun (inode, node) ->
+                    match node.Content with
+                    | InodeContent.Symlink _ -> None
+                    | InodeContent.RegularFile _
+                    | InodeContent.Directory _ -> Some inode
+                )
+
+            match pick candidates i with
+            | None -> vfs, pinned
+            | Some inode ->
+                record Reached.Chmod
+                VirtualFileSystem.setPermissions inode (PermissionBits.parseOrFail "test" 0o700) now vfs, pinned
         | Op.Release i ->
             match pick (Set.toList pinned) i with
             | None -> vfs, pinned
@@ -546,6 +566,7 @@ module TestBindingCount =
                 Reached.RenameDirectory
                 Reached.Forget
                 Reached.ForgetCascade
+                Reached.Chmod
             ]
             |> List.filter (fun r -> not (reached.ContainsKey r))
 
