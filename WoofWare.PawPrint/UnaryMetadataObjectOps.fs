@@ -167,6 +167,16 @@ module internal UnaryMetadataObjectOps =
                     $"TODO: newobj names a constructor of array type %O{arrayType} taking (%s{parameters}), which that type does not declare; CoreCLR raises MissingMethodException when it compiles the call"
 
         let count = ArrayConstructor.parameterCount ctor
+
+        match IlMachineStateExecution.undefinedAmongStackEntries thread 0 count state with
+        | Some undefined ->
+            IlMachineStateExecution.observeUndefinedInInstruction
+                "the lengths an array constructor allocates"
+                undefined
+                thread
+                state
+        | None ->
+
         let arguments = Array.zeroCreate<int> count
         let mutable s = state
 
@@ -551,23 +561,23 @@ module internal UnaryMetadataObjectOps =
             (state.TypeSystem._LoadedAssemblies.ByDefinitionName targetType.AssemblyFullName)
                 .TypeDefs.[targetType.Definition.Get]
 
-        match Boxing.tryUndefinedHasValue baseClassTypes typeHandle toBox state with
-        | Some u ->
-            IlMachineStateExecution.observeUndefinedInInstruction
-                "the hasValue field boxing a Nullable`1 decides by"
-                u
-                thread
-                state
-        | None ->
-
-        let toPush, state =
+        let boxed =
             if LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies defn then
                 // Boxing a value type: wrap it in a heap object and push an ObjectRef. A
                 // `Nullable<T>` boxes to null or to a boxed `T`; `boxValue` owns that rule.
                 Boxing.boxValue loggerFactory baseClassTypes typeHandle toBox state
             else
                 // Reference type: box is a no-op, value passes through unchanged
-                toBox, state
+                Ok (toBox, state)
+
+        match boxed with
+        | Error u ->
+            IlMachineStateExecution.observeUndefinedInInstruction
+                "the hasValue field boxing a Nullable`1 decides by"
+                u
+                thread
+                state
+        | Ok (toPush, state) ->
 
         state
         |> IlMachineState.pushToEvalStack' toPush thread

@@ -626,13 +626,15 @@ module NativeRuntimeFieldHandle =
     /// integer — with `Nullable::NormalizeBox` then turning a `Nullable<T>` box into null or a
     /// boxed `T`. `Boxing.boxValue` is that whole rule, shared with the `box` opcode. The pointer
     /// and function-pointer arms answer `NativeReflectionPointer.toObject`'s wrapper instead.
+    ///
+    /// `Error` with the undefined `hasValue` of a `Nullable<T>` cell, which decides the box.
     let private valueToReturn
         (ctx : NativeCallContext)
         (operation : string)
         (fieldTypeHandle : ConcreteTypeHandle)
         (cell : CliType)
         (state : IlMachineState)
-        : IlMachineState * CliType
+        : Result<IlMachineState * CliType, UndefinedValue>
         =
         match fieldTypeHandle with
         | ConcreteTypeHandle.Pointer _
@@ -640,7 +642,7 @@ module NativeRuntimeFieldHandle =
             let addr, state =
                 NativeReflectionPointer.toObject ctx fieldTypeHandle (EvalStackValue.ofCliType cell) state
 
-            state, CliType.ObjectRef (Some addr)
+            Ok (state, CliType.ObjectRef (Some addr))
         | ConcreteTypeHandle.Byref _ ->
             // A `ref` field lives only in a ref struct, which cannot be boxed, so no instance can
             // reach `FieldInfo.GetValue` with one.
@@ -652,19 +654,21 @@ module NativeRuntimeFieldHandle =
 
         if IlMachineState.isReferenceTypeHandle ctx.BaseClassTypes operation state fieldTypeHandle then
             match cell with
-            | CliType.ObjectRef _ -> state, cell
+            // An undefined reference is only moved into the result slot.
+            | CliType.ObjectRef _
+            | CliType.Undefined _ -> Ok (state, cell)
             | other ->
                 failwith
                     $"BUG: %s{operation}: the cell of a field of reference type %O{fieldTypeHandle} holds %O{other} rather than an object reference"
         else
 
-        let boxed, state =
+        match
             Boxing.boxValue ctx.LoggerFactory ctx.BaseClassTypes fieldTypeHandle (EvalStackValue.ofCliType cell) state
-
-        match boxed with
-        | EvalStackValue.ObjectRef addr -> state, CliType.ObjectRef (Some addr)
-        | EvalStackValue.NullObjectRef -> state, CliType.ObjectRef None
-        | other ->
+        with
+        | Error u -> Error u
+        | Ok (EvalStackValue.ObjectRef addr, state) -> Ok (state, CliType.ObjectRef (Some addr))
+        | Ok (EvalStackValue.NullObjectRef, state) -> Ok (state, CliType.ObjectRef None)
+        | Ok (other, _) ->
             failwith
                 $"BUG: %s{operation}: boxing the cell of a field of type %O{fieldTypeHandle} produced %O{other}, expected an object reference"
 
@@ -792,7 +796,14 @@ module NativeRuntimeFieldHandle =
                     AllocatedNonArrayObject.DereferenceFieldById fieldId (ManagedHeap.get target state.ManagedHeap),
                     state
 
-            let state, result = valueToReturn ctx operation fieldTypeHandle cell state
+            match valueToReturn ctx operation fieldTypeHandle cell state with
+            | Error u ->
+                NativeHandlerResult.undefinedRead
+                    ctx.Instruction.ExecutingMethod
+                    "the hasValue field boxing a Nullable`1 decides by"
+                    u
+                |> Some
+            | Ok (state, result) ->
 
             let resultPtr =
                 NativeCall.objectHandleOnStackTarget operation state "result" instruction.Arguments.[5]
