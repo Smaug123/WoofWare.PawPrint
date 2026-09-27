@@ -1,0 +1,82 @@
+RUN	uid=501 gid=20	base=/private/tmp/chmodp.JcnoTp
+HIGH-SWEEP	file	rows=86016	mismatches=0
+HIGH-SWEEP	dir	rows=86016	mismatches=0
+HIGH-ALL-ONES	file	chmod((mode_t)-1)	ok	after=7777
+SETUP	owner, group = egid	file gid=20
+STANDING-SWEEP	owner, group = egid	file	modes=4096	mismatches=0
+STANDING-SWEEP	owner, group = egid	dir	modes=4096	mismatches=0
+SETUP	owner, group = egid	file gid=20
+TIMES	owner, group = egid	file	chmod(different 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = egid	file	chmod(same 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = egid	file	chmod(02755 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = egid	file	fchmod(same 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = egid	dir	chmod(different 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = egid	dir	chmod(same 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = egid	dir	chmod(02755 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = egid	dir	fchmod(same 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+SETUP	owner, group = supplementary 12	file gid=12
+STANDING-SWEEP	owner, group = supplementary 12	file	modes=4096	mismatches=0
+STANDING-SWEEP	owner, group = supplementary 12	dir	modes=4096	mismatches=0
+SETUP	owner, group = supplementary 12	file gid=12
+TIMES	owner, group = supplementary 12	file	chmod(different 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = supplementary 12	file	chmod(same 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = supplementary 12	file	chmod(02755 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = supplementary 12	file	fchmod(same 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = supplementary 12	dir	chmod(different 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = supplementary 12	dir	chmod(same 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = supplementary 12	dir	chmod(02755 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+TIMES	owner, group = supplementary 12	dir	fchmod(same 2755)	ok	after=2755	atime=kept mtime=kept ctime=moved
+SETUP	owner, group not a member (wheel)	file gid=0
+STANDING-SWEEP	owner, group not a member (wheel)	file	modes=4096	mismatches=0
+STANDING-SWEEP	owner, group not a member (wheel)	dir	modes=4096	mismatches=0
+SETUP	owner, group not a member (wheel)	file gid=0
+TIMES	owner, group not a member (wheel)	file	chmod(different 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	owner, group not a member (wheel)	file	chmod(same 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	owner, group not a member (wheel)	file	chmod(02755 2755)	ok	after=0755	atime=kept mtime=kept ctime=moved
+TIMES	owner, group not a member (wheel)	file	fchmod(same 0755)	ok	after=0755	atime=kept mtime=kept ctime=moved
+TIMES	owner, group not a member (wheel)	dir	chmod(different 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	owner, group not a member (wheel)	dir	chmod(same 0644)	ok	after=0644	atime=kept mtime=kept ctime=moved
+TIMES	owner, group not a member (wheel)	dir	chmod(02755 2755)	ok	after=0755	atime=kept mtime=kept ctime=moved
+TIMES	owner, group not a member (wheel)	dir	fchmod(same 0755)	ok	after=0755	atime=kept mtime=kept ctime=moved
+FOREIGN	non-owner, group = egid	/Users/steam/.DS_Store	uid=503 gid=20	chmod(current 0644)	EPERM	atime=kept mtime=kept ctime=kept
+FOREIGN	non-owner, group = egid	/Users/steam/.DS_Store	fchmod(current 0644)	EPERM
+FOREIGN	non-owner, group = egid	/Users/steam	uid=503 gid=20	chmod(current 0755)	EPERM	atime=kept mtime=kept ctime=kept
+FOREIGN	non-owner, group = egid	/Users/steam	fchmod(current 0755)	EPERM
+FOREIGN	non-owner, group not a member	/etc/hosts	uid=0 gid=0	chmod(current 0644)	EPERM	atime=kept mtime=kept ctime=kept
+FOREIGN	non-owner, group not a member	/etc/hosts	fchmod(current 0644)	EPERM
+FOREIGN	non-owner, group not a member	/private/tmp	uid=0 gid=0	chmod(current 1777)	EPERM	atime=kept mtime=kept ctime=kept
+FOREIGN	non-owner, group not a member	/private/tmp	fchmod(current 1777)	EPERM
+PATH	a link to a file: the target changes	chmod(0640)	ok	paths/f: 0600 -> 0640
+PATH	the link itself	mode 0755 -> 0755	atime=kept mtime=kept ctime=kept
+PATH	the target	atime=kept mtime=kept ctime=moved
+PATH	a link to a directory	chmod(0750)	ok	paths/d: 0700 -> 0750
+PATH	a link to a directory, trailing separator	chmod(0755)	ok	paths/d: 0750 -> 0755
+PATH	a directory, trailing separator	chmod(0700)	ok	paths/d: 0755 -> 0700
+PATH	a file, trailing separator	chmod(0644)	ENOTDIR	paths/f: 0640 -> 0640
+PATH	a link to a file, trailing separator	chmod(0644)	ENOTDIR	paths/f: 0640 -> 0640
+PATH	a dangling link	chmod(0644)	ENOENT
+PATH	a link to itself	chmod(0644)	ELOOP
+PATH	an absent name	chmod(0644)	ENOENT
+PATH	the empty path	chmod(0644)	ENOENT
+PATH	a file as a directory	chmod(0644)	ENOTDIR
+FCHMOD	a file open O_RDONLY	fchmod(0640)	ok	st_mode 0100600 -> 0100640
+FCHMOD	a file open O_WRONLY	fchmod(0600)	ok	st_mode 0100640 -> 0100600
+FCHMOD	a file open O_RDWR	fchmod(0644)	ok	st_mode 0100600 -> 0100644
+FCHMOD	a directory	fchmod(0750)	ok	st_mode 040755 -> 040750
+FCHMOD	an unlinked file	fchmod(0400)	ok	st_mode 0100644 -> 0100400
+FCHMOD	a file someone else owns, open O_RDONLY, to its own mode	fchmod(0644)	EPERM	st_mode 0100644 -> 0100644
+FCHMOD	a closed descriptor	fchmod(0644)	EBADF
+FCHMOD	descriptor -1	fchmod(0644)	EBADF
+FCHMOD	a pipe's read end	fchmod(0600)	EINVAL	st_mode 010660 -> 010660
+FCHMOD	a pipe's write end	fchmod(2750)	EINVAL	st_mode 010660 -> 010660
+FCHMOD	an AF_INET stream socket	fchmod(0600)	EINVAL	st_mode 0140666 -> 0140666
+FCHMOD	an AF_INET stream socket	fchmod(2750)	EINVAL	st_mode 0140666 -> 0140666
+FCHMOD	an AF_INET datagram socket	fchmod(0600)	EINVAL	st_mode 0140666 -> 0140666
+FCHMOD	an AF_INET datagram socket	fchmod(2750)	EINVAL	st_mode 0140666 -> 0140666
+FCHMOD	an AF_INET6 stream socket	fchmod(0600)	EINVAL	st_mode 0140666 -> 0140666
+FCHMOD	an AF_INET6 stream socket	fchmod(2750)	EINVAL	st_mode 0140666 -> 0140666
+FCHMOD	an AF_UNIX stream socket	fchmod(0600)	EINVAL	st_mode 0140666 -> 0140666
+FCHMOD	an AF_UNIX stream socket	fchmod(2750)	EINVAL	st_mode 0140666 -> 0140666
+FCHMOD	a listening AF_INET socket	fchmod(0600)	EINVAL	st_mode 0140666 -> 0140666
+FCHMOD	a kqueue	fchmod(0600)	EINVAL	st_mode 010000 -> 010000
+FCHMOD	a kqueue	fchmod(0644)	EINVAL	st_mode 010000 -> 010000
