@@ -623,6 +623,12 @@ int main(int argc, char **argv) {
         fprintf(stderr, "usage: %s <scratch directory under /private/tmp>\n", argv[0]);
         return 2;
     }
+    // The sticky and control rows point at real system objects and rely on
+    // this caller being unable to remove them. Root could, so refuse it.
+    if (geteuid() == 0 || getuid() == 0) {
+        fprintf(stderr, "refusing to run as root: the Darwin rows touch real system files that only an ordinary user cannot remove\n");
+        return 2;
+    }
     snprintf(base, sizeof base, "%s", argv[1]);
     p("# permission-standing: uid=%u egid=%u base=%s\n", (unsigned)getuid(), (unsigned)getegid(), base);
 
@@ -686,7 +692,9 @@ int main(int argc, char **argv) {
         closedir(d);
     }
     describe("unwritable sticky dir", uw);
-    if (victim[0]) {
+    // Belt and braces beside the root check: only if this caller really may
+    // not write the directory, so no row below can remove or move the entry.
+    if (victim[0] && access(uw, W_OK) != 0) {
         describe("its entry", victim);
         row("unlink(entry of an unwritable sticky dir)", R(unlink(victim)));
         row("rmdir(entry of an unwritable sticky dir)", R(rmdir(victim)));
@@ -708,6 +716,8 @@ int main(int argc, char **argv) {
         while ((de = readdir(fdd))) if (strcmp(de->d_name, ".") && strcmp(de->d_name, "..")) { nonempty = 1; break; }
         closedir(fdd);
     }
+    // unlink(2) of a directory is refused on Darwin whoever asks, and rmdir
+    // below only runs on a directory seen to hold an entry.
     row("unlink(foreign dir in a writable sticky dir)", R(unlink(fd_)));
     if (nonempty) row("rmdir(foreign non-empty dir in a writable sticky dir)", R(rmdir(fd_)));
     else p("SKIPPED\trmdir: %s is empty or unreadable\n", fd_);
@@ -724,7 +734,10 @@ int main(int argc, char **argv) {
     // Control: an unwritable directory that is not sticky.
     describe("unwritable plain dir", "/private/etc");
     describe("its entry", "/private/etc/hosts");
-    row("unlink(/private/etc/hosts: unwritable plain dir)", R(unlink("/private/etc/hosts")));
+    if (access("/private/etc", W_OK) != 0)
+        row("unlink(/private/etc/hosts: unwritable plain dir)", R(unlink("/private/etc/hosts")));
+    else
+        p("SKIPPED\t/private/etc is writable by this caller\n");
     // Tidy what survived.
     unlink(l1); unlink(l2); unlink(l1b); unlink(x); unlink(ownl); rmdir(own); rmdir(myd); unlink(myf);
     rmdir(mine); rmdir(wheel);
