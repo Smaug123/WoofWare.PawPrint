@@ -6,16 +6,6 @@ type MemoryBlockInitialization =
     | ZeroInitialized
     | Uninitialized
 
-/// The bytes of a range of a block, as a read of a typed value needs them.
-[<RequireQualifiedAccess>]
-type BlockBytes =
-    /// Every byte has content: it was written, or the block was zero-initialised. A byte may
-    /// name a native int rather than hold a number (see `UInt8Source`).
-    | Defined of UInt8Source[]
-    /// At least one byte is undefined: nothing ever wrote it, or what was written there was
-    /// itself undefined. Every other byte is a number.
-    | SomeUndefined of ValueByte[]
-
 /// Frame-owned typed-cell storage for `localloc`: one block per `localloc`, keyed by
 /// `StackMemoryBlockId`, living in the owning method frame.
 ///
@@ -118,7 +108,7 @@ module StackMemoryPool =
     /// `memory`. Refuses a range holding an undefined byte alongside one with no number. Fails if
     /// `memory` does not name a localloc block.
     val readValueBytes :
-        memory : UninitialisedMemory -> offset : int -> count : int -> pool : StackMemoryPool -> BlockBytes
+        memory : UninitialisedMemory -> offset : int -> count : int -> pool : StackMemoryPool -> ImageBytes
 
     /// Overwrite the `bytes.Length` bytes at `offset`.
     ///
@@ -201,7 +191,7 @@ module NativeMemoryPool =
     /// As for the stack pool: the bytes, or each byte as a number or undefined. A byte nothing
     /// wrote descends from its own offset in `blockId`.
     val readValueBytes :
-        blockId : NativeMemoryBlockId -> offset : int -> count : int -> pool : NativeMemoryPool -> BlockBytes
+        blockId : NativeMemoryBlockId -> offset : int -> count : int -> pool : NativeMemoryPool -> ImageBytes
 
     /// Overwrite the `bytes.Length` bytes at `offset`. As for the stack pool, this evicts
     /// nothing: a byte inside a byte-addressable cell edits that cell in place, a byte
