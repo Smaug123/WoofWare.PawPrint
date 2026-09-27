@@ -290,6 +290,8 @@ module TestWakeCondition =
                 {
                     Port = locker
                     MaxEvents = 1
+                    Buffer = UserBuffer.Mapped
+                    Deadline = None
                 }
         ]
         |> List.collect (WakeCondition.ofPark >> WakeCondition.deadlines)

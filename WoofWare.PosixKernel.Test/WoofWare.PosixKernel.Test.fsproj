@@ -97,6 +97,8 @@
     <Compile Include="TestSocketWait.fs" />
     <Compile Include="TestDatagramDissolve.fs" />
     <Compile Include="TestEpollCtl.fs" />
+    <Compile Include="TestEpollCreate1.fs" />
+    <Compile Include="TestEpollWait.fs" />
     <Compile Include="TestPipeBuffer.fs" />
     <Compile Include="TestPipeBufferCorpus.fs" />
     <Compile Include="TestPipeBufferAgainstHost.fs" />

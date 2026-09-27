@@ -175,7 +175,14 @@ module WakeCondition =
         match parked with
         | ParkedSyscall.Flock parked ->
             WakeCondition.Primitive (WakePrimitive.FlockGrantable (parked.Requester, parked.Mode))
-        | ParkedSyscall.SocketWait wait -> WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable wait.Port)
+        | ParkedSyscall.SocketWait wait ->
+            let deliverable =
+                WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable wait.Port)
+
+            match wait.Deadline with
+            | None -> deliverable
+            | Some deadline ->
+                WakeCondition.AnyOf (deliverable, [ WakeCondition.Primitive (WakePrimitive.DeadlinePassed deadline) ])
         | ParkedSyscall.Poll poll ->
             let watched =
                 poll.Entries

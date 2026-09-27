@@ -1,17 +1,5 @@
 namespace WoofWare.PosixKernel
 
-/// A sweep this library will not answer, because which of the waiters it would
-/// wake is unmodelled.
-[<RequireQualifiedAccess>]
-type WakeRefusal<'Task> =
-    /// Several tasks are parked in a wait on the socket event port `port`,
-    /// which now has a deliverable event.
-    ///
-    /// A real kernel queues such waiters exclusively and wakes exactly one of
-    /// them, chosen by park order. This library records park order but has not
-    /// measured which end of the queue wakes.
-    | ExclusiveWaiters of port : OpenFileDescriptionId * waiters : 'Task list
-
 /// Parking a task in a syscall, and deciding which parked tasks a system wakes.
 ///
 /// Wakes are pulled rather than pushed: nothing that makes a condition true
@@ -55,16 +43,22 @@ module UnixWait =
     /// Every one must be parked. A task the client has woken keeps its park
     /// until its call finishes, so the parks alone cannot say who is asleep.
     ///
-    /// Every waiter whose condition holds wakes, except where a real kernel
-    /// would wake only one of several, which is refused rather than answered.
+    /// A waiter whose `flock` has become grantable, whose polled descriptor is
+    /// ready, or whose deadline has passed wakes, whoever else is waiting for
+    /// the same thing. A deliverable event on a socket event port wakes one of
+    /// the waiters on that port: the one that parked last. It wakes none of
+    /// them while any task parked on that port has been woken and has not yet
+    /// finished its call (that is, is parked but not in `asleep`), since that
+    /// task will take the event.
+    ///
     /// A woken task is owed no success: several waiters for one lock all wake,
     /// and all but one find it taken again and re-park.
     let wakes<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (asleep : Set<'Task>)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<('Task * Set<WakePrimitive>) list, WakeRefusal<'Task>>
+        : ('Task * Set<WakePrimitive>) list
         =
-        let woken =
+        let satisfied =
             asleep
             |> Set.toList
             |> List.choose (fun task ->
@@ -82,35 +76,83 @@ module UnixWait =
             )
             |> List.sortBy (fun (ordinal, _, _) -> ordinal)
 
-        // `epoll_wait` queues its waiters exclusively, so one event wakes one of
-        // them. Waiters on an `flock` are the opposite, deliberately: a release
-        // wakes every blocker and they race, as `flock(2)` does, and which of them
-        // wins is not observable from userspace on any platform. Waking them all
-        // does not invent a winner; it leaves the choice to the client's
-        // scheduler. Several tasks really can share one lock condition, because a
-        // lock belongs to the open file description: two tasks blocking through
-        // one shared descriptor for the same mode wait for the same primitive.
-        // A `poll` queues itself on each description it watches non-exclusively,
-        // so every poller of a description that becomes ready wakes.
-        let exclusive =
-            woken
-            |> List.collect (fun (_, task, fired) ->
+        // Measured on Linux 6.18.5 (`epoll-wait.c`, section F): `epoll_wait`
+        // queues its waiters exclusively at the *front* of the port's wait
+        // queue, so each signal wakes exactly one of them, the one that parked
+        // last; three threads parked in any order returned in the reverse of
+        // it, one per datagram, in 60 trials of 60, and a thread that waited
+        // again went back to the front every time.
+        //
+        // A real kernel wakes one waiter per *signal*, and this sweep sees only
+        // states, so it cannot tell a second signal from the first one seen
+        // again. So a woken waiter that has yet to finish stands for every
+        // signal since it was woken, and nobody else on its port wakes until it
+        // has taken the events or parked again. Where a real second signal
+        // would have woken another waiter, whichever of the two ran first would
+        // have taken the events; this answers the schedule in which the first
+        // one ran first. Every answer is one a real kernel gives, and the
+        // schedules in which the second waiter runs first are not reached.
+        //
+        // Waiters on an `flock` are the opposite, deliberately: a release
+        // wakes every blocker and they race, as `flock(2)` does, and which of
+        // them wins is not observable from userspace on any platform. Waking
+        // them all does not invent a winner; it leaves the choice to the
+        // client's scheduler. A `poll` queues itself on each description it
+        // watches non-exclusively, so every poller of a description that
+        // becomes ready wakes; and a deadline is each waiter's own.
+        let finishing : Set<OpenFileDescriptionId> =
+            system.Tasks
+            |> Map.toSeq
+            |> Seq.choose (fun (task, state) ->
+                if Set.contains task asleep then
+                    None
+                else
+                    match state.Parked with
+                    | Some {
+                               Syscall = ParkedSyscall.SocketWait wait
+                           } -> Some wait.Port
+                    | Some {
+                               Syscall = ParkedSyscall.Flock _ | ParkedSyscall.Poll _
+                           }
+                    | None -> None
+            )
+            |> Set.ofSeq
+
+        let chosen : Map<OpenFileDescriptionId, 'Task> =
+            satisfied
+            |> List.collect (fun (ordinal, task, fired) ->
                 fired
                 |> Set.toList
                 |> List.choose (fun primitive ->
                     match primitive with
-                    | WakePrimitive.SocketEventDeliverable port -> Some (port, task)
+                    | WakePrimitive.SocketEventDeliverable port -> Some (port, (ordinal, task))
                     | WakePrimitive.FlockGrantable _
                     | WakePrimitive.DescriptorReady _
                     | WakePrimitive.DeadlinePassed _ -> None
                 )
             )
             |> List.groupBy fst
-            |> List.tryFind (fun (_, waiters) -> List.length waiters > 1)
+            |> List.choose (fun (port, waiters) ->
+                if Set.contains port finishing then
+                    None
+                else
+                    let _, (_, last) = waiters |> List.maxBy (fun (_, (ordinal, _)) -> ordinal)
+                    Some (port, last)
+            )
+            |> Map.ofList
 
-        match exclusive with
-        | Some (port, waiters) -> Error (WakeRefusal.ExclusiveWaiters (port, List.map snd waiters))
-        | None -> woken |> List.map (fun (_, task, fired) -> task, fired) |> Ok
+        satisfied
+        |> List.filter (fun (_, task, fired) ->
+            fired
+            |> Set.exists (fun primitive ->
+                match primitive with
+                | WakePrimitive.SocketEventDeliverable port -> Map.tryFind port chosen = Some task
+                | WakePrimitive.FlockGrantable _
+                | WakePrimitive.DescriptorReady _
+                | WakePrimitive.DeadlinePassed _ -> true
+            )
+        )
+        |> List.map (fun (_, task, fired) -> task, fired)
 
     /// Every deadline the parks of `asleep` are waiting for, in nanoseconds since
     /// boot, with a repeat for each park that waits for it.
