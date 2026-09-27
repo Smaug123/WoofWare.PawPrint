@@ -483,6 +483,16 @@ module TestInodeLifetime =
         let kernel = kernelAtRoot ()
         let fd, inner, kernel = openedDirectory kernel
 
+        // Emptied first, since `rmdir` refuses a populated directory.
+        let kernel =
+            [ "a" ; "b" ]
+            |> List.fold
+                (fun kernel entry ->
+                    let inode, kernel = unbound "/outer/inner" entry kernel
+                    UnixDescriptor.forgetIfUnheld inode kernel
+                )
+                kernel
+
         // `rmdir /outer/inner`, which succeeds against a real kernel because the
         // descriptor is not a name.
         let removed, kernel = unbound "/outer" "inner" kernel
@@ -497,6 +507,7 @@ module TestInodeLifetime =
         let kernel = closed fd kernel
 
         contains inner kernel |> shouldEqual false
+        UnixSystem.checkInvariants kernel |> shouldEqual []
 
     [<Test>]
     let ``checkInvariants rejects a descriptor naming an inode the filesystem has forgotten`` () : unit =
