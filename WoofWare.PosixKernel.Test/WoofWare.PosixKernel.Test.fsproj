@@ -93,6 +93,7 @@
     <Compile Include="TestSocketSyscall.fs" />
     <Compile Include="TestSocketSyscallAgainstHost.fs" />
     <Compile Include="TestAccept.fs" />
+    <Compile Include="TestBlockingAccept.fs" />
     <Compile Include="TestBind.fs" />
     <Compile Include="TestSockOpt.fs" />
     <Compile Include="TestSockOptAgainstHost.fs" />

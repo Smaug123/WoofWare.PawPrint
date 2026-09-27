@@ -43,6 +43,13 @@ type WakePrimitive =
     /// `POLLERR` and `POLLHUP` a poll reports unasked. It never waits on a
     /// socket event port, whose level is not modelled.
     | DescriptorReady of description : OpenFileDescriptionId * conditions : uint32
+    /// The listening socket the open file description `listener` names holds a
+    /// completed connection in its accept queue.
+    ///
+    /// What a blocking `accept(2)` waits for. `listener` is the description
+    /// rather than the socket, as for the other primitives: it is what the call
+    /// holds, and what `close` refuses to destroy under it.
+    | AcceptQueueNonEmpty of listener : OpenFileDescriptionId
     /// The machine's monotonic clock (`UnixMachineState.NanosecondsSinceBoot`)
     /// has reached `nanosecondsSinceBoot`.
     ///
@@ -104,6 +111,30 @@ module WakeCondition =
                     $"WakeCondition.satisfied: open file description %O{description} is not in the table, so a task waiting for it to become ready has had it closed underneath it. This library's table models no reference from a waiter to what it waits on, so a client that parks must refuse such a close (as `close` does for a descriptor a parked poll watches)."
 
             LinuxReadiness.ofDescription description system &&& conditions <> 0u
+        | WakePrimitive.AcceptQueueNonEmpty listener ->
+            match
+                FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+                |> Map.tryFind listener
+            with
+            | None ->
+                failwith
+                    $"WakeCondition.satisfied: open file description %O{listener} is not in the table, so a task parked in an accept on it has had it closed underneath it. This library's table models no reference from a waiter to what it waits on, so a client that parks must refuse such a close (as `close` does for a listener a parked accept waits on)."
+            | Some description ->
+
+            match description.Target with
+            | OpenFileTarget.Socket socketId ->
+                match (UnixMachineState.socket socketId system.Machine).Phase with
+                | SocketPhase.Listening listenState -> not (List.isEmpty listenState.Queue)
+                | phase ->
+                    failwith
+                        $"WakeCondition.satisfied: a task is parked in an accept on socket %O{socketId}, which is in %A{phase} rather than listening. Nothing takes a live listener out of listening, so the park was recorded on a socket that was never one (this is a bug in the caller that recorded it)."
+            | OpenFileTarget.StandardStream _
+            | OpenFileTarget.File _
+            | OpenFileTarget.Directory _
+            | OpenFileTarget.Pipe _
+            | OpenFileTarget.SocketEventPort _ ->
+                failwith
+                    $"WakeCondition.satisfied: a task is parked in an accept on open file description %O{listener}, which names %A{description.Target} rather than a socket (this is a bug in the caller that recorded it)."
         | WakePrimitive.DeadlinePassed deadline -> system.Machine.NanosecondsSinceBoot >= deadline
 
     /// The primitives of `condition` which hold of `system`: empty exactly when
@@ -155,7 +186,8 @@ module WakeCondition =
         | WakeCondition.Primitive (WakePrimitive.DeadlinePassed deadline) -> [ deadline ]
         | WakeCondition.Primitive (WakePrimitive.FlockGrantable _)
         | WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable _)
-        | WakeCondition.Primitive (WakePrimitive.DescriptorReady _) -> []
+        | WakeCondition.Primitive (WakePrimitive.DescriptorReady _)
+        | WakeCondition.Primitive (WakePrimitive.AcceptQueueNonEmpty _) -> []
         | WakeCondition.AnyOf (first, rest) -> deadlines first @ List.collect deadlines rest
 
     /// What the task holding `parked` is waiting for.
@@ -207,6 +239,10 @@ module WakeCondition =
                     $"WakeCondition.ofPark: a parked poll with entries %A{poll.Entries} watches no descriptor and has no deadline, so nothing but a signal could end it, and this library parks no such poll (this is a bug in the caller that recorded it)."
             | [ only ] -> only
             | first :: rest -> WakeCondition.AnyOf (first, rest)
+        | ParkedSyscall.Accept accept ->
+            // No deadline: `SO_RCVTIMEO`, which bounds a Linux accept, is an
+            // option `setsockopt` refuses to set.
+            WakeCondition.Primitive (WakePrimitive.AcceptQueueNonEmpty accept.Listener)
 
 /// What became of a request this kernel could answer, where "answer" may be
 /// "the calling task sleeps".

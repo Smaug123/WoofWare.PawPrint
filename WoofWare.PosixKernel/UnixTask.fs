@@ -103,6 +103,31 @@ type ParkedPoll =
         Deadline : int64 option
     }
 
+/// One task's in-flight blocking `accept(2)`: the listening socket it waits on
+/// for a connection, and where the connection's peer address goes when one
+/// arrives.
+type ParkedAccept =
+    {
+        /// The open file description of the listening socket the call was made
+        /// through.
+        ///
+        /// Held by description rather than by descriptor: a `dup` of the
+        /// descriptor names the same listener, and under Linux the descriptor
+        /// the call came through can be closed while it sleeps.
+        Listener : OpenFileDescriptionId
+        /// Where the peer address is to be copied out to, as the caller
+        /// classified it when the call was entered.
+        Destination : UserBuffer
+        /// How many bytes of the peer address the caller's length cell allows
+        /// to be written.
+        ///
+        /// This is the length the call was entered with. Darwin reads the
+        /// caller's cell then; Linux reads it only when it copies the address
+        /// out, after the wait, so under Linux this is right for a caller whose
+        /// cell nothing writes while the call sleeps.
+        DeclaredLength : int
+    }
+
 /// <summary>
 /// The syscall a task is blocked in, if it is blocked in one.
 /// </summary>
@@ -120,6 +145,7 @@ type ParkedSyscall =
     | SocketWait of ParkedSocketWait
     | Flock of ParkedFlock
     | Poll of ParkedPoll
+    | Accept of ParkedAccept
 
 /// Where one park stands in the order every park on this machine was made in.
 ///
@@ -292,10 +318,13 @@ module UnixTaskTable =
             | None, _
             | Some (ParkedSyscall.SocketWait _), ParkedSyscall.SocketWait _
             | Some (ParkedSyscall.Flock _), ParkedSyscall.Flock _
-            | Some (ParkedSyscall.Poll _), ParkedSyscall.Poll _ -> true
-            | Some (ParkedSyscall.SocketWait _), (ParkedSyscall.Flock _ | ParkedSyscall.Poll _)
-            | Some (ParkedSyscall.Flock _), (ParkedSyscall.SocketWait _ | ParkedSyscall.Poll _)
-            | Some (ParkedSyscall.Poll _), (ParkedSyscall.SocketWait _ | ParkedSyscall.Flock _) -> false
+            | Some (ParkedSyscall.Poll _), ParkedSyscall.Poll _
+            | Some (ParkedSyscall.Accept _), ParkedSyscall.Accept _ -> true
+            | Some (ParkedSyscall.SocketWait _), (ParkedSyscall.Flock _ | ParkedSyscall.Poll _ | ParkedSyscall.Accept _)
+            | Some (ParkedSyscall.Flock _), (ParkedSyscall.SocketWait _ | ParkedSyscall.Poll _ | ParkedSyscall.Accept _)
+            | Some (ParkedSyscall.Poll _), (ParkedSyscall.SocketWait _ | ParkedSyscall.Flock _ | ParkedSyscall.Accept _)
+            | Some (ParkedSyscall.Accept _), (ParkedSyscall.SocketWait _ | ParkedSyscall.Flock _ | ParkedSyscall.Poll _) ->
+                false
 
         if not sameSyscall then
             failwith

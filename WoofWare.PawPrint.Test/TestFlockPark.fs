@@ -117,6 +117,7 @@ class Program
                 | Some (ParkedSyscall.Flock parked) -> Some parked
                 | Some (ParkedSyscall.SocketWait _)
                 | Some (ParkedSyscall.Poll _)
+                | Some (ParkedSyscall.Accept _)
                 | None -> None
         )
 

@@ -146,6 +146,10 @@ type UnixSystemDefect<'Task> =
         fd : int *
         watched : OpenFileDescriptionId *
         current : OpenFileDescriptionId option
+    /// A task is parked in an `accept` on a description that is not a listening
+    /// socket, which no accept could have produced and on which
+    /// `WakeCondition.satisfied` crashes.
+    | ParkedAcceptOnNonListener of task : 'Task * description : OpenFileDescriptionId
     /// A task's park records an ordinal at or above the next one to mint, so
     /// some future park would repeat it, and the two waiters' order would be
     /// unspecified.
@@ -637,6 +641,29 @@ module UnixSystem =
 
                                 target @ rebound
                     )
+                | Some (ParkedSyscall.Accept accept) ->
+                    match Map.tryFind accept.Listener descriptions with
+                    | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, accept.Listener) ]
+                    | Some description ->
+                        let listening =
+                            match description.Target with
+                            | OpenFileTarget.Socket socketId ->
+                                match Map.tryFind socketId system.Machine.Sockets with
+                                | Some {
+                                           Phase = SocketPhase.Listening _
+                                       } -> true
+                                | Some _
+                                | None -> false
+                            | OpenFileTarget.StandardStream _
+                            | OpenFileTarget.File _
+                            | OpenFileTarget.Directory _
+                            | OpenFileTarget.Pipe _
+                            | OpenFileTarget.SocketEventPort _ -> false
+
+                        if listening then
+                            []
+                        else
+                            [ UnixSystemDefect.ParkedAcceptOnNonListener (task, accept.Listener) ]
             )
 
         let parkOrdinals =
