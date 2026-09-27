@@ -47,8 +47,13 @@ module TestPipeAgainstHost =
         val mutable Ino : int64
         val mutable UserFlags : uint32
 
+    // Absent from Darwin's libc before 27, so only the test of `pipe2`'s own
+    // flags calls it, and skips where it is missing.
     [<DllImport("libc", EntryPoint = "pipe2", SetLastError = true)>]
     extern int private hostPipe2(int[] fds, int flags)
+
+    [<DllImport("libc", EntryPoint = "pipe", SetLastError = true)>]
+    extern int private hostPipe(int[] fds)
 
     [<DllImport("libc", EntryPoint = "close")>]
     extern int private hostClose(int fd)
@@ -220,8 +225,14 @@ module TestPipeAgainstHost =
                 let flags = if startNonBlocking then nonBlockFlag else 0
                 let hostFds = Array.zeroCreate<int> 2
 
-                if hostPipe2 (hostFds, flags) <> 0 then
-                    failwith $"pipe2 failed: errno %d{Marshal.GetLastPInvokeError ()}"
+                // `pipe` and then O_NONBLOCK on each end: what `pipe2` with the
+                // flag makes, on a host whose libc may have no `pipe2`.
+                if hostPipe hostFds <> 0 then
+                    failwith $"pipe failed: errno %d{Marshal.GetLastPInvokeError ()}"
+
+                if startNonBlocking then
+                    for fd in hostFds do
+                        hostSetNonBlocking (nativeint fd, 1) |> shouldEqual 0
 
                 let created, modelFds =
                     match UnixPipe.pipe2 flags UserBuffer.Mapped initial with
@@ -446,7 +457,32 @@ module TestPipeAgainstHost =
                                     $"%s{where}: fd %O{pipeEnd} end: model mode 0o%o{m.Mode} size %d{m.Size}, host 0o%o{h.Mode} size %d{h.Size}"
 
                             match flavour with
-                            | SimulatedUnixFlavour.Darwin -> ()
+                            | SimulatedUnixFlavour.Darwin ->
+                                // Darwin's poll is not modelled, but while both
+                                // ends are open its IN and OUT bits are the
+                                // buffer's own readiness.
+                                let bothOpen =
+                                    List.exists (fun (_, _, e, _) -> e = PipeEnd.Read) slots
+                                    && List.exists (fun (_, _, e, _) -> e = PipeEnd.Write) slots
+
+                                if bothOpen then
+                                    let buffer = (Map.find (PipeId 0L) system.Machine.Pipes).Buffer
+
+                                    let modelReady =
+                                        match pipeEnd with
+                                        | PipeEnd.Read -> PipeBuffer.readable buffer
+                                        | PipeEnd.Write -> PipeBuffer.writable buffer
+
+                                    let bit =
+                                        match pipeEnd with
+                                        | PipeEnd.Read -> 0x1s
+                                        | PipeEnd.Write -> 0x4s
+
+                                    let hostReady = hostLevel hostFd &&& bit <> 0s
+
+                                    if modelReady <> hostReady then
+                                        failwith
+                                            $"%s{where}: %O{pipeEnd} end: model ready %b{modelReady}, host %b{hostReady}"
                             | SimulatedUnixFlavour.Linux ->
                                 let id =
                                     FileDescriptorRegistry.tryFindId modelFd system.Process.FileDescriptors
@@ -517,6 +553,21 @@ module TestPipeAgainstHost =
     let ``pipe2 answers each single flag bit as the host does`` () : unit =
         HostPlatform.onUnixHostPreset (fun platform ->
             let numbering = SimulatedUnixPlatform.rawErrnoNumbering platform
+
+            let available =
+                try
+                    let fds = [| -1 ; -1 |]
+
+                    if hostPipe2 (fds, 0) = 0 then
+                        hostClose fds.[0] |> ignore
+                        hostClose fds.[1] |> ignore
+
+                    true
+                with :? System.EntryPointNotFoundException ->
+                    false
+
+            if not available then
+                Assert.Ignore "this host's libc has no pipe2 (Darwin's has one from 27)"
 
             for bit in 0..31 do
                 let flags = 1 <<< bit

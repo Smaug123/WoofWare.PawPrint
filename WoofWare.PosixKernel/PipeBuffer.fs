@@ -339,6 +339,31 @@ module PipeBuffer =
             else
                 min count free
 
+    /// The buffer as a write of `count` bytes leaves it when it takes none of
+    /// them: because nothing fits, or because the bytes could not be read.
+    ///
+    /// On Linux, unchanged. On Darwin, grown as the write would have grown it,
+    /// since the buffer grows before any byte is copied: measured, a write
+    /// through a bad pointer answers EFAULT and leaves the buffer at the size
+    /// that write needed.
+    let withoutTaking (count : int) (buffer : PipeBuffer) : PipeBuffer =
+        if count < 0 then
+            failwith
+                $"PipeBuffer.withoutTaking: a count of %d{count} is not a request a kernel ever sees; the caller must answer a negative count before asking."
+
+        match buffer with
+        | PipeBuffer.Linux _ -> buffer
+        | PipeBuffer.Darwin darwin ->
+            let holding = ByteQueue.length darwin.Bytes
+
+            if count > DarwinPipeBufferSize.bytes darwin.Size - holding then
+                PipeBuffer.Darwin
+                    { darwin with
+                        Size = DarwinPipeBufferSize.grownFor darwin.Size (int64 holding + int64 count)
+                    }
+            else
+                buffer
+
     /// A non-blocking write of `bytes`: how many of them, from the start, the
     /// buffer takes now, and the buffer after taking them.
     ///

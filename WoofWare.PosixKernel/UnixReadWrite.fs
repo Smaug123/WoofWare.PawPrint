@@ -222,8 +222,11 @@ type private WriteTarget =
 /// How far a write into a pipe gets before it needs the caller's bytes.
 [<RequireQualifiedAccess>]
 type private PipeWriteStep =
-    /// The write is answered without the bytes.
+    /// The write is answered without the bytes, and leaves the buffer alone.
     | Answered of WriteAnswer
+    /// The write is answered without the bytes, and takes none of them, but
+    /// leaves the buffer as `PipeBuffer.withoutTaking` says.
+    | TakesNothing of WriteAnswer
     | Refused of WriteRefusal
     /// The write takes `taken` of the bytes offered, from the start.
     | Takes of taken : int
@@ -438,13 +441,30 @@ module UnixReadWrite =
                 }
                 system
 
+    /// `system` with `pipeId`'s buffer as a write of `count` bytes that took none
+    /// of them leaves it.
+    let private leftUntaken<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (pipeId : PipeId)
+        (count : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        let pipe = UnixMachineState.pipe pipeId system.Machine
+
+        withPipe
+            pipeId
+            { pipe with
+                Buffer = PipeBuffer.withoutTaking count pipe.Buffer
+            }
+            system
+
     /// Everything a write of `count` bytes into `pipeId` decides before it
     /// needs the bytes themselves, in the order the flavour decides it. `count`
     /// is already one call's worth, and `buffer` is `Mapped` for a caller that
     /// holds the bytes.
     ///
     /// Changes nothing: `touchedByWrite` is the caller's to apply, to every
-    /// outcome but a refusal.
+    /// outcome but a refusal, and `leftUntaken` to `TakesNothing`.
     let private pipeWriteStep<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (pipeId : PipeId)
         (nonBlocking : bool)
@@ -481,7 +501,7 @@ module UnixReadWrite =
             // at: measured on both, a non-blocking write through a bad pointer
             // into a full pipe is EAGAIN, not EFAULT.
             if nonBlocking then
-                PipeWriteStep.Answered (WriteAnswer.Failed UnixError.EAGAIN)
+                PipeWriteStep.TakesNothing (WriteAnswer.Failed UnixError.EAGAIN)
             else
                 PipeWriteStep.Refused (WriteRefusal.PipeWouldBlock (pipeId, count, 0))
         else
@@ -489,8 +509,9 @@ module UnixReadWrite =
         match buffer with
         | UserBuffer.Unmapped _ ->
             // The copy faults before anything is taken: measured on both, EFAULT
-            // into an empty pipe, which is left empty.
-            PipeWriteStep.Answered (WriteAnswer.Failed UnixError.EFAULT)
+            // into an empty pipe, which is left empty -- but on Darwin grown
+            // (pipe-fault-aftermath.c).
+            PipeWriteStep.TakesNothing (WriteAnswer.Failed UnixError.EFAULT)
         | UserBuffer.Opaque -> PipeWriteStep.Refused (WriteRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
         | UserBuffer.Addressless -> PipeWriteStep.Refused (WriteRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
         | UserBuffer.Mapped ->
@@ -1086,6 +1107,8 @@ module UnixReadWrite =
             match pipeWriteStep pipeId nonBlocking count buffer system with
             | PipeWriteStep.Refused refusal -> Error refusal
             | PipeWriteStep.Answered answer -> Ok (WriteAdmission.Answered answer, touchedByWrite pipeId system)
+            | PipeWriteStep.TakesNothing answer ->
+                Ok (WriteAdmission.Answered answer, touchedByWrite pipeId (leftUntaken pipeId count system))
             // Only the bytes the pipe will take: a short write never reads the
             // rest of the caller's buffer, and `write` offered this prefix takes
             // all of it and leaves the pipe as the whole would have.
@@ -1168,6 +1191,8 @@ module UnixReadWrite =
             match pipeWriteStep pipeId nonBlocking bytes.Length UserBuffer.Mapped system with
             | PipeWriteStep.Refused refusal -> Error refusal
             | PipeWriteStep.Answered answer -> Ok (answer, touchedByWrite pipeId system)
+            | PipeWriteStep.TakesNothing answer ->
+                Ok (answer, touchedByWrite pipeId (leftUntaken pipeId bytes.Length system))
             | PipeWriteStep.Takes taken ->
                 let pipe = UnixMachineState.pipe pipeId system.Machine
                 let written, buffer = PipeBuffer.write bytes pipe.Buffer

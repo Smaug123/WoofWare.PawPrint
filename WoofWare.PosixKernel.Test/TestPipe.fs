@@ -132,6 +132,18 @@ module TestPipe =
             let b, s = PipeBufferReference.darwinRead count s
             b, BufferModel.Darwin s
 
+    /// `model` as a write that took none of its bytes leaves it, given `grown`,
+    /// the model after that write had taken what it could: the size `grown`
+    /// reached, and the bytes `model` held.
+    let private modelWithoutTaking (grown : BufferModel) (model : BufferModel) : BufferModel =
+        match grown, model with
+        | BufferModel.Darwin grown, BufferModel.Darwin model ->
+            BufferModel.Darwin
+                { model with
+                    Size = grown.Size
+                }
+        | _, model -> model
+
     let private modelHeld (model : BufferModel) : int =
         match model with
         | BufferModel.Linux s -> List.length s.Bytes
@@ -311,6 +323,14 @@ module TestPipe =
                                 { reference with
                                     Buffer = grown
                                     Offered = reference.Offered + takes
+                                }
+                        | WriteAnswer.Failed UnixError.EAGAIN
+                        | WriteAnswer.Failed UnixError.EFAULT ->
+                            // Nothing taken, but Darwin's buffer grows as the
+                            // write would have grown it.
+                            reference <-
+                                { reference with
+                                    Buffer = modelWithoutTaking grown reference.Buffer
                                 }
                         | _ -> ()
 
@@ -1281,3 +1301,94 @@ module TestPipe =
 
         defectsOf negative
         |> shouldEqual [ UnixSystemDefect.PipeDeviceNotOfFlavour (-1L, SimulatedUnixFlavour.Linux) ]
+
+    // --- what a write that takes nothing leaves behind ---
+
+    [<Test>]
+    let ``a write that takes nothing leaves the buffer as write would, and growing first changes no later write``
+        ()
+        : unit
+        =
+        let property (platform : SimulatedUnixPlatform, ops : PipeBufferOp list, count : int) : unit =
+            let mutable buffer = PipeBuffer.empty platform
+
+            for op in ops do
+                match op with
+                | PipeBufferOp.Write n -> buffer <- snd (PipeBuffer.write (payload 0 n) buffer)
+                | PipeBufferOp.Read n -> buffer <- snd (PipeBuffer.read n buffer)
+
+            let taken, afterWrite = PipeBuffer.write (payload 0 count) buffer
+            let untaken = PipeBuffer.withoutTaking count buffer
+
+            if taken = 0 then
+                untaken |> shouldEqual afterWrite
+
+            PipeBuffer.held untaken |> shouldEqual (PipeBuffer.held buffer)
+            PipeBuffer.write (payload 0 count) untaken |> shouldEqual (taken, afterWrite)
+
+        let countGen =
+            Gen.frequency
+                [
+                    3, Gen.choose (0, 70000)
+                    1, Gen.elements [ 0 ; 1 ; 513 ; 4097 ; 8193 ; 16385 ; 65536 ]
+                ]
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 300,
+            Prop.forAll (Arb.fromGen (Gen.zip3 (Gen.elements platforms) TestPipeBuffer.opsGen countGen)) property
+        )
+
+    /// Measured by pipe-fault-aftermath.c: a write through a bad pointer, then
+    /// the writes named, and whether the write end then polls ready. On Linux
+    /// the fault leaves nothing behind; on Darwin it grows the buffer, which a
+    /// pipe holding exactly 16384 bytes shows.
+    let private measuredChains : (int * int list * bool * bool) list =
+        [
+            8193, [ 16384 ], true, false
+            4097, [ 8192 ; 8192 ], false, true
+            513, [ 1024 ; 1024 ; 2048 ; 4096 ; 8192 ], true, false
+            16385, [ 16000 ], false, true
+        ]
+
+    /// Whether the write end of a fresh pipe on `platform` is ready after
+    /// `writes`, preceded by a write of `fault` bytes through a bad pointer if
+    /// `faultFirst`.
+    let private readyAfter
+        (platform : SimulatedUnixPlatform)
+        (fault : int)
+        (faultFirst : bool)
+        (writes : int list)
+        : bool
+        =
+        let (_, w), system = pipeOrFail 0 (systemOn platform)
+
+        let system =
+            if faultFirst then
+                match UnixReadWrite.admitWrite w (UserBuffer.Unmapped 8UL) (uint64 fault) system with
+                | Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EFAULT), after) -> after
+                | other -> failwith $"%A{other}"
+            else
+                system
+
+        let system =
+            (system, writes)
+            ||> List.fold (fun system count ->
+                match writeOrFail w (payload 0 count) system with
+                | WriteAnswer.Completed n, after when n = int64 count -> after
+                | other -> failwith $"%A{other}"
+            )
+
+        PipeBuffer.writable system.Machine.Pipes.[PipeId 0L].Buffer
+
+    [<Test>]
+    let ``on Darwin a faulting write grows the buffer as measured, and on Linux it changes nothing`` () : unit =
+        for fault, writes, control, faulted in measuredChains do
+            let darwin = SimulatedUnixPlatform.macOsArm64
+
+            (readyAfter darwin fault false writes, readyAfter darwin fault true writes)
+            |> shouldEqual (control, faulted)
+
+            let linux = SimulatedUnixPlatform.linuxX64
+
+            readyAfter linux fault true writes
+            |> shouldEqual (readyAfter linux fault false writes)
