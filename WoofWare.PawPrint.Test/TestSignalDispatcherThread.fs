@@ -55,7 +55,8 @@ module TestSignalDispatcherThread =
 
     [<Test>]
     let ``a dispatcher that is not a task is a defect`` () : unit =
-        let state, dispatcher = baseState () |> IlMachineState.allocateParkedThread
+        let state, dispatcher =
+            baseState () |> IlMachineState.allocateParkedThread (ThreadId 0)
 
         state.Kernel
         |> fun kernel ->
@@ -78,7 +79,7 @@ module TestSignalDispatcherThread =
 
     [<Test>]
     let ``allocateParkedThread mints a Parked, frameless thread`` () : unit =
-        let state, thread = baseState () |> IlMachineState.allocateParkedThread
+        let state, thread = baseState () |> IlMachineState.allocateParkedThread (ThreadId 0)
 
         let ts =
             state.ThreadState
@@ -101,7 +102,7 @@ module TestSignalDispatcherThread =
         // `new Thread(...)` path. There is no `Thread` heap object for guest
         // code to observe, so `ManagedThreadObjects` must not be touched.
         let initial = baseState ()
-        let state, thread = initial |> IlMachineState.allocateParkedThread
+        let state, thread = initial |> IlMachineState.allocateParkedThread (ThreadId 0)
 
         state.ManagedThreadObjects |> Map.containsKey thread |> shouldEqual false
 
@@ -113,8 +114,8 @@ module TestSignalDispatcherThread =
     [<Test>]
     let ``allocateParkedThread mints distinct ids on successive calls`` () : unit =
         let state0 = baseState ()
-        let state1, t1 = state0 |> IlMachineState.allocateParkedThread
-        let state2, t2 = state1 |> IlMachineState.allocateParkedThread
+        let state1, t1 = state0 |> IlMachineState.allocateParkedThread (ThreadId 0)
+        let state2, t2 = state1 |> IlMachineState.allocateParkedThread (ThreadId 0)
 
         t1 |> shouldNotEqual t2
         state2.ThreadState |> Map.containsKey t1 |> shouldEqual true

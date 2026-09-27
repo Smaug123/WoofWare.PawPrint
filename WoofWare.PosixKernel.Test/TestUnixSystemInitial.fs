@@ -35,7 +35,7 @@ module TestUnixSystemInitial =
             | "darwin" -> SimulatedUnixPlatform.macOsArm64
             | other -> failwith $"unknown flavour %s{other}"
 
-        let system : UnixSystem<int, string> = UnixSystem.initial platform
+        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
         system.Machine.SoMaxConn |> shouldEqual expected
 
     [<TestCase("linux")>]
@@ -47,7 +47,7 @@ module TestUnixSystemInitial =
             | "darwin" -> SimulatedUnixPlatform.macOsArm64, EmulatedMount.Apfs ApfsMount.defaults
             | other -> failwith $"unknown flavour %s{other}"
 
-        let system : UnixSystem<int, string> = UnixSystem.initial platform
+        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
         system.Machine.Mount |> shouldEqual expected
 
         // The rule the pair exists to satisfy, asserted directly: a machine
@@ -63,7 +63,7 @@ module TestUnixSystemInitial =
     /// is carried as given.
     [<TestCaseSource(nameof platforms)>]
     let ``withSoMaxConn None takes the machine's own flavour's default`` (platform : SimulatedUnixPlatform) : unit =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform
+        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
         let flavour = SimulatedUnixPlatform.flavour platform
 
         let configured = system.Machine |> UnixMachineState.withSoMaxConn (Some 7)
@@ -79,7 +79,7 @@ module TestUnixSystemInitial =
     let ``a forged platform is refused by the constructor`` () : unit =
         let exn =
             Assert.Throws<System.Exception> (fun () ->
-                UnixSystem.initial<int, string> Unchecked.defaultof<SimulatedUnixPlatform>
+                UnixSystem.initial<int, string> Unchecked.defaultof<SimulatedUnixPlatform> 0 (CpuId 0)
                 |> ignore<UnixSystem<int, string>>
             )
 
@@ -87,7 +87,7 @@ module TestUnixSystemInitial =
 
     [<TestCaseSource(nameof platforms)>]
     let ``the platform asked for is the platform reported`` (platform : SimulatedUnixPlatform) : unit =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform
+        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
         system.Machine.UnixPlatform |> shouldEqual platform
 
     // ------------------------------------------------------------------
@@ -101,7 +101,7 @@ module TestUnixSystemInitial =
     [<Test>]
     let ``the buffer check follows the platform's architecture`` () : unit =
         let checkOn (platform : SimulatedUnixPlatform) : UserBufferCheck =
-            (UnixSystem.initial<int, string> platform).Machine.UserBufferCheck
+            (UnixSystem.initial<int, string> platform 0 (CpuId 0)).Machine.UserBufferCheck
 
         checkOn SimulatedUnixPlatform.linuxX64
         |> shouldEqual (UserBufferCheck.BeforeOperation 0x0000_7FFF_FFFF_F000UL)
@@ -129,7 +129,7 @@ module TestUnixSystemInitial =
             | "darwin" -> SimulatedUnixPlatform.macOsArm64
             | other -> failwith $"unknown flavour %s{other}"
 
-        let system : UnixSystem<int, string> = UnixSystem.initial platform
+        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
         system.Machine.EphemeralPortRange |> shouldEqual (uint16 low, uint16 high)
         system.Machine.NextEphemeralPort |> shouldEqual (uint16 low)
 
@@ -147,7 +147,7 @@ module TestUnixSystemInitial =
     /// of exactly this.
     [<TestCaseSource(nameof platforms)>]
     let ``both clocks boot at zero on every flavour`` (platform : SimulatedUnixPlatform) : unit =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform
+        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
 
         system.Machine.NanosecondsSinceBoot |> shouldEqual 0L
         system.Machine.BootTime |> shouldEqual UnixTimestamp.epoch
@@ -161,7 +161,7 @@ module TestUnixSystemInitial =
     /// field only matters through what it makes the allocator do.
     [<TestCaseSource(nameof platforms)>]
     let ``the first ephemeral port drawn is the bottom of the range`` (platform : SimulatedUnixPlatform) : unit =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform
+        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
 
         let socket : SocketDescription =
             {
@@ -208,7 +208,7 @@ module TestUnixSystemInitial =
         (platform : SimulatedUnixPlatform)
         : unit
         =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform
+        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
 
         system.Process.CurrentDirectoryInode
         |> shouldEqual (VirtualFileSystem.root system.Machine.FileSystem)
@@ -220,14 +220,14 @@ module TestUnixSystemInitial =
     /// is a system at all.
     [<TestCaseSource(nameof platforms)>]
     let ``a fresh system is sound`` (platform : SimulatedUnixPlatform) : unit =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform
+        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
         UnixSystem.checkInvariants system |> shouldEqual []
 
     /// Only the three standard streams, which is what "before anything has
     /// happened to it" means for the descriptor table.
     [<TestCaseSource(nameof platforms)>]
     let ``only the standard streams are open`` (platform : SimulatedUnixPlatform) : unit =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform
+        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
 
         for fd, role in
             [

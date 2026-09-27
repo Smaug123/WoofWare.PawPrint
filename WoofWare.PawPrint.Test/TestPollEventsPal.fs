@@ -225,14 +225,18 @@ module TestPollEventsPal =
 
     let private linux : UnixSystem<int, string> =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial SimulatedUnixPlatform.linuxX64
+            UnixSystem.initial SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
+
+        let system =
+            match UnixTaskLifecycle.spawn system.Leader poller (CpuId 0) system with
+            | Ok (_, system) -> system
+            | Error error -> failwith $"spawning the poller failed with %O{error}"
 
         { system with
             Machine =
                 { system.Machine with
                     LocalRoutes = []
                 }
-            Tasks = UnixTaskTable.register poller (CpuId 0) (OsThreadId 2u) system.Tasks
         }
 
     let private withSocket

@@ -1,0 +1,171 @@
+namespace WoofWare.PosixKernel
+
+open System
+
+/// <summary>
+/// The operating-system thread identifier which the simulated kernel reports for a
+/// thread.
+/// </summary>
+/// <remarks>
+/// Only this library mints one: <c>UnixSystem.initial</c> for a process's first
+/// task, and <c>UnixTaskLifecycle.spawn</c> for every later one.
+/// </remarks>
+/// <example>
+/// This is what <c>gettid(2)</c> returns on Linux, and what
+/// <c>pthread_threadid_np(3)</c> returns on Darwin.
+/// </example>
+[<Struct>]
+type OsThreadId =
+    private
+    | OsThreadId of uint64
+
+    /// <summary>
+    /// A human-readable description of the thread ID.
+    /// </summary>
+    override this.ToString () =
+        match this with
+        | OsThreadId i -> $"<os thread #%i{i}>"
+
+[<RequireQualifiedAccess>]
+module OsThreadId =
+
+    /// The id as an unsigned 64-bit number: the width of Darwin's
+    /// `pthread_threadid_np`. A Linux tid is a positive `pid_t`, so it is the same
+    /// number there too.
+    let toUInt64 (id : OsThreadId) : uint64 =
+        match id with
+        | OsThreadId i -> i
+
+/// How a machine hands out thread ids, which is each flavour's own counter.
+///
+/// Linux takes a thread's id from the counter it takes process ids from; the
+/// process's first task's id is the process id. Darwin takes it from one 64-bit
+/// counter shared by every process on the machine, unrelated to the process id.
+///
+/// The counter belongs to the machine, not to a process. This library models one
+/// process on a quiet machine, so no other process takes ids from it.
+[<RequireQualifiedAccess>]
+type ThreadIdAllocator =
+    internal
+    /// `cursor` is where the next search for a free id starts; ids are below
+    /// `pidMax`.
+    | Linux of cursor : int32 * pidMax : int32
+    /// `next` is the id the next thread gets.
+    | Darwin of next : uint64
+
+[<RequireQualifiedAccess>]
+module ThreadIdAllocator =
+
+    // Linux's `RESERVED_PIDS`: once the counter has passed it, a search that runs
+    // off the top of the range starts again here, never lower.
+    let private reservedPids : int32 = 300
+
+    /// The least value Linux's `pid_max` takes.
+    [<Literal>]
+    let linuxPidMaxFloor : int32 = 301
+
+    /// The greatest value Linux's `pid_max` takes on a 64-bit kernel.
+    [<Literal>]
+    let linuxPidMaxCeiling : int32 = 4194304
+
+    // Measured on Linux 6.18.5 aarch64 and x86-64 by
+    // `docs/plans/2026-08-23-posix-kernel-extraction/pid-allocation.c`: writing
+    // `/proc/sys/kernel/pid_max` accepts exactly 301..4194304, and answers EINVAL for
+    // every other value swept.
+    let private assertPidMax (context : string) (pidMax : int32) : unit =
+        if pidMax < linuxPidMaxFloor || pidMax > linuxPidMaxCeiling then
+            failwith
+                $"%s{context}: %d{pidMax} is not a pid_max Linux accepts; it must be between %d{linuxPidMaxFloor} and %d{linuxPidMaxCeiling} (the sysctl answers EINVAL outside that range)."
+
+    /// A Linux counter whose process has id `pid`, below `pidMax`, and has
+    /// just been started: the process's first task's id, which is `pid`, and the
+    /// counter after it.
+    let internal startLinux (context : string) (pidMax : int32) (pid : ProcessId) : OsThreadId * ThreadIdAllocator =
+        assertPidMax context pidMax
+        let pid = ProcessId.toInt32 (ProcessId.assertValid context pid)
+
+        if pid >= pidMax then
+            failwith
+                $"%s{context}: process ID %d{pid} is not below pid_max %d{pidMax}, so a Linux kernel could not have handed it out."
+
+        OsThreadId (uint64 pid), ThreadIdAllocator.Linux (pid + 1, pidMax)
+
+    /// A Darwin counter whose first id is `first`: the process's first task's id,
+    /// and the counter after it.
+    let internal startDarwin (context : string) (first : uint64) : OsThreadId * ThreadIdAllocator =
+        // Neither end has been observed. 0 is not refused because a kernel was
+        // seen not to report it, but because nothing says one would, and
+        // `UInt64.MaxValue` leaves no id for a second thread.
+        if first = 0UL || first = UInt64.MaxValue then
+            failwith
+                $"%s{context}: %d{first} is not a thread ID this library will start a Darwin counter at; it must be between 1 and %d{UInt64.MaxValue - 1UL}."
+
+        OsThreadId first, ThreadIdAllocator.Darwin (first + 1UL)
+
+    /// The Linux counter `allocator` is, with its `pid_max` set to `pidMax`.
+    ///
+    /// Refuses a Darwin counter, which has no `pid_max`, and a value Linux does not
+    /// accept.
+    let internal withPidMax (context : string) (pidMax : int32) (allocator : ThreadIdAllocator) : ThreadIdAllocator =
+        match allocator with
+        | ThreadIdAllocator.Linux (cursor, _) ->
+            assertPidMax context pidMax
+            ThreadIdAllocator.Linux (cursor, pidMax)
+        | ThreadIdAllocator.Darwin _ ->
+            failwith
+                $"%s{context}: Darwin has no pid_max; its thread IDs come from a 64-bit counter that no setting bounds."
+
+    /// Whether `id` is one `allocator` could have handed out and not yet reached:
+    /// below `pid_max` on Linux, and below the counter on Darwin.
+    let internal couldHaveMinted (id : OsThreadId) (allocator : ThreadIdAllocator) : bool =
+        let id = OsThreadId.toUInt64 id
+
+        match allocator with
+        | ThreadIdAllocator.Linux (_, pidMax) -> id >= 1UL && id < uint64 pidMax
+        | ThreadIdAllocator.Darwin next -> id >= 1UL && id < next
+
+    /// Hand out the next id, given which ids live tasks hold; or EAGAIN if every
+    /// id Linux would hand out is held.
+    let internal allocate
+        (held : Set<OsThreadId>)
+        (allocator : ThreadIdAllocator)
+        : Result<OsThreadId * ThreadIdAllocator, UnixError>
+        =
+        match allocator with
+        | ThreadIdAllocator.Linux (cursor, pidMax) ->
+            let firstFree (low : int32) : int32 option =
+                seq { low .. pidMax - 1 }
+                |> Seq.tryFind (fun id -> not (Set.contains (OsThreadId (uint64 id)) held))
+
+            // Measured on Linux 6.18.5 aarch64 by
+            // `docs/plans/2026-08-23-posix-kernel-extraction/pid-allocation.c`: ids
+            // go up from the last one handed out, never back to a freed one, until
+            // they reach pid_max; the search then starts again at 300 and skips
+            // every live id; and once every id from 300 up is live, thread
+            // creation fails with EAGAIN.
+            let found =
+                match firstFree cursor with
+                | Some id -> Some id
+                | None ->
+                    // The search from the cursor can only fail once the counter has
+                    // passed 300: before then, every id it has handed out is below the
+                    // cursor, and pid_max is above 300. Past it, Linux's search starts
+                    // again at 300; below it, Linux would start at 1, which is
+                    // unmeasured and which this counter cannot reach.
+                    if cursor <= reservedPids then
+                        failwith
+                            $"ThreadIdAllocator.allocate: no free id from the cursor %d{cursor} up to pid_max %d{pidMax}, although the counter has not passed %d{reservedPids}. Every id it has handed out is below the cursor, so this is a bug in this library."
+
+                    firstFree reservedPids
+
+            match found with
+            | Some id -> Ok (OsThreadId (uint64 id), ThreadIdAllocator.Linux (id + 1, pidMax))
+            | None -> Error UnixError.EAGAIN
+        | ThreadIdAllocator.Darwin next ->
+            // A 64-bit counter never wraps in practice, and what Darwin does if it
+            // did has not been measured.
+            if next = UInt64.MaxValue then
+                failwith
+                    "ThreadIdAllocator.allocate: Darwin's thread ID counter has reached the top of its 64-bit range, and what Darwin does next has not been measured."
+
+            Ok (OsThreadId next, ThreadIdAllocator.Darwin (next + 1UL))

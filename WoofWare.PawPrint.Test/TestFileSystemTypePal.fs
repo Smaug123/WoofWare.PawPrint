@@ -131,7 +131,7 @@ module TestFileSystemTypePal =
         : FileSystemStatisticsAnswer
         =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial (HostPlatform.platformOf flavour)
+            UnixSystem.initial (HostPlatform.platformOf flavour) 0 (CpuId 0)
 
         let machine =
             UnixMachineState.withMount (Some (EmulatedMount.defaultOf fsType)) system.Machine

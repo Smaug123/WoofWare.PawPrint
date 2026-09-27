@@ -417,7 +417,7 @@ module TestSocketEventsPal =
 
     let private linuxSystem : UnixSystem<int, string> =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial SimulatedUnixPlatform.linuxX64
+            UnixSystem.initial SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
 
         { system with
             Machine =

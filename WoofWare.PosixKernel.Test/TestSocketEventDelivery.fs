@@ -40,7 +40,7 @@ module TestSocketEventDelivery =
     let private emptyInterest : uint32 = EpollEvents.EdgeTriggered
 
     let private initialSystem : UnixSystem<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.linuxX64
+        UnixSystem.initial SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
 
     /// `close(2)`. A refusal crashes, as it does in the handlers that serve a
     /// guest; an errno comes back, because that is an answer.
@@ -954,7 +954,7 @@ module TestSocketEventDelivery =
 
             let kernel =
                 kernel
-                |> mapTasks (UnixTaskTable.register 1 (CpuId 0) (OsThreadId 2u))
+                |> Tasks.spawn 1
                 |> UnixWait.park
                     1
                     (ParkedSyscall.SocketWait

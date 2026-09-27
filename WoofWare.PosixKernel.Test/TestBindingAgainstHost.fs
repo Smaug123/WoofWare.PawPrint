@@ -143,7 +143,7 @@ module TestBindingAgainstHost =
 
     /// The model of this host, as the caller this test process is, holding the probe tree.
     let private model (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        let initial = UnixSystem.initial platform
+        let initial = UnixSystem.initial platform 0 (CpuId 0)
 
         let system =
             initial

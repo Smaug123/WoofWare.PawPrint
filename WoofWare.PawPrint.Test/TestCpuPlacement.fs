@@ -201,13 +201,13 @@ module TestCpuPlacement =
         let state = machineWith 4
 
         let state, first =
-            IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1) state
+            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1) state
 
         state.NextCpuRotation |> shouldEqual 1
         cpuOf first state |> shouldEqual (CpuId 0)
 
         let state, second =
-            IlMachineState.allocateUnstartedThread (ManagedHeapAddress 2) state
+            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 2) state
 
         state.NextCpuRotation |> shouldEqual 2
         cpuOf second state |> shouldEqual (CpuId 1)
@@ -220,7 +220,7 @@ module TestCpuPlacement =
         // because the field is total — a fixed core 0.
         let state = machineWith 4
 
-        let state, parked = IlMachineState.allocateParkedThread state
+        let state, parked = IlMachineState.allocateParkedThread (ThreadId 0) state
 
         state.NextCpuRotation |> shouldEqual 0
         cpuOf parked state |> shouldEqual (CpuId 0)
@@ -235,13 +235,13 @@ module TestCpuPlacement =
         let placementsWithParked =
             let mutable state = machineWith 3
 
-            let state', _ = IlMachineState.allocateParkedThread state
+            let state', _ = IlMachineState.allocateParkedThread (ThreadId 0) state
             state <- state'
 
             [ 1..5 ]
             |> List.map (fun i ->
                 let state', thread =
-                    IlMachineState.allocateUnstartedThread (ManagedHeapAddress i) state
+                    IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress i) state
 
                 state <- state'
                 cpuOf thread state
@@ -253,7 +253,7 @@ module TestCpuPlacement =
             [ 1..5 ]
             |> List.map (fun i ->
                 let state', thread =
-                    IlMachineState.allocateUnstartedThread (ManagedHeapAddress i) state
+                    IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress i) state
 
                 state <- state'
                 cpuOf thread state

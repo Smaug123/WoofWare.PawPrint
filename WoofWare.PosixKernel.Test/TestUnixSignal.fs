@@ -18,14 +18,12 @@ module TestUnixSignal =
         [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ]
 
     let private systemOn (flavour : SimulatedUnixFlavour) : UnixSystem<int, string> =
-        UnixSystem.initial (HostPlatform.platformOf flavour)
+        UnixSystem.initial (HostPlatform.platformOf flavour) 0 (CpuId 0)
 
     let private linux : UnixSystem<int, string> = systemOn SimulatedUnixFlavour.Linux
 
     let private withPid (pid : int32) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        { system with
-            Process = UnixProcessState.withProcessId "test" (ProcessId.parseOrFail "test" pid) system.Process
-        }
+        UnixSystem.withProcessId "test" (ProcessId.parseOrFail "test" pid) system
 
     let private live : ImmutableArray<int> = ImmutableArray.Create 0
 
@@ -52,9 +50,7 @@ module TestUnixSignal =
     [<Test>]
     let ``kill of the calling process with SIGKILL ends it`` () : unit =
         let system =
-            { linux with
-                Tasks = UnixTaskTable.register 0 (CpuId 0) (OsThreadId 1u) linux.Tasks
-            }
+            linux
             |> fun system ->
                 { system with
                     Process =

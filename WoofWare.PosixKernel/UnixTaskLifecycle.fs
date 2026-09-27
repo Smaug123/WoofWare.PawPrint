@@ -30,6 +30,10 @@ type TaskOutcome<'Task, 'Handler when 'Task : comparison and 'Handler : equality
 type ThreadExitRefusal<'Task> =
     /// The task is blocked in a syscall, so it cannot be making another one.
     | Parked of task : 'Task * park : TaskPark
+    /// The task is the process's leader, and other tasks live. On both flavours
+    /// the process carries on, with a leader that has gone (a zombie task on
+    /// Linux); this library keeps the leader until the process ends.
+    | LeaderBeforeOthers of task : 'Task
     /// The task is the last one on Darwin, where what its thread exit does has not
     /// been measured.
     | LastTaskOnDarwin of task : 'Task
@@ -42,10 +46,12 @@ module ThreadExitRefusal =
         match refusal with
         | ThreadExitRefusal.Parked (task, park) ->
             $"task %O{task} is parked in %A{park.Syscall}, so it cannot be making the thread-exit syscall; whatever ended the thread skipped finishing or abandoning its park"
+        | ThreadExitRefusal.LeaderBeforeOthers task ->
+            $"task %O{task} is the process's leader, and other tasks are still running; this library does not model a process whose leader has exited before them"
         | ThreadExitRefusal.LastTaskOnDarwin task ->
             $"task %O{task} is the process's last task, and what Darwin does when the last task makes the thread-exit syscall has not been measured"
 
-/// How tasks leave a process, and how a process ends.
+/// How tasks join and leave a process, and how a process ends.
 [<RequireQualifiedAccess>]
 module UnixTaskLifecycle =
 
@@ -79,12 +85,8 @@ module UnixTaskLifecycle =
     /// unless `task` was its last, in which case the process ends, on Linux, having
     /// exited with `status`. `status` is otherwise ignored.
     ///
-    /// Refuses a task that is parked in a syscall, and the process's last task on
-    /// Darwin.
-    ///
-    /// The process's leader exiting while other tasks live is not refused yet: that
-    /// refusal arrives with `UnixSystem.Leader`. Until then a leader that exits first
-    /// is removed like any other task.
+    /// Refuses a task that is parked in a syscall, the process's leader while any
+    /// other task lives, and the process's last task on Darwin.
     ///
     /// Fails loudly if `task` names no task, which is a bug in the client.
     let exitThread<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -99,7 +101,13 @@ module UnixTaskLifecycle =
         | Some park -> Error (ThreadExitRefusal.Parked (task, park))
         | None ->
 
-        if system.Tasks.Count = 1 then
+        // Measured on Linux 6.18.5 and Darwin 27.0.0 by
+        // `docs/plans/2026-08-23-posix-kernel-extraction/leader-exits-first.c`: the
+        // process carries on without its leader, which Linux keeps as a zombie
+        // task. Nothing here models a process in that state.
+        if task = system.Leader && system.Tasks.Count > 1 then
+            Error (ThreadExitRefusal.LeaderBeforeOthers task)
+        elif system.Tasks.Count = 1 then
             match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
             | SimulatedUnixFlavour.Linux ->
                 // The last task's own status is the process's, whatever an earlier
@@ -123,6 +131,65 @@ module UnixTaskLifecycle =
                         }
                     Tasks = Map.remove task system.Tasks
                 }
+        )
+
+    /// `clone(2)` with `CLONE_THREAD`, made by `parent`: a new thread in the process,
+    /// the task `child`, running on the logical processor `cpu`. This is what
+    /// `pthread_create(3)` ends in.
+    ///
+    /// Answers the thread ID the machine's counter hands the new task, which
+    /// starts with a copy of `parent`'s signal mask and with no signal pending on
+    /// it alone. On Linux, answers EAGAIN instead once every thread ID from 300 up
+    /// to the machine's `pid_max` is in use.
+    ///
+    /// Fails loudly if `parent` names no task or is parked in a syscall, or if
+    /// `child` already names a task: each is a bug in the client.
+    let spawn<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (parent : 'Task)
+        (child : 'Task)
+        (cpu : CpuId)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<OsThreadId * UnixSystem<'Task, 'Handler>, UnixError>
+        =
+        match (UnixTaskTable.get parent system.Tasks).Parked with
+        | Some park ->
+            failwith
+                $"UnixTaskLifecycle.spawn: task %O{parent} is parked in %A{park.Syscall}, so it cannot be making the clone syscall"
+        | None ->
+
+        if Map.containsKey child system.Tasks then
+            failwith
+                $"UnixTaskLifecycle.spawn: %O{child} already names a task, so it cannot name a new one (this is a bug in the client)"
+
+        let held =
+            system.Tasks
+            |> Map.fold (fun held _ state -> Set.add state.OsThreadId held) Set.empty
+
+        match ThreadIdAllocator.allocate held system.Machine.ThreadIds with
+        | Error error -> Error error
+        | Ok (id, threadIds) ->
+
+        // Measured on Linux 6.18.5 (aarch64 and x86-64) and Darwin 27.0.0 by
+        // `docs/plans/2026-08-23-posix-kernel-extraction/thread-spawn-mask.c`: a new
+        // thread's mask is exactly its creator's, and nothing pending on the
+        // creator alone is pending on it.
+        let signals =
+            (system.Process.Signals, SignalState.blockedFor parent system.Process.Signals)
+            ||> Set.fold (fun signals signal -> SignalState.block child signal signals)
+
+        Ok (
+            id,
+            { system with
+                Machine =
+                    { system.Machine with
+                        ThreadIds = threadIds
+                    }
+                Process =
+                    { system.Process with
+                        Signals = signals
+                    }
+                Tasks = UnixTaskTable.add child cpu id system.Tasks
+            }
         )
 
     /// `exit_group(2)`, made by `task`: every task ends at once, parked ones

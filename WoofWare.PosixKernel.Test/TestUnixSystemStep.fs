@@ -29,9 +29,7 @@ module TestUnixSystemStep =
     /// A system with task `name` registered, since a park is recorded against a
     /// task and `UnixTaskTable` is loudly partial in names it has never minted.
     let private withTask (name : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        { system with
-            Tasks = UnixTaskTable.register name (CpuId 0) (OsThreadId (uint32 name + 1u)) system.Tasks
-        }
+        Tasks.ensure name system
 
     /// The tasks the syscalls here are made by. The flock rows need three:
     /// `holderTask` through `first`, `waiterTask` through `second`, and
@@ -45,7 +43,7 @@ module TestUnixSystemStep =
     /// A simulated process on the flavour asked for, before anything has
     /// happened to it.
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform
+        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
 
         { system with
             Machine =
@@ -2247,6 +2245,7 @@ module TestUnixSystemStep =
                         FileDescriptors = released
                     }
                 Tasks = system.Tasks
+                Leader = system.Leader
             }
 
         UnixDescriptor.pinnedInodes orphaned |> Set.contains inode |> shouldEqual false
@@ -2282,9 +2281,7 @@ module TestUnixSystemStep =
 
         // Away from the default, so that a primitive answering a constant fails.
         let configured =
-            { linux with
-                Process = UnixProcessState.withProcessId "test" (ProcessId.parseOrFail "test" 3) linux.Process
-            }
+            UnixSystem.withProcessId "test" (ProcessId.parseOrFail "test" 3) linux
 
         UnixSystem.processId configured |> ProcessId.toInt32 |> shouldEqual 3
 
@@ -2298,8 +2295,8 @@ module TestUnixSystemStep =
     [<Test>]
     let ``withProcessId refuses the forged default process ID`` () : unit =
         let apply () =
-            UnixProcessState.withProcessId "ctx" Unchecked.defaultof<ProcessId> linux.Process
-            |> ignore<UnixProcessState<int, string>>
+            UnixSystem.withProcessId "ctx" Unchecked.defaultof<ProcessId> linux
+            |> ignore<UnixSystem<int, string>>
 
         let exn = Assert.Throws<System.Exception> (TestDelegate apply)
 

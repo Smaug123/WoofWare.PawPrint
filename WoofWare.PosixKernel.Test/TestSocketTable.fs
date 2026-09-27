@@ -32,7 +32,7 @@ module TestSocketTable =
     let private genWalkSeed : Gen<int> = Gen.choose (0, System.Int32.MaxValue)
 
     let private initialSystem : UnixSystem<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.linuxX64
+        UnixSystem.initial SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
 
     /// `close(2)`. A refusal crashes, as it does in the handlers that serve a
     /// guest; an errno comes back, because that is an answer.

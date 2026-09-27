@@ -11,6 +11,13 @@ type UnixSystem<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         Machine : UnixMachineState
         Process : UnixProcessState<'Task, 'Handler>
         Tasks : Map<'Task, UnixTaskState>
+        /// The process's first task, which it started with: its thread-group
+        /// leader.
+        ///
+        /// Always in `Tasks`. It cannot exit while another task lives
+        /// (`UnixTaskLifecycle.exitThread` refuses that), so it is a task for as
+        /// long as the process is running. On Linux its thread ID is the process ID.
+        Leader : 'Task
     }
 
 /// What the entry point returns, for a request this kernel could answer.
