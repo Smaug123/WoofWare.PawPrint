@@ -152,6 +152,8 @@ module TestClockJitterFindsBugs =
 
             let rec loop (prepared : Program.PreparedProgram) : Ending =
                 match Program.stepPrepared loggerFactory logger prepared with
+                | Program.ProgramStepOutcome.StoppedAtUndefinedValue (_, thread, observation) ->
+                    failwith $"PawPrint stopped the guest on %O{thread} at an undefined value: %O{observation}"
                 | Program.ProgramStepOutcome.Completed outcome -> endingOfOutcome outcome
                 | Program.ProgramStepOutcome.Deadlocked (_, stuck) -> Ending.Deadlock stuck
                 | Program.ProgramStepOutcome.InstructionStepped (p, _, _, _) -> loop p

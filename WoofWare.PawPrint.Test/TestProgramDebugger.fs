@@ -89,6 +89,8 @@ class Program
                 failwith "Prepared debugger stepper did not finish within the step limit"
 
             match Program.stepPrepared loggerFactory logger prepared with
+            | Program.ProgramStepOutcome.StoppedAtUndefinedValue (_, thread, observation) ->
+                failwith $"PawPrint stopped the guest on %O{thread} at an undefined value: %O{observation}"
             | Program.ProgramStepOutcome.Completed outcome -> outcome
             | Program.ProgramStepOutcome.Deadlocked (_, stuck) ->
                 failwith $"Prepared debugger stepper deadlocked: %s{stuck}"

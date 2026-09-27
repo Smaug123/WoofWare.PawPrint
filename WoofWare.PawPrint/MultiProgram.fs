@@ -91,6 +91,29 @@ type MultiStepOutcome =
     /// the clock to: `stuck` says, for each live program in launch order, where each of its
     /// threads is. Real processes would hang here.
     | Deadlocked of stuckDriver : MultiProgram * stuck : (ProcessId * string) list
+    /// `observingThread`, of the program whose process ID is `stoppedProgram`, was about to use a
+    /// value whose content is undefined, so PawPrint stopped the whole machine there (see
+    /// `ExecutionResult.UndefinedValueObserved`): what every program did next would follow a
+    /// value PawPrint does not have. No process has ended. `stoppedDriver` holds the stopped
+    /// program checked out.
+    | StoppedAtUndefinedValue of
+        stoppedDriver : MultiProgram *
+        stoppedProgram : ProcessId *
+        observingThread : ThreadId *
+        observation : UndefinedValueObservation
+
+/// How `MultiProgram.run` ended.
+[<RequireQualifiedAccess>]
+type MultiRunEnd =
+    /// The last program's process ended: how each program's run ended, in launch order.
+    | Finished of ends : (ProcessId * RunEnd) list
+    /// PawPrint stopped the machine at an undefined value, as
+    /// `MultiStepOutcome.StoppedAtUndefinedValue` says.
+    | StoppedAtUndefinedValue of
+        stoppedDriver : MultiProgram *
+        stoppedProgram : ProcessId *
+        observingThread : ThreadId *
+        observation : UndefinedValueObservation
 
 /// Where the driver's preamble to a tick leaves it.
 [<Struct>]
@@ -737,6 +760,13 @@ module MultiProgram =
                 | ProgramTick.StartupCallReturned program ->
                     MultiStepOutcome.Stepped (withCurrent program driver, pid, ProgramEvent.PhaseAdvanced)
                 | ProgramTick.Ended (outcome, ended) -> endCurrent driver outcome ended
+                | ProgramTick.StoppedAtUndefinedValue (stopped, observingThread, observation) ->
+                    MultiStepOutcome.StoppedAtUndefinedValue (
+                        withCurrent stopped driver,
+                        pid,
+                        observingThread,
+                        observation
+                    )
             )
 
     /// One scheduler tick of every program on the machine: the driver's preamble
@@ -857,22 +887,24 @@ module MultiProgram =
         launchAll loggerFactory "MachineConfig" (fun index -> $"launches[%d{index}].Process") machineConfig programs
 
     /// Run the programs `launches` describes on the machine `machineConfig` describes, as
-    /// `start` launches them, until the last ends: how each program's run ended, in launch
-    /// order.
+    /// `start` launches them, until the last ends or PawPrint stops the machine at an undefined
+    /// value; either is returned, never raised.
     ///
     /// Fails loudly if every program is stuck, naming where each one's threads are.
     let run
         (loggerFactory : ILoggerFactory)
         (machineConfig : MachineConfig)
         (launches : ProgramLaunch list)
-        : (ProcessId * RunEnd) list
+        : MultiRunEnd
         =
         let logger = loggerFactory.CreateLogger "Program"
 
-        let rec go (driver : MultiProgram) : (ProcessId * RunEnd) list =
+        let rec go (driver : MultiProgram) : MultiRunEnd =
             match step loggerFactory logger driver with
             | MultiStepOutcome.Stepped (driver, _, _) -> go driver
-            | MultiStepOutcome.Finished (ends, _) -> ends
+            | MultiStepOutcome.Finished (ends, _) -> MultiRunEnd.Finished ends
+            | MultiStepOutcome.StoppedAtUndefinedValue (stopped, pid, thread, observation) ->
+                MultiRunEnd.StoppedAtUndefinedValue (stopped, pid, thread, observation)
             | MultiStepOutcome.Deadlocked (_, stuck) ->
                 let described =
                     stuck

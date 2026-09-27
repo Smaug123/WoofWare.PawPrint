@@ -676,15 +676,6 @@ public sealed class Bystander
                     ]
             ]
 
-    // Parked on a hole that has nothing to do with forwarding, and which no `GetTypeCore` caller
-    // can dodge: a nested name reaches the QCall as `ReadOnlySpan<string> nestedTypeNames`, and
-    // the `LibraryImport` stub that marshals it reads each destination slot of its `localloc`
-    // buffer before writing it (`Ldind_i` at IL_006E of `RuntimeAssembly.GetTypeCore`, into a
-    // local the very next store overwrites). CoreLib is compiled `[SkipLocalsInit]`, so PawPrint
-    // marks that buffer `Uninitialized` and refuses the read outright, which is the whole point of
-    // modelling initialisation — but it stops every nested lookup, forwarded or not, before the
-    // QCall is even entered. Un-park once such a read is allowed to yield a value.
-    [<Explicit "blocked on reading an uninitialised localloc buffer in the span-marshalling stub">]
     [<Test>]
     let ``a nested type under a forwarded type is looked up in the defining assembly`` () : unit =
         {
@@ -727,10 +718,6 @@ class Program
         |> CrossAssemblyHarness.runTest
 
 
-    // Parked on the same stub as the case above: `AssemblyNative_GetTypeCoreIgnoreCase` is handed
-    // its nested names through the same `ReadOnlySpan<string>` marshalling, UTF-16 rather than
-    // UTF-8, so no nested lookup reaches it either.
-    [<Explicit "blocked on reading an uninitialised localloc buffer in the span-marshalling stub">]
     [<Test>]
     let ``a nested name folds too, under a forwarded type`` () : unit =
         {

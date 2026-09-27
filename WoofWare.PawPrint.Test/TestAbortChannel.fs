@@ -40,6 +40,26 @@ module TestAbortChannel =
             Message = Some "boom"
         }
 
+    /// An observation for these tests to carry. Its contents are arbitrary, as for `unhandled`.
+    let private observation () : UndefinedValueObservation =
+        {
+            Value =
+                match
+                    UndefinedValue.tryOfBytes
+                        UndefinedPrimitive.Bool
+                        [
+                            ValueByte.Undefined
+                                {
+                                    Memory = UninitialisedMemory.Native (NativeMemoryBlockId 0)
+                                    Offset = 0
+                                }
+                        ]
+                with
+                | ValueSome u -> u
+                | ValueNone -> failwith "unreachable: the image is undefined"
+            Use = UndefinedValueUse.ExitCode
+        }
+
     /// An unhandled exception for these tests to carry. Its contents are arbitrary: the conversion
     /// under test inspects the case and passes the payload through.
     let private unhandled () : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
@@ -80,6 +100,23 @@ module TestAbortChannel =
                 $"expected a step with an unhandled exception to become ExecutionResult.UnhandledException, got %O{other}"
 
     [<Test>]
+    let ``a step that observed an undefined value becomes a terminating outcome naming the thread`` () : unit =
+        let thread = ThreadId 3
+        let o = observation ()
+
+        let converted =
+            ExecutionResult.Stepped (state (), WhatWeDid.UndefinedValueObserved o, StepEffect.NoEffect)
+            |> AbstractMachine.surfaceTerminatingStep thread
+
+        match converted with
+        | ExecutionResult.UndefinedValueObserved (_, observingThread, observed) ->
+            observingThread |> shouldEqual thread
+            obj.ReferenceEquals (observed, o) |> shouldEqual true
+        | other ->
+            failwith
+                $"expected a step that observed an undefined value to become ExecutionResult.UndefinedValueObserved, got %O{other}"
+
+    [<Test>]
     let ``every other WhatWeDid passes through untouched`` () : unit =
         // The conversion must be keyed on the two terminating variants and nothing else: a
         // `Stepped` that it rewrote would rob the scheduler of the outcome it needs to do its
@@ -97,11 +134,11 @@ module TestAbortChannel =
             ]
 
         // Tie the hand-written table to the type: a variant added later must be classified here
-        // rather than silently inheriting the pass-through arm. The abort and unhandled-exception
-        // cases are the two deliberately absent, hence the `+ 2`.
+        // rather than silently inheriting the pass-through arm. The abort, unhandled-exception and
+        // undefined-value cases are the three deliberately absent, hence the `+ 3`.
         FSharpType.GetUnionCases typeof<WhatWeDid>
         |> Array.length
-        |> shouldEqual (variants.Length + 2)
+        |> shouldEqual (variants.Length + 3)
 
         for variant in variants do
             let stepped = ExecutionResult.Stepped (state (), variant, StepEffect.NoEffect)

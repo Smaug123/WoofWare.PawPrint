@@ -495,7 +495,8 @@ module DebuggerServer =
         | EvalStackValue.NativeInt _
         | EvalStackValue.Float _
         | EvalStackValue.ManagedPointer _
-        | EvalStackValue.UserDefinedValueType _ -> ()
+        | EvalStackValue.UserDefinedValueType _
+        | EvalStackValue.Undefined _ -> ()
 
         writer.WriteEndObject ()
 
@@ -511,7 +512,8 @@ module DebuggerServer =
         | CliType.Bool _
         | CliType.Char _
         | CliType.RuntimePointer _
-        | CliType.ValueType _ -> ()
+        | CliType.ValueType _
+        | CliType.Undefined _ -> ()
 
         writer.WriteEndObject ()
 
@@ -583,6 +585,13 @@ module DebuggerServer =
         | Running of Program.PreparedProgram * stepsExecuted : int64
         | Finished of RunOutcome * stepsExecuted : int64
         | Deadlocked of Program.PreparedProgram * stuckThreads : string * stepsExecuted : int64
+        /// PawPrint stopped the run at an undefined value; the process did not end. The state is
+        /// the one from before the observing step.
+        | StoppedAtUndefinedValue of
+            IlMachineState *
+            observingThread : ThreadId *
+            UndefinedValueObservation *
+            stepsExecuted : int64
 
     type private DebugEvent =
         {
@@ -599,6 +608,7 @@ module DebuggerServer =
         | SessionState.Running (prepared, _) -> prepared.State
         | SessionState.Finished (outcome, _) -> RunOutcome.state outcome
         | SessionState.Deadlocked (prepared, _, _) -> prepared.State
+        | SessionState.StoppedAtUndefinedValue (state, _, _, _) -> state
 
     let private prepareSession
         (loggerFactory : ILoggerFactory)
@@ -629,6 +639,8 @@ module DebuggerServer =
         with
         | Program.ProgramStartResult.Ready prepared -> SessionState.Running (prepared, 0L)
         | Program.ProgramStartResult.CompletedBeforeMain (RunEnd.Ended outcome) -> SessionState.Finished (outcome, 0L)
+        | Program.ProgramStartResult.CompletedBeforeMain (RunEnd.StoppedAtUndefinedValue (state, thread, observation)) ->
+            SessionState.StoppedAtUndefinedValue (state, thread, observation, 0L)
 
     let private eventOfStepOutcome (stepNumber : int64) (outcome : Program.ProgramStepOutcome) : DebugEvent =
         match outcome with
@@ -639,6 +651,7 @@ module DebuggerServer =
                 | WhatWeDid.Executed
                 | WhatWeDid.Aborted _
                 | WhatWeDid.UnhandledException _
+                | WhatWeDid.UndefinedValueObserved _
                 | WhatWeDid.VoluntaryYield _
                 | WhatWeDid.SuspendedForClassInit
                 | WhatWeDid.SuspendedForManagedCall
@@ -687,6 +700,15 @@ module DebuggerServer =
                 BlockedOnClassInitThread = None
                 Effect = StepEffect.NoEffect
             }
+        | Program.ProgramStepOutcome.StoppedAtUndefinedValue (_, thread, observation) ->
+            {
+                StepNumber = stepNumber
+                Kind = "stoppedAtUndefinedValue"
+                Thread = Some (threadIdValue thread)
+                Detail = string observation
+                BlockedOnClassInitThread = None
+                Effect = StepEffect.NoEffect
+            }
 
     let private stepSession
         (loggerFactory : ILoggerFactory)
@@ -708,6 +730,11 @@ module DebuggerServer =
                 SessionState.Finished (runOutcome, steps), eventOfStepOutcome steps outcome, true
             | Program.ProgramStepOutcome.Deadlocked (prepared, stuck) ->
                 SessionState.Deadlocked (prepared, stuck, steps), eventOfStepOutcome steps outcome, false
+            | Program.ProgramStepOutcome.StoppedAtUndefinedValue (prepared, thread, observation) ->
+                // The observing step did not retire, so it is not counted.
+                SessionState.StoppedAtUndefinedValue (prepared.State, thread, observation, steps),
+                eventOfStepOutcome steps outcome,
+                false
         | SessionState.Finished (_, steps) ->
             session,
             {
@@ -726,6 +753,17 @@ module DebuggerServer =
                 Kind = "alreadyDeadlocked"
                 Thread = None
                 Detail = stuck
+                BlockedOnClassInitThread = None
+                Effect = StepEffect.NoEffect
+            },
+            false
+        | SessionState.StoppedAtUndefinedValue (_, thread, observation, steps) ->
+            session,
+            {
+                StepNumber = steps
+                Kind = "alreadyStoppedAtUndefinedValue"
+                Thread = Some (threadIdValue thread)
+                Detail = string observation
                 BlockedOnClassInitThread = None
                 Effect = StepEffect.NoEffect
             },
@@ -796,6 +834,11 @@ module DebuggerServer =
             writer.WriteNumber ("entryThread", threadIdValue prepared.EntryThread)
             writer.WriteNumber ("lastRan", threadIdValue prepared.LastRan)
             writer.WriteString ("stuckThreads", stuck)
+        | SessionState.StoppedAtUndefinedValue (_, thread, observation, steps) ->
+            writer.WriteString ("status", "stoppedAtUndefinedValue")
+            writer.WriteNumber ("stepsExecuted", steps)
+            writer.WriteNumber ("thread", threadIdValue thread)
+            writer.WriteString ("observation", string observation)
 
         writer.WritePropertyName "heap"
         writer.WriteStartObject ()
@@ -2199,7 +2242,8 @@ module DebuggerServer =
         match session with
         | SessionState.Running (_, steps)
         | SessionState.Finished (_, steps)
-        | SessionState.Deadlocked (_, _, steps) -> steps
+        | SessionState.Deadlocked (_, _, steps)
+        | SessionState.StoppedAtUndefinedValue (_, _, _, steps) -> steps
 
     /// Why a trace page ended.
     [<RequireQualifiedAccess>]
@@ -2344,7 +2388,8 @@ module DebuggerServer =
         let rec advance (cursor : TraceCursor) : TraceCursor * TraceStop =
             match cursor.Session with
             | SessionState.Finished _
-            | SessionState.Deadlocked _ -> cursor, TraceStop.SessionEnded
+            | SessionState.Deadlocked _
+            | SessionState.StoppedAtUndefinedValue _ -> cursor, TraceStop.SessionEnded
             | SessionState.Running _ ->
 
             if cursor.StepsRun >= request.MaxSteps then

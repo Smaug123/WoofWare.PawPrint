@@ -293,6 +293,34 @@ module AppProgram =
                 else
                     134
 
+            // The guest was about to use a value nothing wrote. Nothing a real .NET process does:
+            // it would have gone on with whatever the memory held, so from here its behaviour is
+            // undefined and PawPrint does not pick one. The process has not ended, so there is no
+            // termination for the kernel to agree with. The exit code is `EX_SOFTWARE` from
+            // sysexits.h, which no .NET runtime termination produces, so a script can tell this
+            // apart from both a guest's own exit and an abort.
+            let reportUndefinedValue
+                (state : IlMachineState)
+                (thread : ThreadId)
+                (observation : UndefinedValueObservation)
+                : int
+                =
+                drainRemaining state
+
+                logger.LogCritical (
+                    "Guest used an undefined value on thread {Thread}, so its behaviour from here is undefined: {Observation}",
+                    thread,
+                    observation
+                )
+
+                70
+
+            let onRunEnd (runEnd : RunEnd) : int =
+                match runEnd with
+                | RunEnd.Ended outcome -> onOutcome outcome
+                | RunEnd.StoppedAtUndefinedValue (state, thread, observation) ->
+                    reportUndefinedValue state thread observation
+
             let consume (effect : StepEffect) : unit =
                 match effect with
                 | StepEffect.WroteToFd (role, bytes) -> writeEntry role bytes
@@ -307,6 +335,8 @@ module AppProgram =
                 | Program.ProgramStepOutcome.Completed outcome -> onOutcome outcome
                 | Program.ProgramStepOutcome.Deadlocked (prepared, stuck) ->
                     reportDeadlock "execution" prepared.State stuck
+                | Program.ProgramStepOutcome.StoppedAtUndefinedValue (prepared, thread, observation) ->
+                    reportUndefinedValue prepared.State thread observation
 
             // Startup runs guest code too — the AppContext seed, then class initialisers — so
             // it is stepped for exactly the same reason `Main` is: a static initialiser that
@@ -319,8 +349,8 @@ module AppProgram =
                     pumpStartup startup
                 | Program.StartupStepOutcome.WorkerTerminated (startup, _terminatingThread) -> pumpStartup startup
                 | Program.StartupStepOutcome.PhaseAdvanced startup -> pumpStartup startup
-                | Program.StartupStepOutcome.Completed (Program.ProgramStartResult.CompletedBeforeMain (RunEnd.Ended outcome)) ->
-                    onOutcome outcome
+                | Program.StartupStepOutcome.Completed (Program.ProgramStartResult.CompletedBeforeMain runEnd) ->
+                    onRunEnd runEnd
                 | Program.StartupStepOutcome.Completed (Program.ProgramStartResult.Ready prepared) ->
                     // Startup's own bookkeeping (installing the `Main` frame, allocating argv)
                     // performs no guest writes, so this is normally a no-op; it keeps the
@@ -328,6 +358,8 @@ module AppProgram =
                     drainRemaining prepared.State
                     pump prepared
                 | Program.StartupStepOutcome.Deadlocked (startup, stuck) -> reportDeadlock "startup" startup.State stuck
+                | Program.StartupStepOutcome.StoppedAtUndefinedValue (startup, thread, observation) ->
+                    reportUndefinedValue startup.State thread observation
 
             Program.beginStartup
                 loggerFactory
