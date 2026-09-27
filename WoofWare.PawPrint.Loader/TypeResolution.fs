@@ -375,7 +375,7 @@ module TypeResolution =
     /// <c>Error</c> is a plain absence: every assembly on the way was bound, and the last one does
     /// not declare the name. An assembly that cannot be bound fails loudly instead.
     /// </remarks>
-    let rec internal resolveTypeRefIdentity
+    let rec resolveTypeRefIdentity
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (referencedInAssembly : DumpedAssembly)
