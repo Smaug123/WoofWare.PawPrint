@@ -775,6 +775,21 @@ module AbstractMachine =
         : ExecutionResult
         =
         let logger = logger loggerFactory
+        let stateBeforeStep = state
+
+        // A step that observes an undefined value did not happen: whatever the path that found the
+        // value had done by then (popped operands, a delegate's frame, a callee's arguments), the
+        // stop is reported at the state this step started from, so stepping it again stops again.
+        let reportedBeforeStep (result : ExecutionResult) : ExecutionResult =
+            match result with
+            | ExecutionResult.UndefinedValueObserved (_, observingThread, observation) ->
+                ExecutionResult.UndefinedValueObserved (stateBeforeStep, observingThread, observation)
+            | ExecutionResult.Terminated _
+            | ExecutionResult.ProcessExit _
+            | ExecutionResult.Aborted _
+            | ExecutionResult.SignalTerminated _
+            | ExecutionResult.Stepped _
+            | ExecutionResult.UnhandledException _ -> result
 
         let ran =
             match state.ThreadState.[thread].MethodState.PendingTypeInit with
@@ -787,3 +802,4 @@ module AbstractMachine =
         ran
         |> AssemblyLoadEvent.announceBeforeStep loggerFactory baseClassTypes thread state
         |> surfaceTerminatingStep thread
+        |> reportedBeforeStep

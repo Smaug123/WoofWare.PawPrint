@@ -716,13 +716,22 @@ type CliType =
             )
 
         if defined then
-            bytes
-            |> Array.map (fun b ->
-                match b with
-                | ValueByte.Defined b -> b
-                | ValueByte.Undefined _ -> failwith "unreachable: every byte was just checked to be defined"
-            )
-            |> CliType.OfBytesLike template
+            let numbers =
+                bytes
+                |> Array.map (fun b ->
+                    match b with
+                    | ValueByte.Defined b -> b
+                    | ValueByte.Undefined _ -> failwith "unreachable: every byte was just checked to be defined"
+                )
+
+            match CliType.TryPrimitiveShape template with
+            // A reference or pointer has one value a byte image spells: all zeros is null. Any other
+            // image names nothing, and `OfBytesLike` refuses it.
+            | Some (UndefinedPrimitive.ObjectRef | UndefinedPrimitive.RuntimePointer as kind) when
+                Array.forall ((=) 0uy) numbers
+                ->
+                CliType.ZeroOfPrimitive kind
+            | _ -> CliType.OfBytesLike template numbers
         else
 
         match template with
