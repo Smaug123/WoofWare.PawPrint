@@ -125,7 +125,7 @@ class Program
             let image = Roslyn.compile [ guest ]
 
             match runUnderPawPrint platform (Set.ofList [ Signal.SIGHUP ; Signal.SIGUSR2 ]) usr2 image with
-            | RunOutcome.NormalExit (state, _) -> state.LatchedExitCode |> shouldEqual 0
+            | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 0
             | other -> failwith $"PawPrint: expected a clean exit, got %O{other}"
 
             RealRuntime.executeWithInheritedIgnores [ 1 ; usr2 ] [| string<int> usr2 |] image
@@ -160,7 +160,7 @@ class Program
             let image = Roslyn.compile [ nonCanceledInterruptGuest ]
 
             match runUnderPawPrint platform (Set.singleton Signal.SIGINT) 0 image with
-            | RunOutcome.NormalExit (state, _) -> state.LatchedExitCode |> shouldEqual 0
+            | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 0
             | other -> failwith $"PawPrint: expected a clean exit, got %O{other}"
 
             RealRuntime.executeWithInheritedIgnores [ 2 ] [||] image

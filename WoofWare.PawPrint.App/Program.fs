@@ -224,53 +224,25 @@ module AppProgram =
                     writeEntry log.[i].Role log.[i].Bytes
 
             let onOutcome (outcome : RunOutcome) : int =
+                drainRemaining (RunOutcome.state outcome)
+
+                let hostIsWindows = RuntimeInformation.IsOSPlatform OSPlatform.Windows
+                let code = AppExitCode.compute hostIsWindows outcome
+
                 match outcome with
-                | RunOutcome.NormalExit (state, _)
-                | RunOutcome.ProcessExit (state, _) ->
-                    drainRemaining state
-                    // What the host reads at shutdown: `Main`'s return value if it had one,
-                    // else the guest's last `Environment.ExitCode` write, else 0.
-                    state.LatchedExitCode
-                | RunOutcome.Aborted (state, _thread, fatal) ->
-                    // CoreCLR's `EEPolicy::HandleFatalError` ends in
-                    // `CrashDumpAndTerminateProcess(exitCode)` (eepolicy.cpp:62), where `exitCode`
-                    // is the `COR_E_*` value it was handed. On Unix that is `abort()`, so the
-                    // shell sees 128 + SIGABRT = 134 whichever fatal error it was; on Windows it
-                    // is `TerminateProcess` with the HRESULT itself, so the two differ there.
-                    drainRemaining state
+                | RunOutcome.NormalExit _
+                | RunOutcome.ProcessExit _ -> ()
+                | RunOutcome.Aborted (_, _thread, fatal, _) ->
                     let msg = fatal.Message |> Option.defaultValue "<no message>"
-
                     logger.LogCritical ("Guest aborted with {FatalErrorCode}: {FatalErrorMessage}", fatal.Code, msg)
-
-                    if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
-                        FatalErrorCode.toHResult fatal.Code
-                    else
-                        134
-                | RunOutcome.SignalTerminated (state, signal, coreDumped) ->
-                    // A real process killed by a signal reaches its parent
-                    // as `WIFSIGNALED`, which a shell and .NET's
-                    // `Process.ExitCode` both render as `128 + signo`. This
-                    // host exits with that code rather than dying of the
-                    // signal itself, under the numbering of the platform the
-                    // guest simulated, which is the shell that process would
-                    // have had.
-                    drainRemaining state
-
-                    let signo =
-                        Signal.toRawSignoUnder (SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform) signal
-
+                | RunOutcome.SignalTerminated (_, signal, coreDumped) ->
                     logger.LogInformation (
-                        "Guest terminated by POSIX signal {SignalName} (signo {Signo}, core dumped: {CoreDumped}); exiting with code {ExitCode}",
+                        "Guest terminated by POSIX signal {SignalName} (core dumped: {CoreDumped}); exiting with code {ExitCode}",
                         sprintf "%O" signal,
-                        signo,
                         coreDumped,
-                        128 + signo
+                        code
                     )
-
-                    128 + signo
-                | RunOutcome.GuestUnhandledException (state, _thread, exn) ->
-                    drainRemaining state
-
+                | RunOutcome.GuestUnhandledException (state, _thread, exn, _) ->
                     // A PawPrint diagnostic, not CoreCLR's "Unhandled exception." banner: that is
                     // `Exception.ToString()`, which only guest code can compute, so it is not
                     // written to the guest's stderr as though the guest had printed it.
@@ -279,12 +251,17 @@ module AppProgram =
                         UnhandledExceptionReport.describe state exn
                     )
 
-                    // On Windows the .NET runtime exits with 0xE0434352 (SEH);
-                    // on Unix it aborts with SIGABRT (exit code 128 + 6 = 134).
-                    if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
-                        -532462766
-                    else
-                        134
+                // A Windows exit code follows Windows' conventions, which have no wait
+                // status to compare with.
+                if not hostIsWindows then
+                    let numbering =
+                        SimulatedUnixPlatform.signalNumbering (RunOutcome.state outcome).Kernel.UnixPlatform
+
+                    match AppExitCode.checkConsistent numbering code (RunOutcome.termination outcome) with
+                    | Ok () -> ()
+                    | Error disagreement -> failwith $"PawPrint's exit code disagrees with its kernel: %s{disagreement}"
+
+                code
 
             // The stepping loop is driven here rather than by calling `Program.run`,
             // because `Program.run` hands back only a terminal `RunOutcome` and the

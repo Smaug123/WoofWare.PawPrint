@@ -76,8 +76,8 @@ class Program
     /// The exit code a cleanly terminated guest latched.
     let private exitCodeOf (outcome : RunOutcome) : int =
         match outcome with
-        | RunOutcome.NormalExit (state, _)
-        | RunOutcome.ProcessExit (state, _) -> state.LatchedExitCode
+        | RunOutcome.NormalExit (state, _, _)
+        | RunOutcome.ProcessExit (state, _, _) -> state.LatchedExitCode
         | other -> failwith $"expected the guest to terminate cleanly, got %O{other}"
 
     let private runOn (kernel : KernelConfig) (name : string) (source : string) : RunOutcome =

@@ -35,14 +35,14 @@ module TestRaces =
     /// claim.
     let private exitCodeOfOutcome (sourceName : string) (seed : uint64 option) (outcome : RunOutcome) : int =
         match outcome with
-        | RunOutcome.NormalExit (terminalState, _)
-        | RunOutcome.ProcessExit (terminalState, _) -> terminalState.LatchedExitCode
-        | RunOutcome.Aborted (_, _, fatal) ->
+        | RunOutcome.NormalExit (terminalState, _, _)
+        | RunOutcome.ProcessExit (terminalState, _, _) -> terminalState.LatchedExitCode
+        | RunOutcome.Aborted (_, _, fatal, _) ->
             let m = fatal.Message |> Option.defaultValue "<no message>"
             failwith $"%s{sourceName} (seed=%A{seed}) aborted (%O{fatal.Code}): %s{m}"
         | RunOutcome.SignalTerminated (_, signal, _) ->
             failwith $"%s{sourceName} (seed=%A{seed}) was terminated by POSIX signal %O{signal}"
-        | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+        | RunOutcome.GuestUnhandledException (finalState, _, exn, _) ->
             failwith
                 $"%s{sourceName} (seed=%A{seed}) threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
 

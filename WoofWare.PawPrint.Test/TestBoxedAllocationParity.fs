@@ -106,8 +106,8 @@ public static class Program
 
         try
             match Program.run loggerFactory (Some sourceName) peImage (HostConfig.Default dotnetRuntimes) with
-            | RunOutcome.NormalExit (state, thread)
-            | RunOutcome.ProcessExit (state, thread) -> state, thread, state.LatchedExitCode
+            | RunOutcome.NormalExit (state, thread, _)
+            | RunOutcome.ProcessExit (state, thread, _) -> state, thread, state.LatchedExitCode
             | other -> failwith $"guest did not exit normally: %O{other}"
         with _ ->
             for message in messages () do

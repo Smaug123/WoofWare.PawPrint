@@ -55,6 +55,16 @@ module TestSignalState =
     let private empty : SignalState<TestTask, TestHandler> =
         initial SignalNumbering.Linux
 
+    /// The signals a process that `generation` left running has.
+    let private continuesWith
+        (generation : SignalGeneration<TestTask, TestHandler>)
+        : SignalState<TestTask, TestHandler>
+        =
+        match generation with
+        | SignalGeneration.ProcessContinues state -> state
+        | SignalGeneration.ProcessTerminated _
+        | SignalGeneration.ProcessStopped _ -> failwith $"expected the process to carry on, got %A{generation}"
+
     let private t0 : TestTask = TestTask 0
     let private t1 : TestTask = TestTask 1
     let private t2 : TestTask = TestTask 2
@@ -778,13 +788,8 @@ module TestSignalState =
                 Target = ValueNone
             }
 
-        let generation, s' =
-            SignalState.generate CoreDumps.Suppressed (liveThreads [ t0 ]) entry empty
-
-        generation
+        SignalState.generate CoreDumps.Suppressed (liveThreads [ t0 ]) entry empty
         |> shouldEqual (SignalGeneration.ProcessTerminated (Signal.SIGTERM, false))
-        // Nothing is left pending for a delivery that the termination replaced.
-        s' |> shouldEqual empty
 
         // SIGKILL cannot be blocked, so a mask naming it changes nothing.
         let masked = empty |> SignalState.block t0 (Signal.Other 9)
@@ -797,7 +802,6 @@ module TestSignalState =
                 Target = ValueNone
             }
             masked
-        |> fst
         |> shouldEqual (SignalGeneration.ProcessTerminated (Signal.Other 9, false))
 
     [<Test>]
@@ -810,7 +814,7 @@ module TestSignalState =
                 Target = ValueNone
             }
             empty
-        |> shouldEqual (SignalGeneration.ProcessStopped (Signal.Other 19), empty)
+        |> shouldEqual (SignalGeneration.ProcessStopped (Signal.Other 19, empty))
 
     [<Test>]
     let ``a fatal signal nobody can receive yet is queued, not fatal`` () : unit =
@@ -823,17 +827,17 @@ module TestSignalState =
         // Every live thread blocks it...
         let blocked = empty |> SignalState.block t0 Signal.SIGTERM
 
-        let generation, s' =
+        let s' =
             SignalState.generate CoreDumps.Suppressed (liveThreads [ t0 ]) entry blocked
+            |> continuesWith
 
-        generation |> shouldEqual SignalGeneration.ProcessContinues
         SignalState.pending s' |> shouldEqual [ entry ]
 
         // ...or there is no live thread at all.
-        let generation, s' =
+        let s' =
             SignalState.generate CoreDumps.Suppressed (liveThreads []) entry empty
+            |> continuesWith
 
-        generation |> shouldEqual SignalGeneration.ProcessContinues
         SignalState.pending s' |> shouldEqual [ entry ]
 
         // A thread-directed one whose target blocks it waits even though
@@ -843,10 +847,10 @@ module TestSignalState =
                 Target = ValueSome t0
             }
 
-        let generation, s' =
+        let s' =
             SignalState.generate CoreDumps.Suppressed (liveThreads [ t0 ; t1 ]) directed blocked
+            |> continuesWith
 
-        generation |> shouldEqual SignalGeneration.ProcessContinues
         SignalState.pending s' |> shouldEqual [ directed ]
 
     [<Test>]
@@ -859,10 +863,10 @@ module TestSignalState =
 
         let claimed = empty |> enable Signal.SIGTERM
 
-        let generation, s' =
+        let s' =
             SignalState.generate CoreDumps.Suppressed (liveThreads [ t0 ]) entry claimed
+            |> continuesWith
 
-        generation |> shouldEqual SignalGeneration.ProcessContinues
         SignalState.pending s' |> shouldEqual [ entry ]
 
     [<Test>]
@@ -877,12 +881,12 @@ module TestSignalState =
             let s = initial numbering
 
             SignalState.generate CoreDumps.Suppressed (liveThreads [ t0 ]) entry s
-            |> shouldEqual (SignalGeneration.ProcessContinues, s)
+            |> shouldEqual (SignalGeneration.ProcessContinues s)
 
             // Nothing is left for a later handler to claim.
             let claimedLater =
                 SignalState.generate CoreDumps.Suppressed (liveThreads [ t0 ]) entry s
-                |> snd
+                |> continuesWith
                 |> enable Signal.SIGCHLD
 
             SignalState.nextDelivery CoreDumps.Suppressed (liveThreads [ t0 ]) claimedLater
@@ -899,10 +903,10 @@ module TestSignalState =
 
         let blocked = empty |> SignalState.block t0 Signal.SIGCHLD
 
-        let generation, s' =
+        let s' =
             SignalState.generate CoreDumps.Suppressed (liveThreads [ t0 ]) entry blocked
+            |> continuesWith
 
-        generation |> shouldEqual SignalGeneration.ProcessContinues
         SignalState.pending s' |> shouldEqual [ entry ]
 
     [<Test>]
@@ -1339,6 +1343,14 @@ module TestSignalState =
     let private referenceCore (numbering : SignalNumbering) (coreDumps : CoreDumps) (signal : Signal) : bool =
         coreDumps = CoreDumps.Written && Signal.dumpsCoreUnder numbering signal
 
+    /// The reference's `SignalGeneration`: what generating a signal does, with
+    /// the state the process carries on with where it carries on.
+    [<RequireQualifiedAccess>]
+    type private ReferenceGeneration =
+        | Continues of ReferenceState
+        | Terminated of Signal * coreDumped : bool
+        | Stopped of Signal * ReferenceState
+
     /// What generating `entry` (canonical) does at once, and the state after.
     /// A default-disposition signal some thread could receive takes its
     /// default here: terminate, stop, or be discarded if the default ignores
@@ -1349,23 +1361,22 @@ module TestSignalState =
         (live : TestTask list)
         (entry : PendingSignal<TestTask>)
         (r : ReferenceState)
-        : SignalGeneration * ReferenceState
+        : ReferenceGeneration
         =
         match referenceBeginGeneration numbering entry.Signal r with
-        | None -> SignalGeneration.ProcessContinues, r
+        | None -> ReferenceGeneration.Continues r
         | Some r ->
             let receivable = (referenceReceiver live r entry).IsSome
 
             match
                 receivable, referenceDisposition r entry.Signal, Signal.defaultDispositionUnder numbering entry.Signal
             with
-            | true, SignalDisposition.Ignore, _ -> SignalGeneration.ProcessContinues, r
+            | true, SignalDisposition.Ignore, _ -> ReferenceGeneration.Continues r
             | true, SignalDisposition.Default, DefaultDisposition.Terminate ->
-                SignalGeneration.ProcessTerminated (entry.Signal, referenceCore numbering coreDumps entry.Signal), r
-            | true, SignalDisposition.Default, DefaultDisposition.Stop ->
-                SignalGeneration.ProcessStopped entry.Signal, r
-            | true, SignalDisposition.Default, DefaultDisposition.Ignore -> SignalGeneration.ProcessContinues, r
-            | _, _, _ -> SignalGeneration.ProcessContinues, referenceAdmit numbering entry r
+                ReferenceGeneration.Terminated (entry.Signal, referenceCore numbering coreDumps entry.Signal)
+            | true, SignalDisposition.Default, DefaultDisposition.Stop -> ReferenceGeneration.Stopped (entry.Signal, r)
+            | true, SignalDisposition.Default, DefaultDisposition.Ignore -> ReferenceGeneration.Continues r
+            | _, _, _ -> ReferenceGeneration.Continues (referenceAdmit numbering entry r)
 
     /// Index-based scan over an array with a removal mask: distinct algorithm
     /// from the production module's recursive accumulator walk, so a
@@ -1508,9 +1519,9 @@ module TestSignalState =
 
             SignalState.enqueue e s, referenceEnqueue numbering entry r
         | Op.Generate (coreDumps, live, e) ->
-            let actual, s' = SignalState.generate coreDumps (liveThreads live) e s
+            let actual = SignalState.generate coreDumps (liveThreads live) e s
 
-            let expected, r' =
+            let expected =
                 referenceGenerate
                     numbering
                     coreDumps
@@ -1520,10 +1531,16 @@ module TestSignalState =
                     }
                     r
 
-            if actual <> expected then
-                failwith $"generate disagreed: actual=%A{actual}, reference=%A{expected}"
-
-            s', r'
+            // A terminated process has no state to carry on with, so the run goes on
+            // from the state the fatal signal was generated in, as if it had not been.
+            match actual, expected with
+            | SignalGeneration.ProcessContinues s', ReferenceGeneration.Continues r' -> s', r'
+            | SignalGeneration.ProcessStopped (a, s'), ReferenceGeneration.Stopped (b, r') when a = b -> s', r'
+            | SignalGeneration.ProcessTerminated (a, aCore), ReferenceGeneration.Terminated (b, bCore) when
+                a = b && aCore = bCore
+                ->
+                s, r
+            | _ -> failwith $"generate disagreed: actual=%A{actual}, reference=%A{expected}"
         | Op.Deliver (coreDumps, live) ->
             let actualDelivery, s' = SignalState.nextDelivery coreDumps (liveThreads live) s
             let expectedDelivery, r' = referenceNextDelivery numbering coreDumps live r
@@ -1739,13 +1756,13 @@ module TestSignalState =
                         }
 
                     match referenceGenerate numbering coreDumps live entry r with
-                    | SignalGeneration.ProcessTerminated (_, cored), _ ->
+                    | ReferenceGeneration.Terminated (_, cored) ->
                         observedGeneratedTerminations <- observedGeneratedTerminations + 1
 
                         if cored then
                             observedCoreDumps <- observedCoreDumps + 1
-                    | SignalGeneration.ProcessStopped _, _ -> observedGeneratedStops <- observedGeneratedStops + 1
-                    | SignalGeneration.ProcessContinues, r' ->
+                    | ReferenceGeneration.Stopped _ -> observedGeneratedStops <- observedGeneratedStops + 1
+                    | ReferenceGeneration.Continues r' ->
                         observedGeneratedQueued <- observedGeneratedQueued + 1
 
                         if r' = r && referenceIgnoredAtGeneration numbering r entry.Signal then

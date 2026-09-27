@@ -505,11 +505,11 @@ module TestPureCases =
     let private assertTasksMatchThreads (outcome : RunOutcome) : unit =
         let state =
             match outcome with
-            | RunOutcome.NormalExit (state, _)
-            | RunOutcome.ProcessExit (state, _)
-            | RunOutcome.Aborted (state, _, _)
+            | RunOutcome.NormalExit (state, _, _)
+            | RunOutcome.ProcessExit (state, _, _)
+            | RunOutcome.Aborted (state, _, _, _)
             | RunOutcome.SignalTerminated (state, _, _)
-            | RunOutcome.GuestUnhandledException (state, _, _) -> state
+            | RunOutcome.GuestUnhandledException (state, _, _, _) -> state
 
         EmulatedKernel.checkTaskInvariants (state.ThreadState |> Map.map (fun _ ts -> ts.Status)) state.Kernel
         |> shouldEqual []
@@ -589,7 +589,7 @@ public class Program
             KernelConfig.Default
             (fun _image pawPrintResult ->
                 match pawPrintResult with
-                | RunOutcome.NormalExit (terminalState, _) -> terminalState.LatchedExitCode |> shouldEqual 0
+                | RunOutcome.NormalExit (terminalState, _, _) -> terminalState.LatchedExitCode |> shouldEqual 0
                 | outcome ->
                     failwith
                         $"Expected the guest to catch a NullReferenceException from the null calli, got %O{outcome}"
@@ -747,7 +747,7 @@ class Program
             KernelConfig.Default
             (fun _image pawPrintResult ->
                 match pawPrintResult with
-                | RunOutcome.GuestUnhandledException (_, _, exn) ->
+                | RunOutcome.GuestUnhandledException (_, _, exn, _) ->
                     match exn.StackTrace with
                     | firstFrame :: _ -> firstFrame.Method.Name |> shouldEqual "Blow"
                     | [] -> failwith "Expected an unhandled rethrow to keep the original throw stack frame"
@@ -775,14 +775,14 @@ class Program
             KernelConfig.Default
             (fun _image pawPrintResult ->
                 match pawPrintResult with
-                | RunOutcome.NormalExit (terminalState, _) -> terminalState.LatchedExitCode |> shouldEqual 0
+                | RunOutcome.NormalExit (terminalState, _, _) -> terminalState.LatchedExitCode |> shouldEqual 0
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
-                | RunOutcome.Aborted (_, _, fatal) ->
+                | RunOutcome.Aborted (_, _, fatal, _) ->
                     let m = fatal.Message |> Option.defaultValue "<no message>"
                     failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
                 | RunOutcome.SignalTerminated (_, signal, _) ->
                     failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
-                | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+                | RunOutcome.GuestUnhandledException (finalState, _, exn, _) ->
                     failwith $"guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
             )
 
@@ -836,14 +836,14 @@ class Program
             }
             (fun _image pawPrintResult ->
                 match pawPrintResult with
-                | RunOutcome.NormalExit (terminalState, _) -> terminalState.LatchedExitCode |> shouldEqual 0
+                | RunOutcome.NormalExit (terminalState, _, _) -> terminalState.LatchedExitCode |> shouldEqual 0
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
-                | RunOutcome.Aborted (_, _, fatal) ->
+                | RunOutcome.Aborted (_, _, fatal, _) ->
                     let m = fatal.Message |> Option.defaultValue "<no message>"
                     failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
                 | RunOutcome.SignalTerminated (_, signal, _) ->
                     failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
-                | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+                | RunOutcome.GuestUnhandledException (finalState, _, exn, _) ->
                     failwith $"guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
             )
 
@@ -891,14 +891,14 @@ class Program
             }
             (fun _image pawPrintResult ->
                 match pawPrintResult with
-                | RunOutcome.NormalExit (terminalState, _) -> terminalState.LatchedExitCode |> shouldEqual 0
+                | RunOutcome.NormalExit (terminalState, _, _) -> terminalState.LatchedExitCode |> shouldEqual 0
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
-                | RunOutcome.Aborted (_, _, fatal) ->
+                | RunOutcome.Aborted (_, _, fatal, _) ->
                     let m = fatal.Message |> Option.defaultValue "<no message>"
                     failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
                 | RunOutcome.SignalTerminated (_, signal, _) ->
                     failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
-                | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+                | RunOutcome.GuestUnhandledException (finalState, _, exn, _) ->
                     failwith $"guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
             )
 
@@ -933,14 +933,14 @@ class Program
             KernelConfig.Default
             (fun _image pawPrintResult ->
                 match pawPrintResult with
-                | RunOutcome.NormalExit (terminalState, _) -> terminalState.LatchedExitCode |> shouldEqual 0
+                | RunOutcome.NormalExit (terminalState, _, _) -> terminalState.LatchedExitCode |> shouldEqual 0
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
-                | RunOutcome.Aborted (_, _, fatal) ->
+                | RunOutcome.Aborted (_, _, fatal, _) ->
                     let m = fatal.Message |> Option.defaultValue "<no message>"
                     failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
                 | RunOutcome.SignalTerminated (_, signal, _) ->
                     failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
-                | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+                | RunOutcome.GuestUnhandledException (finalState, _, exn, _) ->
                     failwith $"guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
             )
 
@@ -966,14 +966,14 @@ class Program
             KernelConfig.Default
             (fun _image pawPrintResult ->
                 match pawPrintResult with
-                | RunOutcome.Aborted (_, _, fatal) ->
+                | RunOutcome.Aborted (_, _, fatal, _) ->
                     fatal.Code |> shouldEqual FatalErrorCode.FailFast
                     fatal.Message |> shouldEqual (Some "boom")
                 | RunOutcome.NormalExit _ -> failwith "expected FailFast, got normal exit"
                 | RunOutcome.ProcessExit _ -> failwith "expected FailFast, got process exit"
                 | RunOutcome.SignalTerminated (_, signal, _) ->
                     failwith $"expected FailFast, got POSIX signal termination: %O{signal}"
-                | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+                | RunOutcome.GuestUnhandledException (finalState, _, exn, _) ->
                     failwith
                         $"expected FailFast, got guest unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
             )
@@ -1094,16 +1094,16 @@ class Program
     /// with the code the guest actually chose.
     let private expectExitCode (expected : int) (outcome : RunOutcome) : IlMachineState =
         match outcome with
-        | RunOutcome.NormalExit (terminalState, _) ->
+        | RunOutcome.NormalExit (terminalState, _, _) ->
             terminalState.LatchedExitCode |> shouldEqual expected
             terminalState
         | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
-        | RunOutcome.Aborted (_, _, fatal) ->
+        | RunOutcome.Aborted (_, _, fatal, _) ->
             let m = fatal.Message |> Option.defaultValue "<no message>"
             failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
         | RunOutcome.SignalTerminated (_, signal, _) ->
             failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
-        | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+        | RunOutcome.GuestUnhandledException (finalState, _, exn, _) ->
             failwith $"guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
 
     /// The variables `Environment.GetEnvironmentVariables` is asserted against

@@ -54,7 +54,7 @@ class WorkerAfterMain
 """
 
         match runSource "WorkerAfterMain.cs" source with
-        | RunOutcome.NormalExit (state, entryThread) ->
+        | RunOutcome.NormalExit (state, entryThread, _) ->
             stdoutOf state |> shouldEqual "worker ran\n"
             state.LatchedExitCode |> shouldEqual 3
 
@@ -223,7 +223,7 @@ class WorkerPrintsAfterMain
 """
 
         match runSource "WorkerPrintsAfterMain.cs" source with
-        | RunOutcome.NormalExit (state, entryThread) ->
+        | RunOutcome.NormalExit (state, entryThread, _) ->
             stdoutOf state |> shouldEqual "line 0\nline 1\nline 2\nline 3\nline 4\n"
             state.LatchedExitCode |> shouldEqual 6
         | other -> failwith $"expected a normal exit, got %O{other}"

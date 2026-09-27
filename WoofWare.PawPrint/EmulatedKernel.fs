@@ -1659,14 +1659,80 @@ module EmulatedKernel =
     /// so its task leaves the kernel, taking its signal mask and the signals
     /// pending on it alone.
     ///
-    /// Fails loudly on the library's refusals. None is reachable from a guest:
-    /// a thread finishes by returning from its bottom frame, so it is not parked
-    /// in a syscall, and the entry thread, which never goes through here, keeps
-    /// the process's task set from ever emptying.
+    /// Fails loudly on the library's refusals, and if the exit would end the
+    /// process. None is reachable from a guest: a thread finishes by returning
+    /// from its bottom frame, so it is not parked in a syscall, and the entry
+    /// thread, which never goes through here, keeps the process's task set from
+    /// ever emptying.
     let exitThread (thread : ThreadId) (kernel : EmulatedKernel) : EmulatedKernel =
-        match UnixTaskLifecycle.exitThread thread (unix kernel) with
-        | Ok system -> withUnix system kernel
+        // 0 is what glibc's `start_thread` passes to the thread-exit syscall once
+        // the thread's start routine has returned. Only a last task's status is ever
+        // read, and that is refused below.
+        match UnixTaskLifecycle.exitThread thread 0 (unix kernel) with
+        | Ok (TaskOutcome.Continues system) -> withUnix system kernel
+        | Ok (TaskOutcome.ProcessEnded ended) ->
+            failwith
+                $"EmulatedKernel.exitThread: %O{thread} was the process's last task, so its exit ended the process (%O{ended.Termination}); the entry thread never exits through here, so it should still have had a task"
         | Error refusal -> failwith $"EmulatedKernel.exitThread: %s{ThreadExitRefusal.describe refusal}"
+
+    /// `UnixTaskLifecycle.exitGroup` through this kernel: `thread` calls
+    /// `exit(3)` with `status`, which ends in `exit_group(2)`, and the process
+    /// ends. How it ended is the answer; the kernel is left as it stood.
+    ///
+    /// This is how a CoreCLR process that is not killed ends: the host passes the
+    /// latched exit code to `exit`, once `Main` has returned and the foreground
+    /// threads have finished, or at once from `Environment.Exit`.
+    let exitGroup (thread : ThreadId) (status : int32) (kernel : EmulatedKernel) : ProcessTermination =
+        (UnixTaskLifecycle.exitGroup thread status (unix kernel)).Termination
+
+    /// `abort(3)`, called by `thread` at the end of CoreCLR's `PROCAbort`, which is
+    /// how the runtime ends a process that failed fast or let an exception escape.
+    /// How the process ended is the answer; the kernel is left as it stood.
+    ///
+    /// `liveThreads` are the threads that could receive a signal, as
+    /// `UnixSignal.kill` takes them. Fails loudly if the process survives, or dies
+    /// of anything but SIGABRT.
+    let abort
+        (thread : ThreadId)
+        (liveThreads : ImmutableArray<ThreadId>)
+        (kernel : EmulatedKernel)
+        : ProcessTermination
+        =
+        let system = unix kernel
+
+        // `PROCAbort` first restores the dispositions CoreCLR's own handlers
+        // replaced (`SEHCleanupSignals`), and `abort` unblocks SIGABRT and raises
+        // it, then resets it to the default and raises it again if the process
+        // survived the first; either way the process meets SIGABRT at its default
+        // disposition, which is where this starts.
+        let signals =
+            system.Process.Signals
+            |> SignalState.setDisposition Signal.SIGABRT SignalDisposition.Default
+            |> SignalState.unblock thread Signal.SIGABRT
+
+        let system =
+            { system with
+                Process =
+                    { system.Process with
+                        Signals = signals
+                    }
+            }
+
+        // `raise` directs the signal at the calling thread; a signal whose default
+        // terminates the process kills it whichever thread takes it, so `kill`'s
+        // answer is the same.
+        let pid = ProcessId.toInt32 (UnixSystem.processId system)
+
+        let signo = Signal.toRawSignoUnder (SignalState.numbering signals) Signal.SIGABRT
+
+        match UnixSignal.kill liveThreads pid signo system with
+        | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
+            match ended.Termination with
+            | ProcessTermination.Signaled (Signal.SIGABRT, _) -> ended.Termination
+            | other -> failwith $"EmulatedKernel.abort: %O{thread} raised SIGABRT, but the process ended by %O{other}"
+        | other ->
+            failwith
+                $"EmulatedKernel.abort: %O{thread} raised SIGABRT at its default disposition, and the process did not die of it: %O{other}"
 
     /// Check that the kernel has a task for exactly the threads in `threads`
     /// that have not terminated, and that each task's park agrees with its
@@ -1964,7 +2030,7 @@ type KernelConfig =
         InheritedSignalIgnores : Set<Signal>
         /// Whether the simulated process writes a core dump when a signal
         /// whose default action dumps core kills it (`Signal.dumpsCoreUnder`),
-        /// which a host sees as `RunOutcome.SignalTerminated`'s core flag.
+        /// which a host sees as the core flag of `RunOutcome.termination`.
         /// Defaults to `Suppressed`, as under an `RLIMIT_CORE` of 0; see
         /// `UnixProcessState.CoreDumps`.
         CoreDumps : CoreDumps

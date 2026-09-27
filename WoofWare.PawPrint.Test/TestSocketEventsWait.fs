@@ -728,7 +728,7 @@ class QuietParkedWaiter
                 (HostConfig.Default dotnetRuntimes)
 
         match outcome with
-        | RunOutcome.NormalExit (state, _) ->
+        | RunOutcome.NormalExit (state, _, _) ->
             state.LatchedExitCode |> shouldEqual 0
             state.Kernel.StepCounter |> shouldBeSmallerThan 500_000L
         | other -> failwith $"expected a normal exit, got %O{other}"

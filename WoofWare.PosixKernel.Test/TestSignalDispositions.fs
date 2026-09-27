@@ -42,6 +42,13 @@ module TestSignalDispositions =
 
     let private live : ImmutableArray<Task> = ImmutableArray.Create t0
 
+    /// The signals a process that `generation` did not kill has.
+    let private stateAfter (generation : SignalGeneration<Task, Handler>) : SignalState<Task, Handler> =
+        match generation with
+        | SignalGeneration.ProcessContinues state
+        | SignalGeneration.ProcessStopped (_, state) -> state
+        | SignalGeneration.ProcessTerminated _ -> failwith $"expected the process to survive, got %A{generation}"
+
     let private everyNumbering : SignalNumbering list =
         [ SignalNumbering.Linux ; SignalNumbering.Darwin ]
 
@@ -116,17 +123,19 @@ module TestSignalDispositions =
                                 |> SignalState.block t0 signal
                                 |> SignalState.setDisposition signal (toDisposition from)
 
-                            let generation, generated =
-                                SignalState.generate
-                                    CoreDumps.Suppressed
-                                    live
-                                    {
-                                        Signal = signal
-                                        Target = target
-                                    }
-                                    blocked
-
-                            generation |> shouldEqual SignalGeneration.ProcessContinues
+                            let generated =
+                                match
+                                    SignalState.generate
+                                        CoreDumps.Suppressed
+                                        live
+                                        {
+                                            Signal = signal
+                                            Target = target
+                                        }
+                                        blocked
+                                with
+                                | SignalGeneration.ProcessContinues generated -> generated
+                                | other -> failwith $"expected the process to carry on, got %A{other}"
 
                             let isPending (s : SignalState<Task, Handler>) : bool =
                                 SignalState.pending s |> List.exists (fun e -> e.Signal = signal)
@@ -237,7 +246,7 @@ module TestSignalDispositions =
                                                     Target = target
                                                 }
                                                 s
-                                            |> snd
+                                            |> stateAfter
 
                                         let isPending (signal : Signal) (s : SignalState<Task, Handler>) : bool =
                                             SignalState.pending s |> List.exists (fun e -> e.Signal = signal)
@@ -300,7 +309,7 @@ module TestSignalDispositions =
                                         Target = ValueNone
                                     }
 
-                            let _, s =
+                            let s =
                                 SignalState.generate
                                     CoreDumps.Suppressed
                                     live
@@ -309,6 +318,7 @@ module TestSignalDispositions =
                                         Target = ValueNone
                                     }
                                     s
+                                |> stateAfter
 
                             let expected =
                                 numbering = SignalNumbering.Darwin

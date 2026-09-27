@@ -171,7 +171,7 @@ class Program
     let ``SIGPIPE, which the runtime ignores from startup, is discarded under either flavour`` () : unit =
         for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
             match run platform 13 with
-            | RunOutcome.NormalExit (state, _) -> state.LatchedExitCode |> shouldEqual 42
+            | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 42
             | other -> failwith $"expected kill(self, SIGPIPE) to be answered and the guest to exit 42, got %O{other}"
 
     [<Test>]

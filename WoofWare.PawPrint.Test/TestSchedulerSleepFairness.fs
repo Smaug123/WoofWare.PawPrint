@@ -79,7 +79,7 @@ module TestSchedulerSleepFairness =
 
             let rec loop (prepared : Program.PreparedProgram) : RunMeasurement =
                 match Program.stepPrepared loggerFactory logger prepared with
-                | Program.ProgramStepOutcome.Completed (RunOutcome.NormalExit (state, _)) ->
+                | Program.ProgramStepOutcome.Completed (RunOutcome.NormalExit (state, _, _)) ->
                     let code = state.LatchedExitCode
 
                     {

@@ -431,15 +431,15 @@ module DebuggerServer =
         writer.WriteStartObject ()
 
         match outcome with
-        | RunOutcome.NormalExit (state, thread) ->
+        | RunOutcome.NormalExit (state, thread, _) ->
             writer.WriteString ("kind", "normalExit")
             writer.WriteNumber ("thread", threadIdValue thread)
             writer.WriteNumber ("exitCode", state.LatchedExitCode)
-        | RunOutcome.ProcessExit (state, thread) ->
+        | RunOutcome.ProcessExit (state, thread, _) ->
             writer.WriteString ("kind", "processExit")
             writer.WriteNumber ("thread", threadIdValue thread)
             writer.WriteNumber ("exitCode", state.LatchedExitCode)
-        | RunOutcome.Aborted (_state, thread, fatal) ->
+        | RunOutcome.Aborted (_state, thread, fatal, _) ->
             writer.WriteString ("kind", "aborted")
             writer.WriteNumber ("thread", threadIdValue thread)
             writer.WriteString ("code", sprintf "%O" fatal.Code)
@@ -459,7 +459,7 @@ module DebuggerServer =
             writer.WriteNumber ("signo", signo)
             writer.WriteBoolean ("coreDumped", coreDumped)
             writer.WriteNumber ("exitCode", 128 + signo)
-        | RunOutcome.GuestUnhandledException (_, thread, exn) ->
+        | RunOutcome.GuestUnhandledException (_, thread, exn, _) ->
             writer.WriteString ("kind", "guestUnhandledException")
             writer.WriteNumber ("thread", threadIdValue thread)
             writer.WriteString ("exceptionObject", string exn.ExceptionObject)
@@ -485,11 +485,7 @@ module DebuggerServer =
     let private sessionState (session : SessionState) : IlMachineState =
         match session with
         | SessionState.Running (prepared, _) -> prepared.State
-        | SessionState.Finished (RunOutcome.NormalExit (state, _), _)
-        | SessionState.Finished (RunOutcome.ProcessExit (state, _), _)
-        | SessionState.Finished (RunOutcome.Aborted (state, _, _), _)
-        | SessionState.Finished (RunOutcome.SignalTerminated (state, _, _), _)
-        | SessionState.Finished (RunOutcome.GuestUnhandledException (state, _, _), _) -> state
+        | SessionState.Finished (outcome, _) -> RunOutcome.state outcome
         | SessionState.Deadlocked (prepared, _, _) -> prepared.State
 
     let private prepareSession
@@ -558,7 +554,7 @@ module DebuggerServer =
                 match outcome with
                 | RunOutcome.NormalExit _ -> "normal exit"
                 | RunOutcome.ProcessExit _ -> "process exit"
-                | RunOutcome.Aborted (_, _, fatal) -> sprintf "aborted (%O)" fatal.Code
+                | RunOutcome.Aborted (_, _, fatal, _) -> sprintf "aborted (%O)" fatal.Code
                 | RunOutcome.SignalTerminated _ -> "signal terminated"
                 | RunOutcome.GuestUnhandledException _ -> "guest unhandled exception"
 

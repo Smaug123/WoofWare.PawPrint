@@ -2,6 +2,7 @@ namespace WoofWare.PawPrint.Test
 
 open System.Threading.Tasks
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// Comparing one guest's behaviour under PawPrint against the same guest under the
 /// real .NET runtime.
@@ -71,11 +72,11 @@ module DifferentialOracle =
         // RealRuntimeResult.NormalExit, so normalise here.
         let normalisedPawPrint =
             match pawPrintResult with
-            | RunOutcome.ProcessExit (s, t) -> RunOutcome.NormalExit (s, t)
+            | RunOutcome.ProcessExit (s, t, termination) -> RunOutcome.NormalExit (s, t, termination)
             | other -> other
 
         match realResult, normalisedPawPrint with
-        | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, _) ->
+        | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, _, termination) ->
             if exitCode <> expectedReturnCode then
                 failwith
                     $"Real runtime exited with code %d{exitCode} for %s{fileName}, but the case declares ExpectedReturnCode = %d{expectedReturnCode}."
@@ -85,20 +86,40 @@ module DifferentialOracle =
             if pawPrintExitCode <> exitCode then
                 failwith
                     $"PawPrint exited with code %d{pawPrintExitCode} for %s{fileName}, but the real runtime exited with %d{exitCode}."
-        | RealRuntimeResult.UnhandledException realExn, RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+
+            // `Process.ExitCode` is how .NET renders the real process's wait status, which
+            // is how a shell renders it too.
+            let rendered =
+                ProcessTermination.shellStatus
+                    (SimulatedUnixPlatform.signalNumbering terminalState.Kernel.UnixPlatform)
+                    termination
+
+            if rendered <> exitCode then
+                failwith
+                    $"PawPrint's kernel says %s{fileName} ended by %O{termination}, which a parent reads as %d{rendered}, but the real runtime exited with %d{exitCode}."
+        | RealRuntimeResult.UnhandledException realExn,
+          RunOutcome.GuestUnhandledException (finalState, _, exn, termination) ->
             if not expectsUnhandledException then
                 failwith
                     $"Both runtimes threw unhandled exceptions for %s{fileName}, but this test was not expected to throw. Add to expectsUnhandledException if intentional.\nReal runtime:\n%s{realExn}\nPawPrint:\n%s{UnhandledExceptionReport.describe finalState exn}"
-        | RealRuntimeResult.NormalExit exitCode, RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+
+            // The real runtime aborts, which is what the oracle's classification of it
+            // as an unhandled exception rests on.
+            match termination with
+            | ProcessTermination.Signaled (Signal.SIGABRT, _) -> ()
+            | other ->
+                failwith
+                    $"PawPrint's kernel says %s{fileName} ended by %O{other} after an unhandled exception, but the runtime ends such a process with SIGABRT."
+        | RealRuntimeResult.NormalExit exitCode, RunOutcome.GuestUnhandledException (finalState, _, exn, _) ->
             failwith
                 $"Real runtime exited normally with code %d{exitCode}, but PawPrint threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
         | RealRuntimeResult.Aborted (_code, report), _ ->
             failwith
                 $"Real runtime called Environment.FailFast for %s{fileName}; this fixture does not exercise FailFast:\n%s{report}"
-        | RealRuntimeResult.UnhandledException realExn, RunOutcome.NormalExit (terminalState, _) ->
+        | RealRuntimeResult.UnhandledException realExn, RunOutcome.NormalExit (terminalState, _, _) ->
             failwith
                 $"Real runtime terminated with an unhandled exception, but PawPrint exited normally (code: %d{terminalState.LatchedExitCode}):\n%s{realExn}"
-        | _, RunOutcome.Aborted (_, _, fatal) ->
+        | _, RunOutcome.Aborted (_, _, fatal, _) ->
             let m = fatal.Message |> Option.defaultValue "<no message>"
 
             failwith $"PawPrint guest aborted (%O{fatal.Code}) for %s{fileName}: %s{m}"

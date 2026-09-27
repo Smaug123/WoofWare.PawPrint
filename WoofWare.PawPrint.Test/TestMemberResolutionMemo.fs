@@ -75,8 +75,8 @@ static class Program
             match
                 Program.run loggerFactory (Some "MemberResolutionMemo.cs") peImage (HostConfig.Default dotnetRuntimes)
             with
-            | RunOutcome.NormalExit (state, thread)
-            | RunOutcome.ProcessExit (state, thread) ->
+            | RunOutcome.NormalExit (state, thread, _)
+            | RunOutcome.ProcessExit (state, thread, _) ->
                 state.LatchedExitCode |> shouldEqual 0
                 state, thread
             | other -> failwith $"guest did not exit normally: %O{other}"

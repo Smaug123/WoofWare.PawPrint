@@ -20,14 +20,14 @@ open WoofWare.PawPrint
 module TestHardwareIntrinsicsProfile =
     let private exitCodeOfRunOutcome (outcome : RunOutcome) : int =
         match outcome with
-        | RunOutcome.NormalExit (state, _)
-        | RunOutcome.ProcessExit (state, _) -> state.LatchedExitCode
-        | RunOutcome.Aborted (_, _, fatal) ->
+        | RunOutcome.NormalExit (state, _, _)
+        | RunOutcome.ProcessExit (state, _, _) -> state.LatchedExitCode
+        | RunOutcome.Aborted (_, _, fatal, _) ->
             let m = fatal.Message |> Option.defaultValue "<no message>"
             failwith $"PawPrint guest aborted (%O{fatal.Code}): %s{m}"
         | RunOutcome.SignalTerminated (_, signal, _) ->
             failwith $"PawPrint guest was terminated by POSIX signal %O{signal}"
-        | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+        | RunOutcome.GuestUnhandledException (finalState, _, exn, _) ->
             failwith
                 $"PawPrint threw an unexpected guest exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
 

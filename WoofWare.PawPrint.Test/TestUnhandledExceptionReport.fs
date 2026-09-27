@@ -20,14 +20,14 @@ module TestUnhandledExceptionReport =
 
     let private reportOf (outcome : RunOutcome) : string list =
         match outcome with
-        | RunOutcome.GuestUnhandledException (state, _, exn) ->
+        | RunOutcome.GuestUnhandledException (state, _, exn, _) ->
             UnhandledExceptionReport.describe state exn
             |> fun s -> s.Split Environment.NewLine
             |> List.ofArray
-        | RunOutcome.NormalExit (state, _)
-        | RunOutcome.ProcessExit (state, _) ->
+        | RunOutcome.NormalExit (state, _, _)
+        | RunOutcome.ProcessExit (state, _, _) ->
             failwith $"expected an unhandled exception, but the guest exited with %d{state.LatchedExitCode}"
-        | RunOutcome.Aborted (_, _, fatal) ->
+        | RunOutcome.Aborted (_, _, fatal, _) ->
             let message = fatal.Message |> Option.defaultValue "<no message>"
             failwith $"expected an unhandled exception, but the guest aborted (%O{fatal.Code}): %s{message}"
         | RunOutcome.SignalTerminated (_, signal, _) ->
