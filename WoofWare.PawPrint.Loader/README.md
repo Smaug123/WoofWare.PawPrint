@@ -28,8 +28,9 @@ What lives here:
   types.
 * `MethodReferenceResolution` — which method a `MemberRef` names, as CoreCLR binds it: the
   `MethodDef` of a generic definition, a method the runtime supplies on an array type, or nothing
-  (a `MissingMethodException`). It searches each type's method table as `MethodTableLayout` lays it
-  out, in the order CoreCLR does, and is checked against the real runtime's own answer.
+  (a `MissingMethodException`, or a `TypeLoadException` if the parent names no type). It searches
+  each type's method table as `MethodTableLayout` lays it out, in the order CoreCLR does, and is
+  checked against the real runtime's own answer. `MemberReferenceParent` reads the parent token.
 * `TypeConcretization` — instantiating a generic type definition over the whole set of loaded
   assemblies, to a handle that identifies one concrete type.
 * `VtableSlot`, `MethodTableLayout` — a type definition's method table as CoreCLR's
