@@ -454,10 +454,10 @@ module TestUnixSystemStep =
 
             for buffer in [ UserBuffer.Mapped ; UserBuffer.Addressless ; UserBuffer.Unmapped 0UL ] do
                 for count in [ 0UL ; 5UL ] do
-                    UnixReadWrite.admitWrite fd buffer count system
+                    WriteAdmissions.unchanged fd buffer count system
                     |> shouldEqual (Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EBADF)))
 
-            UnixReadWrite.admitWrite 7 UserBuffer.Mapped 0UL system
+            WriteAdmissions.unchanged 7 UserBuffer.Mapped 0UL system
             |> shouldEqual (Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EBADF)))
 
     [<Test>]
@@ -469,19 +469,19 @@ module TestUnixSystemStep =
 
         let linuxFd, linuxSystem = withOpenFile linux
 
-        UnixReadWrite.admitWrite linuxFd wild 0UL linuxSystem
+        WriteAdmissions.unchanged linuxFd wild 0UL linuxSystem
         |> shouldEqual (Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EFAULT)))
 
         let darwinFd, darwinSystem = withOpenFile darwin
 
-        UnixReadWrite.admitWrite darwinFd wild 0UL darwinSystem
+        WriteAdmissions.unchanged darwinFd wild 0UL darwinSystem
         |> shouldEqual (Ok (WriteAdmission.Answered (WriteAnswer.Completed 0L)))
 
     [<Test>]
     let ``a write that reaches the copy asks for exactly what was requested`` () : unit =
         let fd, system = withOpenFile linux
 
-        UnixReadWrite.admitWrite fd UserBuffer.Mapped 3UL system
+        WriteAdmissions.unchanged fd UserBuffer.Mapped 3UL system
         |> admitted
         |> shouldEqual (WriteAdmission.Transfer 3)
 
@@ -489,17 +489,17 @@ module TestUnixSystemStep =
     let ``a buffer with no bytes is refused at the copy, not faulted`` () : unit =
         let fd, system = withOpenFile linux
 
-        UnixReadWrite.admitWrite fd UserBuffer.Opaque 3UL system
+        WriteAdmissions.unchanged fd UserBuffer.Opaque 3UL system
         |> shouldEqual (Error (WriteRefusal.Buffer BufferRefusal.OpaqueAtTransfer))
 
         // An addressless buffer is refused at the *screen* under Linux and at
         // the copy under Darwin, which is the same asymmetry `read` has.
-        UnixReadWrite.admitWrite fd UserBuffer.Addressless 3UL system
+        WriteAdmissions.unchanged fd UserBuffer.Addressless 3UL system
         |> shouldEqual (Error (WriteRefusal.Buffer BufferRefusal.AddresslessAtScreen))
 
         let darwinFd, darwinSystem = withOpenFile darwin
 
-        UnixReadWrite.admitWrite darwinFd UserBuffer.Addressless 3UL darwinSystem
+        WriteAdmissions.unchanged darwinFd UserBuffer.Addressless 3UL darwinSystem
         |> shouldEqual (Error (WriteRefusal.Buffer BufferRefusal.AddresslessAtTransfer))
 
     [<Test>]
@@ -515,10 +515,10 @@ module TestUnixSystemStep =
                 UserBuffer.Unmapped 0UL, 3UL
                 UserBuffer.Mapped, 0UL
             ] do
-            UnixReadWrite.admitWrite fd buffer count system
+            WriteAdmissions.unchanged fd buffer count system
             |> ignore<Result<WriteAdmission, WriteRefusal>>
 
-        UnixReadWrite.admitWrite fd UserBuffer.Mapped 3UL system
+        WriteAdmissions.unchanged fd UserBuffer.Mapped 3UL system
         |> admitted
         |> shouldEqual (WriteAdmission.Transfer 3)
 
@@ -635,11 +635,13 @@ module TestUnixSystemStep =
         let expected =
             Error (WriteRefusal.SocketConnectionState (socketId, SocketDomain.Inet, SocketKind.Stream))
 
-        UnixReadWrite.admitWrite fd UserBuffer.Mapped 5UL system |> shouldEqual expected
+        WriteAdmissions.unchanged fd UserBuffer.Mapped 5UL system
+        |> shouldEqual expected
 
         // Also at length zero, where a *file* would have been the no-op:
         // measured on both, `write(socket, buf, 0)` is the socket's own error.
-        UnixReadWrite.admitWrite fd UserBuffer.Mapped 0UL system |> shouldEqual expected
+        WriteAdmissions.unchanged fd UserBuffer.Mapped 0UL system
+        |> shouldEqual expected
 
         UnixReadWrite.write fd (ImmutableArray.CreateRange [ 1uy ]) system
         |> shouldEqual expected
@@ -685,10 +687,10 @@ module TestUnixSystemStep =
         let darwinFd, darwinSystem = withSocket darwin
 
         for count in [ 0UL ; 5UL ] do
-            UnixReadWrite.admitWrite linuxFd wild count linuxSystem
+            WriteAdmissions.unchanged linuxFd wild count linuxSystem
             |> shouldEqual (Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EFAULT)))
 
-            UnixReadWrite.admitWrite darwinFd wild count darwinSystem
+            WriteAdmissions.unchanged darwinFd wild count darwinSystem
             |> shouldEqual (Error (WriteRefusal.SocketConnectionState (socketId, SocketDomain.Inet, SocketKind.Stream)))
 
     [<Test>]
@@ -1221,12 +1223,12 @@ module TestUnixSystemStep =
         // kind's own errno rather than with unseekability.
         let fd, system = withSocket linux
 
-        UnixReadWrite.admitWrite fd UserBuffer.Mapped 4UL system
+        WriteAdmissions.unchanged fd UserBuffer.Mapped 4UL system
         |> shouldEqual (Error (WriteRefusal.SocketConnectionState (socketZero, SocketDomain.Inet, SocketKind.Stream)))
 
         let portFd, portSystem = withSocketEventPort linux
 
-        UnixReadWrite.admitWrite portFd UserBuffer.Mapped 4UL portSystem
+        WriteAdmissions.unchanged portFd UserBuffer.Mapped 4UL portSystem
         |> shouldEqual (Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EINVAL)))
 
     [<Test>]
@@ -4173,7 +4175,7 @@ module TestUnixSystemStep =
                 | SyscallAnswer.Completed fd, after -> int fd, after
                 | other -> failwith $"expected a descriptor, got %O{other}"
 
-            match UnixReadWrite.admitWrite readOnlyFd UserBuffer.Mapped 3UL afterReadOnly with
+            match WriteAdmissions.unchanged readOnlyFd UserBuffer.Mapped 3UL afterReadOnly with
             | Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EBADF)) -> ()
             | other -> failwith $"a read-only descriptor should refuse write: %O{other}"
 

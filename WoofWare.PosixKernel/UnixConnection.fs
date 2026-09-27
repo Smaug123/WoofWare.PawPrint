@@ -1237,6 +1237,7 @@ module UnixConnection =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.StandardStream _
+        | OpenFileTarget.Pipe _
         | OpenFileTarget.SocketEventPort _ -> Ok (AcceptAnswer.Failed UnixError.ENOTSOCK, system)
         | OpenFileTarget.Socket socketId ->
 

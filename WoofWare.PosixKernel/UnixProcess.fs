@@ -231,6 +231,21 @@ module UnixProcessState =
         )
         |> Set.ofSeq
 
+    /// Whether any open file description names `pipeEnd` of `pipeId`: whether
+    /// that end of the pipe is still open.
+    ///
+    /// Derived rather than stored, so it cannot disagree with the table: closing
+    /// the last descriptor onto an end is what closes it, and `dup` keeps it
+    /// open.
+    let pipeEndOpen<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (pipeId : PipeId)
+        (pipeEnd : PipeEnd)
+        (proc : UnixProcessState<'Task, 'Handler>)
+        : bool
+        =
+        FileDescriptorRegistry.descriptions proc.FileDescriptors
+        |> Map.exists (fun _ description -> description.Target = OpenFileTarget.Pipe (pipeId, pipeEnd))
+
     /// A *state-change* wake on `socketId` — a connect resolving (completion
     /// or refusal), the refusal delivery's reset, a peer's FIN. Unkeyed:
     /// measured (`order8.c`, `order9.c`), such a wake queues every
@@ -277,7 +292,8 @@ module UnixProcessState =
             | OpenFileTarget.Directory (inode, _) -> Some inode
             | OpenFileTarget.StandardStream _
             | OpenFileTarget.Socket _
-            | OpenFileTarget.SocketEventPort _ -> None
+            | OpenFileTarget.SocketEventPort _
+            | OpenFileTarget.Pipe _ -> None
         )
         |> Set.ofSeq
         |> Set.add proc.CurrentDirectoryInode

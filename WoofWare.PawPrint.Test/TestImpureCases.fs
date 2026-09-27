@@ -831,6 +831,29 @@ module TestImpureCases =
                 )
         }
 
+    /// Build one registration of `PipeRaw.cs` under `platform`. The guest's own
+    /// checks say what the handlers answer of a pipe's ends; the assertion here
+    /// is that closing both freed the pipe from the kernel's table.
+    let private pipeRawCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
+        {
+            FileName = "PipeRaw.cs"
+            ExpectedReturnCode = 0
+            KernelConfig =
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.Never
+            ExpectsUnhandledException = false
+            AssertTerminalState =
+                Some (fun state ->
+                    let machine = (EmulatedKernel.unix state.Kernel).Machine
+                    Map.isEmpty machine.Pipes |> shouldEqual true
+                    // Two pipes were made, so the next is the third.
+                    machine.NextPipeId |> shouldEqual (PipeId 2L)
+                )
+        }
+
     let cases : EndToEndTestCase list =
         [
             // Both of these have a current directory whose UTF-8 encoding
@@ -920,6 +943,8 @@ module TestImpureCases =
             // branched on the flavour for a standard stream would show here.
             stdioNonBlockingCase SimulatedUnixPlatform.linuxX64
             stdioNonBlockingCase SimulatedUnixPlatform.macOsArm64
+            pipeRawCase SimulatedUnixPlatform.linuxX64
+            pipeRawCase SimulatedUnixPlatform.macOsArm64
             processIdCase None
             // Small enough to fit in a byte, so the case above is not the only
             // one that pins the handler to the configuration.

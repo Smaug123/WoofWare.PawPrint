@@ -320,6 +320,11 @@ type EpollCtlRefusal =
     /// walks and never re-arms a still-ready one, so a wait after a partly
     /// drained level would sleep where a real `epoll_wait` returns again.
     | LevelTriggered
+    /// An `EPOLL_CTL_ADD` whose target is an end of a pipe. An edge-triggered
+    /// registration reports what the pipe's own wakes signal, and which
+    /// transfers and closes signal a pipe's waiters, and with which events, is
+    /// not measured.
+    | PipeTarget of targetFd : int
 
 [<RequireQualifiedAccess>]
 module EpollCtlRefusal =
@@ -338,6 +343,8 @@ module EpollCtlRefusal =
             "the event carries EPOLLONESHOT, and the registration would succeed. A one-shot registration disarms once it has reported until a MOD re-arms it, and this library's registrations stay armed. Model disarming before answering."
         | EpollCtlRefusal.WakeUp ->
             "the event carries EPOLLWAKEUP, and the registration would succeed. The kernel keeps the bit only for a caller with CAP_BLOCK_SUSPEND on a kernel built with power management, clearing it silently otherwise, and this library models neither capabilities nor wakeup sources."
+        | EpollCtlRefusal.PipeTarget targetFd ->
+            $"fd %d{targetFd} is an end of a pipe, and the registration would succeed. An edge-triggered registration is made pending by the wakes its target signals, and which reads, writes and closes signal a pipe's waiters, with which events, is unmeasured: Linux's pipe_write, for one, wakes readers on every write once a waiter has polled the pipe, not only on the write that makes it non-empty. poll(2) on a pipe is answered; measure the pipe's wakes before registering one."
         | EpollCtlRefusal.LevelTriggered ->
             "the event lacks EPOLLET, asking to be level-triggered, and the registration would succeed. This port models edge-triggered registrations only: the ready list is consumed as it is drained and a still-ready entry is never re-armed, so a wait after a partly drained level would sleep where a real epoll_wait returns again. Register with EPOLLET, or model level-triggering before answering."
 
@@ -423,7 +430,8 @@ module UnixPoll =
             | OpenFileTarget.StandardStream _
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
-            | OpenFileTarget.Socket _ ->
+            | OpenFileTarget.Socket _
+            | OpenFileTarget.Pipe _ ->
                 // A live descriptor onto the wrong kind of object. EINVAL is
                 // epoll's own answer for it, and it is the last of the four
                 // screens -- behind the buffer, which is why an unmappable
@@ -449,7 +457,8 @@ module UnixPoll =
             | OpenFileTarget.StandardStream _
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
-            | OpenFileTarget.Socket _ ->
+            | OpenFileTarget.Socket _
+            | OpenFileTarget.Pipe _ ->
                 // EBADF, where epoll says EINVAL: kqueue folds "not a kqueue"
                 // into "bad descriptor". Measured on a socket too, and for both
                 // a zero and a non-zero event count.
@@ -550,7 +559,8 @@ module UnixPoll =
         | OpenFileTarget.Directory _ -> failed EpollCtlError.TargetNotPollable
         | OpenFileTarget.StandardStream _
         | OpenFileTarget.SocketEventPort _
-        | OpenFileTarget.Socket _ ->
+        | OpenFileTarget.Socket _
+        | OpenFileTarget.Pipe _ ->
 
         // One kernel test, `f.file == tf.file || !is_file_epoll(f.file)`, so
         // one answer: a `dup` of the port as target is this, not success.
@@ -561,7 +571,8 @@ module UnixPoll =
             | OpenFileTarget.StandardStream _
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
-            | OpenFileTarget.Socket _ -> None
+            | OpenFileTarget.Socket _
+            | OpenFileTarget.Pipe _ -> None
 
         match portState with
         | None -> failed EpollCtlError.NotAnEventPort
@@ -573,7 +584,8 @@ module UnixPoll =
             | OpenFileTarget.StandardStream _
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
-            | OpenFileTarget.Socket _ -> false
+            | OpenFileTarget.Socket _
+            | OpenFileTarget.Pipe _ -> false
 
         // The EPOLLEXCLUSIVE screen, ahead of the table (so ahead of EEXIST
         // and ENOENT) and applied to ADD and MOD only: 20000 random masks for
@@ -647,6 +659,15 @@ module UnixPoll =
             else
                 system
 
+        let targetIsPipe =
+            match targetDescription.Target with
+            | OpenFileTarget.Pipe _ -> true
+            | OpenFileTarget.StandardStream _
+            | OpenFileTarget.File _
+            | OpenFileTarget.Directory _
+            | OpenFileTarget.Socket _
+            | OpenFileTarget.SocketEventPort _ -> false
+
         if op = add then
             if registered then
                 failed EpollCtlError.AlreadyRegistered
@@ -655,6 +676,10 @@ module UnixPoll =
             match unmodelledMode with
             | Some refusal -> Error refusal
             | None ->
+
+            if targetIsPipe then
+                Error (EpollCtlRefusal.PipeTarget fd)
+            else
 
             let ordinal = system.Machine.NextSocketEventRegistrationOrdinal
 
@@ -757,7 +782,8 @@ module UnixPoll =
         | OpenFileTarget.Socket _
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
-        | OpenFileTarget.StandardStream _ ->
+        | OpenFileTarget.StandardStream _
+        | OpenFileTarget.Pipe _ ->
             // `do_pollfd`'s own shape: the level, filtered by the request
             // with POLLERR and POLLHUP added whatever was asked.
             // The level's bits all lie below 0x10000, where `<poll.h>`

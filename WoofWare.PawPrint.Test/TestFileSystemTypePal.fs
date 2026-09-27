@@ -110,6 +110,7 @@ module TestFileSystemTypePal =
             Some (OpenFileObject.StandardStream FileDescriptorRole.StandardInput)
             Some (OpenFileObject.Socket (SocketId 1L))
             Some OpenFileObject.AnonymousInode
+            Some (OpenFileObject.Pipe (PipeId 1L))
             None
         ]
 
@@ -164,7 +165,8 @@ module TestFileSystemTypePal =
                 | EmulatedFileSystemType.Nfs -> 0x6969u
             // Darwin's `fstatfs` fails on every object not on a filesystem.
             | Some _, SimulatedUnixFlavour.Darwin -> 0u
-            | Some (OpenFileObject.StandardStream _), SimulatedUnixFlavour.Linux -> 0x50495045u
+            | Some (OpenFileObject.StandardStream _), SimulatedUnixFlavour.Linux
+            | Some (OpenFileObject.Pipe _), SimulatedUnixFlavour.Linux -> 0x50495045u
             | Some (OpenFileObject.Socket _), SimulatedUnixFlavour.Linux -> 0x534F434Bu
             | Some OpenFileObject.AnonymousInode, SimulatedUnixFlavour.Linux -> 0x09041934u
 

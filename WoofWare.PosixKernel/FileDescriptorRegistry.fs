@@ -60,6 +60,28 @@ type ConnectionId =
         match this with
         | ConnectionId value -> string<int64> value
 
+/// Identity of a pipe. Never visible to the simulated process: `fstat` reports
+/// the inode numbers the pipe table mints for it, which are a separate thing.
+///
+/// Its jobs are to be what the pipe table keys on, and what both ends of one
+/// pipe share, so that they contend under `flock` (see `OpenFileObject.Pipe`).
+[<Struct>]
+type PipeId =
+    | PipeId of value : int64
+
+    override this.ToString () : string =
+        match this with
+        | PipeId value -> string<int64> value
+
+/// Which end of a pipe a descriptor names.
+[<RequireQualifiedAccess>]
+type PipeEnd =
+    /// The end `read(2)` takes bytes from: the first descriptor `pipe(2)` returns.
+    | Read
+    /// The end `write(2)` puts bytes into: the second descriptor `pipe(2)`
+    /// returns.
+    | Write
+
 /// The communication domain of a socket this kernel can create.
 ///
 /// Only the domains a socket can actually *be*, so this is narrower than any
@@ -280,6 +302,15 @@ type OpenFileObject =
     /// ENOTSUP, which `UnixDescriptor.flock` refuses to answer
     /// (`FLockRefusal.DarwinSocket`) ahead of any contention test.
     | Socket of SocketId
+    /// One pipe, both of its ends together. Measured on Linux 6.18.5: with
+    /// `LOCK_EX|LOCK_NB` held through a pipe's read end, the same request
+    /// through its write end is `EWOULDBLOCK`, while another pipe's read end
+    /// takes the lock. So the pipe, not the end, is what contends.
+    ///
+    /// Darwin never reaches this: measured, `flock` on any pipe there is
+    /// ENOTSUP, which `UnixDescriptor.flock` refuses to answer
+    /// (`FLockRefusal.DarwinPipe`) ahead of any contention test.
+    | Pipe of PipeId
 
 /// The mode of an advisory whole-file lock taken by `flock(2)`. "No lock" is
 /// the absence of one of these (`OpenFileDescription.Flock` is an option).
@@ -509,6 +540,16 @@ type OpenFileTarget =
     /// kernel is where a socket's lifetime is decided. `UnixMachineState.socket`
     /// resolves the name.
     | Socket of socket : SocketId
+    /// One end of a pipe, handed out by `UnixPipe.pipe2`.
+    ///
+    /// No offset: measured, `lseek` on either end of a pipe is ESPIPE on both
+    /// flavours.
+    ///
+    /// The pipe this names lives in `UnixMachineState.Pipes`, as a socket
+    /// lives in the socket table, and for the same reason: a pipe is shared by
+    /// the descriptions of both its ends, and outlives either. Whether an end
+    /// is still open is whether any description names it.
+    | Pipe of pipe : PipeId * pipeEnd : PipeEnd
 
 /// Which transfers `open(2)`'s access mode permits: `O_RDONLY`, `O_WRONLY` or
 /// `O_RDWR`.
@@ -609,6 +650,9 @@ module OpenFileDescription =
         // Each socket is its own object, unlike the ports above: measured, two
         // sockets do not contend under `flock`. See `OpenFileObject.Socket`.
         | OpenFileTarget.Socket socketId -> OpenFileObject.Socket socketId
+        // Both ends of a pipe are one object: measured, they contend under
+        // `flock`. See `OpenFileObject.Pipe`.
+        | OpenFileTarget.Pipe (pipeId, _) -> OpenFileObject.Pipe pipeId
 
 /// In-memory model of a Unix per-process file descriptor table, and of the
 /// open file descriptions those descriptors point at.
@@ -943,7 +987,8 @@ module FileDescriptorRegistry =
                     | OpenFileTarget.StandardStream _
                     | OpenFileTarget.File _
                     | OpenFileTarget.Directory _
-                    | OpenFileTarget.Socket _ -> description
+                    | OpenFileTarget.Socket _
+                    | OpenFileTarget.Pipe _ -> description
                 )
 
             Ok (
@@ -1120,6 +1165,51 @@ module FileDescriptorRegistry =
                     registry.Descriptions
             NextId = OpenFileDescriptionId (raw + 1L)
         }
+
+    /// Allocate the two open file descriptions of a new pipe, the read end
+    /// `O_RDONLY` and the write end `O_WRONLY`, and a descriptor onto each: the
+    /// lowest one not in use for the read end, then the lowest not in use after
+    /// that for the write end. Both descriptions carry `O_NONBLOCK` exactly when
+    /// `nonBlocking` is set.
+    ///
+    /// Measured on both flavours: with 0, 1 and 2 open, `pipe(2)` returns 3 and
+    /// 4; with 3 then closed, a second `pipe(2)` returns 3 and 5.
+    ///
+    /// `pipeId` is minted by the caller, because the pipe it names lives in the
+    /// pipe table rather than here; `UnixPipe.pipe2` is the one caller.
+    ///
+    /// Total, like `openFile`: this library models no descriptor limit.
+    let createPipe
+        (pipeId : PipeId)
+        (nonBlocking : bool)
+        (registry : FileDescriptorRegistry)
+        : (int * int) * FileDescriptorRegistry
+        =
+        let add (pipeEnd : PipeEnd) (accessMode : FileAccessMode) (registry : FileDescriptorRegistry) =
+            let id = registry.NextId
+            let (OpenFileDescriptionId raw) = id
+            let fd = lowestFree registry.Fds
+
+            fd,
+            { registry with
+                Fds = Map.add fd id registry.Fds
+                Descriptions =
+                    Map.add
+                        id
+                        {
+                            Target = OpenFileTarget.Pipe (pipeId, pipeEnd)
+                            AccessMode = accessMode
+                            NonBlocking = nonBlocking
+                            // `pipe(2)` takes no lock.
+                            Flock = None
+                        }
+                        registry.Descriptions
+                NextId = OpenFileDescriptionId (raw + 1L)
+            }
+
+        let readFd, registry = add PipeEnd.Read FileAccessMode.ReadOnly registry
+        let writeFd, registry = add PipeEnd.Write FileAccessMode.WriteOnly registry
+        (readFd, writeFd), registry
 
     /// May two *different* open file descriptions on one file hold these two
     /// locks at the same time? Symmetric, so `checkInvariants` can apply it to
@@ -1307,6 +1397,9 @@ module FileDescriptorRegistry =
         | OpenFileTarget.Socket socketId ->
             failwith
                 $"setOffset: fd %d{fd} names socket %O{socketId}, which holds no file offset on either platform — `lseek` on a socket is ESPIPE on both (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have answered ESPIPE)."
+        | OpenFileTarget.Pipe (pipeId, pipeEnd) ->
+            failwith
+                $"setOffset: fd %d{fd} names the %O{pipeEnd} end of pipe %O{pipeId}, which holds no file offset — `lseek` on a pipe is ESPIPE on both flavours (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have answered ESPIPE)."
         | OpenFileTarget.Directory (inode, _) ->
             failwith
                 $"setOffset: fd %d{fd} names directory %O{inode}, whose position is not a byte offset (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have called setDirectoryPosition)."
@@ -1362,7 +1455,8 @@ module FileDescriptorRegistry =
         | OpenFileTarget.StandardStream _
         | OpenFileTarget.File _
         | OpenFileTarget.SocketEventPort _
-        | OpenFileTarget.Socket _ ->
+        | OpenFileTarget.Socket _
+        | OpenFileTarget.Pipe _ ->
             failwith
                 $"setDirectoryPosition: fd %d{fd} names %O{description.Target}, which is not a directory (this is a bug in the caller of FileDescriptorRegistry.setDirectoryPosition)."
 
@@ -1423,7 +1517,8 @@ module FileDescriptorRegistry =
         | OpenFileTarget.StandardStream _
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
-        | OpenFileTarget.Socket _ ->
+        | OpenFileTarget.Socket _
+        | OpenFileTarget.Pipe _ ->
             failwith
                 $"%s{operation}: %O{portId} is not a socket event port; the caller resolved it as one moments ago, so this is a bug in the caller of FileDescriptorRegistry.%s{operation}."
         | OpenFileTarget.SocketEventPort portState ->
@@ -1551,7 +1646,8 @@ module FileDescriptorRegistry =
         | OpenFileTarget.StandardStream _
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
-        | OpenFileTarget.Socket _ ->
+        | OpenFileTarget.Socket _
+        | OpenFileTarget.Pipe _ ->
             failwith
                 $"appendSocketEventReady: %O{portId} is not a socket event port; the caller resolved it as one moments ago, so this is a bug in the caller of FileDescriptorRegistry.appendSocketEventReady."
         | OpenFileTarget.SocketEventPort portState ->
@@ -1600,7 +1696,8 @@ module FileDescriptorRegistry =
         | OpenFileTarget.StandardStream _
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
-        | OpenFileTarget.Socket _ ->
+        | OpenFileTarget.Socket _
+        | OpenFileTarget.Pipe _ ->
             failwith
                 $"setSocketEventReady: %O{portId} is not a socket event port (this is a bug in the caller of FileDescriptorRegistry.setSocketEventReady, which derived the list from a different table)."
         | OpenFileTarget.SocketEventPort portState ->
@@ -1662,7 +1759,8 @@ module FileDescriptorRegistry =
                 | OpenFileTarget.StandardStream _
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
-                | OpenFileTarget.Socket _ -> description
+                | OpenFileTarget.Socket _
+                | OpenFileTarget.Pipe _ -> description
                 | OpenFileTarget.SocketEventPort portState ->
                     let entering =
                         portState.Registrations
@@ -1728,7 +1826,8 @@ module FileDescriptorRegistry =
                 match description.Target with
                 | OpenFileTarget.StandardStream _
                 | OpenFileTarget.SocketEventPort _
-                | OpenFileTarget.Socket _ -> None
+                | OpenFileTarget.Socket _
+                | OpenFileTarget.Pipe _ -> None
                 | OpenFileTarget.File (_, offset) ->
                     if offset < 0L then
                         Some (FileDescriptorRegistryDefect.NegativeOffset (id, offset))
@@ -1753,6 +1852,7 @@ module FileDescriptorRegistry =
                 | OpenFileTarget.StandardStream _
                 | OpenFileTarget.SocketEventPort _
                 | OpenFileTarget.Socket _
+                | OpenFileTarget.Pipe _
                 | OpenFileTarget.File _ -> None
             )
 
@@ -1790,7 +1890,8 @@ module FileDescriptorRegistry =
                 | OpenFileTarget.StandardStream _
                 | OpenFileTarget.SocketEventPort _
                 | OpenFileTarget.File _
-                | OpenFileTarget.Directory _ -> None
+                | OpenFileTarget.Directory _
+                | OpenFileTarget.Pipe _ -> None
                 | OpenFileTarget.Socket socketId -> Some (id, socketId)
             )
 
@@ -1817,7 +1918,8 @@ module FileDescriptorRegistry =
                 | OpenFileTarget.StandardStream _
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
-                | OpenFileTarget.Socket _ -> []
+                | OpenFileTarget.Socket _
+                | OpenFileTarget.Pipe _ -> []
                 | OpenFileTarget.SocketEventPort portState ->
                     portState.Registrations
                     |> Map.toList
@@ -1837,7 +1939,8 @@ module FileDescriptorRegistry =
                 | OpenFileTarget.StandardStream _
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
-                | OpenFileTarget.Socket _ -> []
+                | OpenFileTarget.Socket _
+                | OpenFileTarget.Pipe _ -> []
                 | OpenFileTarget.SocketEventPort portState ->
                     let unregistered =
                         portState.Ready
