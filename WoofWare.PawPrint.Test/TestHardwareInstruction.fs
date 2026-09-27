@@ -459,6 +459,13 @@ public static unsafe class Sweep
     [<Test>]
     let ``no hardware instruction raises on the real runtime what its contract leaves out`` () : unit =
         let target, ns = requireHostTarget ()
+
+        // The vacuity floors below are measured with AVX2, which every x64 CI runner has; the
+        // sweep, which inherits this process's CPU and `DOTNET_Enable*` switches, reaches too few
+        // instructions without it to meet them.
+        if target = JitTarget.X64 && not Runtime.Intrinsics.X86.Avx2.IsSupported then
+            Assert.Ignore "This x64 host does not support AVX2, below which the sweep's vacuity floors are not met."
+
         let corelib = hostCoreLib ()
         let lines, crashes = sweep ns
 
