@@ -419,9 +419,6 @@ module TestStorageLocationResolve =
     let private byteHandle : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle concreteTypes baseClassTypes.Byte
 
-    let private byteType : ConcreteType<ConcreteTypeHandle> =
-        AllConcreteTypes.lookup byteHandle concreteTypes |> Option.get
-
     let private byteField (name : string) (offset : int) : CliField =
         {
             Id = FieldId.Named name
@@ -480,7 +477,7 @@ module TestStorageLocationResolve =
                     Root = ByrefRoot.HeapObjectField (addr, FieldId.Named name)
                     Projections =
                         [
-                            ByrefProjection.ReinterpretAs byteType
+                            ByrefProjection.ReinterpretAs byteHandle
                             ByrefProjection.ByteOffset byteOffset
                         ]
                 }
@@ -533,11 +530,11 @@ module TestStorageLocationResolve =
                     Root = ByrefRoot.HeapObjectField (addr, FieldId.Named "A")
                     Projections =
                         [
-                            ByrefProjection.ReinterpretAs byteType
+                            ByrefProjection.ReinterpretAs byteHandle
                             ByrefProjection.ByteOffset System.Int32.MaxValue
-                            ByrefProjection.ReinterpretAs byteType
+                            ByrefProjection.ReinterpretAs byteHandle
                             ByrefProjection.ByteOffset System.Int32.MaxValue
-                            ByrefProjection.ReinterpretAs byteType
+                            ByrefProjection.ReinterpretAs byteHandle
                             ByrefProjection.ByteOffset 4
                         ]
                 }

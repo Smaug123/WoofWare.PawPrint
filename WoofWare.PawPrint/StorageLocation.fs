@@ -93,8 +93,8 @@ module internal StorageLocation =
         | ManagedPointerSource.Null -> None
         | ManagedPointerSource.NativeIntPlaceholder _ -> None
         | ManagedPointerSource.Byref addressed ->
-            let templateFor (ty : ConcreteType<ConcreteTypeHandle>) : CliType =
-                IlMachineManagedByref.zeroForConcreteType baseClassTypes state ty
+            let templateFor (ty : ConcreteTypeHandle) : CliType =
+                IlMachineManagedByref.zeroOfHandleWithoutLoading baseClassTypes state ty
 
             let {
                     Root = root

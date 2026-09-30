@@ -43,7 +43,6 @@ module TestSameWidthStoreIntoNamedCell =
         {
             Name : string
             Handle : ConcreteTypeHandle
-            Type : ConcreteType<ConcreteTypeHandle>
             Zero : CliType
         }
 
@@ -72,14 +71,9 @@ module TestSameWidthStoreIntoNamedCell =
 
             let zero, _ = IlMachineState.cliTypeZeroOfHandle preparedState bct handle
 
-            let ty =
-                AllConcreteTypes.lookup handle preparedState.ConcreteTypes
-                |> Option.defaultWith (fun () -> failwith $"%s{name} has no registry entry")
-
             {
                 Name = name
                 Handle = handle
-                Type = ty
                 Zero = zero
             }
         )
@@ -224,7 +218,7 @@ module TestSameWidthStoreIntoNamedCell =
                 let offset, _ = CliValueType.GetFieldLayoutById cellId storage
 
                 [
-                    ByrefProjection.ReinterpretAs case.Kind.Type
+                    ByrefProjection.ReinterpretAs case.Kind.Handle
                     ByrefProjection.ByteOffset offset
                 ]
 
@@ -304,7 +298,7 @@ module TestSameWidthStoreIntoNamedCell =
                     Root = ByrefRoot.HeapValue addr
                     Projections = []
                 }
-            |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs int64Kind.Type)
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs int64Kind.Handle)
             |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset refOffset)
 
         let payload = CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0x1234L))

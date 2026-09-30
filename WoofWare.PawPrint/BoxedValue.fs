@@ -243,7 +243,7 @@ module BoxedValue =
                         if field.Type = targetConcreteTypeHandle then
                             cell
                         else
-                            ManagedPointerSource.reinterpretAs targetConcreteType cell
+                            ManagedPointerSource.reinterpretAs targetConcreteTypeHandle cell
 
                     state, UnboxAddress.Address address
                 | fields ->

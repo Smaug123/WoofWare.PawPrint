@@ -38,14 +38,10 @@ module internal CellAwareMemOps =
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        : ConcreteType<ConcreteTypeHandle>
+        : ConcreteTypeHandle
         =
-        let handle =
-            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Byte.Identity
-            |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Byte is not concretized")
-
-        AllConcreteTypes.lookup handle state.ConcreteTypes
-        |> Option.defaultWith (fun () -> failwith $"%s{operation}: concrete System.Byte handle %O{handle} not found")
+        AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Byte.Identity
+        |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Byte is not concretized")
 
     let private readByte
         (operation : string)

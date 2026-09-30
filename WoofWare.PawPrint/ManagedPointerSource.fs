@@ -563,9 +563,10 @@ type ByrefProjection =
     /// Navigate to a named field within the current value.
     /// Created by `ldflda` on an existing managed pointer.
     | Field of field : FieldId
-    /// Reinterpret the pointed-to value as a different type.
+    /// Reinterpret the pointed-to value as a different type, which may be structural (an array,
+    /// a pointer) as well as named.
     /// Created by `Unsafe.As`.
-    | ReinterpretAs of ConcreteType<ConcreteTypeHandle>
+    | ReinterpretAs of ConcreteTypeHandle
     /// Byte offset accumulated under a trailing `ReinterpretAs` projection by
     /// pointer arithmetic. Only appears as the final element of the projection
     /// list, and only when immediately preceded by a `ReinterpretAs`. Interior
@@ -587,7 +588,7 @@ type AddressedByref =
         let formatProj acc proj =
             match proj with
             | ByrefProjection.Field field -> $"<field %O{field} of {acc}>"
-            | ByrefProjection.ReinterpretAs ty -> $"<{acc} as %s{ty.Namespace}.%s{ty.Name}>"
+            | ByrefProjection.ReinterpretAs ty -> $"<{acc} as type %O{ty}>"
             | ByrefProjection.ByteOffset n -> $"<{acc} + %d{n} bytes>"
 
         let rootStr =
@@ -1228,7 +1229,7 @@ module ManagedPointerSource =
     /// rejects `ManagedPointerSource.Null` loudly (see the `readManagedByref`
     /// and `writeManagedByref` families in `IlMachineManagedByref`), which is
     /// the NullReferenceException the real runtime would raise.
-    let reinterpretAs (target : ConcreteType<ConcreteTypeHandle>) (src : ManagedPointerSource) : ManagedPointerSource =
+    let reinterpretAs (target : ConcreteTypeHandle) (src : ManagedPointerSource) : ManagedPointerSource =
         match src with
         | ManagedPointerSource.Null
         | ManagedPointerSource.NativeIntPlaceholder _ -> src
@@ -1398,7 +1399,7 @@ module ManagedPointerSource =
     /// and canonicalise any whole-cell movement into the byref root.
     let addByteOffsetUnderReinterpret
         (context : ByteOffsetNormalisationContext)
-        (reinterpretAs : ConcreteType<ConcreteTypeHandle>)
+        (reinterpretAs : ConcreteTypeHandle)
         (byteOffset : int)
         (src : ManagedPointerSource)
         : ManagedPointerSource

@@ -123,7 +123,7 @@ module NativeKernel32 =
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (charConcreteType : ConcreteType<ConcreteTypeHandle>)
+        (charConcreteType : ConcreteTypeHandle)
         (ptr : ManagedPointerSource)
         (charIndex : int)
         (value : char)

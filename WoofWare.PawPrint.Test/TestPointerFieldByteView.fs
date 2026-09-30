@@ -58,10 +58,6 @@ module TestPointerFieldByteView =
     let private storageDeclared : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle preparedState.ConcreteTypes bct.TypedReference
 
-    let private typeOf (handle : ConcreteTypeHandle) : ConcreteType<ConcreteTypeHandle> =
-        AllConcreteTypes.lookup handle preparedState.ConcreteTypes
-        |> Option.defaultWith (fun () -> failwith $"%O{handle} has no registry entry")
-
     let private pointerSize : int = 8
 
     let private nativeIntTemplate : CliType =
@@ -181,7 +177,7 @@ module TestPointerFieldByteView =
         let projections =
             prefix
             @ [
-                ByrefProjection.ReinterpretAs (typeOf byteHandle)
+                ByrefProjection.ReinterpretAs byteHandle
                 ByrefProjection.ByteOffset byteOffset
             ]
 

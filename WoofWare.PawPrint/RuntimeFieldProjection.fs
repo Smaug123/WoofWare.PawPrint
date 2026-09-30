@@ -83,14 +83,9 @@ module internal RuntimeFieldProjection =
     let private byteConcreteType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        : ConcreteType<ConcreteTypeHandle>
+        : ConcreteTypeHandle
         =
-        let byteHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
-
-        match AllConcreteTypes.lookup byteHandle state.ConcreteTypes with
-        | Some byteType -> byteType
-        | None -> failwith "RawData projection could not find System.Byte in AllConcreteTypes"
+        AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
 
     let private isRawDataField
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
