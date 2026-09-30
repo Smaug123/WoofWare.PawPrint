@@ -135,7 +135,6 @@ module internal NativeReflectionInvocation =
 
         let byteType =
             AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Byte.Identity
-            |> Option.bind (fun handle -> AllConcreteTypes.lookup handle state.ConcreteTypes)
             |> Option.defaultWith (fun () ->
                 failwith "argumentByrefSlot: System.Byte is not concretized, so no byte cursor can be built"
             )
@@ -244,16 +243,7 @@ module internal NativeReflectionInvocation =
             failwith
                 $"%s{operation}: args[%d{index}] was a null byref; the managed argument-marshalling layer is expected to have materialised every argument before the QCall"
 
-        let viewType = viewTypeOf ctx state storage
-
-        let viewConcreteType =
-            AllConcreteTypes.lookup viewType state.ConcreteTypes
-            |> Option.defaultWith (fun () ->
-                failwith
-                    $"%s{operation}: view type %O{viewType} for args[%d{index}] is not registered in AllConcreteTypes"
-            )
-
-        ManagedPointerSource.reinterpretAs viewConcreteType byref
+        ManagedPointerSource.reinterpretAs (viewTypeOf ctx state storage) byref
 
     /// The argument to pass for `args[index]`, given the signature's parameter type.
     ///

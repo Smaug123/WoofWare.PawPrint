@@ -515,16 +515,10 @@ module NativeRuntimeAssembly =
                 let intPtrStride = sizeof<nativeint>
 
                 let byteConcreteType =
-                    let h =
-                        AllConcreteTypes.findExistingNonGenericConcreteType
-                            state.ConcreteTypes
-                            ctx.BaseClassTypes.Byte.Identity
-                        |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Byte is not concretized")
-
-                    AllConcreteTypes.lookup h state.ConcreteTypes
-                    |> Option.defaultWith (fun () ->
-                        failwith $"%s{operation}: concrete System.Byte handle %O{h} not found"
-                    )
+                    AllConcreteTypes.findExistingNonGenericConcreteType
+                        state.ConcreteTypes
+                        ctx.BaseClassTypes.Byte.Identity
+                    |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Byte is not concretized")
 
                 [
                     for i in 0 .. nestedCount - 1 do

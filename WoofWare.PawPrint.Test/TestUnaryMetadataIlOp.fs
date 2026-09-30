@@ -124,7 +124,7 @@ module TestUnaryMetadataIlOp =
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (state : IlMachineState)
         (ty : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        : IlMachineState * ConcreteTypeHandle * ConcreteType<ConcreteTypeHandle>
+        : IlMachineState * ConcreteTypeHandle
         =
         let typeDefn =
             LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies ty
@@ -139,11 +139,7 @@ module TestUnaryMetadataIlOp =
                 ImmutableArray.Empty
                 typeDefn
 
-        let concreteType =
-            AllConcreteTypes.lookup handle state.ConcreteTypes
-            |> Option.defaultWith (fun () -> failwith $"Missing concrete type for %O{ty}")
-
-        state, handle, concreteType
+        state, handle
 
     [<Test>]
     let ``Ldfld rejects static fields rather than returning without advancing`` () : unit =
@@ -195,7 +191,7 @@ module TestUnaryMetadataIlOp =
 
         let state, thread = stateWithSingleInstruction loggerFactory op
 
-        let state, volatileObjectHandle, volatileObjectConcrete =
+        let state, volatileObjectHandle =
             concretizeCorelibType loggerFactory state volatileObject
 
         let fieldId =
@@ -208,7 +204,7 @@ module TestUnaryMetadataIlOp =
             ManagedPointerSource.Byref
                 {
                     Root = ByrefRoot.Argument (thread, frame, 0us)
-                    Projections = [ ByrefProjection.ReinterpretAs volatileObjectConcrete ]
+                    Projections = [ ByrefProjection.ReinterpretAs volatileObjectHandle ]
                 }
 
         let state =

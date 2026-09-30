@@ -125,7 +125,7 @@ public unsafe struct Nest
         |> Option.defaultWith (fun () -> failwith $"%O{handle} has no registry entry")
 
     let private zeroOf (handle : ConcreteTypeHandle) : CliType =
-        IlMachineManagedByref.zeroForConcreteType bct baseState (concreteType handle)
+        IlMachineManagedByref.zeroOfHandleWithoutLoading bct baseState handle
 
     let private fieldId (declaring : ConcreteTypeHandle) (name : string) : FieldId =
         let typeInfo =
@@ -411,11 +411,11 @@ public unsafe struct Nest
                 1, Gen.elements flatAccesses
             ]
 
-    let private viewType (access : Access) : ConcreteType<ConcreteTypeHandle> =
+    let private viewType (access : Access) : ConcreteTypeHandle =
         match access with
-        | Access.Byte -> concreteType (AllConcreteTypes.getRequiredNonGenericHandle baseState.ConcreteTypes bct.Byte)
-        | Access.Int32 -> concreteType (AllConcreteTypes.getRequiredNonGenericHandle baseState.ConcreteTypes bct.Int32)
-        | Access.Inner -> concreteType innerHandle
+        | Access.Byte -> AllConcreteTypes.getRequiredNonGenericHandle baseState.ConcreteTypes bct.Byte
+        | Access.Int32 -> AllConcreteTypes.getRequiredNonGenericHandle baseState.ConcreteTypes bct.Int32
+        | Access.Inner -> innerHandle
         | Access.Pointer -> failwith "no view is taken as a pointer here"
 
     let private innerZero : CliType = zeroOf innerHandle

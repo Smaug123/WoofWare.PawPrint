@@ -912,55 +912,41 @@ module IlMachineTypeResolution =
         let zero, state = cliTypeZeroOfHandle state baseClassTypes handle
         state, zero, handle
 
-    let ensureByteConcreteType
+    let private ensureByteHandle
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        : IlMachineState * ConcreteType<ConcreteTypeHandle>
+        : IlMachineState * ConcreteTypeHandle
         =
         let byteTypeDefn =
             LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Byte
 
-        let state, byteHandle =
-            concretizeType
-                loggerFactory
-                baseClassTypes
-                state
-                baseClassTypes.Corelib.DefinitionFullName
-                ImmutableArray.Empty
-                ImmutableArray.Empty
-                byteTypeDefn
+        concretizeType
+            loggerFactory
+            baseClassTypes
+            state
+            baseClassTypes.Corelib.DefinitionFullName
+            ImmutableArray.Empty
+            ImmutableArray.Empty
+            byteTypeDefn
 
-        let byteType =
-            AllConcreteTypes.lookup byteHandle state.ConcreteTypes
-            |> Option.defaultWith (fun () -> failwith "System.Byte was not present after concretization")
-
-        state, byteType
-
-    let ensureCharConcreteType
+    let private ensureCharHandle
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        : IlMachineState * ConcreteType<ConcreteTypeHandle>
+        : IlMachineState * ConcreteTypeHandle
         =
         let charTypeDefn =
             LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Char
 
-        let state, charHandle =
-            concretizeType
-                loggerFactory
-                baseClassTypes
-                state
-                baseClassTypes.Corelib.DefinitionFullName
-                ImmutableArray.Empty
-                ImmutableArray.Empty
-                charTypeDefn
-
-        let charType =
-            AllConcreteTypes.lookup charHandle state.ConcreteTypes
-            |> Option.defaultWith (fun () -> failwith "System.Char was not present after concretization")
-
-        state, charType
+        concretizeType
+            loggerFactory
+            baseClassTypes
+            state
+            baseClassTypes.Corelib.DefinitionFullName
+            ImmutableArray.Empty
+            ImmutableArray.Empty
+            charTypeDefn
 
     let peByteRangeForFieldRva
         (loggerFactory : ILoggerFactory)
@@ -1086,7 +1072,7 @@ module IlMachineTypeResolution =
         (state : IlMachineState)
         : IlMachineState * ManagedPointerSource
         =
-        let state, byteType = ensureByteConcreteType loggerFactory baseClassTypes state
+        let state, byteType = ensureByteHandle loggerFactory baseClassTypes state
 
         state,
         ManagedPointerSource.Byref
@@ -1202,7 +1188,7 @@ module IlMachineTypeResolution =
         // zero and the copy that follows is byte-wise, so a `byte` projection reaches the same answer.
         // `char` is chosen because it is the type the API declares (`out char*`), which keeps the
         // pointer self-describing to anything that later inspects it.
-        let state, charType = ensureCharConcreteType loggerFactory baseClassTypes state
+        let state, charType = ensureCharHandle loggerFactory baseClassTypes state
 
         state,
         ManagedPointerSource.Byref

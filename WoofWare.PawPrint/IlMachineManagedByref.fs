@@ -22,10 +22,23 @@ module IlMachineManagedByref =
         | CliType.Numeric (CliNumericType.Float64 _) -> ValueSome ("float", 8)
         | _ -> ValueNone
 
-    let private classifyTypeForReinterpret (ty : ConcreteType<ConcreteTypeHandle>) : (string * int) voption =
-        if ty.Namespace <> "System" then
-            ValueNone
-        else
+    let private classifyTypeForReinterpret
+        (concreteTypes : AllConcreteTypes)
+        (handle : ConcreteTypeHandle)
+        : (string * int) voption
+        =
+        match handle with
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> ValueNone
+        | ConcreteTypeHandle.Concrete _ ->
+
+        match AllConcreteTypes.lookup handle concreteTypes with
+        | None -> failwith $"ReinterpretAs target %O{handle} is not present in the concrete-type registry"
+        | Some ty when ty.Namespace <> "System" -> ValueNone
+        | Some ty ->
             match ty.Name with
             | "Boolean"
             | "SByte"
@@ -49,8 +62,13 @@ module IlMachineManagedByref =
     /// only). Rejects float<->int bit reinterprets, overlay structs, enum
     /// underlying coercions, and any size change; those still need a proper
     /// bytewise implementation.
-    let private isSafeReinterpretPassthrough (value : CliType) (ty : ConcreteType<ConcreteTypeHandle>) : bool =
-        match classifyValueForReinterpret value, classifyTypeForReinterpret ty with
+    let private isSafeReinterpretPassthrough
+        (concreteTypes : AllConcreteTypes)
+        (value : CliType)
+        (ty : ConcreteTypeHandle)
+        : bool
+        =
+        match classifyValueForReinterpret value, classifyTypeForReinterpret concreteTypes ty with
         | ValueSome v, ValueSome t -> v = t
         | _ -> false
 
@@ -756,7 +774,12 @@ module IlMachineManagedByref =
             // means a code path is bypassing that contract.
             failwith $"writes to the cached-RuntimeType cell for type %O{target} are not modelled (got %O{updated})"
 
-    let private readProjectedValue (rootValue : CliType) (projs : ByrefProjection list) : CliType =
+    let private readProjectedValue
+        (state : IlMachineState)
+        (rootValue : CliType)
+        (projs : ByrefProjection list)
+        : CliType
+        =
         projs
         |> List.fold
             (fun value proj ->
@@ -766,11 +789,11 @@ module IlMachineManagedByref =
                     | CliType.ValueType vt -> CliValueType.DereferenceFieldById field vt
                     | v -> failwith $"could not find field {field.Name} on non-ValueType {v}"
                 | ByrefProjection.ReinterpretAs ty ->
-                    if isSafeReinterpretPassthrough value ty then
+                    if isSafeReinterpretPassthrough state.ConcreteTypes value ty then
                         value
                     else
                         failwith
-                            $"TODO: read through `ReinterpretAs` from value %O{value} as type %s{ty.Namespace}.%s{ty.Name}; needs a bytewise implementation"
+                            $"TODO: read through `ReinterpretAs` from value %O{value} as type %s{AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes ty}; needs a bytewise implementation"
                 | ByrefProjection.ByteOffset n ->
                     failwith
                         $"TODO: readManagedByref via ByteOffset %d{n} requires a trailing byte-view byref shape; generic Ldind at a non-normalised byte offset is not modelled (value: %O{value})"
@@ -804,8 +827,8 @@ module IlMachineManagedByref =
     ///
     /// The rewrite is transient: it is applied where a byref is dereferenced or located, and is
     /// never stored, so the byref keeps its `Field` step and compares as it always did. It reads
-    /// nothing but the concrete-type registry, so it answers for a byref into a block that has
-    /// since been freed, whose address is still a fact.
+    /// nothing from the machine, so it answers for a byref into a block that has since been freed,
+    /// whose address is still a fact.
     ///
     /// A name-keyed `FieldId.Named` carries no declaring type, so there is no layout to read and
     /// this is `ValueNone`; its `Field` is then resolved against the value stored at the root.
@@ -821,16 +844,11 @@ module IlMachineManagedByref =
             match FieldId.tryDeclaringType field with
             | None -> ValueNone
             | Some declaringHandle ->
-                match AllConcreteTypes.lookup declaringHandle state.ConcreteTypes with
-                | Some declaringType ->
-                    {
-                        Root = src.Root
-                        Projections = ByrefProjection.ReinterpretAs declaringType :: src.Projections
-                    }
-                    |> ValueSome
-                | None ->
-                    failwith
-                        $"field %O{field} names declaring type %O{declaringHandle}, which is not in the concrete-type registry, so the field's offset through the raw-memory byref %O{src} cannot be read from its layout"
+                {
+                    Root = src.Root
+                    Projections = ByrefProjection.ReinterpretAs declaringHandle :: src.Projections
+                }
+                |> ValueSome
         | _ -> ValueNone
 
     /// `tryAnchorRawRootFieldPrefixToLayout`, for a caller about to dereference `src`: the
@@ -1429,18 +1447,14 @@ module IlMachineManagedByref =
         let buf = NativeMemoryPool.readNamedBytes block byteOffset targetSize pool
         CliType.ofSymbolicBytesLike targetTemplate buf
 
-    let internal zeroForConcreteType
+    /// The zero of `handle`, read without loading any assembly: every assembly its layout needs
+    /// must already be loaded.
+    let internal zeroOfHandleWithoutLoading
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (ty : ConcreteType<ConcreteTypeHandle>)
+        (handle : ConcreteTypeHandle)
         : CliType
         =
-        let handle =
-            AllConcreteTypes.findExistingConcreteType state.ConcreteTypes ty.Identity ty.Generics
-            |> Option.defaultWith (fun () ->
-                failwith $"ReinterpretAs target %O{ty} is not present in the concrete-type registry"
-            )
-
         // The non-loading walk: this returns a bare `CliType`, so an updated
         // registry or load context would have to be dropped, and dropping the registry would
         // leave the returned value's `FieldId`s dangling. The precondition is discharged
@@ -1497,7 +1511,7 @@ module IlMachineManagedByref =
     /// `rootTemplate` itself when the chain has neither. It is a thunk for the same reason the
     /// cursor is, so a caller that only wants the offset never resolves a template.
     let internal walkProjectionView
-        (templateFor : ConcreteType<ConcreteTypeHandle> -> CliType)
+        (templateFor : ConcreteTypeHandle -> CliType)
         (rootTemplate : unit -> CliType)
         (projs : ByrefProjection list)
         : int64 * (unit -> CliType)
@@ -1542,7 +1556,7 @@ module IlMachineManagedByref =
 
     /// `walkProjectionView`'s byte coordinate alone.
     let internal walkProjectionByteOffset
-        (templateFor : ConcreteType<ConcreteTypeHandle> -> CliType)
+        (templateFor : ConcreteTypeHandle -> CliType)
         (rootTemplate : unit -> CliType)
         (projs : ByrefProjection list)
         : int64
@@ -1651,7 +1665,7 @@ module IlMachineManagedByref =
         let rec findFirstReinterpret
             (revPrefix : ByrefProjection list)
             (remaining : ByrefProjection list)
-            : (ByrefProjection list * ConcreteType<ConcreteTypeHandle> * ByrefProjection list) option
+            : (ByrefProjection list * ConcreteTypeHandle * ByrefProjection list) option
             =
             match remaining with
             | [] -> None
@@ -1667,12 +1681,12 @@ module IlMachineManagedByref =
             // the metadata-light call shapes (`[ReinterpretAs T]`,
             // `[ReinterpretAs T; ByteOffset n]`) work with
             // `baseClassTypes = None`.
-            let templateFor (ty : ConcreteType<ConcreteTypeHandle>) : CliType =
+            let templateFor (ty : ConcreteTypeHandle) : CliType =
                 match baseClassTypes with
-                | Some bct -> zeroForConcreteType bct state ty
+                | Some bct -> zeroOfHandleWithoutLoading bct state ty
                 | None ->
                     failwith
-                        $"peelByteView: BaseClassTypes required to resolve the layout of `ReinterpretAs` %s{ty.Namespace}.%s{ty.Name} in projection chain: %A{projs} (metadata-light entry points cannot resolve Field layout; pass BaseClassTypes via writeManagedByrefWithBase)"
+                        $"peelByteView: BaseClassTypes required to resolve the layout of `ReinterpretAs` %s{describeConcreteType state ty} in projection chain: %A{projs} (metadata-light entry points cannot resolve Field layout; pass BaseClassTypes via writeManagedByrefWithBase)"
 
             // The forward walk is strictly more general than a right-to-left per-pair peel: it
             // handles `[ReinterpretAs Outer; Field I; Field Y]` (e.g.
@@ -1898,7 +1912,7 @@ module IlMachineManagedByref =
                     // at the first `ReinterpretAs` and a `ByteOffset` may not follow a `Field`
                     // unanchored.
                     let rec resolveCell (projs : ByrefProjection list) (offset : int) : Result<CliType, int * int> =
-                        let cell = readProjectedValue rootValue projs
+                        let cell = readProjectedValue state rootValue projs
                         let cellSize = CliType.sizeOf cell
 
                         if offset >= 0 && targetSize <= cellSize - offset then
@@ -1912,7 +1926,7 @@ module IlMachineManagedByref =
                             match List.tryLast projs with
                             | Some (ByrefProjection.Field field) ->
                                 let parentProjs = projs |> List.take (List.length projs - 1)
-                                let parentValue = readProjectedValue rootValue parentProjs
+                                let parentValue = readProjectedValue state rootValue parentProjs
                                 let fieldOffset, _ = CliType.getFieldLayoutById field parentValue
                                 resolveCell parentProjs (offset + fieldOffset)
                             | Some _ ->
@@ -1931,7 +1945,7 @@ module IlMachineManagedByref =
                             $"TODO: byte-view read at offset %d{rootRelativeOffset} for %d{targetSize} bytes does not fit in single primitive cell of size %d{rootCellSize}, and the root is its own storage container so there is nothing larger to read it from: %O{src}"
             | ValueNone ->
                 let raw =
-                    readProjectedValue (readRootValueFor state outerRoot outerProjs) outerProjs
+                    readProjectedValue state (readRootValueFor state outerRoot outerProjs) outerProjs
 
                 let rawSize = namedByteCellSize $"plain byref %O{src}" raw
                 let targetSize = CliType.sizeOf targetTemplate
@@ -1988,7 +2002,7 @@ module IlMachineManagedByref =
             | ValueSome (prefix, offset) -> prefix, offset
             | ValueNone -> projs, 0
 
-        let cell = readProjectedValue (readRootValue state root) structuralPrefix
+        let cell = readProjectedValue state (readRootValue state root) structuralPrefix
 
         match CliType.ByteAddressability cell with
         | CliByteAddressability.ByteAddressable ->
@@ -2052,7 +2066,7 @@ module IlMachineManagedByref =
             | None -> readManagedByrefBytesAs baseClassTypes state src targetTemplate
         | ValueNone ->
             requireNoUnanchoredByteOffset src projs
-            readProjectedValue (readRootValueFor state root projs) projs
+            readProjectedValue state (readRootValueFor state root projs) projs
 
     /// Read a `template`-shaped value from the byte address `src` denotes.
     ///
@@ -2198,7 +2212,7 @@ module IlMachineManagedByref =
             let byteOffset = view.ByteOffset
 
             let storageValue =
-                readProjectedValue (readRootValueFor state root view.StructuralPrefix) view.StructuralPrefix
+                readProjectedValue state (readRootValueFor state root view.StructuralPrefix) view.StructuralPrefix
 
             // The field sits at `fieldOffset` within the view, which itself sits at `byteOffset`
             // within the storage, so the reference the byref names occupies that sum. When some
@@ -2263,10 +2277,11 @@ module IlMachineManagedByref =
         | ValueNone ->
             requireNoUnanchoredByteOffset src projs
 
-            readProjectedValue (readRootValueFor state root projs) projs
+            readProjectedValue state (readRootValueFor state root projs) projs
             |> CliType.getFieldById field
 
     let private applyProjectionsForWriteIfChanged
+        (state : IlMachineState)
         (rootValue : CliType)
         (projs : ByrefProjection list)
         (newValue : CliType)
@@ -2284,7 +2299,7 @@ module IlMachineManagedByref =
                 | Some updatedField -> Some (CliType.withFieldSetById field updatedField rootValue)
             | ByrefProjection.ReinterpretAs ty :: _ ->
                 failwith
-                    $"TODO: write through `ReinterpretAs` as %s{ty.Namespace}.%s{ty.Name} followed by further projections; needs a bytewise implementation"
+                    $"TODO: write through `ReinterpretAs` as %s{describeConcreteType state ty} followed by further projections; needs a bytewise implementation"
             | ByrefProjection.ByteOffset n :: _ ->
                 // Symmetric to the readManagedByref ByteOffset case: byte-offset
                 // writes go through Unsafe.WriteUnaligned (which scatters bytes
@@ -3149,7 +3164,7 @@ module IlMachineManagedByref =
                     | _ ->
 
                     let rootValue = readRootValue state outerRoot
-                    let cellHere = readProjectedValue rootValue prefixProjs
+                    let cellHere = readProjectedValue state rootValue prefixProjs
 
                     match tryNameCellForByteAccess byteOffset cellHere newValue with
                     | None -> ValueNone
@@ -3158,7 +3173,7 @@ module IlMachineManagedByref =
                         | None -> ValueSome state
                         | Some updatedCell ->
 
-                        match applyProjectionsForWriteIfChanged rootValue prefixProjs updatedCell with
+                        match applyProjectionsForWriteIfChanged state rootValue prefixProjs updatedCell with
                         | None -> ValueSome state
                         | Some updatedRoot -> ValueSome (writeRootValue state outerRoot updatedRoot)
 
@@ -3213,7 +3228,7 @@ module IlMachineManagedByref =
                         (offset : int)
                         : Result<ByrefProjection list * CliType option, int * int>
                         =
-                        let cell = readProjectedValue rootValue projs
+                        let cell = readProjectedValue state rootValue projs
                         let cellSize = CliType.sizeOf cell
 
                         if offset >= 0 && bytes.Length <= cellSize - offset then
@@ -3232,7 +3247,7 @@ module IlMachineManagedByref =
                             match List.tryLast projs with
                             | Some (ByrefProjection.Field field) ->
                                 let parentProjs = projs |> List.take (List.length projs - 1)
-                                let parentValue = readProjectedValue rootValue parentProjs
+                                let parentValue = readProjectedValue state rootValue parentProjs
                                 let fieldOffset, _ = CliType.getFieldLayoutById field parentValue
                                 resolveCell parentProjs (offset + fieldOffset)
                             | Some _ ->
@@ -3243,7 +3258,7 @@ module IlMachineManagedByref =
                     match resolveCell prefixProjs byteOffset with
                     | Ok (_, None) -> state
                     | Ok (liftedProjs, Some updatedCell) ->
-                        match applyProjectionsForWriteIfChanged rootValue liftedProjs updatedCell with
+                        match applyProjectionsForWriteIfChanged state rootValue liftedProjs updatedCell with
                         | None -> state
                         | Some updatedRoot -> writeRootValue state outerRoot updatedRoot
                     | Error (rootRelativeOffset, rootCellSize) ->
@@ -3255,7 +3270,7 @@ module IlMachineManagedByref =
                             $"TODO: byte-view write at offset %d{rootRelativeOffset} for %d{bytes.Length} bytes does not fit in single primitive cell of size %d{rootCellSize}, and the root is its own storage container so there is nothing larger to write it to: %O{src}"
             | ValueNone ->
                 let rootValue = readRootValueFor state outerRoot outerProjs
-                let cell = readProjectedValue rootValue outerProjs
+                let cell = readProjectedValue state rootValue outerProjs
                 let cellSize = byteAddressableCellSize $"plain byref %O{src}" cell
 
                 if bytes.Length > cellSize then
@@ -3265,7 +3280,7 @@ module IlMachineManagedByref =
                 match withByteAddressableCellBytesAtIfChanged $"plain byref %O{src}" 0 bytes cell with
                 | None -> state
                 | Some updatedCell ->
-                    match applyProjectionsForWriteIfChanged rootValue outerProjs updatedCell with
+                    match applyProjectionsForWriteIfChanged state rootValue outerProjs updatedCell with
                     | None -> state
                     | Some updatedRoot -> writeRootValue state outerRoot updatedRoot
 
@@ -3285,7 +3300,7 @@ module IlMachineManagedByref =
 
     let private splitFirstReinterpret
         (projs : ByrefProjection list)
-        : (ByrefProjection list * ConcreteType<ConcreteTypeHandle> * ByrefProjection list) option
+        : (ByrefProjection list * ConcreteTypeHandle * ByrefProjection list) option
         =
         let rec loop (revPrefix : ByrefProjection list) (remaining : ByrefProjection list) =
             match remaining with
@@ -3329,8 +3344,8 @@ module IlMachineManagedByref =
         | ByrefProjection.ByteOffset n :: revPrefix -> List.rev revPrefix, n
         | _ -> projs, 0
 
-    let private reinterpretWriteOperation (reinterpretTy : ConcreteType<ConcreteTypeHandle>) : string =
-        $"write through `ReinterpretAs` as %s{reinterpretTy.Namespace}.%s{reinterpretTy.Name}"
+    let private reinterpretWriteOperation (state : IlMachineState) (reinterpretTy : ConcreteTypeHandle) : string =
+        $"write through `ReinterpretAs` as %s{describeConcreteType state reinterpretTy}"
 
     /// The structural route for a write through a byte view: install `newValue` into the one
     /// storage cell the view names, without rendering either side as bytes. `storageValue` is the
@@ -3350,12 +3365,12 @@ module IlMachineManagedByref =
         (state : IlMachineState)
         (storageValue : CliType)
         (byteOffset : int)
-        (reinterpretTy : ConcreteType<ConcreteTypeHandle>)
+        (reinterpretTy : ConcreteTypeHandle)
         (reinterpretProjs : ByrefProjection list)
         (newValue : CliType)
         : CliType option voption
         =
-        let operation = reinterpretWriteOperation reinterpretTy
+        let operation = reinterpretWriteOperation state reinterpretTy
 
         // Transparent single-field wrapper write fast path. CoreLib lowers
         // `Volatile.Write<T>(ref T, T) where T : class?` to
@@ -3404,8 +3419,8 @@ module IlMachineManagedByref =
                 failwith
                     $"%s{operation}: assigning %s{describeCliStorage state newValue}, which is not the same kind of value as the %s{describeCliStorage state current} held by %s{describeCell}"
 
-        let templateFor (ty : ConcreteType<ConcreteTypeHandle>) : CliType =
-            zeroForConcreteType baseClassTypes state ty
+        let templateFor (ty : ConcreteTypeHandle) : CliType =
+            zeroOfHandleWithoutLoading baseClassTypes state ty
 
         // Where `projs` (a prefix of `reinterpretProjs`) lands in the storage, and the template of
         // the type it is viewed as there. The two cursors add: `byteOffset` is the prefix cursor
@@ -3516,7 +3531,7 @@ module IlMachineManagedByref =
         match baseClassTypes, splitFirstReinterpret projs with
         | Some baseClassTypes, Some (prefixProjs, reinterpretTy, reinterpretProjs) ->
             let storageProjs, byteOffset = splitTrailingPrefixByteOffset prefixProjs
-            let storageValue = readProjectedValue rootValue storageProjs
+            let storageValue = readProjectedValue state rootValue storageProjs
 
             match
                 writeReinterpretedStorageIfChanged
@@ -3529,15 +3544,15 @@ module IlMachineManagedByref =
                     newValue
             with
             | None -> None
-            | Some updatedStorage -> applyProjectionsForWriteIfChanged rootValue storageProjs updatedStorage
-        | _ -> applyProjectionsForWriteIfChanged rootValue projs newValue
+            | Some updatedStorage -> applyProjectionsForWriteIfChanged state rootValue storageProjs updatedStorage
+        | _ -> applyProjectionsForWriteIfChanged state rootValue projs newValue
 
     and private writeReinterpretedStorageIfChanged
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (storageValue : CliType)
         (byteOffset : int)
-        (reinterpretTy : ConcreteType<ConcreteTypeHandle>)
+        (reinterpretTy : ConcreteTypeHandle)
         (reinterpretProjs : ByrefProjection list)
         (newValue : CliType)
         : CliType option
@@ -3545,7 +3560,7 @@ module IlMachineManagedByref =
         // Reinterpret writes are byte updates to the original storage shape. This covers patterns
         // such as `Unsafe.As<bool, VolatileBoolean>(ref location).Value = value`, and recurses for
         // nested `Unsafe.As` chains before rebuilding the original cell.
-        let operation = reinterpretWriteOperation reinterpretTy
+        let operation = reinterpretWriteOperation state reinterpretTy
 
         match
             tryWriteByteViewByNaming
@@ -3561,7 +3576,7 @@ module IlMachineManagedByref =
         | ValueNone ->
 
         let storageBytes = reinterpretStorageBytes state operation storageValue
-        let reinterpretZero = zeroForConcreteType baseClassTypes state reinterpretTy
+        let reinterpretZero = zeroOfHandleWithoutLoading baseClassTypes state reinterpretTy
         let reinterpretSize = CliType.sizeOf reinterpretZero
 
         if byteOffset < 0 || reinterpretSize > storageBytes.Length - byteOffset then

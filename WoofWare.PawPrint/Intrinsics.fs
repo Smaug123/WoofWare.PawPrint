@@ -2654,16 +2654,6 @@ module Intrinsics =
                 if ConcreteTypeHandle.Byref from <> inputType then
                     failwith "bad input type"
 
-                let from =
-                    match AllConcreteTypes.lookup from state.ConcreteTypes with
-                    | None -> failwith "somehow have not concretised input type"
-                    | Some t -> t
-
-                let to_ =
-                    match AllConcreteTypes.lookup to_ state.ConcreteTypes with
-                    | None -> failwith "somehow have not concretised ret type"
-                    | Some t -> t
-
                 let inputAddr, state = IlMachineState.popEvalStack currentThread state
 
                 let ptr =
@@ -3193,21 +3183,10 @@ module Intrinsics =
                         | _ -> None
                 | _ -> None
 
-            // Concretising T is only required for the byte-view fallback (which
-            // anchors a `ReinterpretAs T` tail). The typed shortcut never touches
-            // T, so structural concrete-type handles (array, pointer, function
-            // pointer) — which `AllConcreteTypes.lookup` doesn't store — can still
-            // resolve cleanly through the shortcut.
             let ptr =
                 match typedShortcut with
                 | Some p -> p
-                | None ->
-                    let tConcrete =
-                        match AllConcreteTypes.lookup t state.ConcreteTypes with
-                        | Some c -> c
-                        | None -> failwith $"Unsafe.AddByteOffset: T not concretised: %O{t}"
-
-                    ManagedPointerSource.addByteOffsetUnderReinterpret normalisation tConcrete offset srcPtr
+                | None -> ManagedPointerSource.addByteOffsetUnderReinterpret normalisation t offset srcPtr
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) currentThread

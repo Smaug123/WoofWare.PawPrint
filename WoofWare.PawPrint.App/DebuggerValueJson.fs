@@ -342,11 +342,7 @@ module internal DebuggerValueJson =
         | ByrefProjection.ReinterpretAs ty ->
             writer.WriteString ("kind", "reinterpretAs")
 
-            writeType
-                writer
-                context
-                "type"
-                (AllConcreteTypes.findExistingConcreteType context.ConcreteTypes ty.Identity ty.Generics)
+            writeType writer context "type" (Some ty)
 
             writer.WriteString ("text", string ty)
         | ByrefProjection.ByteOffset bytes ->

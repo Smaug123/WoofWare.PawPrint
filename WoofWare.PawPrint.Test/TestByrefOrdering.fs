@@ -49,21 +49,12 @@ module TestByrefOrdering =
             ConcreteTypes = concreteTypes
         }
 
-    let private concreteTypeFor
-        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        : ConcreteType<ConcreteTypeHandle>
-        =
-        ConcreteType.makeFromIdentity
-            typeInfo.Identity
-            typeInfo.Namespace
-            typeInfo.Name
-            ImmutableArray<ConcreteTypeHandle>.Empty
+    let private concreteTypeFor (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle concreteTypes typeInfo
 
-    let private byteType : ConcreteType<ConcreteTypeHandle> =
-        concreteTypeFor baseClassTypes.Byte
+    let private byteType : ConcreteTypeHandle = concreteTypeFor baseClassTypes.Byte
 
-    let private int32Type : ConcreteType<ConcreteTypeHandle> =
-        concreteTypeFor baseClassTypes.Int32
+    let private int32Type : ConcreteTypeHandle = concreteTypeFor baseClassTypes.Int32
 
     /// `struct Pair { int X; int Y; }` under default layout.
     let private pairValueType (state : IlMachineState) : CliValueType =

@@ -620,14 +620,10 @@ module StructMarshalStub =
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        : ConcreteType<ConcreteTypeHandle>
+        : ConcreteTypeHandle
         =
-        let handle =
-            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Byte.Identity
-            |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Byte is not concretized")
-
-        AllConcreteTypes.lookup handle state.ConcreteTypes
-        |> Option.defaultWith (fun () -> failwith $"%s{operation}: concrete System.Byte handle %O{handle} not found")
+        AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Byte.Identity
+        |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Byte is not concretized")
 
     /// One of the guest's static `System.StubHelpers` conversions, by class, name and arity:
     ///

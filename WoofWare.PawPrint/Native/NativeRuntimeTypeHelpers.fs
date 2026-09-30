@@ -103,7 +103,6 @@ module NativeRuntimeTypeHelpers =
 
         let intPtrType =
             AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.IntPtr.Identity
-            |> Option.bind (fun handle -> AllConcreteTypes.lookup handle state.ConcreteTypes)
             |> Option.defaultWith (fun () ->
                 failwith $"%s{operation}: System.IntPtr is not concretized, so the buffer cannot be strided"
             )

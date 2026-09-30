@@ -72,10 +72,6 @@ module TestPointerStructByteViewCells =
     let private innerDeclared : ConcreteTypeHandle = handleOf bct.RuntimeFieldHandle
     let private outerDeclared : ConcreteTypeHandle = handleOf bct.TypedReference
 
-    let private typeOf (handle : ConcreteTypeHandle) : ConcreteType<ConcreteTypeHandle> =
-        AllConcreteTypes.lookup handle concreteTypes
-        |> Option.defaultWith (fun () -> failwith $"%O{handle} has no registry entry")
-
     [<RequireQualifiedAccess>]
     type private View =
         | Byte
@@ -88,11 +84,11 @@ module TestPointerStructByteViewCells =
         | View.Int32 -> 4
         | View.Int64 -> 8
 
-    let private viewType (view : View) : ConcreteType<ConcreteTypeHandle> =
+    let private viewType (view : View) : ConcreteTypeHandle =
         match view with
-        | View.Byte -> typeOf (handleOf bct.Byte)
-        | View.Int32 -> typeOf int32Handle
-        | View.Int64 -> typeOf (handleOf bct.Int64)
+        | View.Byte -> handleOf bct.Byte
+        | View.Int32 -> int32Handle
+        | View.Int64 -> handleOf bct.Int64
 
     let private viewTemplate (view : View) : CliType =
         match view with

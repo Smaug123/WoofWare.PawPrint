@@ -52,7 +52,6 @@ module TestByteViewChainAccess =
         {
             Name : string
             Handle : ConcreteTypeHandle
-            Type : ConcreteType<ConcreteTypeHandle>
             Zero : CliType
         }
 
@@ -84,17 +83,12 @@ module TestByteViewChainAccess =
 
             let zero, state = IlMachineState.cliTypeZeroOfHandle state bct handle
 
-            let ty =
-                AllConcreteTypes.lookup handle state.ConcreteTypes
-                |> Option.defaultWith (fun () -> failwith $"%s{name} was concretized but has no registry entry")
-
             state,
             acc
             @ [
                 {
                     Name = name
                     Handle = handle
-                    Type = ty
                     Zero = zero
                 }
             ]
@@ -102,10 +96,6 @@ module TestByteViewChainAccess =
 
     let private preparedState : IlMachineState = fst prepared
     let private elements : Element list = snd prepared
-
-    let private typeOf (handle : ConcreteTypeHandle) : ConcreteType<ConcreteTypeHandle> =
-        AllConcreteTypes.lookup handle preparedState.ConcreteTypes
-        |> Option.defaultWith (fun () -> failwith $"cell type %O{handle} has no registry entry")
 
     let private storageDeclared : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle preparedState.ConcreteTypes bct.TypedReference
@@ -248,7 +238,7 @@ module TestByteViewChainAccess =
                             |> Gen.bind (fun i ->
                                 go (ByrefProjection.Field (slotId i) :: revProjs) [ slotId i ] (budget - 1)
                             )
-                            go (ByrefProjection.ReinterpretAs element.Type :: revProjs) [ slotId 0 ] (budget - 1)
+                            go (ByrefProjection.ReinterpretAs element.Handle :: revProjs) [ slotId 0 ] (budget - 1)
                         ]
                     | _ ->
                         let cell = CliType.getCellAtPath path storage
@@ -271,10 +261,7 @@ module TestByteViewChainAccess =
                             | ByrefProjection.ReinterpretAs _ :: _, _ -> []
                             | _, CliType.ValueType cvt ->
                                 [
-                                    go
-                                        (ByrefProjection.ReinterpretAs (typeOf cvt.Declared) :: revProjs)
-                                        path
-                                        (budget - 1)
+                                    go (ByrefProjection.ReinterpretAs cvt.Declared :: revProjs) path (budget - 1)
                                 ]
                             | _ -> []
 
