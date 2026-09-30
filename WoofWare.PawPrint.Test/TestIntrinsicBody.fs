@@ -34,7 +34,7 @@ module TestIntrinsicBody =
             TestCaseData("linux-x64").SetArgDisplayNames "pinned linux-x64 CoreLib"
         ]
 
-    let private coreLib (which : string) : DumpedAssembly =
+    let coreLib (which : string) : DumpedAssembly =
         match which with
         | "host" -> readCoreLib typeof<obj>.Assembly.Location
         | "linux-x64" ->

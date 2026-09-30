@@ -40,6 +40,11 @@ What lives here:
   CoreLib method is recognised as one, and each operation's contract: the faults it raises and
   under what conditions, whether it returns, and the nullness of its result. `TestIntrinsicContracts`
   holds the contracts to real .NET, and PawPrint's implementations to the contracts.
+* `NativeMethod` — methods CoreCLR implements in native code (an `InternalCall` or a P/Invoke)
+  whose behaviour is known, and what each can do to its caller, stated as an `IntrinsicPrimitive`
+  contract is. So far these are the C runtime's maths functions that `Math` and `MathF` call,
+  none of which can fault. `TestNativeMethod` checks the recognition against both CoreLibs'
+  metadata, and calls each method on real .NET over its edge values.
 * `HardwareInstruction` — what a hardware-intrinsic placeholder's call to itself can raise when the
   JIT expands it into the instruction on a CPU that has it: `NullReferenceException` for a null
   address where the instruction touches memory, `ArgumentOutOfRangeException` where an immediate

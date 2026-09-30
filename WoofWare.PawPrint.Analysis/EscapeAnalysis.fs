@@ -79,6 +79,8 @@ type internal Runs =
     | Il of MethodInstructions<TypeDefn> * selfCall : JitExpansion option
     /// One of the runtime's own operations, the whole of the method.
     | Primitive of IntrinsicPrimitive
+    /// Native code whose behaviour `NativeMethod` describes, the whole of the method.
+    | Native of NativeMethod
     /// Nothing the analysis can see into.
     | Opaque of Opacity
 
@@ -819,10 +821,10 @@ module EscapeAnalysis =
             OutsideBody = Set.empty
         }
 
-    /// The exceptions an intrinsic primitive can raise. Its contract says under which conditions on
-    /// its arguments; the analysis does not track their values, so each may be raised.
-    let private primitiveRaises (state : EscapeAnalysisState) (primitive : IntrinsicPrimitive) : ThrownType list =
-        (IntrinsicPrimitive.contract primitive).Raises
+    /// The exceptions an operation of the runtime's own can raise. Its contract says under which
+    /// conditions on its arguments; the analysis does not track their values, so each may be raised.
+    let private contractRaises (state : EscapeAnalysisState) (contract : IntrinsicContract) : ThrownType list =
+        contract.Raises
         |> List.map (fun (fault, _) ->
             match fault with
             | PrimitiveFault.NullReference -> ThrownType.Exactly (corelibException state "NullReferenceException")
@@ -873,24 +875,29 @@ module EscapeAnalysis =
             | MethodBody.Abstract -> Runs.Opaque Opacity.AbstractBody
             | MethodBody.InternalCall
             | MethodBody.PInvoke
-            | MethodBody.RuntimeProvided _ -> Runs.Opaque Opacity.NativeBody
+            | MethodBody.RuntimeProvided _ ->
+                match NativeMethod.recognise assembly key.Method.Get with
+                | Some native -> Runs.Native native
+                | None -> Runs.Opaque Opacity.NativeBody
             | MethodBody.Il body -> Runs.Il (body, None)
 
     /// What one body does by itself.
     let private factsOf (state : EscapeAnalysisState) (key : MethodKey) : EscapeAnalysisState * LocalFacts =
         let assembly, method = methodOf state key
 
-        match runsFor assembly key with
-        | Runs.Opaque reason -> state, opaqueFromEntry reason
-        | Runs.Primitive primitive ->
-            state,
+        let contracted (contract : IntrinsicContract) : LocalFacts =
             {
-                Raises = primitiveRaises state primitive |> List.map (fun thrown -> 0, thrown)
+                Raises = contractRaises state contract |> List.map (fun thrown -> 0, thrown)
                 Opaque = []
                 Calls = []
                 Regions = []
                 OutsideBody = Set.empty
             }
+
+        match runsFor assembly key with
+        | Runs.Opaque reason -> state, opaqueFromEntry reason
+        | Runs.Primitive primitive -> state, contracted (IntrinsicPrimitive.contract primitive)
+        | Runs.Native native -> state, contracted (NativeMethod.contract native)
         | Runs.Il (body, selfCall) ->
 
         let ops = body.Instructions |> Array.ofList
@@ -1112,7 +1119,8 @@ module EscapeAnalysis =
                                 MethodKey.make corelib (IntrinsicBody.platformNotSupportedHelper corelib)
 
                             state, raises, opaque, (offset, helper) :: calls
-                        | SelfCallExpansion.Primitive primitive -> raisedHere (primitiveRaises state primitive)
+                        | SelfCallExpansion.Primitive primitive ->
+                            raisedHere (contractRaises state (IntrinsicPrimitive.contract primitive))
                         | SelfCallExpansion.HardwareInstruction intrinsicClass ->
                             match HardwareInstruction.contract state.Target intrinsicClass method.Name with
                             | InstructionContract.Raises faults ->
