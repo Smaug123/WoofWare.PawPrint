@@ -124,11 +124,11 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// `UnixSystem.withProcessId` sets it before the process has created a
         /// thread.
         ProcessId : ProcessId
-        /// Pure data model of the simulated process's signal disposition,
-        /// per-thread sigprocmasks, and pending-signal queue.
+        /// Pure data model of the simulated process's signal dispositions,
+        /// each thread's handler frames, and pending-signal queue.
         /// Held on the process (rather than per-thread) because POSIX
-        /// signal disposition is process-wide; the per-thread piece lives
-        /// inside `SignalState.Blocked`.
+        /// signal disposition is process-wide; the per-thread pieces, each
+        /// thread's handler frames and own pending set, live inside it too.
         Signals : SignalState<'Task, 'Handler>
         /// Whether the process writes a core dump when a signal whose default
         /// action dumps core kills it. Fixed for the whole run: this library

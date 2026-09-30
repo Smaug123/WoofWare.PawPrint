@@ -320,7 +320,7 @@ module TestTaskState =
         EmulatedKernel.checkInvariants state.Kernel |> shouldBeEmpty
 
     [<Test>]
-    let ``a terminated worker's signal mask goes with it`` () : unit =
+    let ``a terminated worker's handler frames go with it`` () : unit =
         // A second thread, so that the worker is not the kernel's last task.
         let state, _ =
             machine ()
@@ -330,17 +330,14 @@ module TestTaskState =
             IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 2) state
 
         let state =
-            state.MapKernel (
-                EmulatedKernel.mapProcess (fun proc ->
-                    { proc with
-                        Signals = SignalState.block worker Signal.SIGUSR1 proc.Signals
-                    }
-                )
-            )
+            state.MapKernel (SignalFrames.enter worker (Set.singleton Signal.SIGUSR1))
+
+        SignalState.tasksWithFrames state.Kernel.Process.Signals
+        |> shouldEqual (Set.singleton worker)
 
         let state = Scheduler.onThreadTerminated worker state
 
-        SignalState.blockedTasks state.Kernel.Process.Signals |> shouldBeEmpty
+        SignalState.tasksWithFrames state.Kernel.Process.Signals |> shouldBeEmpty
         EmulatedKernel.checkInvariants state.Kernel |> shouldBeEmpty
 
     [<TestCaseSource(nameof parks)>]

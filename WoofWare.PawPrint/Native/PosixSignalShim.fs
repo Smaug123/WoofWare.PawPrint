@@ -183,7 +183,7 @@ module PosixSignalShim =
         : NativeSignalHandler option
         =
         match original numbering signal state with
-        | SignalDisposition.Catch handler when not (isCancelableTermination numbering signal) -> Some handler
+        | SignalDisposition.Catch action when not (isCancelableTermination numbering signal) -> Some action.Handler
         | SignalDisposition.Catch _
         | SignalDisposition.Default
         | SignalDisposition.Ignore -> None
@@ -216,11 +216,30 @@ module PosixSignalShim =
                 }
 
         match SignalState.disposition signal signals with
-        | SignalDisposition.Catch NativeSignalHandler.SystemNative -> signals, state
+        | SignalDisposition.Catch {
+                                      Handler = NativeSignalHandler.SystemNative
+                                  } -> signals, state
         | SignalDisposition.Ignore -> signals, save SignalDisposition.Ignore
         | current ->
-            SignalState.setDisposition signal (SignalDisposition.Catch NativeSignalHandler.SystemNative) signals,
-            save current
+            // `InstallSignalHandler` takes `SA_RESTART | SA_SIGINFO` and an
+            // empty `sa_mask` over `SIG_DFL`; over a handler it keeps that
+            // handler's mask and flags, less `SA_RESTART` and `SA_RESETHAND`,
+            // and then adds `SA_RESTART` back.
+            let action =
+                match current with
+                | SignalDisposition.Catch replaced ->
+                    { replaced with
+                        Handler = NativeSignalHandler.SystemNative
+                        ResetHand = false
+                        Restart = true
+                    }
+                | SignalDisposition.Default
+                | SignalDisposition.Ignore ->
+                    { SignalCatch.ofHandler NativeSignalHandler.SystemNative with
+                        Restart = true
+                    }
+
+            SignalState.setDisposition signal (SignalDisposition.Catch action) signals, save current
 
     /// What `InitializeSignalHandlingCore` does to the shim's saved
     /// dispositions: it installs System.Native's handler for SIGINT, SIGQUIT
@@ -246,7 +265,9 @@ module PosixSignalShim =
                 { state with
                     Originals = Map.remove (Signal.canonicalUnder numbering signal) state.Originals
                 }
-            | SignalDisposition.Catch NativeSignalHandler.SystemNative ->
+            | SignalDisposition.Catch {
+                                          Handler = NativeSignalHandler.SystemNative
+                                      } ->
                 failwith
                     $"PosixSignalShim.saveConsoleSignals: %O{signal} is already caught by System.Native's handler before the shim is initialised."
             | disposition ->

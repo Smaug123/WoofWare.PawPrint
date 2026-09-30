@@ -15,9 +15,10 @@ open WoofWare.PosixKernel
 /// Each trial there ran in a fresh child that blocked every signal it was about
 /// to generate, generated them, and then took them: with `sigwait` (so in the
 /// order they are picked, whatever their dispositions), or by unblocking them
-/// under handlers. Each is replayed here on a fresh state whose only task
-/// blocks them, the expected order being the probe's output rather than
-/// anything derived from the model.
+/// under handlers. Each is replayed here on a fresh state holding them pending,
+/// whose only task then returns to user mode and runs the handlers its frames
+/// say, the expected order being the probe's output rather than anything
+/// derived from the model.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestSignalPickOrder =
@@ -61,38 +62,54 @@ module TestSignalPickOrder =
 
     let private signo (numbering : SignalNumbering) (signal : Signal) : int = Signal.toRawSignoUnder numbering signal
 
-    /// Generate each of `generated`, blocked, into a fresh state under
-    /// `dispositions`: `(signo, directed at the leader?)`.
+    /// How the probe's consumer took the signals: `sigwait`, with every
+    /// disposition the default; or handlers whose `sa_mask` holds every signal
+    /// generated, so that one runs at a time; or handlers with an empty
+    /// `sa_mask`.
+    [<RequireQualifiedAccess>]
+    type private Consumer =
+        | SigWait
+        | FullMask
+        | NoMask
+
+    /// Each of `generated` pending in a fresh state, as the probe left them by
+    /// generating them while every one was blocked: `(signo, directed at the
+    /// leader?)`. Blocked, a generated signal is pending with nothing else done
+    /// to it, which is what `SignalState.enqueue` does.
     let private generateBlocked
         (numbering : SignalNumbering)
-        (disposition : SignalDisposition<string>)
+        (consumer : Consumer)
         (generated : (int * bool) list)
         : SignalState<int, string>
         =
-        let blocked =
-            (SignalState.initial numbering Set.empty, generated)
-            ||> List.fold (fun state (signo, _) ->
-                let signal = signal numbering signo
+        let everyGenerated =
+            generated |> List.map (fun (signo, _) -> signal numbering signo) |> Set.ofList
 
-                let state =
-                    match disposition with
-                    | SignalDisposition.Default -> state
-                    | disposition -> SignalState.setDisposition signal disposition state
+        let disposition : SignalDisposition<string> =
+            match consumer with
+            | Consumer.SigWait -> SignalDisposition.Default
+            | Consumer.FullMask ->
+                SignalDisposition.Catch
+                    { SignalCatch.ofHandler handler with
+                        Mask = everyGenerated
+                    }
+            | Consumer.NoMask -> SignalDisposition.Catch (SignalCatch.ofHandler handler)
 
-                SignalState.block leader signal state
-            )
+        let withDispositions =
+            match disposition with
+            | SignalDisposition.Default -> SignalState.initial numbering Set.empty
+            | disposition ->
+                (SignalState.initial numbering Set.empty, everyGenerated)
+                ||> Set.fold (fun state signal -> SignalState.setDisposition signal disposition state)
 
-        (blocked, generated)
+        (withDispositions, generated)
         ||> List.fold (fun state (signo, directed) ->
-            let entry =
+            SignalState.enqueue
                 {
                     Signal = signal numbering signo
                     Target = if directed then ValueSome leader else ValueNone
                 }
-
-            match SignalState.generate CoreDumps.Suppressed leader tasks entry state with
-            | Ok (SignalGeneration.ProcessContinues state) -> state
-            | other -> failwith $"generating %d{signo}, blocked, did not leave it to be taken later: %A{other}"
+                state
         )
 
     /// What `sigwait` on every signal takes, in order: the leader's pending
@@ -101,23 +118,42 @@ module TestSignalPickOrder =
         SignalState.pendingFor leader leader state
         |> List.map (fun entry -> signo numbering entry.Signal)
 
-    /// The handlers the leader runs, in order, once it unblocks everything.
+    /// The handler bodies the leader runs, in the order they run, once it
+    /// returns to user mode: each frame's handler, innermost first, its
+    /// `sigreturn`, and the next return to user mode, which may push frames
+    /// that run before the rest.
     let private handlerOrder (numbering : SignalNumbering) (state : SignalState<int, string>) : int list =
-        let unblocked =
-            (state, SignalState.blockedFor leader state)
-            ||> Set.fold (fun state signal -> SignalState.unblock leader signal state)
+        let returnToUser
+            (state : SignalState<int, string>)
+            : HandlerFrame<int, string> list * SignalState<int, string>
+            =
+            match SignalState.onReturnToUser CoreDumps.Suppressed leader tasks leader state with
+            | Ok (None, state) -> [], state
+            | Ok (Some (SignalDelivery.RunHandlers frames), state) -> frames, state
+            | other -> failwith $"expected handlers to run, got %A{other}"
 
-        let rec drain (taken : int list) (state : SignalState<int, string>) (fuel : int) : int list =
+        let rec run
+            (ran : int list)
+            (frames : HandlerFrame<int, string> list)
+            (state : SignalState<int, string>)
+            (fuel : int)
+            : int list * SignalState<int, string>
+            =
             if fuel = 0 then
-                failwith "the leader took more signals than were ever pending"
+                failwith "the leader ran more handlers than signals were ever pending"
 
-            match SignalState.nextDelivery CoreDumps.Suppressed leader tasks leader state with
-            | Ok (None, _) -> List.rev taken
-            | Ok (Some (SignalDelivery.RunHandler (entry, _)), state) ->
-                drain (signo numbering entry.Signal :: taken) state (fuel - 1)
-            | other -> failwith $"expected a handler to run, got %A{other}"
+            match frames with
+            | [] -> ran, state
+            | frame :: outer ->
+                let ran = signo numbering frame.Entry.Signal :: ran
+                let pushed, state = returnToUser (SignalState.sigreturn leader frame.Id state)
+                let ran, state = run ran pushed state (fuel - 1)
+                run ran outer state (fuel - 1)
 
-        drain [] unblocked 1000
+        let frames, state = returnToUser state
+        let ran, state = run [] frames state 1000
+        SignalState.framesOf leader state |> shouldEqual []
+        List.rev ran
 
     [<Literal>]
     let private RowPattern =
@@ -155,19 +191,13 @@ module TestSignalPickOrder =
 
                 let actual =
                     match consumer with
-                    | "sigwait" ->
-                        generateBlocked numbering SignalDisposition.Default generated
-                        |> sigwaitOrder numbering
-                    | "fullmask" ->
-                        generateBlocked numbering (SignalDisposition.Catch handler) generated
-                        |> handlerOrder numbering
+                    | "sigwait" -> generateBlocked numbering Consumer.SigWait generated |> sigwaitOrder numbering
+                    | "fullmask" -> generateBlocked numbering Consumer.FullMask generated |> handlerOrder numbering
                     // Each handler here leaves every other signal unblocked, so
                     // every pending signal's frame is pushed before any handler
-                    // body runs, and the bodies run last-picked first.
-                    | "nomask" ->
-                        generateBlocked numbering (SignalDisposition.Catch handler) generated
-                        |> handlerOrder numbering
-                        |> List.rev
+                    // body runs, and the bodies run last-picked first: which the
+                    // model's frames say without help.
+                    | "nomask" -> generateBlocked numbering Consumer.NoMask generated |> handlerOrder numbering
                     | other -> failwith $"no such consumer: %s{other}"
 
                 if actual <> delivered then
@@ -184,10 +214,7 @@ module TestSignalPickOrder =
                     |> Array.toList
 
                 let actual =
-                    generateBlocked
-                        numbering
-                        (SignalDisposition.Catch handler)
-                        [ directedAtLeader, true ; toProcess, false ]
+                    generateBlocked numbering Consumer.FullMask [ directedAtLeader, true ; toProcess, false ]
                     |> handlerOrder numbering
 
                 if actual <> delivered then
@@ -211,10 +238,7 @@ module TestSignalPickOrder =
                     |> List.map (fun value -> List.find (fun (v, _) -> v = value) queued |> snd)
 
                 let actual =
-                    generateBlocked
-                        numbering
-                        (SignalDisposition.Catch handler)
-                        (queued |> List.map (fun (_, s) -> s, false))
+                    generateBlocked numbering Consumer.FullMask (queued |> List.map (fun (_, s) -> s, false))
                     |> handlerOrder numbering
 
                 if actual <> delivered then
@@ -272,7 +296,7 @@ module TestSignalPickOrder =
             |> List.filter (fun s -> s <> 9 && s <> 19)
             |> List.map (fun s -> s, false)
 
-        generateBlocked SignalNumbering.Linux SignalDisposition.Default generated
+        generateBlocked SignalNumbering.Linux Consumer.SigWait generated
         |> sigwaitOrder SignalNumbering.Linux
         |> shouldEqual
             [
@@ -316,7 +340,7 @@ module TestSignalPickOrder =
             |> List.filter (fun s -> s <> 9 && s <> 17)
             |> List.map (fun s -> s, false)
 
-        generateBlocked SignalNumbering.Darwin SignalDisposition.Default generated
+        generateBlocked SignalNumbering.Darwin Consumer.SigWait generated
         |> sigwaitOrder SignalNumbering.Darwin
         |> shouldEqual
             [
@@ -347,22 +371,22 @@ module TestSignalPickOrder =
     [<Test>]
     let ``Linux takes a task's own signals before the process's`` () : unit =
         // pair thread=15 proc=4, and thread=4 proc=15.
-        generateBlocked SignalNumbering.Linux (SignalDisposition.Catch handler) [ 15, true ; 4, false ]
+        generateBlocked SignalNumbering.Linux Consumer.FullMask [ 15, true ; 4, false ]
         |> handlerOrder SignalNumbering.Linux
         |> shouldEqual [ 15 ; 4 ]
 
-        generateBlocked SignalNumbering.Linux (SignalDisposition.Catch handler) [ 4, true ; 15, false ]
+        generateBlocked SignalNumbering.Linux Consumer.FullMask [ 4, true ; 15, false ]
         |> handlerOrder SignalNumbering.Linux
         |> shouldEqual [ 4 ; 15 ]
 
     [<Test>]
     let ``Darwin takes a task's own signals and the process's as one set`` () : unit =
         // pair thread=15 proc=4, and thread=4 proc=15.
-        generateBlocked SignalNumbering.Darwin (SignalDisposition.Catch handler) [ 15, true ; 4, false ]
+        generateBlocked SignalNumbering.Darwin Consumer.FullMask [ 15, true ; 4, false ]
         |> handlerOrder SignalNumbering.Darwin
         |> shouldEqual [ 4 ; 15 ]
 
-        generateBlocked SignalNumbering.Darwin (SignalDisposition.Catch handler) [ 4, true ; 15, false ]
+        generateBlocked SignalNumbering.Darwin Consumer.FullMask [ 4, true ; 15, false ]
         |> handlerOrder SignalNumbering.Darwin
         |> shouldEqual [ 4 ; 15 ]
 
@@ -371,7 +395,7 @@ module TestSignalPickOrder =
         // rtfifo: 37, 35, 37, 35, 37, 35 queued; the three 35s were taken first.
         generateBlocked
             SignalNumbering.Linux
-            (SignalDisposition.Catch handler)
+            Consumer.FullMask
             [ 37, false ; 35, false ; 37, false ; 35, false ; 37, false ; 35, false ]
         |> handlerOrder SignalNumbering.Linux
         |> shouldEqual [ 35 ; 35 ; 35 ; 37 ; 37 ; 37 ]
