@@ -129,8 +129,8 @@ type InstructionFault =
     /// vector of addresses), and a null address raises `NullReferenceException`.
     | NullAddress
     /// An operand the instruction encodes as an immediate is outside the range it encodes, which
-    /// the JIT checks (`addRangeCheckIfNeeded`, hwintrinsic.cpp), raising
-    /// `ArgumentOutOfRangeException`.
+    /// the JIT checks (`addRangeCheckIfNeeded`, hwintrinsic.cpp) and throws for by calling CoreLib's
+    /// `IntrinsicBody.argumentOutOfRangeHelper`, which raises `ArgumentOutOfRangeException`.
     | ImmediateOutOfRange
     /// An x86 integer divide (`div`, `idiv`) by zero, raising `DivideByZeroException`.
     | ZeroDivisor

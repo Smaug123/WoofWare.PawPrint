@@ -612,6 +612,21 @@ public class NullReferenceException : Exception { }
         let mutable instructions = 0
         let mutable bareInstructions = 0
 
+        let rangeHelperEscapes, rangeHelperShown =
+            let next, escapes =
+                EscapeAnalysis.escapes
+                    analysis
+                    (MethodKey.make corelib (IntrinsicBody.argumentOutOfRangeHelper corelib))
+
+            analysis <- next
+            let shown = render analysis escapes
+
+            // The helper constructs and throws the exception, and constructing it can exhaust memory.
+            for wanted in [ "=System.ArgumentOutOfRangeException" ; "=System.OutOfMemoryException" ] do
+                shown |> shouldContain wanted
+
+            escapes, shown
+
         let instructionFaultName (fault : InstructionFault) : string =
             match fault with
             | InstructionFault.NullAddress -> "=System.NullReferenceException"
@@ -686,18 +701,31 @@ public class NullReferenceException : Exception { }
                         | InstructionContract.Raises faults ->
                             instructions <- instructions + 1
 
+                            // An out-of-range immediate is thrown by a call to CoreLib's helper,
+                            // so the instruction raises what the helper does.
+                            let viaHelper = faults.Contains InstructionFault.ImmediateOutOfRange
+
                             // A body that does more than call itself, such as `Avx2.GatherVector128`
                             // constructing the exception for a `scale` it rejects, may be unknown
                             // for that.
                             if callsOnlyItself corelib handle then
                                 bareInstructions <- bareInstructions + 1
+                                let expected = viaHelper && rangeHelperEscapes.Unknown
 
-                                if escapes.Unknown then
-                                    failures.Add $"%s{describe ()}: the JIT's tables say it raises %A{faults}"
+                                if escapes.Unknown <> expected then
+                                    failures.Add
+                                        $"%s{describe ()}: the JIT's tables say it raises %A{faults}, so unknown should be %b{expected}"
 
-                            for fault in faults do
-                                if not (shown.Contains (instructionFaultName fault)) then
-                                    failures.Add $"%s{describe ()} lacks %s{instructionFaultName fault}"
+                            let wanted =
+                                faults
+                                |> Seq.filter (fun fault -> fault <> InstructionFault.ImmediateOutOfRange)
+                                |> Seq.map instructionFaultName
+                                |> Set.ofSeq
+                                |> Set.union (if viaHelper then rangeHelperShown else Set.empty)
+
+                            for wanted in wanted do
+                                if not (shown.Contains wanted) then
+                                    failures.Add $"%s{describe ()} lacks %s{wanted}"
                     // Answered by the branch above.
                     | SelfCallExpansion.Primitive _ -> ()
                     | SelfCallExpansion.Unrecognised ->

@@ -881,13 +881,14 @@ module EscapeAnalysis =
             | PrimitiveFault.DataMisaligned -> ThrownType.Exactly (corelibException state "DataMisalignedException")
         )
 
-    let private instructionRaises (state : EscapeAnalysisState) (fault : InstructionFault) : ThrownType =
+    /// What a fault the CPU reports raises, as the VM raises it; `None` for an out-of-range
+    /// immediate, which the JIT throws by calling a helper in CoreLib.
+    let private instructionRaises (state : EscapeAnalysisState) (fault : InstructionFault) : ThrownType option =
         match fault with
-        | InstructionFault.NullAddress -> ThrownType.Exactly (corelibException state "NullReferenceException")
-        | InstructionFault.ImmediateOutOfRange ->
-            ThrownType.Exactly (corelibException state "ArgumentOutOfRangeException")
-        | InstructionFault.ZeroDivisor -> ThrownType.Exactly (corelibException state "DivideByZeroException")
-        | InstructionFault.QuotientOverflow -> ThrownType.Exactly (corelibException state "OverflowException")
+        | InstructionFault.NullAddress -> Some (ThrownType.Exactly (corelibException state "NullReferenceException"))
+        | InstructionFault.ImmediateOutOfRange -> None
+        | InstructionFault.ZeroDivisor -> Some (ThrownType.Exactly (corelibException state "DivideByZeroException"))
+        | InstructionFault.QuotientOverflow -> Some (ThrownType.Exactly (corelibException state "OverflowException"))
 
     /// What CoreCLR runs when `key` is called. The VM's substitute for an intrinsic runs whatever IL
     /// CoreLib ships in its place, working or not.
@@ -1175,7 +1176,19 @@ module EscapeAnalysis =
                         | SelfCallExpansion.HardwareInstruction intrinsicClass ->
                             match HardwareInstruction.contract state.Target intrinsicClass method.Name with
                             | InstructionContract.Raises faults ->
-                                raisedHere (faults |> Set.toList |> List.map (instructionRaises state))
+                                let state, raises, opaque, calls =
+                                    faults |> Set.toList |> List.choose (instructionRaises state) |> raisedHere
+
+                                // The JIT throws for an out-of-range immediate by calling CoreLib's
+                                // helper, and what that raises is its own IL's to say.
+                                if faults.Contains InstructionFault.ImmediateOutOfRange then
+                                    let corelib = state.Context.BaseTypes.Corelib
+
+                                    let helper = MethodKey.make corelib (IntrinsicBody.argumentOutOfRangeHelper corelib)
+
+                                    state, raises, opaque, (offset, helper) :: calls
+                                else
+                                    state, raises, opaque, calls
                             | InstructionContract.Unknown ->
                                 state, raises, (offset, Opacity.IntrinsicExpansion) :: opaque, calls
                         | SelfCallExpansion.Unrecognised ->
