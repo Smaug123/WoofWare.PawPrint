@@ -1,6 +1,6 @@
 # Running the expression interpreter's emitted thunk
 
-Status: stages 1, 2 and 3a implemented (2026-09-26, 2026-09-30). Measured on `main` at 30a3051e, and each probe
+Status: all stages implemented (1 and 2 on 2026-09-26, 3a and 3b on 2026-09-30). Measured on `main` at 30a3051e, and each probe
 re-run after each stage. Tracking issue: #849. Motivated by the ASP.NET ladder's rung L
 (`docs/plans/2026-08-17-aspnet-critical-path.md` on `aspnet-ladder`).
 
@@ -132,7 +132,38 @@ measured on real .NET), and `TestAssemblyLoadContextRefusals` pins the two custo
 
 Measured after 3a: the three-parameter guest stops at `AppDomain_CreateDynamicAssembly` (3b).
 
-**3b: the dynamic assembly.** Option A below.
+**3b: the dynamic assembly.** Option A below, as implemented:
+
+* `DynamicAssemblyImage.build` makes a minimal PE image holding what CoreCLR's emit scope holds
+  when `Assembly::CreateDynamic` returns: a `Module` row named `RefEmit_InMemoryManifestModule`,
+  the `Assembly` row with the requested name, version, culture, flags and hash algorithm (SHA1 when
+  none is given), and `<Module>`. It is read back through `Assembly.read` like any image.
+* The provenance record lives in `LoadedAssemblies` (`WithDynamicAssembly`, `IsDynamic`): a dynamic
+  assembly is in the load context but invisible to the binder, so the exact-identity fallback in
+  `TryResolveReference` never finds one and `WithBoundReference` refuses to bind to one. That is
+  CoreCLR's arrangement, where the binder does not consult dynamic assemblies.
+* Its readers are `RuntimeAssembly.GetIsDynamic` (new) and `ModuleHandle_GetPEKind`, which answers
+  `(0, 0)` for a dynamic module as `PEAssembly::GetPEKindAndMachine` does, rather than the headers
+  PawPrint built. Everything else that reads an assembly already answers a dynamic one as real .NET
+  does (all measured: empty `Location`, null `CodeBase`, no types, no references, metadata stream
+  version 0x20000, present in `AppDomain.GetAssemblies`).
+* The module version ID is a version-4 GUID over bytes drawn from the kernel's entropy pool, as
+  `minipal_guid_v4_create` draws secure random bytes. Real .NET gives a different one each run. No
+  guest can observe it yet, because `MetadataImport.GetScopeProps` is not implemented.
+* Refused, although real .NET admits each (measured): a second dynamic assembly with an identity
+  already loaded, whether dynamic or an image, because `LoadedAssemblies` keys on that identity; a
+  collectible one (the second loader-allocator door); and one with a public key, because CoreCLR
+  raises `SecurityException` for a key `StrongNameIsValidPublicKey` rejects and PawPrint does not
+  yet validate keys (#1404 adds the validator).
+
+`sourcesImpure/DynamicAssemblyHosting.cs` is the acceptance case, `TestDynamicAssemblyRefusals`
+pins the four refusals, and `TestDynamicAssemblyImage` checks the image round-trips any identity.
+All thirteen mutants of the rules above are caught.
+
+Measured after 3b: the three-parameter guest exits 0 and is un-parked. A plain
+`AssemblyBuilder.DefineDynamicAssembly` still stops at `AssemblyNative_GetLoadContextForAssembly`,
+which it calls to find the caller's load context unless a contextual-reflection scope names one;
+the anonymous host passes `AssemblyLoadContext.Default` and never asks.
 
 ## Stage 3's decision: what a dynamic assembly is
 
