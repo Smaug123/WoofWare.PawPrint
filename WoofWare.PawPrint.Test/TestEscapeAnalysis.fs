@@ -44,6 +44,21 @@ public static class Intrinsics
     public static bool Accelerated() => System.Runtime.Intrinsics.Vector128.IsHardwareAccelerated;
 }
 
+public static class Natives
+{
+    // FCalls into the C runtime's maths library, which the JIT may instead expand into an
+    // instruction; neither faults.
+    public static double Sine(double x) => Math.Sin(x);
+    public static double Power(double x, double y) => Math.Pow(x, y);
+    public static double Fused(double a, double b, double c) => Math.FusedMultiplyAdd(a, b, c);
+
+    // An FCall no contract describes.
+    public static int ThreadId() => Environment.CurrentManagedThreadId;
+
+    // The shadow `System.MathF` in this assembly, not CoreLib's.
+    public static float Impostor() => MathF.Sin(1f);
+}
+
 public static class Cases
 {
     public static void ThrowsDirectly() { throw new InvalidOperationException("boom"); }
@@ -230,12 +245,19 @@ public static class ShadowCases
 }
 """
 
-    /// The local shadow the last case catches.
+    /// Local shadows of CoreLib types: an exception the last case catches, and a class whose FCall
+    /// only CoreLib could implement.
     let private shadow =
         """
 namespace System;
 
 public class NullReferenceException : Exception { }
+
+public static class MathF
+{
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.InternalCall)]
+    public static extern float Sin(float x);
+}
 """
 
     /// What a fixture method's answer must hold. A thrown type is written `=T` for `Exactly T` and
@@ -380,6 +402,22 @@ public class NullReferenceException : Exception { }
             }
             { expect "Fixture.Intrinsics" "Accelerated" with
                 Unknown = Some false
+            }
+            { expect "Fixture.Natives" "Sine" with
+                Excludes = [ "=System.NullReferenceException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.Natives" "Power" with
+                Unknown = Some false
+            }
+            { expect "Fixture.Natives" "Fused" with
+                Unknown = Some false
+            }
+            { expect "Fixture.Natives" "ThreadId" with
+                Unknown = Some true
+            }
+            { expect "Fixture.Natives" "Impostor" with
+                Unknown = Some true
             }
         ]
 

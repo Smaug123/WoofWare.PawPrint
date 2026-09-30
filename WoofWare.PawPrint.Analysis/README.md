@@ -18,6 +18,8 @@ method, a `rethrow`) may add more:
   a hardware instruction the CPU lacks raises `PlatformNotSupportedException`, and one it has
   raises what the JIT's tables say (`HardwareInstruction`); one of the runtime's primitives raises
   what its contract (`IntrinsicPrimitive`) says it can;
+* a method CoreCLR implements in native code is opaque, unless `NativeMethod` describes it (so far,
+  the maths functions `Math` and `MathF` call), when it raises what that contract says;
 * code a capability query rules out on that CPU is left out. Where a call to an `IsSupported` or
   `IsHardwareAccelerated` that answers a constant (`IntrinsicBody.constantResult`) is branched on
   straight away (`brtrue` or `brfalse`, which nothing else reaches), only the way the answer goes is
