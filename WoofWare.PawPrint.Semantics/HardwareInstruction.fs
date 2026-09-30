@@ -11,6 +11,18 @@ type JitTarget =
     | Arm64
     | X64
 
+[<RequireQualifiedAccess>]
+module JitTarget =
+    /// Every target.
+    let all : JitTarget list = [ JitTarget.Arm64 ; JitTarget.X64 ]
+
+    /// The namespace of the instruction-set classes whose instructions the JIT emits when compiling
+    /// for `target`. CoreLib declares the other targets' classes too, with bodies that throw.
+    let instructionSetNamespace (target : JitTarget) : string =
+        match target with
+        | JitTarget.Arm64 -> "System.Runtime.Intrinsics.Arm"
+        | JitTarget.X64 -> "System.Runtime.Intrinsics.X86"
+
 /// One row of CoreCLR's JIT hardware-intrinsic tables, `HARDWARE_INTRINSIC(...)`: the columns that
 /// bear on what an instruction can raise, spelled as the table spells them.
 type HardwareIntrinsicRow =
@@ -117,8 +129,8 @@ type InstructionFault =
     /// vector of addresses), and a null address raises `NullReferenceException`.
     | NullAddress
     /// An operand the instruction encodes as an immediate is outside the range it encodes, which
-    /// the JIT checks (`addRangeCheckIfNeeded`, hwintrinsic.cpp), raising
-    /// `ArgumentOutOfRangeException`.
+    /// the JIT checks (`addRangeCheckIfNeeded`, hwintrinsic.cpp) and throws for by calling CoreLib's
+    /// `IntrinsicBody.argumentOutOfRangeHelper`, which raises `ArgumentOutOfRangeException`.
     | ImmediateOutOfRange
     /// An x86 integer divide (`div`, `idiv`) by zero, raising `DivideByZeroException`.
     | ZeroDivisor
@@ -213,7 +225,7 @@ module HardwareInstruction =
     /// placeholder of theirs has no contract.
     let private topLevelInstructionSet (target : JitTarget) (ns : string) (name : string) : JitInstructionSet option =
         match target, ns with
-        | JitTarget.Arm64, "System.Runtime.Intrinsics.Arm" ->
+        | JitTarget.Arm64, _ when ns = JitTarget.instructionSetNamespace JitTarget.Arm64 ->
             match name with
             | "AdvSimd"
             | "Aes"
@@ -226,7 +238,7 @@ module HardwareInstruction =
             | "Sve"
             | "Sve2" -> Some (JitInstructionSet.Fixed name)
             | _ -> None
-        | JitTarget.X64, "System.Runtime.Intrinsics.X86" ->
+        | JitTarget.X64, _ when ns = JitTarget.instructionSetNamespace JitTarget.X64 ->
             match name with
             | "Aes"
             | "Pclmulqdq" -> Some (JitInstructionSet.Fixed "AES")
