@@ -755,6 +755,79 @@ public class Program
         exn.Message |> shouldContainText "StripMethodInstantiation"
         exn.Message |> shouldContainText "System.__Canon"
 
+    /// `RuntimeMethodHandle.GetMethodFromCanonical` reached by private reflection rather than from
+    /// `RuntimeType.GetMethodBase`, so that nothing rebinds its answer onto the exact named type.
+    /// CoreCLR answers from the named type's canonical method table, so the guest can see
+    /// `Holder<System.__Canon>`, which PawPrint does not model; the real runtime is run first to
+    /// show that the difference is really there to be seen. The named types for which the two agree
+    /// are `sourcesPure/ReflectionGetMethodFromCanonicalUnshared.cs`.
+    [<Test>]
+    let ``GetMethodFromCanonical refuses a caller that could see the canonical declaring type`` () =
+        let source =
+            """
+using System;
+using System.Reflection;
+
+public class Program
+{
+    class Holder<T>
+    {
+        internal static int Plain(T t) => 0;
+    }
+
+    public static int Main(string[] args)
+    {
+        const BindingFlags nonPublicStatic = BindingFlags.NonPublic | BindingFlags.Static;
+        Type internalHandle = typeof(RuntimeMethodHandle).Assembly.GetType("System.RuntimeMethodHandleInternal", true);
+        MethodInfo fromCanonical = typeof(RuntimeMethodHandle).GetMethod(
+            "GetMethodFromCanonical", nonPublicStatic, null, new[] { internalHandle, typeof(Type).GetType() }, null);
+        MethodInfo getDeclaringType = typeof(RuntimeMethodHandle).GetMethod(
+            "GetDeclaringType", nonPublicStatic, null, new[] { internalHandle }, null);
+
+        if (fromCanonical == null || getDeclaringType == null)
+        {
+            return 1;
+        }
+
+        object handle = Activator.CreateInstance(
+            internalHandle, BindingFlags.NonPublic | BindingFlags.Instance, null,
+            new object[] { typeof(Holder<int>).GetMethod("Plain", nonPublicStatic).MethodHandle.Value }, null);
+        object answer = fromCanonical.Invoke(null, new object[] { handle, typeof(Holder<string>) });
+        Type declaring = (Type) getDeclaringType.Invoke(null, new object[] { answer });
+
+        if (declaring.GetGenericTypeDefinition() != typeof(Holder<>))
+        {
+            return 2;
+        }
+
+        if (declaring.GetGenericArguments()[0].FullName != "System.__Canon")
+        {
+            return 3;
+        }
+
+        return 0;
+    }
+}
+"""
+
+        let image = Roslyn.compile [ source ]
+
+        match RealRuntime.executeWithRealRuntime [||] image with
+        | RealRuntimeResult.NormalExit 0 -> ()
+        | other -> failwith $"expected the real runtime to report Holder<System.__Canon>, got %O{other}"
+
+        let exn =
+            Assert.Catch (fun () ->
+                runPawPrintSource
+                    "GetMethodFromCanonicalCanonical.cs"
+                    source
+                    KernelConfig.Default
+                    (fun _image _result -> ())
+            )
+
+        exn.Message |> shouldContainText "GetMethodFromCanonical"
+        exn.Message |> shouldContainText "System.__Canon"
+
     /// `float32` and `float64` are the same type (`F`) on the CLI evaluation stack, but a
     /// `calli` marshals across a method boundary, where their ABI footprints differ. Reading a
     /// `float32` return slot as `float64` yields garbage on CoreCLR rather than the target's
