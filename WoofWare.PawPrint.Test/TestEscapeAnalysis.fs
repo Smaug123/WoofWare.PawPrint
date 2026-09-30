@@ -468,6 +468,45 @@ public class NullReferenceException : Exception { }
         =
         analysisUnder HardwareIntrinsicsProfile.ScalarOnly assemblies bind
 
+    /// How `analysis`'s answers for `fixture` fail `expectations`, and the analysis to ask next.
+    let private unmet
+        (analysis : EscapeAnalysisState)
+        (fixture : DumpedAssembly)
+        (expectations : Expectation list)
+        : EscapeAnalysisState * string list
+        =
+        ((analysis, []), expectations)
+        ||> List.fold (fun (analysis, failures) expectation ->
+            let analysis, escapes =
+                EscapeAnalysis.escapes analysis (methodNamed fixture (fst expectation.Method) (snd expectation.Method))
+
+            let shown = render analysis escapes
+
+            let describe () =
+                let ty, name = expectation.Method
+                $"%s{ty}::%s{name}: %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+
+            let failures =
+                [
+                    yield! failures
+
+                    for wanted in expectation.Contains do
+                        if not (shown.Contains wanted) then
+                            yield $"%s{describe ()} lacks %s{wanted}"
+
+                    for unwanted in expectation.Excludes do
+                        if shown.Contains unwanted then
+                            yield $"%s{describe ()} has %s{unwanted}"
+
+                    match expectation.Unknown with
+                    | Some unknown when unknown <> escapes.Unknown ->
+                        yield $"%s{describe ()}, expected unknown %b{unknown}"
+                    | _ -> ()
+                ]
+
+            analysis, failures
+        )
+
     [<Test>]
     let ``each fixture method's escaping exceptions are as stated`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -478,34 +517,160 @@ public class NullReferenceException : Exception { }
         let fixture =
             Assembly.read loggerFactory (Some "EscapeFixture.dll") (new MemoryStream (image))
 
-        let mutable analysis = analysisOver [ fixture ] id
-        let failures = ResizeArray<string> ()
+        match unmet (analysisOver [ fixture ] id) fixture expectations with
+        | _, [] -> ()
+        | _, failures -> failures |> String.concat Environment.NewLine |> failwith
 
-        for expectation in expectations do
-            let next, escapes =
-                EscapeAnalysis.escapes analysis (methodNamed fixture (fst expectation.Method) (snd expectation.Method))
+    /// Code a capability query guards, compiled optimized as CoreLib is, so that the query's result
+    /// is branched on directly.
+    let private guardedSource =
+        """
+using System;
+using System.Runtime.Intrinsics;
 
-            analysis <- next
-            let shown = render analysis escapes
+namespace Guarded;
 
-            let describe () =
-                let ty, name = expectation.Method
-                $"%s{ty}::%s{name}: %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+public static class Cases
+{
+    public static bool Flag;
 
-            for wanted in expectation.Contains do
-                if not (shown.Contains wanted) then
-                    failures.Add $"%s{describe ()} lacks %s{wanted}"
+    // `call get_IsHardwareAccelerated; brfalse`.
+    public static void WhenAccelerated()
+    {
+        if (Vector128.IsHardwareAccelerated) throw new InvalidOperationException();
+    }
 
-            for unwanted in expectation.Excludes do
-                if shown.Contains unwanted then
-                    failures.Add $"%s{describe ()} has %s{unwanted}"
+    // `call get_IsHardwareAccelerated; brtrue`.
+    public static void UnlessAccelerated()
+    {
+        if (!Vector128.IsHardwareAccelerated) throw new InvalidOperationException();
+    }
 
-            match expectation.Unknown with
-            | Some unknown when unknown <> escapes.Unknown ->
-                failures.Add $"%s{describe ()}, expected unknown %b{unknown}"
-            | _ -> ()
+    // The query's result is compared, not branched on.
+    public static void ComparedWithField()
+    {
+        if (Vector128.IsHardwareAccelerated == Flag) throw new InvalidOperationException();
+    }
 
-        if failures.Count > 0 then
+    // The throw is reached past the query as well as through it.
+    public static void AlsoReachedOtherwise()
+    {
+        if (Flag ? Vector128.IsHardwareAccelerated : true) throw new InvalidOperationException();
+    }
+
+    public static void HandlerOfGuardedTry()
+    {
+        if (Vector128.IsHardwareAccelerated)
+        {
+            try { WhenAccelerated(); }
+            catch (InvalidOperationException) { throw new ArgumentException(); }
+        }
+    }
+
+    public static void GuardInHandler()
+    {
+        try { UnlessAccelerated(); }
+        catch (InvalidOperationException) { if (!Vector128.IsHardwareAccelerated) throw new ArgumentException(); }
+    }
+}
+"""
+
+    /// What each guarded method lets escape on a CPU that accelerates `Vector128` and on one that
+    /// does not.
+    let private guardedExpectations : (bool * Expectation) list =
+        let ioe = "=System.InvalidOperationException"
+        let ae = "=System.ArgumentException"
+
+        [
+            false,
+            { expect "Guarded.Cases" "WhenAccelerated" with
+                Excludes = [ ioe ]
+                Unknown = Some false
+            }
+            true,
+            { expect "Guarded.Cases" "WhenAccelerated" with
+                Contains = [ ioe ]
+            }
+            false,
+            { expect "Guarded.Cases" "UnlessAccelerated" with
+                Contains = [ ioe ]
+            }
+            true,
+            { expect "Guarded.Cases" "UnlessAccelerated" with
+                Excludes = [ ioe ]
+                Unknown = Some false
+            }
+            for accelerated in [ false ; true ] do
+                accelerated,
+                { expect "Guarded.Cases" "ComparedWithField" with
+                    Contains = [ ioe ]
+                }
+
+                accelerated,
+                { expect "Guarded.Cases" "AlsoReachedOtherwise" with
+                    Contains = [ ioe ]
+                }
+            // The handler's protected block runs only on an accelerating CPU.
+            false,
+            { expect "Guarded.Cases" "HandlerOfGuardedTry" with
+                Excludes = [ ioe ; ae ]
+                Unknown = Some false
+            }
+            true,
+            { expect "Guarded.Cases" "HandlerOfGuardedTry" with
+                Contains = [ ae ]
+                Excludes = [ ioe ]
+            }
+            false,
+            { expect "Guarded.Cases" "GuardInHandler" with
+                Contains = [ ae ]
+                Excludes = [ ioe ]
+            }
+            true,
+            { expect "Guarded.Cases" "GuardInHandler" with
+                Excludes = [ ioe ; ae ]
+                Unknown = Some false
+            }
+        ]
+
+    [<Test>]
+    let ``code a capability query guards is analysed only on a CPU it runs on`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            Roslyn.compileOptimizedAssembly "GuardedFixture" OutputKind.DynamicallyLinkedLibrary [ guardedSource ]
+
+        let fixture =
+            Assembly.read loggerFactory (Some "GuardedFixture.dll") (new MemoryStream (image))
+
+        let failures =
+            [
+                for accelerated in [ false ; true ] do
+                    let profile =
+                        if accelerated then
+                            { HardwareIntrinsicsProfile.ScalarOnly with
+                                IsHardwareAccelerated =
+                                    Set.singleton
+                                        {
+                                            Namespace = "System.Runtime.Intrinsics"
+                                            Path = [ "Vector128" ]
+                                        }
+                            }
+                        else
+                            HardwareIntrinsicsProfile.ScalarOnly
+
+                    let expectations =
+                        guardedExpectations
+                        |> List.filter (fun (on, _) -> on = accelerated)
+                        |> List.map snd
+
+                    let _, failures = unmet (analysisUnder profile [ fixture ] id) fixture expectations
+
+                    for failure in failures do
+                        yield $"accelerated %b{accelerated}: %s{failure}"
+            ]
+
+        if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
 
     /// The CoreLibs the CoreLib-wide tests read, the host's and the pinned linux-x64 one, each with
