@@ -22,6 +22,8 @@ module NativeQCall =
             NativeRuntimeMethodHandle.tryExecuteQCall "RuntimeMethodHandle_GetStubIfNeededSlow"
             "RuntimeMethodHandle_GetTypicalMethodDefinition",
             NativeRuntimeMethodHandle.tryExecuteQCall "RuntimeMethodHandle_GetTypicalMethodDefinition"
+            "RuntimeMethodHandle_StripMethodInstantiation",
+            NativeRuntimeMethodHandle.tryExecuteQCall "RuntimeMethodHandle_StripMethodInstantiation"
             "RuntimeMethodHandle_InvokeMethod",
             NativeReflectionInvocation.tryExecuteQCall "RuntimeMethodHandle_InvokeMethod"
             "ReflectionInvocation_GetBoxInfo",

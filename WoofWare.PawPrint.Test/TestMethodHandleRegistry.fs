@@ -2662,3 +2662,77 @@ public static class TypicalHolder<T>
             match MethodHandleRegistry.resolveMethodFromId typicalId registry with
             | Some (MethodHandle.FromMetadata viaReflection) -> viaReflection |> shouldEqual typical
             | other -> failwith $"%s{description}: registry id %d{typicalId} resolved to %O{other}"
+
+    // `MethodHandleRegistry.stripMethodInstantiation`, CoreCLR's `StripMethodInstantiation`, which
+    // the `RuntimeMethodHandle_StripMethodInstantiation` QCall rebinds a handle through, over the
+    // same identities.
+    [<Test>]
+    let ``stripMethodInstantiation drops exactly the method's instantiation, and names reflection's definition``
+        ()
+        : unit
+        =
+        let loggerFactory, baseClassTypes, assembly, _seed, state =
+            typicalFixture "StripMethodInstantiationPropertyAssembly"
+
+        let ids, state =
+            allTypicalFixtureIdentities loggerFactory baseClassTypes assembly state
+
+        List.length ids |> shouldEqual 22
+
+        let mutable registry = state.MethodHandles
+
+        for description, id in ids do
+            let identity =
+                match MethodHandleRegistry.resolveMethodFromId id registry with
+                | Some (MethodHandle.FromMetadata identity) -> identity
+                | other -> failwith $"%s{description}: registry id %d{id} resolved to %O{other}"
+
+            let stripped = MethodHandleRegistry.stripMethodInstantiation identity
+
+            // Same MethodDef row, same assembly, same declaring type: only the method's own
+            // instantiation goes.
+            stripped.GetMethodDefinitionHandle ()
+            |> shouldEqual (identity.GetMethodDefinitionHandle ())
+
+            stripped.GetAssemblyFullName () |> shouldEqual (identity.GetAssemblyFullName ())
+            stripped.GetDeclaringType () |> shouldEqual (identity.GetDeclaringType ())
+            stripped.GetMethodGenerics () |> shouldEqual []
+
+            // The QCall replaces `refMethod` exactly when the method was bound.
+            (stripped = identity) |> shouldEqual (identity.GetMethodGenerics ()).IsEmpty
+
+            MethodHandleRegistry.stripMethodInstantiation stripped |> shouldEqual stripped
+
+            // CoreCLR's `_ASSERTE(resultMD->IsGenericMethodDefinition() || !resultMD->HasMethodInstantiation())`.
+            let methodInfo =
+                MethodHandleResolution.methodInfoOfMetadataIdentity "test" state identity
+
+            let strippedCount = (stripped.GetMethodGenerics ()).Length
+
+            if
+                not (
+                    NativeRuntimeMethodHandle.isGenericMethodDefinition methodInfo.Generics.Length strippedCount
+                    || not (NativeRuntimeMethodHandle.hasMethodInstantiation methodInfo.Generics.Length)
+                )
+            then
+                failwith $"%s{description}: %O{stripped} is a bound generic method"
+
+            // Stripping the class instantiation afterwards reaches the typical definition, as
+            // stripping both at once does.
+            MethodHandleRegistry.typicalMethodDefinition state.ConcreteTypes stripped
+            |> shouldEqual (MethodHandleRegistry.typicalMethodDefinition state.ConcreteTypes identity)
+
+            // The stripped handle is the very one reflection over the declaring type mints for the
+            // method, which is what `RuntimeType.GetMethodBase` looks the answer up by.
+            let definitionId, registry' =
+                MethodHandleRegistry.getOrAllocateInternalId
+                    (identity.GetAssemblyFullName ())
+                    (identity.GetDeclaringType ())
+                    methodInfo
+                    registry
+
+            registry <- registry'
+
+            match MethodHandleRegistry.resolveMethodFromId definitionId registry with
+            | Some (MethodHandle.FromMetadata viaReflection) -> viaReflection |> shouldEqual stripped
+            | other -> failwith $"%s{description}: registry id %d{definitionId} resolved to %O{other}"
