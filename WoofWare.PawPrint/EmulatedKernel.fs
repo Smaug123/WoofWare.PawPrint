@@ -1906,10 +1906,12 @@ type KernelConfig =
         /// measured, so there the call stops the run (see
         /// `GroupListReport.Unmeasured`).
         SupplementaryGroups : uint32 list
-        /// The file-mode creation mask `open(O_CREAT)` applies to the mode its
-        /// caller asked for. See `EmulatedKernel.Umask`; it does not affect the
-        /// modes `FileSystem` states, which describe a tree this process did not
-        /// build.
+        /// The file-mode creation mask the process starts with, which
+        /// `open(O_CREAT)` and `mkdir` apply to the mode their caller asked for.
+        /// See `EmulatedKernel.Umask`; it does not affect the modes `FileSystem`
+        /// states, which describe a tree this process did not build. A mask
+        /// with a bit the flavour's `umask(2)` never stores is refused: on
+        /// Linux, any of 0o7000.
         Umask : PermissionBits
         /// The ID the guest observes via `Environment.ProcessId`. See
         /// `UnixSystem.defaultProcessId` for why the default is not 1.
@@ -2104,7 +2106,7 @@ module KernelConfig =
         )
         |> EmulatedKernel.mapMachine (UnixMachineState.withSoMaxConn config.SoMaxConn)
         |> EmulatedKernel.mapMachine (UnixMachineState.withLocalAddresses config.LocalAddresses config.LocalRoutes)
-        |> EmulatedKernel.mapProcess (UnixProcessState.withUmask "KernelConfig.Umask" config.Umask)
+        |> EmulatedKernel.mapUnix (UnixSystem.withUmask "KernelConfig.Umask" config.Umask)
         // The process ID before `pid_max`: the default `pid_max` is the largest
         // Linux has, so any process ID a Linux kernel could have is admitted here,
         // and `withPidMax` then refuses a `pid_max` at or below it.

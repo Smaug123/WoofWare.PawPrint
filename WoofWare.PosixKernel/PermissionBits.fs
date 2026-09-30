@@ -407,10 +407,12 @@ module PermissionBits =
     /// </param>
     ///
     /// <param name="umask">
-    /// Only the low nine bits of <c>umask</c> take part in <c>fromCreationMode</c>, although this appears to be
-    /// something of an empirically-verified coincidence rather than a principled fact.
-    /// Linux's <c>umask(2)</c> only stores the low nine bits, but Darwin stores all twelve
-    /// and happens instead to have <c>modeMask</c> clear them in all cases.
+    /// The process's file-mode creation mask, as its platform's <c>umask(2)</c> stored it, which is
+    /// applied in full. The two platforms differ in what is stored rather than in what is applied:
+    /// Linux stores only the low nine bits, and Darwin stores all twelve
+    /// (see <c>SimulatedUnixPlatform.umaskStoredBits</c>). Darwin's stored special bits are
+    /// invisible to <c>open(2)</c> and <c>mkdir(2)</c>, whose <c>modeMask</c> has already cleared
+    /// them, but Darwin's <c>mkfifo(2)</c> keeps all twelve bits of its mode and they bite there.
     /// </param>
     ///
     /// <param name="mode">
@@ -422,9 +424,7 @@ module PermissionBits =
     /// For example, <c>mode</c> of <c>0o10777</c> creates <c>0o0755</c> on both kernels.
     /// </remarks>
     let fromCreationMode (modeMask : PermissionBits) (umask : PermissionBits) (mode : int) : PermissionBits =
-        let umaskBitsOnly = 0o777
-
-        mode &&& toInt modeMask &&& ~~~(toInt umask &&& umaskBitsOnly)
+        mode &&& toInt modeMask &&& ~~~(toInt umask)
         |> parseOrFail "PermissionBits.fromCreationMode"
 
     let private setUserId : int = 0o4000

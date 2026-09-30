@@ -29,6 +29,7 @@
     <Compile Include="TestPermissionStanding.fs" />
     <Compile Include="TestGetGroups.fs" />
     <Compile Include="TestModeChange.fs" />
+    <Compile Include="TestUmask.fs" />
     <Compile Include="TestWakeCondition.fs" />
     <Compile Include="TestUnixWait.fs" />
     <Compile Include="TestUnixTaskLifecycle.fs" />

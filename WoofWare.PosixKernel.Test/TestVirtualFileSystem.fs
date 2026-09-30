@@ -4340,24 +4340,29 @@ module TestCreatingOpenRules =
         |> shouldEqual (mode 0o666)
 
     [<Test>]
-    let ``only the umask's permission bits take part`` () : unit =
+    let ``only the bits umask stored take part`` () : unit =
         // Measured on Linux: `umask(2)` stores `mask & 0o777`, so `umask(0o4000)`
-        // reads back 0o0000 and a requested 0o4644 stays 0o4644. Applying the
-        // mask at full width would clear the set-user-ID bit instead, making a
-        // setuid file impossible for a guest to create at all.
+        // reads back 0o0000 and a requested 0o4644 stays 0o4644. A mask that
+        // kept the bit would clear the set-user-ID bit instead, making a setuid
+        // file impossible for a guest to create at all.
+        let linuxStored (argument : int) : PermissionBits =
+            argument
+            &&& PermissionBits.toInt (SimulatedUnixPlatform.umaskStoredBits SimulatedUnixPlatform.linuxX64)
+            |> mode
+
         for raw in [ 0o4000 ; 0o2000 ; 0o1000 ; 0o7000 ] do
-            CreatingOpenRules.createdPermissions linux ownedPlainParent (mode 0o755) (mode raw) 0o7644
+            CreatingOpenRules.createdPermissions linux ownedPlainParent (mode 0o755) (linuxStored raw) 0o7644
             |> shouldEqual (mode 0o7644)
 
         // ...and with low bits set too, only those low bits bite: measured,
         // `umask 0o7777` with mode 0o7777 creates 0o7000 on Linux, not 0o0000.
-        CreatingOpenRules.createdPermissions linux ownedPlainParent (mode 0o755) (mode 0o7777) 0o7777
+        CreatingOpenRules.createdPermissions linux ownedPlainParent (mode 0o755) (linuxStored 0o7777) 0o7777
         |> shouldEqual (mode 0o7000)
 
-        // On Darwin the upper mask bits are unobservable either way, because the
-        // platform's own mask has already dropped them from the mode. Measured:
-        // `umask 0o4000` with mode 0o4644 gives 0o0644, and `umask 0o7777` with
-        // mode 0o7777 gives 0o0000.
+        // Darwin's mask keeps its upper bits, but they are unobservable here,
+        // because the platform's own mask has already dropped them from the
+        // mode. Measured: `umask 0o4000` with mode 0o4644 gives 0o0644, and
+        // `umask 0o7777` with mode 0o7777 gives 0o0000.
         CreatingOpenRules.createdPermissions darwin ownedPlainParent (mode 0o755) (mode 0o4000) 0o4644
         |> shouldEqual (mode 0o0644)
 

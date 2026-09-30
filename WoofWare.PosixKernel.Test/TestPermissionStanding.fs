@@ -349,7 +349,16 @@ module TestPermissionStanding =
     let private darwinOpen : CreatingOpenRules =
         SimulatedUnixPlatform.creatingOpenRules SimulatedUnixPlatform.macOsArm64
 
+    /// The probe's `umask(2)` arguments.
     let private umasks : int list = [ 0 ; 0o010 ; 0o022 ; 0o7777 ]
+
+    /// The mask `umask(argument)` leaves a process on `platform` with, which is
+    /// what a creation reads.
+    let private stored (platform : SimulatedUnixPlatform) (argument : int) : PermissionBits =
+        mode (
+            argument
+            &&& PermissionBits.toInt (SimulatedUnixPlatform.umaskStoredBits platform)
+        )
 
     /// `permission-standing.c`'s prediction for a Linux creating open.
     let private linuxCreated (parentSetGroupId : bool) (standing : Standing) (requested : int) (umask : int) : int =
@@ -375,7 +384,12 @@ module TestPermissionStanding =
             for standing in allStandings do
                 for umask in umasks do
                     for requested in allModes do
-                        CreatingOpenRules.createdPermissions linuxOpen standing (mode parentBits) (mode umask) requested
+                        CreatingOpenRules.createdPermissions
+                            linuxOpen
+                            standing
+                            (mode parentBits)
+                            (stored SimulatedUnixPlatform.linuxX64 umask)
+                            requested
                         |> shouldEqual (mode (linuxCreated (parentBits &&& 0o2000 <> 0) standing requested umask))
 
     [<Test>]
@@ -384,7 +398,12 @@ module TestPermissionStanding =
             for umask in umasks do
                 for requested in allModes do
                     let created =
-                        CreatingOpenRules.createdPermissions darwinOpen standing (mode 0o2777) (mode umask) requested
+                        CreatingOpenRules.createdPermissions
+                            darwinOpen
+                            standing
+                            (mode 0o2777)
+                            (stored SimulatedUnixPlatform.macOsArm64 umask)
+                            requested
 
                     created |> shouldEqual (mode (requested &&& 0o777 &&& ~~~(umask &&& 0o777)))
 
@@ -1198,12 +1217,11 @@ module TestPermissionStanding =
             let standing = Standing.toward credentials (owner 0u parentGroup)
 
             for umask in umasks do
-                let system =
-                    let system = systemOn SimulatedUnixPlatform.linuxX64 credentials vfs
-
-                    { system with
-                        Process = UnixProcessState.withUmask context (mode umask) system.Process
-                    }
+                // Set as the probe set it, by `umask(2)`, which is what keeps
+                // only 0o777 of 0o7777 on Linux.
+                let _, system =
+                    systemOn SimulatedUnixPlatform.linuxX64 credentials vfs
+                    |> UnixSystem.umask umask
 
                 // From the same system each time, which leaves `/p` holding one
                 // entry at most.

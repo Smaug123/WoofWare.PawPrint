@@ -32,6 +32,10 @@ type Syscall =
     | ChMod of path : UnixPath * mode : int
     /// `mode` is raw, as `fchmod(2)` takes it.
     | FChMod of fd : int * mode : int
+    /// `mask` is raw, as `umask(2)` takes it: which of its bits the process
+    /// keeps is behaviour this kernel models, and models per flavour. Answers
+    /// the previous mask.
+    | UMask of mask : int
 
 /// Why this kernel will not answer a syscall at all. The client decides what a
 /// refusal means for it; nothing here is recoverable by retrying.
@@ -190,6 +194,10 @@ type UnixSystemDefect<'Task> =
     /// The process holds more supplementary groups than its machine's
     /// platform lets any process hold (`SimulatedUnixPlatform.supplementaryGroupLimit`).
     | TooManySupplementaryGroups of count : int * limit : int
+    /// The process's file-mode creation mask holds a bit its machine's
+    /// platform's `umask(2)` never stores (`SimulatedUnixPlatform.umaskStoredBits`),
+    /// so every creation would clear a bit no kernel of that flavour clears.
+    | UmaskNotOfPlatform of umask : PermissionBits * platform : SimulatedUnixPlatform
     /// The process's leader is not one of its tasks. A running process always has
     /// its leader, since the leader cannot exit while another task lives.
     | LeaderWithoutTask of leader : 'Task
@@ -290,6 +298,34 @@ module UnixSystem =
         =
         system.Process.ProcessId
 
+    /// `umask(2)`: make `mask` the process's file-mode creation mask, and answer
+    /// the mask it replaces.
+    ///
+    /// `mask` is raw, as the kernel takes it. The process keeps only the bits
+    /// `SimulatedUnixPlatform.umaskStoredBits` names, 0o777 on Linux and 0o7777
+    /// on Darwin, and ignores the rest, so a later call answers `mask` narrowed
+    /// to those bits. Total: `umask` cannot fail.
+    ///
+    /// The mask is the process's, shared by all its threads: measured on both,
+    /// a thread's `umask` is what every other thread's next call answers.
+    let umask<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (mask : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : PermissionBits * UnixSystem<'Task, 'Handler>
+        =
+        let kept =
+            mask
+            &&& PermissionBits.toInt (SimulatedUnixPlatform.umaskStoredBits system.Machine.UnixPlatform)
+            |> PermissionBits.parseOrFail "UnixSystem.umask"
+
+        system.Process.Umask,
+        { system with
+            Process =
+                { system.Process with
+                    Umask = kept
+                }
+        }
+
     /// Answer one syscall, made by `task`.
     ///
     /// The task is what a blocking answer is recorded against: `FLock` that
@@ -381,6 +417,10 @@ module UnixSystem =
             UnixPathResolution.fchmod fd mode system
             |> answered
             |> Result.mapError SyscallRefusal.FChMod
+        | Syscall.UMask mask ->
+            let previous, system = umask mask system
+
+            Ok (SyscallOutcome.Answered (SyscallAnswer.Completed (int64 (PermissionBits.toInt previous))), system)
 
     /// Every way this system's tables disagree with each other: the socket table
     /// and the pipe table against the descriptor table, each pipe and the pipe
@@ -388,7 +428,8 @@ module UnixSystem =
     /// that reference it, the descriptor table against the filesystem, the
     /// current directory against both, each task's park against the descriptor
     /// table, the signal state against the task table, and the machine's
-    /// filesystem type and buffer check against its platform.
+    /// filesystem type and buffer check and the process's supplementary groups
+    /// and file-mode creation mask against its platform.
     ///
     /// Each table's own rules are elsewhere and are not repeated here:
     /// `FileDescriptorRegistry.checkInvariants` for the descriptor table, and
@@ -789,6 +830,15 @@ module UnixSystem =
             else
                 []
 
+        let umask =
+            let platform = system.Machine.UnixPlatform
+            let stored = PermissionBits.toInt (SimulatedUnixPlatform.umaskStoredBits platform)
+
+            if PermissionBits.toInt system.Process.Umask &&& ~~~stored <> 0 then
+                [ UnixSystemDefect.UmaskNotOfPlatform (system.Process.Umask, platform) ]
+            else
+                []
+
         // The task table against the process and the machine's thread ID
         // counter: the leader is a task, no two tasks share an ID, and every ID is
         // one the counter could have handed out, so none can be handed out again
@@ -965,6 +1015,7 @@ module UnixSystem =
         @ fileSystemType
         @ userBufferCheck
         @ supplementaryGroups
+        @ umask
         @ threadIds
         @ pipes
 
@@ -1083,8 +1134,9 @@ module UnixSystem =
     /// 0o022 because that is what essentially every Unix login shell and service
     /// manager sets, and because it is the mask the existing seed defaults were
     /// written against (`SeedEntry.defaultPermsForRegularFile` is 0o666 with
-    /// these bits cleared). A client chooses otherwise with
-    /// `UnixProcessState.withUmask`.
+    /// these bits cleared). Measured as the mask a process inherits on both
+    /// flavours. A client chooses otherwise with `UnixSystem.withUmask`, and
+    /// the process itself with `umask`.
     let defaultUmask : PermissionBits =
         PermissionBits.parseOrFail "UnixSystem.defaultUmask" 0o022
 
@@ -1409,6 +1461,37 @@ module UnixSystem =
             Process =
                 { system.Process with
                     Credentials = credentials
+                }
+        }
+
+    /// Set the file-mode creation mask the simulated process starts with: the
+    /// one its parent left it, which it can read and replace with `umask`.
+    ///
+    /// `context` prefixes the rejection a configuration earns; see
+    /// `withCredentials` for why the client supplies it.
+    ///
+    /// Refuses a mask with a bit the platform's `umask(2)` never stores
+    /// (`SimulatedUnixPlatform.umaskStoredBits`): on Linux, any of 0o7000. No
+    /// parent could have left such a mask, so it names a process that cannot
+    /// exist.
+    let withUmask<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (context : string)
+        (umask : PermissionBits)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        let umask = PermissionBits.assertValid context umask
+        let platform = system.Machine.UnixPlatform
+        let stored = SimulatedUnixPlatform.umaskStoredBits platform
+
+        if PermissionBits.toInt umask &&& ~~~(PermissionBits.toInt stored) <> 0 then
+            failwith
+                $"%s{context}: the mask 0o%04o{PermissionBits.toInt umask} holds a bit %O{SimulatedUnixPlatform.flavour platform}'s umask(2) never stores (it keeps only 0o%04o{PermissionBits.toInt stored}), so no process there could have it."
+
+        { system with
+            Process =
+                { system.Process with
+                    Umask = umask
                 }
         }
 
