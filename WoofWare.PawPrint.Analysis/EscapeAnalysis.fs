@@ -53,6 +53,9 @@ type internal LocalFacts =
         Raises : (int * ThrownType) list
         Opaque : (int * Opacity) list
         Calls : (int * MethodKey) list
+        /// Each `rethrow`, with the `catch` or `filter` clause whose handler it is in: it re-raises
+        /// what that clause caught.
+        Rethrows : (int * ExceptionRegion) list
         Regions : ExceptionRegion list
         /// What happens outside the body, so that none of its own handlers can catch it: what
         /// binding the tokens the body names and the types of its locals and `catch` clauses
@@ -61,6 +64,22 @@ type internal LocalFacts =
         /// instantiation), and what taking and releasing a synchronized method's monitor throws.
         OutsideBody : Set<OutsideBodyFact>
     }
+
+/// What a `throw` is handed, as far as the instruction before it says.
+[<RequireQualifiedAccess>]
+type internal ThrowOperand =
+    | Object of ThrownType
+    | Null
+    | Untyped
+
+/// What a `rethrow` re-raises of one thing its clause's protected block raised.
+[<RequireQualifiedAccess>]
+type internal Rethrown =
+    /// The clause cannot catch it.
+    | Nothing
+    | Thrown of ThrownType
+    /// Something the analysis cannot name.
+    | Unknown
 
 /// What a call instruction's token names.
 [<RequireQualifiedAccess>]
@@ -302,14 +321,79 @@ module EscapeAnalysis =
         | MetadataToken.TypeReference handle -> resolveTypeRef state assembly assembly.TypeRefs.[handle]
         | _ -> state, None
 
-    /// Does an exception raised at `offset` get past this body's handlers? `thrown` is `None` for
-    /// one the analysis cannot name. A `finally` or `fault` never stops one, and a `filter` may
-    /// decline, so neither counts.
+    let private isInterface (state : EscapeAnalysisState) (ty : ResolvedTypeIdentity) : bool =
+        (snd (definitionOf state ty)).TypeAttributes.HasFlag TypeAttributes.Interface
+
+    let private wrapperType (state : EscapeAnalysisState) : ResolvedTypeIdentity =
+        corelibType state "System.Runtime.CompilerServices" "RuntimeWrappedException"
+
+    /// Does a `catch` clause for `caught`, in a body of `assembly`, certainly stop what was thrown?
+    /// `thrown` is `None` for one the analysis cannot name.
     ///
     /// A clause sees a thrown object that is not an exception as `RuntimeWrappedException` if
     /// `assembly` wraps such throws, and as itself if not, in which case it also sees any thrown
     /// `RuntimeWrappedException` as the object that wraps; an unknown one may be either, so only a
     /// clause catching everything it could be seen as stops it.
+    let private catchStops
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (caught : ResolvedTypeIdentity)
+        (thrown : ThrownType option)
+        : EscapeAnalysisState * bool
+        =
+        let objectType = state.Context.BaseTypes.Object.Identity
+        let exceptionType = state.Context.BaseTypes.Exception.Identity
+        let wraps = lazy (RuntimeCompatibility.wrapsNonExceptionThrows assembly)
+
+        if caught = objectType then
+            state, true
+        else
+
+        match thrown with
+        | None -> state, caught = exceptionType && wraps.Force ()
+        | Some (ThrownType.Exactly ty)
+        | Some (ThrownType.SubtypeOf ty) ->
+
+        // A clause in an assembly that does not wrap sees any `RuntimeWrappedException`
+        // unwrapped, even one thrown explicitly, and what it wraps may be anything.
+        let state, mayBeUnwrapped =
+            if wraps.Force () then
+                state, false
+            else
+                let wrapper = wrapperType state
+
+                match thrown with
+                | Some (ThrownType.SubtypeOf _) ->
+                    match derivesFrom state wrapper ty with
+                    | state, true -> state, true
+                    | state, false -> state, isInterface state ty
+                | _ -> state, ty = wrapper
+
+        if mayBeUnwrapped then
+            state, false
+        else
+
+        match derivesFrom state ty exceptionType with
+        | state, true -> derivesFrom state ty caught
+        | state, false ->
+            // What is thrown is not an exception, or, below `object` or an interface, may be
+            // either; each possibility must be caught.
+            let mayBeException =
+                match thrown with
+                | Some (ThrownType.SubtypeOf _) -> ty = objectType || isInterface state ty
+                | _ -> false
+
+            let state, nonExceptionStopped =
+                if wraps.Force () then
+                    derivesFrom state (wrapperType state) caught
+                else
+                    derivesFrom state ty caught
+
+            state, nonExceptionStopped && (not mayBeException || caught = exceptionType)
+
+    /// Does an exception raised at `offset` get past `regions`, a body's clauses in the order the
+    /// runtime tries them? `thrown` is `None` for one the analysis cannot name. A `finally` or
+    /// `fault` never stops one, and a `filter` may decline, so neither counts.
     let private escapesHandlers
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
@@ -318,64 +402,6 @@ module EscapeAnalysis =
         (thrown : ThrownType option)
         : EscapeAnalysisState * bool
         =
-        let objectType = state.Context.BaseTypes.Object.Identity
-        let exceptionType = state.Context.BaseTypes.Exception.Identity
-        let wraps = lazy (RuntimeCompatibility.wrapsNonExceptionThrows assembly)
-
-        let wrapperType () =
-            corelibType state "System.Runtime.CompilerServices" "RuntimeWrappedException"
-
-        let isInterface (ty : ResolvedTypeIdentity) : bool =
-            (snd (definitionOf state ty)).TypeAttributes.HasFlag TypeAttributes.Interface
-
-        // Does a clause catching `caught` stop what was thrown?
-        let stops (state : EscapeAnalysisState) (caught : ResolvedTypeIdentity) : EscapeAnalysisState * bool =
-            if caught = objectType then
-                state, true
-            else
-
-            match thrown with
-            | None -> state, caught = exceptionType && wraps.Force ()
-            | Some (ThrownType.Exactly ty)
-            | Some (ThrownType.SubtypeOf ty) ->
-
-            // A clause in an assembly that does not wrap sees any `RuntimeWrappedException`
-            // unwrapped, even one thrown explicitly, and what it wraps may be anything.
-            let state, mayBeUnwrapped =
-                if wraps.Force () then
-                    state, false
-                else
-                    let wrapper = wrapperType ()
-
-                    match thrown with
-                    | Some (ThrownType.SubtypeOf _) ->
-                        match derivesFrom state wrapper ty with
-                        | state, true -> state, true
-                        | state, false -> state, isInterface ty
-                    | _ -> state, ty = wrapper
-
-            if mayBeUnwrapped then
-                state, false
-            else
-
-            match derivesFrom state ty exceptionType with
-            | state, true -> derivesFrom state ty caught
-            | state, false ->
-                // What is thrown is not an exception, or, below `object` or an interface, may be
-                // either; each possibility must be caught.
-                let mayBeException =
-                    match thrown with
-                    | Some (ThrownType.SubtypeOf _) -> ty = objectType || isInterface ty
-                    | _ -> false
-
-                let state, nonExceptionStopped =
-                    if wraps.Force () then
-                        derivesFrom state (wrapperType ()) caught
-                    else
-                        derivesFrom state ty caught
-
-                state, nonExceptionStopped && (not mayBeException || caught = exceptionType)
-
         let rec go (state : EscapeAnalysisState) (regions : ExceptionRegion list) =
             match regions with
             | [] -> state, true
@@ -384,13 +410,91 @@ module EscapeAnalysis =
                 ->
                 match catchType state assembly token with
                 | state, Some caught ->
-                    match stops state caught with
+                    match catchStops state assembly caught thrown with
                     | state, true -> state, false
                     | state, false -> go state rest
                 | state, None -> go state rest
             | _ :: rest -> go state rest
 
         go state regions
+
+    /// What a `rethrow` in the handler of `clause`, a clause of a body in `assembly`, re-raises of
+    /// `thrown`, which reached the clause from its protected block. It re-raises what the clause
+    /// caught, as it was thrown.
+    let private rethrownBy
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (clause : ExceptionRegion)
+        (thrown : ThrownType option)
+        : EscapeAnalysisState * Rethrown
+        =
+        let asThrown =
+            match thrown with
+            | Some thrown -> Rethrown.Thrown thrown
+            | None -> Rethrown.Unknown
+
+        match clause with
+        | ExceptionRegion.Catch (ExceptionCatchType.FromMetadata token, _) ->
+            match catchType state assembly token with
+            | state, None -> state, asThrown
+            | state, Some caught ->
+
+            match catchStops state assembly caught thrown with
+            | state, true -> state, asThrown
+            | state, false ->
+
+            let exceptionType = state.Context.BaseTypes.Exception.Identity
+            let wrapper = wrapperType state
+            let wraps = RuntimeCompatibility.wrapsNonExceptionThrows assembly
+
+            // `catchStops` is exact for an object of a known class, except a
+            // `RuntimeWrappedException` that a clause in an assembly that does not wrap sees as
+            // what it wraps: CoreCLR matches a clause's type against the base chain of what the
+            // clause sees, and nothing else, so a clause for an interface catches nothing
+            // (`ShouldTypedClauseCatchThisException`, ExceptionHandling.cs).
+            let state, never =
+                match thrown with
+                | _ when isInterface state caught -> state, true
+                | Some (ThrownType.Exactly ty) -> state, wraps || ty <> wrapper
+                | Some (ThrownType.SubtypeOf ty) when not (isInterface state ty) ->
+                    match derivesFrom state ty exceptionType with
+                    | state, false -> state, false
+                    | state, true ->
+
+                    match derivesFrom state caught ty with
+                    | state, true -> state, false
+                    | state, false ->
+
+                    match derivesFrom state ty caught with
+                    | state, true -> state, false
+                    | state, false ->
+                        if wraps then
+                            state, true
+                        else
+                            match derivesFrom state wrapper ty with
+                            | state, isWrapperAncestor -> state, not isWrapperAncestor
+                | _ -> state, false
+
+            if never then
+                state, Rethrown.Nothing
+            else
+
+            // In an assembly that wraps, a clause for a type other than an ancestor of
+            // `RuntimeWrappedException` sees only exceptions, each as itself, so what it catches
+            // is one of that type.
+            let state, narrowable =
+                if not wraps then
+                    state, false
+                else
+                    match derivesFrom state wrapper caught with
+                    | state, isWrapperAncestor -> state, not isWrapperAncestor
+
+            match thrown with
+            | None
+            | Some (ThrownType.SubtypeOf _) when narrowable -> state, Rethrown.Thrown (ThrownType.SubtypeOf caught)
+            | _ -> state, asThrown
+        // A `filter` handler holds whatever its filter accepted.
+        | _ -> state, asThrown
 
     /// What a call instruction's metadata token names.
     let rec private callTarget
@@ -817,6 +921,7 @@ module EscapeAnalysis =
             Raises = []
             Opaque = [ 0, reason ]
             Calls = []
+            Rethrows = []
             Regions = []
             OutsideBody = Set.empty
         }
@@ -890,6 +995,7 @@ module EscapeAnalysis =
                 Raises = contractRaises state contract |> List.map (fun thrown -> 0, thrown)
                 Opaque = []
                 Calls = []
+                Rethrows = []
                 Regions = []
                 OutsideBody = Set.empty
             }
@@ -1018,16 +1124,14 @@ module EscapeAnalysis =
             let op, offset = ops.[index]
             let methodTarget = Map.tryFind index targets
 
-            // 1. What the instruction raises by itself.
+            // 1. What the instruction raises by itself. What a `rethrow` raises is its handler's to
+            // say, which `rethrows` below records.
             let state, raises, opaque =
                 match OpcodeFaults.ofIlOp op with
                 | OpcodeFaults.Unmodelled ->
-                    let reason =
-                        match op with
-                        | IlOp.Nullary NullaryIlOp.Rethrow -> Opacity.Rethrow
-                        | _ -> Opacity.UnmodelledOpcode
-
-                    state, raises, (offset, reason) :: opaque
+                    match op with
+                    | IlOp.Nullary NullaryIlOp.Rethrow -> state, raises, opaque
+                    | _ -> state, raises, (offset, Opacity.UnmodelledOpcode) :: opaque
                 | OpcodeFaults.Raises faults ->
                     let state, raises =
                         ((state, raises), faults)
@@ -1056,24 +1160,27 @@ module EscapeAnalysis =
                         else
                             None
 
-                    let state, thrown =
+                    let state, operand =
                         match previous with
+                        | Some (IlOp.Nullary NullaryIlOp.LdNull) -> state, ThrowOperand.Null
                         | Some (IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Newobj,
                                                          MetadataOperand.FromMetadata token)) ->
                             match callTarget state assembly token.Token with
                             | state, CallTarget.Method constructor ->
-                                state, Some (ThrownType.Exactly (declaringTypeOf state constructor))
-                            | state, _ -> state, None
+                                state, ThrowOperand.Object (ThrownType.Exactly (declaringTypeOf state constructor))
+                            | state, _ -> state, ThrowOperand.Untyped
                         | Some (IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Call | UnaryMetadataTokenIlOp.Callvirt),
                                                          MetadataOperand.FromMetadata token)) ->
                             match returnTypeOfCall state assembly token.Token with
-                            | state, Some ty -> state, Some (ThrownType.SubtypeOf ty)
-                            | state, None -> state, None
-                        | _ -> state, None
+                            | state, Some ty -> state, ThrowOperand.Object (ThrownType.SubtypeOf ty)
+                            | state, None -> state, ThrowOperand.Untyped
+                        | _ -> state, ThrowOperand.Untyped
 
-                    match thrown with
-                    | Some thrown -> state, (offset, thrown) :: raises, opaque
-                    | None -> state, raises, (offset, Opacity.UntypedThrow) :: opaque
+                    match operand with
+                    | ThrowOperand.Object thrown -> state, (offset, thrown) :: raises, opaque
+                    // The fault `OpcodeFaults` names for `throw` is all a null operand raises.
+                    | ThrowOperand.Null -> state, raises, opaque
+                    | ThrowOperand.Untyped -> state, raises, (offset, Opacity.UntypedThrow) :: opaque
                 | _ -> state, raises, opaque
 
             // 3. What the instruction calls.
@@ -1245,12 +1352,43 @@ module EscapeAnalysis =
                     acc
             )
 
+        let regions = List.ofSeq body.ExceptionRegions
+
+        // Each `rethrow` belongs to the innermost handler, or filter, around it. Only a `catch`
+        // or `filter` handler may hold one (ECMA-335 III.4.24), so one anywhere else is opaque.
+        let opaque, rethrows =
+            ((List.rev opaque, []), ops)
+            ||> Array.fold (fun (opaque, rethrows) (op, offset) ->
+                match op with
+                | IlOp.Nullary NullaryIlOp.Rethrow when executed.Contains offset ->
+                    let blocks =
+                        regions
+                        |> List.collect (fun region ->
+                            let handlerOf (o : ExceptionOffset) =
+                                o.HandlerOffset, o.HandlerLength, Some region
+
+                            match region with
+                            | ExceptionRegion.Catch (_, o) -> [ handlerOf o ]
+                            | ExceptionRegion.Filter (filterOffset, o) ->
+                                [ handlerOf o ; filterOffset, o.HandlerOffset - filterOffset, None ]
+                            | ExceptionRegion.Finally o
+                            | ExceptionRegion.Fault o -> [ o.HandlerOffset, o.HandlerLength, None ]
+                        )
+                        |> List.filter (fun (start, length, _) -> offset >= start && offset < start + length)
+
+                    match blocks |> List.sortBy (fun (_, length, _) -> length) with
+                    | (_, _, Some clause) :: _ -> opaque, (offset, clause) :: rethrows
+                    | _ -> opaque @ [ offset, Opacity.Rethrow ], rethrows
+                | _ -> opaque, rethrows
+            )
+
         state,
         {
             Raises = List.rev raises
-            Opaque = List.rev opaque
+            Opaque = opaque
             Calls = List.rev calls
-            Regions = List.ofSeq body.ExceptionRegions
+            Rethrows = List.rev rethrows
+            Regions = regions
             OutsideBody = bindingFailures
         }
 
@@ -1294,6 +1432,76 @@ module EscapeAnalysis =
         let escapesAt (state : EscapeAnalysisState) (key : MethodKey) (offset : int) (thrown : ThrownType option) =
             let facts = state.Facts.[key]
             escapesHandlers state (assemblyOf state key.AssemblyFullName) facts.Regions offset thrown
+
+        // What each `rethrow` in `key`'s body re-raises, given what its callees let escape: what
+        // its clause caught of what the clause's protected block raised. That block may hold a
+        // handler with a `rethrow` of its own, whose clause's protected block is smaller, so the
+        // smallest go first.
+        let rethrown
+            (state : EscapeAnalysisState)
+            (key : MethodKey)
+            (summaryOf : MethodKey -> Escapes)
+            : EscapeAnalysisState * (int * ThrownType option) list
+            =
+            let facts = state.Facts.[key]
+            let assembly = assemblyOf state key.AssemblyFullName
+
+            let protectedBy (clause : ExceptionRegion) : ExceptionOffset =
+                match clause with
+                | ExceptionRegion.Catch (_, o)
+                | ExceptionRegion.Filter (_, o)
+                | ExceptionRegion.Finally o
+                | ExceptionRegion.Fault o -> o
+
+            ((state, []),
+             facts.Rethrows
+             |> List.sortBy (fun (_, clause) -> (protectedBy clause).TryLength))
+            ||> List.fold (fun (state, earlier) (offset, clause) ->
+                let o = protectedBy clause
+
+                let inside (at : int) =
+                    at >= o.TryOffset && at < o.TryOffset + o.TryLength
+
+                let raised =
+                    [
+                        for at, thrown in facts.Raises do
+                            if inside at then
+                                yield at, Some thrown
+                        for at, _ in facts.Opaque do
+                            if inside at then
+                                yield at, None
+                        for at, callee in facts.Calls do
+                            if inside at then
+                                let calleeEscapes = summaryOf callee
+
+                                for thrown in calleeEscapes.Types do
+                                    yield at, Some thrown
+
+                                if calleeEscapes.Unknown then
+                                    yield at, None
+                        for at, thrown in earlier do
+                            if inside at then
+                                yield at, thrown
+                    ]
+                    |> List.distinct
+
+                // The clauses the runtime tries before this one.
+                let before = facts.Regions |> List.takeWhile (fun region -> region <> clause)
+
+                let state, here =
+                    ((state, []), raised)
+                    ||> List.fold (fun (state, here) (at, thrown) ->
+                        match escapesHandlers state assembly before at thrown with
+                        | state, false -> state, here
+                        | state, true ->
+                            match rethrownBy state assembly clause thrown with
+                            | state, Rethrown.Nothing -> state, here
+                            | state, Rethrown.Thrown thrown -> state, (offset, Some thrown) :: here
+                            | state, Rethrown.Unknown -> state, (offset, None) :: here
+                    )
+
+                state, List.distinct here @ earlier
+            )
 
         let seedOf (state : EscapeAnalysisState) (key : MethodKey) : EscapeAnalysisState * Escapes =
             let facts = state.Facts.[key]
@@ -1386,6 +1594,31 @@ module EscapeAnalysis =
                                 Types = types
                                 Unknown = unknown
                             }
+                        )
+
+                    let state, rethrows = rethrown state key summaryOf
+
+                    let state, escaping =
+                        ((state, escaping), rethrows)
+                        ||> List.fold (fun (state, acc) (offset, thrown) ->
+                            match thrown with
+                            | Some thrown when not (acc.Types.Contains thrown) ->
+                                match escapesAt state key offset (Some thrown) with
+                                | state, true ->
+                                    state,
+                                    { acc with
+                                        Types = acc.Types.Add thrown
+                                    }
+                                | state, false -> state, acc
+                            | Some _ -> state, acc
+                            | None when not acc.Unknown ->
+                                match escapesAt state key offset None with
+                                | state, unknown ->
+                                    state,
+                                    { acc with
+                                        Unknown = unknown
+                                    }
+                            | None -> state, acc
                         )
 
                     state, Map.add key escaping next

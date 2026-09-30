@@ -138,6 +138,74 @@ public static class Cases
         catch (Exception) { throw; }
     }
 
+    public static int Divide(int a, int b) => a / b;
+
+    public static int Index(int[] a, int i) => a[i];
+
+    // Division raises only faults the analysis names, so what a clause catches of it is known.
+    public static int RethrowsDivision(int a, int b)
+    {
+        try { return Divide(a, b); }
+        catch (DivideByZeroException) { throw; }
+    }
+
+    // What the first clause swallows never reaches the second, so the second rethrows only the
+    // rest.
+    public static int RethrowsWhatEarlierClausesLeave(int[] a, int i)
+    {
+        try { return Index(a, i); }
+        catch (IndexOutOfRangeException) { return 0; }
+        catch (Exception) { throw; }
+    }
+
+    // Whatever an unknown callee raises, what a clause for one exception type catches is that type.
+    public static void RethrowsTheTypeItCatches(Animal a)
+    {
+        try { CallsVirtual(a); }
+        catch (InvalidOperationException) { throw; }
+        catch (Exception) { }
+    }
+
+    // A C# assembly wraps a thrown non-exception, which `catch (Exception)` then catches, and
+    // `throw;` rethrows the object it wraps.
+    public static void RethrowsAnythingCaughtAsException(Animal a)
+    {
+        try { CallsVirtual(a); }
+        catch (Exception) { throw; }
+    }
+
+    // `throw;` rethrows what the innermost enclosing handler caught.
+    public static int RethrowsInnermost(int[] a, int i, int d)
+    {
+        try { return Index(a, i); }
+        catch (IndexOutOfRangeException)
+        {
+            try { return Divide(1, d); }
+            catch (DivideByZeroException) { throw; }
+        }
+    }
+
+    // The second clause stops what the filter declines, so only what the filter accepts escapes.
+    public static int RethrowsFromFilteredHandler(int a, int b)
+    {
+        try { return Divide(a, b); }
+        catch (Exception) when (b == 0) { throw; }
+        catch (Exception) { return 0; }
+    }
+
+    // The outer clause catches what the inner one rethrows.
+    public static int RethrowsWhatIsRethrown(int a, int b)
+    {
+        try
+        {
+            try { return Divide(a, b); }
+            catch (DivideByZeroException) { throw; }
+        }
+        catch (DivideByZeroException) { throw; }
+    }
+
+    public static void ThrowsNull() { throw null; }
+
     public static void ThrowsLocalDerived() { throw new Derived(); }
 
     public static void CaughtByLocalBase()
@@ -346,9 +414,43 @@ public static class MathF
             { expect "Fixture.Cases" "Recursive" with
                 Contains = [ ioe ]
             }
-            // The `throw;` is in the handler, outside the region its catch protects.
+            // The `throw;` is in the handler, outside the region its catch protects, and rethrows
+            // what that catch caught.
             { expect "Fixture.Cases" "Rethrows" with
+                Contains = [ ioe ]
+            }
+            { expect "Fixture.Cases" "RethrowsDivision" with
+                Contains = [ "=System.DivideByZeroException" ; "=System.OverflowException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.Cases" "RethrowsWhatEarlierClausesLeave" with
+                Contains = [ "=System.NullReferenceException" ]
+                Excludes = [ "=System.IndexOutOfRangeException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.Cases" "RethrowsTheTypeItCatches" with
+                Contains = [ "<:System.InvalidOperationException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.Cases" "RethrowsAnythingCaughtAsException" with
                 Unknown = Some true
+            }
+            { expect "Fixture.Cases" "RethrowsInnermost" with
+                Contains = [ "=System.DivideByZeroException" ]
+                Excludes = [ "=System.IndexOutOfRangeException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.Cases" "RethrowsFromFilteredHandler" with
+                Contains = [ "=System.DivideByZeroException" ; "=System.OverflowException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.Cases" "RethrowsWhatIsRethrown" with
+                Contains = [ "=System.DivideByZeroException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.Cases" "ThrowsNull" with
+                Contains = [ "=System.NullReferenceException" ]
+                Unknown = Some false
             }
             { expect "Fixture.Cases" "ThrowsLocalDerived" with
                 Contains = [ "=Fixture.Derived" ]
@@ -568,6 +670,11 @@ using System.Runtime.Intrinsics;
 
 namespace Guarded;
 
+// Exceptions whose construction raises nothing, unlike CoreLib's, which look up their messages.
+public class Guarded : Exception { }
+
+public class HandlerRan : Exception { }
+
 public static class Cases
 {
     public static bool Flag;
@@ -575,25 +682,25 @@ public static class Cases
     // `call get_IsHardwareAccelerated; brfalse`.
     public static void WhenAccelerated()
     {
-        if (Vector128.IsHardwareAccelerated) throw new InvalidOperationException();
+        if (Vector128.IsHardwareAccelerated) throw new Guarded();
     }
 
     // `call get_IsHardwareAccelerated; brtrue`.
     public static void UnlessAccelerated()
     {
-        if (!Vector128.IsHardwareAccelerated) throw new InvalidOperationException();
+        if (!Vector128.IsHardwareAccelerated) throw new Guarded();
     }
 
     // The query's result is compared, not branched on.
     public static void ComparedWithField()
     {
-        if (Vector128.IsHardwareAccelerated == Flag) throw new InvalidOperationException();
+        if (Vector128.IsHardwareAccelerated == Flag) throw new Guarded();
     }
 
     // The throw is reached past the query as well as through it.
     public static void AlsoReachedOtherwise()
     {
-        if (Flag ? Vector128.IsHardwareAccelerated : true) throw new InvalidOperationException();
+        if (Flag ? Vector128.IsHardwareAccelerated : true) throw new Guarded();
     }
 
     public static void HandlerOfGuardedTry()
@@ -601,14 +708,14 @@ public static class Cases
         if (Vector128.IsHardwareAccelerated)
         {
             try { WhenAccelerated(); }
-            catch (InvalidOperationException) { throw new ArgumentException(); }
+            catch (Guarded) { throw new HandlerRan(); }
         }
     }
 
     public static void GuardInHandler()
     {
         try { UnlessAccelerated(); }
-        catch (InvalidOperationException) { if (!Vector128.IsHardwareAccelerated) throw new ArgumentException(); }
+        catch (Guarded) { if (!Vector128.IsHardwareAccelerated) throw new HandlerRan(); }
     }
 }
 """
@@ -616,57 +723,63 @@ public static class Cases
     /// What each guarded method lets escape on a CPU that accelerates `Vector128` and on one that
     /// does not.
     let private guardedExpectations : (bool * Expectation) list =
-        let ioe = "=System.InvalidOperationException"
-        let ae = "=System.ArgumentException"
+        let guarded = "=Guarded.Guarded"
+        let handlerRan = "=Guarded.HandlerRan"
 
         [
             false,
             { expect "Guarded.Cases" "WhenAccelerated" with
-                Excludes = [ ioe ]
+                Excludes = [ guarded ]
                 Unknown = Some false
             }
             true,
             { expect "Guarded.Cases" "WhenAccelerated" with
-                Contains = [ ioe ]
+                Contains = [ guarded ]
+                Unknown = Some false
             }
             false,
             { expect "Guarded.Cases" "UnlessAccelerated" with
-                Contains = [ ioe ]
+                Contains = [ guarded ]
+                Unknown = Some false
             }
             true,
             { expect "Guarded.Cases" "UnlessAccelerated" with
-                Excludes = [ ioe ]
+                Excludes = [ guarded ]
                 Unknown = Some false
             }
             for accelerated in [ false ; true ] do
                 accelerated,
                 { expect "Guarded.Cases" "ComparedWithField" with
-                    Contains = [ ioe ]
+                    Contains = [ guarded ]
+                    Unknown = Some false
                 }
 
                 accelerated,
                 { expect "Guarded.Cases" "AlsoReachedOtherwise" with
-                    Contains = [ ioe ]
+                    Contains = [ guarded ]
+                    Unknown = Some false
                 }
             // The handler's protected block runs only on an accelerating CPU.
             false,
             { expect "Guarded.Cases" "HandlerOfGuardedTry" with
-                Excludes = [ ioe ; ae ]
+                Excludes = [ guarded ; handlerRan ]
                 Unknown = Some false
             }
             true,
             { expect "Guarded.Cases" "HandlerOfGuardedTry" with
-                Contains = [ ae ]
-                Excludes = [ ioe ]
+                Contains = [ handlerRan ]
+                Excludes = [ guarded ]
+                Unknown = Some false
             }
             false,
             { expect "Guarded.Cases" "GuardInHandler" with
-                Contains = [ ae ]
-                Excludes = [ ioe ]
+                Contains = [ handlerRan ]
+                Excludes = [ guarded ]
+                Unknown = Some false
             }
             true,
             { expect "Guarded.Cases" "GuardInHandler" with
-                Excludes = [ ioe ; ae ]
+                Excludes = [ guarded ; handlerRan ]
                 Unknown = Some false
             }
         ]
@@ -1880,7 +1993,12 @@ public static class Uses
         /// `call Exception MakeWrapper(); throw`: the same wrapper, whose static type is only
         /// `Exception`.
         | ReturnedWrapper
-        /// `ldnull; throw`, whose operand's type the analysis does not know.
+        /// `newobj Exception::.ctor(); newobj RuntimeWrappedException::.ctor(object); throw`: a
+        /// wrapper of an exception, which a clause in an assembly that does not wrap sees as that
+        /// exception.
+        | ConstructedWrapperOfException
+        /// `call object Make(); nop; throw`: the `nop` stands between the `throw` and what made
+        /// its operand, so the analysis does not know the operand's type.
         | Untyped
 
     /// The `catch` clause, if any, around an emitted method's raise.
@@ -1897,6 +2015,7 @@ public static class Uses
             Raise.Callee
             Raise.ConstructedWrapper
             Raise.ReturnedWrapper
+            Raise.ConstructedWrapperOfException
             Raise.Untyped
         ]
 
@@ -1906,14 +2025,43 @@ public static class Uses
             Clause.Catch ("System", "Exception")
             Clause.Catch ("System.Runtime.CompilerServices", "RuntimeWrappedException")
             Clause.Catch ("System", "Object")
+            // Every exception implements it, but a clause for an interface catches nothing.
+            Clause.Catch ("System.Runtime.Serialization", "ISerializable")
+            // Unrelated to exceptions: it catches only a thrown wrapper of a string, in an assembly
+            // that does not wrap.
+            Clause.Catch ("System", "String")
         ]
 
-    let private emittedMethodName (raise : Raise) (clause : Clause) : string =
+    /// What the handler of an emitted method's clause does with what it caught.
+    [<RequireQualifiedAccess>]
+    type private Handling =
+        | Swallows
+        /// `rethrow`s it, beside a second clause, for `object`, that swallows whatever the first
+        /// does not catch, so that what escapes is exactly what the first caught.
+        | Rethrows
+
+    let private emittedCases : (Raise * Clause * Handling) list =
+        [
+            for raise in raises do
+                for clause in clauses do
+                    yield raise, clause, Handling.Swallows
+
+                    match clause with
+                    | Clause.Uncaught -> ()
+                    | Clause.Catch _ -> yield raise, clause, Handling.Rethrows
+        ]
+
+    let private emittedMethodName (raise : Raise) (clause : Clause) (handling : Handling) : string =
+        let handled =
+            match handling with
+            | Handling.Swallows -> ""
+            | Handling.Rethrows -> "_rethrown"
+
         match clause with
         | Clause.Uncaught -> $"%A{raise}"
-        | Clause.Catch (_, name) -> $"%A{raise}_%s{name}"
+        | Clause.Catch (_, name) -> $"%A{raise}_%s{name}%s{handled}"
 
-    /// An assembly `W.Throws` with one static method per raise and clause, plus the helpers `Make`,
+    /// An assembly `W.Throws` with one static method per case, plus the helpers `Make`,
     /// `MakeException`, `Throw` and `MakeWrapper`, carrying one `RuntimeCompatibilityAttribute` per blob in `attributes`, in order.
     let private emitThrows (attributes : byte[] list) : byte[] =
         let metadata = MetadataBuilder ()
@@ -2047,8 +2195,15 @@ public static class Uses
             | Raise.ReturnedWrapper ->
                 code.Call makeWrapper
                 code.OpCode ILOpCode.Throw
+            | Raise.ConstructedWrapperOfException ->
+                code.OpCode ILOpCode.Newobj
+                code.Token exceptionConstructor
+                code.OpCode ILOpCode.Newobj
+                code.Token wrapperConstructor
+                code.OpCode ILOpCode.Throw
             | Raise.Untyped ->
-                code.OpCode ILOpCode.Ldnull
+                code.Call make
+                code.OpCode ILOpCode.Nop
                 code.OpCode ILOpCode.Throw
 
         let addMethod (name : string) (returnsObject : bool) (body : int) : unit =
@@ -2116,33 +2271,52 @@ public static class Uses
         )
         |> ignore<MethodDefinitionHandle>
 
-        for raise in raises do
-            for clause in clauses do
-                let body =
-                    match clause with
-                    | Clause.Uncaught ->
-                        let code = InstructionEncoder (BlobBuilder ())
-                        emitRaise code raise
-                        code.OpCode ILOpCode.Ret
-                        bodies.AddMethodBody code
-                    | Clause.Catch (ns, name) ->
-                        let flow = ControlFlowBuilder ()
-                        let code = InstructionEncoder (BlobBuilder (), flow)
-                        let tryStart = code.DefineLabel ()
-                        let handlerStart = code.DefineLabel ()
-                        let handlerEnd = code.DefineLabel ()
-                        code.MarkLabel tryStart
-                        emitRaise code raise
-                        code.Branch (ILOpCode.Leave_s, handlerEnd)
-                        code.MarkLabel handlerStart
-                        code.OpCode ILOpCode.Pop
-                        code.Branch (ILOpCode.Leave_s, handlerEnd)
-                        code.MarkLabel handlerEnd
-                        code.OpCode ILOpCode.Ret
-                        flow.AddCatchRegion (tryStart, handlerStart, handlerStart, handlerEnd, typeRef ns name)
-                        bodies.AddMethodBody code
+        for raise, clause, handling in emittedCases do
+            let body =
+                match clause, handling with
+                | Clause.Uncaught, _ ->
+                    let code = InstructionEncoder (BlobBuilder ())
+                    emitRaise code raise
+                    code.OpCode ILOpCode.Ret
+                    bodies.AddMethodBody code
+                | Clause.Catch (ns, name), Handling.Swallows ->
+                    let flow = ControlFlowBuilder ()
+                    let code = InstructionEncoder (BlobBuilder (), flow)
+                    let tryStart = code.DefineLabel ()
+                    let handlerStart = code.DefineLabel ()
+                    let handlerEnd = code.DefineLabel ()
+                    code.MarkLabel tryStart
+                    emitRaise code raise
+                    code.Branch (ILOpCode.Leave_s, handlerEnd)
+                    code.MarkLabel handlerStart
+                    code.OpCode ILOpCode.Pop
+                    code.Branch (ILOpCode.Leave_s, handlerEnd)
+                    code.MarkLabel handlerEnd
+                    code.OpCode ILOpCode.Ret
+                    flow.AddCatchRegion (tryStart, handlerStart, handlerStart, handlerEnd, typeRef ns name)
+                    bodies.AddMethodBody code
+                | Clause.Catch (ns, name), Handling.Rethrows ->
+                    let flow = ControlFlowBuilder ()
+                    let code = InstructionEncoder (BlobBuilder (), flow)
+                    let tryStart = code.DefineLabel ()
+                    let rethrowing = code.DefineLabel ()
+                    let swallowing = code.DefineLabel ()
+                    let handlersEnd = code.DefineLabel ()
+                    code.MarkLabel tryStart
+                    emitRaise code raise
+                    code.Branch (ILOpCode.Leave_s, handlersEnd)
+                    code.MarkLabel rethrowing
+                    code.OpCode ILOpCode.Rethrow
+                    code.MarkLabel swallowing
+                    code.OpCode ILOpCode.Pop
+                    code.Branch (ILOpCode.Leave_s, handlersEnd)
+                    code.MarkLabel handlersEnd
+                    code.OpCode ILOpCode.Ret
+                    flow.AddCatchRegion (tryStart, rethrowing, rethrowing, swallowing, typeRef ns name)
+                    flow.AddCatchRegion (tryStart, rethrowing, swallowing, handlersEnd, objectRef)
+                    bodies.AddMethodBody code
 
-                addMethod (emittedMethodName raise clause) false body
+            addMethod (emittedMethodName raise clause handling) false body
 
         metadata.AddTypeDefinition (
             TypeAttributes.Class,
@@ -2207,11 +2381,10 @@ public static class Uses
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let cases =
-            [
-                for raise in raises do
-                    for clause in clauses do
-                        raise, clause, emittedMethodName raise clause
-            ]
+            emittedCases
+            |> List.map (fun (raise, clause, handling) ->
+                raise, clause, handling, emittedMethodName raise clause handling
+            )
 
         for wraps in [ false ; true ] do
             let image =
@@ -2231,17 +2404,17 @@ public static class Uses
 
             RuntimeCompatibility.wrapsNonExceptionThrows assembly |> shouldEqual wraps
 
-            // `ldnull; throw` raises a `NullReferenceException` at run time, which says nothing
-            // about how an unknown exception is caught, so only the analysis is asked about those.
+            // An untyped raise throws what `Raise.Returned` throws, which the runtime is already
+            // asked about; what is checked of it is how the analysis treats an unknown exception.
             let runtime =
                 cases
-                |> List.filter (fun (raise, _, _) -> raise <> Raise.Untyped)
-                |> List.map (fun (_, _, name) -> name)
+                |> List.filter (fun (raise, _, _, _) -> raise <> Raise.Untyped)
+                |> List.map (fun (_, _, _, name) -> name)
                 |> escapingOnRealRuntime image
 
             let mutable analysis = analysisOver [ assembly ] id
 
-            for raise, clause, name in cases do
+            for raise, clause, handling, name in cases do
                 let next, escapes =
                     EscapeAnalysis.escapes analysis (methodNamed assembly "W.Throws" name)
 
@@ -2253,10 +2426,17 @@ public static class Uses
 
                 match raise with
                 | Raise.Untyped ->
+                    // A `rethrow` re-raises what its clause caught of an unknown exception, which
+                    // is nothing for a clause for an interface, and one of the clause's type for a
+                    // clause that sees only exceptions: for a type other than an ancestor of
+                    // `RuntimeWrappedException`, in an assembly that wraps.
                     let absorbed =
-                        match clause with
-                        | Clause.Catch ("System", "Object") -> true
-                        | Clause.Catch ("System", "Exception") -> wraps
+                        match clause, handling with
+                        | Clause.Catch ("System.Runtime.Serialization", "ISerializable"), Handling.Rethrows -> true
+                        | Clause.Catch ("System", "String"), Handling.Rethrows -> wraps
+                        | _, Handling.Rethrows -> false
+                        | Clause.Catch ("System", "Object"), _ -> true
+                        | Clause.Catch ("System", "Exception"), _ -> wraps
                         | _ -> false
 
                     if escapes.Unknown = absorbed then
@@ -2265,7 +2445,9 @@ public static class Uses
                     // What the analysis reports the raise as.
                     let reported =
                         match raise with
-                        | Raise.ConstructedWrapper -> [ "=System.Runtime.CompilerServices.RuntimeWrappedException" ]
+                        | Raise.ConstructedWrapper
+                        | Raise.ConstructedWrapperOfException ->
+                            [ "=System.Runtime.CompilerServices.RuntimeWrappedException" ]
                         | Raise.ReturnedWrapper -> [ "<:System.Exception" ]
                         | _ -> [ "=System.Object" ; "<:System.Object" ]
 
@@ -2275,13 +2457,16 @@ public static class Uses
 
                     // Everything that escapes is reported. A returned object's type is known only
                     // as its static type, which may cover values a clause stops and values it does
-                    // not, and whatever could not stop them all is reported to let it escape;
-                    // otherwise the answer is exact.
+                    // not, and whatever could not stop them all is reported to let it escape; and a
+                    // clause in an assembly that does not wrap sees a thrown wrapper as whatever it
+                    // wraps, which the analysis does not know. Otherwise the answer is exact.
                     let exact =
                         match raise with
                         | Raise.Returned
                         | Raise.ReturnedException
                         | Raise.ReturnedWrapper -> false
+                        | Raise.ConstructedWrapper
+                        | Raise.ConstructedWrapperOfException -> wraps
                         | _ -> true
 
                     if
