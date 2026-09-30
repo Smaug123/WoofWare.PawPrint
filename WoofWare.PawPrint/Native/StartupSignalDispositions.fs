@@ -6,6 +6,10 @@ open WoofWare.PosixKernel
 /// code runs: the signals it catches or ignores from the moment it starts, so
 /// that sending one does not do what the kernel's default would.
 ///
+/// Not every entry lasts: the runtime's handlers for the hardware-fault
+/// signals restore the default the first time they are sent one, so a process
+/// survives only the first; see `restoresDefaultWhenSent`.
+///
 /// A PawPrint process starts with this table, over whatever its launcher left
 /// ignored. `TestStartupSignalDispositions` checks the host's column against
 /// the real runtime the test host runs.
@@ -67,10 +71,51 @@ module StartupSignalDispositions =
     // was still in place at Main. The PAL installs SIGINT's and SIGQUIT's
     // handlers only over a disposition that is not SIG_IGN; its others it
     // installs regardless.
-    let private runtimeCaught (numbering : SignalNumbering) : int list =
+    //
+    // Measured 2026-09-26 by sending each signal the process survives a second
+    // time, reading the disposition back with sigaction(2) after each: .NET
+    // 10.0.7 on Darwin 27.0.0 arm64, and .NET 10.0.12 on Linux 6.18.5 aarch64
+    // (Ubuntu, glibc 2.39), natively and under Rosetta x86-64. SIGILL, SIGABRT,
+    // SIGFPE, SIGBUS and SIGSEGV read SIG_DFL after the first, and the second
+    // kills the process with that signal. Each of their handlers reaches
+    // invoke_previous_action (pal/src/exception/signal.cpp): SIGABRT's at
+    // once, the others once the runtime has declined to treat the signal as a
+    // fault in managed code, which is inferred from the outcome rather than
+    // traced. Given the SIG_DFL it replaced, that function runs the runtime's
+    // one-shot shutdown notification (which cleans up the debugger transport),
+    // restores SIG_DFL and returns, expecting the faulting instruction to run
+    // again and raise the signal afresh. A signal sent by kill(2) is not
+    // raised again, so the process carries on with the default installed.
+    // Every other signal here reads the same after each as before (but
+    // Linux's 33, which glibc will not report), and the process survives
+    // both, except that x86-64 Linux dies of SIGILL at the first SIGTRAP, as
+    // above. A handler registered through PosixSignalRegistration for one of
+    // the five changes nothing: it runs for the first signal, and the second
+    // still kills the process, on both flavours, because System.Native's
+    // handler calls the runtime's handler it replaced (pal_signal.c,
+    // SignalHandler), whose restore then overwrites System.Native's own.
+    //
+    // Over an inherited ignore the same five are fatal at the first: the
+    // handler replaced SIG_IGN, and invoke_previous_action's branch for that
+    // calls PROCAbort, so the process dies of SIGABRT (exit 134). Measured
+    // 2026-09-26 on the same Darwin and Linux aarch64 machines, launching the
+    // probe from `bash -c "trap '' <signo>; exec ..."`.
+
+    /// The signals the runtime catches whose handler, sent the signal,
+    /// restores the default it replaced.
+    let private runtimeCaughtRestoring (numbering : SignalNumbering) : int list =
         match numbering with
-        | SignalNumbering.Linux -> [ 4 ; 5 ; 6 ; 7 ; 8 ; 11 ; 34 ]
-        | SignalNumbering.Darwin -> [ 4 ; 6 ; 8 ; 10 ; 11 ; 30 ]
+        | SignalNumbering.Linux -> [ 4 ; 6 ; 7 ; 8 ; 11 ]
+        | SignalNumbering.Darwin -> [ 4 ; 6 ; 8 ; 10 ; 11 ]
+
+    /// The signals the runtime catches whose handler stays installed.
+    let private runtimeCaughtKeeping (numbering : SignalNumbering) : int list =
+        match numbering with
+        | SignalNumbering.Linux -> [ 5 ; 34 ]
+        | SignalNumbering.Darwin -> [ 30 ]
+
+    let private runtimeCaught (numbering : SignalNumbering) : int list =
+        runtimeCaughtRestoring numbering @ runtimeCaughtKeeping numbering
 
     /// Why a set of inherited ignores cannot start a PawPrint process, or
     /// `None` if it can.
@@ -140,3 +185,18 @@ module StartupSignalDispositions =
             | ValueSome signal -> SignalState.setDisposition signal disposition state
             | ValueNone -> failwith $"StartupSignalDispositions: %d{signo} is not a signal under %O{numbering}"
         )
+
+    /// Whether the runtime's handler for `signal`, as `initial` installs it,
+    /// restores the default when the process is sent the signal (rather than
+    /// taking the fault it stands for), and returns: the process survives that
+    /// signal, and the next one terminates it as the default says. A handler
+    /// registered through `PosixSignalRegistration` since does not prevent
+    /// this.
+    ///
+    /// Answers for the signal the value *is* under `numbering`, so an `Other`
+    /// carrying SIGSEGV's number counts. Answers only for a process whose
+    /// launcher left the signal at its default: over an inherited ignore, the
+    /// runtime's handler aborts the process at the first, which dies of
+    /// SIGABRT.
+    let restoresDefaultWhenSent (numbering : SignalNumbering) (signal : Signal) : bool =
+        List.contains (Signal.toRawSignoUnder numbering signal) (runtimeCaughtRestoring numbering)

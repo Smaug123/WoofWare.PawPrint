@@ -83,6 +83,26 @@ module TestNativeLibc =
 
             (numbering, actual) |> shouldEqual (numbering, measured numbering)
 
+    /// The signals of `measured`'s runtime-caught ones whose handler restores
+    /// the default when sent the signal, as measured (see the comments in
+    /// `StartupSignalDispositions`).
+    let private measuredRestoring (numbering : SignalNumbering) : Set<int> =
+        match numbering with
+        | SignalNumbering.Linux -> Set.ofList [ 4 ; 6 ; 7 ; 8 ; 11 ]
+        | SignalNumbering.Darwin -> Set.ofList [ 4 ; 6 ; 8 ; 10 ; 11 ]
+
+    [<Test>]
+    let ``the startup handlers that restore the default when sent are the measured ones`` () : unit =
+        for numbering in everyNumbering do
+            let actual =
+                [ 1 .. Signal.highestSignoUnder numbering ]
+                |> List.filter (fun signo ->
+                    StartupSignalDispositions.restoresDefaultWhenSent numbering (signal numbering signo)
+                )
+                |> Set.ofList
+
+            (numbering, actual) |> shouldEqual (numbering, measuredRestoring numbering)
+
     [<Test>]
     let ``inherited ignores stay ignored except where the runtime installs its own handler`` () : unit =
         // Measured by starting the startup probes with every catchable signal
