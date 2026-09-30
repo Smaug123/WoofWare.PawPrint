@@ -223,11 +223,9 @@ module MethodHandleRegistry =
             failwith
                 $"cannot mint a RuntimeMethodHandle for %O{method}: it is synthesised by the runtime and has no MethodDef token"
 
-    /// Build the identity of a concretised method, binding `methodGenerics` as its method-generic
-    /// arguments. The declaring type's own instantiation is taken from the method either way.
-    let private makeConcreteMethodIdentity
+    /// Build the canonical identity of a concretised method.
+    let private makeMethodIdentity
         (allConcreteTypes : AllConcreteTypes)
-        (methodGenerics : ConcreteTypeHandle list)
         (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         : MetadataMethodIdentity
         =
@@ -245,16 +243,8 @@ module MethodHandleRegistry =
                     failwith $"declaring type for method %O{method} was not found in ConcreteTypes"
                 )
                 |> RuntimeTypeHandleTarget.Closed
-            MethodGenerics = methodGenerics
+            MethodGenerics = method.Generics |> Seq.toList
         }
-
-    /// Build the canonical identity of a concretised method.
-    let private makeMethodIdentity
-        (allConcreteTypes : AllConcreteTypes)
-        (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
-        : MetadataMethodIdentity
-        =
-        makeConcreteMethodIdentity allConcreteTypes (method.Generics |> Seq.toList) method
 
     /// Look up `handle`'s registry id, minting a fresh one if this is the first time it has been
     /// asked for.
@@ -523,6 +513,27 @@ module MethodHandleRegistry =
 
         buildRuntimeMethodHandleInternal baseClassTypes allConcreteTypes mHandle, reg
 
+    /// CoreCLR's `MethodDesc::StripMethodInstantiation` (method.cpp:1760): the same MethodDef row
+    /// with the method's own instantiation dropped and the declaring type's kept, so
+    /// `Foo&lt;int&gt;.Bar&lt;string&gt;` becomes `Foo&lt;int&gt;.Bar&lt;T&gt;`. Dropping the method's arguments is
+    /// how this registry names a generic method *definition*. The function is idempotent, and
+    /// leaves an identity with no method arguments unchanged.
+    ///
+    /// Contrast `typicalMethodDefinition`, which strips the declaring type's instantiation too.
+    ///
+    /// This is not quite CoreCLR's answer when the declaring type is instantiated over a reference
+    /// type. CoreCLR takes the method from the declaring type's *canonical* method table, so the
+    /// declaring type of `Foo&lt;string&gt;.Bar&lt;int&gt;` comes back as `Foo&lt;System.__Canon&gt;`;
+    /// PawPrint does not model canonical forms, and keeps `Foo&lt;string&gt;`. A caller that rebinds
+    /// the result onto the exact declaring type, as `RuntimeMethodInfo.GetGenericMethodDefinition`
+    /// does through `RuntimeType.GetMethodBase`, cannot tell the two apart; the
+    /// `RuntimeMethodHandle_StripMethodInstantiation` QCall refuses any other caller where they
+    /// differ.
+    let stripMethodInstantiation (identity : MetadataMethodIdentity) : MetadataMethodIdentity =
+        { identity with
+            MethodGenerics = []
+        }
+
     /// Mint (or reuse) a registry id naming the *typical definition* of `method`: the same
     /// declaring type, but with the method's own generic arguments stripped.
     ///
@@ -544,7 +555,10 @@ module MethodHandleRegistry =
         // may hold one must classify it first: a dynamic method already carries a registry id and
         // needs no minting, and the remaining kinds have no identity to mint (see
         // `NativeStackTrace.methodHandleIdOfFrame`).
-        idOfHandle (MethodHandle.FromMetadata (makeConcreteMethodIdentity allConcreteTypes [] method)) reg
+        let identity =
+            makeMethodIdentity allConcreteTypes method |> stripMethodInstantiation
+
+        idOfHandle (MethodHandle.FromMetadata identity) reg
 
     /// CoreCLR's `MethodDesc::LoadTypicalMethodDefinition` (method.cpp:1645): the same MethodDef
     /// row with *both* instantiations stripped, so `Foo&lt;int&gt;.Bar&lt;string&gt;` becomes

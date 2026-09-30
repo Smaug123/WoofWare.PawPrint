@@ -762,6 +762,148 @@ module NativeRuntimeMethodHandle =
 
         List.ofSeq acc
 
+    /// The two arguments of a QCall that may replace a method's reflection object with one for a
+    /// related method (`RuntimeMethodHandle_GetTypicalMethodDefinition`,
+    /// `RuntimeMethodHandle_StripMethodInstantiation`): the method the `RuntimeMethodHandleInternal`
+    /// names, and the `ObjectHandleOnStack` target holding its reflection object.
+    ///
+    /// CoreCLR asserts (debug builds only) that the target already holds a reflection object for
+    /// that same method, which is how the managed callers build it. The QCall either leaves the
+    /// object in place or replaces it, so a mismatch would hand the guest back a method it never
+    /// asked about; this refuses one.
+    let private resolveReplaceableMethod
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (handleArg : CliType)
+        (refMethodArg : CliType)
+        : MethodHandle * ManagedPointerSource
+        =
+        let original =
+            MethodHandleResolution.resolveMethodHandleFromArg operation state handleArg
+
+        let refMethod =
+            NativeCall.objectHandleOnStackTarget operation state "refMethod" refMethodArg
+
+        let current =
+            IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed refMethod)
+            |> MethodHandleResolution.resolveMethodHandleFromMethodInfoObject operation state
+
+        if current <> original then
+            failwith
+                $"%s{operation}: refMethod names %O{current}, but the RuntimeMethodHandleInternal argument names %O{original}"
+
+        original, refMethod
+
+    /// CoreCLR's `refMethod.Set(pMethod->AllocateStubMethodInfo())`: point `refMethod` at a freshly
+    /// allocated `RuntimeMethodInfoStub` naming `identity`.
+    let private replaceWithFreshStub
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (refMethod : ManagedPointerSource)
+        (identity : MetadataMethodIdentity)
+        : IlMachineState
+        =
+        let runtimeMethodInfoStubType =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeMethodInfoStub
+
+        let stubAddress, registry, state =
+            MethodHandleRegistry.allocateFreshStubOfIdentity
+                baseClassTypes
+                state.ConcreteTypes
+                state
+                (fun fields state -> IlMachineState.allocateManagedObject runtimeMethodInfoStubType fields state)
+                identity
+                state.MethodHandles
+
+        let state =
+            { state with
+                MethodHandles = registry
+            }
+
+        IlMachineState.writeManagedByrefWithBase
+            baseClassTypes
+            state
+            (ManagedPointerSource.requireAddressed refMethod)
+            (CliType.ObjectRef (Some stubAddress))
+
+    /// Whether `MethodHandleRegistry.stripMethodInstantiation` of a method with this declaring type
+    /// is CoreCLR's answer exactly. CoreCLR's `StripMethodInstantiation` takes the method from the
+    /// declaring type's canonical method table (method.cpp:1774), and PawPrint does not model
+    /// canonical forms, so the two agree only where the canonical method table is the type itself:
+    /// a non-generic type, an array (which has no class instantiation, so CoreCLR returns the method
+    /// before consulting any method table), or an instantiation `isSharedTypeArgument` finds no
+    /// shared argument in. An open declaring type is not claimed to be exact, because what CoreCLR
+    /// canonicalises one to has not been established.
+    let private strippedDeclaringTypeIsExact
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (declaringType : RuntimeTypeHandleTarget)
+        : bool
+        =
+        match declaringType with
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
+            let concreteType =
+                AllConcreteTypes.lookup handle state.ConcreteTypes
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: declaring type %O{handle} is not registered in ConcreteTypes"
+                )
+
+            let describe =
+                AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes handle
+
+            concreteType.Generics
+            |> Seq.exists (IlMachineRuntimeMetadata.isSharedTypeArgument baseClassTypes state describe)
+            |> not
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _) -> true
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+        | RuntimeTypeHandleTarget.OpenConstructed _ -> false
+        | other ->
+            failwith
+                $"%s{operation}: declaring type %O{other} cannot declare a metadata-backed method, so no RuntimeMethodHandleInternal should name one"
+
+    /// Whether the `RuntimeMethodHandle_StripMethodInstantiation` QCall executing in `frame` was
+    /// called by `RuntimeMethodInfo.GetGenericMethodDefinition`, through the managed wrapper
+    /// `RuntimeMethodHandle.StripMethodInstantiation(IRuntimeMethodInfo)`
+    /// (RuntimeMethodInfo.CoreCLR.cs:468, RuntimeHandles.cs:1310).
+    ///
+    /// That caller cannot see the declaring type of what the QCall hands back: it passes the answer
+    /// straight to `RuntimeType.GetMethodBase(m_declaringType, ...)`, which rebinds it onto the
+    /// method's exact declaring type, so CoreCLR's canonical declaring type and PawPrint's exact one
+    /// reach the same `MethodInfo`. Both frames are checked, not merely the immediate one: a guest
+    /// can invoke the wrapper by reflection, and then the wrapper's caller is the reflection
+    /// invoker, and the guest holds the unrebound answer.
+    let private calledFromGetGenericMethodDefinition (state : IlMachineState) (ctx : NativeCallContext) : bool =
+        let callerOf (frame : MethodState) : MethodState option =
+            frame.ReturnState
+            |> Option.map (fun returnState -> IlMachineState.getFrame ctx.Thread returnState.JumpTo state)
+
+        let isCorelibMethod
+            (typeNamespace : string)
+            (typeName : string)
+            (methodName : string)
+            (parameterCount : int)
+            (frame : MethodState)
+            : bool
+            =
+            let method = frame.ExecutingMethod
+
+            AssemblyDefinitionName.isNamed "System.Private.CoreLib" method.DeclaringAssemblyFullName
+            && method.RequiredDeclaringType.Namespace = typeNamespace
+            && method.RequiredDeclaringType.Name = typeName
+            && method.Name = methodName
+            && method.Signature.ParameterTypes.Length = parameterCount
+
+        match callerOf ctx.Instruction with
+        | Some wrapper when isCorelibMethod "System" "RuntimeMethodHandle" "StripMethodInstantiation" 1 wrapper ->
+            match callerOf wrapper with
+            | Some caller ->
+                isCorelibMethod "System.Reflection" "RuntimeMethodInfo" "GetGenericMethodDefinition" 0 caller
+            | None -> false
+        | _ -> false
+
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -1150,26 +1292,13 @@ module NativeRuntimeMethodHandle =
             if instruction.Arguments.Length <> 2 then
                 failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
 
-            let original =
-                MethodHandleResolution.resolveMethodHandleFromArg operation state instruction.Arguments.[0]
-
-            let refMethod =
-                NativeCall.objectHandleOnStackTarget operation state "refMethod" instruction.Arguments.[1]
-
-            // CoreCLR asserts (debug builds only) that `refMethod` already holds a reflection
-            // object for `pMethod`, which is how its managed caller builds the handle. The QCall
-            // either leaves that object in place or replaces it, so a mismatch would hand the guest
-            // back a method it never asked about.
-            let current =
-                IlMachineState.readManagedByref
+            let original, refMethod =
+                resolveReplaceableMethod
+                    operation
                     ctx.BaseClassTypes
                     state
-                    (ManagedPointerSource.requireAddressed refMethod)
-                |> MethodHandleResolution.resolveMethodHandleFromMethodInfoObject operation state
-
-            if current <> original then
-                failwith
-                    $"%s{operation}: refMethod names %O{current}, but the RuntimeMethodHandleInternal argument names %O{original}"
+                    instruction.Arguments.[0]
+                    instruction.Arguments.[1]
 
             match original with
             | MethodHandle.FromDynamic _ ->
@@ -1202,33 +1331,74 @@ module NativeRuntimeMethodHandle =
                 failwith
                     $"%s{operation}: the typical definition %O{typical} of %O{identity} does not itself answer true to IsTypicalMethodDefinition"
 
-            let runtimeMethodInfoStubType =
-                AllConcreteTypes.getRequiredNonGenericHandle
-                    state.ConcreteTypes
-                    ctx.BaseClassTypes.RuntimeMethodInfoStub
+            replaceWithFreshStub ctx.BaseClassTypes state refMethod typical
+            |> NativeHandlerResult.completed
+            |> Some
+        | "RuntimeMethodHandle_StripMethodInstantiation",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeMethodHandle",
+          "StripMethodInstantiation",
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             objectHandleGenerics) ],
+          MethodReturnType.Void when handleGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
+            // CoreCLR runtimehandles.cpp:1828:
+            //   if (!pMethod) COMPlusThrowArgumentNull(NULL, W("Arg_InvalidHandle"));
+            //   MethodDesc *pMethodStripped = pMethod->StripMethodInstantiation();
+            //   if (pMethodStripped != pMethod)
+            //       refMethod.Set(pMethodStripped->AllocateStubMethodInfo());
+            // See `MethodHandleRegistry.stripMethodInstantiation` for the rebind itself.
+            let operation = "RuntimeMethodHandle.StripMethodInstantiation"
 
-            let stubAddress, registry, state =
-                MethodHandleRegistry.allocateFreshStubOfIdentity
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            match
+                MethodHandleResolution.methodHandleIdOfRuntimeMethodHandleInternal operation instruction.Arguments.[0]
+            with
+            | None ->
+                // Unlike its siblings, this QCall checks for the null handle itself. No CoreLib
+                // caller can pass one: `RuntimeMethodInfo` always holds a live handle.
+                failwith
+                    $"TODO: %s{operation} with a null RuntimeMethodHandleInternal should throw ArgumentNullException(\"Arg_InvalidHandle\")"
+            | Some _ ->
+
+            let original, refMethod =
+                resolveReplaceableMethod
+                    operation
                     ctx.BaseClassTypes
-                    state.ConcreteTypes
                     state
-                    (fun fields state -> IlMachineState.allocateManagedObject runtimeMethodInfoStubType fields state)
-                    typical
-                    state.MethodHandles
+                    instruction.Arguments.[0]
+                    instruction.Arguments.[1]
 
-            let state =
-                { state with
-                    MethodHandles = registry
-                }
+            match original with
+            | MethodHandle.FromDynamic _ ->
+                // A `DynamicMethodDesc` has neither a class nor a method instantiation, so
+                // `StripMethodInstantiation` returns it unchanged and `refMethod` is left alone.
+                NativeHandlerResult.completed state |> Some
+            | MethodHandle.FromMetadata identity ->
 
-            let state =
-                IlMachineState.writeManagedByrefWithBase
-                    ctx.BaseClassTypes
-                    state
-                    (ManagedPointerSource.requireAddressed refMethod)
-                    (CliType.ObjectRef (Some stubAddress))
+            // CoreCLR's answer names the declaring type's canonical form, which PawPrint cannot
+            // spell; see `strippedDeclaringTypeIsExact`. Where that differs from the exact type,
+            // answer only a caller known to rebind the answer onto the exact type anyway.
+            if
+                not (strippedDeclaringTypeIsExact operation ctx.BaseClassTypes state (identity.GetDeclaringType ()))
+                && not (calledFromGetGenericMethodDefinition state ctx)
+            then
+                failwith
+                    $"TODO: %s{operation} of %O{identity}, called other than by RuntimeMethodInfo.GetGenericMethodDefinition: CoreCLR answers with the method on its declaring type's canonical method table, which for this declaring type is an instantiation over System.__Canon (or an open type, whose canonical form PawPrint has not established), and the caller can see it. PawPrint does not model canonical forms. GetGenericMethodDefinition is answered because it rebinds the result onto the exact declaring type."
 
-            NativeHandlerResult.completed state |> Some
+            let stripped = MethodHandleRegistry.stripMethodInstantiation identity
+
+            if stripped = identity then
+                NativeHandlerResult.completed state |> Some
+            else
+
+            replaceWithFreshStub ctx.BaseClassTypes state refMethod stripped
+            |> NativeHandlerResult.completed
+            |> Some
         | "RuntimeMethodHandle_GetStubIfNeededSlow",
           "System.Private.CoreLib",
           "System",
