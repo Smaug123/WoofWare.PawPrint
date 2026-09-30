@@ -1929,9 +1929,7 @@ public class MarshalShapes
         // `ReinterpretAs byte` projection is equally required: `BinaryArithmetic` refuses
         // arithmetic on a bare PeByteRange root, so without it a guest's `ConstArray[i]` — which is
         // `((byte*)m_constArray)[index]` — would fail while every content assertion above still passed.
-        let byteType =
-            AllConcreteTypes.lookup fixture.ByteHandle state.ConcreteTypes
-            |> Option.defaultWith (fun () -> failwith "System.Byte was not concretized")
+        let byteType = fixture.ByteHandle
 
         let expected =
             ManagedPointerSource.Byref
@@ -2387,9 +2385,7 @@ public class MarshalShapes
         let _, (length, _, pointer), state =
             invokeGetFieldMarshal fixture (fieldDefToken field.Handle) fixture.State
 
-        let byteType =
-            AllConcreteTypes.lookup fixture.ByteHandle state.ConcreteTypes
-            |> Option.defaultWith (fun () -> failwith "System.Byte was not concretized")
+        let byteType = fixture.ByteHandle
 
         // The root is the whole heap rather than the one blob, which is what lets a read continue
         // past the blob's end as it does over CoreCLR's mapped metadata; the blob itself is found by
@@ -2887,10 +2883,7 @@ public class MarshalShapes
 
             // Look up Char in the *post*-invocation state: the handler is what concretizes it.
             let expectedCharType =
-                AllConcreteTypes.lookup
-                    (AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.Char)
-                    state.ConcreteTypes
-                |> Option.defaultWith (fun () -> failwith "System.Char was not concretized")
+                AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.Char
 
             charType |> shouldEqual expectedCharType
         | other -> failwith $"expected a char pointer over the constant blob, got %O{other}"
@@ -3469,9 +3462,7 @@ public class MarshalShapes
         // The `ReinterpretAs byte` projection is equally required: `BinaryArithmetic` refuses
         // arithmetic on a bare PeByteRange root, so without it a guest's `ConstArray[i]` — which is
         // `((byte*)m_constArray)[index]` — would fail while every content assertion still passed.
-        let byteType =
-            AllConcreteTypes.lookup fixture.ByteHandle state.ConcreteTypes
-            |> Option.defaultWith (fun () -> failwith "System.Byte was not concretized")
+        let byteType = fixture.ByteHandle
 
         let propertyHandle =
             System.Reflection.Metadata.Ecma335.MetadataTokens.PropertyDefinitionHandle hostProperty.MetadataToken

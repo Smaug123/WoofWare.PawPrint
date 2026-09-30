@@ -138,10 +138,7 @@ public interface IOpenInterface<T>
     let private handleFor (ti : TypeInfo<GenericParamFromMetadata, TypeDefn>) : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle concreteTypes ti
 
-    let private concreteTypeFor (ti : TypeInfo<GenericParamFromMetadata, TypeDefn>) : ConcreteType<ConcreteTypeHandle> =
-        handleFor ti
-        |> fun handle -> AllConcreteTypes.lookup handle concreteTypes
-        |> Option.defaultWith (fun () -> failwith $"Could not find concrete type for %O{ti}")
+    let private concreteTypeFor (ti : TypeInfo<GenericParamFromMetadata, TypeDefn>) : ConcreteTypeHandle = handleFor ti
 
     let private intPtrValueField () : FieldInfo<GenericParamFromMetadata, TypeDefn> =
         bct.IntPtr.Fields
@@ -510,13 +507,13 @@ public unsafe struct PointerWrapper
             State : IlMachineState
             Int32WrapperHandle : ConcreteTypeHandle
             Int32WrapperValueField : FieldId
-            FourBytesConcrete : ConcreteType<ConcreteTypeHandle>
+            FourBytesHandle : ConcreteTypeHandle
             FourBytesFields : FieldId[]
-            ByteWrapperConcrete : ConcreteType<ConcreteTypeHandle>
+            ByteWrapperHandle : ConcreteTypeHandle
             ByteWrapperValueField : FieldId
-            FourByteWrappersConcrete : ConcreteType<ConcreteTypeHandle>
+            FourByteWrappersHandle : ConcreteTypeHandle
             FourByteWrapperFields : FieldId[]
-            PointerWrapperConcrete : ConcreteType<ConcreteTypeHandle>
+            PointerWrapperHandle : ConcreteTypeHandle
             PointerWrapperPtrField : FieldId
         }
 
@@ -552,7 +549,7 @@ public unsafe struct PointerWrapper
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (state : IlMachineState)
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        : IlMachineState * ConcreteTypeHandle * ConcreteType<ConcreteTypeHandle>
+        : IlMachineState * ConcreteTypeHandle
         =
         let state, handle =
             typeInfo
@@ -565,11 +562,7 @@ public unsafe struct PointerWrapper
                 ImmutableArray.Empty
                 ImmutableArray.Empty
 
-        let concrete =
-            AllConcreteTypes.lookup handle state.ConcreteTypes
-            |> Option.defaultWith (fun () -> failwith $"Missing concrete type for %O{typeInfo}")
-
-        state, handle, concrete
+        state, handle
 
     let private instanceField
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
@@ -601,36 +594,36 @@ public unsafe struct PointerWrapper
         let fourByteWrappers = reinterpretWriteType "FourByteWrappers"
         let pointerWrapper = reinterpretWriteType "PointerWrapper"
 
-        let state, int32WrapperHandle, _int32WrapperConcrete =
+        let state, int32WrapperHandle =
             concretizeReinterpretWriteType loggerFactory state int32Wrapper
 
-        let state, fourBytesHandle, fourBytesConcrete =
+        let state, fourBytesHandle =
             concretizeReinterpretWriteType loggerFactory state fourBytes
 
-        let state, byteWrapperHandle, byteWrapperConcrete =
+        let state, byteWrapperHandle =
             concretizeReinterpretWriteType loggerFactory state byteWrapper
 
-        let state, fourByteWrappersHandle, fourByteWrappersConcrete =
+        let state, fourByteWrappersHandle =
             concretizeReinterpretWriteType loggerFactory state fourByteWrappers
 
-        let state, pointerWrapperHandle, pointerWrapperConcrete =
+        let state, pointerWrapperHandle =
             concretizeReinterpretWriteType loggerFactory state pointerWrapper
 
         {
             State = state
             Int32WrapperHandle = int32WrapperHandle
             Int32WrapperValueField = instanceField int32Wrapper "Value" |> fieldId int32WrapperHandle
-            FourBytesConcrete = fourBytesConcrete
+            FourBytesHandle = fourBytesHandle
             FourBytesFields =
                 [| "B0" ; "B1" ; "B2" ; "B3" |]
                 |> Array.map (fun name -> instanceField fourBytes name |> fieldId fourBytesHandle)
-            ByteWrapperConcrete = byteWrapperConcrete
+            ByteWrapperHandle = byteWrapperHandle
             ByteWrapperValueField = instanceField byteWrapper "Value" |> fieldId byteWrapperHandle
-            FourByteWrappersConcrete = fourByteWrappersConcrete
+            FourByteWrappersHandle = fourByteWrappersHandle
             FourByteWrapperFields =
                 [| "B0" ; "B1" ; "B2" ; "B3" |]
                 |> Array.map (fun name -> instanceField fourByteWrappers name |> fieldId fourByteWrappersHandle)
-            PointerWrapperConcrete = pointerWrapperConcrete
+            PointerWrapperHandle = pointerWrapperHandle
             PointerWrapperPtrField = instanceField pointerWrapper "Ptr" |> fieldId pointerWrapperHandle
         }
 
@@ -681,7 +674,7 @@ public unsafe struct PointerWrapper
                     Root = ByrefRoot.HeapValue addr
                     Projections =
                         [
-                            ByrefProjection.ReinterpretAs types.FourBytesConcrete
+                            ByrefProjection.ReinterpretAs types.FourBytesHandle
                             ByrefProjection.Field types.FourBytesFields.[fieldIndex]
                         ]
                 }
@@ -1866,9 +1859,9 @@ public unsafe struct PointerWrapper
                     Root = ByrefRoot.HeapValue addr
                     Projections =
                         [
-                            ByrefProjection.ReinterpretAs types.FourByteWrappersConcrete
+                            ByrefProjection.ReinterpretAs types.FourByteWrappersHandle
                             ByrefProjection.Field types.FourByteWrapperFields.[0]
-                            ByrefProjection.ReinterpretAs types.ByteWrapperConcrete
+                            ByrefProjection.ReinterpretAs types.ByteWrapperHandle
                             ByrefProjection.Field types.ByteWrapperValueField
                         ]
                 }
@@ -1894,9 +1887,9 @@ public unsafe struct PointerWrapper
                     Root = ByrefRoot.HeapValue addr
                     Projections =
                         [
-                            ByrefProjection.ReinterpretAs types.FourBytesConcrete
+                            ByrefProjection.ReinterpretAs types.FourBytesHandle
                             ByrefProjection.ByteOffset 1
-                            ByrefProjection.ReinterpretAs types.ByteWrapperConcrete
+                            ByrefProjection.ReinterpretAs types.ByteWrapperHandle
                             ByrefProjection.Field types.ByteWrapperValueField
                         ]
                 }
@@ -1920,7 +1913,7 @@ public unsafe struct PointerWrapper
             ManagedPointerSource.Byref
                 {
                     Root = ByrefRoot.HeapValue addr
-                    Projections = [ ByrefProjection.ReinterpretAs types.PointerWrapperConcrete ]
+                    Projections = [ ByrefProjection.ReinterpretAs types.PointerWrapperHandle ]
                 }
 
         let ex =
@@ -1957,7 +1950,7 @@ public unsafe struct PointerWrapper
                     Root = ByrefRoot.ArrayElement (arrayAddr, 0)
                     Projections =
                         [
-                            ByrefProjection.ReinterpretAs types.FourBytesConcrete
+                            ByrefProjection.ReinterpretAs types.FourBytesHandle
                             ByrefProjection.Field types.FourBytesFields.[0]
                         ]
                 }
@@ -1999,7 +1992,7 @@ public unsafe struct PointerWrapper
                     Root = ByrefRoot.ArrayElement (arrayAddr, 0)
                     Projections =
                         [
-                            ByrefProjection.ReinterpretAs types.FourBytesConcrete
+                            ByrefProjection.ReinterpretAs types.FourBytesHandle
                             ByrefProjection.Field types.FourBytesFields.[0]
                         ]
                 }
@@ -3228,9 +3221,7 @@ public unsafe struct PointerWrapper
         let state =
             IlMachineState.writeManagedByref state (ManagedPointerSource.requireAddressed ptr) bareInt32Cell
 
-        let fourBytesHandle =
-            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes types.FourBytesConcrete.Identity
-            |> Option.defaultWith (fun () -> failwith "FourBytes handle missing")
+        let fourBytesHandle = types.FourBytesHandle
 
         let fourBytesTemplate, state =
             IlMachineState.cliTypeZeroOfHandle state bct fourBytesHandle

@@ -13,14 +13,10 @@ module NativeArray =
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        : ConcreteType<ConcreteTypeHandle>
+        : ConcreteTypeHandle
         =
-        let handle =
-            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Int32.Identity
-            |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Int32 is not concretized")
-
-        AllConcreteTypes.lookup handle state.ConcreteTypes
-        |> Option.defaultWith (fun () -> failwith $"%s{operation}: concrete System.Int32 handle %O{handle} not found")
+        AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Int32.Identity
+        |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Int32 is not concretized")
 
     /// Read `buffer[index]` of an `int*` argument. The native side indexes the pointer in
     /// bytes at the Int32 stride whatever the buffer's provenance, so this does the same:
@@ -30,7 +26,7 @@ module NativeArray =
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
         (state : IlMachineState)
-        (int32ConcreteType : ConcreteType<ConcreteTypeHandle>)
+        (int32ConcreteType : ConcreteTypeHandle)
         (argName : string)
         (buffer : ManagedPointerSource)
         (index : int)

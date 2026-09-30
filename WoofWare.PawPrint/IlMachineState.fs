@@ -60,7 +60,6 @@ module IlMachineState =
 
     let cliTypeZeroOf = IlMachineTypeResolution.cliTypeZeroOf
 
-    let ensureByteConcreteType = IlMachineTypeResolution.ensureByteConcreteType
 
     let peByteRangeForFieldRva = IlMachineTypeResolution.peByteRangeForFieldRva
 

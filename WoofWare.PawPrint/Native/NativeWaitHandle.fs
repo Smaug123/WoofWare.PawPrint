@@ -399,14 +399,10 @@ module NativeWaitHandle =
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        : ConcreteType<ConcreteTypeHandle>
+        : ConcreteTypeHandle
         =
-        let handle =
-            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.IntPtr.Identity
-            |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.IntPtr is not concretized")
-
-        AllConcreteTypes.lookup handle state.ConcreteTypes
-        |> Option.defaultWith (fun () -> failwith $"%s{operation}: concrete System.IntPtr handle %O{handle} not found")
+        AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.IntPtr.Identity
+        |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.IntPtr is not concretized")
 
     /// Read `count` handles from the guest's `IntPtr*`.
     ///

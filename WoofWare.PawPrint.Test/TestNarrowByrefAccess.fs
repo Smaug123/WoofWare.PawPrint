@@ -86,12 +86,8 @@ module TestNarrowByrefAccess =
         | None -> failwith "this corelib has no System.ByReference; these tests have no subject"
         | Some ty -> handleOf ty
 
-    let private byteType : ConcreteType<ConcreteTypeHandle> =
-        ConcreteType.makeFromIdentity
-            baseClassTypes.Byte.Identity
-            baseClassTypes.Byte.Namespace
-            baseClassTypes.Byte.Name
-            ImmutableArray<ConcreteTypeHandle>.Empty
+    let private byteType : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle concreteTypes baseClassTypes.Byte
 
     let private state () : IlMachineState =
         let _, loggerFactory = LoggerFactory.makeTest ()

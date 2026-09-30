@@ -1910,12 +1910,8 @@ module TestNullaryIlOp =
     /// and refuses a total this size, since a single `ByteOffset` cannot hold it.
     [<Test>]
     let ``a stable address folds several cursors without a 32-bit limit`` () : unit =
-        let byteConcreteType : ConcreteType<ConcreteTypeHandle> =
-            ConcreteType.makeFromIdentity
-                baseClassTypes.Byte.Identity
-                baseClassTypes.Byte.Namespace
-                baseClassTypes.Byte.Name
-                System.Collections.Immutable.ImmutableArray<ConcreteTypeHandle>.Empty
+        let byteConcreteType : ConcreteTypeHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle concreteTypes baseClassTypes.Byte
 
         let cursors =
             [ Int32.MaxValue ; Int32.MaxValue ; 2 ]

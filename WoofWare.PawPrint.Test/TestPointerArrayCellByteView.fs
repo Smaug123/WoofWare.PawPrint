@@ -41,12 +41,8 @@ module TestPointerArrayCellByteView =
     let private intPtrHandle : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle concreteTypes baseClassTypes.IntPtr
 
-    let private byteType : ConcreteType<ConcreteTypeHandle> =
-        ConcreteType.makeFromIdentity
-            baseClassTypes.Byte.Identity
-            baseClassTypes.Byte.Namespace
-            baseClassTypes.Byte.Name
-            ImmutableArray<ConcreteTypeHandle>.Empty
+    let private byteType : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle concreteTypes baseClassTypes.Byte
 
     let private state () : IlMachineState =
         let _, loggerFactory = LoggerFactory.makeTest ()

@@ -28,14 +28,9 @@ module internal RawArrayDataProjection =
     let private byteConcreteType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        : ConcreteType<ConcreteTypeHandle>
+        : ConcreteTypeHandle
         =
-        let byteHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
-
-        match AllConcreteTypes.lookup byteHandle state.ConcreteTypes with
-        | Some byteType -> byteType
-        | None -> failwith "RawArrayData projection could not find System.Byte in AllConcreteTypes"
+        AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
 
     let tryProjectField
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

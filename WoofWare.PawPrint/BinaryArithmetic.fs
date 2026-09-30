@@ -29,7 +29,7 @@ type private ArithmeticTarget =
     | ByteViewTarget of
         root : ByrefRoot *
         prefixProjs : ByrefProjection list *
-        reinterpretTy : ConcreteType<ConcreteTypeHandle> *
+        reinterpretTy : ConcreteTypeHandle *
         byteOffset : int
 
 [<RequireQualifiedAccess>]
@@ -131,11 +131,7 @@ module private ArithmeticTarget =
                                              Projections = _
                                          },
               Some declaringHandle when IlMachineManagedByref.isRawByteRoot root ->
-                match AllConcreteTypes.lookup declaringHandle state.ConcreteTypes with
-                | Some declaringType -> IlMachineManagedByref.zeroForConcreteType baseClassTypes state declaringType
-                | None ->
-                    failwith
-                        $"field %O{field} names declaring type %O{declaringHandle}, which is not in the concrete-type registry, so its layout in %O{container} cannot be read"
+                IlMachineManagedByref.zeroOfHandleWithoutLoading baseClassTypes state declaringHandle
             | _ -> IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed ptr)
 
 /// Whether an arithmetic operation wraps on overflow (`add`, `sub`) or traps
@@ -277,24 +273,16 @@ module ArithmeticOperation =
     let private charConcreteType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        : ConcreteType<ConcreteTypeHandle>
+        : ConcreteTypeHandle
         =
-        let handle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Char
-
-        AllConcreteTypes.lookup handle state.ConcreteTypes
-        |> Option.defaultWith (fun () -> failwith $"System.Char concrete handle %O{handle} was not registered")
+        AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Char
 
     let private byteConcreteType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        : ConcreteType<ConcreteTypeHandle>
+        : ConcreteTypeHandle
         =
-        let handle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
-
-        AllConcreteTypes.lookup handle state.ConcreteTypes
-        |> Option.defaultWith (fun () -> failwith $"System.Byte concrete handle %O{handle} was not registered")
+        AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
 
     let private crossArrayPointerDelta
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -413,15 +401,15 @@ module ArithmeticOperation =
             // through the identity-preserving short-circuits, so a cursor that steps out to a
             // mid-cell address and back can still dereference an `object[]` cell. `System.Byte`
             // is the fallback for the element shapes that anchor declines — pointers, byrefs and
-            // function pointers, which have no view type that could honestly describe them —
+            // function pointers, over whose cells the byte-view machinery is not extended —
             // where the stride is still well defined even though byte-granular access is not.
             let anchored =
                 match ManagedPointerByteView.arrayElementHandle state arr with
                 | ConcreteTypeHandle.Byref _
                 | ConcreteTypeHandle.Pointer _
                 | ConcreteTypeHandle.FunctionPointer _ ->
-                    // The anchor declines these by design: no type can honestly describe a cell
-                    // holding pointer provenance. The stride is recorded on the array all the
+                    // The anchor declines these by design: their cells hold pointer provenance
+                    // that no byte view can carry. The stride is recorded on the array all the
                     // same, so a `System.Byte` cursor moves the pointer correctly, and any
                     // attempt to *read* through it refuses loudly at the access.
                     let byteType = byteConcreteType baseClassTypes state
@@ -433,12 +421,10 @@ module ArithmeticOperation =
                                                  Root = _
                                                  Projections = []
                                              } ->
-                    // Every other decline is a lookup that should have succeeded — a concrete
-                    // element type missing from `AllConcreteTypes`, or `System.Object` missing
-                    // when a jagged array needs it as the surrogate for its cells' shape.
-                    // Falling back to a byte view would paper over that; say so instead.
+                    // The anchor views every other element handle as itself, so a decline here
+                    // is an interpreter bug. Falling back to a byte view would paper over that.
                     failwith
-                        $"array %O{arr} has element handle %O{ManagedPointerByteView.arrayElementHandle state arr}, which should have a byte-view anchor, but none could be built"
+                        $"array %O{arr} has element handle %O{ManagedPointerByteView.arrayElementHandle state arr}, which should have a byte-view anchor, but none was built (this is an interpreter bug)"
                 | anchored -> anchored
 
             let advanced =

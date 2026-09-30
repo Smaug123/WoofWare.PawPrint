@@ -6,9 +6,8 @@ module ManagedPointerByteView =
         ArrayElementType.ofShape
 
     /// The handle naming what the cells of `arr` hold. Callers that need to know *why*
-    /// `anchorByteViewIfPlainArrayByref` declined a byref can ask this: it declines exactly the
-    /// `Byref`, `Pointer` and `FunctionPointer` handles, for which no type can honestly describe
-    /// a cell, and every other decline is a lookup that should have succeeded.
+    /// `anchorByteViewIfPlainArrayByref` declined an array byref can ask this: it declines exactly
+    /// the `Byref`, `Pointer` and `FunctionPointer` handles.
     let arrayElementHandle (state : IlMachineState) (arr : ManagedHeapAddress) : ConcreteTypeHandle =
         arrayElementHandleOfShape (ManagedHeap.getArrayShape arr state.ManagedHeap)
 
@@ -16,21 +15,6 @@ module ManagedPointerByteView =
     /// allocation (`ArrayShape.ElementStride`).
     let arrayElementSize (state : IlMachineState) (arr : ManagedHeapAddress) : int =
         ManagedHeap.getArrayElementStride arr state.ManagedHeap
-
-    /// The looked-up concrete element type of the given array, when the element
-    /// is a registered concrete type. Returns `None` when the element handle is
-    /// structural (`Pointer`, `Byref`, `OneDimArrayZero`, `Array`,
-    /// `FunctionPointer`) — those handles are intentionally not present in the
-    /// `AllConcreteTypes` index.
-    let arrayElementConcreteType
-        (state : IlMachineState)
-        (arr : ManagedHeapAddress)
-        : ConcreteType<ConcreteTypeHandle> option
-        =
-        let handle =
-            arrayElementHandleOfShape (ManagedHeap.getArrayShape arr state.ManagedHeap)
-
-        AllConcreteTypes.lookup handle state.ConcreteTypes
 
     let arrayBytePosition
         (state : IlMachineState)
@@ -68,7 +52,7 @@ module ManagedPointerByteView =
 
     let addByteOffset
         (state : IlMachineState)
-        (viewType : ConcreteType<ConcreteTypeHandle>)
+        (viewType : ConcreteTypeHandle)
         (byteOffset : int)
         (ptr : ManagedPointerSource)
         : ManagedPointerSource
@@ -106,8 +90,8 @@ module ManagedPointerByteView =
     /// correct — reference cells aren't byte-addressable.
     ///
     /// Byrefs into arrays whose element handle is a pointer/byref/fnptr
-    /// (e.g. `int*[]`, `delegate*<...>[]`) are left un-anchored, because there is no view type
-    /// that could honestly describe such a cell; arithmetic on them is byte-strided all the
+    /// (e.g. `int*[]`, `delegate*<...>[]`) are left un-anchored, because the byte-view machinery
+    /// is not extended over pointer cells; arithmetic on them is byte-strided all the
     /// same. A byref whose declared pointee really is `byte` does not need this
     /// anchor at all and can be anchored unconditionally — see
     /// `anchorByteStrideOverArrayData` below.
@@ -117,14 +101,6 @@ module ManagedPointerByteView =
         (ptr : ManagedPointerSource)
         : ManagedPointerSource
         =
-        let tryObjectConcreteType () : ConcreteType<ConcreteTypeHandle> option =
-            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Object.Identity
-            |> Option.bind (fun handle -> AllConcreteTypes.lookup handle state.ConcreteTypes)
-
-        let tryCharConcreteType () : ConcreteType<ConcreteTypeHandle> option =
-            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Char.Identity
-            |> Option.bind (fun handle -> AllConcreteTypes.lookup handle state.ConcreteTypes)
-
         match ptr with
         | ManagedPointerSource.Byref {
                                          Root = ByrefRoot.ArrayElement (arr, _)
@@ -134,40 +110,25 @@ module ManagedPointerByteView =
                 arrayElementHandleOfShape (ManagedHeap.getArrayShape arr state.ManagedHeap)
 
             match handle with
-            | ConcreteTypeHandle.Concrete _ ->
-                // Reference-typed elements (e.g. `object[]`) are anchored too, so that the C#
+            | ConcreteTypeHandle.Concrete _
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ ->
+                // Reference-typed elements (e.g. `object[]`, and jagged arrays' array-typed
+                // elements) are anchored too, so that the C#
                 // `fixed (object* p = arr) { p[k] = ...; }` pattern — which lowers to a
                 // byref-to-native-pointer transition followed by `sizeof object; add;
                 // stind.ref` — writes through a pointer whose view type is the cell's own
-                // shape. The cells themselves are
+                // type. The cells themselves are
                 // non-byte-addressable (`ObjectRef`); cell-aligned typed reads
                 // route through `readArrayBytesAs`'s shape-matching
                 // short-circuit and cell-aligned typed writes route through
                 // `tryWriteArrayElementPrecise`, both of which preserve
                 // identity. Mid-cell access would still fail at the
                 // byte-scatter walks.
-                match AllConcreteTypes.lookup handle state.ConcreteTypes with
-                | Some elementType -> addByteOffset state elementType 0 ptr
-                | None -> ptr
-            | ConcreteTypeHandle.OneDimArrayZero _
-            | ConcreteTypeHandle.Array _ ->
-                // Jagged-array element handles are structural — not registered
-                // in `AllConcreteTypes` (they're synthetic, derived from the
-                // inner element type) — but the cells are array references;
-                // the byte-view's reinterpret target only needs to carry the
-                // `ObjectRef` shape, and `System.Object` is the universal
-                // surrogate for that shape. The byte-stride context still
-                // comes from `arrayElementSize` (which derives the stride from
-                // the array's element type, independent of the reinterpret
-                // target), and the cell-aligned read/write short-circuits
-                // preserve identity exactly as for `object[]`.
-                match tryObjectConcreteType () with
-                | Some objectType -> addByteOffset state objectType 0 ptr
-                | None -> ptr
+                addByteOffset state handle 0 ptr
             // Pointer/byref/fnptr element handles carry non-byte-addressable
-            // pointer provenance and no `ObjectRef`-shaped surrogate type,
-            // so the byte-view machinery cannot be safely extended over
-            // them today. Leaving the byref un-anchored means `Conv_U`
+            // pointer provenance, and the byte-view machinery is not extended
+            // over them today. Leaving the byref un-anchored means `Conv_U`
             // merely transports it onto the native-int eval stack, which is
             // what the legal-IL `ldelema ptr[int32]; conv.u` shape
             // needs, without forcing the byte-addressability promise
@@ -187,7 +148,9 @@ module ManagedPointerByteView =
             // `IntrinsicHelpers.offsetManagedPointerByElements` rather than
             // the element-stride branch that demands a matching char cell
             // size.
-            match tryCharConcreteType () with
+            match
+                AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Char.Identity
+            with
             | Some charType -> addByteOffset state charType 0 ptr
             | None -> ptr
         | _ -> ptr
@@ -225,7 +188,6 @@ module ManagedPointerByteView =
                                      } ->
             let byteType =
                 AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Byte.Identity
-                |> Option.bind (fun handle -> AllConcreteTypes.lookup handle state.ConcreteTypes)
                 |> Option.defaultWith (fun () ->
                     failwith "anchorByteStrideOverArrayData: System.Byte is not concretized"
                 )

@@ -42,9 +42,6 @@ module TestNamedByteView =
     let private byteHandle : ConcreteTypeHandle = handleOf baseClassTypes.Byte
     let private intPtrHandle : ConcreteTypeHandle = handleOf baseClassTypes.IntPtr
 
-    let private byteConcreteType : ConcreteType<ConcreteTypeHandle> =
-        AllConcreteTypes.lookup byteHandle concreteTypes |> Option.get
-
     let private state () : IlMachineState =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
@@ -84,11 +81,7 @@ module TestNamedByteView =
         ManagedPointerSource.Byref
             {
                 Root = ByrefRoot.HeapValue addr
-                Projections =
-                    [
-                        ByrefProjection.ReinterpretAs byteConcreteType
-                        ByrefProjection.ByteOffset offset
-                    ]
+                Projections = [ ByrefProjection.ReinterpretAs byteHandle ; ByrefProjection.ByteOffset offset ]
             }
 
     [<Test>]
@@ -245,11 +238,7 @@ module TestNamedByteView =
             ManagedPointerSource.Byref
                 {
                     Root = ByrefRoot.ArrayElement (arrayAddr, 2)
-                    Projections =
-                        [
-                            ByrefProjection.ReinterpretAs byteConcreteType
-                            ByrefProjection.ByteOffset 0
-                        ]
+                    Projections = [ ByrefProjection.ReinterpretAs byteHandle ; ByrefProjection.ByteOffset 0 ]
                 }
 
         IlMachineState.readManagedByrefBytesAs
@@ -265,11 +254,7 @@ module TestNamedByteView =
             ManagedPointerSource.Byref
                 {
                     Root = ByrefRoot.ArrayElement (arrayAddr, index)
-                    Projections =
-                        [
-                            ByrefProjection.ReinterpretAs byteConcreteType
-                            ByrefProjection.ByteOffset 0
-                        ]
+                    Projections = [ ByrefProjection.ReinterpretAs byteHandle ; ByrefProjection.ByteOffset 0 ]
                 }
 
         IlMachineState.readManagedByrefBytesAs
@@ -309,11 +294,7 @@ module TestNamedByteView =
             ManagedPointerSource.Byref
                 {
                     Root = ByrefRoot.ArrayElement (arrayAddr, 1)
-                    Projections =
-                        [
-                            ByrefProjection.ReinterpretAs byteConcreteType
-                            ByrefProjection.ByteOffset 0
-                        ]
+                    Projections = [ ByrefProjection.ReinterpretAs byteHandle ; ByrefProjection.ByteOffset 0 ]
                 }
 
         IlMachineState.readManagedByrefBytesAs
@@ -348,11 +329,7 @@ module TestNamedByteView =
             ManagedPointerSource.Byref
                 {
                     Root = ByrefRoot.ArrayElement (arrayAddr, 1)
-                    Projections =
-                        [
-                            ByrefProjection.ReinterpretAs byteConcreteType
-                            ByrefProjection.ByteOffset 0
-                        ]
+                    Projections = [ ByrefProjection.ReinterpretAs byteHandle ; ByrefProjection.ByteOffset 0 ]
                 }
 
         IlMachineState.readManagedByrefBytesAs
