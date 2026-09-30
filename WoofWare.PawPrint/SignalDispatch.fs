@@ -194,6 +194,12 @@ module SignalDispatch =
                 $"SignalDispatch.poll: the dispatcher %O{dispatcher} is the process's leader, which the kernel delivers the process's signals to; the dispatcher runs handlers for the leader and is always a thread of its own."
         | _ -> ()
 
+        // Nothing pending is nothing to deliver, and this runs between every
+        // two instructions, so it answers without assembling the kernel's view.
+        if List.isEmpty (SignalState.pending state.Kernel.Signals) then
+            state
+        else
+
         let rec deliver (delivered : Signal option) (state : IlMachineState) : IlMachineState =
             let delivery, systemAfter =
                 match UnixSignal.nextDelivery leader (EmulatedKernel.unix state.Kernel) with
@@ -368,9 +374,27 @@ module SignalDispatch =
         // The loop reads the number it was given, whatever the guest has since
         // put there; PawPrint models it reading only a pipe.
         match FileDescriptorRegistry.tryFindTarget pipe.ReadEnd state.Kernel.Process.FileDescriptors with
+        // An empty pipe with its write end open, read through a blocking
+        // description: the read sleeps, and so does the dispatcher. Answered
+        // here because this runs between every two instructions of a process
+        // that has initialised signal handling.
+        | Some (OpenFileTarget.Pipe (pipeId, PipeEnd.Read)) when
+            PipeBuffer.held (UnixMachineState.pipe pipeId state.Kernel.Machine).Buffer = 0
+            && FileDescriptorRegistry.tryFind pipe.ReadEnd state.Kernel.Process.FileDescriptors
+               |> Option.exists (fun description -> not description.NonBlocking)
+            && FileDescriptorRegistry.tryFindTarget pipe.WriteEnd state.Kernel.Process.FileDescriptors = Some (
+                OpenFileTarget.Pipe (pipeId, PipeEnd.Write)
+            )
+            ->
+            SignalPoll.Continues state
+        | Some (OpenFileTarget.StandardStream _ as other)
+        | Some (OpenFileTarget.File _ as other)
+        | Some (OpenFileTarget.Directory _ as other)
+        | Some (OpenFileTarget.SocketEventPort _ as other)
+        | Some (OpenFileTarget.Socket _ as other)
+        | Some (OpenFileTarget.Pipe (_, PipeEnd.Write) as other) -> refuse $"the guest has replaced it with %O{other}"
         | None
-        | Some (OpenFileTarget.Pipe (_, PipeEnd.Read)) -> ()
-        | Some other -> refuse $"the guest has replaced it with %O{other}"
+        | Some (OpenFileTarget.Pipe (_, PipeEnd.Read)) ->
 
         match UnixReadWrite.read pipe.ReadEnd UserBuffer.Mapped 1UL (EmulatedKernel.unix state.Kernel) with
         // Empty, with the write end open: the read sleeps, and so does the

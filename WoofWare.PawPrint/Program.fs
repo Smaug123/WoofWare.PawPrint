@@ -614,21 +614,23 @@ module Program =
         // scheduler from ever stalling.
         let state = fireExpiredDeadlines state
 
-        // Wake anything parked in a syscall whose wake condition now holds — a
-        // port that has become deliverable, a lock that has become available.
-        // Before the jump-to-deadline fallback below, so neither is mistaken for
-        // quiescence.
-        let state = fireSyscallWakes (syscallWaiters state) state
-
         // Run System.Native's signal handling before the scheduler picks its
         // next thread: its native handler writes whatever the kernel delivers
         // to the leader into the signal pipe, and a Parked dispatcher with a
         // signal in the pipe reads it and is flipped to Runnable onto the
         // managed callback, so the scheduler can pick it on the same tick.
+        // Before the syscall wakes, because writing to the pipe and reading
+        // from it change what a syscall parked on it is waiting for.
         match SignalDispatch.poll prepared.BaseClassTypes state with
         | SignalPoll.ProcessKilled (state, signal, coreDumped) ->
             Advanced.Ended (RunOutcome.SignalTerminated (state, signal, coreDumped))
         | SignalPoll.Continues state ->
+
+        // Wake anything parked in a syscall whose wake condition now holds — a
+        // port that has become deliverable, a lock that has become available.
+        // Before the jump-to-deadline fallback below, so neither is mistaken for
+        // quiescence.
+        let state = fireSyscallWakes (syscallWaiters state) state
 
         // Jump-to-deadline fallback: if no thread is Runnable but at
         // least one is parked with a finite-timeout wait outstanding,

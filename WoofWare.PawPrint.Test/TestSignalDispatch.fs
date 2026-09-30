@@ -717,6 +717,22 @@ module TestSignalDispatch =
         exn.Message |> shouldContainText "which the guest has replaced"
 
     [<Test>]
+    let ``the dispatcher refuses an empty read end the guest has made non-blocking`` () : unit =
+        // Its read then fails with EAGAIN rather than sleeping, and the real
+        // SignalHandlerLoop closes the descriptor and exits.
+        let state, _dispatcher, _ = preparedState ()
+
+        let nonBlocking =
+            state.MapKernel (fun kernel ->
+                match UnixSocket.setNonBlocking (pipeOf state).ReadEnd true (EmulatedKernel.unix kernel) with
+                | SetNonBlockingAnswer.Set, system -> EmulatedKernel.withUnix system kernel
+                | other -> failwith $"setting O_NONBLOCK answered %O{other}"
+            )
+
+        let exn = Assert.Throws (fun () -> poll nonBlocking |> ignore<IlMachineState>)
+        exn.Message |> shouldContainText "EAGAIN"
+
+    [<Test>]
     let ``the dispatcher refuses a read end the guest has replaced`` () : unit =
         let state, _dispatcher, _ = preparedState ()
 
