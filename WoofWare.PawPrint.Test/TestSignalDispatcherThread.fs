@@ -40,6 +40,13 @@ module TestSignalDispatcherThread =
             Name = None
         }
 
+    /// A signal pipe for a shim that is never asked to read or write it.
+    let private somePipe : SignalPipe =
+        {
+            ReadEnd = 3
+            WriteEnd = 4
+        }
+
     [<Test>]
     let ``the initial shim has no signal thread`` () : unit =
         PosixSignalShim.initial |> PosixSignalShim.signalThread |> shouldEqual None
@@ -49,7 +56,7 @@ module TestSignalDispatcherThread =
         let dispatcher = ThreadId 7
 
         PosixSignalShim.initial
-        |> PosixSignalShim.markInitialized dispatcher
+        |> PosixSignalShim.markInitialized dispatcher somePipe
         |> PosixSignalShim.signalThread
         |> shouldEqual (Some dispatcher)
 
@@ -61,7 +68,7 @@ module TestSignalDispatcherThread =
         state.Kernel
         |> fun kernel ->
             { kernel with
-                PosixSignalShim = PosixSignalShim.markInitialized dispatcher kernel.PosixSignalShim
+                PosixSignalShim = PosixSignalShim.markInitialized dispatcher somePipe kernel.PosixSignalShim
             }
         |> EmulatedKernel.checkInvariants
         |> shouldEqual []
@@ -72,7 +79,7 @@ module TestSignalDispatcherThread =
         state.Kernel
         |> fun kernel ->
             { kernel with
-                PosixSignalShim = PosixSignalShim.markInitialized ghost kernel.PosixSignalShim
+                PosixSignalShim = PosixSignalShim.markInitialized ghost somePipe kernel.PosixSignalShim
             }
         |> EmulatedKernel.checkInvariants
         |> shouldEqual [ EmulatedKernelDefect.SignalDispatcherWithoutTask ghost ]
