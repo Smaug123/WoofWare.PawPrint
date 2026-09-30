@@ -146,6 +146,12 @@ module Roslyn =
         =
         compileAssemblyWithResources assemblyName outputKind extraReferences [] sources
 
+    /// As `compileAssembly`, but optimized, as a shipped library is: an `if` on a call branches on
+    /// the call's result directly, where an unoptimized build stores it in a local first.
+    let compileOptimizedAssembly (assemblyName : string) (outputKind : OutputKind) (sources : string list) : byte[] =
+        compileCore assemblyName outputKind [] [] DebugSymbols.None Optimization.Release sources
+        |> fst
+
     /// Compiles the supplied C# source strings into an in-memory PE image.
     /// Raises if compilation fails.
     let compile (sources : string list) : byte[] =

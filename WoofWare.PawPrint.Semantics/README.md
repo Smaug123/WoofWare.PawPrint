@@ -18,6 +18,10 @@ What lives here:
 * `OpcodeFaults` — which exceptions an instruction can raise by itself, as opposed to which reach it
   from a callee. Consumed by the interpreter, which raises through it and checks itself against it,
   and readable by an analyser that never runs anything.
+* `ControlFlow` — where control goes after each instruction, and which offsets a run of a body can
+  execute: following branches, fall-through and `leave`, entering a handler only once its protected
+  block has run, and following a conditional branch one way only where it pops a Boolean known in
+  advance. `StackShape` and the escape analysis both read it.
 * `StackShape` — the shape of the evaluation stack on entry to every instruction of a body, joined
   over every path that reaches it, and the control-flow joins at which CoreCLR's importer widens a
   float32 slot to double because another path delivers a double there. What a token-bearing

@@ -18,6 +18,13 @@ method, a `rethrow`) may add more:
   a hardware instruction the CPU lacks raises `PlatformNotSupportedException`, and one it has
   raises what the JIT's tables say (`HardwareInstruction`); one of the runtime's primitives raises
   what its contract (`IntrinsicPrimitive`) says it can;
+* code a capability query rules out on that CPU is left out. Where a call to an `IsSupported` or
+  `IsHardwareAccelerated` that answers a constant (`IntrinsicBody.constantResult`) is branched on
+  straight away (`brtrue` or `brfalse`, which nothing else reaches), only the way the answer goes is
+  followed (`ControlFlow.mayExecute`); every other branch is followed both ways. A handler counts
+  only if something in its protected block does. Tokens in code left out are still bound, below,
+  which reports more than the JIT does: it folds such a branch, even under MinOpts, and never binds
+  what only the other way reaches;
 * a `catch` absorbs what derives from its type, decided on the real base chains of types in any
   assembly, which `WoofWare.PawPrint.Loader` resolves exactly as the interpreter does;
 * an object thrown that is not an exception is named as itself; a `catch` sees it as a
