@@ -198,6 +198,9 @@ module NativeRuntimeAssemblyBuilder =
                 | UInt16.MaxValue -> 0
                 | given -> int given
 
+            let requestedFlags =
+                enum<AssemblyFlags> (NativeCall.int32Argument operation (field "_flags"))
+
             let name : DynamicAssemblyName =
                 {
                     SimpleName = simpleName
@@ -210,13 +213,15 @@ module NativeRuntimeAssemblyBuilder =
                         )
                     Culture = culture
                     PublicKey = System.Collections.Immutable.ImmutableArray<byte>.Empty
-                    Flags = enum<AssemblyFlags> (NativeCall.int32Argument operation (field "_flags"))
+                    // The emitter clears `PublicKey` for an empty key blob, and every key reaching
+                    // here is empty (measured: `PublicKey | Retargetable` is stored as `Retargetable`).
+                    Flags = requestedFlags &&& ~~~AssemblyFlags.PublicKey
                     HashAlgorithm = enum<System.Reflection.AssemblyHashAlgorithm> hashAlgorithm
                 }
 
             if uint32 name.Flags > 0xFFFFu then
                 failwith
-                    $"TODO: %s{operation}: the dynamic assembly '%s{simpleName}' asks for flags 0x%08x{uint32 name.Flags}, with bits above the sixteen DynamicAssemblyImage can write; CoreCLR stores all thirty-two"
+                    $"TODO: %s{operation}: the dynamic assembly '%s{simpleName}' asks for flags 0x%08x{uint32 requestedFlags}, with bits above the sixteen DynamicAssemblyImage can write; CoreCLR stores all thirty-two"
 
             let moduleVersionId, state = freshModuleVersionId state
 

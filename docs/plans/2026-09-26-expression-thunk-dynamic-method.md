@@ -139,7 +139,8 @@ Measured after 3a: the three-parameter guest stops at `AppDomain_CreateDynamicAs
   the `Assembly` row with the requested name, version, culture, flags and hash algorithm (SHA1 when
   none is given), and `<Module>`. It is read back through `Assembly.read` like any image. As the
   metadata emitter does, a version component of 65535 and a hash algorithm of -1 are read as "not
-  given" and stored as 0 (measured).
+  given" and stored as 0, and `PublicKey` is cleared from the flags when there is no key (all
+  measured). `AppDomain.AssemblyLoad` is not raised, for this or any assembly (`docs/divergences.md`).
 * The provenance record lives in `LoadedAssemblies` (`WithDynamicAssembly`, `IsDynamic`): a dynamic
   assembly is in the load context but invisible to the binder, so the exact-identity fallback in
   `TryResolveReference` never finds one and `WithBoundReference` refuses to bind to one. That is

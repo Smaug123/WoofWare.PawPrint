@@ -278,6 +278,41 @@ naive reference implementation` in `TestLoadedAssemblies.fs`.
 **Where this lives in code**: `NativeRuntimeAssembly.tryExecuteQCall`, the
 `AssemblyNative_GetLoadedAssemblies` case, over `LoadedAssemblies.DefinitionNamesInLoadOrder`.
 
+## `AppDomain.AssemblyLoad` is never raised
+
+**CoreCLR**: every assembly added to the AppDomain raises `AppDomain.AssemblyLoad`, by way of the
+managed `AssemblyLoadContext.OnAssemblyLoad` callback. That includes a dynamic assembly, which
+`Assembly::CreateDynamic` announces before `AssemblyBuilder.DefineDynamicAssembly` returns
+(measured: a subscriber counts one notification per `DefineDynamicAssembly`).
+
+**PawPrint**: nothing calls `OnAssemblyLoad`, so a subscriber is never invoked, for an image or a
+dynamic assembly.
+
+**Spec status**: the event is documented to fire on every load. For images, *when* it fires is no
+more a property of the program than `AppDomain.GetAssemblies()`'s membership (see above), because
+it follows the loader; for a dynamic assembly it is exact, inside `DefineDynamicAssembly`.
+
+**Why we chose this**: not a choice, a gap. Raising the event for a dynamic assembly alone would be
+easy (`AppDomain_CreateDynamicAssembly` can call back into managed code), but a guest counting
+notifications would then see dynamic assemblies and no images, which is no truer than seeing
+neither. Raising it for images means choosing the moments at which PawPrint's on-demand loading
+announces an assembly, which is the design question to settle first.
+
+**Observable example**:
+
+```csharp
+// dotnet app.dll:  1
+// PawPrint:        0
+int loads = 0;
+AppDomain.CurrentDomain.AssemblyLoad += (_, _) => loads++;
+AssemblyBuilder.DefineDynamicAssembly(new AssemblyName("Evented"), AssemblyBuilderAccess.Run);
+Console.WriteLine(loads);
+```
+
+**Where this lives in code**: nowhere yet. The two places that add an assembly to the load context
+are `LoadedAssemblies.WithBoundReference`/`WithLoadedAssembly` (images) and
+`NativeRuntimeAssemblyBuilder`'s `AppDomain_CreateDynamicAssembly` (dynamic assemblies).
+
 ## `Environment.ProcessPath` reports no executable, and is never resolved against the filesystem
 
 **CoreCLR**: `SystemNative_GetProcessPath` (`pal_process.c:898-901`) is `return minipal_getexepath();`, and both of the arms PawPrint models in `minipal_getexepath` (`src/native/minipal/getexepath.h`) end in `realpath(..., NULL)` — macOS on the buffer `_NSGetExecutablePath` filled, Linux on `/proc/self/exe` and then on `AT_EXECFN`. So the answer is a `malloc`'d canonical path, and it exists only if every component resolved. Measured on .NET 10.0.7: `dotnet app.dll` reports the *muxer* (`/usr/share/dotnet/dotnet`), an apphost-launched app reports the apphost. The app's own `.dll` is never the answer — that is `GetCommandLineArgs()[0]`.

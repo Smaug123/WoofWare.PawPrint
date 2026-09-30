@@ -139,6 +139,17 @@ public static class Program
             return 17;
         }
 
+        // 18: the emitter clears `PublicKey` from the flags when there is no key. `GetName` sets it
+        // again whatever the row says, so the raw flags are read the way `GetName` reads them.
+        AssemblyName keyless = new AssemblyName ("Keyless") { Flags = AssemblyNameFlags.PublicKey | AssemblyNameFlags.Retargetable };
+        Assembly withoutKey = AssemblyBuilder.DefineDynamicAssembly (keyless, AssemblyBuilderAccess.Run).ManifestModule.Assembly;
+        MethodInfo getFlags = typeof (object).Assembly.GetType ("System.Reflection.RuntimeAssembly").GetMethod ("GetFlags", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        if ((AssemblyNameFlags) getFlags.Invoke (withoutKey, null) != AssemblyNameFlags.Retargetable)
+        {
+            return 18;
+        }
+
         return 0;
     }
 }

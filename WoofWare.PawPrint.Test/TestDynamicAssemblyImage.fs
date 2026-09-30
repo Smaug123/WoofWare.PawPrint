@@ -14,6 +14,7 @@ open WoofWare.PawPrint
 /// `DynamicAssemblyImage.build`, read back through the loader the interpreter uses for every other
 /// assembly.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestDynamicAssemblyImage =
 
     // Every character a simple name can carry through `NativeAssemblyNameParts` except NUL, which
