@@ -177,9 +177,9 @@ module NativeRuntimeMethodHandle =
     /// `HasClassInstantiation` is `GetMethodTable()->HasInstantiation()` (method.hpp:567), i.e. it
     /// asks about the *declaring* type and not about the reflected or element type. Note the second
     /// guard is what makes a frame captured inside `Gen&lt;int&gt;.M` answer false: CoreCLR's stack
-    /// walk strips the method instantiation from each frame's `MethodDesc` but leaves the class
-    /// instantiation alone (debugdebugger.cpp:449-452), so `StackFrameHelper.GetMethodBase` really
-    /// does fall through to the `RuntimeMethodHandle_GetTypicalMethodDefinition` QCall for such a
+    /// walk strips the method instantiation from each frame's `MethodDesc` (debugdebugger.cpp:449-453),
+    /// and `Gen&lt;int&gt;` shares no code, so its class instantiation survives and
+    /// `StackFrameHelper.GetMethodBase` really does fall through to the `RuntimeMethodHandle_GetTypicalMethodDefinition` QCall for such a
     /// frame.
     let isTypicalMethodDefinition
         (methodGenericParamCount : int)
@@ -903,29 +903,6 @@ module NativeRuntimeMethodHandle =
             failwith
                 $"%s{operation}: named type %O{other} is not an instantiation of any generic definition, so it should already have been refused"
 
-    /// The frame that called `frame` on `thread`, if any.
-    let private callerOf (state : IlMachineState) (thread : ThreadId) (frame : MethodState) : MethodState option =
-        frame.ReturnState
-        |> Option.map (fun returnState -> IlMachineState.getFrame thread returnState.JumpTo state)
-
-    /// Whether `frame` is executing the CoreLib method with this declaring type, name and parameter
-    /// count.
-    let private isCorelibMethod
-        (typeNamespace : string)
-        (typeName : string)
-        (methodName : string)
-        (parameterCount : int)
-        (frame : MethodState)
-        : bool
-        =
-        let method = frame.ExecutingMethod
-
-        AssemblyDefinitionName.isNamed "System.Private.CoreLib" method.DeclaringAssemblyFullName
-        && method.RequiredDeclaringType.Namespace = typeNamespace
-        && method.RequiredDeclaringType.Name = typeName
-        && method.Name = methodName
-        && method.Signature.ParameterTypes.Length = parameterCount
-
     /// Whether the `RuntimeMethodHandle_StripMethodInstantiation` QCall executing in `frame` was
     /// called by `RuntimeMethodInfo.GetGenericMethodDefinition`, through the managed wrapper
     /// `RuntimeMethodHandle.StripMethodInstantiation(IRuntimeMethodInfo)`
@@ -938,11 +915,13 @@ module NativeRuntimeMethodHandle =
     /// can invoke the wrapper by reflection, and then the wrapper's caller is the reflection
     /// invoker, and the guest holds the unrebound answer.
     let private calledFromGetGenericMethodDefinition (state : IlMachineState) (ctx : NativeCallContext) : bool =
-        match callerOf state ctx.Thread ctx.Instruction with
-        | Some wrapper when isCorelibMethod "System" "RuntimeMethodHandle" "StripMethodInstantiation" 1 wrapper ->
-            match callerOf state ctx.Thread wrapper with
+        match NativeCall.callerOf state ctx.Thread ctx.Instruction with
+        | Some wrapper when
+            NativeCall.isCorelibMethod "System" "RuntimeMethodHandle" "StripMethodInstantiation" 1 wrapper
+            ->
+            match NativeCall.callerOf state ctx.Thread wrapper with
             | Some caller ->
-                isCorelibMethod "System.Reflection" "RuntimeMethodInfo" "GetGenericMethodDefinition" 0 caller
+                NativeCall.isCorelibMethod "System.Reflection" "RuntimeMethodInfo" "GetGenericMethodDefinition" 0 caller
             | None -> false
         | _ -> false
 
@@ -957,8 +936,8 @@ module NativeRuntimeMethodHandle =
     /// invoked by reflection, that caller is the reflection invoker instead, and the guest holds the
     /// unrebound answer.
     let private calledFromGetMethodBase (state : IlMachineState) (ctx : NativeCallContext) : bool =
-        match callerOf state ctx.Thread ctx.Instruction with
-        | Some caller -> isCorelibMethod "System" "RuntimeType" "GetMethodBase" 2 caller
+        match NativeCall.callerOf state ctx.Thread ctx.Instruction with
+        | Some caller -> NativeCall.isCorelibMethod "System" "RuntimeType" "GetMethodBase" 2 caller
         | None -> false
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =

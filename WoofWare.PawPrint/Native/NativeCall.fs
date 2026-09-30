@@ -764,6 +764,29 @@ module NativeCall =
             managedPointerOfPointerArgument operation $"{argName}._ptr" ptrValue
         | other -> failwith $"%s{operation}: expected %s{argName} to be ObjectHandleOnStack, got %O{other}"
 
+    /// The frame that called `frame` on `thread`, if any.
+    let callerOf (state : IlMachineState) (thread : ThreadId) (frame : MethodState) : MethodState option =
+        frame.ReturnState
+        |> Option.map (fun returnState -> IlMachineState.getFrame thread returnState.JumpTo state)
+
+    /// Whether `frame` is executing the CoreLib method with this declaring type, name and parameter
+    /// count.
+    let isCorelibMethod
+        (typeNamespace : string)
+        (typeName : string)
+        (methodName : string)
+        (parameterCount : int)
+        (frame : MethodState)
+        : bool
+        =
+        let method = frame.ExecutingMethod
+
+        AssemblyDefinitionName.isNamed "System.Private.CoreLib" method.DeclaringAssemblyFullName
+        && method.RequiredDeclaringType.Namespace = typeNamespace
+        && method.RequiredDeclaringType.Name = typeName
+        && method.Name = methodName
+        && method.Signature.ParameterTypes.Length = parameterCount
+
     /// The `RuntimeModule` object a `QCallModule` argument wraps. `QCallModule(ref RuntimeModule)`
     /// stores `Unsafe.AsPointer(ref module)` in `_ptr`, so the object is one dereference behind
     /// that pointer, exactly as an `ObjectHandleOnStack`'s is.

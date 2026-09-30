@@ -538,10 +538,14 @@ module MethodHandleRegistry =
     /// declaring type, but with the method's own generic arguments stripped.
     ///
     /// This is the identity a captured stack frame reports. CoreCLR applies
-    /// `StripMethodInstantiation()` to each frame's `MethodDesc` and leaves the class
-    /// instantiation alone (debugdebugger.cpp:449-452), commenting that "the managed stacktrace
-    /// classes always return typical method definition"; a frame in `Foo<int>.Bar<string>` is
-    /// therefore reported as `Foo<int>.Bar<T>`.
+    /// `StripMethodInstantiation()` to each frame's `MethodDesc` (debugdebugger.cpp:449-453),
+    /// commenting that "the managed stacktrace classes always return typical method definition";
+    /// a frame in `Foo<int>.Bar<string>` is therefore reported as `Foo<int>.Bar<T>`.
+    ///
+    /// That agrees with CoreCLR only where the declaring type's code is not shared. The
+    /// `MethodDesc` CoreCLR strips is the code that ran, so a frame in `Foo<string>.Bar` is reported
+    /// on `Foo<System.__Canon>` (measured), whereas this keeps `Foo<string>`. The
+    /// `StackTrace_GetStackFramesInternal` QCall refuses any caller that could tell the two apart.
     ///
     /// Returns the bare id rather than a `RuntimeMethodHandleInternal`, because the consumer is an
     /// `IntPtr[]` cell rather than a struct field.
