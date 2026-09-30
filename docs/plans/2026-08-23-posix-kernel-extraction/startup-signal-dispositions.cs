@@ -6,9 +6,12 @@
 // arguments to print every signal whose disposition is not SIG_DFL, at Main
 // and after PosixSignalRegistration has initialised the runtime's signal
 // shim; or with a signal number, to send that signal to itself and exit 42
-// if it survives. Linux: run the same build in a Debian trixie container with
-// a .NET 10 runtime from dotnet-install.sh, with
-// DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1.
+// if it survives. A second argument sends it that many times, printing the
+// disposition after each; "register" as a third registers a handler for it
+// through PosixSignalRegistration first. Linux: run the same build in a Debian
+// trixie container with a .NET 10 runtime from dotnet-install.sh, with
+// DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1, or in the
+// mcr.microsoft.com/dotnet/runtime:10.0 image.
 //
 // Measured 2026-09-24 on .NET 10.0.7 / Darwin 25.6.0 arm64 and .NET 10.0.12 /
 // Linux 6.18.5 aarch64 (glibc 2.41), and on 2026-09-25 on .NET 10.0.12 /
@@ -23,6 +26,14 @@
 // be read). Linux: 2 3 4 5 6 7 8 11 15 34 caught, 13 ignored (32 and 33
 // cannot be read: glibc refuses them). After the shim initialises, SIGCONT is
 // caught too (19 on Darwin, 18 on Linux).
+//
+// Sending each signal the process survives a second time, on 2026-09-26 (.NET
+// 10.0.7 / Darwin 27.0.0 arm64; .NET 10.0.12 / Linux 6.18.5 aarch64, Ubuntu
+// glibc 2.39, natively and under Rosetta x86-64): SIGILL, SIGABRT, SIGFPE,
+// SIGBUS and SIGSEGV read DFL after the first, and the second kills the
+// process with that signal, with or without "register". The rest read as
+// before and survive both. Launched from `bash -c "trap '' <signo>; exec ..."`
+// instead, the same five abort the process (exit 134) at the first.
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -67,12 +78,17 @@ unsafe class Program
             return 0;
         }
         int sig = int.Parse(args[0]);
-        bool register = args.Length > 1 && args[1] == "register";
+        int sends = args.Length > 1 ? int.Parse(args[1]) : 1;
+        bool register = args.Length > 2 && args[2] == "register";
         PosixSignalRegistration reg = null;
         if (register) reg = PosixSignalRegistration.Create((PosixSignal)sig, ctx => { Console.WriteLine("handler ran for " + ctx.Signal); });
-        int r = kill(Environment.ProcessId, sig);
-        System.Threading.Thread.Sleep(500);
-        Console.WriteLine($"kill({sig}) returned {r}, process survived");
+        for (int i = 1; i <= sends; i++)
+        {
+            int r = kill(Environment.ProcessId, sig);
+            System.Threading.Thread.Sleep(500);
+            Console.WriteLine($"kill({sig}) #{i} returned {r}, process survived; disposition now {Read(sig)}");
+            Console.Out.Flush();
+        }
         GC.KeepAlive(reg);
         return 42;
     }
