@@ -415,34 +415,49 @@ public class NullReferenceException : Exception { }
         | Runtime.InteropServices.Architecture.X64 -> JitTarget.X64
         | other -> failwith $"No JIT table describes the host's architecture, %O{other}"
 
-    /// An analysis over CoreLib and `assemblies`, with `bind` applied to the load context, for the
-    /// host's JIT on a CPU `profile` describes.
-    let private analysisUnder
+    /// An analysis over `corelib` and `assemblies`, with `bind` applied to the load context, loading
+    /// any other assembly from `runtimeDirs`, for the JIT compiling for `target` on a CPU `profile`
+    /// describes.
+    let private analysisOf
+        (corelib : DumpedAssembly)
+        (runtimeDirs : string seq)
+        (target : JitTarget)
         (profile : HardwareIntrinsicsProfile)
         (assemblies : DumpedAssembly list)
         (bind : LoadedAssemblies -> LoadedAssemblies)
         : EscapeAnalysisState
         =
-        let frameworkDir = FrameworkUnderTest.sharedFrameworkDirectory ()
-        let runtimeDirs = FrameworkUnderTest.runtimeDirs ()
         let _, loggerFactory = LoggerFactory.makeTest ()
-
-        let corelib =
-            Assembly.readFile loggerFactory (Path.Combine (frameworkDir, "System.Private.CoreLib.dll"))
-
         let baseClassTypes = BaseClassTypes.ofCorelib corelib
         let loaded = LoadedAssemblies.ofAssemblies (corelib :: assemblies) |> bind
 
         EscapeAnalysis.create
             loggerFactory
             runtimeDirs
-            (hostTarget ())
+            target
             profile
             {
                 ConcreteTypes = Corelib.concretizeAll loaded baseClassTypes AllConcreteTypes.Empty
                 LoadedAssemblies = loaded
                 BaseTypes = baseClassTypes
             }
+
+    let private hostCoreLib () : DumpedAssembly =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        Assembly.readFile
+            loggerFactory
+            (Path.Combine (FrameworkUnderTest.sharedFrameworkDirectory (), "System.Private.CoreLib.dll"))
+
+    /// An analysis over the host's CoreLib and `assemblies`, with `bind` applied to the load
+    /// context, for the host's JIT on a CPU `profile` describes.
+    let private analysisUnder
+        (profile : HardwareIntrinsicsProfile)
+        (assemblies : DumpedAssembly list)
+        (bind : LoadedAssemblies -> LoadedAssemblies)
+        : EscapeAnalysisState
+        =
+        analysisOf (hostCoreLib ()) (FrameworkUnderTest.runtimeDirs ()) (hostTarget ()) profile assemblies bind
 
     /// An analysis over CoreLib and `assemblies`, with `bind` applied to the load context, on a CPU
     /// with no instruction sets.
@@ -493,13 +508,53 @@ public class NullReferenceException : Exception { }
         if failures.Count > 0 then
             failures |> String.concat Environment.NewLine |> failwith
 
-    /// The CPUs the CoreLib-wide tests answer for: one with no instruction sets, and one with every
-    /// instruction set whose class in `corelib` is a placeholder.
-    let profiles : TestCaseData list =
+    /// The CoreLibs the CoreLib-wide tests read, the host's and the pinned linux-x64 one, each with
+    /// the CPUs they answer for: one with no instruction sets, and one with every instruction set
+    /// whose class in that CoreLib is a placeholder.
+    let coreLibsAndProfiles : TestCaseData list =
         [
-            TestCaseData("scalar-only").SetArgDisplayNames "scalar-only CPU"
-            TestCaseData("every instruction set").SetArgDisplayNames "CPU with every instruction set"
+            for coreLib in [ "host" ; "linux-x64" ] do
+                for profile in [ "scalar-only" ; "every instruction set" ] do
+                    TestCaseData(coreLib, profile).SetArgDisplayNames ($"%s{coreLib} CoreLib", $"%s{profile} CPU")
         ]
+
+    /// A CoreLib the CoreLib-wide tests read, where to load the rest of its framework from, and the
+    /// JIT target it was built for.
+    let private coreLibNamed (name : string) : DumpedAssembly * string list * JitTarget =
+        match name with
+        | "host" -> hostCoreLib (), List.ofSeq (FrameworkUnderTest.runtimeDirs ()), hostTarget ()
+        | "linux-x64" ->
+            match Environment.GetEnvironmentVariable "DOTNET_LINUX_FRAMEWORK_DIR" with
+            | null
+            | "" ->
+                Assert.Ignore "DOTNET_LINUX_FRAMEWORK_DIR is unset; run inside the Nix devshell"
+                failwith "unreachable: Assert.Ignore did not throw"
+            | dir ->
+                let _, loggerFactory = LoggerFactory.makeTest ()
+
+                Assembly.readFile loggerFactory (Path.Combine (dir, "System.Private.CoreLib.dll")),
+                [ dir ],
+                JitTarget.X64
+        | other -> failwith $"unknown CoreLib %s{other}"
+
+    /// Whether `method`'s IL calls, constructs and throws nothing but through its calls to itself, so
+    /// that whatever else it raises is what its instructions raise by themselves.
+    let private callsOnlyItself (corelib : DumpedAssembly) (method : MethodDefinitionHandle) : bool =
+        match corelib.Methods.[method].Body with
+        | MethodBody.Il body ->
+            body.Instructions
+            |> List.forall (fun (op, _) ->
+                match op with
+                | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Call | UnaryMetadataTokenIlOp.Callvirt | UnaryMetadataTokenIlOp.Newobj | UnaryMetadataTokenIlOp.Calli | UnaryMetadataTokenIlOp.Jmp | UnaryMetadataTokenIlOp.Ldftn | UnaryMetadataTokenIlOp.Ldvirtftn),
+                                           operand) ->
+                    match operand with
+                    | MetadataOperand.FromMetadata token -> token.Token = MetadataToken.MethodDef method
+                    | _ -> false
+                | IlOp.Nullary NullaryIlOp.Throw
+                | IlOp.Nullary NullaryIlOp.Rethrow -> false
+                | _ -> true
+            )
+        | _ -> false
 
     let private profileNamed (corelib : DumpedAssembly) (name : string) : HardwareIntrinsicsProfile =
         match name with
@@ -539,18 +594,15 @@ public class NullReferenceException : Exception { }
     /// where there is some, and otherwise its own IL with its call to itself performed as the JIT
     /// expands it for the CPU: a capability query answers a constant, an instruction the CPU lacks
     /// throws `PlatformNotSupportedException`, and one it has raises what the JIT's tables say.
-    [<TestCaseSource(nameof profiles)>]
-    let ``each CoreLib intrinsic is analysed as what CoreCLR runs for it`` (profileName : string) : unit =
-        let _, loggerFactory = LoggerFactory.makeTest ()
-
-        let corelib =
-            Assembly.readFile
-                loggerFactory
-                (Path.Combine (FrameworkUnderTest.sharedFrameworkDirectory (), "System.Private.CoreLib.dll"))
-
+    [<TestCaseSource(nameof coreLibsAndProfiles)>]
+    let ``each CoreLib intrinsic is analysed as what CoreCLR runs for it``
+        (coreLibName : string)
+        (profileName : string)
+        : unit
+        =
+        let corelib, runtimeDirs, target = coreLibNamed coreLibName
         let profile = profileNamed corelib profileName
-        let target = hostTarget ()
-        let mutable analysis = analysisUnder profile [] id
+        let mutable analysis = analysisOf corelib runtimeDirs target profile [] id
         let failures = ResizeArray<string> ()
         let mutable substituted = 0
         let mutable primitives = 0
@@ -558,6 +610,7 @@ public class NullReferenceException : Exception { }
         let mutable constants = 0
         let mutable unsupported = 0
         let mutable instructions = 0
+        let mutable bareInstructions = 0
 
         let instructionFaultName (fault : InstructionFault) : string =
             match fault with
@@ -633,8 +686,14 @@ public class NullReferenceException : Exception { }
                         | InstructionContract.Raises faults ->
                             instructions <- instructions + 1
 
-                            if escapes.Unknown then
-                                failures.Add $"%s{describe ()}: the JIT's tables say it raises %A{faults}"
+                            // A body that does more than call itself, such as `Avx2.GatherVector128`
+                            // constructing the exception for a `scale` it rejects, may be unknown
+                            // for that.
+                            if callsOnlyItself corelib handle then
+                                bareInstructions <- bareInstructions + 1
+
+                                if escapes.Unknown then
+                                    failures.Add $"%s{describe ()}: the JIT's tables say it raises %A{faults}"
 
                             for fault in faults do
                                 if not (shown.Contains (instructionFaultName fault)) then
@@ -662,6 +721,7 @@ public class NullReferenceException : Exception { }
         | _ ->
             unsupported |> shouldEqual 0
             instructions |> shouldBeGreaterThan 1000
+            bareInstructions |> shouldBeGreaterThan 1000
 
     [<Test>]
     let ``a profile supporting another architecture's instruction set is refused`` () : unit =
