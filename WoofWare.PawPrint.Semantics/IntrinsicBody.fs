@@ -294,15 +294,15 @@ module IntrinsicBody =
             else
                 IntrinsicBody.OwnIl
 
-    /// The CoreLib method CoreCLR binds to `CORINFO_HELP_THROW_PLATFORM_NOT_SUPPORTED`
-    /// (corelib.h): `Internal.Runtime.CompilerHelpers.ThrowHelpers.ThrowPlatformNotSupportedException()`.
-    let platformNotSupportedHelper (corelib : DumpedAssembly) : MethodDefinitionHandle =
+    /// The parameterless `Internal.Runtime.CompilerHelpers.ThrowHelpers` method of this name, which
+    /// corelib.h binds to one of the JIT's throw helpers.
+    let private throwHelper (corelib : DumpedAssembly) (name : string) : MethodDefinitionHandle =
         let found =
             corelib.TryGetTopLevelTypeDef "Internal.Runtime.CompilerHelpers" "ThrowHelpers"
             |> Option.toList
             |> List.collect (fun ty -> List.ofSeq ty.Methods)
             |> List.filter (fun m ->
-                m.Name = "ThrowPlatformNotSupportedException"
+                m.Name = name
                 && m.IsStatic
                 && m.Signature.ParameterTypes.IsEmpty
                 && m.Signature.GenericParameterCount = 0
@@ -313,7 +313,19 @@ module IntrinsicBody =
         | [ facts ] -> facts.Handle
         | found ->
             failwith
-                $"IntrinsicBody: expected %s{corelib.DefinitionFullName} to define one ThrowHelpers.ThrowPlatformNotSupportedException(), found %d{found.Length}"
+                $"IntrinsicBody: expected %s{corelib.DefinitionFullName} to define one ThrowHelpers.%s{name}(), found %d{found.Length}"
+
+    /// The CoreLib method CoreCLR binds to `CORINFO_HELP_THROW_PLATFORM_NOT_SUPPORTED`
+    /// (corelib.h): `Internal.Runtime.CompilerHelpers.ThrowHelpers.ThrowPlatformNotSupportedException()`.
+    let platformNotSupportedHelper (corelib : DumpedAssembly) : MethodDefinitionHandle =
+        throwHelper corelib "ThrowPlatformNotSupportedException"
+
+    /// The CoreLib method CoreCLR binds to `CORINFO_HELP_THROW_ARGUMENTOUTOFRANGEEXCEPTION`
+    /// (corelib.h): `Internal.Runtime.CompilerHelpers.ThrowHelpers.ThrowArgumentOutOfRangeException()`.
+    /// The JIT calls it when a hardware instruction's immediate operand is out of range
+    /// (`addRangeCheckIfNeeded` and `impUnsupportedNamedIntrinsic`, hwintrinsic.cpp).
+    let argumentOutOfRangeHelper (corelib : DumpedAssembly) : MethodDefinitionHandle =
+        throwHelper corelib "ThrowArgumentOutOfRangeException"
 
     /// What a call from a method whose body `classify` finds to be `expansion` to itself does, on
     /// a CPU `profile` describes. A call to that method from anywhere else runs its IL, which

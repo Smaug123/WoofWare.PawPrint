@@ -24,9 +24,9 @@ type Opacity =
     /// The method is abstract.
     | AbstractBody
     /// Something CoreCLR runs for an <c>[Intrinsic]</c> in place of its IL that the analysis does not
-    /// model: the JIT's expansion of the method's call to itself into a hardware instruction or a
-    /// capability query, whose outcome depends on the CPU, or a body the VM substitutes that is not
-    /// transcribed.
+    /// model: the JIT's expansion of the method's call to itself where the JIT's tables do not say
+    /// what the instruction raises (<c>HardwareInstruction.contract</c>) or the expansion is not
+    /// recognised, or a body the VM substitutes that is not transcribed.
     | IntrinsicExpansion
     /// A MemberRef whose target turns on how a type variable of this method is instantiated.
     | DependsOnInstantiation
@@ -89,6 +89,10 @@ type EscapeAnalysisState =
         {
             LoggerFactory : ILoggerFactory
             RuntimeDirs : string list
+            /// The architecture the JIT compiles for, and the CPU it compiles for: what a capability
+            /// query answers, and whether a hardware instruction is emitted or throws.
+            Target : JitTarget
+            Profile : HardwareIntrinsicsProfile
             Context : TypeConcretization.ConcretizationContext<DumpedAssembly>
             Facts : Map<MethodKey, LocalFacts>
             Summaries : Map<MethodKey, Escapes>
@@ -126,16 +130,34 @@ type EscapeAnalysisState =
 module EscapeAnalysis =
 
     /// Begin an analysis over the assemblies `context` has loaded, loading any others it needs from
-    /// `runtimeDirs`.
+    /// `runtimeDirs`, of what they do when CoreCLR's JIT compiles them for `target` on a CPU
+    /// `profile` describes. `profile` must not mark as supported a class of another target's
+    /// instruction sets: CoreLib gives those bodies that throw, whatever the CPU.
     let create
         (loggerFactory : ILoggerFactory)
         (runtimeDirs : string seq)
+        (target : JitTarget)
+        (profile : HardwareIntrinsicsProfile)
         (context : TypeConcretization.ConcretizationContext<DumpedAssembly>)
         : EscapeAnalysisState
         =
+        let foreign =
+            JitTarget.all
+            |> List.filter (fun other -> other <> target)
+            |> List.map JitTarget.instructionSetNamespace
+            |> Set.ofList
+
+        for intrinsicClass in Set.union profile.IsSupported profile.IsHardwareAccelerated do
+            if foreign.Contains intrinsicClass.Namespace then
+                invalidArg
+                    (nameof profile)
+                    $"The profile marks %O{intrinsicClass} supported, but the JIT compiles for %A{target}"
+
         {
             LoggerFactory = loggerFactory
             RuntimeDirs = List.ofSeq runtimeDirs
+            Target = target
+            Profile = profile
             Context = context
             Facts = Map.empty
             Summaries = Map.empty
@@ -859,6 +881,15 @@ module EscapeAnalysis =
             | PrimitiveFault.DataMisaligned -> ThrownType.Exactly (corelibException state "DataMisalignedException")
         )
 
+    /// What a fault the CPU reports raises, as the VM raises it; `None` for an out-of-range
+    /// immediate, which the JIT throws by calling a helper in CoreLib.
+    let private instructionRaises (state : EscapeAnalysisState) (fault : InstructionFault) : ThrownType option =
+        match fault with
+        | InstructionFault.NullAddress -> Some (ThrownType.Exactly (corelibException state "NullReferenceException"))
+        | InstructionFault.ImmediateOutOfRange -> None
+        | InstructionFault.ZeroDivisor -> Some (ThrownType.Exactly (corelibException state "DivideByZeroException"))
+        | InstructionFault.QuotientOverflow -> Some (ThrownType.Exactly (corelibException state "OverflowException"))
+
     /// What CoreCLR runs when `key` is called. The VM's substitute for an intrinsic runs whatever IL
     /// CoreLib ships in its place, working or not.
     let private runsFor (assembly : DumpedAssembly) (key : MethodKey) : Runs =
@@ -1117,25 +1148,52 @@ module EscapeAnalysis =
                         state, raises, opaque, calls
                 | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Call | UnaryMetadataTokenIlOp.Callvirt | UnaryMetadataTokenIlOp.Newobj | UnaryMetadataTokenIlOp.Jmp) as call,
                                            operand) ->
-                    match operand, methodTarget with
-                    | MetadataOperand.FromDynamicScope _, _ ->
+                    match operand, methodTarget, selfCall with
+                    | MetadataOperand.FromDynamicScope _, _, _ ->
                         state, raises, (offset, Opacity.IndirectCall) :: opaque, calls
-                    | MetadataOperand.FromMetadata _, Some (CallTarget.Method callee) when
+                    | MetadataOperand.FromMetadata _, Some (CallTarget.Method callee), Some expansion when
                         callee = key
-                        && selfCall.IsSome
                         && call <> UnaryMetadataTokenIlOp.Newobj
                         && call <> UnaryMetadataTokenIlOp.Jmp
                         ->
                         // The body's call to itself, which the JIT expands where it stands
                         // (`gtIsRecursiveCall`): no call happens, so the raises are this offset's.
-                        match selfCall with
-                        | Some (JitExpansion.Primitive primitive) ->
-                            let raised =
-                                primitiveRaises state primitive |> List.map (fun thrown -> offset, thrown)
+                        let raisedHere (thrown : ThrownType list) =
+                            state, (thrown |> List.map (fun thrown -> offset, thrown)) @ raises, opaque, calls
 
-                            state, raised @ raises, opaque, calls
-                        | _ -> state, raises, (offset, Opacity.IntrinsicExpansion) :: opaque, calls
-                    | MetadataOperand.FromMetadata _, Some (CallTarget.Method callee) ->
+                        match IntrinsicBody.expandSelfCall state.Profile expansion with
+                        | SelfCallExpansion.Constant _ -> state, raises, opaque, calls
+                        | SelfCallExpansion.ThrowPlatformNotSupported ->
+                            // The JIT calls CoreLib's helper in place of the method, and what the
+                            // helper raises is its own IL's to say.
+                            let corelib = state.Context.BaseTypes.Corelib
+
+                            let helper =
+                                MethodKey.make corelib (IntrinsicBody.platformNotSupportedHelper corelib)
+
+                            state, raises, opaque, (offset, helper) :: calls
+                        | SelfCallExpansion.Primitive primitive -> raisedHere (primitiveRaises state primitive)
+                        | SelfCallExpansion.HardwareInstruction intrinsicClass ->
+                            match HardwareInstruction.contract state.Target intrinsicClass method.Name with
+                            | InstructionContract.Raises faults ->
+                                let state, raises, opaque, calls =
+                                    faults |> Set.toList |> List.choose (instructionRaises state) |> raisedHere
+
+                                // The JIT throws for an out-of-range immediate by calling CoreLib's
+                                // helper, and what that raises is its own IL's to say.
+                                if faults.Contains InstructionFault.ImmediateOutOfRange then
+                                    let corelib = state.Context.BaseTypes.Corelib
+
+                                    let helper = MethodKey.make corelib (IntrinsicBody.argumentOutOfRangeHelper corelib)
+
+                                    state, raises, opaque, (offset, helper) :: calls
+                                else
+                                    state, raises, opaque, calls
+                            | InstructionContract.Unknown ->
+                                state, raises, (offset, Opacity.IntrinsicExpansion) :: opaque, calls
+                        | SelfCallExpansion.Unrecognised ->
+                            state, raises, (offset, Opacity.IntrinsicExpansion) :: opaque, calls
+                    | MetadataOperand.FromMetadata _, Some (CallTarget.Method callee), _ ->
                         // A static virtual is dispatched on the type a `constrained.` prefix names,
                         // which is how the only legal call to one is written.
                         if
@@ -1145,18 +1203,18 @@ module EscapeAnalysis =
                             state, raises, (offset, Opacity.VirtualCall) :: opaque, calls
                         else
                             state, raises, opaque, (offset, callee) :: calls
-                    | MetadataOperand.FromMetadata _, Some (CallTarget.ArrayAccessor (arrayType, accessor)) ->
+                    | MetadataOperand.FromMetadata _, Some (CallTarget.ArrayAccessor (arrayType, accessor)), _ ->
                         let raised =
                             arrayAccessorRaises state arrayType accessor
                             |> List.map (fun thrown -> offset, thrown)
 
                         state, raised @ raises, opaque, calls
-                    | MetadataOperand.FromMetadata _, Some CallTarget.DependsOnInstantiation ->
+                    | MetadataOperand.FromMetadata _, Some CallTarget.DependsOnInstantiation, _ ->
                         state, raises, (offset, Opacity.DependsOnInstantiation) :: opaque, calls
                     // Binding the token fails, which step 0 recorded; there is nothing to call.
-                    | MetadataOperand.FromMetadata _, Some CallTarget.Missing
-                    | MetadataOperand.FromMetadata _, Some CallTarget.TypeMissing -> state, raises, opaque, calls
-                    | MetadataOperand.FromMetadata token, None ->
+                    | MetadataOperand.FromMetadata _, Some CallTarget.Missing, _
+                    | MetadataOperand.FromMetadata _, Some CallTarget.TypeMissing, _ -> state, raises, opaque, calls
+                    | MetadataOperand.FromMetadata token, None, _ ->
                         failwith
                             $"A call in %s{assembly.DefinitionFullName} names %O{token.Token}, which is not a method"
                 | _ -> state, raises, opaque, calls
