@@ -651,6 +651,86 @@ module TestSignalDispatch =
         |> shouldEqual ThreadStatus.Parked
 
     [<Test>]
+    let ``the dispatcher reads on past a signal it handles without a callback, in the same poll`` () : unit =
+        // SIGCHLD, whose registration has gone, and then SIGTERM, which is
+        // registered, both in the pipe: the loop handles SIGCHLD itself and
+        // goes straight back to its read, so one poll reaches SIGTERM's
+        // callback. Leaving it for a later tick would report a deadlock when
+        // every other thread is asleep.
+        let state, dispatcher, _ = preparedState ()
+
+        let written =
+            state
+            |> withStatus dispatcher ThreadStatus.Runnable
+            |> register Signal.SIGCHLD
+            |> register Signal.SIGTERM
+            |> sendToProcess Signal.SIGCHLD
+            |> poll
+            |> sendToProcess Signal.SIGTERM
+            |> poll
+            |> unregister Signal.SIGCHLD
+            |> withStatus dispatcher ThreadStatus.Parked
+
+        pipeContents written |> shouldEqual [ 17uy ; 15uy ]
+
+        let state' = poll written
+        pipeContents state' |> shouldEqual []
+
+        (state'.ThreadState |> Map.find dispatcher).Status
+        |> shouldEqual ThreadStatus.Runnable
+
+        callbackArguments dispatcher state' |> List.head |> shouldEqual (int32Arg 15)
+
+    /// `state` with the descriptor `fd` replaced by a duplicate of standard
+    /// output, as `dup2(1, fd)` would leave it.
+    let private replacedByStdout (fd : int) (state : IlMachineState) : IlMachineState =
+        state.MapKernel (fun kernel ->
+            let system = EmulatedKernel.unix kernel
+
+            let system =
+                match UnixDescriptor.close fd system with
+                | Ok (SyscallAnswer.Completed _, system) -> system
+                | other -> failwith $"closing %d{fd} answered %O{other}"
+
+            match UnixDescriptor.dup 1 system with
+            | SyscallAnswer.Completed newFd, system when newFd = int64 fd -> EmulatedKernel.withUnix system kernel
+            | other -> failwith $"duplicating stdout onto %d{fd} answered %O{other}"
+        )
+
+    [<Test>]
+    let ``the native handler refuses a write end the guest has replaced with standard output`` () : unit =
+        // The real handler writes its byte to whatever the descriptor now
+        // names; on standard output that is guest-visible output, which
+        // PawPrint would record without streaming it.
+        let state, _dispatcher, _ = preparedState ()
+
+        let exn =
+            Assert.Throws (fun () ->
+                state
+                |> replacedByStdout (pipeOf state).WriteEnd
+                |> register Signal.SIGINT
+                |> sendToProcess Signal.SIGINT
+                |> poll
+                |> ignore<IlMachineState>
+            )
+
+        exn.Message |> shouldContainText "which the guest has replaced"
+
+    [<Test>]
+    let ``the dispatcher refuses a read end the guest has replaced`` () : unit =
+        let state, _dispatcher, _ = preparedState ()
+
+        let exn =
+            Assert.Throws (fun () ->
+                state
+                |> replacedByStdout (pipeOf state).ReadEnd
+                |> poll
+                |> ignore<IlMachineState>
+            )
+
+        exn.Message |> shouldContainText "the guest has replaced it"
+
+    [<Test>]
     let ``a terminating signal read after its registration went kills the process`` () : unit =
         // For SIGTERM the loop's `SystemNative_HandleNonCanceledPosixSignal`
         // restores the default it saved and re-raises the signal, which kills

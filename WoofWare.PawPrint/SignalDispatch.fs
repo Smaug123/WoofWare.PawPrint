@@ -153,6 +153,17 @@ module SignalDispatch =
             failwith
                 $"SignalDispatch.poll: System.Native's handler for %O{entry.Signal} writes to descriptor %d{pipe.WriteEnd}, the write end of its signal pipe, and %s{what}; the real handler abort()s the process, or blocks until the dispatcher reads, and PawPrint models neither."
 
+        // The shim writes to the number it was given, whatever the guest has
+        // since put there. A byte written to a standard stream would reach the
+        // guest's output without the step effect that streams it, so anything
+        // but a pipe's write end is refused rather than half-answered.
+        match FileDescriptorRegistry.tryFindTarget pipe.WriteEnd system.Process.FileDescriptors with
+        | None
+        | Some (OpenFileTarget.Pipe (_, PipeEnd.Write)) -> ()
+        | Some other ->
+            failwith
+                $"SignalDispatch.poll: System.Native's handler for %O{entry.Signal} writes to descriptor %d{pipe.WriteEnd}, which the guest has replaced with %O{other}; PawPrint models the handler writing only to a pipe."
+
         match UnixReadWrite.admitWrite pipe.WriteEnd UserBuffer.Mapped 1UL system with
         | Error refusal -> refuse (WriteRefusal.describe refusal)
         | Ok (WriteAdmission.Answered answer, _) -> refuse $"the kernel answers %O{answer} without taking the byte"
@@ -321,8 +332,13 @@ module SignalDispatch =
 
     /// The dispatcher's blocking `read(pipeFd, &signalCode, 1)`, if it is
     /// Parked there and the pipe has a byte for it: what the loop then does
-    /// with the signal.
-    let private wakeDispatcher (baseClassTypes : BaseClassTypes<DumpedAssembly>) (state : IlMachineState) : SignalPoll =
+    /// with the signal, and with each after it, until it starts a callback,
+    /// the pipe is empty, or the process dies.
+    let rec private wakeDispatcher
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : SignalPoll
+        =
         match
             PosixSignalShim.signalThread state.Kernel.PosixSignalShim,
             PosixSignalShim.signalPipe state.Kernel.PosixSignalShim
@@ -348,6 +364,13 @@ module SignalDispatch =
         let refuse (what : string) : 'a =
             failwith
                 $"SignalDispatch.poll: System.Native's dispatcher reads descriptor %d{pipe.ReadEnd}, the read end of its signal pipe, and %s{what}; the real SignalHandlerLoop then closes the descriptor and its thread exits, which PawPrint does not model."
+
+        // The loop reads the number it was given, whatever the guest has since
+        // put there; PawPrint models it reading only a pipe.
+        match FileDescriptorRegistry.tryFindTarget pipe.ReadEnd state.Kernel.Process.FileDescriptors with
+        | None
+        | Some (OpenFileTarget.Pipe (_, PipeEnd.Read)) -> ()
+        | Some other -> refuse $"the guest has replaced it with %O{other}"
 
         match UnixReadWrite.read pipe.ReadEnd UserBuffer.Mapped 1UL (EmulatedKernel.unix state.Kernel) with
         // Empty, with the write end open: the read sleeps, and so does the
@@ -382,7 +405,13 @@ module SignalDispatch =
         | ValueSome signal when PosixSignalShim.isRegistered numbering signal state.Kernel.PosixSignalShim ->
             SignalPoll.Continues (startCallback baseClassTypes dispatcher signal state)
         | ValueSome _
-        | ValueNone -> handleNonCanceledOnDispatcher dispatcher signo state
+        | ValueNone ->
+            // Handled without guest code, and the loop goes straight back to
+            // its read: so does this, rather than leaving the next byte for a
+            // tick that may never come if every other thread is asleep.
+            match handleNonCanceledOnDispatcher dispatcher signo state with
+            | SignalPoll.Continues state -> wakeDispatcher baseClassTypes state
+            | killed -> killed
 
     /// System.Native's signal handling between two guest instructions: the
     /// native handler for whatever the kernel delivers to the leader now, and
