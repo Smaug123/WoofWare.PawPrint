@@ -414,6 +414,35 @@ module TestKernelConfig =
             |> shouldEqual true
 
     [<Test>]
+    let ``KernelConfig refuses a umask its flavour never stores, naming the knob`` () : unit =
+        // Linux's umask(2) keeps only 0o777 of its argument, so no Linux process
+        // has 0o7022; Darwin's keeps all twelve bits, so one there can.
+        let configured (platform : SimulatedUnixPlatform) (bits : int) : KernelConfig =
+            { KernelConfig.Default with
+                UnixPlatform = platform
+                Umask = PermissionBits.parseOrFail "test" bits
+            }
+
+        let message =
+            (Assert.Throws<System.Exception> (fun () ->
+                KernelConfig.toKernel (configured SimulatedUnixPlatform.linuxX64 0o7022)
+                |> ignore<EmulatedKernel>
+            ))
+                .Message
+
+        message.StartsWith ("KernelConfig.Umask: ", System.StringComparison.Ordinal)
+        |> shouldEqual true
+
+        for platform, bits in
+            [
+                SimulatedUnixPlatform.linuxX64, 0o777
+                SimulatedUnixPlatform.macOsArm64, 0o7022
+            ] do
+            let kernel = KernelConfig.toKernel (configured platform bits)
+            kernel.Umask |> shouldEqual (PermissionBits.parseOrFail "test" bits)
+            EmulatedKernel.checkInvariants kernel |> shouldEqual []
+
+    [<Test>]
     let ``KernelConfig applies the current directory whatever else it sets`` () : unit =
         let config =
             { KernelConfig.Default with
