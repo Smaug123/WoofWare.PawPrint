@@ -102,12 +102,15 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// its own (`Inode.Owner`), fixed when it was created or seeded.
         Credentials : Credentials
         /// The simulated process's file-mode creation mask: the permission bits
-        /// `open(O_CREAT)` clears from the mode its caller asked for.
+        /// `open(O_CREAT)` and `mkdir(2)` clear from the mode their caller asked
+        /// for, applied in full.
         ///
-        /// Process state rather than filesystem state, and immutable for the
-        /// whole run: this library models no `umask(2)`, so the process cannot
-        /// read or change it, and a client that wants a differently-masked
-        /// process sets it once with `UnixProcessState.withUmask`.
+        /// Process state rather than filesystem state, and shared by every
+        /// thread. Held at the width the platform's `umask(2)` stores
+        /// (`SimulatedUnixPlatform.umaskStoredBits`): never above 0o777 on Linux.
+        /// The process replaces it with `UnixSystem.umask`, and a client sets
+        /// the one it starts with using `UnixSystem.withUmask`; both keep it at
+        /// that width.
         ///
         /// Deliberately *not* consulted for seed entries. A seed describes a
         /// tree that some other process built, so this run's mask has no bearing
@@ -152,22 +155,6 @@ module UnixProcessState =
         =
         { proc with
             ProcessPath = path |> Option.map (AbsoluteUnixPath.assertValid context)
-        }
-
-    /// Set the file-mode creation mask `open(O_CREAT)` clears from the mode its
-    /// caller asked for. See `UnixProcessState.Umask` for why this is the only way
-    /// to set it, and why a seed entry is not subject to it.
-    ///
-    /// `context` prefixes the rejection a forged mask earns; see
-    /// `withProcessPath` for why the client supplies it.
-    let withUmask<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (context : string)
-        (umask : PermissionBits)
-        (proc : UnixProcessState<'Task, 'Handler>)
-        : UnixProcessState<'Task, 'Handler>
-        =
-        { proc with
-            Umask = PermissionBits.assertValid context umask
         }
 
     /// Set whether the process writes a core dump when a signal whose default

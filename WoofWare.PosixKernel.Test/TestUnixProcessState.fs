@@ -128,12 +128,6 @@ module TestUnixProcessState =
     let ``a forged path is refused under the caller's name`` () : unit =
         // `AbsoluteUnixPath` hides its case, so the only invalid value a client
         // can produce is a defaulted one; this setter is where it stops.
-        //
-        // `withUmask`'s guard has no such row, and cannot have one: a defaulted
-        // `PermissionBits` is 0o000, which is `umask 000` and perfectly legal
-        // (`PermissionBits.assertValid` says so itself). The only value it
-        // refuses is an out-of-range word, and the case being private means no
-        // caller outside this assembly can build one.
         let exn =
             Assert.Throws<exn> (fun () ->
                 UnixProcessState.withProcessPath

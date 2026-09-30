@@ -22,6 +22,13 @@ type VirtualFileSystem =
             /// "different file", which is the safe direction to be wrong in.
             /// </remarks>
             NextInode : InodeNumber
+            /// How many directory entries name each inode, holding only the
+            /// non-zero counts: an inode absent from the map is named by
+            /// nothing. Kept so that asking the count is not a scan of every
+            /// directory; `checkInvariants` holds it to that scan. Holding no
+            /// zeros is what makes the map a function of the entries alone,
+            /// so that two filesystems with the same graph compare equal.
+            BindingCounts : Map<InodeNumber, int>
         }
 
 /// A way in which a `VirtualFileSystem` fails to describe a filesystem any
@@ -63,6 +70,13 @@ type VirtualFileSystemDefect =
     | UnreachableFromRoot of inode : InodeNumber
     /// `NextInode` would hand out a number already in use.
     | NextInodeNotFresh of nextInode : InodeNumber * existing : InodeNumber
+    /// The count `VirtualFileSystem.bindingCount` answers for `inode`
+    /// disagrees with the number of directory entries that name it.
+    ///
+    /// `stored` is `None` where no count is stored, which the filesystem
+    /// reads as zero. A stored `Some 0` is reported even though it agrees in
+    /// value, because only non-zero counts are stored.
+    | BindingCountMismatch of inode : InodeNumber * stored : int option * counted : int
 
 /// What losing a name does to the inode that had it, which is not the same for
 /// every caller of `unbind`.
@@ -309,6 +323,7 @@ module VirtualFileSystem =
                     ]
             Root = firstInode
             NextInode = InodeNumber 2L
+            BindingCounts = Map.empty
         }
 
     let root (vfs : VirtualFileSystem) : InodeNumber = vfs.Root
@@ -600,6 +615,25 @@ module VirtualFileSystem =
 
         inode, vfs
 
+    /// `counts` with the number of entries naming `inode` moved by `delta`,
+    /// dropping it from the map when it reaches zero.
+    let private adjustBindingCount
+        (inode : InodeNumber)
+        (delta : int)
+        (counts : Map<InodeNumber, int>)
+        : Map<InodeNumber, int>
+        =
+        let current = Map.tryFind inode counts |> Option.defaultValue 0
+        let updated = current + delta
+
+        if updated < 0 then
+            failwith
+                $"VirtualFileSystem: inode %O{inode} was named by %d{current} entries, and removing %d{-delta} would leave a negative count. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
+        elif updated = 0 then
+            Map.remove inode counts
+        else
+            Map.add inode updated counts
+
     /// Whether `name` could be bound in `directory` right now, with the errno
     /// the attempt would otherwise fail with.
     ///
@@ -678,6 +712,7 @@ module VirtualFileSystem =
             Ok
                 { vfs with
                     Inodes = Map.add directory updated vfs.Inodes
+                    BindingCounts = adjustBindingCount inode 1 vfs.BindingCounts
                 }
 
     /// Create an empty subdirectory owned by `owner`. Mirrors `mkdir(2)`: EEXIST
@@ -902,6 +937,7 @@ module VirtualFileSystem =
             target,
             { vfs with
                 Inodes = inodes
+                BindingCounts = adjustBindingCount target -1 vfs.BindingCounts
             }
         )
 
@@ -914,20 +950,13 @@ module VirtualFileSystem =
     /// reports the number anyway — `FileStatus` has no `nlink` field.
     ///
     /// Zero means the inode has no name: either it is the root, or its last link
-    /// has gone and only a descriptor is keeping it alive.
+    /// has gone and only a descriptor is keeping it alive. Zero too for an inode
+    /// the filesystem does not contain.
+    ///
+    /// Answered from a count the filesystem keeps as names come and go, so it
+    /// costs a lookup rather than a scan of every directory.
     let bindingCount (inode : InodeNumber) (vfs : VirtualFileSystem) : int =
-        vfs.Inodes
-        |> Map.toSeq
-        |> Seq.sumBy (fun (_, node) ->
-            match node.Content with
-            | InodeContent.Directory directory ->
-                directory.Entries
-                |> Map.toSeq
-                |> Seq.filter (fun (_, target) -> target = inode)
-                |> Seq.length
-            | InodeContent.RegularFile _
-            | InodeContent.Symlink _ -> 0
-        )
+        Map.tryFind inode vfs.BindingCounts |> Option.defaultValue 0
 
     /// Whether `inode` is a directory that no path from the root can reach: its
     /// last name has gone, and only a descriptor or the current directory is
@@ -1217,12 +1246,20 @@ module VirtualFileSystem =
                     failwith
                         $"VirtualFileSystem.rename: directory inode %O{destinationDirectory} bound \"%s{DirectoryEntryName.toEscaped destinationName}\" to inode %O{displaced}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
 
+        // The moved inode loses one name and gains another, so only a displaced
+        // inode's count changes.
+        let counts =
+            match displaced with
+            | None -> vfs.BindingCounts
+            | Some displaced -> adjustBindingCount displaced -1 vfs.BindingCounts
+
         Ok (
             {
                 Displaced = displaced
             },
             { vfs with
                 Inodes = inodes
+                BindingCounts = counts
             }
         )
 
@@ -1304,11 +1341,15 @@ module VirtualFileSystem =
     /// Remove an inode from the graph, which is what a kernel does when the last
     /// name for a file has gone *and* no open description is holding it.
     ///
-    /// Partial, deliberately: the inode must be present and nothing may still
-    /// name it. Both are bugs in the caller rather than anything a process can
-    /// cause — the caller has just unbound the last name and consulted the
-    /// descriptor table — and forgetting a still-bound inode would leave a
-    /// dangling entry that every later walk would trip over far from here.
+    /// Partial, deliberately: the inode must be present, nothing may still
+    /// name it, and if it is a directory it must be empty. All three are bugs
+    /// in the caller rather than anything a process can cause — the caller has
+    /// just unbound the last name and consulted the descriptor table, and a
+    /// directory loses its last name only to an `rmdir` or a `rename` that
+    /// displaced it, both of which refuse a populated one. Forgetting a
+    /// still-bound inode would leave a dangling entry that every later walk
+    /// would trip over far from here; forgetting a populated directory would
+    /// strand what it holds.
     ///
     /// The number is not reused; see `VirtualFileSystem.NextInode`.
     let forget (inode : InodeNumber) (vfs : VirtualFileSystem) : VirtualFileSystem =
@@ -1320,6 +1361,17 @@ module VirtualFileSystem =
             failwith
                 "VirtualFileSystem.forget: the root cannot be forgotten; every path resolves from it (this is a bug in the caller of VirtualFileSystem.forget)."
 
+        match Map.tryFind inode vfs.Inodes with
+        | Some {
+                   Content = InodeContent.Directory directory
+               } when not (Map.isEmpty directory.Entries) ->
+            failwith
+                $"VirtualFileSystem.forget: directory inode %O{inode} still holds %d{Map.count directory.Entries} entries, so forgetting it would strand them unreachable while they went on counting as names (this is a bug in the caller of VirtualFileSystem.forget)."
+        | _ -> ()
+
+        // Nothing to adjust in `BindingCounts`: a count of zero is stored as
+        // absence, and the directory emptiness above means this inode names
+        // nothing either.
         match bindingCount inode vfs with
         | 0 ->
             { vfs with
@@ -1557,6 +1609,15 @@ module VirtualFileSystem =
             | InodeContent.Symlink _ -> []
         )
 
+    /// How many of `bindings` name each target, holding only non-zero counts,
+    /// which is the form `VirtualFileSystem.BindingCounts` is kept in.
+    let private countBindings
+        (bindings : (InodeNumber * DirectoryEntryName * InodeNumber) list)
+        : Map<InodeNumber, int>
+        =
+        bindings
+        |> List.fold (fun counts (_, _, target) -> adjustBindingCount target 1 counts) Map.empty
+
     /// The absolute path of a directory, by walking `Parent` links to the root.
     ///
     /// Directories only: a regular file may be hard-linked under several names,
@@ -1773,12 +1834,28 @@ module VirtualFileSystem =
             |> List.filter (fun inode -> inode >= vfs.NextInode)
             |> List.map (fun inode -> VirtualFileSystemDefect.NextInodeNotFresh (vfs.NextInode, inode))
 
+        let bindingCounts =
+            let counted = countBindings bindings
+
+            Set.union (Map.keys counted |> Set.ofSeq) (Map.keys vfs.BindingCounts |> Set.ofSeq)
+            |> Set.toList
+            |> List.choose (fun inode ->
+                let stored = Map.tryFind inode vfs.BindingCounts
+                let counted = Map.tryFind inode counted |> Option.defaultValue 0
+
+                if stored = (if counted = 0 then None else Some counted) then
+                    None
+                else
+                    Some (VirtualFileSystemDefect.BindingCountMismatch (inode, stored, counted))
+            )
+
         rootDefects
         @ rootLinks
         @ danglingEntries
         @ parentDefects
         @ unreachable
         @ freshness
+        @ bindingCounts
 
     /// Fail loudly if `vfs` is not sound, naming `context`. For the operations
     /// that build a filesystem from host configuration, where a defect is a
@@ -1867,14 +1944,33 @@ module VirtualFileSystem =
     /// in review — nothing outside tests should.
     [<RequireQualifiedAccess>]
     module Unchecked =
+        /// The filesystem with exactly these parts. The binding counts are
+        /// computed from the entries, so a graph forged to exhibit some other
+        /// defect does not also exhibit `BindingCountMismatch`.
         let ofParts
             (inodes : Map<InodeNumber, Inode>)
             (root : InodeNumber)
             (nextInode : InodeNumber)
             : VirtualFileSystem
             =
-            {
-                Inodes = inodes
-                Root = root
-                NextInode = nextInode
+            let vfs =
+                {
+                    Inodes = inodes
+                    Root = root
+                    NextInode = nextInode
+                    BindingCounts = Map.empty
+                }
+
+            { vfs with
+                BindingCounts = countBindings (allBindings vfs)
+            }
+
+        /// `vfs` with the count `bindingCount` answers for `inode` replaced by
+        /// `count` verbatim, `None` storing nothing, and the graph untouched.
+        let setBindingCount (inode : InodeNumber) (count : int option) (vfs : VirtualFileSystem) : VirtualFileSystem =
+            { vfs with
+                BindingCounts =
+                    match count with
+                    | None -> Map.remove inode vfs.BindingCounts
+                    | Some count -> Map.add inode count vfs.BindingCounts
             }

@@ -29,6 +29,7 @@
     <Compile Include="TestPermissionStanding.fs" />
     <Compile Include="TestGetGroups.fs" />
     <Compile Include="TestModeChange.fs" />
+    <Compile Include="TestUmask.fs" />
     <Compile Include="TestWakeCondition.fs" />
     <Compile Include="TestUnixWait.fs" />
     <Compile Include="TestUnixTaskLifecycle.fs" />
@@ -79,6 +80,7 @@
     <Compile Include="TestDirectoryReadAgainstHost.fs" />
     <Compile Include="TestPathCursor.fs" />
     <Compile Include="TestVirtualFileSystem.fs" />
+    <Compile Include="TestBindingCount.fs" />
     <Compile Include="TestOpenDirRules.fs" />
     <Compile Include="TestRmDirRules.fs" />
     <Compile Include="TestPosixFadvise.fs" />
