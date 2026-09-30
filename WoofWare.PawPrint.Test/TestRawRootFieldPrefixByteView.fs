@@ -40,12 +40,8 @@ module TestRawRootFieldPrefixByteView =
     let private int32Handle : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle concreteTypes bct.Int32
 
-    let private concreteTypeFor (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) =
-        ConcreteType.makeFromIdentity
-            typeInfo.Identity
-            typeInfo.Namespace
-            typeInfo.Name
-            ImmutableArray<ConcreteTypeHandle>.Empty
+    let private concreteTypeFor (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle concreteTypes typeInfo
 
     /// The two views a guest steps through: `Unsafe.As<_, int>` and `Unsafe.As<_, byte>`.
     [<RequireQualifiedAccess>]
@@ -58,7 +54,7 @@ module TestRawRootFieldPrefixByteView =
         | View.Int32 -> 4
         | View.Byte -> 1
 
-    let private viewType (view : View) : ConcreteType<ConcreteTypeHandle> =
+    let private viewType (view : View) : ConcreteTypeHandle =
         match view with
         | View.Int32 -> concreteTypeFor bct.Int32
         | View.Byte -> concreteTypeFor bct.Byte

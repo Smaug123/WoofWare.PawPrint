@@ -31,22 +31,21 @@ module TestByrefComparison =
         let _, loggerFactory = LoggerFactory.makeTest ()
         Assembly.readFile loggerFactory typeof<obj>.Assembly.Location
 
-    let private concreteType
-        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        : ConcreteType<ConcreteTypeHandle>
-        =
-        ConcreteType.makeFromIdentity
-            typeInfo.Identity
-            typeInfo.Namespace
-            typeInfo.Name
-            ImmutableArray<ConcreteTypeHandle>.Empty
+    let private concreteTypes : AllConcreteTypes =
+        Corelib.concretizeAll
+            (LoadedAssemblies.ofAssemblies [ corelib ])
+            (BaseClassTypes.ofCorelib corelib)
+            AllConcreteTypes.Empty
 
-    let private byteType : ConcreteType<ConcreteTypeHandle> =
+    let private concreteType (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle concreteTypes typeInfo
+
+    let private byteType : ConcreteTypeHandle =
         concreteType (BaseClassTypes.ofCorelib corelib).Byte
 
     /// A second type, so that a test can vary the *view* a chain takes without varying the
     /// address it names.
-    let private int32Type : ConcreteType<ConcreteTypeHandle> =
+    let private int32Type : ConcreteTypeHandle =
         concreteType (BaseClassTypes.ofCorelib corelib).Int32
 
     let private thread = ThreadId 0

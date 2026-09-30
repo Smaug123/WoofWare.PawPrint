@@ -468,16 +468,10 @@ module internal IntrinsicHelpers =
                     // The projection chain contains structural navigations (e.g. Field)
                     // that aren't byte-view compatible. Transition into a byte-view by
                     // appending ReinterpretAs(T) + ByteOffset(sizeof(T) * offset).
-                    let elementTypeInfo =
-                        AllConcreteTypes.lookup elementType state.ConcreteTypes
-                        |> Option.defaultWith (fun () ->
-                            failwith $"byref element offset: element type %O{elementType} was not registered"
-                        )
-
                     let normalisation = ByteOffsetNormalisationContext.nonArrayRootsOnly
 
                     src
-                    |> ManagedPointerSource.addByteOffsetUnderReinterpret normalisation elementTypeInfo (byteDelta ())
+                    |> ManagedPointerSource.addByteOffsetUnderReinterpret normalisation elementType (byteDelta ())
                     |> EvalStackValue.ManagedPointer
             | _ -> failwith $"TODO: byref element offset on non-managed-pointer: %O{src}"
 
@@ -490,14 +484,10 @@ module internal IntrinsicHelpers =
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        : ConcreteType<ConcreteTypeHandle>
+        : ConcreteTypeHandle
         =
-        let handle =
-            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Byte.Identity
-            |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Byte is not concretized")
-
-        AllConcreteTypes.lookup handle state.ConcreteTypes
-        |> Option.defaultWith (fun () -> failwith $"%s{operation}: concrete System.Byte handle %O{handle} not found")
+        AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Byte.Identity
+        |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Byte is not concretized")
 
     let checkedByteCount (operation : string) (count : int64) : int =
         if count < 0L then
@@ -797,11 +787,6 @@ module internal IntrinsicHelpers =
             failwith
                 $"TODO: %s{MethodOwner.describe methodToCall.Owner}(void*, int) with negative length should throw ArgumentOutOfRangeException"
 
-        let elementTypeInfo =
-            match AllConcreteTypes.lookup elementType state.ConcreteTypes with
-            | Some info -> info
-            | None -> failwith $"Span pointer constructor element type was not registered: %O{elementType}"
-
         // `Unsafe.AsRef<T>((void*)bits)` placeholders are bit patterns, not
         // anchored byrefs; `appendProjection` rightly refuses to project off
         // them. The CLR permits arbitrary non-null pointers for zero-length
@@ -817,8 +802,7 @@ module internal IntrinsicHelpers =
             | ManagedPointerSource.NativeIntPlaceholder bits ->
                 failwith
                     $"TODO: %s{MethodOwner.describe methodToCall.Owner}(void*, int) with non-zero length %d{length} over placeholder pointer 0x%x{bits}"
-            | sourcePtr ->
-                ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs elementTypeInfo) sourcePtr
+            | sourcePtr -> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs elementType) sourcePtr
 
         let declaringTypeHandle = intrinsicDeclaringTypeHandle state methodToCall
 

@@ -42,7 +42,6 @@ module TestSameWidthReadFromNamedCell =
         {
             Name : string
             Handle : ConcreteTypeHandle
-            Type : ConcreteType<ConcreteTypeHandle>
             Zero : CliType
         }
 
@@ -71,14 +70,9 @@ module TestSameWidthReadFromNamedCell =
 
             let zero, _ = IlMachineState.cliTypeZeroOfHandle preparedState bct handle
 
-            let ty =
-                AllConcreteTypes.lookup handle preparedState.ConcreteTypes
-                |> Option.defaultWith (fun () -> failwith $"%s{name} has no registry entry")
-
             {
                 Name = name
                 Handle = handle
-                Type = ty
                 Zero = zero
             }
         )
@@ -297,12 +291,16 @@ module TestSameWidthReadFromNamedCell =
         let projections =
             match case.Route with
             | Route.PlainField -> [ ByrefProjection.Field cellId ]
-            | Route.FieldView -> [ ByrefProjection.Field cellId ; ByrefProjection.ReinterpretAs case.View.Type ]
+            | Route.FieldView ->
+                [
+                    ByrefProjection.Field cellId
+                    ByrefProjection.ReinterpretAs case.View.Handle
+                ]
             | Route.ByteView ->
                 let offset, _ = CliValueType.GetFieldLayoutById cellId storage
 
                 [
-                    ByrefProjection.ReinterpretAs case.View.Type
+                    ByrefProjection.ReinterpretAs case.View.Handle
                     ByrefProjection.ByteOffset offset
                 ]
 
@@ -356,7 +354,7 @@ module TestSameWidthReadFromNamedCell =
                             nested
                             storage
                             [
-                                ByrefProjection.ReinterpretAs int64Kind.Type
+                                ByrefProjection.ReinterpretAs int64Kind.Handle
                                 ByrefProjection.ByteOffset refOffset
                             ]
 
@@ -399,7 +397,7 @@ module TestSameWidthReadFromNamedCell =
                         nested
                         storage
                         [
-                            ByrefProjection.ReinterpretAs view.Type
+                            ByrefProjection.ReinterpretAs view.Handle
                             ByrefProjection.ByteOffset cellOffset
                         ]
 

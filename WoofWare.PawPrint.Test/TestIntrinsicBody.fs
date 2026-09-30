@@ -1195,3 +1195,166 @@ unsafe class CallsSubstitutedIntrinsicThroughCalli
         with
         | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 1
         | other -> failwith $"expected the guest to exit normally, got %O{other}"
+
+    [<TestCaseSource(nameof coreLibs)>]
+    let ``every capability query returns the constant its profile gives, and nothing else does``
+        (which : string)
+        : unit
+        =
+        let corelib = coreLib which
+        let expansions = expansionsOf corelib
+
+        let answeringTrue =
+            {
+                IsSupported =
+                    expansions
+                    |> List.choose (fun (_, e) ->
+                        match e with
+                        | JitExpansion.IsSupportedQuery c -> Some c
+                        | _ -> None
+                    )
+                    |> Set.ofList
+                IsHardwareAccelerated =
+                    expansions
+                    |> List.choose (fun (_, e) ->
+                        match e with
+                        | JitExpansion.IsHardwareAcceleratedQuery c -> Some c
+                        | _ -> None
+                    )
+                    |> Set.ofList
+            }
+
+        let queries =
+            expansions
+            |> List.choose (fun (m, e) ->
+                match e with
+                | JitExpansion.IsSupportedQuery _
+                | JitExpansion.IsHardwareAcceleratedQuery _ -> Some m.Handle
+                | _ -> None
+            )
+            |> System.Collections.Generic.HashSet
+
+        let failures =
+            [
+                for m in methodsOf corelib do
+                    for profile, answer in [ HardwareIntrinsicsProfile.ScalarOnly, false ; answeringTrue, true ] do
+                        let expected = if queries.Contains m.Handle then Some answer else None
+                        let actual = IntrinsicBody.constantResult profile corelib m.Handle
+
+                        if actual <> expected then
+                            yield $"%s{describe m}: %A{actual}, expected %A{expected}"
+            ]
+
+        if not failures.IsEmpty then
+            failures |> List.truncate 40 |> String.concat "\n" |> failwith
+
+        queries.Count |> shouldBeGreaterThan 20
+
+    /// An image that calls itself System.Private.CoreLib, so that its getters in a hardware-intrinsic
+    /// namespace are capability queries, each of whose IL does something different with its call to
+    /// itself.
+    let private fabricateQueries () : byte[] =
+        let name = "System.Private.CoreLib"
+        let builder = PersistedAssemblyBuilder (AssemblyName name, typeof<obj>.Assembly)
+        let modul = builder.DefineDynamicModule name
+
+        let intrinsic =
+            let ty =
+                typeof<obj>.Assembly.GetType ("System.Runtime.CompilerServices.IntrinsicAttribute", true)
+
+            let ctor =
+                ty.GetConstructor (
+                    BindingFlags.Instance ||| BindingFlags.Public ||| BindingFlags.NonPublic,
+                    Type.EmptyTypes
+                )
+
+            CustomAttributeBuilder (ctor, Array.empty)
+
+        let query (className : string) (emit : ILGenerator -> MethodBuilder -> unit) =
+            let ty =
+                modul.DefineType (
+                    $"System.Runtime.Intrinsics.Arm.%s{className}",
+                    TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+                )
+
+            let getter =
+                ty.DefineMethod (
+                    "get_IsSupported",
+                    staticMethod ||| MethodAttributes.SpecialName,
+                    typeof<bool>,
+                    Type.EmptyTypes
+                )
+
+            getter.SetCustomAttribute intrinsic
+            emit (getter.GetILGenerator ()) getter
+            ty.CreateType () |> ignore<Type>
+
+        query
+            "Returned"
+            (fun il self ->
+                il.Emit (OpCodes.Call, self)
+                il.Emit OpCodes.Ret
+            )
+
+        query
+            "Negated"
+            (fun il self ->
+                il.Emit (OpCodes.Call, self)
+                il.Emit OpCodes.Ldc_I4_0
+                il.Emit OpCodes.Ceq
+                il.Emit OpCodes.Ret
+            )
+
+        query
+            "Discarded"
+            (fun il self ->
+                il.Emit (OpCodes.Call, self)
+                il.Emit OpCodes.Pop
+                il.Emit OpCodes.Ldc_I4_1
+                il.Emit OpCodes.Ret
+            )
+
+        use image = new MemoryStream ()
+        builder.Save image
+        image.ToArray ()
+
+    [<Test>]
+    let ``a capability query that does more than return its call to itself has no constant result`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use stream = new MemoryStream (fabricateQueries ())
+        let image = Assembly.read loggerFactory None stream
+
+        let answers =
+            [
+                for className in [ "Returned" ; "Negated" ; "Discarded" ] do
+                    let handle =
+                        find image "System.Runtime.Intrinsics.Arm" className "get_IsSupported" []
+
+                    let intrinsicClass =
+                        {
+                            Namespace = "System.Runtime.Intrinsics.Arm"
+                            Path = [ className ]
+                        }
+
+                    // Each is a query, so only its IL decides whether it answers a constant.
+                    IntrinsicBody.classify image handle
+                    |> shouldEqual (IntrinsicBody.JitExpansion (JitExpansion.IsSupportedQuery intrinsicClass))
+
+                    let supporting =
+                        { HardwareIntrinsicsProfile.ScalarOnly with
+                            IsSupported = Set.singleton intrinsicClass
+                        }
+
+                    yield
+                        className,
+                        IntrinsicBody.constantResult HardwareIntrinsicsProfile.ScalarOnly image handle,
+                        IntrinsicBody.constantResult supporting image handle
+            ]
+
+        answers
+        |> shouldEqual
+            [
+                "Returned", Some false, Some true
+                "Negated", None, None
+                "Discarded", None, None
+            ]

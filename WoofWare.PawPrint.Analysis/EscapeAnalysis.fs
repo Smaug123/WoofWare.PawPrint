@@ -390,58 +390,6 @@ module EscapeAnalysis =
 
         go state regions
 
-    /// How far a branch instruction jumps from the end of itself, or `None` if it is not a branch.
-    /// Exhaustive with no wildcard, so that a branch opcode added to `UnaryConstIlOp` must be
-    /// classified here rather than silently read as falling through.
-    let private branchDelta (op : UnaryConstIlOp) : int option =
-        match op with
-        | UnaryConstIlOp.Br d
-        | UnaryConstIlOp.Brfalse d
-        | UnaryConstIlOp.Brtrue d
-        | UnaryConstIlOp.Beq d
-        | UnaryConstIlOp.Blt d
-        | UnaryConstIlOp.Ble d
-        | UnaryConstIlOp.Bgt d
-        | UnaryConstIlOp.Bge d
-        | UnaryConstIlOp.Bne_un d
-        | UnaryConstIlOp.Bge_un d
-        | UnaryConstIlOp.Bgt_un d
-        | UnaryConstIlOp.Ble_un d
-        | UnaryConstIlOp.Blt_un d
-        | UnaryConstIlOp.Leave d -> Some (int d)
-        | UnaryConstIlOp.Br_s d
-        | UnaryConstIlOp.Brfalse_s d
-        | UnaryConstIlOp.Brtrue_s d
-        | UnaryConstIlOp.Beq_s d
-        | UnaryConstIlOp.Blt_s d
-        | UnaryConstIlOp.Ble_s d
-        | UnaryConstIlOp.Bgt_s d
-        | UnaryConstIlOp.Bge_s d
-        | UnaryConstIlOp.Bne_un_s d
-        | UnaryConstIlOp.Bge_un_s d
-        | UnaryConstIlOp.Bgt_un_s d
-        | UnaryConstIlOp.Ble_un_s d
-        | UnaryConstIlOp.Blt_un_s d
-        | UnaryConstIlOp.Leave_s d -> Some (int d)
-        | UnaryConstIlOp.Stloc _
-        | UnaryConstIlOp.Stloc_s _
-        | UnaryConstIlOp.Ldc_I8 _
-        | UnaryConstIlOp.Ldc_I4 _
-        | UnaryConstIlOp.Ldc_R4 _
-        | UnaryConstIlOp.Ldc_R8 _
-        | UnaryConstIlOp.Ldc_I4_s _
-        | UnaryConstIlOp.Ldloc_s _
-        | UnaryConstIlOp.Ldloca_s _
-        | UnaryConstIlOp.Ldarga _
-        | UnaryConstIlOp.Ldarg_s _
-        | UnaryConstIlOp.Ldarga_s _
-        | UnaryConstIlOp.Starg_s _
-        | UnaryConstIlOp.Starg _
-        | UnaryConstIlOp.Unaligned _
-        | UnaryConstIlOp.Ldloc _
-        | UnaryConstIlOp.Ldloca _
-        | UnaryConstIlOp.Ldarg _ -> None
-
     /// What a call instruction's metadata token names.
     let rec private callTarget
         (state : EscapeAnalysisState)
@@ -950,32 +898,7 @@ module EscapeAnalysis =
         // Offsets some branch or handler can land on: a `throw` at one of these may be reached
         // from somewhere other than the instruction above it, so that instruction is not
         // necessarily what produced its operand.
-        let entered =
-            let fromBranches =
-                ops
-                |> Seq.collect (fun (op, offset) ->
-                    let width = IlOp.NumberOfBytes op
-
-                    match op with
-                    | IlOp.UnaryConst c ->
-                        match branchDelta c with
-                        | Some delta -> [ offset + width + delta ]
-                        | None -> []
-                    | IlOp.Switch deltas -> deltas |> Seq.map (fun d -> offset + width + d) |> List.ofSeq
-                    | _ -> []
-                )
-
-            let fromHandlers =
-                body.ExceptionRegions
-                |> Seq.collect (fun region ->
-                    match region with
-                    | ExceptionRegion.Filter (filterOffset, o) -> [ filterOffset ; o.HandlerOffset ]
-                    | ExceptionRegion.Catch (_, o)
-                    | ExceptionRegion.Finally o
-                    | ExceptionRegion.Fault o -> [ o.HandlerOffset ]
-                )
-
-            Seq.append fromBranches fromHandlers |> Set.ofSeq
+        let entered = ControlFlow.landedOn body
 
         // Inside a type initializer, touching the type it initializes cannot trigger it: the CLI
         // lets the initializing thread straight through (ECMA-335 I.8.9.5). Only for a non-generic
@@ -1026,19 +949,16 @@ module EscapeAnalysis =
             | state, Some owner -> state, (Some owner = initializing || not (hasTypeInitializer state owner))
             | state, None -> state, false
 
-        let folder
-            (
-                state : EscapeAnalysisState,
-                raises : (int * ThrownType) list,
-                opaque : (int * Opacity) list,
-                calls : (int * MethodKey) list,
-                bindingFailures : Set<OutsideBodyFact>
-            )
+        // 0. Bind the token the instruction names, which the JIT does before the body runs. This
+        // binds every instruction's, as the JIT does for code no run reaches unless a branch it
+        // folds cuts that code off; it folds a branch a capability query decides, so for code
+        // only such a branch reaches, this is an over-approximation.
+        let bind
+            (state : EscapeAnalysisState, targets : Map<int, CallTarget>, bindingFailures : Set<OutsideBodyFact>)
             (index : int)
             =
-            let op, offset = ops.[index]
+            let op, _ = ops.[index]
 
-            // 0. Bind the token the instruction names, which the JIT does before the body runs.
             let state, methodTarget, bindingFailures =
                 match op with
                 | IlOp.UnaryMetadataToken (tokenOp, MetadataOperand.FromMetadata token) ->
@@ -1070,6 +990,26 @@ module EscapeAnalysis =
 
                     state, target, Set.union bindingFailures (Set.ofList failures)
                 | _ -> state, None, bindingFailures
+
+            let targets =
+                match methodTarget with
+                | Some target -> Map.add index target targets
+                | None -> targets
+
+            state, targets, bindingFailures
+
+        let folder
+            (targets : Map<int, CallTarget>)
+            (
+                state : EscapeAnalysisState,
+                raises : (int * ThrownType) list,
+                opaque : (int * Opacity) list,
+                calls : (int * MethodKey) list
+            )
+            (index : int)
+            =
+            let op, offset = ops.[index]
+            let methodTarget = Map.tryFind index targets
 
             // 1. What the instruction raises by itself.
             let state, raises, opaque =
@@ -1219,7 +1159,7 @@ module EscapeAnalysis =
                             $"A call in %s{assembly.DefinitionFullName} names %O{token.Token}, which is not a method"
                 | _ -> state, raises, opaque, calls
 
-            state, raises, opaque, calls, bindingFailures
+            state, raises, opaque, calls
 
         // The JIT loads the type of every local and every `catch` clause before the body runs, as
         // it binds every token.
@@ -1267,9 +1207,35 @@ module EscapeAnalysis =
             else
                 localFailures
 
-        let state, raises, opaque, calls, bindingFailures =
-            ((state, [], [], [], localFailures), [ 0 .. ops.Length - 1 ])
-            ||> List.fold folder
+        let state, targets, bindingFailures =
+            ((state, Map.empty, localFailures), [ 0 .. ops.Length - 1 ]) ||> List.fold bind
+
+        // What each call to a capability query returns on this CPU, which decides a branch on it.
+        let constants =
+            ops
+            |> Seq.indexed
+            |> Seq.choose (fun (index, (op, offset)) ->
+                match op, Map.tryFind index targets with
+                | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Call, MetadataOperand.FromMetadata _),
+                  Some (CallTarget.Method callee) ->
+                    let calleeAssembly, _ = methodOf state callee
+
+                    IntrinsicBody.constantResult state.Profile calleeAssembly callee.Method.Get
+                    |> Option.map (fun value -> offset, value)
+                | _ -> None
+            )
+            |> Map.ofSeq
+
+        let executed = ControlFlow.mayExecute body constants
+
+        let state, raises, opaque, calls =
+            ((state, [], [], []), [ 0 .. ops.Length - 1 ])
+            ||> List.fold (fun acc index ->
+                if executed.Contains (snd ops.[index]) then
+                    folder targets acc index
+                else
+                    acc
+            )
 
         state,
         {

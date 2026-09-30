@@ -39,11 +39,6 @@ module TestEmptyArrayByrefWalks =
     let private handleFor (ty : TypeInfo<GenericParamFromMetadata, TypeDefn>) : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle concreteTypes ty
 
-    let private concreteTypeFor (ty : TypeInfo<GenericParamFromMetadata, TypeDefn>) : ConcreteType<ConcreteTypeHandle> =
-        match AllConcreteTypes.lookup (handleFor ty) concreteTypes with
-        | Some t -> t
-        | None -> failwith $"%s{ty.Name} is not concretized"
-
     /// Walk `offset` elements of `elementType` from index 0 of a fresh `int[len]`, through a
     /// byref carrying `projections`, and report the resulting cell index and projections.
     /// The array address is dropped so that the empty and populated cases are comparable.
@@ -99,8 +94,7 @@ module TestEmptyArrayByrefWalks =
         // compare equal, sending this down the cell-index branch to cell 8: four times too
         // far, and silently, since an empty array has no cell whose contents would contradict
         // it. The populated array takes the byte-cursor branch and correctly reaches cell 2.
-        let byteView =
-            [ ByrefProjection.ReinterpretAs (concreteTypeFor baseClassTypes.Byte) ]
+        let byteView = [ ByrefProjection.ReinterpretAs (handleFor baseClassTypes.Byte) ]
 
         let populated = walk 8 baseClassTypes.Byte byteView 8L
         let empty = walk 0 baseClassTypes.Byte byteView 8L
@@ -115,8 +109,7 @@ module TestEmptyArrayByrefWalks =
         // Same reasoning one step further: 6 bytes is one whole cell plus 2, so normalisation
         // folds one cell and keeps the remainder. Distinguishes correct normalisation from a
         // rule that merely divides and discards.
-        let byteView =
-            [ ByrefProjection.ReinterpretAs (concreteTypeFor baseClassTypes.Byte) ]
+        let byteView = [ ByrefProjection.ReinterpretAs (handleFor baseClassTypes.Byte) ]
 
         let populated = walk 8 baseClassTypes.Byte byteView 6L
         let empty = walk 0 baseClassTypes.Byte byteView 6L
@@ -188,7 +181,7 @@ module TestEmptyArrayByrefWalks =
             ManagedPointerSource.Byref
                 {
                     Root = ByrefRoot.ArrayElement (arr, 0)
-                    Projections = [ ByrefProjection.ReinterpretAs (concreteTypeFor baseClassTypes.Byte) ]
+                    Projections = [ ByrefProjection.ReinterpretAs (handleFor baseClassTypes.Byte) ]
                 }
 
         let result =

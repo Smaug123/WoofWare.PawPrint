@@ -288,16 +288,12 @@ module TestElementOffsetOverflow =
         // which does not fit in the int32 `ByrefProjection.ByteOffset`.
         let arr, st = allocateIntArray 4 (state ())
 
-        let int64View =
-            AllConcreteTypes.lookup int64Handle concreteTypes
-            |> Option.defaultWith (fun () -> failwith "System.Int64 was not concretised")
-
         let src =
             EvalStackValue.ManagedPointer (
                 ManagedPointerSource.Byref
                     {
                         Root = ByrefRoot.ArrayElement (arr, 0)
-                        Projections = [ ByrefProjection.ReinterpretAs int64View ]
+                        Projections = [ ByrefProjection.ReinterpretAs int64Handle ]
                     }
             )
 
@@ -316,16 +312,12 @@ module TestElementOffsetOverflow =
         // guard is not refusing the whole byte-cursor path outright.
         let arr, st = allocateIntArray 4 (state ())
 
-        let int64View =
-            AllConcreteTypes.lookup int64Handle concreteTypes
-            |> Option.defaultWith (fun () -> failwith "System.Int64 was not concretised")
-
         let src =
             EvalStackValue.ManagedPointer (
                 ManagedPointerSource.Byref
                     {
                         Root = ByrefRoot.ArrayElement (arr, 0)
-                        Projections = [ ByrefProjection.ReinterpretAs int64View ]
+                        Projections = [ ByrefProjection.ReinterpretAs int64Handle ]
                     }
             )
 
@@ -344,7 +336,7 @@ module TestElementOffsetOverflow =
 
             projs
             |> List.tryLast
-            |> shouldEqual (Some (ByrefProjection.ReinterpretAs int64View))
+            |> shouldEqual (Some (ByrefProjection.ReinterpretAs int64Handle))
         | other -> failwith $"expected a byte-view byref into the array, got %O{other}"
 
     /// Uniform over the whole int64 range, with extra weight on the values where two's-complement

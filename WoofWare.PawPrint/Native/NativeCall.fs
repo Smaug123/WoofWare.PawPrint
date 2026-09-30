@@ -238,20 +238,16 @@ module NativeCall =
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        : ConcreteType<ConcreteTypeHandle>
+        : ConcreteTypeHandle
         =
-        let handle =
-            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Char.Identity
-            |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Char is not concretized")
-
-        AllConcreteTypes.lookup handle state.ConcreteTypes
-        |> Option.defaultWith (fun () -> failwith $"%s{operation}: concrete System.Char handle %O{handle} not found")
+        AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Char.Identity
+        |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Char is not concretized")
 
     let private readUtf16Char
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (charConcreteType : ConcreteType<ConcreteTypeHandle>)
+        (charConcreteType : ConcreteTypeHandle)
         (ptr : ManagedPointerSource)
         (charIndex : int)
         : char
@@ -347,20 +343,16 @@ module NativeCall =
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        : ConcreteType<ConcreteTypeHandle>
+        : ConcreteTypeHandle
         =
-        let handle =
-            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Byte.Identity
-            |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Byte is not concretized")
-
-        AllConcreteTypes.lookup handle state.ConcreteTypes
-        |> Option.defaultWith (fun () -> failwith $"%s{operation}: concrete System.Byte handle %O{handle} not found")
+        AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Byte.Identity
+        |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Byte is not concretized")
 
     let private readNamedByte
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (byteConcreteType : ConcreteType<ConcreteTypeHandle>)
+        (byteConcreteType : ConcreteTypeHandle)
         (ptr : ManagedPointerSource)
         (byteIndex : int)
         : UInt8Source
@@ -381,7 +373,7 @@ module NativeCall =
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (byteConcreteType : ConcreteType<ConcreteTypeHandle>)
+        (byteConcreteType : ConcreteTypeHandle)
         (ptr : ManagedPointerSource)
         (byteIndex : int)
         : byte

@@ -52,15 +52,10 @@ module TestByteViewCrossesContainer =
             ConcreteTypes = concreteTypes
         }
 
-    let private concreteTypeFor (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) =
-        ConcreteType.makeFromIdentity
-            typeInfo.Identity
-            typeInfo.Namespace
-            typeInfo.Name
-            ImmutableArray<ConcreteTypeHandle>.Empty
+    let private concreteTypeFor (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle concreteTypes typeInfo
 
-    let private byteType : ConcreteType<ConcreteTypeHandle> =
-        concreteTypeFor baseClassTypes.Byte
+    let private byteType : ConcreteTypeHandle = concreteTypeFor baseClassTypes.Byte
 
     let private int32Template : CliType = CliType.Numeric (CliNumericType.Int32 0)
 

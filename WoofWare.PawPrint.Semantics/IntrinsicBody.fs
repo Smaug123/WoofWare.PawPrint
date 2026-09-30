@@ -347,6 +347,29 @@ module IntrinsicBody =
         | JitExpansion.Primitive primitive -> SelfCallExpansion.Primitive primitive
         | JitExpansion.Unrecognised -> SelfCallExpansion.Unrecognised
 
+    /// What every call to `method` returns on a CPU `profile` describes, where that is a constant:
+    /// `method` is a capability query whose IL returns its call to itself. `None` for any other
+    /// method.
+    let constantResult
+        (profile : HardwareIntrinsicsProfile)
+        (assembly : DumpedAssembly)
+        (method : MethodDefinitionHandle)
+        : bool option
+        =
+        if not (isIntrinsic assembly method) then
+            None
+        else
+
+        match classify assembly method, assembly.Methods.[method].Body with
+        | IntrinsicBody.JitExpansion expansion, MethodBody.Il body ->
+            // `classify` found a call naming the method itself, and this body's only call is this one.
+            match expandSelfCall profile expansion, body.Instructions with
+            | SelfCallExpansion.Constant value,
+              [ IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Call, MetadataOperand.FromMetadata _), _
+                IlOp.Nullary NullaryIlOp.Ret, _ ] -> Some value
+            | _ -> None
+        | _ -> None
+
     /// The IL CoreCLR's VM runs in place of `method`'s own, when its own is a placeholder that
     /// `VmSubstitution` transcribes. `None` means the method's own body is what runs, or else that
     /// no IL can: `classify` says which.

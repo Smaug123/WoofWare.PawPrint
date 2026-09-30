@@ -129,20 +129,6 @@ type StackShape =
 [<RequireQualifiedAccess>]
 module StackShape =
 
-    /// Where control goes after an instruction, given the stack it leaves.
-    [<RequireQualifiedAccess>]
-    type private Successors =
-        /// Control leaves the method, or the instruction is a rethrow: nothing follows.
-        | None
-        /// The next instruction in the stream.
-        | FallThrough
-        /// Branch targets, as byte offsets, plus the next instruction.
-        | TargetsAndFallThrough of int list
-        /// Branch targets only.
-        | Targets of int list
-        /// `leave`: the target, with the stack emptied first.
-        | Leave of int
-
     /// What an instruction does to the stack: how many values it pops and what it pushes.
     /// `pushes` is a function of the popped values (top first) because an arithmetic result's
     /// width depends on its operands' and `dup` reproduces its operand.
@@ -157,57 +143,6 @@ module StackShape =
             Pops = pops
             Pushes = fun _ -> pushes
         }
-
-    /// Where control goes after the instruction at `offset`, as byte offsets into the body.
-    let private successorsOf (offset : int) (instruction : IlOp) : Successors =
-        let target (delta : int) : int =
-            offset + IlOp.NumberOfBytes instruction + delta
-
-        match instruction with
-        | IlOp.Nullary NullaryIlOp.Ret
-        | IlOp.Nullary NullaryIlOp.Throw
-        | IlOp.Nullary NullaryIlOp.Rethrow
-        | IlOp.Nullary NullaryIlOp.Endfinally
-        | IlOp.Nullary NullaryIlOp.Endfilter
-        | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Jmp, _) -> Successors.None
-        // A `br` to the very next instruction is a `nop` to the JIT, which merges the two blocks
-        // before importing (`DoEarlyBlockMerging`, Tier-0 included): no block boundary, so a
-        // constant of the block survives it.
-        | IlOp.UnaryConst (UnaryConstIlOp.Br 0)
-        | IlOp.UnaryConst (UnaryConstIlOp.Br_s 0y) -> Successors.FallThrough
-        | IlOp.UnaryConst (UnaryConstIlOp.Br delta) -> Successors.Targets [ target delta ]
-        | IlOp.UnaryConst (UnaryConstIlOp.Br_s delta) -> Successors.Targets [ target (int delta) ]
-        | IlOp.UnaryConst (UnaryConstIlOp.Brfalse delta)
-        | IlOp.UnaryConst (UnaryConstIlOp.Brtrue delta)
-        | IlOp.UnaryConst (UnaryConstIlOp.Beq delta)
-        | IlOp.UnaryConst (UnaryConstIlOp.Blt delta)
-        | IlOp.UnaryConst (UnaryConstIlOp.Ble delta)
-        | IlOp.UnaryConst (UnaryConstIlOp.Bgt delta)
-        | IlOp.UnaryConst (UnaryConstIlOp.Bge delta)
-        | IlOp.UnaryConst (UnaryConstIlOp.Bne_un delta)
-        | IlOp.UnaryConst (UnaryConstIlOp.Bge_un delta)
-        | IlOp.UnaryConst (UnaryConstIlOp.Bgt_un delta)
-        | IlOp.UnaryConst (UnaryConstIlOp.Ble_un delta)
-        | IlOp.UnaryConst (UnaryConstIlOp.Blt_un delta) -> Successors.TargetsAndFallThrough [ target delta ]
-        | IlOp.UnaryConst (UnaryConstIlOp.Brfalse_s delta)
-        | IlOp.UnaryConst (UnaryConstIlOp.Brtrue_s delta)
-        | IlOp.UnaryConst (UnaryConstIlOp.Beq_s delta)
-        | IlOp.UnaryConst (UnaryConstIlOp.Blt_s delta)
-        | IlOp.UnaryConst (UnaryConstIlOp.Ble_s delta)
-        | IlOp.UnaryConst (UnaryConstIlOp.Bgt_s delta)
-        | IlOp.UnaryConst (UnaryConstIlOp.Bge_s delta)
-        | IlOp.UnaryConst (UnaryConstIlOp.Bne_un_s delta)
-        | IlOp.UnaryConst (UnaryConstIlOp.Bge_un_s delta)
-        | IlOp.UnaryConst (UnaryConstIlOp.Bgt_un_s delta)
-        | IlOp.UnaryConst (UnaryConstIlOp.Ble_un_s delta)
-        | IlOp.UnaryConst (UnaryConstIlOp.Blt_un_s delta) -> Successors.TargetsAndFallThrough [ target (int delta) ]
-        | IlOp.UnaryConst (UnaryConstIlOp.Leave delta) -> Successors.Leave (target delta)
-        | IlOp.UnaryConst (UnaryConstIlOp.Leave_s delta) -> Successors.Leave (target (int delta))
-        | IlOp.Switch targets -> Successors.TargetsAndFallThrough (targets |> Seq.map target |> List.ofSeq)
-        | IlOp.Nullary _
-        | IlOp.UnaryConst _
-        | IlOp.UnaryMetadataToken _
-        | IlOp.UnaryStringToken _ -> Successors.FallThrough
 
     /// The width CoreCLR gives a binary arithmetic result: single precision only when both
     /// operands are single, otherwise double, with the float32 operand widened first. Anything
@@ -744,7 +679,7 @@ module StackShape =
     let private targetsOf (offset : int) (instruction : IlOp) : int list =
         let fallThrough = offset + IlOp.NumberOfBytes instruction
 
-        match successorsOf offset instruction with
+        match ControlFlow.successorsOf offset instruction with
         | Successors.None -> []
         | Successors.FallThrough -> [ fallThrough ]
         | Successors.Targets targets -> targets
@@ -765,7 +700,7 @@ module StackShape =
         let fromInstructions =
             body.Instructions
             |> List.collect (fun (instruction, offset) ->
-                match successorsOf offset instruction with
+                match ControlFlow.successorsOf offset instruction with
                 | Successors.None
                 | Successors.FallThrough -> []
                 | Successors.Targets targets -> targets
@@ -926,7 +861,7 @@ module StackShape =
                         List.replicate pushed constant @ rest
 
                 let fallsOut =
-                    match successorsOf offset instruction with
+                    match ControlFlow.successorsOf offset instruction with
                     | Successors.FallThrough
                     | Successors.TargetsAndFallThrough _ -> true
                     | Successors.None
@@ -991,7 +926,7 @@ module StackShape =
             let instruction = body.Locations.[offset]
             let fallThrough = offset + IlOp.NumberOfBytes instruction
 
-            match successorsOf offset instruction with
+            match ControlFlow.successorsOf offset instruction with
             | Successors.None -> ()
             | Successors.FallThrough -> visit fallThrough
             | Successors.Targets targets -> List.iter visit targets
@@ -1128,7 +1063,7 @@ module StackShape =
         /// Where `offset` sends control, each successor arriving with `delivery` (a `leave`
         /// empties the stack).
         let successors (offset : int) (delivery : Delivery) : (int * Delivery) list =
-            match successorsOf offset locations.[offset] with
+            match ControlFlow.successorsOf offset locations.[offset] with
             | Successors.Leave target -> [ target, Delivery.Known [] ]
             | _ -> graph.[offset] |> List.map (fun target -> target, delivery)
 

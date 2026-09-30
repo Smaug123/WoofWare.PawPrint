@@ -59,24 +59,15 @@ module TestBinaryArithmetic =
         | Ok (result, _) -> result
         | Error fault -> failwith $"%s{op.Name} of %O{val1} and %O{val2} unexpectedly faulted with %O{fault}"
 
-    let private concreteTypeFor
-        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        : ConcreteType<ConcreteTypeHandle>
-        =
-        ConcreteType.makeFromIdentity
-            typeInfo.Identity
-            typeInfo.Namespace
-            typeInfo.Name
-            ImmutableArray<ConcreteTypeHandle>.Empty
+    let private concreteTypeFor (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle concreteTypes typeInfo
 
-    let private byteType : ConcreteType<ConcreteTypeHandle> =
-        concreteTypeFor baseClassTypes.Byte
+    let private byteType : ConcreteTypeHandle = concreteTypeFor baseClassTypes.Byte
 
     /// The view an `int[]` element byref picks up when arithmetic turns it into a byte cursor:
     /// the cursor is anchored on the element's own shape, not on `System.Byte`, so that a
     /// cell-aligned read back through it still sees a cell rather than a run of bytes.
-    let private int32Type : ConcreteType<ConcreteTypeHandle> =
-        concreteTypeFor baseClassTypes.Int32
+    let private int32Type : ConcreteTypeHandle = concreteTypeFor baseClassTypes.Int32
 
     let private allocatedIntArray (values : int list) : AllocatedArray =
         let elements : PersistentVector<CliType> =
@@ -134,7 +125,7 @@ module TestBinaryArithmetic =
         |> EvalStackValue.ManagedPointer
 
     let private byteViewPointerAs
-        (viewType : ConcreteType<ConcreteTypeHandle>)
+        (viewType : ConcreteTypeHandle)
         (arr : ManagedHeapAddress)
         (index : int)
         (byteOffset : int)
@@ -2263,7 +2254,7 @@ module TestBinaryArithmetic =
                                                                         Projections = [ ByrefProjection.ReinterpretAs viewType
                                                                                         ByrefProjection.ByteOffset actualOffset ]
                                                                     }) ->
-            viewType.Name |> shouldEqual "Byte"
+            viewType |> shouldEqual byteType
             actualOffset |> shouldEqual offset
 
             root

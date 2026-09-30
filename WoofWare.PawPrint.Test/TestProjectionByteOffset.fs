@@ -51,11 +51,10 @@ module TestProjectionByteOffset =
     let private int32Handle : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle allCt bct.Int32
 
-    /// Some `ConcreteType<ConcreteTypeHandle>` to hang a `ReinterpretAs` on. Which type it names is
+    /// Some type to hang a `ReinterpretAs` on. Which type it names is
     /// irrelevant to these tests: `templateFor` is a parameter of the function under test, so the
     /// tests supply the template the reinterpret resolves to directly.
-    let private someConcreteType : ConcreteType<ConcreteTypeHandle> =
-        AllConcreteTypes.lookup int32Handle allCt |> Option.get
+    let private someConcreteType : ConcreteTypeHandle = int32Handle
 
     let private cliField (name : string) (contents : CliType) (fieldType : ConcreteTypeHandle) : CliField =
         {
@@ -103,11 +102,11 @@ module TestProjectionByteOffset =
     /// The walk never needs to resolve a `ReinterpretAs` in most of these chains, so the default
     /// `templateFor` is a trap: a test that unexpectedly consults it fails loudly rather than
     /// silently agreeing for the wrong reason.
-    let private noTemplate (_ : ConcreteType<ConcreteTypeHandle>) : CliType =
+    let private noTemplate (_ : ConcreteTypeHandle) : CliType =
         failwith "templateFor should not have been consulted"
 
     let private walk
-        (templateFor : ConcreteType<ConcreteTypeHandle> -> CliType)
+        (templateFor : ConcreteTypeHandle -> CliType)
         (root : CliType)
         (projs : ByrefProjection list)
         : int64
