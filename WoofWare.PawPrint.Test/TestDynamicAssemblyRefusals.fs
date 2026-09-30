@@ -83,6 +83,18 @@ public class Program
         exc.Message |> shouldContainText "the dynamic assembly 'Keyed' has a public key"
 
     [<Test>]
+    let ``a dynamic assembly with flags above bit fifteen is refused`` () : unit =
+        // Real .NET stores all thirty-two bits: `GetName().Flags` reports -3825, the masked -1.
+        let exc =
+            runRefused
+                "DynamicAssemblyAllFlags.cs"
+                """AssemblyBuilder.DefineDynamicAssembly(new AssemblyName("AllFlags") { Flags = (AssemblyNameFlags)(-1) }, AssemblyBuilderAccess.Run);"""
+
+        // The `AssemblyName.Flags` setter has already cleared the processor-architecture and
+        // content-type bits by the time the QCall reads `RawFlags`.
+        exc.Message |> shouldContainText "asks for flags 0xfffff10f"
+
+    [<Test>]
     let ``two dynamic assemblies of one name are refused`` () : unit =
         let exc =
             runRefused

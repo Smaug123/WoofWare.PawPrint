@@ -120,6 +120,25 @@ public static class Program
         {
         }
 
+        // 16: the metadata emitter reads a version component of 65535 as "unset", leaving it 0.
+        AssemblyName sentinelVersion = new AssemblyName ("SentinelVersion") { Version = new Version (65535, 2, 65534, 65535) };
+        Assembly withSentinelVersion = AssemblyBuilder.DefineDynamicAssembly (sentinelVersion, AssemblyBuilderAccess.Run).ManifestModule.Assembly;
+
+        if (withSentinelVersion.FullName != "SentinelVersion, Version=0.2.65534.0, Culture=neutral, PublicKeyToken=null")
+        {
+            return 16;
+        }
+
+        // 17: and a hash algorithm of -1 the same way, although 0 means SHA1.
+#pragma warning disable SYSLIB0037
+        AssemblyName sentinelHash = new AssemblyName ("SentinelHash") { HashAlgorithm = (System.Configuration.Assemblies.AssemblyHashAlgorithm) (-1) };
+
+        if ((int) AssemblyBuilder.DefineDynamicAssembly (sentinelHash, AssemblyBuilderAccess.Run).ManifestModule.Assembly.GetName ().HashAlgorithm != 0)
+#pragma warning restore SYSLIB0037
+        {
+            return 17;
+        }
+
         return 0;
     }
 }

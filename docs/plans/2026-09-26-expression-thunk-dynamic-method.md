@@ -137,7 +137,9 @@ Measured after 3a: the three-parameter guest stops at `AppDomain_CreateDynamicAs
 * `DynamicAssemblyImage.build` makes a minimal PE image holding what CoreCLR's emit scope holds
   when `Assembly::CreateDynamic` returns: a `Module` row named `RefEmit_InMemoryManifestModule`,
   the `Assembly` row with the requested name, version, culture, flags and hash algorithm (SHA1 when
-  none is given), and `<Module>`. It is read back through `Assembly.read` like any image.
+  none is given), and `<Module>`. It is read back through `Assembly.read` like any image. As the
+  metadata emitter does, a version component of 65535 and a hash algorithm of -1 are read as "not
+  given" and stored as 0 (measured).
 * The provenance record lives in `LoadedAssemblies` (`WithDynamicAssembly`, `IsDynamic`): a dynamic
   assembly is in the load context but invisible to the binder, so the exact-identity fallback in
   `TryResolveReference` never finds one and `WithBoundReference` refuses to bind to one. That is
@@ -154,10 +156,12 @@ Measured after 3a: the three-parameter guest stops at `AppDomain_CreateDynamicAs
   already loaded, whether dynamic or an image, because `LoadedAssemblies` keys on that identity; a
   collectible one (the second loader-allocator door); and one with a public key, because CoreCLR
   raises `SecurityException` for a key `StrongNameIsValidPublicKey` rejects and PawPrint does not
-  yet validate keys (#1404 adds the validator).
+  yet validate keys (#1404 adds the validator); and one whose flags use bits above 15, because
+  `MetadataBuilder` writes the four-byte `Flags` column from a `UInt16`. No flag ECMA-335 defines
+  is up there.
 
 `sourcesImpure/DynamicAssemblyHosting.cs` is the acceptance case, `TestDynamicAssemblyRefusals`
-pins the four refusals, and `TestDynamicAssemblyImage` checks the image round-trips any identity.
+pins the five refusals, and `TestDynamicAssemblyImage` checks the image round-trips any identity.
 All thirteen mutants of the rules above are caught.
 
 Measured after 3b: the three-parameter guest exits 0 and is un-parked. A plain

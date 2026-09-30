@@ -14,6 +14,7 @@ type DynamicAssemblyName =
     {
         /// Never empty: `Assembly::CreateDynamic` refuses an empty name before defining anything.
         SimpleName : string
+        /// Already defaulted: CoreCLR stores 0 for a component the caller passes as 65535.
         Version : Version
         /// Empty for the neutral culture, whether the caller passed no culture or an empty one.
         Culture : string
@@ -21,9 +22,11 @@ type DynamicAssemblyName =
         /// never a token.
         PublicKey : ImmutableArray<byte>
         /// `AssemblyName.RawFlags`, stored verbatim (measured: `Retargetable` and
-        /// `EnableJITcompileTracking` both survive into the assembly's name).
+        /// `EnableJITcompileTracking` both survive into the assembly's name). Only the low 16 bits
+        /// can be given: `build` refuses more.
         Flags : AssemblyFlags
-        /// Already defaulted: CoreCLR stores SHA1 when the caller passes zero.
+        /// Already defaulted: CoreCLR stores SHA1 when the caller passes zero, and nothing when it
+        /// passes all ones.
         HashAlgorithm : AssemblyHashAlgorithm
     }
 
@@ -45,6 +48,13 @@ module DynamicAssemblyImage =
     let build (name : DynamicAssemblyName) (moduleVersionId : Guid) : byte[] =
         if String.IsNullOrEmpty name.SimpleName then
             invalidArg (nameof name) "a dynamic assembly's simple name must be non-empty"
+
+        // The `Assembly` row's `Flags` column is four bytes, but `MetadataBuilder.AddAssembly` keeps
+        // only the low two, so higher bits would silently vanish. No flag ECMA-335 defines is up there.
+        if uint32 name.Flags > 0xFFFFu then
+            invalidArg
+                (nameof name)
+                $"assembly flags 0x%08x{uint32 name.Flags} have bits above the sixteen MetadataBuilder can write"
 
         let metadata = MetadataBuilder ()
 

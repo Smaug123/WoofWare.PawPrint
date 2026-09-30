@@ -183,26 +183,40 @@ module NativeRuntimeAssemblyBuilder =
                 | ManagedPointerSource.Null -> ""
                 | culturePtr -> NativeCall.readNullTerminatedUtf16 operation ctx.BaseClassTypes state culturePtr
 
+            // The metadata emitter (`RegMeta::_SetAssemblyProps`) reads an all-ones value as "not
+            // given" and leaves the new row's zero, so -1 is no algorithm, where 0 was SHA1 by then
+            // (measured on .NET 10).
             let hashAlgorithm =
                 match NativeCall.int32Argument operation instruction.Arguments.[2] with
                 | 0 -> calgSha1
+                | -1 -> 0
                 | algorithm -> algorithm
+
+            // The same "not given" reading, for each version component: 65535 is left 0.
+            let versionComponent (fieldName : string) : int =
+                match NativeCall.uint16Argument operation (field fieldName) with
+                | UInt16.MaxValue -> 0
+                | given -> int given
 
             let name : DynamicAssemblyName =
                 {
                     SimpleName = simpleName
                     Version =
                         Version (
-                            int (NativeCall.uint16Argument operation (field "_major")),
-                            int (NativeCall.uint16Argument operation (field "_minor")),
-                            int (NativeCall.uint16Argument operation (field "_build")),
-                            int (NativeCall.uint16Argument operation (field "_revision"))
+                            versionComponent "_major",
+                            versionComponent "_minor",
+                            versionComponent "_build",
+                            versionComponent "_revision"
                         )
                     Culture = culture
                     PublicKey = System.Collections.Immutable.ImmutableArray<byte>.Empty
                     Flags = enum<AssemblyFlags> (NativeCall.int32Argument operation (field "_flags"))
                     HashAlgorithm = enum<System.Reflection.AssemblyHashAlgorithm> hashAlgorithm
                 }
+
+            if uint32 name.Flags > 0xFFFFu then
+                failwith
+                    $"TODO: %s{operation}: the dynamic assembly '%s{simpleName}' asks for flags 0x%08x{uint32 name.Flags}, with bits above the sixteen DynamicAssemblyImage can write; CoreCLR stores all thirty-two"
 
             let moduleVersionId, state = freshModuleVersionId state
 
