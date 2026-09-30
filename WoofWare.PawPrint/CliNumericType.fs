@@ -434,6 +434,7 @@ type CliNumericType =
             | NativeIntSource.WaitHandlePtr _ -> failwith "refusing to express WaitHandlePtr as bytes"
             | NativeIntSource.EvpMdPtr _ -> failwith "refusing to express EvpMdPtr as bytes"
             | NativeIntSource.EvpMdCtxPtr _ -> failwith "refusing to express EvpMdCtxPtr as bytes"
+            | NativeIntSource.AssemblyBinderPtr _ -> failwith "refusing to express AssemblyBinderPtr as bytes"
             | NativeIntSource.AssemblyHandle _ -> failwith "refusing to express AssemblyHandle as bytes"
             | NativeIntSource.ModuleHandle _ -> failwith "refusing to express ModuleHandle as bytes"
             | NativeIntSource.MetadataImportHandle _ -> failwith "refusing to express MetadataImportHandle as bytes"

@@ -161,6 +161,8 @@ module EvalStackValue =
         | NativeIntSource.EvpMdPtr algorithm ->
             failwith $"%s{operation}: refusing to convert EVP_MD for %O{algorithm} to a float"
         | NativeIntSource.EvpMdCtxPtr handle -> failwith $"%s{operation}: refusing to convert %O{handle} to a float"
+        | NativeIntSource.AssemblyBinderPtr binder ->
+            failwith $"%s{operation}: refusing to convert %O{binder} to a float"
         | NativeIntSource.AssemblyHandle assemblyName ->
             failwith $"%s{operation}: refusing to convert assembly handle %s{assemblyName} to a float"
         | NativeIntSource.ModuleHandle moduleName ->
@@ -315,6 +317,8 @@ module EvalStackValue =
                 failwith $"Conv_U: refusing to convert EVP_MD for %O{algorithm} to unsigned native int"
             | NativeIntSource.EvpMdCtxPtr handle ->
                 failwith $"Conv_U: refusing to convert %O{handle} to unsigned native int"
+            | NativeIntSource.AssemblyBinderPtr binder ->
+                failwith $"Conv_U: refusing to convert %O{binder} to unsigned native int"
             | NativeIntSource.AssemblyHandle assemblyName ->
                 failwith $"Conv_U: refusing to convert assembly handle %s{assemblyName} to unsigned native int"
             | NativeIntSource.ModuleHandle moduleName ->
@@ -819,6 +823,7 @@ module EvalStackValue =
                     | NativeIntSource.EvpMdPtr algorithm ->
                         failwith $"refusing to coerce EVP_MD for %O{algorithm} to int64"
                     | NativeIntSource.EvpMdCtxPtr handle -> failwith $"refusing to coerce %O{handle} to int64"
+                    | NativeIntSource.AssemblyBinderPtr binder -> failwith $"refusing to coerce %O{binder} to int64"
                     | NativeIntSource.AssemblyHandle f -> failwith $"TODO: {f}"
                     | NativeIntSource.ModuleHandle f -> failwith $"TODO: {f}"
                     | NativeIntSource.MetadataImportHandle f ->
@@ -974,6 +979,8 @@ module EvalStackValue =
                 | NativeIntSource.WaitHandlePtr _ -> failwith "refusing to interpret wait handle as an object ref"
                 | NativeIntSource.EvpMdPtr _ -> failwith "refusing to interpret EVP_MD as an object ref"
                 | NativeIntSource.EvpMdCtxPtr _ -> failwith "refusing to interpret EVP_MD_CTX handle as an object ref"
+                | NativeIntSource.AssemblyBinderPtr _ ->
+                    failwith "refusing to interpret assembly binder as an object ref"
                 | NativeIntSource.AssemblyHandle _ -> failwith "refusing to interpret assembly handle as an object ref"
                 | NativeIntSource.ModuleHandle _ -> failwith "refusing to interpret module handle as an object ref"
                 | NativeIntSource.MetadataImportHandle _ ->
@@ -1051,6 +1058,9 @@ module EvalStackValue =
                 | NativeIntSource.EvpMdCtxPtr handle ->
                     failwith
                         $"refusing to coerce %O{handle} to runtime pointer: an EVP_MD_CTX is opaque, not an address"
+                | NativeIntSource.AssemblyBinderPtr binder ->
+                    failwith
+                        $"refusing to coerce %O{binder} to runtime pointer: an assembly binder is opaque, not an address"
                 | NativeIntSource.AssemblyHandle _ -> failwith "todo: AssemblyHandle into CliType.RuntimePointer"
                 | NativeIntSource.ModuleHandle _ -> failwith "todo: ModuleHandle into CliType.RuntimePointer"
                 | NativeIntSource.MetadataImportHandle _ ->

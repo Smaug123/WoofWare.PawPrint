@@ -396,7 +396,8 @@ module NullaryIlOp =
             | EvalStackValue.NativeInt (NativeIntSource.LowLevelMonitorPtr _)
             | EvalStackValue.NativeInt (NativeIntSource.WaitHandlePtr _)
             | EvalStackValue.NativeInt (NativeIntSource.EvpMdPtr _)
-            | EvalStackValue.NativeInt (NativeIntSource.EvpMdCtxPtr _) ->
+            | EvalStackValue.NativeInt (NativeIntSource.EvpMdCtxPtr _)
+            | EvalStackValue.NativeInt (NativeIntSource.AssemblyBinderPtr _) ->
                 failwith $"Localloc: refusing to use pointer-like value %O{value} as a byte count"
             | EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits bits) ->
                 failwith $"Localloc: refusing to use synthesised pointer-hash bits 0x%x{bits} as a byte count"
@@ -619,6 +620,7 @@ module NullaryIlOp =
             | NativeIntSource.WaitHandlePtr id -> failwith $"Neg: refusing to negate wait handle %O{id}"
             | NativeIntSource.EvpMdPtr algorithm -> failwith $"Neg: refusing to negate EVP_MD for %O{algorithm}"
             | NativeIntSource.EvpMdCtxPtr handle -> failwith $"Neg: refusing to negate %O{handle}"
+            | NativeIntSource.AssemblyBinderPtr binder -> failwith $"Neg: refusing to negate %O{binder}"
             | NativeIntSource.OpaqueHashBits bits ->
                 // Negating synthesised hash bits is a bit-mixing operation
                 // that stays in the synthesis domain; the result keeps the
@@ -755,6 +757,8 @@ module NullaryIlOp =
                 failwith $"Conv_ovf_u: refusing to convert EVP_MD for %O{algorithm} to unsigned native int"
             | NativeIntSource.EvpMdCtxPtr handle ->
                 failwith $"Conv_ovf_u: refusing to convert %O{handle} to unsigned native int"
+            | NativeIntSource.AssemblyBinderPtr binder ->
+                failwith $"Conv_ovf_u: refusing to convert %O{binder} to unsigned native int"
             | NativeIntSource.AssemblyHandle assemblyName ->
                 failwith $"Conv_ovf_u: refusing to convert assembly handle %s{assemblyName} to unsigned native int"
             | NativeIntSource.ModuleHandle moduleName ->
@@ -853,6 +857,8 @@ module NullaryIlOp =
                 failwith $"Conv_ovf_i: refusing to convert EVP_MD for %O{algorithm} to signed native int"
             | NativeIntSource.EvpMdCtxPtr handle ->
                 failwith $"Conv_ovf_i: refusing to convert %O{handle} to signed native int"
+            | NativeIntSource.AssemblyBinderPtr binder ->
+                failwith $"Conv_ovf_i: refusing to convert %O{binder} to signed native int"
             | NativeIntSource.AssemblyHandle assemblyName ->
                 failwith $"Conv_ovf_i: refusing to convert assembly handle %s{assemblyName} to signed native int"
             | NativeIntSource.ModuleHandle moduleName ->
@@ -1001,6 +1007,8 @@ module NullaryIlOp =
                 failwith $"Conv_ovf_i_un: refusing to convert EVP_MD for %O{algorithm} to signed native int"
             | NativeIntSource.EvpMdCtxPtr handle ->
                 failwith $"Conv_ovf_i_un: refusing to convert %O{handle} to signed native int"
+            | NativeIntSource.AssemblyBinderPtr binder ->
+                failwith $"Conv_ovf_i_un: refusing to convert %O{binder} to signed native int"
             | NativeIntSource.AssemblyHandle assemblyName ->
                 failwith $"Conv_ovf_i_un: refusing to convert assembly handle %s{assemblyName} to signed native int"
             | NativeIntSource.ModuleHandle moduleName ->
@@ -1346,6 +1354,7 @@ module NullaryIlOp =
             | NativeIntSource.WaitHandlePtr _
             | NativeIntSource.EvpMdPtr _
             | NativeIntSource.EvpMdCtxPtr _
+            | NativeIntSource.AssemblyBinderPtr _
             | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
             | NativeIntSource.SyntheticCrossArrayOffset _ ->
                 failwith "Refusing to treat a synthetic cross-storage byte offset as an array index"

@@ -325,6 +325,7 @@
     <Compile Include="TestFabricatedArrayConstructorNewobj.fs" />
     <Compile Include="TestFabricatedNullByrefArgument.fs" />
     <Compile Include="TestConstrainedGetTypeNullByref.fs" />
+    <Compile Include="TestAssemblyLoadContextRefusals.fs" />
     <Compile Include="TestFabricatedCallArgumentCoercion.fs" />
     <Compile Include="TestFabricatedEntryPoint.fs" />
     <Compile Include="TestFabricatedIntrinsicWithoutIl.fs" />
