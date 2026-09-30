@@ -1,0 +1,33 @@
+Darwin 27.0 (26A428) arm64
+flavour darwin uid 501 gid 20
+inherited 0022
+SWEEP12	libc	rows=4096	mismatches(stored = arg & 0777)=3584	mismatches(stored = arg & 07777)=0
+SWEEP12	syscall	rows=4096	mismatches(stored = arg & 0777)=3584	mismatches(stored = arg & 07777)=0
+HIGH	libc	low 0000: 12:0000 13:0000 14:0000 15:0000 16:0000 17:0000 18:0000 19:0000 20:0000 21:0000 22:0000 23:0000 24:0000 25:0000 26:0000 27:0000 28:0000 29:0000 30:0000 31:0000
+HIGH	libc	low 7777: 12:7777 13:7777 14:7777 15:7777 16:7777 17:7777 18:7777 19:7777 20:7777 21:7777 22:7777 23:7777 24:7777 25:7777 26:7777 27:7777 28:7777 29:7777 30:7777 31:7777
+HIGH	libc	low 0022: 12:0022 13:0022 14:0022 15:0022 16:0022 17:0022 18:0022 19:0022 20:0022 21:0022 22:0022 23:0022 24:0022 25:0022 26:0022 27:0022 28:0022 29:0022 30:0022 31:0022
+HIGH	libc	low 0777: 12:0777 13:0777 14:0777 15:0777 16:0777 17:0777 18:0777 19:0777 20:0777 21:0777 22:0777 23:0777 24:0777 25:0777 26:0777 27:0777 28:0777 29:0777 30:0777 31:0777
+EXTREME	libc	arg 0xffffffff	reads back 7777
+EXTREME	libc	arg 0x80000000	reads back 0000
+EXTREME	libc	arg 0x7fffffff	reads back 7777
+EXTREME	libc	arg 0xfffff000	reads back 0000
+EXTREME	libc	arg 0x0000ffff	reads back 7777
+EXTREME	libc	arg 0x00010012	reads back 0022
+HIGH	syscall	low 0000: 12:0000 13:0000 14:0000 15:0000 16:0000 17:0000 18:0000 19:0000 20:0000 21:0000 22:0000 23:0000 24:0000 25:0000 26:0000 27:0000 28:0000 29:0000 30:0000 31:0000
+HIGH	syscall	low 7777: 12:7777 13:7777 14:7777 15:7777 16:7777 17:7777 18:7777 19:7777 20:7777 21:7777 22:7777 23:7777 24:7777 25:7777 26:7777 27:7777 28:7777 29:7777 30:7777 31:7777
+HIGH	syscall	low 0022: 12:0022 13:0022 14:0022 15:0022 16:0022 17:0022 18:0022 19:0022 20:0022 21:0022 22:0022 23:0022 24:0022 25:0022 26:0022 27:0022 28:0022 29:0022 30:0022 31:0022
+HIGH	syscall	low 0777: 12:0777 13:0777 14:0777 15:0777 16:0777 17:0777 18:0777 19:0777 20:0777 21:0777 22:0777 23:0777 24:0777 25:0777 26:0777 27:0777 28:0777 29:0777 30:0777 31:0777
+EXTREME	syscall	arg 0xffffffff	reads back 7777
+EXTREME	syscall	arg 0x80000000	reads back 0000
+EXTREME	syscall	arg 0x7fffffff	reads back 7777
+EXTREME	syscall	arg 0xfffff000	reads back 0000
+EXTREME	syscall	arg 0x0000ffff	reads back 7777
+EXTREME	syscall	arg 0x00010012	reads back 0022
+CHAIN	libc	rows=20000	mismatches(returns previous arg & 0777)=17483	mismatches(returns previous arg & 07777)=0
+CHAIN	syscall	rows=20000	mismatches(returns previous arg & 0777)=17483	mismatches(returns previous arg & 07777)=0
+ROW	syscall(0xfffff000 | 0777) returned 0000; then syscall(022) returned 0777; then syscall(0) returned 0022
+ROW	umask(0777) then umask(07777) returned 0777; then umask(0) returned 7777
+THREAD	after another thread's umask(077), this thread reads 0077
+width 7777
+APPLY	open	rows=16384	mismatches(mode & 0777 & ~stored)=0	mismatches(mode & 0777 & ~(stored & 0777))=0
+APPLY	mkdir	rows=16384	mismatches(mode & 0777 & ~stored)=0	mismatches(mode & 0777 & ~(stored & 0777))=0

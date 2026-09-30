@@ -508,9 +508,9 @@ module SimulatedUnixPlatform =
     /// The Darwin answer here is the `umask 022` one, and stays a constant even
     /// though a process umask is modelled: a symbolic link can only enter this
     /// filesystem through a *seed*, and a seed describes a tree some other
-    /// process built, so this run's configured umask is not the one that applied
-    /// to it. The day a `symlink(2)` lets a guest create one, that link *is*
-    /// created by this process and this must become a function of the configured
+    /// process built, so this process's umask is not the one that applied to
+    /// it. The day a `symlink(2)` lets a guest create one, that link *is*
+    /// created by this process and this must become a function of the process's
     /// umask — that is the trigger, not the existence of the field.
     let symlinkPermissions (platform : SimulatedUnixPlatform) : PermissionBits =
         match flavour platform with
@@ -634,6 +634,25 @@ module SimulatedUnixPlatform =
                 ModeMask = PermissionBits.parseOrFail "SimulatedUnixPlatform.mkDirRules" 0o0777
                 InheritsSetGroupIdFromParent = false
             }
+
+    /// The bits of its argument this platform's `umask(2)` keeps as the
+    /// process's file-mode creation mask: 0o777 on Linux, and all twelve
+    /// permission bits, 0o7777, on Darwin. Every other bit of the argument is
+    /// ignored on both.
+    ///
+    /// The stored mask is applied in full wherever a mode is masked (see
+    /// `PermissionBits.fromCreationMode`). The special bits Darwin keeps are
+    /// invisible to its `open(2)` and `mkdir(2)`, which drop those bits from the
+    /// mode first, but `umask(2)` reports them.
+    let umaskStoredBits (platform : SimulatedUnixPlatform) : PermissionBits =
+        // Measured by `docs/plans/2026-08-23-posix-kernel-extraction/umask-width.c`
+        // on Linux 6.18.5 (aarch64, as root and as uid 1000) and Darwin 27.0
+        // (uid 501): every 12-bit argument, and each of bits 12 to 31 over four
+        // low words, through libc's `umask` and through the raw syscall alike,
+        // reads back as the argument ANDed with this, with no mismatch.
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> PermissionBits.parseOrFail "SimulatedUnixPlatform.umaskStoredBits" 0o0777
+        | SimulatedUnixFlavour.Darwin -> PermissionBits.parseOrFail "SimulatedUnixPlatform.umaskStoredBits" 0o7777
 
     /// Everything this platform's `unlink(2)` does differently. See
     /// `UnlinkRules`, whose one field this picks; the rest of the divergence is
