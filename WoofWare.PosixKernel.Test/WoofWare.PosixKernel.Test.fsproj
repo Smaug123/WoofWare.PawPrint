@@ -80,6 +80,7 @@
     <Compile Include="TestDirectoryReadAgainstHost.fs" />
     <Compile Include="TestPathCursor.fs" />
     <Compile Include="TestVirtualFileSystem.fs" />
+    <Compile Include="TestBindingCount.fs" />
     <Compile Include="TestOpenDirRules.fs" />
     <Compile Include="TestRmDirRules.fs" />
     <Compile Include="TestPosixFadvise.fs" />
