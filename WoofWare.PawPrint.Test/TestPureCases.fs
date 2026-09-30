@@ -685,6 +685,76 @@ public class Program
         exn.Message |> shouldContainText "parameter"
         exn.Message |> shouldContainText "Program"
 
+    /// `RuntimeMethodHandle.StripMethodInstantiation` reached by private reflection rather than
+    /// through `MethodInfo.GetGenericMethodDefinition`, so that nothing rebinds its answer onto the
+    /// exact declaring type. CoreCLR strips onto the declaring type's canonical method table, so the
+    /// guest can see `Holder<System.__Canon>`, which PawPrint does not model; the real runtime is run
+    /// first to show that the difference is really there to be seen.
+    [<Test>]
+    let ``StripMethodInstantiation refuses a caller that could see the canonical declaring type`` () =
+        let source =
+            """
+using System;
+using System.Reflection;
+
+public class Program
+{
+    class Holder<T>
+    {
+        internal static U Pair<U>(T t, U u) => u;
+    }
+
+    public static int Main(string[] args)
+    {
+        const BindingFlags nonPublicStatic = BindingFlags.NonPublic | BindingFlags.Static;
+        Type iRuntimeMethodInfo = typeof(RuntimeMethodHandle).Assembly.GetType("System.IRuntimeMethodInfo", true);
+        MethodInfo strip = typeof(RuntimeMethodHandle).GetMethod(
+            "StripMethodInstantiation", nonPublicStatic, null, new[] { iRuntimeMethodInfo }, null);
+        MethodInfo getDeclaringType = typeof(RuntimeMethodHandle).GetMethod(
+            "GetDeclaringType", nonPublicStatic, null, new[] { iRuntimeMethodInfo }, null);
+
+        if (strip == null || getDeclaringType == null)
+        {
+            return 1;
+        }
+
+        MethodInfo bound = typeof(Holder<string>).GetMethod("Pair", nonPublicStatic).MakeGenericMethod(typeof(int));
+        object stripped = strip.Invoke(null, new object[] { bound });
+        Type declaring = (Type) getDeclaringType.Invoke(null, new object[] { stripped });
+
+        if (declaring.GetGenericTypeDefinition() != typeof(Holder<>))
+        {
+            return 2;
+        }
+
+        if (declaring.GetGenericArguments()[0].FullName != "System.__Canon")
+        {
+            return 3;
+        }
+
+        return 0;
+    }
+}
+"""
+
+        let image = Roslyn.compile [ source ]
+
+        match RealRuntime.executeWithRealRuntime [||] image with
+        | RealRuntimeResult.NormalExit 0 -> ()
+        | other -> failwith $"expected the real runtime to report Holder<System.__Canon>, got %O{other}"
+
+        let exn =
+            Assert.Catch (fun () ->
+                runPawPrintSource
+                    "StripMethodInstantiationCanonical.cs"
+                    source
+                    KernelConfig.Default
+                    (fun _image _result -> ())
+            )
+
+        exn.Message |> shouldContainText "StripMethodInstantiation"
+        exn.Message |> shouldContainText "System.__Canon"
+
     /// `float32` and `float64` are the same type (`F`) on the CLI evaluation stack, but a
     /// `calli` marshals across a method boundary, where their ABI footprints differ. Reading a
     /// `float32` return slot as `float64` yields garbage on CoreCLR rather than the target's

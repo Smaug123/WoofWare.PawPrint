@@ -827,6 +827,83 @@ module NativeRuntimeMethodHandle =
             (ManagedPointerSource.requireAddressed refMethod)
             (CliType.ObjectRef (Some stubAddress))
 
+    /// Whether `MethodHandleRegistry.stripMethodInstantiation` of a method with this declaring type
+    /// is CoreCLR's answer exactly. CoreCLR's `StripMethodInstantiation` takes the method from the
+    /// declaring type's canonical method table (method.cpp:1774), and PawPrint does not model
+    /// canonical forms, so the two agree only where the canonical method table is the type itself:
+    /// a non-generic type, an array (which has no class instantiation, so CoreCLR returns the method
+    /// before consulting any method table), or an instantiation `isSharedTypeArgument` finds no
+    /// shared argument in. An open declaring type is not claimed to be exact, because what CoreCLR
+    /// canonicalises one to has not been established.
+    let private strippedDeclaringTypeIsExact
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (declaringType : RuntimeTypeHandleTarget)
+        : bool
+        =
+        match declaringType with
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
+            let concreteType =
+                AllConcreteTypes.lookup handle state.ConcreteTypes
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: declaring type %O{handle} is not registered in ConcreteTypes"
+                )
+
+            let describe =
+                AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes handle
+
+            concreteType.Generics
+            |> Seq.exists (IlMachineRuntimeMetadata.isSharedTypeArgument baseClassTypes state describe)
+            |> not
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _) -> true
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+        | RuntimeTypeHandleTarget.OpenConstructed _ -> false
+        | other ->
+            failwith
+                $"%s{operation}: declaring type %O{other} cannot declare a metadata-backed method, so no RuntimeMethodHandleInternal should name one"
+
+    /// Whether the `RuntimeMethodHandle_StripMethodInstantiation` QCall executing in `frame` was
+    /// called by `RuntimeMethodInfo.GetGenericMethodDefinition`, through the managed wrapper
+    /// `RuntimeMethodHandle.StripMethodInstantiation(IRuntimeMethodInfo)`
+    /// (RuntimeMethodInfo.CoreCLR.cs:468, RuntimeHandles.cs:1310).
+    ///
+    /// That caller cannot see the declaring type of what the QCall hands back: it passes the answer
+    /// straight to `RuntimeType.GetMethodBase(m_declaringType, ...)`, which rebinds it onto the
+    /// method's exact declaring type, so CoreCLR's canonical declaring type and PawPrint's exact one
+    /// reach the same `MethodInfo`. Both frames are checked, not merely the immediate one: a guest
+    /// can invoke the wrapper by reflection, and then the wrapper's caller is the reflection
+    /// invoker, and the guest holds the unrebound answer.
+    let private calledFromGetGenericMethodDefinition (state : IlMachineState) (ctx : NativeCallContext) : bool =
+        let callerOf (frame : MethodState) : MethodState option =
+            frame.ReturnState
+            |> Option.map (fun returnState -> IlMachineState.getFrame ctx.Thread returnState.JumpTo state)
+
+        let isCorelibMethod
+            (typeNamespace : string)
+            (typeName : string)
+            (methodName : string)
+            (parameterCount : int)
+            (frame : MethodState)
+            : bool
+            =
+            let method = frame.ExecutingMethod
+
+            AssemblyDefinitionName.isNamed "System.Private.CoreLib" method.DeclaringAssemblyFullName
+            && method.RequiredDeclaringType.Namespace = typeNamespace
+            && method.RequiredDeclaringType.Name = typeName
+            && method.Name = methodName
+            && method.Signature.ParameterTypes.Length = parameterCount
+
+        match callerOf ctx.Instruction with
+        | Some wrapper when isCorelibMethod "System" "RuntimeMethodHandle" "StripMethodInstantiation" 1 wrapper ->
+            match callerOf wrapper with
+            | Some caller ->
+                isCorelibMethod "System.Reflection" "RuntimeMethodInfo" "GetGenericMethodDefinition" 0 caller
+            | None -> false
+        | _ -> false
+
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -1272,10 +1349,7 @@ module NativeRuntimeMethodHandle =
             //   MethodDesc *pMethodStripped = pMethod->StripMethodInstantiation();
             //   if (pMethodStripped != pMethod)
             //       refMethod.Set(pMethodStripped->AllocateStubMethodInfo());
-            // See `MethodHandleRegistry.stripMethodInstantiation` for the rebind itself. The one
-            // managed caller, `RuntimeMethodInfo.GetGenericMethodDefinition`
-            // (RuntimeMethodInfo.CoreCLR.cs:468), passes a generic method and rebinds the answer onto
-            // its declaring type with `RuntimeType.GetMethodBase`.
+            // See `MethodHandleRegistry.stripMethodInstantiation` for the rebind itself.
             let operation = "RuntimeMethodHandle.StripMethodInstantiation"
 
             if instruction.Arguments.Length <> 2 then
@@ -1305,6 +1379,16 @@ module NativeRuntimeMethodHandle =
                 // `StripMethodInstantiation` returns it unchanged and `refMethod` is left alone.
                 NativeHandlerResult.completed state |> Some
             | MethodHandle.FromMetadata identity ->
+
+            // CoreCLR's answer names the declaring type's canonical form, which PawPrint cannot
+            // spell; see `strippedDeclaringTypeIsExact`. Where that differs from the exact type,
+            // answer only a caller known to rebind the answer onto the exact type anyway.
+            if
+                not (strippedDeclaringTypeIsExact operation ctx.BaseClassTypes state (identity.GetDeclaringType ()))
+                && not (calledFromGetGenericMethodDefinition state ctx)
+            then
+                failwith
+                    $"TODO: %s{operation} of %O{identity}, called other than by RuntimeMethodInfo.GetGenericMethodDefinition: CoreCLR answers with the method on its declaring type's canonical method table, which for this declaring type is an instantiation over System.__Canon (or an open type, whose canonical form PawPrint has not established), and the caller can see it. PawPrint does not model canonical forms. GetGenericMethodDefinition is answered because it rebinds the result onto the exact declaring type."
 
             let stripped = MethodHandleRegistry.stripMethodInstantiation identity
 

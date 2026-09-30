@@ -526,7 +526,9 @@ module MethodHandleRegistry =
     /// declaring type of `Foo&lt;string&gt;.Bar&lt;int&gt;` comes back as `Foo&lt;System.__Canon&gt;`;
     /// PawPrint does not model canonical forms, and keeps `Foo&lt;string&gt;`. A caller that rebinds
     /// the result onto the exact declaring type, as `RuntimeMethodInfo.GetGenericMethodDefinition`
-    /// does through `RuntimeType.GetMethodBase`, cannot tell the two apart.
+    /// does through `RuntimeType.GetMethodBase`, cannot tell the two apart; the
+    /// `RuntimeMethodHandle_StripMethodInstantiation` QCall refuses any other caller where they
+    /// differ.
     let stripMethodInstantiation (identity : MetadataMethodIdentity) : MetadataMethodIdentity =
         { identity with
             MethodGenerics = []
