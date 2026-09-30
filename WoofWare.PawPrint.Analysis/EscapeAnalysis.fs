@@ -1434,9 +1434,10 @@ module EscapeAnalysis =
             escapesHandlers state (assemblyOf state key.AssemblyFullName) facts.Regions offset thrown
 
         // What each `rethrow` in `key`'s body re-raises, given what its callees let escape: what
-        // its clause caught of what the clause's protected block raised. That block may hold a
-        // handler with a `rethrow` of its own, whose clause's protected block is smaller, so the
-        // smallest go first.
+        // its clause caught of what the clause's protected block raised. That block may hold
+        // another `rethrow`, in a nested handler or in the protected block of a clause nested in
+        // a handler, so the rethrows depend on each other; they are solved together, to the least
+        // fixed point.
         let rethrown
             (state : EscapeAnalysisState)
             (key : MethodKey)
@@ -1453,55 +1454,72 @@ module EscapeAnalysis =
                 | ExceptionRegion.Finally o
                 | ExceptionRegion.Fault o -> o
 
-            ((state, []),
-             facts.Rethrows
-             |> List.sortBy (fun (_, clause) -> (protectedBy clause).TryLength))
-            ||> List.fold (fun (state, earlier) (offset, clause) ->
-                let o = protectedBy clause
+            let rec solve
+                (state : EscapeAnalysisState)
+                (current : Map<int, Set<ThrownType option>>)
+                : EscapeAnalysisState * Map<int, Set<ThrownType option>>
+                =
+                let state, next =
+                    ((state, Map.empty), facts.Rethrows)
+                    ||> List.fold (fun (state, next) (offset, clause) ->
+                        let o = protectedBy clause
 
-                let inside (at : int) =
-                    at >= o.TryOffset && at < o.TryOffset + o.TryLength
+                        let inside (at : int) =
+                            at >= o.TryOffset && at < o.TryOffset + o.TryLength
 
-                let raised =
-                    [
-                        for at, thrown in facts.Raises do
-                            if inside at then
-                                yield at, Some thrown
-                        for at, _ in facts.Opaque do
-                            if inside at then
-                                yield at, None
-                        for at, callee in facts.Calls do
-                            if inside at then
-                                let calleeEscapes = summaryOf callee
+                        let raised =
+                            [
+                                for at, thrown in facts.Raises do
+                                    if inside at then
+                                        yield at, Some thrown
+                                for at, _ in facts.Opaque do
+                                    if inside at then
+                                        yield at, None
+                                for at, callee in facts.Calls do
+                                    if inside at then
+                                        let calleeEscapes = summaryOf callee
 
-                                for thrown in calleeEscapes.Types do
-                                    yield at, Some thrown
+                                        for thrown in calleeEscapes.Types do
+                                            yield at, Some thrown
 
-                                if calleeEscapes.Unknown then
-                                    yield at, None
-                        for at, thrown in earlier do
-                            if inside at then
-                                yield at, thrown
-                    ]
-                    |> List.distinct
+                                        if calleeEscapes.Unknown then
+                                            yield at, None
+                                for KeyValue (at, rethrownThere) in current do
+                                    if inside at then
+                                        for thrown in rethrownThere do
+                                            yield at, thrown
+                            ]
+                            |> List.distinct
 
-                // The clauses the runtime tries before this one.
-                let before = facts.Regions |> List.takeWhile (fun region -> region <> clause)
+                        // The clauses the runtime tries before this one.
+                        let before = facts.Regions |> List.takeWhile (fun region -> region <> clause)
 
-                let state, here =
-                    ((state, []), raised)
-                    ||> List.fold (fun (state, here) (at, thrown) ->
-                        match escapesHandlers state assembly before at thrown with
-                        | state, false -> state, here
-                        | state, true ->
-                            match rethrownBy state assembly clause thrown with
-                            | state, Rethrown.Nothing -> state, here
-                            | state, Rethrown.Thrown thrown -> state, (offset, Some thrown) :: here
-                            | state, Rethrown.Unknown -> state, (offset, None) :: here
+                        let state, here =
+                            ((state, Set.empty), raised)
+                            ||> List.fold (fun (state, here) (at, thrown) ->
+                                match escapesHandlers state assembly before at thrown with
+                                | state, false -> state, here
+                                | state, true ->
+                                    match rethrownBy state assembly clause thrown with
+                                    | state, Rethrown.Nothing -> state, here
+                                    | state, Rethrown.Thrown thrown -> state, Set.add (Some thrown) here
+                                    | state, Rethrown.Unknown -> state, Set.add None here
+                            )
+
+                        state, Map.add offset here next
                     )
 
-                state, List.distinct here @ earlier
-            )
+                if next = current then state, current else solve state next
+
+            let state, solved =
+                solve state (facts.Rethrows |> List.map (fun (offset, _) -> offset, Set.empty) |> Map.ofList)
+
+            state,
+            [
+                for KeyValue (offset, rethrownHere) in solved do
+                    for thrown in rethrownHere do
+                        yield offset, thrown
+            ]
 
         let seedOf (state : EscapeAnalysisState) (key : MethodKey) : EscapeAnalysisState * Escapes =
             let facts = state.Facts.[key]

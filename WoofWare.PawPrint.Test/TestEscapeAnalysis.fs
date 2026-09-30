@@ -193,6 +193,18 @@ public static class Cases
         catch (Exception) { return 0; }
     }
 
+    // The inner clause's protected block is in the outer clause's handler, and catches what the
+    // outer clause's `throw;` rethrows.
+    public static int RethrowsWithinAHandler(int a, int b)
+    {
+        try { return Divide(a, b); }
+        catch (DivideByZeroException)
+        {
+            try { throw; }
+            catch (DivideByZeroException) { throw; }
+        }
+    }
+
     // The outer clause catches what the inner one rethrows.
     public static int RethrowsWhatIsRethrown(int a, int b)
     {
@@ -442,6 +454,10 @@ public static class MathF
             }
             { expect "Fixture.Cases" "RethrowsFromFilteredHandler" with
                 Contains = [ "=System.DivideByZeroException" ; "=System.OverflowException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.Cases" "RethrowsWithinAHandler" with
+                Contains = [ "=System.DivideByZeroException" ]
                 Unknown = Some false
             }
             { expect "Fixture.Cases" "RethrowsWhatIsRethrown" with
