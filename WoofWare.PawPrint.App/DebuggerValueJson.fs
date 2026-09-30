@@ -492,6 +492,11 @@ module internal DebuggerValueJson =
             writer.WriteString ("kind", "evpMd")
             writer.WriteString ("algorithm", string algorithm)
         | NativeIntSource.EvpMdCtxPtr (EvpMdCtxHandle.EvpMdCtxHandle id) -> writeIdSource writer "evpMdCtx" id
+        | NativeIntSource.AssemblyBinderPtr binder ->
+            writer.WriteString ("kind", "assemblyBinder")
+
+            match binder with
+            | AssemblyBinder.Default -> writer.WriteString ("binder", "default")
         | NativeIntSource.SyntheticCrossArrayOffset offset ->
             writer.WriteString ("kind", "crossStorageOffset")
             writeCrossStorageOffsetProperties writer offset

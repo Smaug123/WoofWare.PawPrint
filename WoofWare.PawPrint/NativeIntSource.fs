@@ -404,6 +404,11 @@ type NativeIntSource =
     /// by matching the registry's counter; never compares equal to `Verbatim 0L`, so
     /// `SafeEvpMdCtxHandle.IsInvalid` is false for a successfully-minted context.
     | EvpMdCtxPtr of EvpMdCtxHandle
+    /// The `AssemblyBinder*` returned by `AssemblyNative_InitializeAssemblyLoadContext`, which the
+    /// guest stores in `AssemblyLoadContext._nativeAssemblyLoadContext` and hands back to the QCalls
+    /// that load into that context. Distinguished by tag so a foreign `IntPtr` cannot be mistaken for
+    /// a binder; never compares equal to `Verbatim 0L`.
+    | AssemblyBinderPtr of AssemblyBinder
     /// Returned by `Unsafe.ByteOffset` or managed-pointer subtraction for two byrefs into distinct byte-addressed
     /// storage containers.
     | SyntheticCrossArrayOffset of SyntheticCrossArrayOffset
@@ -444,6 +449,7 @@ type NativeIntSource =
         | NativeIntSource.WaitHandlePtr id -> $"%O{id}"
         | NativeIntSource.EvpMdPtr algorithm -> $"<EVP_MD for %O{algorithm}>"
         | NativeIntSource.EvpMdCtxPtr handle -> $"%O{handle}"
+        | NativeIntSource.AssemblyBinderPtr binder -> $"%O{binder}"
         | NativeIntSource.SyntheticCrossArrayOffset _ -> "<synthetic cross-storage byte offset>"
         | NativeIntSource.OpaqueHashBits bits -> $"<opaque hash bits (native int) 0x%x{bits}>"
 
@@ -474,6 +480,7 @@ type NativeIntSource =
             | NativeIntSource.WaitHandlePtr left, NativeIntSource.WaitHandlePtr right -> left = right
             | NativeIntSource.EvpMdPtr left, NativeIntSource.EvpMdPtr right -> left = right
             | NativeIntSource.EvpMdCtxPtr left, NativeIntSource.EvpMdCtxPtr right -> left = right
+            | NativeIntSource.AssemblyBinderPtr left, NativeIntSource.AssemblyBinderPtr right -> left = right
             | NativeIntSource.SyntheticCrossArrayOffset left, NativeIntSource.SyntheticCrossArrayOffset right ->
                 left = right
             | NativeIntSource.OpaqueHashBits left, NativeIntSource.OpaqueHashBits right -> left = right
@@ -498,6 +505,7 @@ type NativeIntSource =
             | NativeIntSource.WaitHandlePtr _, _
             | NativeIntSource.EvpMdPtr _, _
             | NativeIntSource.EvpMdCtxPtr _, _
+            | NativeIntSource.AssemblyBinderPtr _, _
             | NativeIntSource.SyntheticCrossArrayOffset _, _
             | NativeIntSource.OpaqueHashBits _, _ -> false
         | _ -> false
@@ -527,6 +535,7 @@ type NativeIntSource =
         | NativeIntSource.WaitHandlePtr id -> HashCode.Combine (17, id)
         | NativeIntSource.EvpMdPtr algorithm -> HashCode.Combine (21, algorithm)
         | NativeIntSource.EvpMdCtxPtr handle -> HashCode.Combine (22, handle)
+        | NativeIntSource.AssemblyBinderPtr binder -> HashCode.Combine (23, binder)
 
 /// CoreCLR's `TypeHandle` is a tagged pointer: it wraps either a `MethodTable*`
 /// or a `TypeDesc*`, and distinguishes them by setting bit 1 in the TypeDesc
@@ -638,6 +647,7 @@ module NativeIntSource =
         | NativeIntSource.WaitHandlePtr _
         | NativeIntSource.EvpMdPtr _
         | NativeIntSource.EvpMdCtxPtr _
+        | NativeIntSource.AssemblyBinderPtr _
         | NativeIntSource.AssemblyHandle _
         | NativeIntSource.MetadataImportHandle _
         | NativeIntSource.ModuleHandle _ -> false
@@ -673,6 +683,7 @@ module NativeIntSource =
         | NativeIntSource.WaitHandlePtr _
         | NativeIntSource.EvpMdPtr _
         | NativeIntSource.EvpMdCtxPtr _
+        | NativeIntSource.AssemblyBinderPtr _
         | NativeIntSource.AssemblyHandle _
         | NativeIntSource.MetadataImportHandle _
         | NativeIntSource.ModuleHandle _ -> true

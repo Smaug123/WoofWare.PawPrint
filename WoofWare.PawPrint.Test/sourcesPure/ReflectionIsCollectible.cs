@@ -32,7 +32,7 @@ public static class Program
     //
     // A collectible answer is not reachable from a pure guest at all. In CoreCLR `m_IsCollectible`
     // is set true only by `AssemblyNative_InitializeAssemblyLoadContext`'s collectible branch, and
-    // PawPrint implements no AssemblyLoadContext native, so no guest can construct one. The one
+    // PawPrint refuses that branch, so no guest can construct one. The one
     // `true` a program can see -- `DynamicMethod.IsCollectible` -- comes from `MemberInfo`'s
     // managed virtual default rather than from any QCall, and PawPrint reports dynamic code
     // unsupported, so it is absent here on both counts.

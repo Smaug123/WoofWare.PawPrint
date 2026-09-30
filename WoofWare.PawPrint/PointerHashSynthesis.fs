@@ -39,6 +39,7 @@ type CanonicalPointerKey =
     | WaitHandle of WaitHandleId
     | EvpMd of EvpDigestAlgorithm
     | EvpMdCtx of EvpMdCtxHandle
+    | AssemblyBinder of AssemblyBinder
     | AssemblyHandle of string
     | ModuleHandle of string
     | MetadataImportHandle of string
@@ -206,6 +207,7 @@ module PointerHashSynthesis =
         | NativeIntSource.WaitHandlePtr id -> CanonicalPointerKey.WaitHandle id
         | NativeIntSource.EvpMdPtr algorithm -> CanonicalPointerKey.EvpMd algorithm
         | NativeIntSource.EvpMdCtxPtr handle -> CanonicalPointerKey.EvpMdCtx handle
+        | NativeIntSource.AssemblyBinderPtr binder -> CanonicalPointerKey.AssemblyBinder binder
         | NativeIntSource.AssemblyHandle name -> CanonicalPointerKey.AssemblyHandle name
         | NativeIntSource.ModuleHandle name -> CanonicalPointerKey.ModuleHandle name
         | NativeIntSource.MetadataImportHandle name -> CanonicalPointerKey.MetadataImportHandle name

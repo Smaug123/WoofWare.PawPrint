@@ -32,11 +32,12 @@ module LoaderAllocator =
     ///     `AssemblyBuilder.DefineDynamicAssembly` with `AssemblyBuilderAccess.RunAndCollect`,
     ///     reached through the `AppDomain_CreateDynamicAssembly` QCall.
     ///
-    /// PawPrint implements neither, nor any other `AssemblyLoadContext` native — `Assembly.Load`
-    /// included — so a guest has no route to a second arena and `true` is unreachable by
-    /// construction.
+    /// PawPrint refuses the first's collectible branch and does not implement the second, and a
+    /// guest has no other way to load an assembly at runtime (`Assembly.Load` included), so it has
+    /// no route to a second arena and `true` is unreachable by construction.
     ///
-    /// Those two QCalls are therefore what to revisit here, and nothing before one of them lands.
+    /// Those two QCalls are therefore what to revisit here, and nothing before one of them admits a
+    /// collectible arena.
     let isCollectible (allocator : LoaderAllocator) : bool =
         match allocator with
         | LoaderAllocator.Global -> false

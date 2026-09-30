@@ -1,6 +1,6 @@
 # Running the expression interpreter's emitted thunk
 
-Status: stages 1 and 2 implemented (2026-09-26). Measured on `main` at 30a3051e, and each probe
+Status: stages 1, 2 and 3a implemented (2026-09-26, 2026-09-30). Measured on `main` at 30a3051e, and each probe
 re-run after each stage. Tracking issue: #849. Motivated by the ASP.NET ladder's rung L
 (`docs/plans/2026-08-17-aspnet-critical-path.md` on `aspnet-ladder`).
 
@@ -119,7 +119,20 @@ Measured after stage 2: the owned-thunk probe answers 42. The three-parameter gu
 
 ### Stage 3: anonymous hosting
 
-The decision is below. Acceptance is the parked three-parameter guest, un-parked.
+The decision is below. Acceptance is the parked three-parameter guest, un-parked. Split in two,
+because the load-context half is independently observable and needs none of the image building.
+
+**3a: the default `AssemblyLoadContext`.** `AssemblyNative_InitializeAssemblyLoadContext` returns
+`NativeIntSource.AssemblyBinderPtr AssemblyBinder.Default` for the default context and refuses the
+other three combinations of its two flags, as below. The binder is stateless: CoreCLR's default
+binder keeps the context's GC handle only to raise `Resolving` events, which PawPrint's binding
+never does, and it only `_ASSERTE`s against a second default context, so there is nothing to
+record. `sourcesPure/AssemblyLoadContextDefault.cs` is the acceptance case (all seven checks
+measured on real .NET), and `TestAssemblyLoadContextRefusals` pins the two custom-context refusals.
+
+Measured after 3a: the three-parameter guest stops at `AppDomain_CreateDynamicAssembly` (3b).
+
+**3b: the dynamic assembly.** Option A below.
 
 ## Stage 3's decision: what a dynamic assembly is
 
