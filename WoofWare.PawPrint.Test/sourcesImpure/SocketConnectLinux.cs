@@ -18,12 +18,11 @@ using System.Threading;
 //     immediately);
 //   * a connect retry after an async refusal delivers the pending error —
 //     ECONNREFUSED — exactly once, and then *resets* the socket, so the
-//     connect after that is a fresh attempt answering EINPROGRESS (Darwin
-//     delivers ECONNREFUSED once too, but then latches the socket dead:
-//     EINVAL thereafter). Reading SO_ERROR first would consume the pending
-//     error and change these answers (probe-measured ECONNABORTED), but
-//     `GetSocketErrorOption` is not modelled yet, so only this path is
-//     reachable. A bound-but-not-listening destination refuses exactly like
+//     connect after that is a fresh attempt answering EINPROGRESS (Darwin's
+//     connect never delivers it, answering EISCONN instead). Reading SO_ERROR
+//     first takes the pending error and changes these answers to
+//     ECONNABORTED; `SocketErrorOptionLinux.cs` covers that path. A
+//     bound-but-not-listening destination refuses exactly like
 //     a closed port, because Linux answers a SYN to either with RST (Darwin
 //     drops the SYN and the connect pends, which PawPrint's Darwin arm
 //     refuses to model);
@@ -202,8 +201,8 @@ class SocketConnectLinux
 
         // --- retry after an async refusal: the pending error is delivered
         //     once as ECONNREFUSED, and the socket then resets — the next
-        //     connect is a *fresh attempt* (Darwin instead latches the
-        //     socket dead: EINVAL thereafter) ---
+        //     connect is a *fresh attempt* (Darwin's connect instead answers
+        //     EISCONN, never delivering it) ---
         IntPtr c4 = Make(SOCK_STREAM, PT_TCP);
         if (c4 == (IntPtr)(-1)) return 27;
         if (SetIsNonBlocking(c4, 1) != 0) return 28;

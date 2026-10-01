@@ -5168,6 +5168,79 @@ module NativeSystemNative =
             state
             |> writeBytesThrough ctx operation lengthCell (ImmutableArray.CreateRange reported)
             |> complete UnixErrorPal.palSuccess
+
+        // `int32_t SystemNative_GetSocketErrorOption(intptr_t socket, int32_t* error)`
+        // (pal_networking.c:1904): `getsockopt(SOL_SOCKET, SO_ERROR)` through the
+        // shim's own stack `int` and `socklen_t`, with the error it reads stored
+        // through `error` in the PAL's numbering.
+        | Some "SystemNative_GetSocketErrorOption",
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ; ConcretePointer _ ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
+            let operation = "SystemNative_GetSocketErrorOption"
+
+            let errorArgument =
+                bufferPointerArgument operation "error" instruction.Arguments.[1]
+
+            let complete (palError : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim palError)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            // The shim's own screen, ahead of the descriptor: no syscall, so no
+            // errno either.
+            match errorArgument with
+            | BufferPointer.RawAddress 0UL -> complete (UnixErrorPal.toPal UnixError.EFAULT) state
+            | _ ->
+
+            let fd = fdArgument operation instruction.Arguments.[0]
+            let unix = EmulatedKernel.unix state.Kernel
+            let platform = state.Kernel.UnixPlatform
+            let level = SimulatedUnixPlatform.socketOptionLevel platform
+            let optionName = SimulatedUnixPlatform.socketErrorOption platform
+
+            // Both of `getsockopt`'s buffers are the shim's own locals, and the
+            // length cell holds `sizeof(int)`.
+            let declaredLength =
+                match UnixSocket.admitGetSockOpt fd level optionName UserBuffer.Mapped UserBuffer.Mapped unix with
+                | Ok GetSockOptAdmission.ReadLength -> Some 4u
+                | Ok GetSockOptAdmission.SkipLength
+                | Ok (GetSockOptAdmission.Answered _)
+                | Error _ -> None
+
+            match UnixSocket.getsockopt fd level optionName UserBuffer.Mapped UserBuffer.Mapped declaredLength unix with
+            | Error refusal ->
+                failwith
+                    $"%s{operation}: fd %d{fd}: the shim's getsockopt(SO_ERROR) through its own stack buffers was refused: %s{SocketOptionRefusal.describe refusal}"
+            | Ok (GetSockOptAnswer.Failed error, unix) ->
+                // The system comes back on a failure too: a call that fails
+                // after reading the option has still taken a pending refusal.
+                let errno =
+                    UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) error
+
+                state.MapKernel (
+                    EmulatedKernel.withUnix unix
+                    >> EmulatedKernel.withLastSystemError ctx.Thread errno
+                )
+                |> complete (UnixErrorPal.toPal error)
+            | Ok (GetSockOptAnswer.Reported (socketErrno, length), unix) ->
+
+            // The shim asserts that the kernel reported a whole `int`.
+            if length <> 4u then
+                failwith
+                    $"%s{operation}: fd %d{fd}: getsockopt(SO_ERROR) reported a length of %d{length} for the shim's four-byte cell. This is an interpreter bug."
+
+            let errorCell = requireStorage operation "error" errorArgument
+            let bytes = Array.zeroCreate<byte> 4
+
+            BinaryPrimitives.WriteInt32LittleEndian (
+                System.Span<byte> bytes,
+                UnixErrorPal.ofRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) socketErrno
+            )
+
+            state.MapKernel (EmulatedKernel.withUnix unix)
+            |> writeBytesThrough ctx operation errorCell (ImmutableArray.CreateRange bytes)
+            |> complete UnixErrorPal.palSuccess
         | Some "SystemNative_CreateSocketEventPort",
           [ ConcretePointer _ ],
           MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
