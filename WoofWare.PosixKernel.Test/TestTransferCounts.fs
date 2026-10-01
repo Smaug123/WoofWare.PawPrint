@@ -70,7 +70,8 @@ module TestTransferCounts =
         ]
 
     let internal systemOn (platform : SimulatedUnixPlatform, limit : uint64 option) : UnixSystem<int, string> =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
+        let system : UnixSystem<int, string> =
+            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         match limit with
         | None -> system

@@ -1310,7 +1310,6 @@ module UnixConnection =
         match description.Target with
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
-        | OpenFileTarget.StandardStream _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.SocketEventPort _ -> Ok (AcceptOutcome.Failed UnixError.ENOTSOCK, system)
         | OpenFileTarget.Socket socketId ->
@@ -1415,7 +1414,6 @@ module UnixConnection =
             | OpenFileTarget.Socket socketId -> socketId
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
-            | OpenFileTarget.StandardStream _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.SocketEventPort _ ->
                 failwith

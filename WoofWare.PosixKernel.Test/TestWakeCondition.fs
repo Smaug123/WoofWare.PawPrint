@@ -42,7 +42,7 @@ module TestWakeCondition =
     /// `blocked` contends with it.
     let private world : UnixSystem<int, string> * OpenFileDescriptionId * OpenFileDescriptionId =
         let system =
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let lockerFd, registry =
             FileDescriptorRegistry.createSocketEventPort system.Process.FileDescriptors

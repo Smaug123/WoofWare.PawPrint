@@ -128,7 +128,6 @@ module WakeCondition =
                 | phase ->
                     failwith
                         $"WakeCondition.satisfied: a task is parked in an accept on socket %O{socketId}, which is in %A{phase} rather than listening. Nothing takes a live listener out of listening, so the park was recorded on a socket that was never one (this is a bug in the caller that recorded it)."
-            | OpenFileTarget.StandardStream _
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
             | OpenFileTarget.Pipe _

@@ -78,6 +78,7 @@
     <Compile Include="Native\ClockPal.fs" />
     <Compile Include="Native\EnvironmentPal.fs" />
     <Compile Include="Native\ClrConfigEnvironment.fs" />
+    <Compile Include="StandardStreams.fs" />
     <Compile Include="EmulatedKernel.fs" />
     <Compile Include="RuntimeConfig.fs" />
     <Compile Include="HostConfig.fs" />

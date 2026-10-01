@@ -417,7 +417,7 @@ module TestSocketEventsPal =
 
     let private linuxSystem : UnixSystem<int, string> =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
+            UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         { system with
             Machine =
@@ -550,14 +550,20 @@ module TestSocketEventsPal =
 
         match description.Target with
         | OpenFileTarget.Socket socketId -> UnixMachineState.socketReadinessLevel socketId system.Machine
-        | OpenFileTarget.StandardStream FileDescriptorRole.StandardInput ->
-            { ReadinessLevel.none with
-                Hup = true
-            }
-        | OpenFileTarget.StandardStream _ ->
-            { ReadinessLevel.none with
-                Out = true
-            }
+        | OpenFileTarget.Pipe (pipeId, _) ->
+            // Only the launched standard streams are registered here: input
+            // whose writer has gone and supplied nothing, and output a client
+            // drains.
+            match (UnixMachineState.pipe pipeId system.Machine).Origin with
+            | PipeOrigin.Launched (_, LaunchDescriptor.SuppliedNothing) ->
+                { ReadinessLevel.none with
+                    Hup = true
+                }
+            | PipeOrigin.Launched (_, LaunchDescriptor.Drained) ->
+                { ReadinessLevel.none with
+                    Out = true
+                }
+            | PipeOrigin.Made _ -> failwith $"oldLevel: %O{pipeId} is a pipe the process made, which no row registers"
         | other -> failwith $"oldLevel: %O{other} cannot be registered"
 
     /// What the old shim-shaped model reported for a registration with

@@ -1177,8 +1177,8 @@ module NativeSystemNative =
     let private fstatRefusalMessage (operation : string) (fd : int) (refusal : FStatRefusal) : string =
         let reachability =
             match refusal with
-            | FStatRefusal.StandardStream _ ->
-                "The BCL reaches FStat only through a SafeFileHandle it opened itself, so this is a hand-rolled P/Invoke or a new code path -- and either wants a decision rather than a guess."
+            | FStatRefusal.LaunchedPipe _ ->
+                "PawPrint launches every guest with its standard streams on pipes, and does not say who made them or when. The BCL reaches FStat on a standard stream only through a SafeFileHandle it opened itself, so this is a hand-rolled P/Invoke or a new code path -- and either wants a decision about the launcher's owner and timestamps rather than a guess."
             | FStatRefusal.SocketEventPort
             | FStatRefusal.Socket _ ->
                 "Decide what an inode-free descriptor's struct stat is -- for streams, ports and sockets together (issue #956) -- rather than guessing."
@@ -3345,10 +3345,10 @@ module NativeSystemNative =
             | Error (FChModRefusal.UnmeasuredModeChange _ as refusal) ->
                 failwith
                     $"%s{operation}: fd %d{fd}: %s{FChModRefusal.describe refusal} Configure a user other than root (KernelConfig.UserId) or the Linux platform to run this guest."
-            | Error (FChModRefusal.StandardStream _ as refusal)
+            | Error (FChModRefusal.LaunchedPipe _ as refusal)
             | Error (FChModRefusal.Socket _ as refusal) ->
                 failwith
-                    $"%s{operation}: fd %d{fd}: %s{FChModRefusal.describe refusal} The BCL reaches FChMod only through a SafeFileHandle, which a guest can wrap around a standard stream or a socket by hand; decide what their mode is (issue #956) rather than guessing."
+                    $"%s{operation}: fd %d{fd}: %s{FChModRefusal.describe refusal} The BCL reaches FChMod only through a SafeFileHandle, which a guest can wrap around a standard stream or a socket by hand; decide who owns them (issue #956) rather than guessing."
             | Ok (SyscallAnswer.Failed error, system) ->
                 withErrno ctx error system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
@@ -6086,8 +6086,6 @@ module NativeSystemNative =
                         "Nothing in the BCL waits on this: CoreLib reaches a socket through `SystemNative_Send`, `SafeSocketHandle` not being a `SafeFileHandle`, so this is a hand-rolled P/Invoke. Model the connection state (issue #956) before answering it."
                     | WriteRefusal.ExceedsRepresentableLength _ ->
                         "Write less, or raise the model's file-length limit (issue #956)."
-                    | WriteRefusal.NonBlockingStandardStreamShortWrite _ ->
-                        "Reachable from the BCL once the guest has set O_NONBLOCK on the stream: `ConsolePal.Unix.Write` hands `write` the whole buffer a `Stream.Write` on `Console.OpenStandardOutput()` was given, and loops over a short count. Answering needs the kernel's log to record the bytes a short write took rather than the bytes offered, and this handler's `WroteToFd` to follow it."
                     | WriteRefusal.PipeWouldBlock _ ->
                         "PawPrint parks no task in a write yet. A guest reaching this writes more into a pipe it made with `SystemNative_Pipe` than the pipe has room for; give the write end O_NONBLOCK, or read from the pipe first."
                     | WriteRefusal.BrokenPipe _ ->
@@ -6158,23 +6156,24 @@ module NativeSystemNative =
                 | Error refusal -> refused refusal
                 | Ok (answer, system) ->
 
-                let result, state = answered answer system state
-
                 // The host's own view of what the guest printed, which is
                 // PawPrint's business rather than the kernel's: the kernel
-                // records the bytes in its output log, and this is what makes
-                // them appear on a console.
+                // records what reached the pipes PawPrint drains, and this is
+                // what makes it appear on a console. One write delivers at most
+                // once, and exactly the bytes it moved.
                 let effect =
-                    match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
-                    | Some description ->
-                        match description.Target with
-                        | OpenFileTarget.StandardStream role -> StepEffect.WroteToFd (role, bytes)
-                        | OpenFileTarget.File _
-                        | OpenFileTarget.Directory _
-                        | OpenFileTarget.Socket _
-                        | OpenFileTarget.SocketEventPort _
-                        | OpenFileTarget.Pipe _ -> StepEffect.NoEffect
-                    | None -> StepEffect.NoEffect
+                    let before = admitted.Machine.Delivered.Length
+
+                    match system.Machine.Delivered.Length - before with
+                    | 0 -> StepEffect.NoEffect
+                    | 1 ->
+                        let delivery = system.Machine.Delivered.[before]
+                        StepEffect.WroteToFd (StandardStreams.roleOf delivery.Endpoint, delivery.Bytes)
+                    | delivered ->
+                        failwith
+                            $"%s{operation}: fd %d{fd}: one write delivered %d{delivered} times to the pipes PawPrint drains; a write delivers once or not at all (this is an interpreter bug)."
+
+                let result, state = answered answer system state
 
                 result, effect, state
 
@@ -6271,16 +6270,31 @@ module NativeSystemNative =
         | Some "SystemNative_InitializeTerminalAndSignalHandling",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
-            // The real native side configures the controlling terminal, makes
-            // its signal pipe, and starts a dedicated signal-dispatch thread
-            // (`pthread_create(..., SignalHandlerLoop, ...)`). PawPrint has no
-            // terminal; the pipe is a real pipe in the kernel model, and the
-            // dispatcher a parked thread that `SignalDispatch` wakes when the
-            // pipe has a signal in it. The call is idempotent: once it has
-            // succeeded, a later one changes nothing, as the BCL's several
-            // initialisers rely on. It answers 0, with errno set, if the pipe
-            // cannot be made.
+            // The real native side asks `tcgetattr(STDIN_FILENO)` whether
+            // standard input is a terminal (`InitializeTerminalCore`), then
+            // makes its signal pipe and starts a dedicated signal-dispatch
+            // thread (`pthread_create(..., SignalHandlerLoop, ...)`). Nothing
+            // the kernel models is a terminal, so the first step only ever
+            // learns why not, and leaves that in errno; the pipe is a real
+            // pipe in the kernel model, and the dispatcher a parked thread that
+            // `SignalDispatch` wakes when the pipe has a signal in it. The call
+            // is idempotent: once it has succeeded, a later one changes
+            // nothing, errno included, as the BCL's several initialisers rely
+            // on. It answers 0, with errno set, if the pipe cannot be made.
+            //
+            // Measured on Darwin 27.0.0 and Linux 6.18.5 with .NET 10
+            // (terminal-init-errno.cs): with standard input a pipe, the first
+            // call answers 1 and leaves errno ENOTTY, through a SetLastError
+            // import and without one, and a second leaves errno alone.
             let operation = "SystemNative_InitializeTerminalAndSignalHandling"
+
+            let state =
+                if PosixSignalShim.isInitialized state.Kernel.PosixSignalShim then
+                    state
+                else
+
+                match UnixDescriptor.terminalAttributes 0 (EmulatedKernel.unix state.Kernel) with
+                | TerminalAttributesAnswer.NotATerminal error -> withErrnoOnly ctx error state
 
             let state, result =
                 match initializeSignalHandling operation ctx.Thread state with

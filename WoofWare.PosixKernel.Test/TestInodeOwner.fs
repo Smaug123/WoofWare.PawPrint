@@ -168,7 +168,7 @@ module TestInodeOwner =
         let seed =
             Map.ofList [ name "p", SeedEntry.Directory (Map.empty, mode parentMode, Some parentOwner) ]
 
-        UnixSystem.initial platform 0 (CpuId 0)
+        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
         |> UnixSystem.withFileSystemAndCurrentDirectory epoch (owner 0u 0u) seed AbsoluteUnixPath.root
         |> ok
         |> UnixSystem.withCredentials context credentials
@@ -289,7 +289,7 @@ module TestInodeOwner =
         let vfs = VirtualFileSystem.ofFileSystemSeed epoch defaultOwner seed
 
         let system =
-            UnixSystem.initial SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
+            UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
             |> UnixSystem.withFileSystemAndCurrentDirectory epoch defaultOwner seed AbsoluteUnixPath.root
             |> ok
 

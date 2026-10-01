@@ -320,10 +320,10 @@ type EpollCtlRefusal =
     /// walks and never re-arms a still-ready one, so a wait after a partly
     /// drained level would sleep where a real `epoll_wait` returns again.
     | LevelTriggered
-    /// An `EPOLL_CTL_ADD` whose target is an end of a pipe. An edge-triggered
-    /// registration reports what the pipe's own wakes signal, and which
-    /// transfers and closes signal a pipe's waiters, and with which events, is
-    /// not measured.
+    /// An `EPOLL_CTL_ADD` whose target is an end of a pipe the process made.
+    /// An edge-triggered registration reports what the pipe's own wakes
+    /// signal, and which transfers and closes signal a pipe's waiters, and with
+    /// which events, is not measured.
     | PipeTarget of targetFd : int
 
 [<RequireQualifiedAccess>]
@@ -344,7 +344,7 @@ module EpollCtlRefusal =
         | EpollCtlRefusal.WakeUp ->
             "the event carries EPOLLWAKEUP, and the registration would succeed. The kernel keeps the bit only for a caller with CAP_BLOCK_SUSPEND on a kernel built with power management, clearing it silently otherwise, and this library models neither capabilities nor wakeup sources."
         | EpollCtlRefusal.PipeTarget targetFd ->
-            $"fd %d{targetFd} is an end of a pipe, and the registration would succeed. An edge-triggered registration is made pending by the wakes its target signals, and which reads, writes and closes signal a pipe's waiters, with which events, is unmeasured: Linux's pipe_write, for one, wakes readers on every write once a waiter has polled the pipe, not only on the write that makes it non-empty. poll(2) on a pipe is answered; measure the pipe's wakes before registering one."
+            $"fd %d{targetFd} is an end of a pipe the process made, and the registration would succeed. An edge-triggered registration is made pending by the wakes its target signals, and which reads, writes and closes signal a pipe's waiters, with which events, is unmeasured: Linux's pipe_write, for one, wakes readers on every write once a waiter has polled the pipe, not only on the write that makes it non-empty. poll(2) on a pipe is answered; measure the pipe's wakes before registering one."
         | EpollCtlRefusal.LevelTriggered ->
             "the event lacks EPOLLET, asking to be level-triggered, and the registration would succeed. This port models edge-triggered registrations only: the ready list is consumed as it is drained and a still-ready entry is never re-armed, so a wait after a partly drained level would sleep where a real epoll_wait returns again. Register with EPOLLET, or model level-triggering before answering."
 
@@ -427,7 +427,6 @@ module UnixPoll =
             | Ok false ->
 
             match description.Target with
-            | OpenFileTarget.StandardStream _
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
             | OpenFileTarget.Socket _
@@ -454,7 +453,6 @@ module UnixPoll =
             | Some (port, description) ->
 
             match description.Target with
-            | OpenFileTarget.StandardStream _
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
             | OpenFileTarget.Socket _
@@ -557,7 +555,6 @@ module UnixPoll =
         match targetDescription.Target with
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _ -> failed EpollCtlError.TargetNotPollable
-        | OpenFileTarget.StandardStream _
         | OpenFileTarget.SocketEventPort _
         | OpenFileTarget.Socket _
         | OpenFileTarget.Pipe _ ->
@@ -568,7 +565,6 @@ module UnixPoll =
             match portDescription.Target with
             | OpenFileTarget.SocketEventPort portState when portId <> targetId -> Some portState
             | OpenFileTarget.SocketEventPort _
-            | OpenFileTarget.StandardStream _
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
             | OpenFileTarget.Socket _
@@ -581,7 +577,6 @@ module UnixPoll =
         let targetIsPort =
             match targetDescription.Target with
             | OpenFileTarget.SocketEventPort _ -> true
-            | OpenFileTarget.StandardStream _
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
             | OpenFileTarget.Socket _
@@ -659,10 +654,19 @@ module UnixPoll =
             else
                 system
 
+        // A pipe the process was launched with is answered: its far end is the
+        // client's, so every wake it can signal is one this kernel knows. A
+        // `SuppliedNothing` pipe has no writer and nothing in it, so nothing
+        // wakes it. A `Drained` pipe's read end is the client's, and its write
+        // end is woken only by the client's drain of a write that filled it,
+        // which `UnixReadWrite.write` signals (measured,
+        // drained-pipe-epoll.c).
         let targetIsPipe =
             match targetDescription.Target with
-            | OpenFileTarget.Pipe _ -> true
-            | OpenFileTarget.StandardStream _
+            | OpenFileTarget.Pipe (pipeId, _) ->
+                match (UnixMachineState.pipe pipeId system.Machine).Origin with
+                | PipeOrigin.Made _ -> true
+                | PipeOrigin.Launched _ -> false
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
             | OpenFileTarget.Socket _
@@ -782,7 +786,6 @@ module UnixPoll =
         | OpenFileTarget.Socket _
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
-        | OpenFileTarget.StandardStream _
         | OpenFileTarget.Pipe _ ->
             // `do_pollfd`'s own shape: the level, filtered by the request
             // with POLLERR and POLLHUP added whatever was asked.

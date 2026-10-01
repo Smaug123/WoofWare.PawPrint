@@ -167,7 +167,7 @@ module TestCredentials =
     [<Test>]
     let ``Linux takes any credentials it can hold, and stores exactly them`` () : unit =
         let initial : UnixSystem<int, string> =
-            UnixSystem.initial SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
+            UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let property (credentials : Credentials) : unit =
             let after = initial |> UnixSystem.withCredentials context credentials
@@ -189,7 +189,7 @@ module TestCredentials =
         // Which of them a Darwin kernel consults is unmeasured, because changing
         // a user ID there needs root.
         let initial : UnixSystem<int, string> =
-            UnixSystem.initial SimulatedUnixPlatform.macOsArm64 0 (CpuId 0)
+            UnixSystem.initial SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let property (credentials : Credentials) : unit =
             if agreeing credentials then
@@ -213,7 +213,7 @@ module TestCredentials =
         // One ID at a time, so a check that compared only some of the six fails
         // here even if a random draw never happened to isolate it.
         let initial : UnixSystem<int, string> =
-            UnixSystem.initial SimulatedUnixPlatform.macOsArm64 0 (CpuId 0)
+            UnixSystem.initial SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let base' = Credentials.ofIds (uid 501u) (gid 20u) []
 
@@ -260,7 +260,8 @@ module TestCredentials =
 
         SimulatedUnixPlatform.supplementaryGroupLimit platform |> shouldEqual limit
 
-        let initial : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
+        let initial : UnixSystem<int, string> =
+            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let groups (count : int) : GroupId list =
             List.init count (fun i -> gid (uint32 (2000 + i)))

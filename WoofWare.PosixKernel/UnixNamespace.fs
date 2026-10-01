@@ -658,7 +658,6 @@ module UnixNamespace =
         | OpenFileTarget.File _ ->
             let readable = FileAccessMode.permitsRead description.AccessMode
             Ok (ReadDirectoryAnswer.Failed (notADirectory readable true), system)
-        | OpenFileTarget.StandardStream _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Socket _
         | OpenFileTarget.SocketEventPort _ -> Ok (ReadDirectoryAnswer.Failed (notADirectory true false), system)

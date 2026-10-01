@@ -305,7 +305,8 @@ module TestDirectoryReadAgainstHost =
                 let mutable live : Live list = []
 
                 try
-                    let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
+                    let system : UnixSystem<int, string> =
+                        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
                     let system =
                         UnixNamespace.mkdir (rooted "d") 0o755 system |> completed "mkdir d" |> snd
@@ -589,7 +590,8 @@ module TestDirectoryReadAgainstHost =
             hostSucceeded "open f O_WRONLY" hostWriteOnly
 
             try
-                let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
+                let system : UnixSystem<int, string> =
+                    UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
                 let fd, system =
                     Answered.openPath creating (rooted "f") 0o644 system |> completed "creat f"

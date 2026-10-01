@@ -36,7 +36,7 @@ module TestUmask =
         ]
 
     let private fresh (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        UnixSystem.initial platform 0 (CpuId 0)
+        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     /// The bits the probe found each flavour keeps: `stored = argument & width`,
     /// with 0 mismatches over every 12-bit argument by both routes, and every

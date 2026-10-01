@@ -12,23 +12,6 @@ module TestFileDescriptorRegistry =
 
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
-    /// The access mode is *derived* from the role here rather than passed in, so
-    /// that a test comparing against this cannot accidentally assert a mode of its
-    /// own choosing. Which mode each role gets is asserted directly, once, in
-    /// `initial gives each standard stream the access mode a redirected launch
-    /// would`.
-    let private standardStream (role : FileDescriptorRole) : OpenFileDescription =
-        {
-            Target = OpenFileTarget.StandardStream role
-            AccessMode =
-                match role with
-                | FileDescriptorRole.StandardInput -> FileAccessMode.ReadOnly
-                | FileDescriptorRole.StandardOutput
-                | FileDescriptorRole.StandardError -> FileAccessMode.WriteOnly
-            NonBlocking = false
-            Flock = None
-        }
-
     let private openOn (inode : InodeNumber) : OpenFileDescription =
         {
             Target = OpenFileTarget.File (inode, 0L)
@@ -54,7 +37,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``openFile takes the lowest free descriptor and a fresh description`` () : unit =
         let a, registry =
-            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly FileDescriptorRegistry.initial
+            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly LaunchedStreams.registry
 
         a |> shouldEqual 3
 
@@ -79,7 +62,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``two opens of one inode are two descriptions, unlike dup`` () : unit =
         let a, registry =
-            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly FileDescriptorRegistry.initial
+            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly LaunchedStreams.registry
 
         let b, registry =
             FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly registry
@@ -111,7 +94,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``two sockets are two descriptions and two flock objects`` () : unit =
         let a, registry =
-            FileDescriptorRegistry.createSocket (SocketId 0L) FileDescriptorRegistry.initial
+            FileDescriptorRegistry.createSocket (SocketId 0L) LaunchedStreams.registry
 
         let b, registry = FileDescriptorRegistry.createSocket (SocketId 1L) registry
 
@@ -143,7 +126,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``dup of a socket names the same socket`` () : unit =
         let a, registry =
-            FileDescriptorRegistry.createSocket (SocketId 0L) FileDescriptorRegistry.initial
+            FileDescriptorRegistry.createSocket (SocketId 0L) LaunchedStreams.registry
 
         match FileDescriptorRegistry.dup a registry with
         | Error e -> failwith $"expected dup to succeed, got %O{e}"
@@ -166,7 +149,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``a fresh socket description names its socket and is ReadWrite`` () : unit =
         let fd, registry =
-            FileDescriptorRegistry.createSocket (SocketId 4L) FileDescriptorRegistry.initial
+            FileDescriptorRegistry.createSocket (SocketId 4L) LaunchedStreams.registry
 
         match FileDescriptorRegistry.tryFind fd registry with
         | None -> failwith "the socket descriptor is not live"
@@ -183,7 +166,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``closing the last descriptor destroys the description`` () : unit =
         let fd, registry =
-            FileDescriptorRegistry.createSocket (SocketId 0L) FileDescriptorRegistry.initial
+            FileDescriptorRegistry.createSocket (SocketId 0L) LaunchedStreams.registry
 
         FileDescriptorRegistry.descriptions registry |> Map.count |> shouldEqual 4
 
@@ -210,7 +193,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``two socket event ports are two descriptions but one flock object`` () : unit =
         let a, registry =
-            FileDescriptorRegistry.createSocketEventPort FileDescriptorRegistry.initial
+            FileDescriptorRegistry.createSocketEventPort LaunchedStreams.registry
 
         let b, registry = FileDescriptorRegistry.createSocketEventPort registry
 
@@ -247,7 +230,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``a socket event port outlives a closed descriptor but not its last`` () : unit =
         let a, registry =
-            FileDescriptorRegistry.createSocketEventPort FileDescriptorRegistry.initial
+            FileDescriptorRegistry.createSocketEventPort LaunchedStreams.registry
 
         let b, registry =
             match FileDescriptorRegistry.dup a registry with
@@ -281,7 +264,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``a closed description's identity is never handed out again`` () : unit =
         let fd, registry =
-            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly FileDescriptorRegistry.initial
+            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly LaunchedStreams.registry
 
         let firstId = FileDescriptorRegistry.tryFindId fd registry
 
@@ -332,31 +315,30 @@ module TestFileDescriptorRegistry =
         |> shouldEqual []
 
     [<Test>]
-    let ``initial seeds stdin, stdout, stderr`` () : unit =
-        FileDescriptorRegistry.tryFind 0 FileDescriptorRegistry.initial
-        |> shouldEqual (Some (standardStream FileDescriptorRole.StandardInput))
+    let ``ofLaunchedPipes seeds each descriptor onto the pipe end it names`` () : unit =
+        FileDescriptorRegistry.tryFind 0 LaunchedStreams.registry
+        |> shouldEqual (Some (LaunchedStreams.description 0))
 
-        FileDescriptorRegistry.tryFind 1 FileDescriptorRegistry.initial
-        |> shouldEqual (Some (standardStream FileDescriptorRole.StandardOutput))
+        FileDescriptorRegistry.tryFind 1 LaunchedStreams.registry
+        |> shouldEqual (Some (LaunchedStreams.description 1))
 
-        FileDescriptorRegistry.tryFind 2 FileDescriptorRegistry.initial
-        |> shouldEqual (Some (standardStream FileDescriptorRole.StandardError))
+        FileDescriptorRegistry.tryFind 2 LaunchedStreams.registry
+        |> shouldEqual (Some (LaunchedStreams.description 2))
 
-    /// The shape a *redirected* launch produces, which is what PawPrint commits
-    /// to elsewhere: `SystemNative_IsATty` always reports 0, and a `write` to fd 0
-    /// is EBADF, both of which are only true of an `O_RDONLY` stdin. Under a tty
-    /// all three would be `O_RDWR` — that is the same fact as their sharing one
-    /// description, and is rejected for the same reason.
+    /// The access modes `pipe(2)` gives a pipe's ends, which a launch onto pipes
+    /// inherits: a `write` to the read end is EBADF, which is only true of an
+    /// `O_RDONLY` descriptor. Under a tty all three standard streams would be
+    /// `O_RDWR` — that is the same fact as their sharing one description.
     ///
     /// Asserted here rather than left to the helper above, because these are the
     /// modes every readability and writability answer in the syscall handlers is
     /// derived from.
     [<Test>]
-    let ``initial gives each standard stream the access mode a redirected launch would`` () : unit =
+    let ``ofLaunchedPipes opens a read end read-only and a write end write-only`` () : unit =
         let modeOf (fd : int) : FileAccessMode =
-            match FileDescriptorRegistry.tryFind fd FileDescriptorRegistry.initial with
+            match FileDescriptorRegistry.tryFind fd LaunchedStreams.registry with
             | Some description -> description.AccessMode
-            | None -> failwith $"fd %d{fd} should be live in the initial table"
+            | None -> failwith $"fd %d{fd} should be live in the launched table"
 
         modeOf 0 |> shouldEqual FileAccessMode.ReadOnly
         modeOf 1 |> shouldEqual FileAccessMode.WriteOnly
@@ -382,7 +364,7 @@ module TestFileDescriptorRegistry =
                 FileAccessMode.ReadWrite
             ] do
             let fd, registry =
-                FileDescriptorRegistry.openFile someInode mode FileDescriptorRegistry.initial
+                FileDescriptorRegistry.openFile someInode mode LaunchedStreams.registry
 
             let duplicated, registry =
                 match FileDescriptorRegistry.dup fd registry with
@@ -402,59 +384,57 @@ module TestFileDescriptorRegistry =
 
     /// An implementation that pointed every file descriptor at a single shared
     /// open file description would satisfy the dup-sharing property below, and
-    /// only this test would notice. PawPrint
-    /// models a process launched with each standard stream separately
-    /// redirected, so the three inherited descriptors name three descriptions.
+    /// only this test would notice. Each launched descriptor is a pipe end of
+    /// its own, so the three inherited descriptors name three descriptions.
     /// (Under a tty they would genuinely share one — measured with `forkpty` —
-    /// but PawPrint has committed against the tty model elsewhere; see the
-    /// comment on `FileDescriptorRegistry.initial`.)
+    /// which is not a launch shape this library offers; see
+    /// `UnixSystem.pipedStandardStreams`.)
     [<Test>]
-    let ``initial seeds three distinct open file descriptions`` () : unit =
+    let ``ofLaunchedPipes seeds three distinct open file descriptions`` () : unit =
         let ids =
             [ 0 ; 1 ; 2 ]
             |> List.map (fun fd ->
-                match FileDescriptorRegistry.tryFindId fd FileDescriptorRegistry.initial with
+                match FileDescriptorRegistry.tryFindId fd LaunchedStreams.registry with
                 | Some id -> id
-                | None -> failwith $"fd %d{fd} should be live in the initial table"
+                | None -> failwith $"fd %d{fd} should be live in the launched table"
             )
 
         ids |> List.distinct |> List.length |> shouldEqual 3
 
-        FileDescriptorRegistry.descriptions FileDescriptorRegistry.initial
+        FileDescriptorRegistry.descriptions LaunchedStreams.registry
         |> Map.count
         |> shouldEqual 3
 
     [<Test>]
-    let ``initial has no entries outside 0/1/2`` () : unit =
+    let ``ofLaunchedPipes has no entries outside the ones it was given`` () : unit =
         for fd in [ -2 ; -1 ; 3 ; 4 ; 100 ; System.Int32.MaxValue ] do
-            FileDescriptorRegistry.tryFind fd FileDescriptorRegistry.initial
-            |> shouldEqual None
+            FileDescriptorRegistry.tryFind fd LaunchedStreams.registry |> shouldEqual None
 
     [<Test>]
-    let ``initial is sound`` () : unit =
-        FileDescriptorRegistry.checkInvariants FileDescriptorRegistry.initial
+    let ``ofLaunchedPipes is sound`` () : unit =
+        FileDescriptorRegistry.checkInvariants LaunchedStreams.registry
         |> shouldEqual []
 
     [<Test>]
     let ``dup of unknown fd returns BadFd`` () : unit =
-        FileDescriptorRegistry.dup 3 FileDescriptorRegistry.initial
+        FileDescriptorRegistry.dup 3 LaunchedStreams.registry
         |> shouldEqual (Error FileDescriptorDupError.BadFd)
 
-        FileDescriptorRegistry.dup -1 FileDescriptorRegistry.initial
+        FileDescriptorRegistry.dup -1 LaunchedStreams.registry
         |> shouldEqual (Error FileDescriptorDupError.BadFd)
 
-        FileDescriptorRegistry.dup System.Int32.MaxValue FileDescriptorRegistry.initial
+        FileDescriptorRegistry.dup System.Int32.MaxValue LaunchedStreams.registry
         |> shouldEqual (Error FileDescriptorDupError.BadFd)
 
     [<Test>]
     let ``dup of stdin/stdout/stderr returns fresh fd 3 sharing the description`` () : unit =
-        let assertDupAllocatesFd3 (sourceFd : int) (expectedRole : FileDescriptorRole) : unit =
-            match FileDescriptorRegistry.dup sourceFd FileDescriptorRegistry.initial with
+        let assertDupAllocatesFd3 (sourceFd : int) : unit =
+            match FileDescriptorRegistry.dup sourceFd LaunchedStreams.registry with
             | Ok (newFd, registry) ->
                 newFd |> shouldEqual 3
 
                 FileDescriptorRegistry.tryFind newFd registry
-                |> shouldEqual (Some (standardStream expectedRole))
+                |> shouldEqual (Some (LaunchedStreams.description sourceFd))
 
                 // The point of the indirection: the new descriptor names the
                 // *same* description, not an equal copy of it.
@@ -467,12 +447,12 @@ module TestFileDescriptorRegistry =
                 // Source fd is unaffected — the table still resolves it to its
                 // original description. dup is non-destructive on the source.
                 FileDescriptorRegistry.tryFind sourceFd registry
-                |> shouldEqual (FileDescriptorRegistry.tryFind sourceFd FileDescriptorRegistry.initial)
+                |> shouldEqual (FileDescriptorRegistry.tryFind sourceFd LaunchedStreams.registry)
             | Error e -> failwith $"unexpected dup error: %O{e}"
 
-        assertDupAllocatesFd3 0 FileDescriptorRole.StandardInput
-        assertDupAllocatesFd3 1 FileDescriptorRole.StandardOutput
-        assertDupAllocatesFd3 2 FileDescriptorRole.StandardError
+        assertDupAllocatesFd3 0
+        assertDupAllocatesFd3 1
+        assertDupAllocatesFd3 2
 
     [<Test>]
     let ``repeated dup allocates strictly increasing fds starting at 3`` () : unit =
@@ -483,7 +463,7 @@ module TestFileDescriptorRegistry =
                 registry
             | Error e -> failwith $"unexpected dup error: %O{e}"
 
-        FileDescriptorRegistry.initial
+        LaunchedStreams.registry
         |> fun r -> assertDupYields r 3
         |> fun r -> assertDupYields r 4
         |> fun r -> assertDupYields r 5
@@ -492,7 +472,7 @@ module TestFileDescriptorRegistry =
 
     [<Test>]
     let ``closing one descriptor of a dup pair leaves the other intact`` () : unit =
-        match FileDescriptorRegistry.dup 1 FileDescriptorRegistry.initial with
+        match FileDescriptorRegistry.dup 1 LaunchedStreams.registry with
         | Error e -> failwith $"unexpected dup error: %O{e}"
         | Ok (duped, registry) ->
 
@@ -509,7 +489,7 @@ module TestFileDescriptorRegistry =
         FileDescriptorRegistry.tryFindId 1 afterClose |> shouldEqual sharedId
 
         FileDescriptorRegistry.tryFind 1 afterClose
-        |> shouldEqual (Some (standardStream FileDescriptorRole.StandardOutput))
+        |> shouldEqual (Some (LaunchedStreams.description 1))
 
         FileDescriptorRegistry.descriptions afterClose |> Map.count |> shouldEqual 3
         FileDescriptorRegistry.checkInvariants afterClose |> shouldEqual []
@@ -518,7 +498,7 @@ module TestFileDescriptorRegistry =
     let ``the last close of a description destroys it`` () : unit =
         // Close stdout with no dup outstanding: nothing names its description
         // afterwards, so the kernel would destroy it.
-        match closeOnly 1 FileDescriptorRegistry.initial with
+        match closeOnly 1 LaunchedStreams.registry with
         | Error e -> failwith $"unexpected close error: %O{e}"
         | Ok afterClose ->
 
@@ -527,11 +507,7 @@ module TestFileDescriptorRegistry =
         FileDescriptorRegistry.descriptions afterClose
         |> Map.toList
         |> List.map snd
-        |> shouldEqual
-            [
-                standardStream FileDescriptorRole.StandardInput
-                standardStream FileDescriptorRole.StandardError
-            ]
+        |> shouldEqual [ LaunchedStreams.description 0 ; LaunchedStreams.description 2 ]
 
         FileDescriptorRegistry.checkInvariants afterClose |> shouldEqual []
 
@@ -539,7 +515,7 @@ module TestFileDescriptorRegistry =
     let ``a description survives until its last descriptor closes`` () : unit =
         // dup stdout twice, then close all three descriptors naming it. The
         // description must survive exactly until the final close.
-        let registry = FileDescriptorRegistry.initial
+        let registry = LaunchedStreams.registry
 
         let dupOf (fd : int) (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
             match FileDescriptorRegistry.dup fd registry with
@@ -567,10 +543,10 @@ module TestFileDescriptorRegistry =
 
     [<Test>]
     let ``close of unknown fd returns BadFd`` () : unit =
-        closeOnly 3 FileDescriptorRegistry.initial
+        closeOnly 3 LaunchedStreams.registry
         |> shouldEqual (Error FileDescriptorCloseError.BadFd)
 
-        closeOnly -1 FileDescriptorRegistry.initial
+        closeOnly -1 LaunchedStreams.registry
         |> shouldEqual (Error FileDescriptorCloseError.BadFd)
 
     /// Reference implementation: the lowest non-negative integer not in `used`.
@@ -598,7 +574,7 @@ module TestFileDescriptorRegistry =
             let rng = System.Random (seed)
             let steps = rng.Next (1, 30)
 
-            let mutable registry = FileDescriptorRegistry.initial
+            let mutable registry = LaunchedStreams.registry
             let mutable live : Set<int> = Set.ofList [ 0 ; 1 ; 2 ]
 
             for _ in 1..steps do
@@ -672,7 +648,7 @@ module TestFileDescriptorRegistry =
             let rng = System.Random (seed)
             let steps = rng.Next (1, 30)
 
-            let mutable registry = FileDescriptorRegistry.initial
+            let mutable registry = LaunchedStreams.registry
             let mutable origin : Map<int, int> = Map.ofList [ 0, 0 ; 1, 1 ; 2, 2 ]
 
             for _ in 1..steps do
@@ -747,7 +723,7 @@ module TestFileDescriptorRegistry =
         let registry =
             FileDescriptorRegistry.Unchecked.ofParts
                 Map.empty
-                (Map.ofList [ OpenFileDescriptionId 7L, standardStream FileDescriptorRole.StandardOutput ])
+                (Map.ofList [ OpenFileDescriptionId 7L, LaunchedStreams.description 1 ])
                 (OpenFileDescriptionId 8L)
 
         FileDescriptorRegistry.checkInvariants registry
@@ -758,8 +734,8 @@ module TestFileDescriptorRegistry =
 
     [<Test>]
     let ``assertInvariants passes a sound table and fails an unsound one`` () : unit =
-        FileDescriptorRegistry.assertInvariants "sound" FileDescriptorRegistry.initial
-        |> shouldEqual FileDescriptorRegistry.initial
+        FileDescriptorRegistry.assertInvariants "sound" LaunchedStreams.registry
+        |> shouldEqual LaunchedStreams.registry
 
         let unsound =
             FileDescriptorRegistry.Unchecked.ofParts
@@ -794,11 +770,11 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``flock of an unknown fd is BadFd`` () : unit =
         for fd in [ 3 ; -1 ; System.Int32.MaxValue ] do
-            FileDescriptorRegistry.flock fd (FlockRequest.Acquire FlockMode.Shared) FileDescriptorRegistry.initial
+            FileDescriptorRegistry.flock fd (FlockRequest.Acquire FlockMode.Shared) LaunchedStreams.registry
             |> snd
             |> shouldEqual (Some FlockError.BadFd)
 
-            FileDescriptorRegistry.flock fd FlockRequest.Release FileDescriptorRegistry.initial
+            FileDescriptorRegistry.flock fd FlockRequest.Release LaunchedStreams.registry
             |> snd
             |> shouldEqual (Some FlockError.BadFd)
 
@@ -819,7 +795,7 @@ module TestFileDescriptorRegistry =
         let mode (exclusive : bool) =
             if exclusive then FlockMode.Exclusive else FlockMode.Shared
 
-        let a, registry = openOrFail someInode FileDescriptorRegistry.initial
+        let a, registry = openOrFail someInode LaunchedStreams.registry
         let b, registry = openOrFail someInode registry
 
         let registry = lockOrFail a (FlockRequest.Acquire (mode heldExclusive)) registry
@@ -837,7 +813,7 @@ module TestFileDescriptorRegistry =
     /// obstacle. Without this, "one global lock" satisfies the matrix above.
     [<Test>]
     let ``an exclusive lock on one file does not block another file`` () : unit =
-        let a, registry = openOrFail someInode FileDescriptorRegistry.initial
+        let a, registry = openOrFail someInode LaunchedStreams.registry
         let b, registry = openOrFail otherInode registry
 
         let registry = lockOrFail a (FlockRequest.Acquire FlockMode.Exclusive) registry
@@ -851,7 +827,7 @@ module TestFileDescriptorRegistry =
     /// obstacle to that. Measured on both platforms.
     [<Test>]
     let ``a description may convert its own lock but not past another holder`` () : unit =
-        let a, registry = openOrFail someInode FileDescriptorRegistry.initial
+        let a, registry = openOrFail someInode LaunchedStreams.registry
 
         // Sole holder: shared upgrades to exclusive, and back down again.
         let registry = lockOrFail a (FlockRequest.Acquire FlockMode.Shared) registry
@@ -887,7 +863,7 @@ module TestFileDescriptorRegistry =
     /// about the return value distinguishes them.
     [<Test>]
     let ``a failed conversion drops the caller's existing lock`` () : unit =
-        let a, registry = openOrFail someInode FileDescriptorRegistry.initial
+        let a, registry = openOrFail someInode LaunchedStreams.registry
         let b, registry = openOrFail someInode registry
         let bystander, registry = openOrFail someInode registry
 
@@ -915,7 +891,7 @@ module TestFileDescriptorRegistry =
     /// cleared the lock when downgrading would pass one and fail the other.
     [<Test>]
     let ``a failed re-acquisition drops an exclusive lock too`` () : unit =
-        let a, registry = openOrFail someInode FileDescriptorRegistry.initial
+        let a, registry = openOrFail someInode LaunchedStreams.registry
         let b, registry = openOrFail someInode registry
 
         let registry = lockOrFail a (FlockRequest.Acquire FlockMode.Exclusive) registry
@@ -944,7 +920,7 @@ module TestFileDescriptorRegistry =
     /// description with nothing to remove.
     [<Test>]
     let ``a failed acquisition by an unlocked description changes nothing`` () : unit =
-        let a, registry = openOrFail someInode FileDescriptorRegistry.initial
+        let a, registry = openOrFail someInode LaunchedStreams.registry
         let b, registry = openOrFail someInode registry
         let registry = lockOrFail a (FlockRequest.Acquire FlockMode.Exclusive) registry
 
@@ -957,7 +933,7 @@ module TestFileDescriptorRegistry =
 
     [<Test>]
     let ``releasing a lock that was never taken succeeds`` () : unit =
-        let a, registry = openOrFail someInode FileDescriptorRegistry.initial
+        let a, registry = openOrFail someInode LaunchedStreams.registry
         lockOrFail a FlockRequest.Release registry |> ignore<FileDescriptorRegistry>
 
     /// The lock belongs to the *description*, so `dup` shares it: releasing
@@ -966,7 +942,7 @@ module TestFileDescriptorRegistry =
     /// per-inode, would get wrong in opposite directions.
     [<Test>]
     let ``a dup pair shares one lock`` () : unit =
-        let a, registry = openOrFail someInode FileDescriptorRegistry.initial
+        let a, registry = openOrFail someInode LaunchedStreams.registry
         let registry = lockOrFail a (FlockRequest.Acquire FlockMode.Exclusive) registry
 
         let duplicate, registry =
@@ -998,7 +974,7 @@ module TestFileDescriptorRegistry =
     /// explicitly unlocked stop blocking the next open.
     [<Test>]
     let ``closing a locked description releases its lock`` () : unit =
-        let a, registry = openOrFail someInode FileDescriptorRegistry.initial
+        let a, registry = openOrFail someInode LaunchedStreams.registry
         let registry = lockOrFail a (FlockRequest.Acquire FlockMode.Exclusive) registry
         let b, registry = openOrFail someInode registry
 
@@ -1023,7 +999,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``a standard stream can be locked and conflicts with nothing`` () : unit =
         let registry =
-            FileDescriptorRegistry.initial
+            LaunchedStreams.registry
             |> lockOrFail 1 (FlockRequest.Acquire FlockMode.Exclusive)
             |> lockOrFail 0 (FlockRequest.Acquire FlockMode.Exclusive)
             |> lockOrFail 2 (FlockRequest.Acquire FlockMode.Shared)
@@ -1111,7 +1087,7 @@ module TestFileDescriptorRegistry =
             let rng = System.Random (seed)
             let steps = rng.Next (1, 40)
 
-            let mutable registry = FileDescriptorRegistry.initial
+            let mutable registry = LaunchedStreams.registry
             // fd -> description id, and description id -> (inode, held mode).
             let mutable fdToId : Map<int, OpenFileDescriptionId> = Map.empty
 
@@ -1271,7 +1247,6 @@ module TestFileDescriptorRegistry =
     let private offsetOf (fd : int) (registry : FileDescriptorRegistry) : int64 option =
         match FileDescriptorRegistry.tryFindTarget fd registry with
         | None -> failwith $"fd %d{fd} is not live"
-        | Some (OpenFileTarget.StandardStream _)
         | Some (OpenFileTarget.SocketEventPort _)
         | Some (OpenFileTarget.Socket _)
         | Some (OpenFileTarget.Pipe _) -> None
@@ -1282,14 +1257,14 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``a fresh description starts at offset zero`` () : unit =
         let fd, registry =
-            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly FileDescriptorRegistry.initial
+            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly LaunchedStreams.registry
 
         offsetOf fd registry |> shouldEqual (Some 0L)
 
     [<Test>]
     let ``the standard streams have no offset at all`` () : unit =
         for fd in 0..2 do
-            offsetOf fd FileDescriptorRegistry.initial |> shouldEqual None
+            offsetOf fd LaunchedStreams.registry |> shouldEqual None
 
     /// The offset belongs to the *description*, so `dup` shares it: this is the same indirection
     /// that makes two descriptors from one `dup` share a `flock` lock, and it is why the offset
@@ -1297,7 +1272,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``dup shares one offset`` () : unit =
         let fd, registry =
-            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly FileDescriptorRegistry.initial
+            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly LaunchedStreams.registry
 
         let copy, registry =
             match FileDescriptorRegistry.dup fd registry with
@@ -1319,7 +1294,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``two opens on one file hold independent offsets`` () : unit =
         let first, registry =
-            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly FileDescriptorRegistry.initial
+            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly LaunchedStreams.registry
 
         let second, registry =
             FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly registry
@@ -1335,7 +1310,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``seeking leaves the object identity alone`` () : unit =
         let first, registry =
-            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly FileDescriptorRegistry.initial
+            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly LaunchedStreams.registry
 
         let second, registry =
             FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly registry
@@ -1364,7 +1339,7 @@ module TestFileDescriptorRegistry =
     let ``setOffset refuses a descriptor that cannot hold an offset`` () : unit =
         let onStream =
             Assert.Catch (fun () ->
-                FileDescriptorRegistry.setOffset 1 4L FileDescriptorRegistry.initial
+                FileDescriptorRegistry.setOffset 1 4L LaunchedStreams.registry
                 |> ignore<FileDescriptorRegistry>
             )
 
@@ -1372,14 +1347,14 @@ module TestFileDescriptorRegistry =
 
         let onMissing =
             Assert.Catch (fun () ->
-                FileDescriptorRegistry.setOffset 4242 4L FileDescriptorRegistry.initial
+                FileDescriptorRegistry.setOffset 4242 4L LaunchedStreams.registry
                 |> ignore<FileDescriptorRegistry>
             )
 
         onMissing.Message |> shouldContainText "EBADF"
 
         let fd, registry =
-            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly FileDescriptorRegistry.initial
+            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly LaunchedStreams.registry
 
         let negative =
             Assert.Catch (fun () ->
@@ -1394,7 +1369,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``a reopened file starts from zero again`` () : unit =
         let fd, registry =
-            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly FileDescriptorRegistry.initial
+            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly LaunchedStreams.registry
 
         let registry = FileDescriptorRegistry.setOffset fd 11L registry
 
@@ -1479,7 +1454,7 @@ module TestFileDescriptorRegistry =
             let rng = System.Random (seed)
             let steps = rng.Next (1, 30)
 
-            let mutable registry = FileDescriptorRegistry.initial
+            let mutable registry = LaunchedStreams.registry
             let mutable nextSocketId = 0L
 
             for _ in 1..steps do
@@ -1616,13 +1591,13 @@ module TestFileDescriptorRegistry =
     let ``every creator starts its description blocking`` () : unit =
         // The three inherited streams...
         for fd in [ 0 ; 1 ; 2 ] do
-            nonBlockingOf fd FileDescriptorRegistry.initial |> shouldEqual false
+            nonBlockingOf fd LaunchedStreams.registry |> shouldEqual false
 
         // ...and each of the three creators: `SystemNative_Open` accepts no
         // O_NONBLOCK bit, `socket(2)` is given no SOCK_NONBLOCK, and an event
         // port is handed out as `epoll_create1`/`kqueue` make it.
         let fd, registry =
-            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly FileDescriptorRegistry.initial
+            FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly LaunchedStreams.registry
 
         nonBlockingOf fd registry |> shouldEqual false
 
@@ -1635,7 +1610,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``setNonBlocking round-trips on a socket and on a file`` () : unit =
         let socketFd, registry =
-            FileDescriptorRegistry.createSocket (SocketId 0L) FileDescriptorRegistry.initial
+            FileDescriptorRegistry.createSocket (SocketId 0L) LaunchedStreams.registry
 
         let fileFd, registry =
             FileDescriptorRegistry.openFile someInode FileAccessMode.ReadWrite registry
@@ -1657,7 +1632,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``setNonBlocking on one descriptor of a dup pair is visible through the other`` () : unit =
         let fd, registry =
-            FileDescriptorRegistry.createSocket (SocketId 0L) FileDescriptorRegistry.initial
+            FileDescriptorRegistry.createSocket (SocketId 0L) LaunchedStreams.registry
 
         let duplicated, registry =
             match FileDescriptorRegistry.dup fd registry with
@@ -1688,10 +1663,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``setNonBlocking refuses a dead fd`` () : unit =
         // A dead fd is the caller's EBADF to answer, not this module's.
-        (fun () ->
-            FileDescriptorRegistry.setNonBlocking 99 true FileDescriptorRegistry.initial
-            |> ignore
-        )
+        (fun () -> FileDescriptorRegistry.setNonBlocking 99 true LaunchedStreams.registry |> ignore)
         |> shouldFail<exn>
 
     /// Each standard stream is its own description, so flagging one leaves the
@@ -1700,7 +1672,7 @@ module TestFileDescriptorRegistry =
     let ``setNonBlocking round-trips on each standard stream`` () : unit =
         for fd in [ 0 ; 1 ; 2 ] do
             let registry =
-                FileDescriptorRegistry.setNonBlocking fd true FileDescriptorRegistry.initial
+                FileDescriptorRegistry.setNonBlocking fd true LaunchedStreams.registry
 
             nonBlockingOf fd registry |> shouldEqual true
 
@@ -1721,7 +1693,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``setNonBlocking round-trips on a socket event port`` () : unit =
         let portFd, registry =
-            FileDescriptorRegistry.createSocketEventPort FileDescriptorRegistry.initial
+            FileDescriptorRegistry.createSocketEventPort LaunchedStreams.registry
 
         let registry = FileDescriptorRegistry.setNonBlocking portFd true registry
         nonBlockingOf portFd registry |> shouldEqual true
@@ -1791,7 +1763,7 @@ module TestFileDescriptorRegistry =
         : unit
         =
         let portFd, registry =
-            FileDescriptorRegistry.createSocketEventPort FileDescriptorRegistry.initial
+            FileDescriptorRegistry.createSocketEventPort LaunchedStreams.registry
 
         let sockFd, registry = FileDescriptorRegistry.createSocket (SocketId 0L) registry
         let portId = idOf portFd registry
@@ -1848,7 +1820,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``Remove drops the pending entry and Modify keeps its place`` () : unit =
         let portFd, registry =
-            FileDescriptorRegistry.createSocketEventPort FileDescriptorRegistry.initial
+            FileDescriptorRegistry.createSocketEventPort LaunchedStreams.registry
 
         let aFd, registry = FileDescriptorRegistry.createSocket (SocketId 0L) registry
         let bFd, registry = FileDescriptorRegistry.createSocket (SocketId 1L) registry
@@ -1878,7 +1850,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``the table primitives refuse a key in the wrong state`` () : unit =
         let portFd, registry =
-            FileDescriptorRegistry.createSocketEventPort FileDescriptorRegistry.initial
+            FileDescriptorRegistry.createSocketEventPort LaunchedStreams.registry
 
         let sockFd, registry = FileDescriptorRegistry.createSocket (SocketId 0L) registry
         let portId = idOf portFd registry
@@ -1915,7 +1887,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``closing the target's last descriptor sweeps its registrations; a surviving dup keeps them`` () : unit =
         let portFd, registry =
-            FileDescriptorRegistry.createSocketEventPort FileDescriptorRegistry.initial
+            FileDescriptorRegistry.createSocketEventPort LaunchedStreams.registry
 
         let sockFd, registry = FileDescriptorRegistry.createSocket (SocketId 0L) registry
 
@@ -1991,7 +1963,7 @@ module TestFileDescriptorRegistry =
     [<Test>]
     let ``checkInvariants rejects unregistered and duplicated ready entries`` () : unit =
         let portFd, registry =
-            FileDescriptorRegistry.createSocketEventPort FileDescriptorRegistry.initial
+            FileDescriptorRegistry.createSocketEventPort LaunchedStreams.registry
 
         let sockFd, registry = FileDescriptorRegistry.createSocket (SocketId 0L) registry
 

@@ -1,9 +1,12 @@
 namespace WoofWare.PosixKernel
 
+open System.Collections.Immutable
+
 /// The kernel-image facts a POSIX simulator owns: the platform it is
 /// impersonating, its filesystem, its clock and entropy, its network
-/// configuration, its socket and pipe tables, and the two numbers a process reads back
-/// about the machine it is running on.
+/// configuration, its socket and pipe tables, what clients draining its pipes
+/// have received, and the two numbers a process reads back about the machine it
+/// is running on.
 ///
 /// Everything here is state any client of a POSIX simulator would have.
 type UnixMachineState =
@@ -75,18 +78,29 @@ type UnixMachineState =
         /// address inside and Darwin ignores. See
         /// `UnixSystem.defaultLocalRoutes`.
         LocalRoutes : Ipv4Prefix list
-        /// Every pipe the simulated process holds an end of, by identity.
+        /// Every pipe with an end open, by identity: an end the simulated
+        /// process holds, or one the client holds (`PipeState.heldByClient`).
         ///
         /// Separate from the descriptor table for the reason `Sockets` is: an
         /// `OpenFileTarget.Pipe` holds only the `PipeId`, and both ends' descriptions
-        /// name the one pipe. A pipe is in the table exactly while some
-        /// description names one of its ends (`UnixSystem.checkInvariants`
-        /// states both halves), and `UnixDescriptor.close` removes it with the
-        /// last one.
+        /// name the one pipe. A pipe is in the table exactly while one of its
+        /// ends is open (`UnixSystem.checkInvariants` states both halves), and
+        /// `UnixDescriptor.close` removes it with the last one.
         Pipes : Map<PipeId, PipeState>
-        /// The identity the next `UnixPipe.pipe2` will allocate. Monotonic and
-        /// never reused, for the replay-trace reason `NextSocketId` gives.
+        /// The identity the next pipe will be given, by `UnixPipe.pipe2`.
+        /// Monotonic and never reused, for the replay-trace reason
+        /// `NextSocketId` gives.
         NextPipeId : PipeId
+        /// Every write that reached a client draining a pipe, oldest first: the
+        /// bytes the outside world has received from the process.
+        ///
+        /// A client reads what its own ends received by filtering on
+        /// `Delivery.Endpoint`. One log rather than one per endpoint, so that
+        /// the order of writes across endpoints is kept: a process writing to
+        /// its output, then its error stream, then its output again is read
+        /// back in that order. It grows without bound: a process that writes
+        /// gigabytes costs that much memory.
+        Delivered : ImmutableArray<Delivery>
         /// The inode number the next pipe end will be given, as `fstat(2)`
         /// reports it. Monotonic and never reused: a process can compare the
         /// numbers two descriptors report to decide whether they name one pipe,

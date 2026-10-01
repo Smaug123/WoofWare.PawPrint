@@ -739,11 +739,16 @@ type EmulatedKernel =
         DirectoryStreamFds : Map<NativeMemoryBlockId, int>
     }
 
+    /// What the guest wrote to its standard output and error, one entry per
+    /// write, in the order it wrote them: the kernel's deliveries to the pipes
+    /// PawPrint drains, labelled by stream.
+    member this.OutputLog : ImmutableArray<OutputLogEntry> =
+        StandardStreams.outputLog this.Machine.Delivered
+
     // Forwarding members for everything `Process` now holds, so that this split
     // costs no read site. They go when stage 6 moves the state to the library and
     // call sites learn to say `kernel.Process.X`.
     member this.FileDescriptors : FileDescriptorRegistry = this.Process.FileDescriptors
-    member this.OutputLog : ImmutableArray<OutputLogEntry> = this.Process.OutputLog
     member this.Environment : UnixByteString list = this.Process.Environment
     member this.CurrentDirectoryInode : InodeNumber = this.Process.CurrentDirectoryInode
     member this.ProcessPath : AbsoluteUnixPath option = this.Process.ProcessPath
@@ -1031,7 +1036,7 @@ module EmulatedKernel =
         // Processor 0 is where the CPU rotation puts the first thread it places
         // (`cpuForRotation 0`), which is this one.
         let system : UnixSystem<ThreadId, NativeSignalHandler> =
-            UnixSystem.initial platform (ThreadId 0) (CpuId 0)
+            UnixSystem.initial platform StandardStreams.launch (ThreadId 0) (CpuId 0)
 
         let signals =
             StartupSignalDispositions.initial (SimulatedUnixPlatform.signalNumbering platform) Set.empty
