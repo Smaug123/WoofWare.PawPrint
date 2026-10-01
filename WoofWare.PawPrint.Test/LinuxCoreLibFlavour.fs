@@ -53,7 +53,7 @@ module LinuxCoreLibFlavour =
             Program.run loggerFactory (Some name) peImage (HostConfig.Default (runtimeDirsPreferringLinux frameworkDir))
 
         match outcome with
-        | RunOutcome.NormalExit (terminalState, _, _) -> terminalState
+        | RunEnd.Ended (RunOutcome.NormalExit (terminalState, _, _)) -> terminalState
         | other -> failwith $"Expected the guest to exit normally on the linux-x64 CoreLib, got %O{other}"
 
     let loadedCorelibPath (terminalState : IlMachineState) : string =

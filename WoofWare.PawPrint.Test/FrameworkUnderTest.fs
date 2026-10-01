@@ -216,11 +216,5 @@ module FrameworkUnderTest =
         | Ok () -> ()
         | Error error -> failwith $"The run did not serve the framework under test: %s{describe error}"
 
-    /// `assertServes` on the final state of `outcome`.
-    let assertOutcomeServes (outcome : RunOutcome) : unit =
-        match outcome with
-        | RunOutcome.NormalExit (state, _, _)
-        | RunOutcome.ProcessExit (state, _, _)
-        | RunOutcome.Aborted (state, _, _, _)
-        | RunOutcome.SignalTerminated (state, _, _)
-        | RunOutcome.GuestUnhandledException (state, _, _, _) -> assertServes state
+    /// `assertServes` on the final state of `runEnd`.
+    let assertOutcomeServes (runEnd : RunEnd) : unit = assertServes (RunEnd.state runEnd)

@@ -138,6 +138,7 @@ class Program
                         Argv = [ string<int> usr2 ]
                     }
             }
+        |> ExpectRun.ended
 
     [<Test>]
     let ``a guest started with signals ignored survives them on both runtimes`` () : unit =

@@ -154,6 +154,7 @@ class Program
                         Kernel = kernel
                     }
             }
+        |> ExpectRun.ended
 
     /// The rows Linux answers with EFAULT and macOS answers by performing the
     /// operation, plus the checks that come *before* the screen on both.

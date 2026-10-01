@@ -403,7 +403,7 @@ public static class Program
                     (Some fileName)
                     peImage
                     (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
-                |> ignore<RunOutcome>
+                |> ignore<RunEnd>
             )
 
         Assert.That (exc.Message, Does.Contain "which implements it with a default interface method")
@@ -458,7 +458,7 @@ public static class Program
 
                             reraise ()
 
-                    match outcome with
+                    match ExpectRun.ended outcome with
                     | RunOutcome.NormalExit (terminalState, _, _)
                     | RunOutcome.ProcessExit (terminalState, _, _) -> terminalState.LatchedExitCode
                     | RunOutcome.GuestUnhandledException (_, _, exn, _) ->

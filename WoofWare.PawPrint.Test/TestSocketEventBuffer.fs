@@ -85,7 +85,7 @@ class Program
                     }
             }
 
-        match Program.run loggerFactory (Some "SocketEventBufferProbe.cs") peImage hostConfig with
+        match ExpectRun.ended (Program.run loggerFactory (Some "SocketEventBufferProbe.cs") peImage hostConfig) with
         | RunOutcome.NormalExit (state, _, _)
         | RunOutcome.ProcessExit (state, _, _) ->
             match state.LatchedExitCode with
@@ -214,7 +214,7 @@ class Program
                     (Some "SocketEventBufferRefusal.cs")
                     peImage
                     (HostConfig.Default dotnetRuntimes)
-                |> ignore<RunOutcome>
+                |> ignore<RunEnd>
             )
 
         exn.Message

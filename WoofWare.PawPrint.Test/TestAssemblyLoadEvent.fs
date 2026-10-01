@@ -43,6 +43,7 @@ module TestAssemblyLoadEvent =
         let exn =
             Assert.Catch (fun () ->
                 BoundedRun.run loggerFactory name (Some name) peImage (HostConfig.Default dotnetRuntimes)
+                |> ExpectRun.ended
                 |> ignore<RunOutcome>
             )
 
@@ -90,6 +91,7 @@ module TestAssemblyLoadEvent =
         let exn =
             Assert.Catch (fun () ->
                 BoundedRun.run loggerFactory name (Some name) peImage config
+                |> ExpectRun.ended
                 |> ignore<RunOutcome>
             )
 

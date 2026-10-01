@@ -35,7 +35,7 @@ module TestUnsafeAccessorRefusals =
                 (Some name)
                 peImage
                 (HostConfig.Default dotnetRuntimes)
-            |> ignore<RunOutcome>
+            |> ignore<RunEnd>
         )
 
     /// A guest declaring `declaration` inside a class that also declares a generic struct `GS<T>`,

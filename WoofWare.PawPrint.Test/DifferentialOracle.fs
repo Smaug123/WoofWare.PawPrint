@@ -63,9 +63,13 @@ module DifferentialOracle =
         (expectedReturnCode : int)
         (expectsUnhandledException : bool)
         (realResult : RealRuntimeResult)
-        (pawPrintResult : RunOutcome)
+        (pawPrintResult : RunEnd)
         : unit
         =
+        let pawPrintResult =
+            match pawPrintResult with
+            | RunEnd.Ended outcome -> outcome
+
         // NormalExit and ProcessExit both represent a clean process termination with
         // the latched exit code; the only difference is whether the guest returned from
         // Main or called Environment.Exit. The real runtime surfaces both as

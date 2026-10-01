@@ -75,23 +75,17 @@ module TestScheduleFork =
     /// Collapse a terminal outcome to a string. Rendered rather than kept structurally because
     /// every `RunOutcome` carries an entire `IlMachineState`, which is neither comparable nor
     /// printable at any sane size.
-    let private describeOutcome (outcome : RunOutcome) : string =
-        match outcome with
-        | RunOutcome.NormalExit (state, _, _)
-        | RunOutcome.ProcessExit (state, _, _) -> $"exit %d{state.LatchedExitCode}"
-        | RunOutcome.Aborted (_, _, fatal, _) ->
+    let private describeOutcome (runEnd : RunEnd) : string =
+        match runEnd with
+        | RunEnd.Ended (RunOutcome.NormalExit (state, _, _))
+        | RunEnd.Ended (RunOutcome.ProcessExit (state, _, _)) -> $"exit %d{state.LatchedExitCode}"
+        | RunEnd.Ended (RunOutcome.Aborted (_, _, fatal, _)) ->
             let message = fatal.Message |> Option.defaultValue "<none>"
             $"aborted %O{fatal.Code} %s{message}"
-        | RunOutcome.SignalTerminated (_, signal, _) -> $"signal %O{signal}"
-        | RunOutcome.GuestUnhandledException (_, _, _, _) -> "unhandled exception"
+        | RunEnd.Ended (RunOutcome.SignalTerminated (_, signal, _)) -> $"signal %O{signal}"
+        | RunEnd.Ended (RunOutcome.GuestUnhandledException (_, _, _, _)) -> "unhandled exception"
 
-    let private terminalStateOf (outcome : RunOutcome) : IlMachineState =
-        match outcome with
-        | RunOutcome.NormalExit (state, _, _)
-        | RunOutcome.ProcessExit (state, _, _)
-        | RunOutcome.Aborted (state, _, _, _)
-        | RunOutcome.SignalTerminated (state, _, _)
-        | RunOutcome.GuestUnhandledException (state, _, _, _) -> state
+    let private terminalStateOf (runEnd : RunEnd) : IlMachineState = RunEnd.state runEnd
 
     let private bytesOf (role : FileDescriptorRole) (state : IlMachineState) : byte list =
         OutputLogEntry.bytesFor role state.Kernel.OutputLog |> List.ofSeq
@@ -119,7 +113,8 @@ module TestScheduleFork =
         let rec go (prepared : Program.PreparedProgram) (steps : Step list) : RunTrace =
             match Program.stepPrepared loggerFactory logger prepared with
             | Program.ProgramStepOutcome.Completed outcome ->
-                finish steps (describeOutcome outcome) (terminalStateOf outcome)
+                let runEnd = RunEnd.Ended outcome
+                finish steps (describeOutcome runEnd) (terminalStateOf runEnd)
             | Program.ProgramStepOutcome.Deadlocked (p, stuck) -> finish steps $"deadlock %s{stuck}" p.State
             | Program.ProgramStepOutcome.InstructionStepped (p, ThreadId ran, what, _) ->
                 let step =

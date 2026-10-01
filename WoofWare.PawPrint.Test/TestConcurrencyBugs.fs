@@ -194,7 +194,7 @@ module TestConcurrencyBugs =
             // `RunOutcome` carries an entire `IlMachineState`, so `%A` on it
             // would render a large chunk of the guest heap into the message.
             failwith
-                $"%s{scenario.SourceName}: the guest ran to completion (%A{classifyRunOutcome outcome}) without ever having two threads Runnable at the same tick, so no seed can explore anything and the scenario tests nothing. A concurrency-bug guest must start a thread whose lifetime overlaps another's."
+                $"%s{scenario.SourceName}: the guest ran to completion (%A{classifyRunOutcome (ExpectRun.ended outcome)}) without ever having two threads Runnable at the same tick, so no seed can explore anything and the scenario tests nothing. A concurrency-bug guest must start a thread whose lifetime overlaps another's."
         | Program.PrefixOutcome.DeadlockedBeforeFork stuck ->
             failwith
                 $"%s{scenario.SourceName}: every thread blocked before any scheduling choice arose (stuck: %s{stuck}), so the guest wedges under every seed rather than under a bad interleaving."

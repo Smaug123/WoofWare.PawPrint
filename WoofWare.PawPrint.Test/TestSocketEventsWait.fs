@@ -341,7 +341,7 @@ class TwoWaitersOnOnePort
                 peImage
                 (HostConfig.Default dotnetRuntimes)
 
-        match outcome with
+        match ExpectRun.ended outcome with
         | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 12
         | other -> failwith $"expected the guest to exit, got %O{other}"
 
@@ -627,7 +627,7 @@ class ClosesAParkedPort
                     (Some "ClosesAParkedPort.cs")
                     peImage
                     (HostConfig.Default dotnetRuntimes)
-                |> ignore<RunOutcome>
+                |> ignore<RunEnd>
             )
 
         exc.Message |> shouldContainText "Implement port retention"
@@ -738,7 +738,7 @@ class QuietParkedWaiter
                 peImage
                 (HostConfig.Default dotnetRuntimes)
 
-        match outcome with
+        match ExpectRun.ended outcome with
         | RunOutcome.NormalExit (state, _, _) ->
             state.LatchedExitCode |> shouldEqual 0
             state.Kernel.StepCounter |> shouldBeSmallerThan 500_000L

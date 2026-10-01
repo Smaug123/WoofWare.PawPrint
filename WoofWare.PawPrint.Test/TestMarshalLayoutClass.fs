@@ -760,7 +760,7 @@ public static class LayoutClassSweep
 
                             reraise ()
 
-                    match outcome with
+                    match ExpectRun.ended outcome with
                     | RunOutcome.NormalExit (terminalState, _, _)
                     | RunOutcome.ProcessExit (terminalState, _, _) -> terminalState.LatchedExitCode
                     | RunOutcome.GuestUnhandledException (_, _, exn, _) ->

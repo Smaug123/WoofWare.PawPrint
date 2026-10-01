@@ -58,6 +58,7 @@ public class Program
 
         Assert.Throws<GuestFailureException> (fun () ->
             BoundedRun.runWith loggerFactory BoundedRun.defaultMaxSteps name (Some name) peImage host
+            |> ExpectRun.ended
             |> ignore<RunOutcome>
         )
 

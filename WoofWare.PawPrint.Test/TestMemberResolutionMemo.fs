@@ -74,6 +74,7 @@ static class Program
         try
             match
                 Program.run loggerFactory (Some "MemberResolutionMemo.cs") peImage (HostConfig.Default dotnetRuntimes)
+                |> ExpectRun.ended
             with
             | RunOutcome.NormalExit (state, thread, _)
             | RunOutcome.ProcessExit (state, thread, _) ->

@@ -3729,7 +3729,7 @@ module TestImpureCases =
             | None -> ()
 
             let terminalState =
-                match pawPrintResult with
+                match ExpectRun.ended pawPrintResult with
                 | RunOutcome.GuestUnhandledException (finalState, _, exn, _) ->
                     failwith $"Guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
                 | RunOutcome.Aborted (_, _, fatal, _) ->
@@ -3780,6 +3780,7 @@ module TestImpureCases =
                                 Kernel = foreignOwnedConfig SimulatedUnixPlatform.macOsArm64
                             }
                     }
+                |> ExpectRun.ended
                 |> ignore<RunOutcome>
             )
 
@@ -3814,6 +3815,7 @@ module TestImpureCases =
                                 Kernel = accessWiringDarwinConfig 0u
                             }
                     }
+                |> ExpectRun.ended
                 |> ignore<RunOutcome>
             )
 

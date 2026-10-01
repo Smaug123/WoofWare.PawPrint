@@ -128,6 +128,7 @@ class CommandLineArgsWithArguments
 
         let pawPrintExitCode =
             Program.run loggerFactory (Some "CommandLineArgsWithArguments.cs") peImage hostConfig
+            |> ExpectRun.ended
             |> exitCodeOf
 
         pawPrintExitCode |> shouldEqual realExitCode
@@ -169,7 +170,7 @@ class EchoArgv0
         // `originalPath` is deliberately something that is not an assembly path at all: it is
         // where the host read the image from, and a test that let it reach the guest would be
         // asserting the very conflation `GuestConfig.AssemblyPath` exists to prevent.
-        match Program.run loggerFactory (Some "EchoArgv0.cs") peImage hostConfig with
+        match ExpectRun.ended (Program.run loggerFactory (Some "EchoArgv0.cs") peImage hostConfig) with
         | RunOutcome.NormalExit (state, _, _) as outcome ->
             exitCodeOf outcome |> shouldEqual 0
 
@@ -226,6 +227,7 @@ class EchoArgv0
         let exn =
             Assert.Throws (fun () ->
                 Program.run loggerFactory (Some "EchoArgv0.cs") peImage hostConfig
+                |> ExpectRun.ended
                 |> ignore<RunOutcome>
             )
 

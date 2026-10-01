@@ -719,6 +719,19 @@ module RunOutcome =
         | RunOutcome.SignalTerminated (state, _, _)
         | RunOutcome.GuestUnhandledException (state, _, _, _) -> state
 
+/// How a run of the interpreter finished.
+[<RequireQualifiedAccess>]
+type RunEnd =
+    /// The process ended, as `RunOutcome` says.
+    | Ended of RunOutcome
+
+[<RequireQualifiedAccess>]
+module RunEnd =
+    /// The machine as it stood when the run finished.
+    let state (runEnd : RunEnd) : IlMachineState =
+        match runEnd with
+        | RunEnd.Ended outcome -> RunOutcome.state outcome
+
 [<RequireQualifiedAccess>]
 module ExecutionResult =
     /// Construct a `Stepped` result that emits no externally-observable effect.

@@ -198,19 +198,19 @@ module BoundedRun =
         (originalPath : string option)
         (fileStream : Stream)
         (hostConfig : HostConfig)
-        : RunOutcome
+        : RunEnd
         =
         let logger = loggerFactory.CreateLogger "BoundedRun"
 
         /// Pumping `Main`, once startup has installed it.
-        let rec goMain (steps : int64) (prepared : Program.PreparedProgram) : RunOutcome =
+        let rec goMain (steps : int64) (prepared : Program.PreparedProgram) : RunEnd =
             if steps >= maxSteps then
                 failwith
                     $"%s{description} did not terminate within %d{maxSteps} interpreted steps, so the harness gave up (kernel step counter %d{prepared.State.Kernel.StepCounter}). This is what a livelocked guest looks like: every thread is runnable but nothing progresses. Threads: %s{threadSummary prepared.State}"
             else
 
             match Program.stepPrepared loggerFactory logger prepared with
-            | Program.ProgramStepOutcome.Completed outcome -> outcome
+            | Program.ProgramStepOutcome.Completed outcome -> RunEnd.Ended outcome
             | Program.ProgramStepOutcome.Deadlocked (_, stuck) ->
                 // `Program.run` would raise from inside `pumpPrepared`, discarding the state
                 // along with any diagnostic it carries. Reported here instead, with the same
@@ -232,14 +232,14 @@ module BoundedRun =
         /// returns wedges startup exactly as a `Main` that never returns wedges the run, and
         /// behind `prepare` that would hang the suite with no diagnostic; here it is bounded and
         /// reported like any other stuck guest.
-        let rec goStartup (steps : int64) (startup : Program.Startup) : RunOutcome =
+        let rec goStartup (steps : int64) (startup : Program.Startup) : RunEnd =
             if steps >= maxSteps then
                 failwith
                     $"%s{description} did not finish starting up within %d{maxSteps} interpreted steps, so the harness gave up (kernel step counter %d{startup.State.Kernel.StepCounter}). Guest code runs before Main — the entry type's static initialiser among it — so this is a guest that wedged before Main was ever installed. Threads: %s{threadSummary startup.State}"
             else
 
             match Program.stepStartup loggerFactory logger startup with
-            | Program.StartupStepOutcome.Completed (Program.ProgramStartResult.CompletedBeforeMain outcome) -> outcome
+            | Program.StartupStepOutcome.Completed (Program.ProgramStartResult.CompletedBeforeMain runEnd) -> runEnd
             // The budget is shared, not per-phase: `Main` resumes the count startup left off at,
             // so the bound is a statement about the whole run. Startup is cheap enough for that
             // to cost nothing — lazy class initialisation means a trivial guest reaches `Main`
@@ -279,6 +279,6 @@ module BoundedRun =
         (originalPath : string option)
         (fileStream : Stream)
         (hostConfig : HostConfig)
-        : RunOutcome
+        : RunEnd
         =
         runWith loggerFactory defaultMaxSteps description originalPath fileStream hostConfig

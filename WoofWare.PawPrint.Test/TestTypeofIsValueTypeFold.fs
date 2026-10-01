@@ -67,6 +67,7 @@ static class Program
         try
             match
                 Program.run loggerFactory (Some "TypeofIsValueTypeFold.cs") peImage (HostConfig.Default dotnetRuntimes)
+                |> ExpectRun.ended
             with
             | RunOutcome.NormalExit (state, _, _)
             | RunOutcome.ProcessExit (state, _, _) ->

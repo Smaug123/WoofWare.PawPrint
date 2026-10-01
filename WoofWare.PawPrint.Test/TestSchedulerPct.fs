@@ -362,6 +362,7 @@ module TestSchedulerPct =
             { HostConfig.Default dotnetRuntimes with
                 PctSeed = seed
             }
+        |> ExpectRun.ended
 
     /// Project a RunOutcome to its salient bit: the terminating thread's
     /// top-of-stack int32 if the run finished normally, or a tag describing

@@ -99,6 +99,7 @@ class Program
                         Kernel = nfs
                     }
             }
+        |> ExpectRun.ended
 
     [<TestCase("SystemNative_Stat", "Stat(d, &st);")>]
     [<TestCase("SystemNative_LStat", "LStat(d, &st);")>]
