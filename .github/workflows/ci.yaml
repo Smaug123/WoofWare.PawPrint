@@ -131,31 +131,28 @@ jobs:
       - name: Run Alejandra
         run: nix develop --command alejandra --check .
 
+  # Pull requests only. A push to main is the squash of a pull request this
+  # check already ran on, against GitHub's merge of that branch into main, so
+  # rerunning it can only disagree through the squash's commit message, which is
+  # edited by hand at merge time and may no longer carry the trailer below. The
+  # steps are skipped rather than the job, because all-required-checks-complete
+  # counts a skipped job as a failure.
   check-docstring-attachment:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
+        if: ${{ github.event_name == 'pull_request' }}
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0 # the check compares against the commit this change starts from
       - name: Check every docstring still documents what it did
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PUSH_BEFORE: ${{ github.event.before }}
+        if: ${{ github.event_name == 'pull_request' }}
         run: |
-          if [ "$EVENT_NAME" = pull_request ]; then
-            # A pull_request checkout is GitHub's merge of the branch into main:
-            # its first parent is that main, and its second the branch's head.
-            git rev-parse --verify --quiet HEAD^2 > /dev/null || { echo "expected a merge commit at HEAD for a pull_request event" >&2; exit 2; }
-            base="$(git rev-parse HEAD^1)"
-            range="HEAD^1..HEAD^2"
-          elif [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != 0000000000000000000000000000000000000000 ]; then
-            base="$PUSH_BEFORE"
-            range="$PUSH_BEFORE..HEAD"
-          else
-            base="$(git rev-parse HEAD^1)"
-            range="HEAD^1..HEAD"
-          fi
+          # A pull_request checkout is GitHub's merge of the branch into main:
+          # its first parent is that main, and its second the branch's head.
+          git rev-parse --verify --quiet HEAD^2 > /dev/null || { echo "expected a merge commit at HEAD for a pull_request event" >&2; exit 2; }
+          base="$(git rev-parse HEAD^1)"
+          range="HEAD^1..HEAD^2"
           set +e
           scripts/check-docstring-attachment-branch.sh "$base"
           status=$?
