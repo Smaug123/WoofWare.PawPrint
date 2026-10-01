@@ -32,7 +32,7 @@ module TestSocketTable =
     let private genWalkSeed : Gen<int> = Gen.choose (0, System.Int32.MaxValue)
 
     let private initialSystem : UnixSystem<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
+        UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     /// `close(2)`. A refusal crashes, as it does in the handlers that serve a
     /// guest; an errno comes back, because that is an answer.
@@ -68,6 +68,11 @@ module TestSocketTable =
     let private linuxReadiness (targetId : OpenFileDescriptionId) (kernel : UnixSystem<int, string>) : uint32 =
         LinuxReadiness.ofDescription targetId kernel
 
+    /// A process launched with no descriptors at all, and so no pipes: the base
+    /// for a descriptor table built wholly by hand.
+    let private unlaunchedSystem : UnixSystem<int, string> =
+        UnixSystem.initial SimulatedUnixPlatform.linuxX64 Map.empty 0 (CpuId 0)
+
     /// A kernel whose socket table and descriptor table are built by hand, so
     /// that `checkInvariants` has something unsound to reject. Every operation
     /// the kernel offers maintains the invariant, which is exactly why the
@@ -94,14 +99,14 @@ module TestSocketTable =
                  |> Map.ofList)
                 (OpenFileDescriptionId (int64 descriptions.Length + 100L))
 
-        { initialSystem with
+        { unlaunchedSystem with
             Machine =
-                { initialSystem.Machine with
+                { unlaunchedSystem.Machine with
                     Sockets = sockets |> List.map (fun (id, socket) -> SocketId id, socket) |> Map.ofList
                     NextSocketId = SocketId nextSocketId
                 }
             Process =
-                { initialSystem.Process with
+                { unlaunchedSystem.Process with
                     FileDescriptors = registry
                 }
         }

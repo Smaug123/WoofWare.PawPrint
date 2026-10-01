@@ -38,8 +38,7 @@ module TestUnixProcessState =
     /// has to supply for any of these operations to mean something.
     let private empty : UnixProcessState<int, string> =
         {
-            FileDescriptors = FileDescriptorRegistry.initial
-            OutputLog = ImmutableArray<OutputLogEntry>.Empty
+            FileDescriptors = LaunchedStreams.registry
             Environment = []
             CurrentDirectoryInode = rootInode
             ProcessPath = None
@@ -182,7 +181,7 @@ module TestUnixProcessState =
         let directoryInode = InodeNumber 9L
 
         let _fd, withFile =
-            FileDescriptorRegistry.openFile fileInode FileAccessMode.ReadOnly FileDescriptorRegistry.initial
+            FileDescriptorRegistry.openFile fileInode FileAccessMode.ReadOnly LaunchedStreams.registry
 
         let _directoryFd, withDirectory =
             FileDescriptorRegistry.openDirectory directoryInode withFile
@@ -206,7 +205,7 @@ module TestUnixProcessState =
         let other = SocketId 2L
 
         let watchedFd, registry =
-            FileDescriptorRegistry.createSocket watched FileDescriptorRegistry.initial
+            FileDescriptorRegistry.createSocket watched LaunchedStreams.registry
 
         let _otherFd, registry = FileDescriptorRegistry.createSocket other registry
         let portFd, registry = FileDescriptorRegistry.createSocketEventPort registry
@@ -228,7 +227,7 @@ module TestUnixProcessState =
         let watched = SocketId 1L
 
         let watchedFd, registry =
-            FileDescriptorRegistry.createSocket watched FileDescriptorRegistry.initial
+            FileDescriptorRegistry.createSocket watched LaunchedStreams.registry
 
         let portFd, registry = FileDescriptorRegistry.createSocketEventPort registry
 

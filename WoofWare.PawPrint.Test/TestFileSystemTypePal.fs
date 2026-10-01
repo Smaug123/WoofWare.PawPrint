@@ -107,7 +107,6 @@ module TestFileSystemTypePal =
     let private everyTarget : OpenFileObject option list =
         [
             Some (OpenFileObject.File (InodeNumber 7L))
-            Some (OpenFileObject.StandardStream FileDescriptorRole.StandardInput)
             Some (OpenFileObject.Socket (SocketId 1L))
             Some OpenFileObject.AnonymousInode
             Some (OpenFileObject.Pipe (PipeId 1L))
@@ -132,7 +131,7 @@ module TestFileSystemTypePal =
         : FileSystemStatisticsAnswer
         =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial (HostPlatform.platformOf flavour) 0 (CpuId 0)
+            UnixSystem.initial (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let machine =
             UnixMachineState.withMount (Some (EmulatedMount.defaultOf fsType)) system.Machine
@@ -165,7 +164,6 @@ module TestFileSystemTypePal =
                 | EmulatedFileSystemType.Nfs -> 0x6969u
             // Darwin's `fstatfs` fails on every object not on a filesystem.
             | Some _, SimulatedUnixFlavour.Darwin -> 0u
-            | Some (OpenFileObject.StandardStream _), SimulatedUnixFlavour.Linux
             | Some (OpenFileObject.Pipe _), SimulatedUnixFlavour.Linux -> 0x50495045u
             | Some (OpenFileObject.Socket _), SimulatedUnixFlavour.Linux -> 0x534F434Bu
             | Some OpenFileObject.AnonymousInode, SimulatedUnixFlavour.Linux -> 0x09041934u
@@ -232,12 +230,8 @@ module TestFileSystemTypePal =
             try
                 let rows =
                     [
-                        "pipe read end",
-                        ends.[0],
-                        Some (OpenFileObject.StandardStream FileDescriptorRole.StandardInput)
-                        "pipe write end",
-                        ends.[1],
-                        Some (OpenFileObject.StandardStream FileDescriptorRole.StandardOutput)
+                        "pipe read end", ends.[0], Some (OpenFileObject.Pipe (PipeId 0L))
+                        "pipe write end", ends.[1], Some (OpenFileObject.Pipe (PipeId 0L))
                         "AF_INET socket", sock, Some (OpenFileObject.Socket (SocketId 1L))
                         "anonymous inode", port, Some OpenFileObject.AnonymousInode
                         // 4242 rather than -1, so that a shim screening negative

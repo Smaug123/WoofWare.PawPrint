@@ -24,7 +24,8 @@ module TestSocketWait =
     /// A simulated process on the flavour asked for, before anything has
     /// happened to it.
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
+        let system : UnixSystem<int, string> =
+            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         { system with
             Machine =

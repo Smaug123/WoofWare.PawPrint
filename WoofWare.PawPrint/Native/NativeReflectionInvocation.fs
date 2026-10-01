@@ -708,7 +708,7 @@ module internal NativeReflectionInvocation =
                 // (reflectioninvocation.cpp:419), so invoking a virtual method through a base
                 // class's MethodInfo runs the derived override.
                 // advanceProgramCounterOfCaller = false: the native QCall frame has no IL.
-                // wrapExceptionInTargetInvocation = false: `MethodBaseInvoker` wraps in managed
+                // ExceptionEscape.Propagate: `MethodBaseInvoker` wraps in managed
                 // code (MethodBaseInvoker.cs:176), so wrapping here too would nest two
                 // TargetInvocationExceptions.
                 let state, commitment =
@@ -733,7 +733,7 @@ module internal NativeReflectionInvocation =
                         threadState
                         None
                         ReturnValueDisposition.PushToCaller
-                        false
+                        ExceptionEscape.Propagate
                         state
 
                 match commitment with

@@ -130,7 +130,7 @@ module TestStackFrameCapture =
                     Constructing = ConstructionState.NotConstructing
                     CallSiteIlOpIndex = callSite
                     ReturnValueDisposition = ReturnValueDisposition.PushToCaller
-                    WrapExceptionInTargetInvocation = false
+                    ExceptionEscape = ExceptionEscape.Propagate
                 }
 
             let callee =

@@ -245,7 +245,7 @@ module SignalFuzz =
         let mutable bodies = sequence.Bodies
 
         let mutable system : UnixSystem<int, unit> =
-            UnixSystem.initial platform leader (CpuId 0)
+            UnixSystem.initial platform UnixSystem.pipedStandardStreams leader (CpuId 0)
 
         let self = ProcessId.toInt32 (UnixSystem.processId system)
 

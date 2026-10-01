@@ -22,6 +22,7 @@ module TestPureCases =
 
     let unimplemented =
         [
+            "AssemblyLoadHandlerThrowIsSwallowed.cs" // An `AppDomain.AssemblyLoad` handler that throws. CoreCLR calls it from `AppDomain::RaiseLoadingAssemblyEvent` inside `EX_TRY ... EX_CATCH {}`, so the exception is discarded and `Main`'s `catch` never sees it. PawPrint marks the announcing frame `ExceptionEscape.SwallowedByRuntime` and ends the run when exception dispatch reaches it, rather than let the exception unwind into `Main`; `TestAssemblyLoadEvent` pins that refusal. Un-park when dispatch discards an exception at that boundary. Verified to exit 0 on real .NET.
             "CustomAttributeTypeArgNested.cs" // A `System.Type`-valued attribute argument naming a nested type of the decorated assembly, "Outer+Inner". CoreLib's `TypeNameResolver` splits the name and calls `RuntimeAssembly.GetTypeCore(string, ReadOnlySpan<string> nestedTypeNames, ...)`, a `LibraryImport` whose generated stub marshals the span into a stack-allocated pointer array, and the interpreted stub stops at "MemoryBlock.readBytes: byte at offset 0 in <stack memory block #0> is uninitialised" (in `RuntimeAssembly.GetTypeCore` at IL offset 110). Measured: a guest calling `Type.GetType("Outer+Inner")` directly stops at the same instruction, so this is the nested-name path of `GetTypeCore`, not anything in the attribute decoder; `sourcesPure/CustomAttributeTypeArg.cs` covers the top-level names, which take the empty-span path. Un-park when that stub's stack buffer reads back what it wrote. Verified to exit 0 on real .NET.
             "AssemblyGetTypeNested.cs" // `Assembly.GetType("Outer+Inner")`, and a nested type whose base lives in a framework assembly nothing else loads, which `AssemblyGetTypeUnloadedBaseAssembly.cs` cannot cover for the nested walk. It stops before the QCall, at the same nested-name marshalling gap as `CustomAttributeTypeArgNested.cs`: "MemoryBlock.readBytes: byte at offset 0 in <stack memory block #0> is uninitialised" (in `RuntimeAssembly.GetTypeCore` at IL offset 110), measured with the nested type's base plain `object` too. Un-park with that one. Verified to exit 0 on real .NET.
             "CustomAttributeTypeArgForeign.cs" // A `System.Type`-valued attribute argument naming a type from another assembly. Roslyn writes every such name assembly-qualified -- `typeof(int)` included, measured as "System.Int32, System.Runtime, Version=10.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a" against the reference pack -- and CoreLib's `TypeNameResolver` then binds that assembly through `RuntimeAssembly.InternalLoad`, so the guest stops at "Unimplemented native method (PInvokeImpl QCall!AssemblyNative_InternalLoad)". The resolution itself is CoreLib's own code, reached from `CustomAttribute_CreateCustomAttributeInstance` exactly as CoreCLR reaches it, so nothing in the attribute path is what is missing; `sourcesPure/CustomAttributeTypeArg.cs` covers the names Roslyn leaves unqualified, which are the decorated assembly's own types. Un-park when `AssemblyNative_InternalLoad` binds a display name. Verified to exit 0 on real .NET.
@@ -378,6 +379,13 @@ module TestPureCases =
                     name "ld", SeedEntry.Symlink (target "d", None)
                     name "dang", SeedEntry.Symlink (target "nx", None)
                 ]
+            // The folder the guest's HOME names, `s/h`, inside a directory
+            // whose mode it changes; see `seededCaseEnvironments`.
+            "AccessSeeded.cs",
+            Map.ofList
+                [
+                    name "s", SeedEntry.directory (Map.ofList [ name "h", SeedEntry.directory Map.empty ])
+                ]
             "FlockContentionSeeded.cs",
             Map.ofList
                 [
@@ -393,6 +401,14 @@ module TestPureCases =
         |> Map.ofList
 
     let seededCaseNames : string list = seededCases |> Map.toList |> List.map fst
+
+    /// The environment a seeded guest wants, where it wants one, which both
+    /// runtimes are given as `environmentCases` gives theirs. A relative HOME
+    /// names the same place in PawPrint's seeded tree and in the oracle's
+    /// scratch directory, which no absolute path could.
+    let seededCaseEnvironments : Map<string, string list> =
+        [ "AccessSeeded.cs", [ EnvironmentPal.nameValueEntry "HOME" "s/h" ] ]
+        |> Map.ofList
 
     /// Guests that need a particular environment variable, with the environment
     /// entries each one wants.
@@ -1352,6 +1368,10 @@ class Program
             KernelConfig =
                 { KernelConfig.Default with
                     FileSystem = seededCases.[fileName]
+                    Environment =
+                        seededCaseEnvironments
+                        |> Map.tryFind fileName
+                        |> Option.defaultValue KernelConfig.Default.Environment
                 }
             AppContext = AppContextProperties.empty
             Oracle = OraclePolicy.Always

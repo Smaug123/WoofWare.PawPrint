@@ -252,8 +252,8 @@ Between the two lawful candidates, sorting was rejected because the stability it
 not real: under PawPrint the *set* is already a function of the run, so sorting only makes the
 order a function of the set, and the guest's answer still changes with the seed. Load order costs
 the same, has the same shape as the real runtime's answer, and preserves strictly more information
-— the load context now records the order, which a future `AppDomain.AssemblyLoad` event or a
-load-order diagnostic can read.
+— the load context now records the order, which `AppDomain.AssemblyLoad` reads to tell what each
+step loaded (see below), as can a load-order diagnostic.
 
 **Observable example**:
 
@@ -278,40 +278,110 @@ naive reference implementation` in `TestLoadedAssemblies.fs`.
 **Where this lives in code**: `NativeRuntimeAssembly.tryExecuteQCall`, the
 `AssemblyNative_GetLoadedAssemblies` case, over `LoadedAssemblies.DefinitionNamesInLoadOrder`.
 
-## `AppDomain.AssemblyLoad` is never raised
+## `AppDomain.AssemblyLoad` is raised later for an image than on CoreCLR, and not for a dynamic assembly
 
-**CoreCLR**: every assembly added to the AppDomain raises `AppDomain.AssemblyLoad`, by way of the
-managed `AssemblyLoadContext.OnAssemblyLoad` callback. That includes a dynamic assembly, which
-`Assembly::CreateDynamic` announces before `AssemblyBuilder.DefineDynamicAssembly` returns
-(measured: a subscriber counts one notification per `DefineDynamicAssembly`).
+**CoreCLR**: every assembly added to the AppDomain except corelib raises `AppDomain.AssemblyLoad`.
+`Assembly::DeliverAsyncEvents` calls `AppDomain::RaiseLoadingAssemblyEvent` on the loading thread
+once the load completes and the load lock is released; that returns early for corelib, calls
+CoreLib's `AssemblyLoadContext.OnAssemblyLoad` only if the event's static field holds a delegate,
+and wraps the call in `EX_TRY ... EX_CATCH {}`, so an exception the handler throws is discarded. An
+image is usually loaded while the JIT compiles the first method that names it, so its handler has
+run before that method's first instruction. A dynamic assembly is announced inside
+`DefineDynamicAssembly`.
 
-**PawPrint**: nothing calls `OnAssemblyLoad`, so a subscriber is never invoked, for an image or a
-dynamic assembly.
+**PawPrint**: an image is announced on the thread that loaded it, before the instruction that first
+needed it runs, and so before anything in the assembly runs, its type initialisers included. The
+interpreter loads an assembly partway through a step, so a step that loads one while something is
+subscribed is discarded, keeping only the first assembly it loaded; that assembly is announced; and
+then the step runs again from where it began, finding it already loaded. If the step needs another
+assembly too, it loads that one afresh and is discarded again to announce it, unless a handler
+needed it first, in which case it was announced inside that handler, as on CoreCLR. Corelib is never
+announced, and with nothing subscribed no managed code runs and no step is spent or repeated.
 
-**Spec status**: the event is documented to fire on every load. For images, *when* it fires is no
-more a property of the program than `AppDomain.GetAssemblies()`'s membership (see above), because
-it follows the loader; for a dynamic assembly it is exact, inside `DefineDynamicAssembly`.
+Two things are not modelled, and each ends the run rather than diverge silently:
 
-**Why we chose this**: not a choice, a gap. Raising the event for a dynamic assembly alone would be
-easy (`AppDomain_CreateDynamicAssembly` can call back into managed code), but a guest counting
-notifications would then see dynamic assemblies and no images, which is no truer than seeing
-neither. Raising it for images means choosing the moments at which PawPrint's on-demand loading
-announces an assembly, which is the design question to settle first.
+- an exception escaping the handler. The announcing frame is marked
+  `ExceptionEscape.SwallowedByRuntime`, and exception dispatch refuses on reaching it rather than
+  unwind the exception into the guest frame beneath, whose `catch` CoreCLR never offers it to;
+- a dynamic assembly. CoreCLR announces it from inside `AppDomain_CreateDynamicAssembly`
+  (`Assembly::CreateDynamic`), so the handler has run once by the time `DefineDynamicAssembly`
+  returns. Discarding and re-running the step is sound only because loading an image is idempotent
+  and writes nothing but the load context; creating a dynamic assembly is neither, so that step is
+  never discarded, and with something subscribed it is refused until the QCall announces what it
+  creates itself.
 
-**Observable example**:
+**Spec status**: the event is documented to fire on every load, with no promise about when. For an
+image the moment follows the loader, so it is no more a property of the program than
+`AppDomain.GetAssemblies()`'s membership (see above). What does hold on both runtimes is that each
+load is announced exactly once, on the thread that made it, before code after the assembly's first
+use runs.
+
+**Why we chose this**: modelling the JIT, by loading and announcing every assembly a method body
+references on its first entry, would bring the timing closer, but it depends on what the JIT inlines
+and at which tier, which PawPrint refuses to model (see #1445), and loads assemblies a run would
+never need. So an assembly is announced where the interpreter first needs it.
+
+Announcing at that point means interrupting the instruction that needs it, and few of the places
+that load an assembly could be resumed afterwards: by the time type resolution loads anything, an
+instruction has typically consumed operands or changed other state. Discarding the whole step
+needs none of them to be resumable, because the interpreter's state is immutable and a step is a
+function of the state it began in; loading is idempotent and writes nothing but the load context,
+so that is all that is carried over. Each discard leaves one more assembly loaded for good, so a
+step is repeated at most once per assembly it loads.
+
+Only one assembly is carried over at a time. If every assembly the step loaded were kept, a handler
+for the first could run code in a later one, which then needs no loading, so would run before it
+was announced. One `newobj` of a class whose base class is in another assembly loads both.
+
+Announcing *after* the loading step instead, at the start of the thread's next one, is not enough.
+The step that needs an assembly can already have started a type initialiser in it: an
+`ldsfld` of a type with an explicit static constructor claims the type's initialisation and pushes
+the constructor in that step, and a handler running over it then reads the type's statics as a
+recursive access by the initialising thread, before the constructor has run. No CoreCLR schedule
+allows that, because an assembly is announced before anything in it runs.
+
+The announcement is pushed only at the start of a step, never over a step that has run: the
+scheduler writes a return value onto the active frame's evaluation stack when a thread yields or a
+timed wait ends (`Scheduler.onStepOutcome`, `fireJoinTimeout`), and a frame pushed over a thread
+that had just parked would receive it.
+
+**Observable example** (measured on .NET 10, with tiered compilation on, off, and without quick JIT):
 
 ```csharp
-// dotnet app.dll:  1
-// PawPrint:        0
-int loads = 0;
-AppDomain.CurrentDomain.AssemblyLoad += (_, _) => loads++;
-AssemblyBuilder.DefineDynamicAssembly(new AssemblyName("Evented"), AssemblyBuilderAccess.Run);
-Console.WriteLine(loads);
+// dotnet app.dll:  11 (announced while the JIT compiled Touch)
+// PawPrint:        1  (announced just before the `newobj` that first needs System.Collections)
+static int seen;
+
+[MethodImpl(MethodImplOptions.NoInlining)]
+static int Touch()
+{
+    int before = seen;
+    new Stack<int>().Push(1);
+    return before * 10 + seen;
+}
+
+AppDomain.CurrentDomain.AssemblyLoad += (_, a) =>
+{
+    if (a.LoadedAssembly.GetName().Name == "System.Collections") seen++;
+};
+Console.WriteLine(Touch());
 ```
 
-**Where this lives in code**: nowhere yet. The two places that add an assembly to the load context
-are `LoadedAssemblies.WithBoundReference`/`WithLoadedAssembly` (images) and
-`NativeRuntimeAssemblyBuilder`'s `AppDomain_CreateDynamicAssembly` (dynamic assemblies).
+**Testing note**: `sourcesPure/AssemblyLoadEventImage.cs` compares against real .NET only what holds
+on both: that an assembly first used after subscribing has been announced exactly once by the line
+after its first use, on the thread that used it, with `AppDomain.CurrentDomain` as sender and the
+assembly's cached `RuntimeAssembly`; that corelib is never announced; and that nothing is announced
+once the only handler is removed. `TestCrossAssemblyAssemblyLoadEvent` does the same for an assembly
+whose first use starts a type initialiser in it: the handler runs before that initialiser, and a
+handler reading the type's statics sees them initialised.
+It also has a handler for one assembly call into another that the same `newobj` loaded, which must
+by then have been announced. `sourcesPure/AssemblyLoadHandlerThrowIsSwallowed.cs` is parked on the
+swallowed exception, and `TestAssemblyLoadEvent` pins the refusal in its place; it likewise runs
+`sourcesImpure/AssemblyLoadEventDynamic.cs`, asserting that real .NET announces a dynamic assembly
+once before `DefineDynamicAssembly` returns and that PawPrint refuses it.
+
+**Where this lives in code**: `AssemblyLoadEvent.announceBeforeStep`, called from
+`AbstractMachine.executeOneStep`; the refusal is in `ExceptionDispatching.firstPass`.
 
 ## `Environment.ProcessPath` reports no executable, and is never resolved against the filesystem
 

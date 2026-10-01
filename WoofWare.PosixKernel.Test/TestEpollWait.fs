@@ -60,7 +60,8 @@ module TestEpollWait =
     /// `EPOLLIN` registration of it: the listener's descriptor, and the port's.
     let private world : int * int * UnixSystem<int, string> =
         let system =
-            (UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 0 (CpuId 0), [ 1..6 ])
+            (UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0),
+             [ 1..6 ])
             ||> List.fold (fun system name -> withTask name system)
 
         let socketId = system.Machine.NextSocketId
@@ -321,7 +322,7 @@ module TestEpollWait =
     [<Test>]
     let ``Darwin has no epoll, so every wait is refused`` () : unit =
         let darwin =
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 0 (CpuId 0)
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
             |> withTask task
 
         UnixPoll.epollWait task 3 8 UserBuffer.Mapped -1 darwin

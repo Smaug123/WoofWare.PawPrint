@@ -170,6 +170,30 @@ module Credentials =
         else
             CallerPrivilege.Unprivileged
 
+    /// These credentials with the real user and group standing in for the
+    /// effective ones: who `access(2)` checks a path as, at every step of the
+    /// walk and at the inode it reaches.
+    ///
+    /// Everything else is kept, so privilege and group membership are still
+    /// decided as `Credentials.privilege` and `Standing.toward` decide them,
+    /// from the substituted IDs: a real uid of 0 is privileged here whatever
+    /// the effective uid, and the supplementary groups count as they always
+    /// do.
+    let realIdsAsEffective (credentials : Credentials) : Credentials =
+        // Measured on Linux 6.18.5 (`access-rules.c`): over all 4096 modes on
+        // a file and a directory and every R_OK/W_OK/X_OK combination, with
+        // real 0 / effective 1000, real 1000 / effective 0, real and effective
+        // users that are and are not the owner, and real and effective groups
+        // that are and are not the inode's, `access(2)` answers exactly as
+        // these credentials' standing says and `faccessat(AT_EACCESS)` exactly
+        // as the originals' does. A directory only the effective user may
+        // search refuses `access(2)` a path through it, and one only the real
+        // user may search refuses `AT_EACCESS`.
+        { credentials with
+            EffectiveUser = credentials.RealUser
+            EffectiveGroup = credentials.RealGroup
+        }
+
     /// The groups `getgroups(2)` reports for a process with these credentials,
     /// under `report`, or `None` where `report` is `GroupListReport.Unmeasured`.
     let reportedGroups (report : GroupListReport) (credentials : Credentials) : GroupId list option =

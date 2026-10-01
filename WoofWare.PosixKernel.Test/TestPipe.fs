@@ -40,7 +40,7 @@ module TestPipe =
         ]
 
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        UnixSystem.initial platform 0 (CpuId 0)
+        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private flavourOf (system : UnixSystem<int, string>) : SimulatedUnixFlavour =
         SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
@@ -55,6 +55,34 @@ module TestPipe =
         match UnixPipe.pipe2 flags UserBuffer.Mapped system with
         | Ok (Pipe2Answer.Created (readFd, writeFd), system) -> (readFd, writeFd), system
         | other -> failwith $"pipe2 0x%x{flags} did not make a pipe: %A{other}"
+
+    /// The pipes the process made, leaving out the ones it was launched with.
+    let private madePipes (system : UnixSystem<int, string>) : Map<PipeId, PipeState> =
+        system.Machine.Pipes
+        |> Map.filter (fun _ pipe ->
+            match pipe.Origin with
+            | PipeOrigin.Made _ -> true
+            | PipeOrigin.Launched _ -> false
+        )
+
+    /// The pipe descriptor `fd` names an end of.
+    let private pipeOf (fd : int) (system : UnixSystem<int, string>) : PipeId =
+        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        | Some (OpenFileTarget.Pipe (pipeId, _)) -> pipeId
+        | other -> failwith $"fd %d{fd} is %A{other}, not a pipe end"
+
+    /// `pipe` reporting `inodes`. Only a pipe the process made reports any.
+    let private withInodes (inodes : PipeInodes) (pipe : PipeState) : PipeState =
+        match pipe.Origin with
+        | PipeOrigin.Made status ->
+            { pipe with
+                Origin =
+                    PipeOrigin.Made
+                        { status with
+                            Inodes = inodes
+                        }
+            }
+        | PipeOrigin.Launched _ -> failwith "a launched pipe reports no inodes"
 
     let private assertSound (context : string) (system : UnixSystem<int, string>) : unit =
         match UnixSystem.checkInvariants system with
@@ -502,7 +530,7 @@ module TestPipe =
                 assertSound where system
 
                 // The pipe lives exactly while some descriptor names an end.
-                Map.count system.Machine.Pipes
+                Map.count (madePipes system)
                 |> shouldEqual (if Map.isEmpty reference.Fds then 0 else 1)
 
         let gen =
@@ -942,8 +970,15 @@ module TestPipe =
                 UnixDescriptor.bytesAvailable fd (UserBuffer.Unmapped 0UL) system
                 |> shouldEqual (Ok (BytesAvailableAnswer.Failed UnixError.EFAULT))
 
-            match UnixDescriptor.bytesAvailable 1 UserBuffer.Mapped system with
-            | Error (BytesAvailableRefusal.UnmodelledTarget 1) -> ()
+            // The launched standard streams are pipes too, and empty.
+            UnixDescriptor.bytesAvailable 1 UserBuffer.Mapped system
+            |> shouldEqual (Ok (BytesAvailableAnswer.Reported 0))
+
+            let socketFd, system =
+                NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
+
+            match UnixDescriptor.bytesAvailable socketFd UserBuffer.Mapped system with
+            | Error (BytesAvailableRefusal.UnmodelledTarget fd) when fd = socketFd -> ()
             | other -> failwith $"%A{other}"
 
     [<Test>]
@@ -1073,9 +1108,9 @@ module TestPipe =
             | other -> failwith $"%A{other}"
 
             let system = closeOrFail r system
-            Map.count system.Machine.Pipes |> shouldEqual 1
+            Map.count (madePipes system) |> shouldEqual 1
             let system = closeOrFail dupped system
-            Map.isEmpty system.Machine.Pipes |> shouldEqual true
+            Map.isEmpty (madePipes system) |> shouldEqual true
             assertSound $"%O{platform}" system
 
     [<Test>]
@@ -1114,8 +1149,8 @@ module TestPipe =
 
     /// A Linux system holding one pipe with both ends open, which is sound.
     let private withPipe (platform : SimulatedUnixPlatform) : UnixSystem<int, string> * PipeId =
-        let _, system = pipeOrFail 0 (systemOn platform)
-        system, PipeId 0L
+        let (r, _), system = pipeOrFail 0 (systemOn platform)
+        system, pipeOf r system
 
     let private defectsOf (system : UnixSystem<int, string>) : UnixSystemDefect<int> list =
         UnixSystem.checkInvariants system
@@ -1141,7 +1176,7 @@ module TestPipe =
             { system with
                 Machine =
                     { system.Machine with
-                        Pipes = Map.empty
+                        Pipes = Map.remove pipeId system.Machine.Pipes
                     }
             }
 
@@ -1169,13 +1204,7 @@ module TestPipe =
                         NextPipeInode = InodeNumber 100L
                     }
             }
-            |> mapPipe
-                (PipeId 7L)
-                (fun pipe ->
-                    { pipe with
-                        Inodes = PipeInodes.Shared (InodeNumber 50L)
-                    }
-                )
+            |> mapPipe (PipeId 7L) (withInodes (PipeInodes.Shared (InodeNumber 50L)))
 
         defectsOf forged
         |> shouldEqual [ UnixSystemDefect.UnreferencedPipe (PipeId 7L) ]
@@ -1211,17 +1240,11 @@ module TestPipe =
         defectsOf atNext
         |> shouldEqual [ UnixSystemDefect.PipeInodeNotFresh (inode, pipeId, inode) ]
 
-        let _, twoPipes = pipeOrFail 0 system
+        let (second, _), twoPipes = pipeOrFail 0 system
 
         let shared =
             twoPipes
-            |> mapPipe
-                (PipeId 1L)
-                (fun pipe ->
-                    { pipe with
-                        Inodes = PipeInodes.Shared inode
-                    }
-                )
+            |> mapPipe (pipeOf second twoPipes) (withInodes (PipeInodes.Shared inode))
 
         defectsOf shared |> shouldEqual [ UnixSystemDefect.DuplicatePipeInode inode ]
 
@@ -1232,13 +1255,7 @@ module TestPipe =
 
         let perEnd =
             linux
-            |> mapPipe
-                pipeId
-                (fun pipe ->
-                    { pipe with
-                        Inodes = PipeInodes.PerEnd (InodeNumber 1L, InodeNumber 2L)
-                    }
-                )
+            |> mapPipe pipeId (withInodes (PipeInodes.PerEnd (InodeNumber 1L, InodeNumber 2L)))
 
         let perEnd =
             { perEnd with
@@ -1378,7 +1395,7 @@ module TestPipe =
                 | other -> failwith $"%A{other}"
             )
 
-        PipeBuffer.writable system.Machine.Pipes.[PipeId 0L].Buffer
+        PipeBuffer.writable system.Machine.Pipes.[pipeOf w system].Buffer
 
     [<Test>]
     let ``on Darwin a faulting write grows the buffer as measured, and on Linux it changes nothing`` () : unit =

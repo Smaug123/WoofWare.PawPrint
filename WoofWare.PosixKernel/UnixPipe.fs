@@ -202,16 +202,20 @@ module UnixPipe =
         let pipe =
             {
                 Buffer = PipeBuffer.empty platform
-                Inodes = inodes
-                Owner = InodeOwner.ofProcess system.Process.Credentials
-                Permissions = permissions
-                Times =
-                    {
-                        Created = now
-                        ReadEndAccess = now
-                        Modification = now
-                        StatusChange = now
-                    }
+                Origin =
+                    PipeOrigin.Made
+                        {
+                            Inodes = inodes
+                            Owner = InodeOwner.ofProcess system.Process.Credentials
+                            Permissions = permissions
+                            Times =
+                                {
+                                    Created = now
+                                    ReadEndAccess = now
+                                    Modification = now
+                                    StatusChange = now
+                                }
+                        }
             }
 
         let (readFd, writeFd), registry =

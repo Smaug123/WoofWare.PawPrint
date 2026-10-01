@@ -940,7 +940,7 @@ module NativeRuntimeTypeQCall =
                         threadState
                         None
                         ReturnValueDisposition.PushToCaller
-                        false // wrapExceptionInTargetInvocation
+                        ExceptionEscape.Propagate
                         state
 
                 NativeHandlerResult.pushedManagedCallee state |> Some

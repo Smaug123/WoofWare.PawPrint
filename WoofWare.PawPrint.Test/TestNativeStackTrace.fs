@@ -178,7 +178,7 @@ public static class Entry
                     Constructing = ConstructionState.NotConstructing
                     CallSiteIlOpIndex = i
                     ReturnValueDisposition = ReturnValueDisposition.PushToCaller
-                    WrapExceptionInTargetInvocation = false
+                    ExceptionEscape = ExceptionEscape.Propagate
                 }
 
             let callee =
@@ -279,7 +279,7 @@ public static class Entry
                 Constructing = ConstructionState.NotConstructing
                 CallSiteIlOpIndex = 0
                 ReturnValueDisposition = ReturnValueDisposition.PushToCaller
-                WrapExceptionInTargetInvocation = false
+                ExceptionEscape = ExceptionEscape.Propagate
             }
 
         let frame =
@@ -335,7 +335,7 @@ public static class Entry
                 Constructing = ConstructionState.NotConstructing
                 CallSiteIlOpIndex = 0
                 ReturnValueDisposition = ReturnValueDisposition.PushToCaller
-                WrapExceptionInTargetInvocation = false
+                ExceptionEscape = ExceptionEscape.Propagate
             }
 
         let frame =
@@ -411,7 +411,7 @@ public static class Entry
                 Constructing = ConstructionState.NotConstructing
                 CallSiteIlOpIndex = 0
                 ReturnValueDisposition = ReturnValueDisposition.PushToCaller
-                WrapExceptionInTargetInvocation = false
+                ExceptionEscape = ExceptionEscape.Propagate
             }
 
         let frame =

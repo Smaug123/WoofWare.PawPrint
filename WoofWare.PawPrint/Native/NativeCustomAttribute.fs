@@ -602,7 +602,7 @@ module NativeCustomAttribute =
                             threadState
                             None
                             ReturnValueDisposition.PushToCaller
-                            false // wrapExceptionInTargetInvocation
+                            ExceptionEscape.Propagate
                             state
 
                     NativeHandlerResult.pushedManagedCallee state |> Some
@@ -760,7 +760,7 @@ module NativeCustomAttribute =
                         threadState
                         None
                         ReturnValueDisposition.PushToCaller
-                        false // wrapExceptionInTargetInvocation
+                        ExceptionEscape.Propagate
                         state
 
                 NativeHandlerResult.pushedManagedCallee state |> Some

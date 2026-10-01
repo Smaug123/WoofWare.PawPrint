@@ -64,7 +64,8 @@ module TestFileSystemType =
 
     /// The machine a simulated process boots with on `flavour`'s platform.
     let private machineOn (flavour : SimulatedUnixFlavour) : UnixMachineState =
-        (UnixSystem.initial<int, string> (HostPlatform.platformOf flavour) 0 (CpuId 0)).Machine
+        (UnixSystem.initial<int, string> (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0))
+            .Machine
 
     let private everyFlavour : SimulatedUnixFlavour list =
         [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ]
@@ -247,7 +248,8 @@ module TestFileSystemType =
             ]
 
     let private systemWith (platform : SimulatedUnixPlatform) (mount : EmulatedMount) : UnixSystem<int, string> =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
+        let system : UnixSystem<int, string> =
+            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let system =
             { system with
@@ -702,7 +704,7 @@ module TestFileSystemType =
             for target in
                 [
                     OpenFileObject.File (InodeNumber 7L)
-                    OpenFileObject.StandardStream FileDescriptorRole.StandardInput
+                    OpenFileObject.Pipe (PipeId 0L)
                     OpenFileObject.Socket (SocketId 1L)
                     OpenFileObject.AnonymousInode
                 ] do
@@ -785,12 +787,8 @@ module TestFileSystemType =
             try
                 let rows =
                     [
-                        "pipe read end",
-                        ends.[0],
-                        Some (OpenFileObject.StandardStream FileDescriptorRole.StandardInput)
-                        "pipe write end",
-                        ends.[1],
-                        Some (OpenFileObject.StandardStream FileDescriptorRole.StandardOutput)
+                        "pipe read end", ends.[0], Some (OpenFileObject.Pipe (PipeId 0L))
+                        "pipe write end", ends.[1], Some (OpenFileObject.Pipe (PipeId 0L))
                         "AF_INET stream socket", inet, Some (OpenFileObject.Socket (SocketId 1L))
                         "AF_INET datagram socket", datagram, Some (OpenFileObject.Socket (SocketId 2L))
                         "AF_UNIX stream socket", local, Some (OpenFileObject.Socket (SocketId 3L))

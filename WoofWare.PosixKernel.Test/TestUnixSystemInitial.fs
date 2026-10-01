@@ -1,5 +1,7 @@
 namespace WoofWare.PosixKernel.Test
 
+open FsCheck
+open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
@@ -35,7 +37,9 @@ module TestUnixSystemInitial =
             | "darwin" -> SimulatedUnixPlatform.macOsArm64
             | other -> failwith $"unknown flavour %s{other}"
 
-        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
+        let system : UnixSystem<int, string> =
+            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
         system.Machine.SoMaxConn |> shouldEqual expected
 
     [<TestCase("linux")>]
@@ -47,7 +51,9 @@ module TestUnixSystemInitial =
             | "darwin" -> SimulatedUnixPlatform.macOsArm64, EmulatedMount.Apfs ApfsMount.defaults
             | other -> failwith $"unknown flavour %s{other}"
 
-        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
+        let system : UnixSystem<int, string> =
+            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
         system.Machine.Mount |> shouldEqual expected
 
         // The rule the pair exists to satisfy, asserted directly: a machine
@@ -63,7 +69,9 @@ module TestUnixSystemInitial =
     /// is carried as given.
     [<TestCaseSource(nameof platforms)>]
     let ``withSoMaxConn None takes the machine's own flavour's default`` (platform : SimulatedUnixPlatform) : unit =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
+        let system : UnixSystem<int, string> =
+            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
         let flavour = SimulatedUnixPlatform.flavour platform
 
         let configured = system.Machine |> UnixMachineState.withSoMaxConn (Some 7)
@@ -79,7 +87,11 @@ module TestUnixSystemInitial =
     let ``a forged platform is refused by the constructor`` () : unit =
         let exn =
             Assert.Throws<System.Exception> (fun () ->
-                UnixSystem.initial<int, string> Unchecked.defaultof<SimulatedUnixPlatform> 0 (CpuId 0)
+                UnixSystem.initial<int, string>
+                    Unchecked.defaultof<SimulatedUnixPlatform>
+                    UnixSystem.pipedStandardStreams
+                    0
+                    (CpuId 0)
                 |> ignore<UnixSystem<int, string>>
             )
 
@@ -87,7 +99,9 @@ module TestUnixSystemInitial =
 
     [<TestCaseSource(nameof platforms)>]
     let ``the platform asked for is the platform reported`` (platform : SimulatedUnixPlatform) : unit =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
+        let system : UnixSystem<int, string> =
+            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
         system.Machine.UnixPlatform |> shouldEqual platform
 
     // ------------------------------------------------------------------
@@ -101,7 +115,8 @@ module TestUnixSystemInitial =
     [<Test>]
     let ``the buffer check follows the platform's architecture`` () : unit =
         let checkOn (platform : SimulatedUnixPlatform) : UserBufferCheck =
-            (UnixSystem.initial<int, string> platform 0 (CpuId 0)).Machine.UserBufferCheck
+            (UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0))
+                .Machine.UserBufferCheck
 
         checkOn SimulatedUnixPlatform.linuxX64
         |> shouldEqual (UserBufferCheck.BeforeOperation 0x0000_7FFF_FFFF_F000UL)
@@ -129,7 +144,9 @@ module TestUnixSystemInitial =
             | "darwin" -> SimulatedUnixPlatform.macOsArm64
             | other -> failwith $"unknown flavour %s{other}"
 
-        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
+        let system : UnixSystem<int, string> =
+            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
         system.Machine.EphemeralPortRange |> shouldEqual (uint16 low, uint16 high)
         system.Machine.NextEphemeralPort |> shouldEqual (uint16 low)
 
@@ -147,7 +164,8 @@ module TestUnixSystemInitial =
     /// of exactly this.
     [<TestCaseSource(nameof platforms)>]
     let ``both clocks boot at zero on every flavour`` (platform : SimulatedUnixPlatform) : unit =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
+        let system : UnixSystem<int, string> =
+            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         system.Machine.NanosecondsSinceBoot |> shouldEqual 0L
         system.Machine.BootTime |> shouldEqual UnixTimestamp.epoch
@@ -161,7 +179,8 @@ module TestUnixSystemInitial =
     /// field only matters through what it makes the allocator do.
     [<TestCaseSource(nameof platforms)>]
     let ``the first ephemeral port drawn is the bottom of the range`` (platform : SimulatedUnixPlatform) : unit =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
+        let system : UnixSystem<int, string> =
+            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let socket : SocketDescription =
             {
@@ -208,7 +227,8 @@ module TestUnixSystemInitial =
         (platform : SimulatedUnixPlatform)
         : unit
         =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
+        let system : UnixSystem<int, string> =
+            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         system.Process.CurrentDirectoryInode
         |> shouldEqual (VirtualFileSystem.root system.Machine.FileSystem)
@@ -220,24 +240,120 @@ module TestUnixSystemInitial =
     /// is a system at all.
     [<TestCaseSource(nameof platforms)>]
     let ``a fresh system is sound`` (platform : SimulatedUnixPlatform) : unit =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
+        let system : UnixSystem<int, string> =
+            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
         UnixSystem.checkInvariants system |> shouldEqual []
 
     /// Only the three standard streams, which is what "before anything has
-    /// happened to it" means for the descriptor table.
+    /// happened to it" means for the descriptor table: each a pipe end of its
+    /// own, whose far end the client holds as the launch table says.
     [<TestCaseSource(nameof platforms)>]
     let ``only the standard streams are open`` (platform : SimulatedUnixPlatform) : unit =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
+        let system : UnixSystem<int, string> =
+            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
-        for fd, role in
+        for fd, pipeEnd, descriptor in
             [
-                0, FileDescriptorRole.StandardInput
-                1, FileDescriptorRole.StandardOutput
-                2, FileDescriptorRole.StandardError
+                0, PipeEnd.Read, LaunchDescriptor.SuppliedNothing
+                1, PipeEnd.Write, LaunchDescriptor.Drained
+                2, PipeEnd.Write, LaunchDescriptor.Drained
             ] do
             match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
-            | Some (OpenFileTarget.StandardStream actual) -> actual |> shouldEqual role
-            | other -> failwith $"fd %d{fd} is %A{other}, not the standard stream %O{role}"
+            | Some (OpenFileTarget.Pipe (pipeId, actualEnd)) ->
+                actualEnd |> shouldEqual pipeEnd
+
+                (UnixMachineState.pipe pipeId system.Machine).Origin
+                |> shouldEqual (PipeOrigin.Launched (ExternalEndpoint fd, descriptor))
+            | other -> failwith $"fd %d{fd} is %A{other}, not the %O{pipeEnd} end of a launched pipe"
 
         FileDescriptorRegistry.tryFind 3 system.Process.FileDescriptors
         |> shouldEqual None
+
+        system.Machine.Pipes |> Map.count |> shouldEqual 3
+        system.Machine.Delivered.IsEmpty |> shouldEqual true
+        UnixSystem.checkInvariants system |> shouldEqual []
+
+    /// A launch table of any shape: the descriptors it names and no others,
+    /// each onto a pipe of its own with the end and the far holder its entry
+    /// says, at the access mode `pipe(2)` gives that end, blocking. The pipes
+    /// are the machine's first, the system is sound, and the next descriptor a
+    /// process makes is the lowest the table left free.
+    [<Test>]
+    let ``initial launches exactly the table it is given`` () : unit =
+        let descriptor =
+            Gen.elements [ LaunchDescriptor.SuppliedNothing ; LaunchDescriptor.Drained ]
+
+        let table =
+            Gen.zip (Gen.choose (0, 12)) descriptor |> Gen.listOf |> Gen.map Map.ofList
+
+        let platform = Gen.elements platforms
+
+        let property (launch : Map<int, LaunchDescriptor>, platform : SimulatedUnixPlatform) : unit =
+            let system : UnixSystem<int, string> =
+                UnixSystem.initial platform launch 0 (CpuId 0)
+
+            let registry = system.Process.FileDescriptors
+
+            FileDescriptorRegistry.fds registry
+            |> Map.keys
+            |> Set.ofSeq
+            |> shouldEqual (launch |> Map.keys |> Set.ofSeq)
+
+            FileDescriptorRegistry.descriptions registry
+            |> Map.count
+            |> shouldEqual launch.Count
+
+            for KeyValue (fd, entry) in launch do
+                let description =
+                    match FileDescriptorRegistry.tryFind fd registry with
+                    | Some description -> description
+                    | None -> failwith $"fd %d{fd} is not open"
+
+                let expectedEnd, expectedMode =
+                    match entry with
+                    | LaunchDescriptor.SuppliedNothing -> PipeEnd.Read, FileAccessMode.ReadOnly
+                    | LaunchDescriptor.Drained -> PipeEnd.Write, FileAccessMode.WriteOnly
+
+                description.AccessMode |> shouldEqual expectedMode
+                description.NonBlocking |> shouldEqual false
+                description.Flock |> shouldEqual None
+
+                match description.Target with
+                | OpenFileTarget.Pipe (pipeId, pipeEnd) ->
+                    pipeEnd |> shouldEqual expectedEnd
+
+                    let pipe = UnixMachineState.pipe pipeId system.Machine
+                    pipe.Origin |> shouldEqual (PipeOrigin.Launched (ExternalEndpoint fd, entry))
+                    PipeBuffer.held pipe.Buffer |> shouldEqual 0
+                | other -> failwith $"fd %d{fd} is %A{other}, not a pipe end"
+
+            system.Machine.Pipes |> Map.count |> shouldEqual launch.Count
+            system.Machine.NextPipeId |> shouldEqual (PipeId (int64 launch.Count))
+            UnixSystem.checkInvariants system |> shouldEqual []
+
+            let lowestFree =
+                Seq.initInfinite id |> Seq.find (fun fd -> not (Map.containsKey fd launch))
+
+            match UnixPipe.pipe2 0 UserBuffer.Mapped system with
+            | Ok (Pipe2Answer.Created (readFd, _), _) -> readFd |> shouldEqual lowestFree
+            | other -> failwith $"pipe2 did not make a pipe: %A{other}"
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 300,
+            Prop.forAll (Arb.fromGen (Gen.zip table platform)) property
+        )
+
+    [<Test>]
+    let ``a launch table naming a negative descriptor is refused`` () : unit =
+        let exn =
+            Assert.Throws (fun () ->
+                UnixSystem.initial<int, string>
+                    SimulatedUnixPlatform.linuxX64
+                    (Map.ofList [ -1, LaunchDescriptor.Drained ])
+                    0
+                    (CpuId 0)
+                |> ignore
+            )
+
+        exn.Message |> shouldContainText "descriptor -1"

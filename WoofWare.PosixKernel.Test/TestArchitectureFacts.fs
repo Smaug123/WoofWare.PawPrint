@@ -205,7 +205,9 @@ module TestArchitectureFacts =
     [<Test>]
     let ``no machine mixes one architecture's address limit with another's`` () : unit =
         for platform, expected in presetChecks do
-            let system = UnixSystem.initial<int, string> platform 0 (CpuId 0)
+            let system =
+                UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
             UnixMachineState.userBufferCheck system.Machine |> shouldEqual expected
             UnixSystem.checkInvariants system |> shouldEqual []
 
@@ -218,7 +220,8 @@ module TestArchitectureFacts =
                 ]
 
         let property (platform : SimulatedUnixPlatform, limit : uint64) : unit =
-            let machine = (UnixSystem.initial<int, string> platform 0 (CpuId 0)).Machine
+            let machine =
+                (UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)).Machine
 
             let admissible =
                 SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Linux
@@ -260,7 +263,8 @@ module TestArchitectureFacts =
                 ]
 
         let property (platform : SimulatedUnixPlatform, check : UserBufferCheck) : unit =
-            let system = UnixSystem.initial<int, string> platform 0 (CpuId 0)
+            let system =
+                UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             let forged =
                 { system with

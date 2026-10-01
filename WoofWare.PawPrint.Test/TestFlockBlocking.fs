@@ -277,7 +277,7 @@ class Program
             let exn =
                 Assert.Catch (fun () -> runOn darwin "FlockDarwinStream.cs" source |> ignore<RunOutcome>)
 
-            exn.Message |> shouldContainText "standard stream"
+            exn.Message |> shouldContainText "end of pipe"
             exn.Message |> shouldContainText "ENOTSUP"
 
         /// Converting a lock: should the conversion fail, Linux has already dropped the old lock

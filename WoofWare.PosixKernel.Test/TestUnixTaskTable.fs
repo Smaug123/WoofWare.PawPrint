@@ -17,7 +17,7 @@ module TestUnixTaskTable =
 
     /// A Linux process whose leader is task 0, with process ID 4242.
     let private initial : UnixSystem<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
+        UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private withTask (name : int) (cpu : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         match UnixTaskLifecycle.spawn system.Leader name (CpuId cpu) system with

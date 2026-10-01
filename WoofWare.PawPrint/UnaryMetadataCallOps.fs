@@ -697,7 +697,7 @@ module internal UnaryMetadataCallOps =
                 threadState
                 None
                 ReturnValueDisposition.PushToCaller
-                false // wrapExceptionInTargetInvocation
+                ExceptionEscape.Propagate
                 state
 
         match commitment with
@@ -1068,7 +1068,7 @@ module internal UnaryMetadataCallOps =
                 threadState
                 None
                 ReturnValueDisposition.PushToCaller
-                false // wrapExceptionInTargetInvocation
+                ExceptionEscape.Propagate
                 state
 
         match commitment with
@@ -2083,7 +2083,7 @@ module internal UnaryMetadataCallOps =
                 threadState
                 None
                 ReturnValueDisposition.PushToCaller
-                false // wrapExceptionInTargetInvocation
+                ExceptionEscape.Propagate
                 state
 
         // This `calli` commits exactly once, so the function pointer popped above is simply gone
