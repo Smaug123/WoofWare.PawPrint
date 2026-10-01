@@ -386,7 +386,7 @@ module NativeCall =
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (byteConcreteType : ConcreteType<ConcreteTypeHandle>)
+        (byteConcreteType : ConcreteTypeHandle)
         (ptr : ManagedPointerSource)
         (byteIndex : int)
         : Result<byte, UndefinedValue>
