@@ -27,6 +27,9 @@ What lives here:
   method concretisation. The interpreter's machine state holds one. Its module asks the questions
   that need nothing else: instantiating a type or signature, comparing signatures and
   instantiations as CoreCLR does, resolving a type token, and finding a concrete type's base.
+* `MethodConcretisation` — a method instantiated for execution: its declaring type's and its own
+  generic parameters bound to concrete types, and its signature and locals concretised against
+  them, memoised per instantiation.
 * `ConcreteMethodTable`, `ConcreteInterfaceDispatch` — the method table of a concrete type, read
   through its definition's, and CoreCLR's interface map and dispatch map: which slot of the receiver
   implements an interface method, before any default interface body is considered.
