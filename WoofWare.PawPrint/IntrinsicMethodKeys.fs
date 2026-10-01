@@ -39,7 +39,7 @@ module IntrinsicMethodKeys =
         let concreteTypeShape (handle : ConcreteTypeHandle) : string =
             match handle with
             | ConcreteTypeHandle.Concrete _ ->
-                match AllConcreteTypes.lookup handle state.ConcreteTypes with
+                match AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes with
                 | Some ct ->
                     if String.IsNullOrEmpty ct.Namespace then
                         ct.Name

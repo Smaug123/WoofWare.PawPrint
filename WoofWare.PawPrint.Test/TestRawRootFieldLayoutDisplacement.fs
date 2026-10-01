@@ -90,7 +90,8 @@ public unsafe struct Nest
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : IlMachineState * ConcreteTypeHandle
         =
-        let kind = LoadedTypeInfo.signatureTypeKind bct state._LoadedAssemblies typeInfo
+        let kind =
+            LoadedTypeInfo.signatureTypeKind bct state.TypeSystem._LoadedAssemblies typeInfo
 
         IlMachineTypeResolution.concretizeType
             loggerFactory
@@ -108,7 +109,11 @@ public unsafe struct Nest
 
         let state =
             { state with
-                ConcreteTypes = Corelib.concretizeAll state._LoadedAssemblies bct AllConcreteTypes.Empty
+                TypeSystem =
+                    { state.TypeSystem with
+                        ConcreteTypes =
+                            Corelib.concretizeAll state.TypeSystem._LoadedAssemblies bct AllConcreteTypes.Empty
+                    }
             }
 
         let state = state.WithLoadedAssembly corpusAssembly
@@ -121,7 +126,7 @@ public unsafe struct Nest
         state, inner, outer, holder, twin, union, nest
 
     let private concreteType (handle : ConcreteTypeHandle) : ConcreteType<ConcreteTypeHandle> =
-        AllConcreteTypes.lookup handle baseState.ConcreteTypes
+        AllConcreteTypes.lookup handle baseState.TypeSystem.ConcreteTypes
         |> Option.defaultWith (fun () -> failwith $"%O{handle} has no registry entry")
 
     let private zeroOf (handle : ConcreteTypeHandle) : CliType =
@@ -413,8 +418,8 @@ public unsafe struct Nest
 
     let private viewType (access : Access) : ConcreteTypeHandle =
         match access with
-        | Access.Byte -> AllConcreteTypes.getRequiredNonGenericHandle baseState.ConcreteTypes bct.Byte
-        | Access.Int32 -> AllConcreteTypes.getRequiredNonGenericHandle baseState.ConcreteTypes bct.Int32
+        | Access.Byte -> AllConcreteTypes.getRequiredNonGenericHandle baseState.TypeSystem.ConcreteTypes bct.Byte
+        | Access.Int32 -> AllConcreteTypes.getRequiredNonGenericHandle baseState.TypeSystem.ConcreteTypes bct.Int32
         | Access.Inner -> innerHandle
         | Access.Pointer -> failwith "no view is taken as a pointer here"
 
@@ -515,9 +520,9 @@ public unsafe struct Nest
         let methodState =
             match
                 MethodState.Empty
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     bct
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     corelib
                     method
                     ImmutableArray.Empty

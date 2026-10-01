@@ -26,8 +26,13 @@ module TestFunctionPointerTargetIdentity =
         let _, loggerFactory = LoggerFactory.makeTest ()
         let loadedAssemblies = LoadedAssemblies.ofAssemblies [ corelib ]
 
-        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
-            ConcreteTypes = Corelib.concretizeAll loadedAssemblies baseClassTypes AllConcreteTypes.Empty
+        let initialState = IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+
+        { initialState with
+            TypeSystem =
+                { initialState.TypeSystem with
+                    ConcreteTypes = Corelib.concretizeAll loadedAssemblies baseClassTypes AllConcreteTypes.Empty
+                }
         }
 
     /// A uniquely-named instance method of the value type `System.Int32`, concretised afresh, so

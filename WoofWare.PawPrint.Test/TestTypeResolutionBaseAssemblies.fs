@@ -228,7 +228,7 @@ public class Holder
 
         let state = state.WithLoadedAssembly corelib
 
-        Netstandard21FSharpCore.isLoaded state._LoadedAssemblies.DefinitionNames
+        Netstandard21FSharpCore.isLoaded state.TypeSystem._LoadedAssemblies.DefinitionNames
         |> shouldEqual false
 
         loggerFactory, fsharpCore, baseTypes, state
@@ -256,7 +256,7 @@ public class Holder
 
         match target with
         | RuntimeTypeHandleTarget.Closed handle ->
-            AllConcreteTypes.lookup handle state.ConcreteTypes
+            AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes
             |> Option.defaultWith (fun () -> failwith "declaring type was not registered in ConcreteTypes")
             |> fun concreteType -> concreteType.Identity |> shouldEqual unit.Identity
         | other -> failwithf "expected the closed non-generic type Unit, got %A" other

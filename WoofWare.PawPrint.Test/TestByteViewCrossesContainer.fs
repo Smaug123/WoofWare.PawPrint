@@ -48,8 +48,13 @@ module TestByteViewCrossesContainer =
     let private state () : IlMachineState =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
-        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
-            ConcreteTypes = concreteTypes
+        let initialState = IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+
+        { initialState with
+            TypeSystem =
+                { initialState.TypeSystem with
+                    ConcreteTypes = concreteTypes
+                }
         }
 
     let private concreteTypeFor (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) : ConcreteTypeHandle =
@@ -90,7 +95,7 @@ module TestByteViewCrossesContainer =
         [ field "X" x ; field "Y" y ]
         |> SynthesisedLayoutKind.ofFields
             baseClassTypes
-            state.ConcreteTypes
+            state.TypeSystem.ConcreteTypes
             int32Handle
             Layout.Default
             System.Runtime.InteropServices.CharSet.Ansi
@@ -224,7 +229,7 @@ module TestByteViewCrossesContainer =
         ]
         |> SynthesisedLayoutKind.ofFields
             baseClassTypes
-            state.ConcreteTypes
+            state.TypeSystem.ConcreteTypes
             int32Handle
             Layout.Default
             System.Runtime.InteropServices.CharSet.Ansi

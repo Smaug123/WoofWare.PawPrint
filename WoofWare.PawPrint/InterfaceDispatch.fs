@@ -35,7 +35,7 @@ module InterfaceDispatch =
           TypeInfo<GenericParamFromMetadata, TypeDefn>
         =
         let ownerAssy =
-            state._LoadedAssemblies.ByDefinitionName ownerTy.Identity.AssemblyFullName
+            state.TypeSystem._LoadedAssemblies.ByDefinitionName ownerTy.Identity.AssemblyFullName
 
         let implAssy =
             match state.LoadedAssembly impl.RelativeToAssembly.FullName with
@@ -176,7 +176,7 @@ module InterfaceDispatch =
         let expandParents =
             not (
                 ty.Identity.AssemblyFullName = baseClassTypes.Corelib.DefinitionFullName
-                && LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo
+                && LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo
             )
 
         let rec expand
@@ -539,7 +539,7 @@ module InterfaceDispatch =
         (typeHandle : ConcreteTypeHandle)
         : IlMachineState * InterfaceDispatchMap
         =
-        match Map.tryFind typeHandle state._InterfaceDispatchMaps with
+        match Map.tryFind typeHandle state.TypeSystem._InterfaceDispatchMaps with
         | Some cached -> state, cached
         | None ->
 

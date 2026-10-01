@@ -25,6 +25,7 @@
         <Compile Include="VtableSlot.fs" />
         <Compile Include="MethodTableLayout.fs" />
         <Compile Include="MethodReferenceResolution.fs" />
+        <Compile Include="TypeSystemState.fs" />
         <EmbeddedResource Include="version.json" />
     </ItemGroup>
 

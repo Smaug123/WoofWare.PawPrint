@@ -20,7 +20,7 @@ module NativeRuntimeHelpers =
           "System.Runtime.CompilerServices",
           "RuntimeHelpers",
           "RunClassConstructor",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", generics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", generics) ],
           MethodReturnType.Void when generics.IsEmpty ->
             let operation = "RuntimeHelpers.RunClassConstructor"
             let qCallHandle = instruction.Arguments.[0] |> EvalStackValue.ofCliType
@@ -116,8 +116,8 @@ module NativeRuntimeHelpers =
           "System.Runtime.CompilerServices",
           "RuntimeHelpers",
           "GetHashCode",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Object ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let hash =
                 identityHash "RuntimeHelpers.GetHashCode" (EvalStackValue.ofCliType instruction.Arguments.[0])
 
@@ -130,7 +130,7 @@ module NativeRuntimeHelpers =
           "RuntimeHelpers",
           "TryEnsureSufficientExecutionStack",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) ->
             // CoreCLR probes the native thread's stack guard pages; BCL callers (async
             // resume, recursive parsers, `ConditionalWeakTable` rebuild, expression
             // compilation, ...) use this as a "take the fast recursive path or fall back
@@ -147,8 +147,8 @@ module NativeRuntimeHelpers =
           "System.Runtime.CompilerServices",
           "RuntimeHelpers",
           "TryGetHashCode",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Object ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // In CoreCLR, TryGetHashCode returns the cached identity hash or 0 if no hash
             // has been assigned yet, and the public GetHashCode wraps it as
             //     int h = TryGetHashCode(o); if (h == 0) return GetHashCodeWorker(o); return h;

@@ -308,7 +308,11 @@ module TestMarshalOffsetOf =
 
         let state =
             { state with
-                ConcreteTypes = Corelib.concretizeAll state._LoadedAssemblies bct AllConcreteTypes.Empty
+                TypeSystem =
+                    { state.TypeSystem with
+                        ConcreteTypes =
+                            Corelib.concretizeAll state.TypeSystem._LoadedAssemblies bct AllConcreteTypes.Empty
+                    }
             }
 
         state.WithLoadedAssembly corpusAssembly
@@ -342,8 +346,8 @@ module TestMarshalOffsetOf =
                 |> List.exactlyOne
 
             CliType.TryComputeMarshalFieldOffset
-                state.ConcreteTypes
-                state._LoadedAssemblies
+                state.TypeSystem.ConcreteTypes
+                state.TypeSystem._LoadedAssemblies
                 bct
                 handle
                 zero

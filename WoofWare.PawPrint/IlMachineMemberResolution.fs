@@ -207,12 +207,16 @@ module IlMachineMemberResolution =
                 MethodGenerics = List.ofSeq executing.Generics
             }
 
-        match Map.tryFind key state._MemberResolutions with
+        match Map.tryFind key state.TypeSystem._MemberResolutions with
         | Some resolved -> state, resolved.DeclaringAssembly, resolved.Member, resolved.TargetTypeGenerics
         | None ->
 
         let toTypeDefn (handle : ConcreteTypeHandle) : TypeDefn =
-            Concretization.concreteHandleToTypeDefn baseClassTypes handle state.ConcreteTypes state._LoadedAssemblies
+            Concretization.concreteHandleToTypeDefn
+                baseClassTypes
+                handle
+                state.TypeSystem.ConcreteTypes
+                state.TypeSystem._LoadedAssemblies
 
         let typeGenerics =
             executing.DeclaringTypeGenerics

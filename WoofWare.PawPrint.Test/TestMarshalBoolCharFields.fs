@@ -159,7 +159,10 @@ module TestMarshalBoolCharFields =
         let state = IlMachineState.initial loggerFactory dirs corelib
 
         { state with
-            ConcreteTypes = Corelib.concretizeAll state._LoadedAssemblies bct AllConcreteTypes.Empty
+            TypeSystem =
+                { state.TypeSystem with
+                    ConcreteTypes = Corelib.concretizeAll state.TypeSystem._LoadedAssemblies bct AllConcreteTypes.Empty
+                }
         }
 
     let private baseState : IlMachineState =
@@ -199,14 +202,20 @@ module TestMarshalBoolCharFields =
 
         match IlMachineState.cliTypeZeroOfHandle state bct handle with
         | CliType.ValueType vt, state ->
-            match CliValueType.TryComputeMarshalLayout state.ConcreteTypes state._LoadedAssemblies bct vt with
+            match
+                CliValueType.TryComputeMarshalLayout
+                    state.TypeSystem.ConcreteTypes
+                    state.TypeSystem._LoadedAssemblies
+                    bct
+                    vt
+            with
             | Result.Error (MarshalSizeError.NotMarshalable _) -> Result.Ok HostAnswer.CannotMarshal
             | Result.Error (MarshalSizeError.NotImplemented reason) -> Result.Error reason
             | Result.Ok (size, placements) ->
                 let blittable =
                     StructMarshalStub.isBlittableStruct
-                        state.ConcreteTypes
-                        state._LoadedAssemblies
+                        state.TypeSystem.ConcreteTypes
+                        state.TypeSystem._LoadedAssemblies
                         bct
                         (CliType.ValueType vt)
 
@@ -390,13 +399,19 @@ module TestMarshalBoolCharFields =
             for _, (typeName, expected) in types do
                 let state, handle = concretizeNamed state dumped typeName
 
-                StructMarshalStub.bestFitFlags state.ConcreteTypes state._LoadedAssemblies handle
+                StructMarshalStub.bestFitFlags state.TypeSystem.ConcreteTypes state.TypeSystem._LoadedAssemblies handle
                 |> shouldEqual expected
 
                 // And the struct stub's ANSI conversion is handed exactly those flags.
                 let zero, state = IlMachineState.cliTypeZeroOfHandle state bct handle
 
-                match StructMarshalStub.tryComputePlan state.ConcreteTypes state._LoadedAssemblies bct zero with
+                match
+                    StructMarshalStub.tryComputePlan
+                        state.TypeSystem.ConcreteTypes
+                        state.TypeSystem._LoadedAssemblies
+                        bct
+                        zero
+                with
                 | Result.Ok plan ->
                     plan.Steps
                     |> List.map _.Kind

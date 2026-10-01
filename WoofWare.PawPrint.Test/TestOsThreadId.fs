@@ -61,9 +61,9 @@ module TestOsThreadId =
 
         match
             MethodState.Empty
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 baseClassTypes
-                state._LoadedAssemblies
+                state.TypeSystem._LoadedAssemblies
                 corelib
                 method
                 ImmutableArray.Empty

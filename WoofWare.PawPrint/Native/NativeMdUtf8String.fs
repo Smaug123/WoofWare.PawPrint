@@ -1292,12 +1292,12 @@ module NativeMdUtf8String =
           "System.Private.CoreLib",
           "System",
           "MdUtf8String",
-          [ ConcretePointer (ConcreteVoid state.ConcreteTypes)
-            ConcretePointer (ConcreteVoid state.ConcreteTypes)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          [ ConcretePointer (ConcreteVoid state.TypeSystem.ConcreteTypes)
+            ConcretePointer (ConcreteVoid state.TypeSystem.ConcreteTypes)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
           // CoreLib declares `[return: MarshalAs(UnmanagedType.Bool)] bool`; the QCall
           // PInvoke stub presents this to us as a 4-byte Int32 (Win32 BOOL).
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "MdUtf8String_EqualsCaseInsensitive"
 
             if instruction.Arguments.Length <> 3 then

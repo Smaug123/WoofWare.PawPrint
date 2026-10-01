@@ -41,8 +41,13 @@ module TestStackFrameCapture =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let state =
-            { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
-                ConcreteTypes = concreteTypes
+            let initialState = IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+
+            { initialState with
+                TypeSystem =
+                    { initialState.TypeSystem with
+                        ConcreteTypes = concreteTypes
+                    }
             }
 
         let ctor =

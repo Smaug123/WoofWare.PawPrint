@@ -144,9 +144,9 @@ module NativeLibc =
             instruction.ExecutingMethod.Signature.ReturnType
         with
         | Some "kill",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `int kill(pid_t pid, int sig)`: `pid_t` is a 32-bit int on both
             // flavours.
             let operation = "libc kill"

@@ -135,9 +135,9 @@ module NativeGcFrameRegistration =
           "System.Runtime",
           "GCFrameRegistration",
           (("RegisterForGCReporting" | "UnregisterForGCReporting") as methodName),
-          [ ConcretePointer (CorelibType state.ConcreteTypes ("System.Runtime",
-                                                              "GCFrameRegistration",
-                                                              registrationGenerics)) ],
+          [ ConcretePointer (CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime",
+                                                                         "GCFrameRegistration",
+                                                                         registrationGenerics)) ],
           MethodReturnType.Void when registrationGenerics.IsEmpty ->
             let operation = $"GCFrameRegistration.%s{methodName}"
 

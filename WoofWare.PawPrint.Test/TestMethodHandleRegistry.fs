@@ -40,7 +40,14 @@ module TestMethodHandleRegistry =
             let state = initialState.WithLoadedAssembly corelib
 
             { state with
-                ConcreteTypes = Corelib.concretizeAll state._LoadedAssemblies baseClassTypes state.ConcreteTypes
+                TypeSystem =
+                    { state.TypeSystem with
+                        ConcreteTypes =
+                            Corelib.concretizeAll
+                                state.TypeSystem._LoadedAssemblies
+                                baseClassTypes
+                                state.TypeSystem.ConcreteTypes
+                    }
             }
 
         loggerFactory, baseClassTypes, assembly, state
@@ -110,9 +117,9 @@ module TestMethodHandleRegistry =
         let methodState =
             match
                 MethodState.Empty
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     baseClassTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     assembly
                     concretizedMethod
                     ImmutableArray.Empty
@@ -173,7 +180,9 @@ public static class HasMethod
         let allocated = ManagedHeap.get addr state.ManagedHeap
 
         let runtimeMethodInfoStubType =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeMethodInfoStub
+            AllConcreteTypes.getRequiredNonGenericHandle
+                state.TypeSystem.ConcreteTypes
+                baseClassTypes.RuntimeMethodInfoStub
 
         allocated.ConcreteType |> shouldEqual runtimeMethodInfoStubType
 
@@ -217,12 +226,14 @@ public static class HasMethod
             loadFixture ()
 
         let runtimeMethodInfoStubType =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeMethodInfoStub
+            AllConcreteTypes.getRequiredNonGenericHandle
+                state.TypeSystem.ConcreteTypes
+                baseClassTypes.RuntimeMethodInfoStub
 
         let stubAddr, registry, state =
             MethodHandleRegistry.getOrAllocateStub
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 state
                 (fun fields state -> IlMachineState.allocateManagedObject runtimeMethodInfoStubType fields state)
                 concretizedMethod
@@ -241,7 +252,7 @@ public static class HasMethod
         let freshAddr, registry, state =
             MethodHandleRegistry.allocateFreshStub
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 state
                 (fun fields state -> IlMachineState.allocateManagedObject runtimeMethodInfoStubType fields state)
                 concretizedMethod
@@ -259,7 +270,7 @@ public static class HasMethod
         let stubAddrAgain, registry, state =
             MethodHandleRegistry.getOrAllocateStub
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 state
                 (fun fields state -> IlMachineState.allocateManagedObject runtimeMethodInfoStubType fields state)
                 concretizedMethod
@@ -290,9 +301,9 @@ public static class HasMethod
         let methodState =
             match
                 MethodState.Empty
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     baseClassTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     assembly
                     concretizedMethod
                     ImmutableArray.Empty
@@ -436,14 +447,14 @@ public static class GenericMethodHolder
         =
         let handle =
             AllConcreteTypes.findExistingNonGenericConcreteType
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 method.RequiredDeclaringType.Identity
             |> Option.defaultWith (fun () ->
                 failwith
                     $"Closed ConcreteType for declaring type '%s{method.RequiredDeclaringType.Name}' was not registered in state.ConcreteTypes"
             )
 
-        AllConcreteTypes.lookup handle state.ConcreteTypes
+        AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes
         |> Option.defaultWith (fun () -> failwith $"declaring-type handle %O{handle} not present in mapping")
 
     [<Test>]
@@ -451,7 +462,7 @@ public static class GenericMethodHolder
         let _, baseClassTypes, _, _, _, state = loadFixture ()
 
         let zero =
-            MethodHandleRegistry.zeroInternalHandle baseClassTypes state.ConcreteTypes
+            MethodHandleRegistry.zeroInternalHandle baseClassTypes state.TypeSystem.ConcreteTypes
 
         zero.PrimitiveLikeKind
         |> shouldEqual (Some PrimitiveLikeKind.FlattenToRuntimePointer)
@@ -470,7 +481,12 @@ public static class GenericMethodHolder
         let declaringType = findDeclaringConcreteType state targetMethod
 
         let internalHandle, registry =
-            internalHandleForClosed baseClassTypes state.ConcreteTypes declaringType targetMethod state.MethodHandles
+            internalHandleForClosed
+                baseClassTypes
+                state.TypeSystem.ConcreteTypes
+                declaringType
+                targetMethod
+                state.MethodHandles
 
         let registryId =
             match
@@ -507,10 +523,15 @@ public static class GenericMethodHolder
         let declaringType = findDeclaringConcreteType state targetMethod
 
         let firstHandle, registry1 =
-            internalHandleForClosed baseClassTypes state.ConcreteTypes declaringType targetMethod state.MethodHandles
+            internalHandleForClosed
+                baseClassTypes
+                state.TypeSystem.ConcreteTypes
+                declaringType
+                targetMethod
+                state.MethodHandles
 
         let secondHandle, _ =
-            internalHandleForClosed baseClassTypes state.ConcreteTypes declaringType targetMethod registry1
+            internalHandleForClosed baseClassTypes state.TypeSystem.ConcreteTypes declaringType targetMethod registry1
 
         let extractId (vt : CliValueType) : int64 =
             match CliValueType.DereferenceField "m_handle" vt |> CliType.unwrapPrimitiveLikeDeep with
@@ -540,13 +561,13 @@ public static class GenericMethodHolder
 
         let targetMethod = assembly |> findMethod "GenericMethodHolder" "Identity"
 
-        // Register the (non-generic) declaring type in state.ConcreteTypes WITHOUT concretizing
+        // Register the (non-generic) declaring type in state.TypeSystem.ConcreteTypes WITHOUT concretizing
         // the generic method itself.
         let declaringTypeInfo =
             assembly.TypeDefs.[targetMethod.RequiredDeclaringType.Definition.Get]
 
         let stk =
-            LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies declaringTypeInfo
+            LoadedTypeInfo.signatureTypeKind baseClassTypes state.TypeSystem._LoadedAssemblies declaringTypeInfo
 
         let state, declaringHandle =
             IlMachineState.concretizeType
@@ -566,7 +587,7 @@ public static class GenericMethodHolder
         let internalHandle, _ =
             internalHandleForClosed
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 declaringConcrete
                 targetMethod
                 state.MethodHandles
@@ -642,9 +663,9 @@ public static class GenericMethodHolder
         let methodState =
             match
                 MethodState.Empty
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     baseClassTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     baseClassTypes.Corelib
                     method
                     ImmutableArray.Empty
@@ -703,7 +724,7 @@ public static class GenericMethodHolder
     let private invokeHasMethodInstantiation =
         invokeRuntimeMethodHandleFCall "HasMethodInstantiation"
 
-    /// Register `method`'s (non-generic) declaring type in `state.ConcreteTypes` and hand back the
+    /// Register `method`'s (non-generic) declaring type in `state.TypeSystem.ConcreteTypes` and hand back the
     /// `ConcreteType` the method-handle registry needs. `findDeclaringConcreteType` above only
     /// finds a type some earlier concretization already registered; this puts one there.
     let private concretizeDeclaringType
@@ -718,7 +739,7 @@ public static class GenericMethodHolder
             assembly.TypeDefs.[method.RequiredDeclaringType.Definition.Get]
 
         let stk =
-            LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies declaringTypeInfo
+            LoadedTypeInfo.signatureTypeKind baseClassTypes state.TypeSystem._LoadedAssemblies declaringTypeInfo
 
         let state, handle =
             IlMachineState.concretizeType
@@ -731,7 +752,7 @@ public static class GenericMethodHolder
                 (TypeDefn.FromDefinition (method.RequiredDeclaringType.Identity, stk))
 
         let concrete =
-            AllConcreteTypes.lookup handle state.ConcreteTypes
+            AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes
             |> Option.defaultWith (fun () -> failwith $"declaring-type handle %O{handle} not present in mapping")
 
         state, concrete
@@ -748,7 +769,12 @@ public static class GenericMethodHolder
             concretizeDeclaringType loggerFactory baseClassTypes assembly targetMethod state
 
         let internalHandle, registry =
-            internalHandleForClosed baseClassTypes state.ConcreteTypes declaringType targetMethod state.MethodHandles
+            internalHandleForClosed
+                baseClassTypes
+                state.TypeSystem.ConcreteTypes
+                declaringType
+                targetMethod
+                state.MethodHandles
 
         let state =
             { state with
@@ -806,7 +832,12 @@ public class HasConstructors
         let declaringType = findDeclaringConcreteType state targetMethod
 
         let internalHandle, registry =
-            internalHandleForClosed baseClassTypes state.ConcreteTypes declaringType targetMethod state.MethodHandles
+            internalHandleForClosed
+                baseClassTypes
+                state.TypeSystem.ConcreteTypes
+                declaringType
+                targetMethod
+                state.MethodHandles
 
         let state =
             { state with
@@ -827,7 +858,7 @@ public class HasConstructors
         let loggerFactory, baseClassTypes, _, _, _, state = loadFixture ()
 
         let bogusHandle =
-            MethodHandleRegistry.internalHandleFromId baseClassTypes state.ConcreteTypes 12345L
+            MethodHandleRegistry.internalHandleFromId baseClassTypes state.TypeSystem.ConcreteTypes 12345L
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
@@ -845,12 +876,17 @@ public class HasConstructors
 
         let expected =
             AllConcreteTypes.findExistingNonGenericConcreteType
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 targetMethod.RequiredDeclaringType.Identity
             |> Option.defaultWith (fun () -> failwith "declaring type was not registered in ConcreteTypes")
 
         let internalHandle, registry =
-            internalHandleForClosed baseClassTypes state.ConcreteTypes declaringType targetMethod state.MethodHandles
+            internalHandleForClosed
+                baseClassTypes
+                state.TypeSystem.ConcreteTypes
+                declaringType
+                targetMethod
+                state.MethodHandles
 
         let state =
             { state with
@@ -890,7 +926,7 @@ public class GenericHolder<T>
             assembly.TypeDefs.[targetMethod.RequiredDeclaringType.Definition.Get]
 
         let stk =
-            LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies declaringTypeInfo
+            LoadedTypeInfo.signatureTypeKind baseClassTypes state.TypeSystem._LoadedAssemblies declaringTypeInfo
 
         let closedDefn =
             TypeDefn.GenericInstantiation (
@@ -909,7 +945,7 @@ public class GenericHolder<T>
                 closedDefn
 
         let closedConcrete =
-            AllConcreteTypes.lookup closedHandle state.ConcreteTypes
+            AllConcreteTypes.lookup closedHandle state.TypeSystem.ConcreteTypes
             |> Option.defaultWith (fun () -> failwith $"closed handle %O{closedHandle} not present in mapping")
 
         // Guard the guard: if this were empty, the test could not distinguish an exact MethodTable
@@ -917,7 +953,12 @@ public class GenericHolder<T>
         closedConcrete.Generics.IsEmpty |> shouldEqual false
 
         let internalHandle, registry =
-            internalHandleForClosed baseClassTypes state.ConcreteTypes closedConcrete targetMethod state.MethodHandles
+            internalHandleForClosed
+                baseClassTypes
+                state.TypeSystem.ConcreteTypes
+                closedConcrete
+                targetMethod
+                state.MethodHandles
 
         let state =
             { state with
@@ -965,7 +1006,7 @@ public static class GenericMethodHolder
             let internalHandle, registry =
                 MethodHandleRegistry.getOrAllocateConcreteInternalHandle
                     baseClassTypes
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     concretized
                     state.MethodHandles
 
@@ -982,7 +1023,7 @@ public static class GenericMethodHolder
 
         let expected =
             AllConcreteTypes.findExistingNonGenericConcreteType
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 targetMethod.RequiredDeclaringType.Identity
             |> Option.defaultWith (fun () -> failwith "declaring type was not registered in ConcreteTypes")
 
@@ -1057,7 +1098,12 @@ public static class InstantiationHolder
             concretizeDeclaringType loggerFactory baseClassTypes assembly targetMethod state
 
         let internalHandle, registry =
-            internalHandleForClosed baseClassTypes state.ConcreteTypes declaringType targetMethod state.MethodHandles
+            internalHandleForClosed
+                baseClassTypes
+                state.TypeSystem.ConcreteTypes
+                declaringType
+                targetMethod
+                state.MethodHandles
 
         let state =
             { state with
@@ -1083,7 +1129,12 @@ public static class InstantiationHolder
             concretizeDeclaringType loggerFactory baseClassTypes assembly targetMethod state
 
         let internalHandle, registry =
-            internalHandleForClosed baseClassTypes state.ConcreteTypes declaringType targetMethod state.MethodHandles
+            internalHandleForClosed
+                baseClassTypes
+                state.TypeSystem.ConcreteTypes
+                declaringType
+                targetMethod
+                state.MethodHandles
 
         // `getOrAllocateInternalHandle` mints the definition: empty MethodGenerics.
         match MethodHandleRegistry.resolveMethodFromId 1L registry with
@@ -1121,7 +1172,7 @@ public static class InstantiationHolder
         let internalHandle, registry =
             MethodHandleRegistry.getOrAllocateConcreteInternalHandle
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 concretized
                 state.MethodHandles
 
@@ -1200,7 +1251,7 @@ public static class InstantiationHolder
         typeInfo.Methods
         |> List.map (fun method ->
             let internalHandle, reg =
-                internalHandleForClosed baseClassTypes state.ConcreteTypes declaringType method registry
+                internalHandleForClosed baseClassTypes state.TypeSystem.ConcreteTypes declaringType method registry
 
             registry <- reg
 
@@ -1299,7 +1350,12 @@ public static class InstantiationHolder
         let declaringType = findDeclaringConcreteType state targetMethod
 
         let internalHandle, registry =
-            internalHandleForClosed baseClassTypes state.ConcreteTypes declaringType targetMethod state.MethodHandles
+            internalHandleForClosed
+                baseClassTypes
+                state.TypeSystem.ConcreteTypes
+                declaringType
+                targetMethod
+                state.MethodHandles
 
         let state =
             { state with
@@ -1329,7 +1385,7 @@ public static class InstantiationHolder
         let loggerFactory, baseClassTypes, _, _, _, state = loadFixture ()
 
         let bogusHandle =
-            MethodHandleRegistry.internalHandleFromId baseClassTypes state.ConcreteTypes 999L
+            MethodHandleRegistry.internalHandleFromId baseClassTypes state.TypeSystem.ConcreteTypes 999L
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
@@ -1450,7 +1506,7 @@ public sealed class Box<T>
         let openHandle, reg =
             MethodHandleRegistry.getOrAllocateInternalHandle
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 assembly.Name.FullName
                 openTarget
                 ctor
@@ -1459,7 +1515,7 @@ public sealed class Box<T>
         let closedHandle, reg =
             MethodHandleRegistry.getOrAllocateInternalHandle
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 assembly.Name.FullName
                 closedTarget
                 ctor
@@ -1496,7 +1552,7 @@ public sealed class Box<T>
         let first, reg =
             MethodHandleRegistry.getOrAllocateInternalHandle
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 assembly.Name.FullName
                 openTarget
                 ctor
@@ -1505,7 +1561,7 @@ public sealed class Box<T>
         let second, _ =
             MethodHandleRegistry.getOrAllocateInternalHandle
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 assembly.Name.FullName
                 openTarget
                 ctor
@@ -1532,7 +1588,7 @@ public sealed class Box<T>
                 let handle, reg =
                     MethodHandleRegistry.getOrAllocateInternalHandle
                         baseClassTypes
-                        state.ConcreteTypes
+                        state.TypeSystem.ConcreteTypes
                         assembly.Name.FullName
                         openTarget
                         method
@@ -1602,7 +1658,14 @@ public class HasNestedGeneric<TKey, TValue>
             let state = initial.WithLoadedAssembly corelib
 
             { state with
-                ConcreteTypes = Corelib.concretizeAll state._LoadedAssemblies baseClassTypes state.ConcreteTypes
+                TypeSystem =
+                    { state.TypeSystem with
+                        ConcreteTypes =
+                            Corelib.concretizeAll
+                                state.TypeSystem._LoadedAssemblies
+                                baseClassTypes
+                                state.TypeSystem.ConcreteTypes
+                    }
             }
 
         let _, _, walked =
@@ -1689,7 +1752,7 @@ public class HasNestedGeneric<TKey, TValue>
             Assert.Throws<exn> (fun () ->
                 MethodHandleRegistry.getOrAllocateInternalHandle
                     baseClassTypes
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     assembly.Name.FullName
                     (RuntimeTypeHandleTarget.GenericParameter (declaringIdentity, 0))
                     ctors.Head
@@ -1734,7 +1797,7 @@ public class HasNestedGeneric<TKey, TValue>
                 let handle, reg =
                     MethodHandleRegistry.getOrAllocateInternalHandle
                         baseClassTypes
-                        state.ConcreteTypes
+                        state.TypeSystem.ConcreteTypes
                         assembly.Name.FullName
                         target
                         ctor
@@ -1754,7 +1817,7 @@ public class HasNestedGeneric<TKey, TValue>
         let again, _ =
             MethodHandleRegistry.getOrAllocateInternalHandle
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 assembly.Name.FullName
                 construction
                 ctor
@@ -1782,7 +1845,7 @@ public class HasNestedGeneric<TKey, TValue>
             Assert.Throws<exn> (fun () ->
                 MethodHandleRegistry.getOrAllocateInternalHandle
                     baseClassTypes
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     assembly.Name.FullName
                     typicalSpelledOpen
                     ctors.Head
@@ -1805,7 +1868,7 @@ public class HasNestedGeneric<TKey, TValue>
         let internalHandle, registry =
             MethodHandleRegistry.getOrAllocateInternalHandle
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 assembly.Name.FullName
                 construction
                 ctor
@@ -1873,7 +1936,7 @@ public sealed class Plain
 
         match target with
         | RuntimeTypeHandleTarget.Closed handle ->
-            AllConcreteTypes.lookup handle state.ConcreteTypes
+            AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes
             |> Option.defaultWith (fun () -> failwith "declaring type was not registered in ConcreteTypes")
             |> fun concreteType ->
                 concreteType.Identity |> shouldEqual method.RequiredDeclaringType.Identity
@@ -1921,7 +1984,7 @@ public sealed class Plain
         let openHandle, reg =
             MethodHandleRegistry.getOrAllocateInternalHandle
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 assembly.Name.FullName
                 openTarget
                 plain
@@ -1930,7 +1993,7 @@ public sealed class Plain
         let expectedHandle, reg =
             MethodHandleRegistry.getOrAllocateInternalHandle
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 assembly.Name.FullName
                 closedTarget
                 plain
@@ -1981,7 +2044,7 @@ public sealed class Plain
         let handle, reg =
             MethodHandleRegistry.getOrAllocateInternalHandle
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 assembly.Name.FullName
                 openTarget
                 plain
@@ -1994,7 +2057,7 @@ public sealed class Plain
 
         let unrelated =
             RuntimeTypeHandleTarget.Closed (
-                AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Object
+                AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.Object
             )
 
         let runtimeType, state =
@@ -2029,7 +2092,7 @@ public sealed class Plain
         let handle, reg =
             MethodHandleRegistry.getOrAllocateInternalHandle
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 assembly.Name.FullName
                 openTarget
                 plain
@@ -2043,7 +2106,7 @@ public sealed class Plain
         let objectArray =
             RuntimeTypeHandleTarget.Closed (
                 ConcreteTypeHandle.OneDimArrayZero (
-                    AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Object
+                    AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.Object
                 )
             )
 
@@ -2143,12 +2206,14 @@ public static class TypicalHolder<T>
         : ManagedHeapAddress * IlMachineState
         =
         let runtimeMethodInfoStubType =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeMethodInfoStub
+            AllConcreteTypes.getRequiredNonGenericHandle
+                state.TypeSystem.ConcreteTypes
+                baseClassTypes.RuntimeMethodInfoStub
 
         let addr, registry, state =
             MethodHandleRegistry.allocateFreshStub
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 state
                 (fun fields state -> IlMachineState.allocateManagedObject runtimeMethodInfoStubType fields state)
                 seed
@@ -2180,7 +2245,12 @@ public static class TypicalHolder<T>
             concretizeDeclaringType loggerFactory baseClassTypes assembly targetMethod state
 
         let internalHandle, registry =
-            internalHandleForClosed baseClassTypes state.ConcreteTypes declaringType targetMethod state.MethodHandles
+            internalHandleForClosed
+                baseClassTypes
+                state.TypeSystem.ConcreteTypes
+                declaringType
+                targetMethod
+                state.MethodHandles
 
         let stubAddr, state =
             allocateStubCarrying
@@ -2209,7 +2279,12 @@ public static class TypicalHolder<T>
             concretizeDeclaringType loggerFactory baseClassTypes assembly targetMethod state
 
         let internalHandle, registry =
-            internalHandleForClosed baseClassTypes state.ConcreteTypes declaringType targetMethod state.MethodHandles
+            internalHandleForClosed
+                baseClassTypes
+                state.TypeSystem.ConcreteTypes
+                declaringType
+                targetMethod
+                state.MethodHandles
 
         match MethodHandleRegistry.resolveMethodFromId (registryIdOf internalHandle) registry with
         | Some (MethodHandle.FromMetadata identity) -> identity.GetMethodGenerics () |> shouldEqual []
@@ -2250,7 +2325,7 @@ public static class TypicalHolder<T>
         let internalHandle, registry =
             MethodHandleRegistry.getOrAllocateConcreteInternalHandle
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 concretized
                 state.MethodHandles
 
@@ -2305,7 +2380,7 @@ public static class TypicalHolder<T>
         let internalHandle, registry =
             MethodHandleRegistry.getOrAllocateInternalHandle
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 assembly.DefinitionFullName
                 (RuntimeTypeHandleTarget.Closed closedHandle)
                 targetMethod
@@ -2336,7 +2411,7 @@ public static class TypicalHolder<T>
         let internalHandle, registry =
             MethodHandleRegistry.getOrAllocateInternalHandle
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 assembly.DefinitionFullName
                 (RuntimeTypeHandleTarget.OpenGenericTypeDefinition targetMethod.RequiredDeclaringType.Identity)
                 targetMethod
@@ -2378,7 +2453,7 @@ public static class TypicalHolder<T>
         let internalHandle, registry =
             MethodHandleRegistry.getOrAllocateInternalHandle
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 assembly.DefinitionFullName
                 construction
                 targetMethod
@@ -2423,12 +2498,12 @@ public static class TypicalHolder<T>
         let stubAddr, registry, state =
             MethodHandleRegistry.mintDynamicMethod
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 state
                 (fun fields state ->
                     IlMachineState.allocateManagedObject
                         (AllConcreteTypes.getRequiredNonGenericHandle
-                            state.ConcreteTypes
+                            state.TypeSystem.ConcreteTypes
                             baseClassTypes.RuntimeMethodInfoStub)
                         fields
                         state
@@ -2475,12 +2550,12 @@ public static class TypicalHolder<T>
             typicalFixture "TypicalWrongClassAssembly"
 
         let objectHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Object
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.Object
 
         let objectValue =
             SynthesisedLayoutKind.ofFields
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 objectHandle
                 Layout.Default
                 System.Runtime.InteropServices.CharSet.Ansi
@@ -2560,7 +2635,10 @@ public static class TypicalHolder<T>
                     state
 
             let id, registry =
-                MethodHandleRegistry.getOrAllocateConcreteId state'.ConcreteTypes concretized state'.MethodHandles
+                MethodHandleRegistry.getOrAllocateConcreteId
+                    state'.TypeSystem.ConcreteTypes
+                    concretized
+                    state'.MethodHandles
 
             state <-
                 { state' with
@@ -2663,7 +2741,7 @@ public static class TypicalHolder<T>
                 | other -> failwith $"%s{description}: registry id %d{id} resolved to %O{other}"
 
             let typical =
-                MethodHandleRegistry.typicalMethodDefinition state.ConcreteTypes identity
+                MethodHandleRegistry.typicalMethodDefinition state.TypeSystem.ConcreteTypes identity
 
             // Same MethodDef row, same assembly: only the instantiations change.
             typical.GetMethodDefinitionHandle ()
@@ -2685,7 +2763,7 @@ public static class TypicalHolder<T>
             if not (isTypical typical) then
                 failwith $"%s{description}: the typical definition %O{typical} is not typical"
 
-            MethodHandleRegistry.typicalMethodDefinition state.ConcreteTypes typical
+            MethodHandleRegistry.typicalMethodDefinition state.TypeSystem.ConcreteTypes typical
             |> shouldEqual typical
 
             // The FCall and the QCall agree about which handles need rebinding: a handle is left
@@ -2769,8 +2847,8 @@ public static class TypicalHolder<T>
 
             // Stripping the class instantiation afterwards reaches the typical definition, as
             // stripping both at once does.
-            MethodHandleRegistry.typicalMethodDefinition state.ConcreteTypes stripped
-            |> shouldEqual (MethodHandleRegistry.typicalMethodDefinition state.ConcreteTypes identity)
+            MethodHandleRegistry.typicalMethodDefinition state.TypeSystem.ConcreteTypes stripped
+            |> shouldEqual (MethodHandleRegistry.typicalMethodDefinition state.TypeSystem.ConcreteTypes identity)
 
             // The stripped handle is the very one reflection over the declaring type mints for the
             // method, which is what `RuntimeType.GetMethodBase` looks the answer up by.

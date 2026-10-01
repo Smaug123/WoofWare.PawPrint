@@ -517,13 +517,13 @@ module StructMarshalStub =
         : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
         =
         let declaringType =
-            AllConcreteTypes.lookup typeHandle state.ConcreteTypes
+            AllConcreteTypes.lookup typeHandle state.TypeSystem.ConcreteTypes
             |> Option.defaultWith (fun () ->
                 failwith $"%s{operation}: type %O{typeHandle} is not registered in AllConcreteTypes"
             )
 
         let handleOf (ty : TypeInfo<GenericParamFromMetadata, TypeDefn>) : ConcreteTypeHandle =
-            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes ty.Identity
+            AllConcreteTypes.findExistingNonGenericConcreteType state.TypeSystem.ConcreteTypes ty.Identity
             |> Option.defaultWith (fun () -> failwith $"%s{operation}: %s{ty.Name} is not concretized")
 
         // CoreLib invokes the stub through
@@ -622,7 +622,7 @@ module StructMarshalStub =
         (state : IlMachineState)
         : ConcreteTypeHandle
         =
-        AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Byte.Identity
+        AllConcreteTypes.findExistingNonGenericConcreteType state.TypeSystem.ConcreteTypes baseClassTypes.Byte.Identity
         |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Byte is not concretized")
 
     /// One of the guest's static `System.StubHelpers` conversions, by class, name and arity:
@@ -782,7 +782,7 @@ module StructMarshalStub =
 
         let typeHandle =
             AllConcreteTypes.findExistingConcreteType
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 instruction.ExecutingMethod.RequiredDeclaringType.Identity
                 instruction.ExecutingMethod.DeclaringTypeGenerics
             |> Option.defaultWith (fun () ->
@@ -860,7 +860,9 @@ module StructMarshalStub =
         /// The plan for the stub's type, derived from `value`. `nativeSizeOnly` callers pass the
         /// type's zero because they need only the total.
         let planFor (value : CliType) : StructMarshalPlan =
-            match tryComputePlan state.ConcreteTypes state._LoadedAssemblies baseClassTypes value with
+            match
+                tryComputePlan state.TypeSystem.ConcreteTypes state.TypeSystem._LoadedAssemblies baseClassTypes value
+            with
             | Result.Ok plan -> plan
             | Result.Error reason ->
                 // Unreachable in practice: the QCall only mints a stub pointer for a type whose

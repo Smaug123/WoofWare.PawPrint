@@ -377,7 +377,7 @@ module TestContextSwitchPrior =
     /// No metadata op is `InterpreterOnly`, which is why this fixture has no anchor list for
     /// that band here (`Ldstr` still is, and is pinned by the routing test below). The
     /// token-resolution ops are in this band because a first touch of a type from an unloaded
-    /// assembly registers it in `_LoadedAssemblies`, which `AppDomain.GetAssemblies()` reports —
+    /// assembly registers it in `TypeSystem._LoadedAssemblies`, which `AppDomain.GetAssemblies()` reports —
     /// so which thread gets there first is guest-readable, on the once-per-assembly execution
     /// that does the loading.
     let private metadataRarelyGuestVisible : UnaryMetadataTokenIlOp list =

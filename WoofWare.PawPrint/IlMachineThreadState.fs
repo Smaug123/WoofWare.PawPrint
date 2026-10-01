@@ -229,8 +229,9 @@ module IlMachineThreadState =
                 // Distinguishing that from a genuinely malformed method costs a lookup only on the
                 // path that is about to fail anyway.
                 if
-                    AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Void.Identity = Some
-                        retType
+                    AllConcreteTypes.findExistingNonGenericConcreteType
+                        state.TypeSystem.ConcreteTypes
+                        baseClassTypes.Void.Identity = Some retType
                 then
                     failwith
                         $"logic error: %s{returningMethodState.ExecutingMethod.Name} has a concretised signature claiming to return System.Void by value; its signature bypassed the custom-modifier fold in IlMachineState.concretizeMethodSignature"
@@ -286,10 +287,13 @@ module IlMachineThreadState =
             let constructed = ManagedHeap.get constructing state.ManagedHeap
 
             let _, ty' =
-                AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes constructed.ConcreteType
+                AllConcreteTypes.tryTypeInfo
+                    state.TypeSystem._LoadedAssemblies
+                    state.TypeSystem.ConcreteTypes
+                    constructed.ConcreteType
                 |> Option.get
 
-            if LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies ty' then
+            if LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies ty' then
                 state
                 // TODO: ordering of fields probably important
                 |> pushToEvalStack (CliType.ValueType constructed.Contents) currentThread
@@ -333,11 +337,7 @@ module IlMachineThreadState =
 
         let state =
             {
-                ConcreteTypes = AllConcreteTypes.Empty
-                _VirtualSlotTables = Map.empty
-                _InterfaceDispatchMaps = Map.empty
-                _MemberResolutions = Map.empty
-                _ConcretisedMethods = Map.empty
+                TypeSystem = TypeSystemState.Empty
                 _ZeroValues = Map.empty
                 Logger = logger
                 LoggerFactory = lf
@@ -348,7 +348,6 @@ module IlMachineThreadState =
                 ManagedHeap = ManagedHeap.empty
                 ThreadState = Map.empty
                 InternedStrings = ImmutableDictionary.Empty
-                _LoadedAssemblies = LoadedAssemblies.empty
                 EntryAssembly = entryAssembly.Name
                 LatchedExitCode = 0
                 Statics = StaticStorage.empty

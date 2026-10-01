@@ -134,7 +134,9 @@ module internal NativeReflectionInvocation =
         else
 
         let byteType =
-            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Byte.Identity
+            AllConcreteTypes.findExistingNonGenericConcreteType
+                state.TypeSystem.ConcreteTypes
+                baseClassTypes.Byte.Identity
             |> Option.defaultWith (fun () ->
                 failwith "argumentByrefSlot: System.Byte is not concretized, so no byte cursor can be built"
             )
@@ -198,9 +200,9 @@ module internal NativeReflectionInvocation =
         match storage with
         | ArgumentStorage.ValueTypePayload ty -> ty
         | ArgumentStorage.IntPtrPayload ->
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes ctx.BaseClassTypes.IntPtr
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes ctx.BaseClassTypes.IntPtr
         | ArgumentStorage.ObjectSlot ->
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes ctx.BaseClassTypes.Object
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes ctx.BaseClassTypes.Object
 
     /// The byref the caller placed at `args[index]`, re-viewed as a byref to what `storage` says it
     /// addresses.
@@ -473,11 +475,17 @@ module internal NativeReflectionInvocation =
           "System",
           "RuntimeMethodHandle",
           "InvokeMethod",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", targetGenerics)
-            ConcretePointer (ConcretePointer (ConcreteVoid state.ConcreteTypes))
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", sigGenerics)
-            CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", resultGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        targetGenerics)
+            ConcretePointer (ConcretePointer (ConcreteVoid state.TypeSystem.ConcreteTypes))
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        sigGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("", "BOOL", boolGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        resultGenerics) ],
           MethodReturnType.Void when
             targetGenerics.IsEmpty
             && sigGenerics.IsEmpty
@@ -633,7 +641,7 @@ module internal NativeReflectionInvocation =
                             failwith
                                 $"%s{operation}: this corelib declares no System.ByReference, but MethodBaseInvoker builds its argument buffer out of them"
                         | Some byReference ->
-                            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes byReference
+                            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes byReference
                             |> IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes
 
                     state,
@@ -854,11 +862,13 @@ module internal NativeReflectionInvocation =
           "",
           "BoxCache",
           "GetBoxInfo",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", typeHandleGenerics)
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        typeHandleGenerics)
             ConcretePointer (ConcreteFunctionPointer _)
-            ConcretePointer (ConcretePointer (ConcreteVoid state.ConcreteTypes))
-            ConcretePointer (ConcreteInt32 state.ConcreteTypes)
-            ConcretePointer (ConcreteUInt32 state.ConcreteTypes) ],
+            ConcretePointer (ConcretePointer (ConcreteVoid state.TypeSystem.ConcreteTypes))
+            ConcretePointer (ConcreteInt32 state.TypeSystem.ConcreteTypes)
+            ConcretePointer (ConcreteUInt32 state.TypeSystem.ConcreteTypes) ],
           MethodReturnType.Void when typeHandleGenerics.IsEmpty ->
             // CoreCLR: `ReflectionInvocation_GetBoxInfo`, reflectioninvocation.cpp:1909. Describes
             // how `RuntimeType.BoxCache` should box a value of this type by `calli`: an allocator
@@ -947,9 +957,11 @@ module internal NativeReflectionInvocation =
           "",
           "CreateUninitializedCache",
           "GetCreateUninitializedInfo",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", typeHandleGenerics)
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        typeHandleGenerics)
             ConcretePointer (ConcreteFunctionPointer _)
-            ConcretePointer (ConcretePointer (ConcreteVoid state.ConcreteTypes)) ],
+            ConcretePointer (ConcretePointer (ConcreteVoid state.TypeSystem.ConcreteTypes)) ],
           MethodReturnType.Void when typeHandleGenerics.IsEmpty ->
             // CoreCLR: `ReflectionSerialization_GetCreateUninitializedObjectInfo`,
             // reflectioninvocation.cpp:1737, the primitive under `RuntimeHelpers.GetUninitializedObject`.

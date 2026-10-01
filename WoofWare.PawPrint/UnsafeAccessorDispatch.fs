@@ -353,8 +353,11 @@ module internal UnsafeAccessorDispatch =
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ -> true
         | ConcreteTypeHandle.Concrete _ ->
-            match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes argument with
-            | Some (_, typeInfo) -> not (LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo)
+            match
+                AllConcreteTypes.tryTypeInfo state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes argument
+            with
+            | Some (_, typeInfo) ->
+                not (LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo)
             | None -> failwith $"BUG: %s{describe}: concrete type argument %O{argument} has no TypeDef row"
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
@@ -502,7 +505,7 @@ module internal UnsafeAccessorDispatch =
             // generic method (`mcInstantiated`) and an `RTSpecialName` one: measured, a struct's
             // generic interface implementation binds rather than being ambiguous.
             let hasUnboxingStub =
-                LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies targetTypeInfo
+                LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies targetTypeInfo
                 && not single.IsStatic
                 && single.IsVirtual
                 && single.Generics.IsEmpty
@@ -674,8 +677,11 @@ module internal UnsafeAccessorDispatch =
                     $"TODO: %s{describe} names the generic method %s{target.Name}, whose type parameter %s{parameter.Name} carries a constraint; deciding whether the accessor's own type argument satisfies it needs the assignability walk of CoreCLR's TypeVarTypeDesc::SatisfiesConstraints, which PawPrint does not have"
 
         let isByRefLike (argument : ConcreteTypeHandle) : bool =
-            match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes argument with
-            | Some (_, typeInfo) -> LoadedTypeInfo.isByRefLike baseClassTypes state._LoadedAssemblies typeInfo
+            match
+                AllConcreteTypes.tryTypeInfo state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes argument
+            with
+            | Some (_, typeInfo) ->
+                LoadedTypeInfo.isByRefLike baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo
             | None ->
                 // A structural handle: a byref, pointer, array or function pointer. None of those
                 // is a byref-like *type* -- `Span<T>` is nominal -- so the anti-constraint does not
@@ -735,8 +741,14 @@ module internal UnsafeAccessorDispatch =
             | ConcreteTypeHandle.FunctionPointer _ -> false
             | ConcreteTypeHandle.Byref _ -> failwith $"BUG: %s{describe} bound a constructor of an array of byrefs"
             | ConcreteTypeHandle.Concrete _ ->
-                match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes element with
-                | Some (_, typeInfo) -> not (LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo)
+                match
+                    AllConcreteTypes.tryTypeInfo
+                        state.TypeSystem._LoadedAssemblies
+                        state.TypeSystem.ConcreteTypes
+                        element
+                with
+                | Some (_, typeInfo) ->
+                    not (LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo)
                 | None -> failwith $"BUG: %s{describe}: array element type %O{element} has no TypeDef row"
 
         if not sharesObjectArrayMethods then
@@ -744,7 +756,7 @@ module internal UnsafeAccessorDispatch =
         else
 
         let objectHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Object
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.Object
 
         match ctor with
         | ArrayConstructor.SzArray (_, depth) -> ArrayConstructor.SzArray (objectHandle, depth)
@@ -1036,12 +1048,17 @@ module internal UnsafeAccessorDispatch =
             | UnsafeAccessorKind.StaticField -> state, Error (UnsafeAccessorRefusal.MissingField (arrayName (), name))
         | _ ->
 
-        match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes strippedTarget with
+        match
+            AllConcreteTypes.tryTypeInfo
+                state.TypeSystem._LoadedAssemblies
+                state.TypeSystem.ConcreteTypes
+                strippedTarget
+        with
         | None -> state, Error (UnsafeAccessorRefusal.BadImageFormat invalidUsageMessage)
         | Some (targetType, targetTypeInfo) ->
 
         let targetIsValueType =
-            LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies targetTypeInfo
+            LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies targetTypeInfo
 
         // An instance member of a value type must be reached through a byref, or the accessor
         // would be handed a copy (unsafeaccessors.cpp:1111 and :1134).
@@ -1478,7 +1495,7 @@ module internal UnsafeAccessorDispatch =
         let accessorDeclaringType =
             match
                 AllConcreteTypes.findExistingConcreteType
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     accessor.RequiredDeclaringType.Identity
                     accessor.DeclaringTypeGenerics
             with

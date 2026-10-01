@@ -194,8 +194,8 @@ module FrameworkUnderTest =
     /// one.
     let loadedCoreLib (state : IlMachineState) : DumpedAssembly =
         let corelibs =
-            state._LoadedAssemblies.DefinitionNames
-            |> Seq.choose state._LoadedAssemblies.TryByDefinitionName
+            state.TypeSystem._LoadedAssemblies.DefinitionNames
+            |> Seq.choose state.TypeSystem._LoadedAssemblies.TryByDefinitionName
             |> Seq.filter (fun loaded -> loaded.Name.Name = "System.Private.CoreLib")
             |> Seq.toList
 

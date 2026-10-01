@@ -85,17 +85,21 @@ module MethodHandleResolution =
         // guest-authored object can arrive typed as this parameter.
         let fieldName =
             match object'.ConcreteType with
-            | CorelibType state.ConcreteTypes ("System.Reflection", "RuntimeMethodInfo", generics) when generics.IsEmpty ->
-                "m_handle"
-            | CorelibType state.ConcreteTypes ("System.Reflection", "RuntimeConstructorInfo", generics) when
+            | CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection", "RuntimeMethodInfo", generics) when
                 generics.IsEmpty
                 ->
                 "m_handle"
-            | CorelibType state.ConcreteTypes ("System", "RuntimeMethodInfoStub", generics) when generics.IsEmpty ->
+            | CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection", "RuntimeConstructorInfo", generics) when
+                generics.IsEmpty
+                ->
+                "m_handle"
+            | CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodInfoStub", generics) when
+                generics.IsEmpty
+                ->
                 "m_value"
             | other ->
                 let described =
-                    match AllConcreteTypes.lookup other state.ConcreteTypes with
+                    match AllConcreteTypes.lookup other state.TypeSystem.ConcreteTypes with
                     | Some concrete -> $"%s{concrete.Namespace}.%s{concrete.Name} in %O{concrete.AssemblyFullName}"
                     | None -> string other
 
@@ -175,7 +179,7 @@ module MethodHandleResolution =
         let typeGenerics =
             match declaringTypeHandle with
             | ConcreteTypeHandle.Concrete _ ->
-                match AllConcreteTypes.lookup declaringTypeHandle state.ConcreteTypes with
+                match AllConcreteTypes.lookup declaringTypeHandle state.TypeSystem.ConcreteTypes with
                 | Some declaringType -> declaringType.Generics
                 | None ->
                     failwith

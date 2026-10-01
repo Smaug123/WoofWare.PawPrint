@@ -31,10 +31,12 @@ module NativeRuntimeModule =
           "System.Private.CoreLib",
           "System.Reflection",
           "RuntimeModule",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", qCallModuleGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallModule",
+                                                        qCallModuleGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when qCallModuleGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
             // `RuntimeModule_GetTypes` (coreclr/vm/commodule.cpp:689), the QCall behind
             // `Module.GetTypes()` and `Assembly.DefinedTypes`. CoreCLR enumerates the module's
@@ -159,10 +161,12 @@ module NativeRuntimeModule =
           "System.Private.CoreLib",
           "System.Reflection",
           "RuntimeModule",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", qCallModuleGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "StringHandleOnStack",
-                                             stringHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallModule",
+                                                        qCallModuleGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "StringHandleOnStack",
+                                                        stringHandleGenerics) ],
           MethodReturnType.Void when qCallModuleGenerics.IsEmpty && stringHandleGenerics.IsEmpty ->
             // `RuntimeModule_GetScopeName` (coreclr/vm/commodule.cpp:604), behind
             // `Module.ScopeName` and so `Module.ToString()`. CoreCLR answers

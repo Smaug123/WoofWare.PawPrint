@@ -117,7 +117,14 @@ public static class Caller
             let state = initialState.WithLoadedAssembly corelib
 
             { state with
-                ConcreteTypes = Corelib.concretizeAll state._LoadedAssemblies baseClassTypes state.ConcreteTypes
+                TypeSystem =
+                    { state.TypeSystem with
+                        ConcreteTypes =
+                            Corelib.concretizeAll
+                                state.TypeSystem._LoadedAssemblies
+                                baseClassTypes
+                                state.TypeSystem.ConcreteTypes
+                    }
             }
 
         loggerFactory, baseClassTypes, corelib, assembly, state
@@ -211,9 +218,9 @@ public static class Caller
         let methodState =
             match
                 MethodState.Empty
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     baseClassTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     assembly
                     concretizedMethod
                     ImmutableArray.Empty
@@ -261,10 +268,10 @@ public static class Caller
         | None -> failwith "Expected ldtoken to push a handle, but the eval stack was empty"
 
     let private stringHandle (baseClassTypes : BaseClassTypes<DumpedAssembly>) (state : IlMachineState) =
-        AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.String
+        AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.String
 
     let private int32Handle (baseClassTypes : BaseClassTypes<DumpedAssembly>) (state : IlMachineState) =
-        AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Int32
+        AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.Int32
 
     /// The metadata identity the registry recorded for the handle `ldtoken` just pushed.
     ///
@@ -308,14 +315,14 @@ public static class Caller
         =
         match target with
         | RuntimeTypeHandleTarget.Closed handle ->
-            AllConcreteTypes.lookup handle state.ConcreteTypes
+            AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes
             |> Option.defaultWith (fun () -> failwith $"declaring type %O{handle} was not registered")
         | other -> failwith $"Expected a closed declaring type, got %O{other}"
 
     /// Render a `ConcreteTypeHandle` as `Namespace.Name<args>`, so an assertion about an
     /// instantiation reads as one. Structural handles (arrays and the like) do not occur here.
     let rec private describe (state : IlMachineState) (handle : ConcreteTypeHandle) : string =
-        match AllConcreteTypes.lookup handle state.ConcreteTypes with
+        match AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes with
         | None -> failwith $"type handle %O{handle} was not registered"
         | Some concrete ->
             let name =

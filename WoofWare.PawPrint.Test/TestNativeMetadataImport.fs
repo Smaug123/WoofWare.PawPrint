@@ -377,7 +377,7 @@ public class MarshalShapes
         : IlMachineState
         =
         let typeDefn =
-            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies typeInfo
+            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo
 
         let state, _ =
             IlMachineState.concretizeType
@@ -479,7 +479,7 @@ public class MarshalShapes
                 (TypeDefn.FromDefinition (constArrayType.Identity, SignatureTypeKind.ValueType))
 
         let byteHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.Byte
 
         {
             LoggerFactory = loggerFactory
@@ -599,7 +599,7 @@ public class MarshalShapes
         : ManagedPointerSource * IlMachineState
         =
         let int32Handle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.Int32
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes fixture.BaseClassTypes.Int32
 
         let arrayAddr, state =
             IlMachineState.allocateArray
@@ -667,7 +667,7 @@ public class MarshalShapes
         : ManagedPointerSource * IlMachineState
         =
         let objectHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.Object
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes fixture.BaseClassTypes.Object
 
         let arrayAddr, state =
             IlMachineState.allocateArray
@@ -733,9 +733,9 @@ public class MarshalShapes
         let methodState =
             match
                 MethodState.Empty
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     fixture.BaseClassTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     fixture.BaseClassTypes.Corelib
                     method
                     ImmutableArray.Empty
@@ -2419,7 +2419,7 @@ public class MarshalShapes
         : ManagedPointerSource * IlMachineState
         =
         let handle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes elementType
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes elementType
 
         let arrayAddr, state =
             IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero handle) (fun () -> zero) 1 state
@@ -2883,7 +2883,7 @@ public class MarshalShapes
 
             // Look up Char in the *post*-invocation state: the handler is what concretizes it.
             let expectedCharType =
-                AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.Char
+                AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes fixture.BaseClassTypes.Char
 
             charType |> shouldEqual expectedCharType
         | other -> failwith $"expected a char pointer over the constant blob, got %O{other}"
@@ -2970,7 +2970,9 @@ public class MarshalShapes
                     IlMachineState.cliTypeZeroOfHandle
                         state
                         fixture.BaseClassTypes
-                        (AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.Char)
+                        (AllConcreteTypes.getRequiredNonGenericHandle
+                            state.TypeSystem.ConcreteTypes
+                            fixture.BaseClassTypes.Char)
 
                 System.String (
                     Array.init

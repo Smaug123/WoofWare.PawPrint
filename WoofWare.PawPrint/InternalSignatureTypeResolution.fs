@@ -33,14 +33,14 @@ module InternalSignatureTypeResolution =
             assembly.TypeDefs.[identity.TypeDefinition.Get]
 
         let kindOf (definition : TypeInfo<GenericParamFromMetadata, TypeDefn>) =
-            LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies definition
+            LoadedTypeInfo.signatureTypeKind baseClassTypes state.TypeSystem._LoadedAssemblies definition
 
         match source with
         | NativeIntSource.TypeHandlePtr target ->
             match target with
             | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
                 let concrete =
-                    AllConcreteTypes.lookup handle state.ConcreteTypes
+                    AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes
                     |> Option.defaultWith (fun () ->
                         failwith
                             $"%s{operation}: an ELEMENT_TYPE_INTERNAL run names %O{handle}, which is not a registered concrete type"

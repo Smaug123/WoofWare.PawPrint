@@ -51,7 +51,7 @@ module NativeCastHelpers =
             // class, never an interface.
             | RuntimeTypeHandleTarget.DynamicMethodsClass _ -> None
             | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
-                AllConcreteTypes.lookup handle state.ConcreteTypes
+                AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes
                 |> Option.map (fun ct -> ct.Identity)
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
             // An open constructed type carries the interface flag of its definition; this is
@@ -81,16 +81,19 @@ module NativeCastHelpers =
         =
         let typeInfo = baseClassTypes.IDynamicInterfaceCastable
 
-        match AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes typeInfo.Identity with
+        match AllConcreteTypes.findExistingNonGenericConcreteType state.TypeSystem.ConcreteTypes typeInfo.Identity with
         | Some handle -> state, handle
         | None ->
             let ct =
                 ConcreteType.makeFromIdentity typeInfo.Identity typeInfo.Namespace typeInfo.Name ImmutableArray.Empty
 
-            let handle, concreteTypes = AllConcreteTypes.add ct state.ConcreteTypes
+            let handle, concreteTypes = AllConcreteTypes.add ct state.TypeSystem.ConcreteTypes
 
             { state with
-                ConcreteTypes = concreteTypes
+                TypeSystem =
+                    { state.TypeSystem with
+                        ConcreteTypes = concreteTypes
+                    }
             },
             handle
 
@@ -215,12 +218,12 @@ module NativeCastHelpers =
           "System.Private.CoreLib",
           "System.Runtime.CompilerServices",
           "CastHelpers",
-          [ ConcretePointer (ConcreteVoid state.ConcreteTypes)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+          [ ConcretePointer (ConcreteVoid state.TypeSystem.ConcreteTypes)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
             objectHandleGenerics.IsEmpty
             ->
             let operation = "CastHelpers.IsInstanceOf_NoCacheLookup"

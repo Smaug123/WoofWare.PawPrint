@@ -259,7 +259,7 @@ public static class Program
             IlMachineState.allocateManagedString loggerFactory baseClassTypes "unwritten" state
 
         let objectHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Object
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.Object
 
         let arrayAddr, state =
             IlMachineState.allocateArray

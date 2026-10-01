@@ -30,7 +30,7 @@ module ReflectedTypeTarget =
                 $"%s{operation}: generic arity mismatch for %s{typeInfo.Namespace}.%s{typeInfo.Name}; definition has %i{typeInfo.Generics.Length} parameters, but call supplied %i{genericArguments.Length} arguments"
 
         let signatureTypeKind =
-            LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies typeInfo
+            LoadedTypeInfo.signatureTypeKind baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo
 
         let genericDefn = TypeDefn.FromDefinition (genericDefinition, signatureTypeKind)
 
@@ -40,8 +40,8 @@ module ReflectedTypeTarget =
                 Concretization.concreteHandleToTypeDefn
                     baseClassTypes
                     handle
-                    state.ConcreteTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem.ConcreteTypes
+                    state.TypeSystem._LoadedAssemblies
             )
             |> ImmutableArray.CreateRange
 

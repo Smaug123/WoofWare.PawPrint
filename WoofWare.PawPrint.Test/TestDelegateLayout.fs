@@ -289,7 +289,7 @@ module TestDelegateLayout =
             (ty : TypeInfo<GenericParamFromMetadata, TypeDefn>)
             : IlMachineState * ConcreteTypeHandle
             =
-            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies ty
+            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state.TypeSystem._LoadedAssemblies ty
             |> IlMachineState.concretizeType
                 loggerFactory
                 baseClassTypes
@@ -363,7 +363,10 @@ module TestDelegateLayout =
                 state
 
         let expected, _ =
-            MethodHandleRegistry.getOrAllocateConcreteId state.ConcreteTypes fixture.Invoke state.MethodHandles
+            MethodHandleRegistry.getOrAllocateConcreteId
+                state.TypeSystem.ConcreteTypes
+                fixture.Invoke
+                state.MethodHandles
 
         registryId |> shouldEqual expected
 
@@ -382,9 +385,9 @@ module TestDelegateLayout =
         let frame =
             match
                 MethodState.Empty
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     fixture.BaseClassTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     fixture.Guest
                     stub
                     ImmutableArray.Empty
@@ -461,7 +464,7 @@ module TestDelegateLayout =
             state.ManagedHeap
             |> ManagedHeap.setFieldById
                 fixture.Delegate
-                (DelegateLayout.fieldId state.ConcreteTypes invocations.InvocationCount)
+                (DelegateLayout.fieldId state.TypeSystem.ConcreteTypes invocations.InvocationCount)
                 (CliType.ObjectRef (Some fixture.Delegate))
 
         let state =
@@ -492,7 +495,9 @@ module TestDelegateLayout =
             | DelegateLayout.InvocationListAndCount (_, invocations) -> invocations
 
         let objectType =
-            AllConcreteTypes.getRequiredNonGenericHandle fixture.State.ConcreteTypes fixture.BaseClassTypes.Object
+            AllConcreteTypes.getRequiredNonGenericHandle
+                fixture.State.TypeSystem.ConcreteTypes
+                fixture.BaseClassTypes.Object
 
         // Two elements, neither of them a delegate: the stub must reach element 0 through the
         // layout's count and list, and refuse it as the layout's list cannot hold it.
@@ -504,7 +509,11 @@ module TestDelegateLayout =
                 fixture.State
 
         let set (field : FieldInfo<GenericParamFromMetadata, TypeDefn>) (value : CliType) (heap : ManagedHeap) =
-            ManagedHeap.setFieldById fixture.Delegate (DelegateLayout.fieldId state.ConcreteTypes field) value heap
+            ManagedHeap.setFieldById
+                fixture.Delegate
+                (DelegateLayout.fieldId state.TypeSystem.ConcreteTypes field)
+                value
+                heap
 
         let state =
             { state with

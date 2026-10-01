@@ -62,7 +62,7 @@ nix develop -c dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.
 - Published for the same reason as Semantics, with the same CI entries
 
 **WoofWare.PawPrint.TypeSystem**
-- The CLI type system as CoreCLR lays it out over the loaded assemblies: `TypeConcretisation.fs` (instantiating generic types to `ConcreteTypeHandle`s), `VtableSlot.fs` with `MethodTableLayout.fs` (a definition's method table: slot identity, slot content, and the slots past the vtable; the interpreter's `VirtualSlotLayout` wraps it for closed types and memoises dispatch tables), and `MethodReferenceResolution` (matching a `MemberRef` to the `MethodDef` it names, which CoreCLR does by searching method tables)
+- The CLI type system as CoreCLR lays it out over the loaded assemblies: `TypeConcretisation.fs` (instantiating generic types to `ConcreteTypeHandle`s), `VtableSlot.fs` with `MethodTableLayout.fs` (a definition's method table: slot identity, slot content, and the slots past the vtable; the interpreter's `VirtualSlotLayout` wraps it for closed types and memoises dispatch tables), `MethodReferenceResolution` (matching a `MemberRef` to the `MethodDef` it names, which CoreCLR does by searching method tables), and `TypeSystemState` (the loaded assemblies, the concrete types and the memos those walks keep, which `IlMachineState` holds as its `TypeSystem` field)
 - The line from the Loader is binding versus building: the Loader says which definition a reference names, and this says what the runtime builds from definitions
 - **It sees Domain and Loader, and never `WoofWare.PawPrint`**, for the same reason as the Loader. Published for the same reason, with the same CI entries
 

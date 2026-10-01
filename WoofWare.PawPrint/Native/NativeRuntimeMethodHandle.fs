@@ -552,7 +552,7 @@ module NativeRuntimeMethodHandle =
             =
             StubDeclaringType.MethodTable
                 {
-                    IsValueType = LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo
+                    IsValueType = LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo
                     HasInstantiation = hasInstantiation
                     IsGenericTypeDefinition = isGenericTypeDefinition
                     IsInterface = typeInfo.TypeAttributes.HasFlag TypeAttributes.Interface
@@ -577,7 +577,7 @@ module NativeRuntimeMethodHandle =
             factsOfTypeInfo (typeInfoOf identity) true false
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
             let concreteType =
-                AllConcreteTypes.lookup handle state.ConcreteTypes
+                AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes
                 |> Option.defaultWith (fun () ->
                     failwith $"%s{operation}: concrete type handle %O{handle} is not registered in ConcreteTypes"
                 )
@@ -687,7 +687,7 @@ module NativeRuntimeMethodHandle =
         | RuntimeTypeHandleTarget.Closed handle ->
             match handle with
             | ConcreteTypeHandle.Concrete _ ->
-                match AllConcreteTypes.lookup handle state.ConcreteTypes with
+                match AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes with
                 | None -> failwith $"%s{operation}: %s{label} concrete handle %O{handle} not found in AllConcreteTypes"
                 | Some concreteType ->
                     let assembly =
@@ -805,12 +805,14 @@ module NativeRuntimeMethodHandle =
         : IlMachineState
         =
         let runtimeMethodInfoStubType =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeMethodInfoStub
+            AllConcreteTypes.getRequiredNonGenericHandle
+                state.TypeSystem.ConcreteTypes
+                baseClassTypes.RuntimeMethodInfoStub
 
         let stubAddress, registry, state =
             MethodHandleRegistry.allocateFreshStubOfIdentity
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 state
                 (fun fields state -> IlMachineState.allocateManagedObject runtimeMethodInfoStubType fields state)
                 identity
@@ -839,13 +841,13 @@ module NativeRuntimeMethodHandle =
         : bool
         =
         let concreteType =
-            AllConcreteTypes.lookup handle state.ConcreteTypes
+            AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes
             |> Option.defaultWith (fun () ->
                 failwith $"%s{operation}: type %O{handle} is not registered in ConcreteTypes"
             )
 
         let describe =
-            AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes handle
+            AllConcreteTypes.describe state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes handle
 
         concreteType.Generics
         |> Seq.exists (IlMachineRuntimeMetadata.isSharedTypeArgument baseClassTypes state describe)
@@ -961,11 +963,15 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "IsCAVisibleFromDecoratedType",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", attrGenerics)
-            CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", ctorGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", sourceGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", moduleGenerics) ],
-          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        attrGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", ctorGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        sourceGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", moduleGenerics) ],
+          MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("", "BOOL", boolGenerics)) when
             attrGenerics.IsEmpty
             && ctorGenerics.IsEmpty
             && sourceGenerics.IsEmpty
@@ -1024,7 +1030,9 @@ module NativeRuntimeMethodHandle =
                 | Some (MethodInfo.Metadata (_, facts)) -> facts.MethodAttributes
                 | None ->
                     // No constructor was supplied or found.
-                    if LoadedTypeInfo.isValueType ctx.BaseClassTypes state._LoadedAssemblies attrTypeInfo then
+                    if
+                        LoadedTypeInfo.isValueType ctx.BaseClassTypes state.TypeSystem._LoadedAssemblies attrTypeInfo
+                    then
                         // CoreCLR: value types fall through with dwAttr = mdPublic, so
                         // canAccessMethod only checks class visibility.
                         MethodAttributes.Public
@@ -1106,8 +1114,8 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "GetIsCollectible",
-          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics) ],
-          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics) ],
+          MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("", "BOOL", boolGenerics)) when
             handleGenerics.IsEmpty && boolGenerics.IsEmpty
             ->
             let operation = "RuntimeMethodHandle.GetIsCollectible"
@@ -1142,8 +1150,8 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "GetFunctionPointer",
-          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics) ],
-          MethodReturnType.Returns (ConcreteIntPtr state.ConcreteTypes) when handleGenerics.IsEmpty ->
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics) ],
+          MethodReturnType.Returns (ConcreteIntPtr state.TypeSystem.ConcreteTypes) when handleGenerics.IsEmpty ->
             // CoreCLR runtimehandles.cpp:1276:
             //   pMethod->EnsureActive();
             //   pMethod->PrepareForUseAsAFunctionPointer();
@@ -1170,14 +1178,21 @@ module NativeRuntimeMethodHandle =
                 | RuntimeTypeHandleTarget.OpenConstructed _ -> FunctionPointerDeclaringType.ContainsGenericVariables
                 | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
                     let concreteType, typeInfo =
-                        AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes handle
+                        AllConcreteTypes.tryTypeInfo
+                            state.TypeSystem._LoadedAssemblies
+                            state.TypeSystem.ConcreteTypes
+                            handle
                         |> Option.defaultWith (fun () ->
                             failwith $"%s{operation}: declaring type handle %O{handle} names no registered type"
                         )
 
                     FunctionPointerDeclaringType.Closed
                         {
-                            IsValueType = LoadedTypeInfo.isValueType ctx.BaseClassTypes state._LoadedAssemblies typeInfo
+                            IsValueType =
+                                LoadedTypeInfo.isValueType
+                                    ctx.BaseClassTypes
+                                    state.TypeSystem._LoadedAssemblies
+                                    typeInfo
                             IsInterface = typeInfo.TypeAttributes.HasFlag TypeAttributes.Interface
                             IsSharedByGenericInstantiations =
                                 concreteType.Generics
@@ -1211,7 +1226,7 @@ module NativeRuntimeMethodHandle =
             | FunctionPointerOutcome.SharedCode _ ->
                 let declaringTypeName =
                     MethodHandleResolution.requireClosedDeclaringType operation identity
-                    |> AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes
+                    |> AllConcreteTypes.describe state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes
 
                 failwith
                     $"TODO: %s{operation} on %s{methodInfo.Name} of %s{declaringTypeName}, an instance method of a shared generic instantiation; CoreCLR answers the one address of the code every instantiation sharing its canonical form runs, which takes its instantiation from the receiver, and PawPrint does not model shared generic code"
@@ -1244,11 +1259,11 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "GetMethodInstantiation",
-          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics)
-            CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("", "BOOL", boolGenerics) ],
           MethodReturnType.Void when handleGenerics.IsEmpty && objectHandleGenerics.IsEmpty && boolGenerics.IsEmpty ->
             // CoreCLR runtimehandles.cpp:1708:
             //   Instantiation inst = pMethod->LoadMethodInstantiation();
@@ -1312,10 +1327,10 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "GetTypicalMethodDefinition",
-          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when handleGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
             // CoreCLR runtimehandles.cpp:1806:
             //   MethodDesc *pMethodTypical = pMethod->LoadTypicalMethodDefinition();
@@ -1348,7 +1363,7 @@ module NativeRuntimeMethodHandle =
             | MethodHandle.FromMetadata identity ->
 
             let typical =
-                MethodHandleRegistry.typicalMethodDefinition state.ConcreteTypes identity
+                MethodHandleRegistry.typicalMethodDefinition state.TypeSystem.ConcreteTypes identity
 
             if typical = identity then
                 NativeHandlerResult.completed state |> Some
@@ -1378,10 +1393,10 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "StripMethodInstantiation",
-          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when handleGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
             // CoreCLR runtimehandles.cpp:1828:
             //   if (!pMethod) COMPlusThrowArgumentNull(NULL, W("Arg_InvalidHandle"));
@@ -1443,14 +1458,16 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "GetStubIfNeededSlow",
-          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
-          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System",
-                                                                     "RuntimeMethodHandleInternal",
-                                                                     retGenerics)) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        qCallGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
+          MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("System",
+                                                                                "RuntimeMethodHandleInternal",
+                                                                                retGenerics)) when
             handleGenerics.IsEmpty
             && qCallGenerics.IsEmpty
             && objectHandleGenerics.IsEmpty
@@ -1517,7 +1534,10 @@ module NativeRuntimeMethodHandle =
                 |> Some
             | StubOutcome.Original ->
                 let state =
-                    MethodHandleRegistry.internalHandleFromId ctx.BaseClassTypes state.ConcreteTypes methodHandleId
+                    MethodHandleRegistry.internalHandleFromId
+                        ctx.BaseClassTypes
+                        state.TypeSystem.ConcreteTypes
+                        methodHandleId
                     |> CliType.ValueType
                     |> fun handle -> IlMachineState.pushToEvalStack handle ctx.Thread state
 
@@ -1612,7 +1632,7 @@ module NativeRuntimeMethodHandle =
                 let handleValue, registry =
                     MethodHandleRegistry.getOrAllocateInternalHandle
                         ctx.BaseClassTypes
-                        state.ConcreteTypes
+                        state.TypeSystem.ConcreteTypes
                         (identity.GetAssemblyFullName ())
                         declaringTarget
                         methodInfo
@@ -1634,7 +1654,7 @@ module NativeRuntimeMethodHandle =
             let typeVariables : ReflectedTypeTarget.ReflectionVariableBinding =
                 match declaringTarget with
                 | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
-                    AllConcreteTypes.lookup handle state.ConcreteTypes
+                    AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes
                     |> Option.defaultWith (fun () ->
                         failwith $"%s{operation}: declaring type handle %O{handle} is not registered in ConcreteTypes"
                     )
@@ -1712,7 +1732,7 @@ module NativeRuntimeMethodHandle =
                     let handleValue, registry =
                         MethodHandleRegistry.getOrAllocateConcreteInternalHandle
                             ctx.BaseClassTypes
-                            state.ConcreteTypes
+                            state.TypeSystem.ConcreteTypes
                             concretizedMethod
                             state.MethodHandles
 
@@ -1723,7 +1743,7 @@ module NativeRuntimeMethodHandle =
                     let handleValue, registry =
                         MethodHandleRegistry.getOrAllocateInstantiatedInternalHandle
                             ctx.BaseClassTypes
-                            state.ConcreteTypes
+                            state.TypeSystem.ConcreteTypes
                             (identity.GetAssemblyFullName ())
                             declaringTarget
                             methodInfo
@@ -1759,8 +1779,8 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "GetUtf8NameInternal",
-          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
-          MethodReturnType.Returns (ConcretePointer (ConcreteVoid state.ConcreteTypes)) when generics.IsEmpty ->
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
+          MethodReturnType.Returns (ConcretePointer (ConcreteVoid state.TypeSystem.ConcreteTypes)) when generics.IsEmpty ->
             // CoreCLR's RuntimeMethodHandle.GetUtf8NameInternal returns a raw pointer into
             // metadata; the managed wrapper RuntimeMethodHandle.GetUtf8Name(...) wraps the
             // result in MdUtf8String, which calls string.strlen on the pointer to discover
@@ -1783,10 +1803,10 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "GetAttributes",
-          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
-          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System.Reflection",
-                                                                     "MethodAttributes",
-                                                                     retGenerics)) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
+          MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection",
+                                                                                "MethodAttributes",
+                                                                                retGenerics)) when
             generics.IsEmpty && retGenerics.IsEmpty
             ->
             // CoreCLR (runtimehandles.cpp): asserts non-null and returns
@@ -1819,10 +1839,10 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "GetImplAttributes",
-          [ CorelibType state.ConcreteTypes ("System", "IRuntimeMethodInfo", generics) ],
-          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System.Reflection",
-                                                                     "MethodImplAttributes",
-                                                                     retGenerics)) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "IRuntimeMethodInfo", generics) ],
+          MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection",
+                                                                                "MethodImplAttributes",
+                                                                                retGenerics)) when
             generics.IsEmpty && retGenerics.IsEmpty
             ->
             // CoreCLR (runtimehandles.cpp:1330): asserts non-null, answers 0 outright when no
@@ -1866,8 +1886,10 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "GetSlot",
-          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when generics.IsEmpty ->
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
+            generics.IsEmpty
+            ->
             // CoreCLR (runtimehandles.cpp:1352): asserts non-null and returns
             // (INT32)pMethod->GetSlot(), which is a bare read of the MethodDesc's slot number as
             // assigned once during method-table building. PawPrint has no persisted slot number, so
@@ -1955,8 +1977,10 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "GetMethodDef",
-          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when generics.IsEmpty ->
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
+            generics.IsEmpty
+            ->
             // CoreCLR (runtimehandles.cpp:1577): asserts non-null and returns
             // (INT32)pMethod->GetMemberDef(). See `methodDefToken` above for what that token is and
             // why neither the declaring assembly nor the handle's instantiations come into it.
@@ -1981,11 +2005,11 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "GetMethodFromCanonical",
-          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics)
-            CorelibType state.ConcreteTypes ("System", "RuntimeType", declaringTypeGenerics) ],
-          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System",
-                                                                     "RuntimeMethodHandleInternal",
-                                                                     returnGenerics)) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeType", declaringTypeGenerics) ],
+          MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("System",
+                                                                                "RuntimeMethodHandleInternal",
+                                                                                returnGenerics)) when
             handleGenerics.IsEmpty
             && declaringTypeGenerics.IsEmpty
             && returnGenerics.IsEmpty
@@ -2038,7 +2062,7 @@ module NativeRuntimeMethodHandle =
             let namedDefinition : ResolvedTypeIdentity option =
                 match target with
                 | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
-                    AllConcreteTypes.lookup handle state.ConcreteTypes
+                    AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes
                     |> Option.defaultWith (fun () ->
                         failwith $"%s{operation}: declaring type handle %O{handle} is not registered in ConcreteTypes"
                     )
@@ -2067,7 +2091,7 @@ module NativeRuntimeMethodHandle =
             let handleValue, registry =
                 MethodHandleRegistry.getOrAllocateInternalHandle
                     ctx.BaseClassTypes
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     (identity.GetAssemblyFullName ())
                     target
                     methodInfo
@@ -2086,8 +2110,10 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "IsGenericMethodDefinition",
-          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when generics.IsEmpty ->
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) when
+            generics.IsEmpty
+            ->
             // CoreCLR (runtimehandles.cpp:1730): FC_RETURN_BOOL(pMethod->IsGenericMethodDefinition()).
             // See `isGenericMethodDefinition` above for the predicate and how it maps onto
             // PawPrint's representation.
@@ -2109,8 +2135,10 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "IsTypicalMethodDefinition",
-          [ CorelibType state.ConcreteTypes ("System", "IRuntimeMethodInfo", generics) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when generics.IsEmpty ->
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "IRuntimeMethodInfo", generics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) when
+            generics.IsEmpty
+            ->
             // CoreCLR (runtimehandles.cpp:1798):
             // FC_RETURN_BOOL(pMethodUNSAFE->GetMethod()->IsTypicalMethodDefinition()).
             // See `isTypicalMethodDefinition` above for the predicate.
@@ -2173,8 +2201,10 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "IsDynamicMethod",
-          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when generics.IsEmpty ->
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) when
+            generics.IsEmpty
+            ->
             // CoreCLR (runtimehandles.cpp:1746): FC_RETURN_BOOL(pMethod->IsNoMetadata()).
             // See `isDynamicMethod` above for the predicate.
             //
@@ -2194,10 +2224,10 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "GetMethodTable",
-          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
-          MethodReturnType.Returns (ConcretePointer (CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                                                                      "MethodTable",
-                                                                                      retGenerics))) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
+          MethodReturnType.Returns (ConcretePointer (CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                                                                 "MethodTable",
+                                                                                                 retGenerics))) when
             generics.IsEmpty && retGenerics.IsEmpty
             ->
             // CoreCLR (runtimehandles.cpp:1344): asserts non-null and returns
@@ -2259,8 +2289,10 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "HasMethodInstantiation",
-          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when generics.IsEmpty ->
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) when
+            generics.IsEmpty
+            ->
             // CoreCLR (runtimehandles.cpp:1722): FC_RETURN_BOOL(pMethod->HasMethodInstantiation()).
             // See `hasMethodInstantiation` above for the predicate, and in particular for why the
             // handle's own instantiation is not what it consults.
@@ -2278,8 +2310,10 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "IsConstructor",
-          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when generics.IsEmpty ->
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) when
+            generics.IsEmpty
+            ->
             // CoreCLR (runtimehandles.cpp:2135): asserts non-null and returns
             // pMethod->IsClassConstructorOrCtor(). See `isConstructorOrClassConstructor` above for
             // the predicate; it reads the same two things CoreCLR does, the method's attributes and
@@ -2300,11 +2334,11 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "GetStubIfNeededInternal",
-          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics)
-            CorelibType state.ConcreteTypes ("System", "RuntimeType", runtimeTypeGenerics) ],
-          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System",
-                                                                     "RuntimeMethodHandleInternal",
-                                                                     retGenerics)) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("System",
+                                                                                "RuntimeMethodHandleInternal",
+                                                                                retGenerics)) when
             handleGenerics.IsEmpty && runtimeTypeGenerics.IsEmpty && retGenerics.IsEmpty
             ->
             // CoreCLR runtimehandles.cpp:1886-1911. Fast path that returns the same MethodDesc*
@@ -2343,9 +2377,12 @@ module NativeRuntimeMethodHandle =
 
             let returnValue =
                 if returnsOriginalHandle then
-                    MethodHandleRegistry.internalHandleFromId ctx.BaseClassTypes state.ConcreteTypes methodHandleId
+                    MethodHandleRegistry.internalHandleFromId
+                        ctx.BaseClassTypes
+                        state.TypeSystem.ConcreteTypes
+                        methodHandleId
                 else
-                    MethodHandleRegistry.zeroInternalHandle ctx.BaseClassTypes state.ConcreteTypes
+                    MethodHandleRegistry.zeroInternalHandle ctx.BaseClassTypes state.TypeSystem.ConcreteTypes
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.ValueType returnValue) ctx.Thread state
@@ -2355,8 +2392,10 @@ module NativeRuntimeMethodHandle =
           "System",
           "RuntimeMethodHandle",
           "GetLoaderAllocatorInternal",
-          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics) ],
-          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System.Reflection", "LoaderAllocator", retGenerics)) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics) ],
+          MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection",
+                                                                                "LoaderAllocator",
+                                                                                retGenerics)) when
             handleGenerics.IsEmpty && retGenerics.IsEmpty
             ->
             // CoreCLR runtimehandles.cpp:2148 returns

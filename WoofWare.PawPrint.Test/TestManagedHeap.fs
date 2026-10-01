@@ -30,8 +30,13 @@ module TestManagedHeap =
         Corelib.concretizeAll loadedAssemblies baseClassTypes AllConcreteTypes.Empty
 
     let private state (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) : IlMachineState =
-        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
-            ConcreteTypes = concreteTypes
+        let initialState = IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+
+        { initialState with
+            TypeSystem =
+                { initialState.TypeSystem with
+                    ConcreteTypes = concreteTypes
+                }
         }
 
     /// The zero of the element type used by the hand-built allocations in this fixture.
@@ -742,7 +747,7 @@ module TestManagedHeap =
             [ field fieldA "A" 0 a ; field fieldB "B" 4 b ]
             |> CliValueType.OfFields
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 objectHandle
                 {
                     IsValueType = true

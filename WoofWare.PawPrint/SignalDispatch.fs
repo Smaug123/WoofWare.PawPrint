@@ -303,7 +303,7 @@ module SignalDispatch =
                     $"SignalDispatch.poll: the dispatcher read %O{signal}, which has a registration, but no handler has been installed with SystemNative_SetPosixSignalHandler; the real shim asserts one has."
 
         let mi = SignalHandler.methodInfo handler
-        validateHandlerSignature state.ConcreteTypes mi
+        validateHandlerSignature state.TypeSystem.ConcreteTypes mi
 
         let containingAssembly =
             state.LoadedAssembly mi.DeclaringAssemblyFullName
@@ -323,9 +323,9 @@ module SignalDispatch =
         let newMethodState =
             match
                 MethodState.Empty
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     baseClassTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     containingAssembly
                     mi
                     mi.Generics

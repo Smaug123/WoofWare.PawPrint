@@ -237,9 +237,9 @@ module NativeThreading =
           "System.Threading",
           "Thread",
           "GetCurrentThread",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when objectHandleGenerics.IsEmpty ->
             // .NET 10 QCall: writes the calling thread's managed Thread object into *thread.
             let operation = "ThreadNative_GetCurrentThread"
@@ -266,9 +266,9 @@ module NativeThreading =
           "System.Threading",
           "Thread",
           "Initialize",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when objectHandleGenerics.IsEmpty ->
             // .NET 10 QCall replacing the parameterless Thread.Initialize InternalCall. The Thread
             // reference comes in through ObjectHandleOnStack rather than as `this`.
@@ -300,11 +300,11 @@ module NativeThreading =
           "System.Threading",
           "Thread",
           _,
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
             objectHandleGenerics.IsEmpty
             ->
             // .NET 10 QCall replacing the Thread.Join(int) InternalCall. Argument 0 is
@@ -351,8 +351,8 @@ module NativeThreading =
           "System.Threading",
           "Thread",
           "SetIsBackground",
-          [ CorelibType state.ConcreteTypes ("System.Threading", "ThreadHandle", threadHandleGenerics)
-            CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Threading", "ThreadHandle", threadHandleGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("", "BOOL", boolGenerics) ],
           MethodReturnType.Void when threadHandleGenerics.IsEmpty && boolGenerics.IsEmpty ->
             // .NET 10 QCall backing `Thread.IsBackground = value`. Once `Main` has returned,
             // `Program.stepPrepared` ends the run when no foreground thread is left alive, so
@@ -415,8 +415,8 @@ module NativeThreading =
           "System.Threading",
           "Thread",
           "GetIsBackground",
-          [ CorelibType state.ConcreteTypes ("System.Threading", "ThreadHandle", threadHandleGenerics) ],
-          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Threading", "ThreadHandle", threadHandleGenerics) ],
+          MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("", "BOOL", boolGenerics)) when
             threadHandleGenerics.IsEmpty && boolGenerics.IsEmpty
             ->
             // .NET 10 QCall backing the `Thread.IsBackground` getter. Returns Interop.BOOL
@@ -459,8 +459,8 @@ module NativeThreading =
           "System.Threading",
           "Thread",
           "GetThreadState",
-          [ CorelibType state.ConcreteTypes ("System.Threading", "ThreadHandle", threadHandleGenerics) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Threading", "ThreadHandle", threadHandleGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
             threadHandleGenerics.IsEmpty
             ->
             // .NET 10 QCall backing the `Thread.ThreadState` getter, which casts the int32 back
@@ -501,9 +501,9 @@ module NativeThreading =
           // signature shape on the parameter-types pattern below; the QCall entry-point
           // tuple element is already an exact match. Same approach as Environment_FailFast.
           _,
-          [ CorelibType state.ConcreteTypes ("System.Threading", "ThreadHandle", threadHandleGenerics)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Threading", "ThreadHandle", threadHandleGenerics)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt16)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void when threadHandleGenerics.IsEmpty ->
             // .NET 10 QCall fired by the `Thread.Name` setter after the BCL has already
             // written the canonical name into the managed `Thread._name` field. In CoreCLR
@@ -588,7 +588,7 @@ module NativeThreading =
           // `Environment_FailFast`.
           _,
           [],
-          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)) when
+          MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("", "BOOL", boolGenerics)) when
             boolGenerics.IsEmpty
             ->
             // .NET 10 QCall backing `Thread.Yield()`:
@@ -632,7 +632,7 @@ module NativeThreading =
           "System.Threading",
           "Thread",
           "SleepInternal",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
             // .NET 10 CoreCLR routes `Thread.Sleep(int)` to `SleepInternal(int)`
             // (a `[LibraryImport]` partial in `Thread.CoreCLR.cs`), which the
@@ -710,7 +710,7 @@ module NativeThreading =
           // signature shape instead of the name, same approach as
           // `ThreadNative_YieldThread` and `ThreadNative_InformThreadNameChange`.
           _,
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
             // .NET 10 QCall backing `Thread.SpinWait(int)`. CoreCLR's native
             // side (`comsynchronizable.cpp`) is:
@@ -819,7 +819,9 @@ module NativeThreading =
           "Thread",
           "GetCurrentThreadNative",
           [],
-          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System.Threading", "Thread", threadGenerics)) when
+          MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("System.Threading",
+                                                                                "Thread",
+                                                                                threadGenerics)) when
             threadGenerics.IsEmpty
             ->
             let addr, state =
@@ -948,8 +950,8 @@ module NativeThreading =
           "System.Threading",
           "Thread",
           "Join",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) ->
             // Pre-.NET 10 InternalCall path for `bool Thread.Join(int millisecondsTimeout)`.
             // The deployed CoreLib stamps this method as InternalCall; the managed body we see
             // in source lives only in the reference assembly. `this` is arg 0, the timeout is
@@ -976,7 +978,7 @@ module NativeThreading =
           "Thread",
           "get_OptimalMaxSpinWaitsPerSpinIteration",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // InternalCall backing the `internal static int
             // Thread.OptimalMaxSpinWaitsPerSpinIteration { get; }` property
             // (`[MethodImpl(MethodImplOptions.InternalCall)]` in

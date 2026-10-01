@@ -75,7 +75,7 @@ module internal NativeReflectionPointer =
         | ConcreteTypeHandle.Pointer _ -> createPointer ctx ty value state
         | ConcreteTypeHandle.FunctionPointer _ ->
             let intPtr =
-                AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes ctx.BaseClassTypes.IntPtr
+                AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes ctx.BaseClassTypes.IntPtr
 
             Boxing.boxValueType ctx.LoggerFactory ctx.BaseClassTypes intPtr value state
         | ConcreteTypeHandle.Concrete _
@@ -93,7 +93,9 @@ module internal NativeReflectionPointer =
         | None -> None
         | Some obj ->
             match obj.ConcreteType with
-            | CorelibType state.ConcreteTypes ("System.Reflection", "Pointer", generics) when generics.IsEmpty ->
+            | CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection", "Pointer", generics) when
+                generics.IsEmpty
+                ->
                 let ptrField =
                     IlMachineState.requiredOwnInstanceFieldId state obj.ConcreteType "_ptr"
 

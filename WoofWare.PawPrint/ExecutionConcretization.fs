@@ -145,15 +145,18 @@ module ExecutionConcretization =
                         MethodGenerics = List.ofSeq methodGenerics
                     }
 
-        match key |> Option.bind (fun key -> Map.tryFind key state._ConcretisedMethods) with
+        match
+            key
+            |> Option.bind (fun key -> Map.tryFind key state.TypeSystem._ConcretisedMethods)
+        with
         | Some hit -> state, hit.Method, hit.DeclaringTypeHandle
         | None ->
 
         let concretizedMethod, newConcreteTypes, newAssemblies =
             Concretization.concretizeMethod
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 (IlMachineState.loader loggerFactory state)
-                state._LoadedAssemblies
+                state.TypeSystem._LoadedAssemblies
                 baseClassTypes
                 methodToCall
                 typeGenerics
@@ -161,14 +164,17 @@ module ExecutionConcretization =
 
         let state =
             { state with
-                ConcreteTypes = newConcreteTypes
-                _LoadedAssemblies = newAssemblies
+                TypeSystem =
+                    { state.TypeSystem with
+                        ConcreteTypes = newConcreteTypes
+                        _LoadedAssemblies = newAssemblies
+                    }
             }
 
         let declaringTypeHandle =
             match
                 AllConcreteTypes.findExistingConcreteType
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     concretizedMethod.RequiredDeclaringType.Identity
                     concretizedMethod.DeclaringTypeGenerics
             with
@@ -255,8 +261,8 @@ module ExecutionConcretization =
             for i = 0 to args.Length - 1 do
                 let ctx =
                     {
-                        TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
-                        TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                        TypeConcretization.ConcretizationContext.ConcreteTypes = state.TypeSystem.ConcreteTypes
+                        TypeConcretization.ConcretizationContext.LoadedAssemblies = state.TypeSystem._LoadedAssemblies
                         TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
                     }
 
@@ -273,8 +279,11 @@ module ExecutionConcretization =
 
                 state <-
                     { state with
-                        ConcreteTypes = newCtx.ConcreteTypes
-                        _LoadedAssemblies = newCtx.LoadedAssemblies
+                        TypeSystem =
+                            { state.TypeSystem with
+                                ConcreteTypes = newCtx.ConcreteTypes
+                                _LoadedAssemblies = newCtx.LoadedAssemblies
+                            }
                     }
 
             handles.ToImmutable (), state
@@ -360,20 +369,23 @@ module ExecutionConcretization =
         let loadedAssemblies =
             BaseChainLoading.ensureTypeDefinitionBaseAssembliesLoaded
                 (IlMachineState.loader loggerFactory state)
-                state._LoadedAssemblies
-                (state._LoadedAssemblies.ByDefinitionName field.DeclaringType.AssemblyFullName)
+                state.TypeSystem._LoadedAssemblies
+                (state.TypeSystem._LoadedAssemblies.ByDefinitionName field.DeclaringType.AssemblyFullName)
                 field.DeclaringType.Definition.Get
 
         let state =
             { state with
-                _LoadedAssemblies = loadedAssemblies
+                TypeSystem =
+                    { state.TypeSystem with
+                        _LoadedAssemblies = loadedAssemblies
+                    }
             }
 
         // Create a concretization context
         let ctx =
             {
-                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
-                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                TypeConcretization.ConcretizationContext.ConcreteTypes = state.TypeSystem.ConcreteTypes
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = state.TypeSystem._LoadedAssemblies
                 TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
             }
 
@@ -382,23 +394,23 @@ module ExecutionConcretization =
             if field.DeclaringType.Generics.IsEmpty then
                 // Non-generic type - determine the SignatureTypeKind
                 let assy =
-                    state._LoadedAssemblies.ByDefinitionName field.DeclaringType.AssemblyFullName
+                    state.TypeSystem._LoadedAssemblies.ByDefinitionName field.DeclaringType.AssemblyFullName
 
                 let typeDef = assy.TypeDefs.[field.DeclaringType.Definition.Get]
 
                 let signatureTypeKind =
-                    LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies typeDef
+                    LoadedTypeInfo.signatureTypeKind baseClassTypes state.TypeSystem._LoadedAssemblies typeDef
 
                 TypeDefn.FromDefinition (field.DeclaringType.Identity, signatureTypeKind)
             else
                 // Generic type - the field's declaring type already has the generic arguments
                 let assy =
-                    state._LoadedAssemblies.ByDefinitionName field.DeclaringType.AssemblyFullName
+                    state.TypeSystem._LoadedAssemblies.ByDefinitionName field.DeclaringType.AssemblyFullName
 
                 let typeDef = assy.TypeDefs.[field.DeclaringType.Definition.Get]
 
                 let signatureTypeKind =
-                    LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies typeDef
+                    LoadedTypeInfo.signatureTypeKind baseClassTypes state.TypeSystem._LoadedAssemblies typeDef
 
                 let baseType =
                     TypeDefn.FromDefinition (field.DeclaringType.Identity, signatureTypeKind)
@@ -421,13 +433,17 @@ module ExecutionConcretization =
 
         let state =
             { state with
-                ConcreteTypes = newCtx.ConcreteTypes
-                _LoadedAssemblies = newCtx.LoadedAssemblies
+                TypeSystem =
+                    { state.TypeSystem with
+                        ConcreteTypes = newCtx.ConcreteTypes
+                        _LoadedAssemblies = newCtx.LoadedAssemblies
+                    }
             }
 
         // Get the concretized type's generics
         let concretizedType =
-            AllConcreteTypes.lookup declaringHandle state.ConcreteTypes |> Option.get
+            AllConcreteTypes.lookup declaringHandle state.TypeSystem.ConcreteTypes
+            |> Option.get
 
         let typeGenerics = concretizedType.Generics
 

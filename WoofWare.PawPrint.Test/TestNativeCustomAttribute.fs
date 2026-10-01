@@ -82,7 +82,7 @@ public sealed class TypeAttribute : System.Attribute
         : IlMachineState * ConcreteTypeHandle
         =
         let typeDefn =
-            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies typeInfo
+            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo
 
         IlMachineState.concretizeType
             loggerFactory
@@ -132,7 +132,7 @@ public sealed class TypeAttribute : System.Attribute
         : ManagedHeapAddress * ManagedPointerSource * IlMachineState
         =
         let objectHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.Object
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes fixture.BaseClassTypes.Object
 
         let arrayAddr, state =
             IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero objectHandle) (fun () -> value) 1 state
@@ -253,7 +253,7 @@ public sealed class TypeAttribute : System.Attribute
         : ManagedHeapAddress * ManagedHeapAddress * IlMachineState
         =
         let byteHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.Byte
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes fixture.BaseClassTypes.Byte
 
         let blobArr, state =
             IlMachineState.allocateArray
@@ -273,7 +273,7 @@ public sealed class TypeAttribute : System.Attribute
             )
 
         let intPtrHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.IntPtr
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes fixture.BaseClassTypes.IntPtr
 
         let intPtrArr, state =
             IlMachineState.allocateArray
@@ -312,7 +312,7 @@ public sealed class TypeAttribute : System.Attribute
         : ManagedHeapAddress * IlMachineState
         =
         let int32Handle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.Int32
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes fixture.BaseClassTypes.Int32
 
         IlMachineState.allocateArray
             (ConcreteTypeHandle.OneDimArrayZero int32Handle)
@@ -375,7 +375,14 @@ public sealed class TypeAttribute : System.Attribute
             let state = initialState.WithLoadedAssembly corelib
 
             { state with
-                ConcreteTypes = Corelib.concretizeAll state._LoadedAssemblies baseClassTypes state.ConcreteTypes
+                TypeSystem =
+                    { state.TypeSystem with
+                        ConcreteTypes =
+                            Corelib.concretizeAll
+                                state.TypeSystem._LoadedAssemblies
+                                baseClassTypes
+                                state.TypeSystem.ConcreteTypes
+                    }
             }
 
         let customAttributeType =
@@ -542,9 +549,9 @@ public sealed class TypeAttribute : System.Attribute
         let methodState =
             match
                 MethodState.Empty
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     fixture.BaseClassTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     fixture.Corelib
                     fixture.QCallMethod
                     ImmutableArray.Empty
@@ -1023,9 +1030,9 @@ public sealed class TypeAttribute : System.Attribute
         let methodState =
             match
                 MethodState.Empty
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     fixture.BaseClassTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     fixture.Corelib
                     fixture.NamedArgQCallMethod
                     ImmutableArray.Empty
@@ -1108,10 +1115,12 @@ public sealed class TypeAttribute : System.Attribute
         let obj = ManagedHeap.get addr state.ManagedHeap
 
         let concrete =
-            AllConcreteTypes.lookup obj.ConcreteType state.ConcreteTypes
+            AllConcreteTypes.lookup obj.ConcreteType state.TypeSystem.ConcreteTypes
             |> Option.defaultWith (fun () -> failwithf "object at %O had an unregistered concrete type" addr)
 
-        let assembly = state._LoadedAssemblies.ByDefinitionName concrete.AssemblyFullName
+        let assembly =
+            state.TypeSystem._LoadedAssemblies.ByDefinitionName concrete.AssemblyFullName
+
         let defn = assembly.TypeDefs.[concrete.Definition.Get]
         $"%s{defn.Namespace}.%s{defn.Name}"
 

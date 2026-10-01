@@ -37,8 +37,13 @@ module TestPrimitiveBackingFieldAddress =
     let private state () : IlMachineState =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
-        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
-            ConcreteTypes = allCt
+        let initialState = IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+
+        { initialState with
+            TypeSystem =
+                { initialState.TypeSystem with
+                    ConcreteTypes = allCt
+                }
         }
 
     let private generate<'a> (f : 'a -> CliType) : Gen<CliType> =

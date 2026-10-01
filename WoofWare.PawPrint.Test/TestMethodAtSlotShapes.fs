@@ -82,7 +82,11 @@ namespace PawPrint.MethodAtSlot
 
         let state =
             { state with
-                ConcreteTypes = Corelib.concretizeAll state._LoadedAssemblies bct AllConcreteTypes.Empty
+                TypeSystem =
+                    { state.TypeSystem with
+                        ConcreteTypes =
+                            Corelib.concretizeAll state.TypeSystem._LoadedAssemblies bct AllConcreteTypes.Empty
+                    }
             }
 
         state.WithLoadedAssembly corpusAssembly
@@ -172,7 +176,7 @@ namespace PawPrint.MethodAtSlot
 
     let private pawPrintDeclaringShape (state : IlMachineState) (target : RuntimeTypeHandleTarget) : int * string list =
         let closedArgument (argument : ConcreteTypeHandle) : string =
-            match AllConcreteTypes.lookup argument state.ConcreteTypes with
+            match AllConcreteTypes.lookup argument state.TypeSystem.ConcreteTypes with
             | Some argumentType -> string (tokenOfTypeDefinition argumentType.Identity)
             | None -> failwith $"generic argument %O{argument} is not a nominal type"
 
@@ -182,13 +186,13 @@ namespace PawPrint.MethodAtSlot
         match target with
         | RuntimeTypeHandleTarget.Closed handle ->
             let concreteType =
-                AllConcreteTypes.lookup handle state.ConcreteTypes
+                AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes
                 |> Option.defaultWith (fun () -> failwith $"declaring handle %O{handle} is not registered")
 
             tokenOfTypeDefinition concreteType.Identity, (concreteType.Generics |> Seq.map closedArgument |> List.ofSeq)
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
             let arity =
-                state._LoadedAssemblies
+                state.TypeSystem._LoadedAssemblies
                     .ByDefinitionName(identity.AssemblyFullName)
                     .TypeDefs.[identity.TypeDefinition.Get].Generics.Length
 
@@ -378,7 +382,7 @@ namespace PawPrint.MethodAtSlot
         let state = baseState
 
         let state, stringHandle =
-            LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies bct.String
+            LoadedTypeInfo.typeInfoToTypeDefn' bct state.TypeSystem._LoadedAssemblies bct.String
             |> IlMachineState.concretizeType
                 loggerFactory
                 bct
@@ -388,7 +392,7 @@ namespace PawPrint.MethodAtSlot
                 ImmutableArray.Empty
 
         let state, closed =
-            LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies twoStep
+            LoadedTypeInfo.typeInfoToTypeDefn' bct state.TypeSystem._LoadedAssemblies twoStep
             |> IlMachineState.concretizeType
                 loggerFactory
                 bct

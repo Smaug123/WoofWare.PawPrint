@@ -460,7 +460,7 @@ module internal UnaryMetadataCallOps =
           ConcreteTypeHandle
         =
         let methodDeclAssy =
-            state._LoadedAssemblies.ByDefinitionName methodToCall.DeclaringAssemblyFullName
+            state.TypeSystem._LoadedAssemblies.ByDefinitionName methodToCall.DeclaringAssemblyFullName
 
         let methodDeclType =
             methodDeclAssy.TypeDefs.[methodToCall.RequiredDeclaringType.Definition.Get]
@@ -474,7 +474,7 @@ module internal UnaryMetadataCallOps =
             // Registration is checked eagerly, and separately from rendering: an unregistered
             // handle would otherwise surface as a confusing resolution failure below rather than
             // as the bookkeeping error it is.
-            if (AllConcreteTypes.lookup constrainedTypeHandle state.ConcreteTypes).IsNone then
+            if (AllConcreteTypes.lookup constrainedTypeHandle state.TypeSystem.ConcreteTypes).IsNone then
                 failwith $"%s{opName}: constrained type handle %O{constrainedTypeHandle} is not registered"
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _
@@ -498,7 +498,10 @@ module internal UnaryMetadataCallOps =
         match implementation with
         | None ->
             let constrained =
-                AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes constrainedTypeHandle
+                AllConcreteTypes.describe
+                    state.TypeSystem._LoadedAssemblies
+                    state.TypeSystem.ConcreteTypes
+                    constrainedTypeHandle
 
             failwith $"%s{opName}: could not find static implementation of %s{methodToCall.Name} on %s{constrained}"
         | Some implementation when not implementation.IsStatic ->
@@ -507,7 +510,7 @@ module internal UnaryMetadataCallOps =
         | Some implementation ->
             let declaringTypeHandle =
                 AllConcreteTypes.findExistingConcreteType
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     implementation.RequiredDeclaringType.Identity
                     implementation.DeclaringTypeGenerics
                 |> Option.defaultWith (fun () ->
@@ -563,8 +566,11 @@ module internal UnaryMetadataCallOps =
             | ConcreteTypeHandle.Pointer _
             | ConcreteTypeHandle.FunctionPointer _ -> false
             | ConcreteTypeHandle.Concrete _ ->
-                AllConcreteTypes.tryIsValueType baseClassTypes state._LoadedAssemblies state.ConcreteTypes declared = Some
-                    false
+                AllConcreteTypes.tryIsValueType
+                    baseClassTypes
+                    state.TypeSystem._LoadedAssemblies
+                    state.TypeSystem.ConcreteTypes
+                    declared = Some false
 
         let refuse
             (state : IlMachineState)
@@ -573,7 +579,8 @@ module internal UnaryMetadataCallOps =
             (declared : ConcreteTypeHandle)
             : unit
             =
-            let describe = AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes
+            let describe =
+                AllConcreteTypes.describe state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes
 
             failwith
                 $"Unverifiable %s{op} of %s{concretizedMethod.Name}: %s{what} has type %s{describe actual}, which is not assignable to the declared type %s{describe declared}. ECMA-335 III.3.19 requires each argument to be assignable to its declared parameter type; real .NET does not check this and would run the call, so this is a defect in the guest image rather than in the interpreter. PawPrint refuses because it keys field storage on the exact generic instantiation, so continuing risks a wrong answer rather than merely a late failure."
@@ -587,7 +594,7 @@ module internal UnaryMetadataCallOps =
             let declaring =
                 concretizedMethod.TryDeclaringType
                 |> Option.bind (fun ct ->
-                    AllConcreteTypes.findExistingConcreteType state.ConcreteTypes ct.Identity ct.Generics
+                    AllConcreteTypes.findExistingConcreteType state.TypeSystem.ConcreteTypes ct.Identity ct.Generics
                 )
 
             match
@@ -1283,8 +1290,8 @@ module internal UnaryMetadataCallOps =
                                 Concretization.concreteHandleToTypeDefn
                                     baseClassTypes
                                     handle
-                                    state.ConcreteTypes
-                                    state._LoadedAssemblies
+                                    state.TypeSystem.ConcreteTypes
+                                    state.TypeSystem._LoadedAssemblies
                             )
                             |> ImmutableArray.CreateRange
 
@@ -1432,11 +1439,14 @@ module internal UnaryMetadataCallOps =
                 | ConcreteTypeHandle.Concrete _ ->
 
                 let tConcrete, tDefn =
-                    AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes tHandle
+                    AllConcreteTypes.tryTypeInfo
+                        state.TypeSystem._LoadedAssemblies
+                        state.TypeSystem.ConcreteTypes
+                        tHandle
                     |> Option.get
 
                 let tIsValueType =
-                    LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies tDefn
+                    LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies tDefn
 
                 if not tIsValueType then
                     // Reference-type T: dereference the byref to the underlying ObjectRef.
@@ -1793,7 +1803,7 @@ module internal UnaryMetadataCallOps =
         // matters beyond tidiness: `Box` never boxes `Nullable<T>` as itself, and the unbox
         // reader relies on it, so allocating one here would put a heap object on the heap that no
         // reader is prepared for.
-        match AllConcreteTypes.lookup typeHandle state.ConcreteTypes with
+        match AllConcreteTypes.lookup typeHandle state.TypeSystem.ConcreteTypes with
         | Some ct when InternalTypeKind.kind ctx.BaseClassTypes ct = InternalTypeKind.Nullable ->
             failwith
                 $"%s{operation}: invoked with a Nullable<T> MethodTable (%O{typeHandle}); neither RuntimeTypeHandle_GetActivationInfo (which returns a null allocator, so ActivatorCache substitutes its own null-returning stub) nor ReflectionInvocation_GetBoxInfo and ReflectionSerialization_GetCreateUninitializedObjectInfo (which substitute the underlying T's MethodTable) can produce this pairing, so this pointer should never have been called"
@@ -1838,17 +1848,17 @@ module internal UnaryMetadataCallOps =
             failwith $"%s{operation}: %s{describe} is static, so it has no receiver to unbox and no unboxing stub"
 
         let declaringType =
-            AllConcreteTypes.lookup declaringTypeHandle state.ConcreteTypes
+            AllConcreteTypes.lookup declaringTypeHandle state.TypeSystem.ConcreteTypes
             |> Option.defaultWith (fun () ->
                 failwith $"%s{operation}: declaring type %O{declaringTypeHandle} of %s{describe} is not registered"
             )
 
         let declaringTypeDefn =
-            state._LoadedAssemblies
+            state.TypeSystem._LoadedAssemblies
                 .ByDefinitionName(declaringType.AssemblyFullName)
                 .TypeDefs.[declaringType.Definition.Get]
 
-        if not (LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies declaringTypeDefn) then
+        if not (LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies declaringTypeDefn) then
             failwith
                 $"%s{operation}: %s{describe} is declared on a reference type, whose methods take an object receiver already and so have no unboxing stub"
 
@@ -2015,7 +2025,7 @@ module internal UnaryMetadataCallOps =
 
         let declaringTypeHandle =
             AllConcreteTypes.findExistingConcreteType
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 methodToCall.RequiredDeclaringType.Identity
                 methodToCall.DeclaringTypeGenerics
             |> Option.defaultWith (fun () ->

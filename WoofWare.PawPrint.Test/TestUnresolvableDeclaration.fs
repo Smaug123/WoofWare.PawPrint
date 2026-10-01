@@ -152,9 +152,14 @@ module TestUnresolvableDeclaration =
         let concreteTypes = Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
 
         let state () : IlMachineState =
-            { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
-                ConcreteTypes = concreteTypes
-                _LoadedAssemblies = loaded
+            let initialState = IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+
+            { initialState with
+                TypeSystem =
+                    { initialState.TypeSystem with
+                        ConcreteTypes = concreteTypes
+                        _LoadedAssemblies = loaded
+                    }
             }
 
         {

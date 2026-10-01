@@ -149,7 +149,9 @@ module ManagedPointerByteView =
             // the element-stride branch that demands a matching char cell
             // size.
             match
-                AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Char.Identity
+                AllConcreteTypes.findExistingNonGenericConcreteType
+                    state.TypeSystem.ConcreteTypes
+                    baseClassTypes.Char.Identity
             with
             | Some charType -> addByteOffset state charType 0 ptr
             | None -> ptr
@@ -187,7 +189,9 @@ module ManagedPointerByteView =
                                          Projections = []
                                      } ->
             let byteType =
-                AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Byte.Identity
+                AllConcreteTypes.findExistingNonGenericConcreteType
+                    state.TypeSystem.ConcreteTypes
+                    baseClassTypes.Byte.Identity
                 |> Option.defaultWith (fun () ->
                     failwith "anchorByteStrideOverArrayData: System.Byte is not concretized"
                 )

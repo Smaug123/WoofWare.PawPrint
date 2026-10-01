@@ -196,8 +196,13 @@ module TestSyncBlockMonitor =
         Corelib.concretizeAll loadedAssemblies baseClassTypes AllConcreteTypes.Empty
 
     let private baseStateWithFrames () : IlMachineState =
-        { baseState () with
-            ConcreteTypes = concreteTypes
+        let initialState = baseState ()
+
+        { initialState with
+            TypeSystem =
+                { initialState.TypeSystem with
+                    ConcreteTypes = concreteTypes
+                }
         }
 
     let private mintFrame (state : IlMachineState) : IlMachineState * MethodState =
@@ -226,9 +231,9 @@ module TestSyncBlockMonitor =
         let methodState =
             match
                 MethodState.Empty
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     baseClassTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     corelib
                     method
                     ImmutableArray.Empty

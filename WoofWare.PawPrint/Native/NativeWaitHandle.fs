@@ -401,7 +401,9 @@ module NativeWaitHandle =
         (state : IlMachineState)
         : ConcreteTypeHandle
         =
-        AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.IntPtr.Identity
+        AllConcreteTypes.findExistingNonGenericConcreteType
+            state.TypeSystem.ConcreteTypes
+            baseClassTypes.IntPtr.Identity
         |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.IntPtr is not concretized")
 
     /// Read `count` handles from the guest's `IntPtr*`.
@@ -475,13 +477,13 @@ module NativeWaitHandle =
         | "CreateSemaphoreExW",
           "System.Private.CoreLib",
           "Kernel32",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt16)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr) ->
             let operation = "CreateSemaphoreExW"
             // CoreLib's `CreateSemaphoreCore` passes `lpSecurityAttributes = 0`,
             // `flags = 0`, and `AccessRights` for `dwDesiredAccess`. We refuse a
@@ -509,10 +511,10 @@ module NativeWaitHandle =
         | "ReleaseSemaphore",
           "System.Private.CoreLib",
           "Kernel32",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "ReleaseSemaphore"
             let id = waitHandleOfArgument operation instruction.Arguments.[0]
 
@@ -551,8 +553,8 @@ module NativeWaitHandle =
         | "CloseHandle",
           "System.Private.CoreLib",
           "Kernel32",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "CloseHandle"
             let id = waitHandleOfArgument operation instruction.Arguments.[0]
             let state = WaitHandle.close id state
@@ -566,10 +568,10 @@ module NativeWaitHandle =
         | "WaitHandle_WaitOneCore",
           "System.Private.CoreLib",
           "WaitHandle",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "WaitHandle_WaitOneCore"
             let id = waitHandleOfArgument operation instruction.Arguments.[0]
 
@@ -599,9 +601,9 @@ module NativeWaitHandle =
         | "WaitHandle_WaitOnePrioritized",
           "System.Private.CoreLib",
           "LowLevelLifoSemaphore",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `LowLevelLifoSemaphore.WaitCore` (PortableThreadPool's worker
             // park primitive on Unix) imports this 2-arg variant of the
             // waiter. The "Prioritized" tag corresponds to
@@ -636,11 +638,11 @@ module NativeWaitHandle =
         | "WaitHandle_WaitMultipleIgnoringSyncContext",
           "System.Private.CoreLib",
           "WaitHandle",
-          [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `WaitHandle.CoreCLR.cs` declares this as
             // `(ReadOnlySpan<IntPtr>, int numHandles, bool waitAll, int
             // millisecondsTimeout)`; the LibraryImport stub pins the span and
@@ -726,11 +728,11 @@ module NativeWaitHandle =
         | "PAL_CreateMutexW",
           "System.Private.CoreLib",
           "Mutex",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32 ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt16)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32 ],
           MethodReturnType.Returns _ ->
             // `Mutex.CoreCLR.Unix.cs` declares this as a `partial
             // SafeWaitHandle` return; the LibraryImport source generator
@@ -773,7 +775,7 @@ module NativeWaitHandle =
           "System.Private.CoreLib",
           "Kernel32",
           [ _ ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // The single argument is declared as `SafeWaitHandle` in
             // CoreLib's `Interop.Mutex.cs`, but the LibraryImport stub
             // marshals it as an `IntPtr` at the QCall boundary. Decode
@@ -801,10 +803,10 @@ module NativeWaitHandle =
         | "CreateEventExW",
           "System.Private.CoreLib",
           "Kernel32",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32 ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt16)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32 ],
           MethodReturnType.Returns _ ->
             // `EventWaitHandle.Windows.cs` declares the return as
             // `SafeWaitHandle`, a reference type at the IL boundary; the
@@ -844,7 +846,7 @@ module NativeWaitHandle =
           "System.Private.CoreLib",
           "Kernel32",
           [ _ ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // The single argument is declared as `SafeWaitHandle` in
             // `Interop.EventWaitHandle.cs`; the LibraryImport stub
             // marshals it as `IntPtr` at the QCall boundary. Decode
@@ -864,7 +866,7 @@ module NativeWaitHandle =
           "System.Private.CoreLib",
           "Kernel32",
           [ _ ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "ResetEvent"
             let id = eventHandleOfArgument operation instruction.Arguments.[0] state
             let state = WaitHandle.resetEvent id state

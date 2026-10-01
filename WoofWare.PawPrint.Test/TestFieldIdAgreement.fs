@@ -159,7 +159,11 @@ public class Outer<A>
 
         let state =
             { state with
-                ConcreteTypes = Corelib.concretizeAll state._LoadedAssemblies bct AllConcreteTypes.Empty
+                TypeSystem =
+                    { state.TypeSystem with
+                        ConcreteTypes =
+                            Corelib.concretizeAll state.TypeSystem._LoadedAssemblies bct AllConcreteTypes.Empty
+                    }
             }
 
         state.WithLoadedAssembly(corpusAssembly).WithLoadedAssembly fsharpCore
@@ -173,7 +177,7 @@ public class Outer<A>
     let private absorbLoads (state : IlMachineState) (loaded : LoadedAssemblies) : IlMachineState =
         (state, loaded.DefinitionNames)
         ||> Seq.fold (fun state name ->
-            if state._LoadedAssemblies.ContainsDefinition (AssemblyName name) then
+            if state.TypeSystem._LoadedAssemblies.ContainsDefinition (AssemblyName name) then
                 state
             else
                 state.WithLoadedAssembly (loaded.ByDefinitionName name)
@@ -189,11 +193,12 @@ public class Outer<A>
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : IlMachineState
         =
-        let assy = state._LoadedAssemblies.ByDefinitionName typeInfo.AssemblyFullName
+        let assy =
+            state.TypeSystem._LoadedAssemblies.ByDefinitionName typeInfo.AssemblyFullName
 
         BaseChainLoading.ensureTypeDefinitionBaseAssembliesLoaded
             (IlMachineState.loader loggerFactory state)
-            state._LoadedAssemblies
+            state.TypeSystem._LoadedAssemblies
             assy
             typeInfo.TypeDefHandle
         |> absorbLoads state
@@ -206,7 +211,8 @@ public class Outer<A>
         (args : TypeDefn list)
         : TypeDefn
         =
-        let kind = LoadedTypeInfo.signatureTypeKind bct state._LoadedAssemblies typeInfo
+        let kind =
+            LoadedTypeInfo.signatureTypeKind bct state.TypeSystem._LoadedAssemblies typeInfo
 
         let definition = TypeDefn.FromDefinition (typeInfo.Identity, kind)
 
@@ -241,14 +247,17 @@ public class Outer<A>
                 (IlMachineState.loader loggerFactory state)
                 bct
                 (System.Collections.Generic.HashSet ())
-                state._LoadedAssemblies
-                state.ConcreteTypes
+                state.TypeSystem._LoadedAssemblies
+                state.TypeSystem.ConcreteTypes
                 handle
 
         let state =
             absorbLoads
                 { state with
-                    ConcreteTypes = concreteTypes
+                    TypeSystem =
+                        { state.TypeSystem with
+                            ConcreteTypes = concreteTypes
+                        }
                 }
                 loaded
 
@@ -298,12 +307,12 @@ public class Outer<A>
                 complain state "storage laid out from metadata contains a name-keyed field identity"
             | Some declaringHandle, Some fieldDefinition ->
 
-            match AllConcreteTypes.lookup declaringHandle state.ConcreteTypes with
+            match AllConcreteTypes.lookup declaringHandle state.TypeSystem.ConcreteTypes with
             | None -> complain state $"declaring-type handle %O{declaringHandle} is not registered in AllConcreteTypes"
             | Some declaringType ->
 
             let declaringAssembly =
-                state._LoadedAssemblies.ByDefinitionName declaringType.Identity.AssemblyFullName
+                state.TypeSystem._LoadedAssemblies.ByDefinitionName declaringType.Identity.AssemblyFullName
 
             let declaringTypeDef =
                 declaringAssembly.TypeDefs.[declaringType.Identity.TypeDefinition.Get]
@@ -342,7 +351,11 @@ public class Outer<A>
             let genericArgs =
                 declaringType.Generics
                 |> Seq.map (fun h ->
-                    Concretization.concreteHandleToTypeDefn bct h state.ConcreteTypes state._LoadedAssemblies
+                    Concretization.concreteHandleToTypeDefn
+                        bct
+                        h
+                        state.TypeSystem.ConcreteTypes
+                        state.TypeSystem._LoadedAssemblies
                 )
                 |> ImmutableArray.CreateRange
 
@@ -590,7 +603,7 @@ public class Outer<A>
         | ConcreteTypeHandle.Pointer element -> renderHandle state element + "*"
         | ConcreteTypeHandle.FunctionPointer _ -> "<fnptr>"
         | ConcreteTypeHandle.Concrete _ ->
-            match AllConcreteTypes.lookup handle state.ConcreteTypes with
+            match AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes with
             | None -> $"<unregistered %O{handle}>"
             | Some ct ->
                 if ct.Generics.IsEmpty then

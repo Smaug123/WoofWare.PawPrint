@@ -19,7 +19,7 @@ module NativeMetadataUpdater =
           "System.Reflection.Metadata",
           "MetadataUpdater",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // CoreCLR (assemblynative.cpp) returns CORDebuggerAttached() ||
             // ForceEnc || DebugAssembliesModifiable. PawPrint never enables hot
             // reload, so the answer is always false (BOOL is marshalled as int32

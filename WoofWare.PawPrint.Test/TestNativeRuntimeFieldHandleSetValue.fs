@@ -217,7 +217,7 @@ module TestNativeRuntimeFieldHandleSetValue =
 
         let targetInvocationHandle =
             AllConcreteTypes.getRequiredNonGenericHandle
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 fixture.BaseClassTypes.TargetInvocationException
 
         wrapperType |> shouldEqual targetInvocationHandle
@@ -287,7 +287,7 @@ module TestNativeRuntimeFieldHandleSetValue =
         ignore<ManagedHeapAddress> instanceAddr
 
         let objectHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.Object
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes fixture.BaseClassTypes.Object
 
         let state, wrongContents =
             IlMachineState.buildInstanceStorage fixture.LoggerFactory fixture.BaseClassTypes state objectHandle

@@ -231,7 +231,7 @@ public static class Entry
         : ManagedPointerSource * IlMachineState
         =
         let objectHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Object
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.Object
 
         let arrayAddr, state =
             IlMachineState.allocateArray
@@ -340,7 +340,7 @@ public static class Entry
         : unit
         =
         let expectedElementHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes expectedElementType
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes expectedElementType
 
         let array =
             match HeapObserver.tryGetArray arrayAddr state.ManagedHeap with

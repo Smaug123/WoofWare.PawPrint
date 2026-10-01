@@ -38,9 +38,14 @@ module TestInterfaceDispatchMap =
     let private stateOf (assemblies : DumpedAssembly list) : IlMachineState =
         let loaded = LoadedAssemblies.ofAssemblies (corelib :: assemblies)
 
-        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
-            ConcreteTypes = Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
-            _LoadedAssemblies = loaded
+        let initialState = IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+
+        { initialState with
+            TypeSystem =
+                { initialState.TypeSystem with
+                    ConcreteTypes = Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
+                    _LoadedAssemblies = loaded
+                }
         }
 
     /// The host type a PawPrint handle denotes. `hostAssemblies` maps each PawPrint assembly's
@@ -54,7 +59,7 @@ module TestInterfaceDispatchMap =
         match handle with
         | ConcreteTypeHandle.Concrete _ ->
             let ty =
-                AllConcreteTypes.lookup handle state.ConcreteTypes
+                AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes
                 |> Option.defaultWith (fun () -> failwith $"%O{handle} is not registered")
 
             let definition =
@@ -82,7 +87,7 @@ module TestInterfaceDispatchMap =
         (arguments : ConcreteTypeHandle list)
         : IlMachineState * ConcreteTypeHandle
         =
-        LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
+        LoadedTypeInfo.typeInfoToTypeDefn' bct state.TypeSystem._LoadedAssemblies typeInfo
         |> IlMachineState.concretizeType
             loggerFactory
             bct

@@ -74,8 +74,8 @@ type internal DebuggerValueContext =
 module internal DebuggerValueJson =
     let ofState (state : IlMachineState) : DebuggerValueContext =
         {
-            Assemblies = state._LoadedAssemblies
-            ConcreteTypes = state.ConcreteTypes
+            Assemblies = state.TypeSystem._LoadedAssemblies
+            ConcreteTypes = state.TypeSystem.ConcreteTypes
             Heap = state.ManagedHeap
         }
 

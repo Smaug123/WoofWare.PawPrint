@@ -127,8 +127,10 @@ module NativeModuleHandle =
           "System.Private.CoreLib",
           "System",
           "ModuleHandle",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", qCallModuleGenerics) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallModule",
+                                                        qCallModuleGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
             qCallModuleGenerics.IsEmpty
             ->
             let operation = "ModuleHandle_GetMDStreamVersion"
@@ -171,8 +173,10 @@ module NativeModuleHandle =
           "System.Private.CoreLib",
           "System",
           "ModuleHandle",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", qCallModuleGenerics) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallModule",
+                                                        qCallModuleGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
             qCallModuleGenerics.IsEmpty
             ->
             let operation = "ModuleHandle_GetToken"
@@ -210,9 +214,11 @@ module NativeModuleHandle =
           "System.Private.CoreLib",
           "System",
           "ModuleHandle",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", qCallModuleGenerics)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallModule",
+                                                        qCallModuleGenerics)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ],
           MethodReturnType.Void when qCallModuleGenerics.IsEmpty ->
             let operation = "ModuleHandle_GetPEKind"
 
@@ -236,7 +242,7 @@ module NativeModuleHandle =
             // there, and answers zero for both (measured: `NotAPortableExecutableImage` and
             // machine 0); the headers PawPrint built it with are not the guest's to see.
             let kindAndMachine =
-                if state._LoadedAssemblies.IsDynamic assemblyFullName then
+                if state.TypeSystem._LoadedAssemblies.IsDynamic assemblyFullName then
                     {
                         PEKind = 0
                         Machine = 0
@@ -264,16 +270,18 @@ module NativeModuleHandle =
           "System.Private.CoreLib",
           "System",
           "ModuleHandle",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", qCallModuleGenerics)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             resolverHandleGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             resultHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallModule",
+                                                        qCallModuleGenerics)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        resolverHandleGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        resultHandleGenerics) ],
           MethodReturnType.Void when
             qCallModuleGenerics.IsEmpty
             && resolverHandleGenerics.IsEmpty
@@ -355,7 +363,8 @@ module NativeModuleHandle =
                 )
 
             if (state.LoadedAssembly scopeAssemblyFullName).IsNone then
-                let available = state._LoadedAssemblies.DefinitionNames |> String.concat " ; "
+                let available =
+                    state.TypeSystem._LoadedAssemblies.DefinitionNames |> String.concat " ; "
 
                 failwith
                     $"%s{operation}: the scope assembly %s{scopeAssemblyFullName} is not loaded; available assemblies: %s{available}"
@@ -364,13 +373,13 @@ module NativeModuleHandle =
 
             let runtimeMethodInfoStubType =
                 AllConcreteTypes.getRequiredNonGenericHandle
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     ctx.BaseClassTypes.RuntimeMethodInfoStub
 
             let stubAddress, registry, state =
                 MethodHandleRegistry.mintDynamicMethod
                     ctx.BaseClassTypes
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     state
                     (fun fields state -> IlMachineState.allocateManagedObject runtimeMethodInfoStubType fields state)
                     name

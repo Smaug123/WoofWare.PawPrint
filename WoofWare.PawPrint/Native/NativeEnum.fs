@@ -48,7 +48,7 @@ module NativeEnum =
                     failwith $"%s{operation}: expected exact concrete enum type handle, got non-concrete %O{typeHandle}"
 
         let concreteType =
-            AllConcreteTypes.lookup concreteTypeHandle state.ConcreteTypes
+            AllConcreteTypes.lookup concreteTypeHandle state.TypeSystem.ConcreteTypes
             |> Option.defaultWith (fun () ->
                 failwith $"%s{operation}: concrete type handle %O{concreteTypeHandle} is not registered"
             )
@@ -124,7 +124,7 @@ module NativeEnum =
                 // enum underlyings; model those storage views if PawPrint hits them.
                 failwith $"%s{operation}: unsupported enum underlying primitive type %O{underlying}"
 
-        AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes typeInfo
+        AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes typeInfo
 
     let private failConstantType
         (operation : string)
@@ -212,7 +212,7 @@ module NativeEnum =
         : ManagedHeapAddress * IlMachineState
         =
         let stringHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.String
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.String
 
         let arrayAddr, state =
             IlMachineState.allocateArray
@@ -255,13 +255,15 @@ module NativeEnum =
           "System.Private.CoreLib",
           "System",
           "Enum",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             valuesHandleGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             namesHandleGenerics)
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        qCallGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        valuesHandleGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        namesHandleGenerics)
             _getNamesType ],
           MethodReturnType.Void when
             qCallGenerics.IsEmpty

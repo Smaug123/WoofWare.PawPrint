@@ -102,8 +102,8 @@ class Program
     /// pointer would arrive here as a raw address naming no block at all.
     let private bufferBlock (state : IlMachineState) : NativeMemoryBlockId =
         let probeType =
-            state._LoadedAssemblies.DefinitionNames
-            |> Seq.collect (fun name -> state._LoadedAssemblies.ByDefinitionName(name).TypeDefs.Values)
+            state.TypeSystem._LoadedAssemblies.DefinitionNames
+            |> Seq.collect (fun name -> state.TypeSystem._LoadedAssemblies.ByDefinitionName(name).TypeDefs.Values)
             |> Seq.filter (fun ty -> ty.Name = "Probe" && ty.Namespace = "")
             |> Seq.toList
             |> function
@@ -111,7 +111,7 @@ class Program
                 | other -> failwith $"expected exactly one `Probe` type across loaded assemblies, got %d{other.Length}"
 
         let probeHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes probeType
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes probeType
 
         let field = FieldIdentity.requiredOwnStaticField probeType "Buffer"
 

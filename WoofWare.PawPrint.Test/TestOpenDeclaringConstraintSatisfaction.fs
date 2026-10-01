@@ -150,7 +150,11 @@ public class D_Self<T> where T : class { public void M_Self<U>() where U : D_Sel
             (IlMachineState.initial loggerFactory ImmutableArray.Empty guest).WithLoadedAssembly corelib
 
         { withAssemblies with
-            ConcreteTypes = Corelib.concretizeAll withAssemblies._LoadedAssemblies bct AllConcreteTypes.Empty
+            TypeSystem =
+                { withAssemblies.TypeSystem with
+                    ConcreteTypes =
+                        Corelib.concretizeAll withAssemblies.TypeSystem._LoadedAssemblies bct AllConcreteTypes.Empty
+                }
         }
 
     let private guestType (name : string) : TypeInfo<GenericParamFromMetadata, TypeDefn> =
@@ -180,7 +184,7 @@ public class D_Self<T> where T : class { public void M_Self<U>() where U : D_Sel
             Defn =
                 TypeDefn.FromDefinition (
                     typeInfo.Identity,
-                    LoadedTypeInfo.signatureTypeKind bct initialState._LoadedAssemblies typeInfo
+                    LoadedTypeInfo.signatureTypeKind bct initialState.TypeSystem._LoadedAssemblies typeInfo
                 )
             Host = hostType name
         }
@@ -207,7 +211,7 @@ public class D_Self<T> where T : class { public void M_Self<U>() where U : D_Sel
                 TypeDefn.GenericInstantiation (
                     TypeDefn.FromDefinition (
                         definition.Identity,
-                        LoadedTypeInfo.signatureTypeKind bct initialState._LoadedAssemblies definition
+                        LoadedTypeInfo.signatureTypeKind bct initialState.TypeSystem._LoadedAssemblies definition
                     ),
                     args |> List.map (fun a -> a.Defn) |> ImmutableArray.CreateRange
                 )

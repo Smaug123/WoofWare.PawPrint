@@ -19,7 +19,7 @@ module NativeStackTrace =
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : IlMachineState * ConcreteTypeHandle
         =
-        LoadedTypeInfo.typeInfoToTypeDefn' ctx.BaseClassTypes state._LoadedAssemblies typeInfo
+        LoadedTypeInfo.typeInfoToTypeDefn' ctx.BaseClassTypes state.TypeSystem._LoadedAssemblies typeInfo
         |> IlMachineState.concretizeType
             ctx.LoggerFactory
             ctx.BaseClassTypes
@@ -148,14 +148,19 @@ module NativeStackTrace =
             then
                 let arguments =
                     frame.Method.DeclaringTypeGenerics
-                    |> Seq.map (AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes)
+                    |> Seq.map (
+                        AllConcreteTypes.describe state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes
+                    )
                     |> String.concat ", "
 
                 failwith
                     $"TODO: %s{operation}: a captured frame runs %O{frame.Method} on the instantiation <%s{arguments}>, which has a shareable type argument, so CoreCLR reports the frame by the canonical method declared on an instantiation over System.__Canon, which PawPrint does not model. The capture was not requested by StackTrace.CaptureStackTrace or StackFrame.BuildStackFrame, which read the frame only as its typical definition, so the caller could observe the difference."
 
             let id, registry =
-                MethodHandleRegistry.getOrAllocateDefinitionId state.ConcreteTypes frame.Method state.MethodHandles
+                MethodHandleRegistry.getOrAllocateDefinitionId
+                    state.TypeSystem.ConcreteTypes
+                    frame.Method
+                    state.MethodHandles
 
             { state with
                 MethodHandles = registry
@@ -221,9 +226,13 @@ module NativeStackTrace =
           "System.Private.CoreLib",
           "System.Diagnostics",
           "StackTrace",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", helperGenerics)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", exceptionGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        helperGenerics)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        exceptionGenerics) ],
           MethodReturnType.Void when helperGenerics.IsEmpty && exceptionGenerics.IsEmpty ->
             // CoreCLR debugdebugger.cpp:287. Fills a caller-allocated `StackFrameHelper` in place:
             // `iFrameCount` arrives as the caller's `NumFramesRequested` and leaves as the number

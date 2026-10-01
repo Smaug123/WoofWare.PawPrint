@@ -27,7 +27,13 @@ module internal IntrinsicHelpers =
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ -> false
         | ConcreteTypeHandle.Concrete _ ->
-            match AllConcreteTypes.tryIsValueType baseClassTypes state._LoadedAssemblies state.ConcreteTypes handle with
+            match
+                AllConcreteTypes.tryIsValueType
+                    baseClassTypes
+                    state.TypeSystem._LoadedAssemblies
+                    state.TypeSystem.ConcreteTypes
+                    handle
+            with
             | Some isValueType -> isValueType
             | None -> failwith $"%s{operation}: expected nominal concrete type handle, got %O{handle}"
 
@@ -99,7 +105,7 @@ module internal IntrinsicHelpers =
             state, seenSoFar, v
         | false, _ ->
             let concrete =
-                AllConcreteTypes.lookup handle state.ConcreteTypes
+                AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes
                 |> Option.defaultWith (fun () -> failwith $"type was not registered: %O{handle}")
 
             if
@@ -118,7 +124,7 @@ module internal IntrinsicHelpers =
 
             let td = assy.TypeDefs.[concrete.Definition.Get]
 
-            if not (LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies td) then
+            if not (LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies td) then
                 // Short-circuit: if the type itself is a reference type, we're done.
                 state, seenSoFar.Add (handle, Completed true), true
             else
@@ -486,7 +492,7 @@ module internal IntrinsicHelpers =
         (state : IlMachineState)
         : ConcreteTypeHandle
         =
-        AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Byte.Identity
+        AllConcreteTypes.findExistingNonGenericConcreteType state.TypeSystem.ConcreteTypes baseClassTypes.Byte.Identity
         |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Byte is not concretized")
 
     let checkedByteCount (operation : string) (count : int64) : int =
@@ -633,10 +639,10 @@ module internal IntrinsicHelpers =
         : bool
         =
         match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-        | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
-            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
-            ConcreteUIntPtr state.ConcreteTypes ],
-          MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> true
+        | [ ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+            ConcreteUIntPtr state.TypeSystem.ConcreteTypes ],
+          MethodReturnType.Returns (ConcreteBool state.TypeSystem.ConcreteTypes) -> true
         | _ -> false
 
     let spanHelpersSequenceEqual
@@ -648,10 +654,10 @@ module internal IntrinsicHelpers =
         : IlMachineState
         =
         match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-        | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
-            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
-            ConcreteUIntPtr state.ConcreteTypes ],
-          MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
+        | [ ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+            ConcreteUIntPtr state.TypeSystem.ConcreteTypes ],
+          MethodReturnType.Returns (ConcreteBool state.TypeSystem.ConcreteTypes) -> ()
         | _ -> failwith $"bad signature for SpanHelpers.SequenceEqual: %A{methodToCall.Signature}"
 
         let operation = "SpanHelpers.SequenceEqual"
@@ -742,7 +748,7 @@ module internal IntrinsicHelpers =
         : ConcreteTypeHandle
         =
         AllConcreteTypes.findExistingConcreteType
-            state.ConcreteTypes
+            state.TypeSystem.ConcreteTypes
             methodToCall.RequiredDeclaringType.Identity
             methodToCall.DeclaringTypeGenerics
         |> Option.defaultWith (fun () ->
@@ -768,7 +774,7 @@ module internal IntrinsicHelpers =
         let elementType = methodToCall.DeclaringTypeGenerics |> Seq.exactlyOne
 
         match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-        | [ ConcretePointer _ ; ConcreteInt32 state.ConcreteTypes ], MethodReturnType.Void -> ()
+        | [ ConcretePointer _ ; ConcreteInt32 state.TypeSystem.ConcreteTypes ], MethodReturnType.Void -> ()
         | _ ->
             failwith
                 $"bad signature for %s{IntrinsicMethodKeys.formatMethodKey (IntrinsicMethodKeys.methodKey state methodToCall)}"
@@ -878,7 +884,7 @@ module internal IntrinsicHelpers =
         (handle : ConcreteTypeHandle)
         : bool
         =
-        match AllConcreteTypes.lookup handle state.ConcreteTypes with
+        match AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes with
         | Some ty ->
             AssemblyDefinitionName.isNamed "System.Private.CoreLib" ty.AssemblyFullName
             && ty.Namespace = ns
@@ -886,7 +892,7 @@ module internal IntrinsicHelpers =
         | None -> false
 
     let isReadOnlySpanOfChar (state : IlMachineState) (handle : ConcreteTypeHandle) : bool =
-        match AllConcreteTypes.lookup handle state.ConcreteTypes with
+        match AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes with
         | Some ty ->
             AssemblyDefinitionName.isNamed "System.Private.CoreLib" ty.AssemblyFullName
             && ty.Namespace = "System"
@@ -950,7 +956,7 @@ module internal IntrinsicHelpers =
         : string * IlMachineState
         =
         let spanType =
-            AllConcreteTypes.lookup span.Declared state.ConcreteTypes
+            AllConcreteTypes.lookup span.Declared state.TypeSystem.ConcreteTypes
             |> Option.defaultWith (fun () -> failwith $"%s{operation}: span type %O{span.Declared} was not registered")
 
         if
@@ -1002,7 +1008,7 @@ module internal IntrinsicHelpers =
         : IlMachineState
         =
         match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-        | [], MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.String) -> ()
+        | [], MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.String) -> ()
         | _ ->
             failwith
                 $"bad signature for %s{IntrinsicMethodKeys.formatMethodKey (IntrinsicMethodKeys.methodKey state methodToCall)}"
@@ -1017,7 +1023,7 @@ module internal IntrinsicHelpers =
             failwith $"%s{operation}: span length was negative: %d{length}"
 
         let elementTypeInfo =
-            AllConcreteTypes.lookup elementType state.ConcreteTypes
+            AllConcreteTypes.lookup elementType state.TypeSystem.ConcreteTypes
             |> Option.defaultWith (fun () -> failwith $"%s{operation}: element type %O{elementType} was not registered")
 
         let contents, state =
@@ -1068,7 +1074,8 @@ module internal IntrinsicHelpers =
         : IlMachineState
         =
         match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-        | [ leftSpan ; rightSpan ; comparisonType ], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) when
+        | [ leftSpan ; rightSpan ; comparisonType ],
+          MethodReturnType.Returns (ConcreteBool state.TypeSystem.ConcreteTypes) when
             isReadOnlySpanOfChar state leftSpan
             && isReadOnlySpanOfChar state rightSpan
             && isCorelibConcreteType state "System" "StringComparison" comparisonType

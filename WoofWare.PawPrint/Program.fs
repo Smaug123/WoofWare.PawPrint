@@ -1185,7 +1185,7 @@ module Program =
                     // Resolve the type reference to find which assembly it's in
                     match
                         LoadedTypeResolution.resolveTypeRef
-                            state._LoadedAssemblies
+                            state.TypeSystem._LoadedAssemblies
                             currentAssembly
                             ImmutableArray.Empty
                             typeRef
@@ -1195,7 +1195,11 @@ module Program =
                         let handle, definedIn = assyRef.Handle
 
                         let state, _, _ =
-                            IlMachineState.loadAssembly loggerFactory state._LoadedAssemblies.[definedIn] handle state
+                            IlMachineState.loadAssembly
+                                loggerFactory
+                                state.TypeSystem._LoadedAssemblies.[definedIn]
+                                handle
+                                state
 
                         go state
                     | TypeResolutionResult.NotFound miss ->
@@ -1313,9 +1317,9 @@ module Program =
 
             match
                 MethodState.Empty
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     baseTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     dumped
                     concretizedMainMethod
                     ImmutableArray.Empty
@@ -1366,7 +1370,14 @@ module Program =
 
         let state =
             { state with
-                ConcreteTypes = Corelib.concretizeAll state._LoadedAssemblies baseClassTypes state.ConcreteTypes
+                TypeSystem =
+                    { state.TypeSystem with
+                        ConcreteTypes =
+                            Corelib.concretizeAll
+                                state.TypeSystem._LoadedAssemblies
+                                baseClassTypes
+                                state.TypeSystem.ConcreteTypes
+                    }
             }
 
         // Seed AppContext before anything else runs. On CoreCLR this happens in
@@ -1423,9 +1434,9 @@ module Program =
             let methodState =
                 match
                     MethodState.Empty
-                        state.ConcreteTypes
+                        state.TypeSystem.ConcreteTypes
                         baseClassTypes
-                        state._LoadedAssemblies
+                        state.TypeSystem._LoadedAssemblies
                         dumped
                         concretizedMainMethod
                         ImmutableArray.Empty

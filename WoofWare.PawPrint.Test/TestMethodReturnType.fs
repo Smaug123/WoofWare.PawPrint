@@ -39,7 +39,14 @@ module TestMethodReturnType =
             let state = initialState.WithLoadedAssembly corelib
 
             { state with
-                ConcreteTypes = Corelib.concretizeAll state._LoadedAssemblies baseClassTypes state.ConcreteTypes
+                TypeSystem =
+                    { state.TypeSystem with
+                        ConcreteTypes =
+                            Corelib.concretizeAll
+                                state.TypeSystem._LoadedAssemblies
+                                baseClassTypes
+                                state.TypeSystem.ConcreteTypes
+                    }
             }
 
         loggerFactory, baseClassTypes, assembly, state

@@ -28,8 +28,8 @@ module NativeMonitor =
           "System.Threading",
           "Monitor",
           "TryEnter_FastPath",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Object ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) ->
             System_Threading_Monitor.TryEnter_FastPath ctx.BaseClassTypes ctx.Thread state
             |> NativeHandlerResult.ofExecutionResult
             |> Some
@@ -37,9 +37,9 @@ module NativeMonitor =
           "System.Threading",
           "Monitor",
           "TryEnter_FastPath_WithTimeout",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (MonitorNestedEnum state.ConcreteTypes "EnterHelperResult") ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Object
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (MonitorNestedEnum state.TypeSystem.ConcreteTypes "EnterHelperResult") ->
             System_Threading_Monitor.TryEnter_FastPath_WithTimeout ctx.BaseClassTypes ctx.Thread state
             |> NativeHandlerResult.ofExecutionResult
             |> Some
@@ -47,8 +47,8 @@ module NativeMonitor =
           "System.Threading",
           "Monitor",
           "Exit_FastPath",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
-          MethodReturnType.Returns (MonitorNestedEnum state.ConcreteTypes "LeaveHelperAction") ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Object ],
+          MethodReturnType.Returns (MonitorNestedEnum state.TypeSystem.ConcreteTypes "LeaveHelperAction") ->
             System_Threading_Monitor.Exit_FastPath ctx.BaseClassTypes ctx.Thread state
             |> NativeHandlerResult.ofExecutionResult
             |> Some
@@ -56,8 +56,8 @@ module NativeMonitor =
           "System.Threading",
           "Monitor",
           "IsEnteredNative",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Object ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) ->
             System_Threading_Monitor.IsEnteredNative ctx.BaseClassTypes ctx.Thread state
             |> NativeHandlerResult.ofExecutionResult
             |> Some
@@ -101,11 +101,11 @@ module NativeMonitor =
           "System.Threading",
           "Monitor",
           _,
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
             objectHandleGenerics.IsEmpty
             ->
             // .NET 10 QCall: Monitor.Wait(ObjectHandleOnStack obj, int millisecondsTimeout) -> bool.
@@ -171,9 +171,9 @@ module NativeMonitor =
           "System.Threading",
           "Monitor",
           _,
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when objectHandleGenerics.IsEmpty ->
             // .NET 10 QCall: Monitor.Pulse(ObjectHandleOnStack obj) -> void.
             let operation = "Monitor_Pulse"
@@ -192,9 +192,9 @@ module NativeMonitor =
           "System.Threading",
           "Monitor",
           _,
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when objectHandleGenerics.IsEmpty ->
             // .NET 10 QCall: Monitor.PulseAll(ObjectHandleOnStack obj) -> void.
             let operation = "Monitor_PulseAll"
@@ -213,11 +213,11 @@ module NativeMonitor =
           "System.Threading",
           "Monitor",
           _,
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
             objectHandleGenerics.IsEmpty
             ->
             // .NET 10 QCall: Monitor.TryEnter_Slowpath(ObjectHandleOnStack obj, int millisecondsTimeout) -> int.

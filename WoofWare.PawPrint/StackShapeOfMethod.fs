@@ -31,8 +31,8 @@ module StackShapeOfMethod =
 
     let private shapeOfConcreteType (state : IlMachineState) (handle : ConcreteTypeHandle) : SlotShape =
         match handle with
-        | ConcretePrimitive state.ConcreteTypes PrimitiveType.Single -> SlotShape.Float FloatWidth.Single
-        | ConcretePrimitive state.ConcreteTypes PrimitiveType.Double -> SlotShape.Float FloatWidth.Double
+        | ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Single -> SlotShape.Float FloatWidth.Single
+        | ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Double -> SlotShape.Float FloatWidth.Double
         | _ -> SlotShape.Other
 
     /// The instantiation the body is running under, as the shapes of its generic parameters.

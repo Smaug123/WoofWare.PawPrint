@@ -41,7 +41,7 @@ module NativeLowLevelMonitor =
         with
         | Some "SystemNative_LowLevelMonitor_Create",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr) ->
             // Mint a fresh tagged monitor handle. Counter starts at 1 so the
             // guest's `if (_nativeMonitor == IntPtr.Zero) throw new OOM()` check
             // never fires for a successful Create.
@@ -55,7 +55,7 @@ module NativeLowLevelMonitor =
             |> Some
 
         | Some "SystemNative_LowLevelMonitor_Destroy",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr ],
           MethodReturnType.Void ->
             let operation = "SystemNative_LowLevelMonitor_Destroy"
             let id = monitorOfArgument operation instruction.Arguments.[0]
@@ -63,7 +63,7 @@ module NativeLowLevelMonitor =
             NativeHandlerResult.completed state |> Some
 
         | Some "SystemNative_LowLevelMonitor_Acquire",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr ],
           MethodReturnType.Void ->
             let operation = "SystemNative_LowLevelMonitor_Acquire"
             let id = monitorOfArgument operation instruction.Arguments.[0]
@@ -82,7 +82,7 @@ module NativeLowLevelMonitor =
             NativeHandlerResult.completed state |> Some
 
         | Some "SystemNative_LowLevelMonitor_Release",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr ],
           MethodReturnType.Void ->
             let operation = "SystemNative_LowLevelMonitor_Release"
             let id = monitorOfArgument operation instruction.Arguments.[0]
@@ -90,7 +90,7 @@ module NativeLowLevelMonitor =
             NativeHandlerResult.completed state |> Some
 
         | Some "SystemNative_LowLevelMonitor_Wait",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr ],
           MethodReturnType.Void ->
             let operation = "SystemNative_LowLevelMonitor_Wait"
             let id = monitorOfArgument operation instruction.Arguments.[0]
@@ -98,9 +98,9 @@ module NativeLowLevelMonitor =
             NativeHandlerResult.completed state |> Some
 
         | Some "SystemNative_LowLevelMonitor_TimedWait",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // The managed BCL marshals `bool` ↔ `Int32`: non-zero means
             // signalled, zero means timed out. The wait *always* parks
             // (no fast path — TimedWait is a condvar primitive, not a
@@ -159,7 +159,7 @@ module NativeLowLevelMonitor =
             NativeHandlerResult.completed state |> Some
 
         | Some "SystemNative_LowLevelMonitor_Signal_Release",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr ],
           MethodReturnType.Void ->
             let operation = "SystemNative_LowLevelMonitor_Signal_Release"
             let id = monitorOfArgument operation instruction.Arguments.[0]

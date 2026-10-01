@@ -240,7 +240,7 @@ module NativeCall =
         (state : IlMachineState)
         : ConcreteTypeHandle
         =
-        AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Char.Identity
+        AllConcreteTypes.findExistingNonGenericConcreteType state.TypeSystem.ConcreteTypes baseClassTypes.Char.Identity
         |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Char is not concretized")
 
     let private readUtf16Char
@@ -345,7 +345,7 @@ module NativeCall =
         (state : IlMachineState)
         : ConcreteTypeHandle
         =
-        AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Byte.Identity
+        AllConcreteTypes.findExistingNonGenericConcreteType state.TypeSystem.ConcreteTypes baseClassTypes.Byte.Identity
         |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Byte is not concretized")
 
     let private readNamedByte
@@ -559,7 +559,7 @@ module NativeCall =
         : ManagedHeapAddress * IlMachineState
         =
         let byteHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.Byte
 
         let arrayAddr, state =
             IlMachineState.allocateArray
@@ -874,7 +874,7 @@ module NativeCall =
                 match h with
                 | ConcreteTypeHandle.Concrete _ ->
                     let concreteType =
-                        AllConcreteTypes.lookup h state.ConcreteTypes
+                        AllConcreteTypes.lookup h state.TypeSystem.ConcreteTypes
                         |> Option.defaultWith (fun () ->
                             failwith
                                 $"%s{operation}: could not find concrete type for handle %O{concreteTypeHandle} (unwrapped to %O{h})"
@@ -935,7 +935,7 @@ module NativeCall =
             | MethodBody.Il _ -> "IL"
 
         let rec formatTypeHandle (cth : ConcreteTypeHandle) : string =
-            match AllConcreteTypes.lookup cth state.ConcreteTypes with
+            match AllConcreteTypes.lookup cth state.TypeSystem.ConcreteTypes with
             | Some ct -> $"{ct.Namespace}.{ct.Name}"
             | None ->
                 match cth with

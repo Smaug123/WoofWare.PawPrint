@@ -159,8 +159,8 @@ module NativeGc =
           "System",
           "GC",
           "GetMemoryInfo",
-          [ CorelibType state.ConcreteTypes ("System", "GCMemoryInfoData", dataGenerics)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "GCMemoryInfoData", dataGenerics)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void when dataGenerics.IsEmpty ->
             let operation = "GC.GetMemoryInfo"
 
@@ -262,15 +262,15 @@ module NativeGc =
           "System.Private.CoreLib",
           "System",
           "GC",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
             // `GC_ALLOC_FLAGS` is nested in `GC`, and a nested TypeDef carries an empty
             // namespace in ECMA metadata (II.22.37), so it is matched with "" rather than
             // "System" — as `NativeException` matches the nested `ExceptionMessageKind`.
-            CorelibType state.ConcreteTypes ("", "GC_ALLOC_FLAGS", flagsGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+            CorelibType state.TypeSystem.ConcreteTypes ("", "GC_ALLOC_FLAGS", flagsGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when flagsGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
             let operation = "GC.AllocateNewArray"
 

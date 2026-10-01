@@ -79,7 +79,7 @@ module NativeValueType =
                     $"%s{operation}: field of type System.TypedReference; only a ByRefLike type may declare one, and such a type cannot be boxed, so ValueType.GetHashCode is unreachable for it"
 
         match fieldType with
-        | ConcretePrimitive state.ConcreteTypes primitive -> state, ofPrimitive primitive
+        | ConcretePrimitive state.TypeSystem.ConcreteTypes primitive -> state, ofPrimitive primitive
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ -> state, FieldClass.ObjectReference
         | ConcreteTypeHandle.Pointer _
@@ -240,18 +240,20 @@ module NativeValueType =
           "System.Private.CoreLib",
           "System",
           "ValueType",
-          [ ConcretePointer (CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                                              "MethodTable",
-                                                              methodTableGenerics))
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32)
-            ConcretePointer (ConcretePointer (CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                                                               "MethodTable",
-                                                                               fieldMethodTableGenerics))) ],
-          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("", "ValueTypeHashCodeStrategy", strategyGenerics)) when
+          [ ConcretePointer (CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                                         "MethodTable",
+                                                                         methodTableGenerics))
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32)
+            ConcretePointer (ConcretePointer (CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                                                          "MethodTable",
+                                                                                          fieldMethodTableGenerics))) ],
+          MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("",
+                                                                                "ValueTypeHashCodeStrategy",
+                                                                                strategyGenerics)) when
             methodTableGenerics.IsEmpty
             && objectHandleGenerics.IsEmpty
             && fieldMethodTableGenerics.IsEmpty

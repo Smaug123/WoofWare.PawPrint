@@ -633,9 +633,14 @@ module TestFabricatedVtableLayout =
     let private loggerFactory = snd (LoggerFactory.makeTest ())
 
     let private state () : IlMachineState =
-        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
-            ConcreteTypes = concreteTypes
-            _LoadedAssemblies = loaded
+        let initialState = IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+
+        { initialState with
+            TypeSystem =
+                { initialState.TypeSystem with
+                    ConcreteTypes = concreteTypes
+                    _LoadedAssemblies = loaded
+                }
         }
 
     /// A fabricated type, closed at the given corelib type arguments (none, for the non-generic
@@ -661,7 +666,7 @@ module TestFabricatedVtableLayout =
                     | Some typeInfo -> typeInfo
 
                 let state, handle =
-                    LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies argumentTypeInfo
+                    LoadedTypeInfo.typeInfoToTypeDefn' bct state.TypeSystem._LoadedAssemblies argumentTypeInfo
                     |> IlMachineState.concretizeType
                         loggerFactory
                         bct
@@ -676,7 +681,7 @@ module TestFabricatedVtableLayout =
         // As in TestVirtualMethodSlots: `typeInfoToTypeDefn'` already yields the instantiation shape
         // `T`n<!0, ..>`, so close it by supplying the arguments as the type-generic context rather
         // than by wrapping it again.
-        LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
+        LoadedTypeInfo.typeInfoToTypeDefn' bct state.TypeSystem._LoadedAssemblies typeInfo
         |> IlMachineState.concretizeType
             loggerFactory
             bct

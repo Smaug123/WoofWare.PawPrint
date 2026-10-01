@@ -89,13 +89,21 @@ module NativeRuntimeAssemblyBuilder =
           "System.Private.CoreLib",
           "System.Reflection.Emit",
           "RuntimeAssemblyBuilder",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", contextGenerics)
-            ConcretePointer (CorelibType state.ConcreteTypes ("System.Reflection",
-                                                              "NativeAssemblyNameParts",
-                                                              partsGenerics))
-            CorelibType state.ConcreteTypes ("System.Configuration.Assemblies", "AssemblyHashAlgorithm", hashGenerics)
-            CorelibType state.ConcreteTypes ("System.Reflection.Emit", "AssemblyBuilderAccess", accessGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", retGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        contextGenerics)
+            ConcretePointer (CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection",
+                                                                         "NativeAssemblyNameParts",
+                                                                         partsGenerics))
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Configuration.Assemblies",
+                                                        "AssemblyHashAlgorithm",
+                                                        hashGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection.Emit",
+                                                        "AssemblyBuilderAccess",
+                                                        accessGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        retGenerics) ],
           MethodReturnType.Void when
             contextGenerics.IsEmpty
             && partsGenerics.IsEmpty

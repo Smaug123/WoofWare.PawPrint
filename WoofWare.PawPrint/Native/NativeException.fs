@@ -35,10 +35,10 @@ module NativeException =
           "System",
           "Exception",
           "GetMessageFromNativeResources",
-          [ CorelibType state.ConcreteTypes ("", "ExceptionMessageKind", kindGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "StringHandleOnStack",
-                                             stringHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("", "ExceptionMessageKind", kindGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "StringHandleOnStack",
+                                                        stringHandleGenerics) ],
           MethodReturnType.Void when kindGenerics.IsEmpty && stringHandleGenerics.IsEmpty ->
             let operation = "ExceptionNative_GetMessageFromNativeResources"
 
@@ -69,10 +69,12 @@ module NativeException =
           "System",
           "Exception",
           "GetFrozenStackTrace",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", exceptionGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             stackTraceGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        exceptionGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        stackTraceGenerics) ],
           MethodReturnType.Void when exceptionGenerics.IsEmpty && stackTraceGenerics.IsEmpty ->
             // Reached from `ExceptionDispatchInfo.Capture` via `Exception.CaptureDispatchState`
             // (Exception.CoreCLR.cs:229-237). CoreCLR fetches the exception's `StackTraceArray`,
@@ -146,8 +148,8 @@ module NativeException =
           "System",
           "Exception",
           "IsImmutableAgileException",
-          [ CorelibType state.ConcreteTypes ("System", "Exception", exceptionGenerics) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "Exception", exceptionGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) when
             exceptionGenerics.IsEmpty
             ->
             // "Is this one of the runtime's *preallocated* exception objects?" — a reference-identity

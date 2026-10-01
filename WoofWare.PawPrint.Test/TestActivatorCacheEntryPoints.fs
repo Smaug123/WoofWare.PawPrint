@@ -72,9 +72,10 @@ public static class Program
             reraise ()
 
     let private typeName (state : IlMachineState) (handle : ConcreteTypeHandle) : string =
-        match AllConcreteTypes.lookup handle state.ConcreteTypes with
+        match AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes with
         | None -> failwith $"%O{handle} is not registered"
-        | Some ty -> state._LoadedAssemblies.ByDefinitionName(ty.AssemblyFullName).TypeDefs.[ty.Definition.Get].Name
+        | Some ty ->
+            state.TypeSystem._LoadedAssemblies.ByDefinitionName(ty.AssemblyFullName).TypeDefs.[ty.Definition.Get].Name
 
     /// The `(_pfnRefCtor, _pfnValueCtor)` pair of the one `ActivatorCache` whose ref ctor is a
     /// constructor declared on the named guest type.

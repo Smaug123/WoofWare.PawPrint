@@ -46,14 +46,17 @@ module VirtualSlotLayout =
         let ctx, result =
             walk
                 {
-                    TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
-                    TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                    TypeConcretization.ConcretizationContext.ConcreteTypes = state.TypeSystem.ConcreteTypes
+                    TypeConcretization.ConcretizationContext.LoadedAssemblies = state.TypeSystem._LoadedAssemblies
                     TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
                 }
 
         { state with
-            _LoadedAssemblies = ctx.LoadedAssemblies
-            ConcreteTypes = ctx.ConcreteTypes
+            TypeSystem =
+                { state.TypeSystem with
+                    _LoadedAssemblies = ctx.LoadedAssemblies
+                    ConcreteTypes = ctx.ConcreteTypes
+                }
         },
         result
 
@@ -64,11 +67,11 @@ module VirtualSlotLayout =
         (identity : ResolvedTypeIdentity)
         : DumpedAssembly * TypeInfo<GenericParamFromMetadata, TypeDefn>
         =
-        MethodTableLayout.definitionMetadata operation state._LoadedAssemblies identity
+        MethodTableLayout.definitionMetadata operation state.TypeSystem._LoadedAssemblies identity
 
     /// `MethodTableLayout.ownerOfDefinition` against the machine's loaded assemblies.
     let ownerOfDefinition (operation : string) (state : IlMachineState) (identity : ResolvedTypeIdentity) : SlotOwner =
-        MethodTableLayout.ownerOfDefinition operation state._LoadedAssemblies identity
+        MethodTableLayout.ownerOfDefinition operation state.TypeSystem._LoadedAssemblies identity
 
     /// `MethodTableLayout.nominalIdentityOfSpelling` against the machine's load context.
     let internal nominalIdentityOfSpelling
@@ -240,9 +243,9 @@ module VirtualSlotLayout =
                 )
 
             // Keyed on the definition, which every instantiation of it shares -- the same reason the
-            // walk itself is defined on the definition. See `_VirtualSlotTables` for why a memo is
+            // walk itself is defined on the definition. See `TypeSystemState._VirtualSlotTables` for why a memo is
             // sound here and why it has to live on the state rather than beside this walk.
-            match Map.tryFind concreteTypeInfo.Identity state._VirtualSlotTables with
+            match Map.tryFind concreteTypeInfo.Identity state.TypeSystem._VirtualSlotTables with
             | Some cached -> state, Some cached
             | None ->
 

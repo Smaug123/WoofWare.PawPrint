@@ -43,18 +43,18 @@ module NativeBuffer =
           "System",
           "Buffer",
           "__Memmove",
-          [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
-            ConcreteUIntPtr state.ConcreteTypes ],
+          [ ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+            ConcreteUIntPtr state.TypeSystem.ConcreteTypes ],
           MethodReturnType.Void
         | "Buffer_MemMove",
           "System.Private.CoreLib",
           "System",
           "Buffer",
           "MemmoveInternal",
-          [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
-            ConcreteUIntPtr state.ConcreteTypes ],
+          [ ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+            ConcreteUIntPtr state.TypeSystem.ConcreteTypes ],
           MethodReturnType.Void ->
             let operation = "Buffer_MemMove"
 
@@ -108,9 +108,9 @@ module NativeBuffer =
           "System",
           "Buffer",
           "BulkMoveWithWriteBarrierInternal",
-          [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
-            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
-            ConcreteUIntPtr state.ConcreteTypes ],
+          [ ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+            ConcreteUIntPtr state.TypeSystem.ConcreteTypes ],
           MethodReturnType.Void ->
             let operation = "Buffer_BulkMoveWithWriteBarrierInternal"
 

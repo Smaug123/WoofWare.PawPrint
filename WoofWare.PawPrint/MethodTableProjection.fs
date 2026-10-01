@@ -86,7 +86,7 @@ module internal MethodTableProjection =
         (handle : ConcreteTypeHandle)
         : bool
         =
-        match AllConcreteTypes.lookup handle state.ConcreteTypes with
+        match AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes with
         | None -> false
         | Some concreteType when concreteType.Generics.IsEmpty -> concreteType.Identity = baseClassTypes.String.Identity
         | Some _ -> false
@@ -127,7 +127,7 @@ module internal MethodTableProjection =
         (handle : ConcreteTypeHandle)
         : (ConcreteType<ConcreteTypeHandle> * TypeInfo<GenericParamFromMetadata, TypeDefn>) option
         =
-        AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes handle
+        AllConcreteTypes.tryTypeInfo state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes handle
 
     let private concreteTypeInfoOrFail
         (state : IlMachineState)
@@ -209,7 +209,7 @@ module internal MethodTableProjection =
                 match tryPrimitiveSize baseClassTypes typeInfo with
                 | Some size -> Some size
                 | None ->
-                    if LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+                    if LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo then
                         None
                     else
                         Some NATIVE_INT_SIZE
@@ -232,7 +232,7 @@ module internal MethodTableProjection =
             | Some (_, typeInfo) ->
                 if isTruePrimitive baseClassTypes typeInfo then
                     Some false
-                elif LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+                elif LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo then
                     None
                 else
                     Some true
@@ -247,10 +247,10 @@ module internal MethodTableProjection =
             categoryInterface
         elif TypeInfo.NominallyEqual typeInfo baseClassTypes.Nullable then
             categoryNullable
-        elif LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+        elif LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo then
             if isTruePrimitive baseClassTypes typeInfo then
                 categoryTruePrimitive
-            elif LoadedTypeInfo.isEnum baseClassTypes state._LoadedAssemblies typeInfo then
+            elif LoadedTypeInfo.isEnum baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo then
                 // An enum's element type is its underlying integer (`SetupMethodTable2`,
                 // methodtablebuilder.cpp:11157), and `SetInternalCorElementType` files anything
                 // that is not `ELEMENT_TYPE_CLASS`/`ELEMENT_TYPE_VALUETYPE` under
@@ -377,7 +377,7 @@ module internal MethodTableProjection =
 
             if isTruePrimitive baseClassTypes typeInfo then
                 false, state
-            elif LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+            elif LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo then
                 let zero, state =
                     IlMachineState.cliTypeZeroOfHandle state baseClassTypes containsForHandle
 
@@ -483,7 +483,7 @@ module internal MethodTableProjection =
             let state, assembly, typeInfo =
                 resolveTypeInfoForTypeDefn loggerFactory baseClassTypes state currentAssembly fieldType
 
-            if LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+            if LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo then
                 typeInfoInstanceFieldsMayContainGcPointers
                     loggerFactory
                     baseClassTypes
@@ -518,7 +518,7 @@ module internal MethodTableProjection =
                 let state, assembly, typeInfo =
                     resolveTypeInfoForTypeDefn loggerFactory baseClassTypes state currentAssembly fieldType
 
-                if LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+                if LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo then
                     typeInfoInstanceFieldsMayContainGcPointers
                         loggerFactory
                         baseClassTypes
@@ -790,7 +790,7 @@ module internal MethodTableProjection =
         | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
             let _, typeInfo = typeInfoForIdentityOrFail state identity
 
-            if LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+            if LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo then
                 openGenericContainsGcPointers loggerFactory baseClassTypes state identity
             else
                 true, state
@@ -824,7 +824,7 @@ module internal MethodTableProjection =
         | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
             let _, typeInfo = typeInfoForIdentityOrFail state identity
 
-            if LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+            if LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo then
                 RuntimeTypeHandleTarget.refuseComposite "MethodTable::ComponentSize" element
             else
                 uint16 NATIVE_INT_SIZE
@@ -972,8 +972,8 @@ module internal MethodTableProjection =
         let isByRefLike =
             RuntimeTypeHandleTarget.isByRefLike
                 baseClassTypes
-                state._LoadedAssemblies
-                state.ConcreteTypes
+                state.TypeSystem._LoadedAssemblies
+                state.TypeSystem.ConcreteTypes
                 methodTableFor
 
         let containsGcPointers, state =
@@ -1026,7 +1026,7 @@ module internal MethodTableProjection =
             match tryPrimitiveSize baseClassTypes typeInfo with
             | Some size -> uint32 size, state
             | None ->
-                if LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+                if LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo then
                     let zero, state =
                         IlMachineState.cliTypeZeroOfHandle state baseClassTypes methodTableFor
 

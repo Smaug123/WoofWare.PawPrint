@@ -39,24 +39,29 @@ module TestPointerFieldByteView =
     let private loggerFactory = snd (LoggerFactory.makeTest ())
 
     let private preparedState : IlMachineState =
-        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
-            ConcreteTypes = Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
+        let initialState = IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+
+        { initialState with
+            TypeSystem =
+                { initialState.TypeSystem with
+                    ConcreteTypes = Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
+                }
         }
 
     let private int32Handle : ConcreteTypeHandle =
-        AllConcreteTypes.getRequiredNonGenericHandle preparedState.ConcreteTypes bct.Int32
+        AllConcreteTypes.getRequiredNonGenericHandle preparedState.TypeSystem.ConcreteTypes bct.Int32
 
     let private byteHandle : ConcreteTypeHandle =
-        AllConcreteTypes.getRequiredNonGenericHandle preparedState.ConcreteTypes bct.Byte
+        AllConcreteTypes.getRequiredNonGenericHandle preparedState.TypeSystem.ConcreteTypes bct.Byte
 
     let private intPtrHandle : ConcreteTypeHandle =
-        AllConcreteTypes.getRequiredNonGenericHandle preparedState.ConcreteTypes bct.IntPtr
+        AllConcreteTypes.getRequiredNonGenericHandle preparedState.TypeSystem.ConcreteTypes bct.IntPtr
 
     let private objectHandle : ConcreteTypeHandle =
-        AllConcreteTypes.getRequiredNonGenericHandle preparedState.ConcreteTypes bct.Object
+        AllConcreteTypes.getRequiredNonGenericHandle preparedState.TypeSystem.ConcreteTypes bct.Object
 
     let private storageDeclared : ConcreteTypeHandle =
-        AllConcreteTypes.getRequiredNonGenericHandle preparedState.ConcreteTypes bct.TypedReference
+        AllConcreteTypes.getRequiredNonGenericHandle preparedState.TypeSystem.ConcreteTypes bct.TypedReference
 
     let private pointerSize : int = 8
 
@@ -113,7 +118,7 @@ module TestPointerFieldByteView =
     let private synthesise (fields : CliField list) : CliValueType =
         SynthesisedLayoutKind.ofFields
             bct
-            preparedState.ConcreteTypes
+            preparedState.TypeSystem.ConcreteTypes
             storageDeclared
             Layout.Default
             CharSet.Ansi

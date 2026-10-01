@@ -93,7 +93,7 @@ public sealed class GenericHolder<T>
         : IlMachineState * ConcreteTypeHandle
         =
         let typeDefn =
-            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies typeInfo
+            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo
 
         IlMachineState.concretizeType
             loggerFactory
@@ -158,7 +158,14 @@ public sealed class GenericHolder<T>
             let state = initialState.WithLoadedAssembly corelib
 
             { state with
-                ConcreteTypes = Corelib.concretizeAll state._LoadedAssemblies baseClassTypes state.ConcreteTypes
+                TypeSystem =
+                    { state.TypeSystem with
+                        ConcreteTypes =
+                            Corelib.concretizeAll
+                                state.TypeSystem._LoadedAssemblies
+                                baseClassTypes
+                                state.TypeSystem.ConcreteTypes
+                    }
             }
 
         let runtimeFieldHandleType =
@@ -183,7 +190,7 @@ public sealed class GenericHolder<T>
             concretizeTypeInfo loggerFactory baseClassTypes state holderType
 
         let int32Handle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Int32
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.Int32
 
         {
             LoggerFactory = loggerFactory
@@ -277,7 +284,11 @@ public sealed class GenericHolder<T>
         let stubAddress, state = fieldInfoStubFor fixture declaringType field state
         let stub = ManagedHeap.get stubAddress state.ManagedHeap
 
-        RuntimeFieldInfoStubLayout.value fixture.BaseClassTypes state.ConcreteTypes stub.ConcreteType stub.Contents,
+        RuntimeFieldInfoStubLayout.value
+            fixture.BaseClassTypes
+            state.TypeSystem.ConcreteTypes
+            stub.ConcreteType
+            stub.Contents,
         state
 
     /// `fieldDescArgumentFor` on `Holder`'s field named `fieldName`.
@@ -321,7 +332,7 @@ public sealed class GenericHolder<T>
         : ManagedHeapAddress * CliType * IlMachineState
         =
         let objectHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.Object
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes fixture.BaseClassTypes.Object
 
         let arrayAddr, state =
             IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero objectHandle) (fun () -> value) 1 state
@@ -431,9 +442,9 @@ public sealed class GenericHolder<T>
         let methodState =
             match
                 MethodState.Empty
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     fixture.BaseClassTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     fixture.Corelib
                     fixture.NativeMethod
                     ImmutableArray.Empty
@@ -552,7 +563,9 @@ public sealed class GenericHolder<T>
             let obj = ManagedHeap.get exn.ExceptionObject state.ManagedHeap
 
             let exceptionHandle =
-                AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.Exception
+                AllConcreteTypes.getRequiredNonGenericHandle
+                    state.TypeSystem.ConcreteTypes
+                    fixture.BaseClassTypes.Exception
 
             let innerField =
                 FieldIdentity.requiredOwnInstanceField fixture.BaseClassTypes.Exception "_innerException"

@@ -104,16 +104,16 @@ static class Program
     /// The corelib instance the run resolved against, so that a fresh computation reads the
     /// same metadata objects the memoised one did.
     let private baseClassTypesOf (state : IlMachineState) : BaseClassTypes<DumpedAssembly> =
-        state._LoadedAssemblies.DefinitionNames
+        state.TypeSystem._LoadedAssemblies.DefinitionNames
         |> Seq.find (fun name -> name.StartsWith ("System.Private.CoreLib,", System.StringComparison.Ordinal))
-        |> state._LoadedAssemblies.ByDefinitionName
+        |> state.TypeSystem._LoadedAssemblies.ByDefinitionName
         |> BaseClassTypes.ofCorelib
 
     [<Test>]
     let ``Every memoised method concretisation agrees with concretising the definition afresh`` () =
         let state = runGuest ()
         let baseClassTypes = baseClassTypesOf state
-        let entries = state._ConcretisedMethods |> Map.toList
+        let entries = state.TypeSystem._ConcretisedMethods |> Map.toList
 
         // The guest is chosen to reach every shape of key; a run that memoised only
         // non-generic metadata methods would pass the comparison below without testing the claim.
@@ -147,7 +147,7 @@ static class Program
                 |> shouldEqual key.TypeGenerics
             | Some row ->
                 let assy =
-                    state._LoadedAssemblies.ByDefinitionName key.DeclaringType.AssemblyFullName
+                    state.TypeSystem._LoadedAssemblies.ByDefinitionName key.DeclaringType.AssemblyFullName
 
                 let definition =
                     assy.Methods.[MetadataTokens.MethodDefinitionHandle row]
@@ -155,9 +155,9 @@ static class Program
 
                 let fresh, concreteTypes, assemblies =
                     Concretization.concretizeMethod
-                        state.ConcreteTypes
+                        state.TypeSystem.ConcreteTypes
                         (IlMachineState.loader state.LoggerFactory state)
-                        state._LoadedAssemblies
+                        state.TypeSystem._LoadedAssemblies
                         baseClassTypes
                         definition
                         (ImmutableArray.CreateRange key.TypeGenerics)
@@ -186,10 +186,10 @@ static class Program
                 // them: so concretising again against the final state loads and registers
                 // nothing new.
                 List.ofSeq assemblies.DefinitionNames
-                |> shouldEqual (List.ofSeq state._LoadedAssemblies.DefinitionNames)
+                |> shouldEqual (List.ofSeq state.TypeSystem._LoadedAssemblies.DefinitionNames)
 
                 // The registry is compared whole: the fresh walk must mint no handle.
-                (concreteTypes = state.ConcreteTypes) |> shouldEqual true
+                (concreteTypes = state.TypeSystem.ConcreteTypes) |> shouldEqual true
 
     [<Test>]
     let ``Every memoised zero value agrees with building it afresh`` () =
@@ -213,14 +213,14 @@ static class Program
             let fresh, concreteTypes, assemblies =
                 CliType.zeroOf
                     (IlMachineState.loader state.LoggerFactory state)
-                    state.ConcreteTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem.ConcreteTypes
+                    state.TypeSystem._LoadedAssemblies
                     baseClassTypes
                     handle
 
             fresh |> shouldEqual memoised
 
             List.ofSeq assemblies.DefinitionNames
-            |> shouldEqual (List.ofSeq state._LoadedAssemblies.DefinitionNames)
+            |> shouldEqual (List.ofSeq state.TypeSystem._LoadedAssemblies.DefinitionNames)
 
-            (concreteTypes = state.ConcreteTypes) |> shouldEqual true
+            (concreteTypes = state.TypeSystem.ConcreteTypes) |> shouldEqual true

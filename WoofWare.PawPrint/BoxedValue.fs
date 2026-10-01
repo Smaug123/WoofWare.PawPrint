@@ -167,11 +167,11 @@ module BoxedValue =
         | ConcreteTypeHandle.Concrete _ ->
 
         let targetConcreteType =
-            AllConcreteTypes.lookup targetConcreteTypeHandle state.ConcreteTypes
+            AllConcreteTypes.lookup targetConcreteTypeHandle state.TypeSystem.ConcreteTypes
             |> Option.get
 
         let targetDefn =
-            (state._LoadedAssemblies.ByDefinitionName targetConcreteType.AssemblyFullName)
+            (state.TypeSystem._LoadedAssemblies.ByDefinitionName targetConcreteType.AssemblyFullName)
                 .TypeDefs.[targetConcreteType.Definition.Get]
 
         // `Nullable<T>` is a value type, so test for it before the general value-type check.
@@ -190,7 +190,7 @@ module BoxedValue =
             failwith
                 $"TODO: %s{opName} with a System.Nullable`1 type token (%O{targetConcreteTypeHandle}) is unimplemented; CoreCLR would push the address of a materialised copy rather than a pointer into the box"
 
-        if not (LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies targetDefn) then
+        if not (LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies targetDefn) then
             failwith
                 $"%s{opName}: type token denotes reference type %O{targetConcreteTypeHandle}, but ECMA-335 III.4.32 requires a value type; this is invalid IL"
 

@@ -304,7 +304,7 @@ module internal DynamicScopeOperand =
         =
         match handle with
         | ConcreteTypeHandle.Concrete _ ->
-            match AllConcreteTypes.lookup handle state.ConcreteTypes with
+            match AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes with
             | Some ty -> ty.Identity = corelibType.Identity
             | None -> false
         | _ -> false
@@ -1071,7 +1071,7 @@ module internal DynamicScopeOperand =
         let dynamicMethodType = baseClassTypes.DynamicMethod
 
         let assy =
-            state._LoadedAssemblies.ByDefinitionName dynamicMethodType.AssemblyFullName
+            state.TypeSystem._LoadedAssemblies.ByDefinitionName dynamicMethodType.AssemblyFullName
 
         let typeDef = assy.TypeDefs.[dynamicMethodType.Identity.TypeDefinition.Get]
 

@@ -244,7 +244,7 @@ module NativeMetadataImport =
         : ManagedHeapAddress * IlMachineState
         =
         let int32Handle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Int32
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.Int32
 
         let arrayAddr, state =
             IlMachineState.allocateArray
@@ -966,10 +966,10 @@ module NativeMetadataImport =
         | s -> failwith $"%s{operation}: ConstArray.m_constArray had unexpected signature %O{s}"
 
         let int32Handle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Int32
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.Int32
 
         let intPtrHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.IntPtr
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.IntPtr
 
         let lengthField =
             FieldIdentity.cliField
@@ -985,9 +985,9 @@ module NativeMetadataImport =
             [ lengthField ; pointerField ]
             |> CliValueType.OfFields
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 constArrayHandle
-                (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies typeInfo)
+                (DeclaredTypeFacts.ofTypeInfo baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo)
             |> CliType.ValueType
 
         valueType, state
@@ -1109,14 +1109,14 @@ module NativeMetadataImport =
           "System.Private.CoreLib",
           "System.Reflection",
           "MetadataImport",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when objectHandleGenerics.IsEmpty ->
             let operation = "MetadataImport.Enum"
             let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
@@ -1206,8 +1206,8 @@ module NativeMetadataImport =
           "System.Reflection",
           "MetadataImport",
           "GetMetadataImport",
-          [ CorelibType state.ConcreteTypes ("System.Reflection", "RuntimeModule", runtimeModuleGenerics) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection", "RuntimeModule", runtimeModuleGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr) when
             runtimeModuleGenerics.IsEmpty
             ->
             let operation = "MetadataImport.GetMetadataImport"
@@ -1230,10 +1230,10 @@ module NativeMetadataImport =
           "System.Reflection",
           "MetadataImport",
           "GetNamespace",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcreteByref (ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "MetadataImport.GetNamespace"
             let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
 
@@ -1252,10 +1252,10 @@ module NativeMetadataImport =
           "System.Reflection",
           "MetadataImport",
           "GetName",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcreteByref (ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // CoreCLR's FCall (`managedmdimport.cpp:204`) answers seven token kinds, forwarding each
             // to a different `IMDInternalImport` accessor. This answers three.
             //
@@ -1307,10 +1307,10 @@ module NativeMetadataImport =
           "System.Reflection",
           "MetadataImport",
           "GetFieldDefProps",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "MetadataImport.GetFieldDefProps"
             let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
             let assembly = metadataImportAssembly operation state assemblyFullName
@@ -1339,13 +1339,13 @@ module NativeMetadataImport =
           "System.Reflection",
           "MetadataImport",
           "GetDefaultValue",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64)
-            ConcreteByref (ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Char))
-            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int64)
+            ConcreteByref (ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Char))
+            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // CoreCLR's FCall (managedmdimport.cpp:80) unpacks one `MDDefaultValue`: a string
             // constant reports its blob as a `char*` with a length in *characters*, everything else
             // packs into the 64-bit buffer with a length in *bytes*, and a token with no Constant
@@ -1488,11 +1488,13 @@ module NativeMetadataImport =
           "System.Reflection",
           "MetadataImport",
           "GetCustomAttributeProps",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            ConcreteByref (CorelibType state.ConcreteTypes ("System.Reflection", "ConstArray", constArrayGenerics)) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcreteByref (CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection",
+                                                                       "ConstArray",
+                                                                       constArrayGenerics)) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
             constArrayGenerics.IsEmpty
             ->
             let operation = "MetadataImport.GetCustomAttributeProps"
@@ -1548,10 +1550,12 @@ module NativeMetadataImport =
           "System.Reflection",
           "MetadataImport",
           "GetSigOfMethodDef",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcreteByref (CorelibType state.ConcreteTypes ("System.Reflection", "ConstArray", constArrayGenerics)) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection",
+                                                                       "ConstArray",
+                                                                       constArrayGenerics)) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
             constArrayGenerics.IsEmpty
             ->
             let operation = "MetadataImport.GetSigOfMethodDef"
@@ -1602,10 +1606,12 @@ module NativeMetadataImport =
           "System.Reflection",
           "MetadataImport",
           "GetSigOfFieldDef",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcreteByref (CorelibType state.ConcreteTypes ("System.Reflection", "ConstArray", constArrayGenerics)) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection",
+                                                                       "ConstArray",
+                                                                       constArrayGenerics)) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
             constArrayGenerics.IsEmpty
             ->
             // CoreCLR's FCall forwards to `IMDInternalImport::GetSigOfFieldDef`
@@ -1662,10 +1668,12 @@ module NativeMetadataImport =
           "System.Reflection",
           "MetadataImport",
           "GetFieldMarshal",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcreteByref (CorelibType state.ConcreteTypes ("System.Reflection", "ConstArray", constArrayGenerics)) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection",
+                                                                       "ConstArray",
+                                                                       constArrayGenerics)) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
             constArrayGenerics.IsEmpty
             ->
             // CoreCLR's FCall (managedmdimport.cpp:338) forwards to
@@ -1739,18 +1747,18 @@ module NativeMetadataImport =
           "System.Reflection",
           "MetadataImport",
           "GetMarshalAs",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            ConcreteByref (ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte))
-            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            ConcreteByref (ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte))
-            ConcreteByref (ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte))
-            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcreteByref (ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte))
+            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcreteByref (ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte))
+            ConcreteByref (ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte))
+            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) ->
             // CoreCLR's FCall (managedmdimport.cpp:15) runs `ParseNativeTypeInfo` over the blob
             // `GetFieldMarshal` handed out, from a zeroed `NativeTypeParamInfo`, and on success
             // copies its fields out, so a field the parse left unwritten reads as 0; see
@@ -1849,12 +1857,14 @@ module NativeMetadataImport =
           "System.Reflection",
           "MetadataImport",
           "GetPropertyProps",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcreteByref (ConcretePointer (ConcreteVoid state.ConcreteTypes))
-            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            ConcreteByref (CorelibType state.ConcreteTypes ("System.Reflection", "ConstArray", constArrayGenerics)) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (ConcretePointer (ConcreteVoid state.TypeSystem.ConcreteTypes))
+            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcreteByref (CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection",
+                                                                       "ConstArray",
+                                                                       constArrayGenerics)) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
             constArrayGenerics.IsEmpty
             ->
             // CoreCLR's FCall (managedmdimport.cpp:330) forwards straight to
@@ -1940,10 +1950,12 @@ module NativeMetadataImport =
           "System.Reflection",
           "MetadataImport",
           "GetMemberRefProps",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcreteByref (CorelibType state.ConcreteTypes ("System.Reflection", "ConstArray", constArrayGenerics)) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection",
+                                                                       "ConstArray",
+                                                                       constArrayGenerics)) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
             constArrayGenerics.IsEmpty
             ->
             let operation = "MetadataImport.GetMemberRefProps"
@@ -1992,9 +2004,9 @@ module NativeMetadataImport =
           "System.Reflection",
           "MetadataImport",
           "IsValidToken",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) ->
             // `MetaDataImport::IsValidToken` (coreclr/vm/managedmdimport.cpp:124), which is
             // `pScope->IsValidToken(tk)`. CoreLib asks this to decide whether a token the guest
             // handed it names a row at all: `ModuleHandle.Resolve{Type,Method,Field}Handle` ask it
@@ -2022,10 +2034,10 @@ module NativeMetadataImport =
           "System.Reflection",
           "MetadataImport",
           "GetParentToken",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "MetadataImport.GetParentToken"
             let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
             let assembly = metadataImportAssembly operation state assemblyFullName
@@ -2162,11 +2174,11 @@ module NativeMetadataImport =
           "System.Reflection",
           "MetadataImport",
           "GetParamDefProps",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // CoreCLR's FCall (managedmdimport.cpp:298) reports the Param row's `Sequence` and
             // `Flags` columns raw. `Sequence` is 1-based over the method's parameters, with 0
             // meaning the return value; `RuntimeParameterInfo.GetParameters` is what subtracts one
@@ -2210,10 +2222,10 @@ module NativeMetadataImport =
           "System.Reflection",
           "MetadataImport",
           "GetGenericParamProps",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "MetadataImport.GetGenericParamProps"
             let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
             let assembly = metadataImportAssembly operation state assemblyFullName

@@ -46,8 +46,13 @@ module TestFunctionPointerConcretization =
     let private state () : IlMachineState =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
-        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
-            ConcreteTypes = concreteTypes
+        let initialState = IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+
+        { initialState with
+            TypeSystem =
+                { initialState.TypeSystem with
+                    ConcreteTypes = concreteTypes
+                }
         }
 
     let private concretize (state : IlMachineState) (ty : TypeDefn) : IlMachineState * ConcreteTypeHandle =
@@ -92,10 +97,10 @@ module TestFunctionPointerConcretization =
         let state, handle = concretize (state ()) (TypeDefn.FunctionPointer signature)
 
         let int32Handle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Int32
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.Int32
 
         let int64Handle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Int64
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.Int64
 
         match handle with
         | ConcreteTypeHandle.FunctionPointer concreteSig ->
@@ -166,7 +171,11 @@ module TestFunctionPointerConcretization =
         let state, handle = concretize (state ()) original
 
         let roundTripped =
-            Concretization.concreteHandleToTypeDefn baseClassTypes handle state.ConcreteTypes state._LoadedAssemblies
+            Concretization.concreteHandleToTypeDefn
+                baseClassTypes
+                handle
+                state.TypeSystem.ConcreteTypes
+                state.TypeSystem._LoadedAssemblies
 
         // The fnptr wrapper round-trips exactly; element TypeDefns may be re-expressed
         // (e.g. PrimitiveType -> FromDefinition) by the inverse, so compare structure.
@@ -191,7 +200,11 @@ module TestFunctionPointerConcretization =
         let state, handle = concretize (state ()) original
 
         let roundTripped =
-            Concretization.concreteHandleToTypeDefn baseClassTypes handle state.ConcreteTypes state._LoadedAssemblies
+            Concretization.concreteHandleToTypeDefn
+                baseClassTypes
+                handle
+                state.TypeSystem.ConcreteTypes
+                state.TypeSystem._LoadedAssemblies
 
         match roundTripped with
         | TypeDefn.FunctionPointer roundTrippedSig ->
@@ -213,8 +226,8 @@ module TestFunctionPointerConcretization =
         let zero, _, _ =
             CliType.zeroOf
                 IAssemblyLoad.alreadyLoadedOnly
-                state.ConcreteTypes
-                state._LoadedAssemblies
+                state.TypeSystem.ConcreteTypes
+                state.TypeSystem._LoadedAssemblies
                 baseClassTypes
                 handle
 
@@ -237,8 +250,8 @@ module TestFunctionPointerConcretization =
             Concretization.concreteHandleToTypeDefn
                 baseClassTypes
                 firstHandle
-                state.ConcreteTypes
-                state._LoadedAssemblies
+                state.TypeSystem.ConcreteTypes
+                state.TypeSystem._LoadedAssemblies
 
         let _, secondHandle = concretize state roundTripped
 
