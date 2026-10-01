@@ -1063,22 +1063,67 @@ module TestSignalDispatch =
             state'.Kernel.Signals |> SignalState.pending |> shouldEqual []
 
     [<Test>]
-    let ``poll refuses a signal whose System.Native handler would first run the runtime's`` () : unit =
-        // SIGSEGV is caught by CoreCLR's PAL from startup; registering it
-        // installs System.Native's handler over the PAL's, which the shim's
-        // handler then calls first. PawPrint does not model what that does.
+    let ``poll runs the runtime's fault handler for a sent SIGILL, which restores the default`` () : unit =
+        // SIGILL is caught by CoreCLR's PAL from startup, over the default it
+        // saves; sent the signal, the handler puts that default back and
+        // returns.
         let state, _dispatcher, _ = preparedState ()
-        let segv = Signal.Other 11
+        let sigill = Signal.Other 4
 
-        let state = state |> register segv |> sendToProcess segv
+        let state' = state |> sendToProcess sigill |> poll
 
-        let exn = Assert.Throws (fun () -> poll state |> ignore<IlMachineState>)
-        exn.Message |> shouldContainText "would first run the handler it replaced"
+        SignalState.disposition sigill state'.Kernel.Signals
+        |> shouldEqual SignalDisposition.Default
+
+        state'.Kernel.Signals |> SignalState.pending |> shouldEqual []
+        pipeContents state' |> shouldEqual []
 
     [<Test>]
-    let ``poll refuses a signal caught by a handler installed before Main`` () : unit =
+    let ``with SIGILL registered, System.Native's handler runs the runtime's first, whose default replaces it``
+        ()
+        : unit
+        =
+        // Registering SIGILL installs System.Native's handler over the PAL's,
+        // which the shim's handler calls first: the PAL's restore leaves the
+        // default installed over System.Native's own, and System.Native still
+        // hands the signal to the callback. SIGILL has no PosixSignal member.
+        let state, dispatcher, _ = preparedState ()
+        let sigill = Signal.Other 4
+
+        let state' = state |> register sigill |> sendToProcess sigill |> poll
+
+        SignalState.disposition sigill state'.Kernel.Signals
+        |> shouldEqual SignalDisposition.Default
+
+        callbackArguments dispatcher state' |> shouldEqual [ int32Arg 4 ; int32Arg 0 ]
+
+    [<Test>]
+    let ``poll aborts the process for a SIGILL whose fault handler replaced an ignore`` () : unit =
+        // A launcher that left SIGILL ignored: the PAL saved the ignore, and
+        // its handler, sent the signal, calls `PROCAbort`.
         let state, _dispatcher, _ = preparedState ()
-        let state = state |> sendToProcess (Signal.Other 11)
+        let sigill = Signal.Other 4
+
+        let state =
+            state
+            |> mapSignals (
+                SignalState.setDisposition
+                    sigill
+                    (SignalDisposition.Catch (
+                        SignalCatch.ofHandler (NativeSignalHandler.CoreClrPalFault PalReplacedDisposition.Ignore)
+                    ))
+            )
+            |> sendToProcess sigill
+
+        match SignalDispatch.poll baseClassTypes state with
+        | SignalPoll.ProcessKilled (_, signal, _) -> signal |> shouldEqual Signal.SIGABRT
+        | SignalPoll.Continues _ -> failwith "expected the poll to abort the process"
+
+    [<Test>]
+    let ``poll refuses a signal caught by any other handler installed before Main`` () : unit =
+        // The PAL's thread-activation handler: SIGRTMIN, 34, on Linux.
+        let state, _dispatcher, _ = preparedState ()
+        let state = state |> sendToProcess (Signal.Other 34)
 
         let exn = Assert.Throws (fun () -> poll state |> ignore<IlMachineState>)
         exn.Message |> shouldContainText "installed before Main"

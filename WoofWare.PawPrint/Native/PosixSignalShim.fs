@@ -78,6 +78,16 @@ type PosixSignalShim =
             /// array zeroed, which is `SIG_DFL`, so an absent key is the
             /// default.
             Originals : Map<Signal, SignalDisposition<NativeSignalHandler>>
+            /// The signals `installHandler` has handled since `restoreHandler`
+            /// last restored them (`g_handlerIsInstalled`), in their canonical
+            /// spelling: an ignored signal, left ignored, as well as one it put
+            /// its handler on. A record of the shim's own, not of the kernel's
+            /// dispositions: the runtime's fault handler, run first by the
+            /// shim's, can restore a default over the shim's handler, and the
+            /// signal stays installed as far as the shim knows. The console
+            /// signals `saveConsoleSignals` records are not here, because their
+            /// installation is not modelled.
+            Installed : Set<Signal>
         }
 
 [<RequireQualifiedAccess>]
@@ -91,6 +101,7 @@ module PosixSignalShim =
             Registered = Set.empty
             Calling = None
             Originals = Map.empty
+            Installed = Set.empty
         }
 
     /// Whether `SystemNative_InitializeTerminalAndSignalHandling` has run.
@@ -191,7 +202,8 @@ module PosixSignalShim =
     /// `InstallSignalHandler`: install System.Native's handler for `signal`,
     /// saving the disposition it replaces. The shim respects an ignored
     /// signal, and leaves it ignored (saving that too); and it installs its
-    /// handler only once, so a signal it already handles is left alone.
+    /// handler only once, so a signal it has handled since it last restored
+    /// it is left alone, whatever its disposition now.
     ///
     /// `signal` must be one `sigaction` accepts; the caller screens it.
     let installHandler<'Task when 'Task : comparison>
@@ -204,21 +216,31 @@ module PosixSignalShim =
         let signal = Signal.canonicalUnder numbering signal
 
         let save (disposition : SignalDisposition<NativeSignalHandler>) : PosixSignalShim =
+            let installed = Set.add signal state.Installed
+
             match disposition with
             | SignalDisposition.Default ->
                 { state with
                     Originals = Map.remove signal state.Originals
+                    Installed = installed
                 }
             | SignalDisposition.Ignore
             | SignalDisposition.Catch _ ->
                 { state with
                     Originals = Map.add signal disposition state.Originals
+                    Installed = installed
                 }
+
+        if Set.contains signal state.Installed then
+            signals, state
+        else
 
         match SignalState.disposition signal signals with
         | SignalDisposition.Catch {
                                       Handler = NativeSignalHandler.SystemNative
-                                  } -> signals, state
+                                  } ->
+            failwith
+                $"PosixSignalShim.installHandler: %O{signal} is caught by System.Native's handler, which only this function installs, but the shim does not record installing it."
         | SignalDisposition.Ignore -> signals, save SignalDisposition.Ignore
         | current ->
             // `InstallSignalHandler` takes `SA_RESTART | SA_SIGINFO` and an
@@ -277,15 +299,22 @@ module PosixSignalShim =
         )
 
     /// `RestoreSignalHandler`: put back the disposition the shim saved for
-    /// `signal`, which is the default if it never installed a handler for it.
+    /// `signal`, which is the default if it never installed a handler for it,
+    /// and forget that it installed one, so that `installHandler` installs it
+    /// afresh.
+    ///
+    /// `signal` must be one `sigaction` accepts; the caller screens it.
     let restoreHandler<'Task when 'Task : comparison>
         (numbering : SignalNumbering)
         (signal : Signal)
         (signals : SignalState<'Task, NativeSignalHandler>)
         (state : PosixSignalShim)
-        : SignalState<'Task, NativeSignalHandler>
+        : SignalState<'Task, NativeSignalHandler> * PosixSignalShim
         =
-        SignalState.setDisposition signal (original numbering signal state) signals
+        SignalState.setDisposition signal (original numbering signal state) signals,
+        { state with
+            Installed = Set.remove (Signal.canonicalUnder numbering signal) state.Installed
+        }
 
     /// Whether `signal` has a managed registration: whether the dispatcher
     /// hands it to the callback (`g_hasPosixSignalRegistrations`).
@@ -317,7 +346,9 @@ module PosixSignalShim =
         (state : PosixSignalShim)
         : SignalState<'Task, NativeSignalHandler> * PosixSignalShim
         =
-        restoreHandler numbering signal signals state,
+        let signals, state = restoreHandler numbering signal signals state
+
+        signals,
         { state with
             Registered = Set.remove (Signal.canonicalUnder numbering signal) state.Registered
         }
