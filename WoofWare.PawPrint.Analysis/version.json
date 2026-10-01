@@ -8,6 +8,7 @@
     ":/WoofWare.PawPrint.Domain",
     ":/WoofWare.PawPrint.Loader",
     ":/WoofWare.PawPrint.Semantics",
+    ":/WoofWare.PawPrint.TypeSystem",
     ":/Directory.Build.props",
     ":/logos/light.png"
   ]

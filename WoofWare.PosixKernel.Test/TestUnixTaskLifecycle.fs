@@ -69,9 +69,9 @@ module TestUnixTaskLifecycle =
     /// The per-task entries the process holds, each of which must name a live task.
     let private perTaskEntries (proc : UnixProcessState<int, string>) : string list =
         let masks =
-            SignalState.blockedTasks proc.Signals
+            SignalState.tasksWithFrames proc.Signals
             |> Set.toList
-            |> List.map (fun t -> $"mask of %d{t}")
+            |> List.map (fun t -> $"frames of %d{t}")
 
         let pending =
             SignalState.pending proc.Signals
@@ -96,9 +96,8 @@ module TestUnixTaskLifecycle =
                 system
                 |> withTask 1
                 |> withTask 2
-                |> mapSignals (SignalState.block 1 Signal.SIGUSR1)
-                |> mapSignals (SignalState.block 1 Signal.SIGUSR2)
-                |> mapSignals (SignalState.block 2 Signal.SIGUSR2)
+                |> HandlerFrames.enterIn "h" 1 (Set.ofList [ Signal.SIGUSR1 ; Signal.SIGUSR2 ])
+                |> HandlerFrames.enterIn "h" 2 (Set.singleton Signal.SIGUSR2)
                 |> mapSignals (
                     SignalState.enqueue
                         {
@@ -138,9 +137,10 @@ module TestUnixTaskLifecycle =
                     }
                 ]
 
-            SignalState.blockedTasks after.Process.Signals |> shouldEqual (Set.singleton 2)
+            SignalState.tasksWithFrames after.Process.Signals
+            |> shouldEqual (Set.singleton 2)
 
-            SignalState.blockedFor 2 after.Process.Signals
+            SignalState.maskOf 2 after.Process.Signals
             |> shouldEqual (Set.singleton Signal.SIGUSR2)
 
             UnixSystem.checkInvariants after |> shouldEqual []
@@ -169,7 +169,7 @@ module TestUnixTaskLifecycle =
         system
         |> withTask 1
         |> exitOrFail 1
-        |> mapSignals (SignalState.block 0 Signal.SIGUSR1)
+        |> HandlerFrames.enterIn "h" 0 (Set.singleton Signal.SIGUSR1)
         |> mapSignals (
             SignalState.enqueue
                 {
@@ -257,7 +257,7 @@ module TestUnixTaskLifecycle =
                 |> withTask 2
                 |> withTask 3
                 |> UnixWait.park 3 (flockOn port)
-                |> mapSignals (SignalState.block 2 Signal.SIGUSR2)
+                |> HandlerFrames.enterIn "h" 2 (Set.singleton Signal.SIGUSR2)
                 |> mapSignals (
                     SignalState.enqueue
                         {
@@ -399,7 +399,7 @@ module TestUnixTaskLifecycle =
             mutable ExitsKeepingProcessPending : int
             mutable RefusedParked : int
             mutable RefusedLeaderFirst : int
-            mutable SpawnsInheritingAMask : int
+            mutable SpawnsRefusedForAMask : int
             mutable RefusedLast : int
             mutable EndedByLastExit : int
             mutable EndedByExitGroup : int
@@ -411,9 +411,9 @@ module TestUnixTaskLifecycle =
         let tasks = system.Tasks |> Map.keys |> Set.ofSeq
 
         let masks =
-            Set.difference (SignalState.blockedTasks system.Process.Signals) tasks
+            Set.difference (SignalState.tasksWithFrames system.Process.Signals) tasks
             |> Set.toList
-            |> List.map (fun t -> $"mask of %d{t}")
+            |> List.map (fun t -> $"frames of %d{t}")
 
         let pending =
             SignalState.pending system.Process.Signals
@@ -473,6 +473,23 @@ module TestUnixTaskLifecycle =
             let after, model' =
                 match op with
                 | Op.Spawn (parent, child) when
+                    live parent
+                    && not (Set.contains parent model.Parked)
+                    && not (live child)
+                    && not (Set.isEmpty (SignalState.maskOf parent system.Process.Signals))
+                    ->
+                    // A mask is held only as handler frames, which a new task
+                    // cannot inherit, so a spawn from a task that blocks
+                    // anything is refused.
+                    Assert.Throws (fun () ->
+                        UnixTaskLifecycle.spawn parent child (CpuId 0) system
+                        |> ignore<Result<OsThreadId * UnixSystem<int, string>, UnixError>>
+                    )
+                    |> ignore<exn>
+
+                    coverage.SpawnsRefusedForAMask <- coverage.SpawnsRefusedForAMask + 1
+                    system, model
+                | Op.Spawn (parent, child) when
                     live parent && not (Set.contains parent model.Parked) && not (live child)
                     ->
                     let after =
@@ -480,22 +497,37 @@ module TestUnixTaskLifecycle =
                         | Ok (_, after) -> after
                         | Error error -> failwith $"spawning %d{child} from %d{parent} failed with %O{error}"
 
-                    // The child starts with its parent's mask, and nothing pending on it.
-                    let parentMask = SignalState.blockedFor parent system.Process.Signals
-                    SignalState.blockedFor child after.Process.Signals |> shouldEqual parentMask
+                    // The child starts with its parent's mask, which is empty,
+                    // and nothing pending on it.
+                    SignalState.maskOf child after.Process.Signals |> shouldEqual Set.empty
+                    SignalState.framesOf child after.Process.Signals |> shouldEqual []
 
                     SignalState.pending after.Process.Signals
                     |> shouldEqual (SignalState.pending system.Process.Signals)
-
-                    if not parentMask.IsEmpty then
-                        coverage.SpawnsInheritingAMask <- coverage.SpawnsInheritingAMask + 1
 
                     after,
                     { model with
                         Live = Set.add child model.Live
                     }
-                | Op.Block (task, signal) when live task -> mapSignals (SignalState.block task signal) system, model
-                | Op.Unblock (task, signal) when live task -> mapSignals (SignalState.unblock task signal) system, model
+                | Op.Block (task, signal) when live task ->
+                    let tasks = system.Tasks |> Map.keys |> Set.ofSeq
+
+                    match
+                        HandlerFrames.tryEnter
+                            "h"
+                            system.Leader
+                            tasks
+                            task
+                            (Set.singleton signal)
+                            system.Process.Signals
+                    with
+                    | Some signals -> mapSignals (fun _ -> signals) system, model
+                    | None -> system, model
+                | Op.Unblock (task, _) when
+                    live task
+                    && not (List.isEmpty (SignalState.framesOf task system.Process.Signals))
+                    ->
+                    mapSignals (HandlerFrames.leave task) system, model
                 | Op.EnqueueOnTask (task, signal) when live task ->
                     mapSignals
                         (SignalState.enqueue
@@ -584,12 +616,12 @@ module TestUnixTaskLifecycle =
                             |> List.filter (fun entry -> entry.Target <> ValueSome task)
                         )
 
-                        SignalState.blockedTasks signalsAfter
-                        |> shouldEqual (Set.remove task (SignalState.blockedTasks signalsBefore))
+                        SignalState.tasksWithFrames signalsAfter
+                        |> shouldEqual (Set.remove task (SignalState.tasksWithFrames signalsBefore))
 
                         for other in Set.remove task model.Live do
-                            SignalState.blockedFor other signalsAfter
-                            |> shouldEqual (SignalState.blockedFor other signalsBefore)
+                            SignalState.framesOf other signalsAfter
+                            |> shouldEqual (SignalState.framesOf other signalsBefore)
 
                         SignalState.dispositions signalsAfter
                         |> shouldEqual (SignalState.dispositions signalsBefore)
@@ -602,7 +634,7 @@ module TestUnixTaskLifecycle =
                         }
                         |> shouldEqual system.Process
 
-                        if not (SignalState.blockedFor task signalsBefore).IsEmpty then
+                        if not (SignalState.maskOf task signalsBefore).IsEmpty then
                             coverage.ExitsDroppingAMask <- coverage.ExitsDroppingAMask + 1
 
                         if
@@ -665,7 +697,7 @@ module TestUnixTaskLifecycle =
                 ExitsKeepingProcessPending = 0
                 RefusedParked = 0
                 RefusedLeaderFirst = 0
-                SpawnsInheritingAMask = 0
+                SpawnsRefusedForAMask = 0
                 RefusedLast = 0
                 EndedByLastExit = 0
                 EndedByExitGroup = 0
@@ -676,16 +708,18 @@ module TestUnixTaskLifecycle =
 
         // Each floor sits at least four standard deviations below the count that
         // 1000 cases reach, so it fails when a generator change stops reaching the
-        // path, not by chance. Measured over 1000 runs per flavour, the rarest is
-        // `EndedWithParkedTask`, at a mean of 40 and a standard deviation of 8.
-        coverage.ExitsDroppingAMask |> shouldBeGreaterThan 50
+        // path, not by chance. Measured over 30 runs per flavour, the rarest are
+        // `EndedWithParkedTask`, at a mean of 30 and a standard deviation of 7,
+        // and `ExitsDroppingAMask`, at 55 and 9: a task has a mask only while
+        // it is inside a handler, which takes a delivery to put it there.
+        coverage.ExitsDroppingAMask |> shouldBeGreaterThan 20
         coverage.ExitsDroppingOwnPending |> shouldBeGreaterThan 20
         coverage.ExitsKeepingProcessPending |> shouldBeGreaterThan 20
         coverage.RefusedParked |> shouldBeGreaterThan 20
         coverage.RefusedLeaderFirst |> shouldBeGreaterThan 20
-        coverage.SpawnsInheritingAMask |> shouldBeGreaterThan 20
+        coverage.SpawnsRefusedForAMask |> shouldBeGreaterThan 20
         coverage.EndedByExitGroup |> shouldBeGreaterThan 50
-        coverage.EndedWithParkedTask |> shouldBeGreaterThan 5
+        coverage.EndedWithParkedTask |> shouldBeGreaterThan 3
 
         match SimulatedUnixPlatform.flavour platform with
         | SimulatedUnixFlavour.Linux ->

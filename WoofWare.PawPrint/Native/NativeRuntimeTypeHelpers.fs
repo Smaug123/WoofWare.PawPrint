@@ -2351,7 +2351,7 @@ module NativeRuntimeTypeHelpers =
         let state =
             { state with
                 _LoadedAssemblies =
-                    Concretization.ensureTypeDefinitionBaseAssembliesLoaded
+                    BaseChainLoading.ensureTypeDefinitionBaseAssembliesLoaded
                         (IlMachineState.loader loggerFactory state)
                         state._LoadedAssemblies
                         assembly

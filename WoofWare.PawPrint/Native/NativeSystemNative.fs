@@ -344,10 +344,10 @@ module NativeSystemNative =
                     )
 
             match SignalState.disposition signal restored.Kernel.Signals with
-            | SignalDisposition.Catch handler ->
+            | SignalDisposition.Catch action ->
                 // Linux's 33, whose handler is glibc's own.
                 failwith
-                    $"%s{operation}: re-raising %O{signal} under the %O{numbering} numbering would run its handler (%O{handler}), native code PawPrint does not model."
+                    $"%s{operation}: re-raising %O{signal} under the %O{numbering} numbering would run its handler (%O{action.Handler}), native code PawPrint does not model."
             | SignalDisposition.Default
             | SignalDisposition.Ignore -> ()
 

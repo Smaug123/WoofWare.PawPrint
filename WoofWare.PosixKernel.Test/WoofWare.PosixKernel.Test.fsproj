@@ -22,6 +22,7 @@
     <Compile Include="Owners.fs" />
     <Compile Include="BindingProbes.fs" />
     <Compile Include="Tasks.fs" />
+    <Compile Include="HandlerFrames.fs" />
     <Compile Include="TestUnixTaskTable.fs" />
     <Compile Include="CredentialsGen.fs" />
     <Compile Include="TestCredentials.fs" />
@@ -75,6 +76,8 @@
     <Compile Include="TestUnixSignal.fs" />
     <Compile Include="TestSignalPickOrder.fs" />
     <Compile Include="TestSignalReceiver.fs" />
+    <Compile Include="SignalFuzz.fs" />
+    <Compile Include="TestSignalFuzz.fs" />
     <Compile Include="TestDirectoryEnumeration.fs" />
     <Compile Include="TestDirectoryDescription.fs" />
     <Compile Include="TestDirectoryReadAgainstHost.fs" />
@@ -162,6 +165,8 @@
          resource names follow the assembly, so `TestSocketFuzz` reads these as
          `WoofWare.PosixKernel.Test.socketFuzz*`. -->
     <EmbeddedResource Include="socketFuzz\harness.c" />
+    <EmbeddedResource Include="signalFuzz\harness.c" />
+    <EmbeddedResource Include="signalFuzzCorpus\*.txt" />
     <EmbeddedResource Include="socketFuzzCorpus\*.txt" />
   </ItemGroup>
 

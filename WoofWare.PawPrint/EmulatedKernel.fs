@@ -557,8 +557,8 @@ type EmulatedKernel =
         /// because an absent key *does* have a truthful reading: 0, the value a thread
         /// that has had no error reported to it sees. `withLastPInvokeError` drops an
         /// entry it would set to 0, so "absent" and "zero" stay structurally equal —
-        /// the same canonicalisation `SignalState.Blocked` performs for empty masks,
-        /// and for the same reason: two states that differ only that way must compare
+        /// the same canonicalisation `SignalState` performs for a task with no
+        /// handler frames, and for the same reason: two states that differ only that way must compare
         /// equal.
         LastPInvokeError : Map<ThreadId, int>
         /// Per-thread system error: errno on Unix, `GetLastError` on Windows. CoreCLR's
@@ -840,6 +840,10 @@ type EmulatedKernelDefect =
     /// The signal dispatcher is not a task in the table, so no delivery can
     /// wake it.
     | SignalDispatcherWithoutTask of thread : ThreadId
+    /// A task holds handler frames between instructions. Every handler a
+    /// PawPrint process runs is native code that `SignalDispatch` runs to its
+    /// `sigreturn` within one poll, so none can be left pushed.
+    | HandlerFramesBetweenInstructions of thread : ThreadId
 
 [<RequireQualifiedAccess>]
 module EmulatedKernel =
@@ -1621,11 +1625,12 @@ module EmulatedKernel =
         // replaced (`SEHCleanupSignals`), and `abort` unblocks SIGABRT and raises
         // it, then resets it to the default and raises it again if the process
         // survived the first; either way the process meets SIGABRT at its default
-        // disposition, which is where this starts.
+        // disposition, which is where this starts. The unblocking has nothing to
+        // do here: a thread's mask is its handler frames', and a PawPrint thread
+        // has none between instructions (`EmulatedKernel.checkInvariants`).
         let signals =
             system.Process.Signals
             |> SignalState.setDisposition Signal.SIGABRT SignalDisposition.Default
-            |> SignalState.unblock thread Signal.SIGABRT
 
         let system =
             { system with
@@ -1722,7 +1727,9 @@ module EmulatedKernel =
     /// Every way this kernel's tables disagree with each other, including the
     /// POSIX system's own rules: `UnixSystem.checkInvariants` answers those, and
     /// this adds what PawPrint holds that no POSIX kernel does — the thread
-    /// `PosixSignalShim` records as its dispatcher, which must be a task.
+    /// `PosixSignalShim` records as its dispatcher, which must be a task — and
+    /// what PawPrint's own signal handling guarantees: no handler frame outlives
+    /// the poll that pushed it.
     ///
     /// The descriptor table's own rules are `FileDescriptorRegistry.checkInvariants`,
     /// and the filesystem's are `VirtualFileSystem.checkInvariants`; this
@@ -1738,8 +1745,14 @@ module EmulatedKernel =
             | Some _
             | None -> []
 
+        let frames =
+            SignalState.tasksWithFrames kernel.Process.Signals
+            |> Set.toList
+            |> List.map EmulatedKernelDefect.HandlerFramesBetweenInstructions
+
         (UnixSystem.checkInvariants (unix kernel) |> List.map EmulatedKernelDefect.System)
         @ dispatcher
+        @ frames
 
 /// Host-supplied configuration for the simulated process's kernel, applied by
 /// `Program.prepare` before any guest code runs.

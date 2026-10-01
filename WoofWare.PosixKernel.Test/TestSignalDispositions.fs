@@ -35,7 +35,7 @@ module TestSignalDispositions =
         match d with
         | Disposition.Dfl -> SignalDisposition.Default
         | Disposition.Ign -> SignalDisposition.Ignore
-        | Disposition.Handler h -> SignalDisposition.Catch h
+        | Disposition.Handler h -> SignalDisposition.Catch (SignalCatch.ofHandler h)
 
     let private t0 : Task = Task 0
 
@@ -56,9 +56,24 @@ module TestSignalDispositions =
         (s : SignalState<Task, Handler>)
         : SignalDelivery<Task, Handler> option * SignalState<Task, Handler>
         =
-        match SignalState.nextDelivery CoreDumps.Suppressed t0 tasks t0 s with
+        match SignalState.onReturnToUser CoreDumps.Suppressed t0 tasks t0 s with
         | Ok answer -> answer
-        | Error refusal -> failwith $"nextDelivery refused: %O{refusal}"
+        | Error refusal -> failwith $"onReturnToUser refused: %O{refusal}"
+
+    /// `t0` inside a handler that blocks `signal`, delivered through a carrier
+    /// the sweep is not looking at.
+    let private block (signal : Signal) (s : SignalState<Task, Handler>) : SignalState<Task, Handler> =
+        let carrier =
+            if signal = Signal.canonicalUnder (SignalState.numbering s) HandlerFrames.carrier then
+                Signal.Other 26
+            else
+                HandlerFrames.carrier
+
+        HandlerFrames.enterVia carrier H t0 tasks t0 (Set.singleton signal) s
+
+    /// `t0` returns from its handler for `signal`, and the frame of every
+    /// handler it entered after.
+    let private unblock (s : SignalState<Task, Handler>) : SignalState<Task, Handler> = HandlerFrames.leave t0 s
 
     /// The signals a process that `generation` did not kill has.
     let private stateAfter (generation : SignalGeneration<Task, Handler>) : SignalState<Task, Handler> =
@@ -138,7 +153,7 @@ module TestSignalDispositions =
                         for toward in everyDisposition @ [ Disposition.Handler H2 ] do
                             let blocked : SignalState<Task, Handler> =
                                 SignalState.initial numbering Set.empty
-                                |> SignalState.block t0 signal
+                                |> block signal
                                 |> SignalState.setDisposition signal (toDisposition from)
 
                             let generated =
@@ -162,8 +177,8 @@ module TestSignalDispositions =
 
                             let delivered =
                                 changed
-                                |> SignalState.setDisposition signal (SignalDisposition.Catch H)
-                                |> SignalState.unblock t0 signal
+                                |> SignalState.setDisposition signal (SignalDisposition.Catch (SignalCatch.ofHandler H))
+                                |> unblock
                                 |> leaderDelivery
                                 |> fst
 
@@ -179,10 +194,10 @@ module TestSignalDispositions =
                             |> shouldEqual (row, expectedAtGeneration, expectedAfter)
 
                             match delivered with
-                            | Some (SignalDelivery.RunHandler (entry, handler)) ->
+                            | Some (SignalDelivery.RunHandlers [ frame ]) ->
                                 (row, true) |> shouldEqual (row, expectedAfter)
-                                entry.Signal |> shouldEqual signal
-                                handler |> shouldEqual H
+                                frame.Entry.Signal |> shouldEqual signal
+                                frame.Action.Handler |> shouldEqual H
                             | None -> (row, false) |> shouldEqual (row, expectedAfter)
                             | Some other -> failwith $"%s{row}: delivered %A{other}"
 
@@ -247,8 +262,8 @@ module TestSignalDispositions =
 
                                         let start : SignalState<Task, Handler> =
                                             SignalState.initial numbering Set.empty
-                                            |> SignalState.block t0 firstSignal
-                                            |> SignalState.block t0 secondSignal
+                                            |> block firstSignal
+                                            |> block secondSignal
                                             |> SignalState.setDisposition firstSignal (toDisposition firstDisposition)
                                             |> SignalState.setDisposition secondSignal (toDisposition secondDisposition)
 
@@ -313,8 +328,10 @@ module TestSignalDispositions =
 
                             let s : SignalState<Task, Handler> =
                                 SignalState.initial numbering Set.empty
-                                |> SignalState.block t0 firstSignal
-                                |> SignalState.setDisposition firstSignal (SignalDisposition.Catch H)
+                                |> block firstSignal
+                                |> SignalState.setDisposition
+                                    firstSignal
+                                    (SignalDisposition.Catch (SignalCatch.ofHandler H))
                                 |> SignalState.setDisposition secondSignal (toDisposition secondDisposition)
                                 |> SignalState.enqueue
                                     {

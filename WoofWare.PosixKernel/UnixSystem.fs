@@ -172,8 +172,8 @@ type UnixSystemDefect<'Task> =
     /// an unlocked port is half-bound at `address:0`, which is measured and
     /// is what a later `bind` or `connect` completes.
     | BoundToPortZero of socket : SocketId
-    /// A per-task signal mask names a task the table does not hold.
-    | SignalMaskWithoutTask of task : 'Task
+    /// A task the table does not hold has handler frames.
+    | HandlerFramesWithoutTask of task : 'Task
     /// A pending signal is directed at a task the table does not hold, so it
     /// can never be delivered and sits in the queue for the rest of the run.
     | PendingSignalTargetWithoutTask of task : 'Task * signal : Signal
@@ -780,11 +780,11 @@ module UnixSystem =
                 else
                     [ UnixSystemDefect.SignalNumberingMismatch (stateNumbering, platformNumbering) ]
 
-            let masks =
-                SignalState.blockedTasks signals
+            let frames =
+                SignalState.tasksWithFrames signals
                 |> Set.toList
                 |> List.filter (fun task -> not (Map.containsKey task system.Tasks))
-                |> List.map UnixSystemDefect.SignalMaskWithoutTask
+                |> List.map UnixSystemDefect.HandlerFramesWithoutTask
 
             let targets =
                 SignalState.pending signals
@@ -796,7 +796,7 @@ module UnixSystem =
                     | ValueNone -> None
                 )
 
-            numberings @ masks @ targets
+            numberings @ frames @ targets
 
         let fileSystemType =
             let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform

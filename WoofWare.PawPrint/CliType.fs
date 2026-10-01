@@ -5209,7 +5209,7 @@ module CliType =
         // all: a field type we have only just read in may itself derive from a class in a third
         // assembly, and nothing before this point had any reason to bind that reference.
         let assemblies =
-            Concretization.ensureTypeDefinitionBaseAssembliesLoaded
+            BaseChainLoading.ensureTypeDefinitionBaseAssembliesLoaded
                 loadAssembly
                 assemblies
                 (assemblies.ByDefinitionName concreteType.AssemblyFullName)

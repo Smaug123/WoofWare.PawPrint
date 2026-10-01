@@ -576,22 +576,22 @@ module TestUnixSystemInvariants =
         }
 
     [<Test>]
-    let ``a signal mask for a task the table does not hold is a defect`` () : unit =
-        system
-        |> withTask None
-        |> withSignals (
+    let ``handler frames for a task the table does not hold are a defect`` () : unit =
+        // Task 42 in a handler, in a state that is then given to a system
+        // without it.
+        let inHandler (inside : int) : SignalState<int, string> =
             SignalState.initial SignalNumbering.Linux Set.empty
-            |> SignalState.block 42 Signal.SIGINT
-        )
-        |> UnixSystem.checkInvariants
-        |> shouldEqual [ UnixSystemDefect.SignalMaskWithoutTask 42 ]
+            |> HandlerFrames.enter "h" 0 (Set.ofList [ 0 ; inside ]) inside (Set.singleton Signal.SIGINT)
 
         system
         |> withTask None
-        |> withSignals (
-            SignalState.initial SignalNumbering.Linux Set.empty
-            |> SignalState.block task Signal.SIGINT
-        )
+        |> withSignals (inHandler 42)
+        |> UnixSystem.checkInvariants
+        |> shouldEqual [ UnixSystemDefect.HandlerFramesWithoutTask 42 ]
+
+        system
+        |> withTask None
+        |> withSignals (inHandler task)
         |> UnixSystem.checkInvariants
         |> shouldEqual []
 

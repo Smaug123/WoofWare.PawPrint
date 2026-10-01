@@ -373,11 +373,11 @@ module TestSignalDispatch =
         let state' =
             state
             |> register Signal.SIGINT
-            |> mapSignals (fun signals ->
-                signals
-                |> SignalState.block state.Kernel.Leader Signal.SIGINT
-                |> SignalState.block dispatcher Signal.SIGINT
-            )
+            |> fun state ->
+                state.MapKernel (
+                    SignalFrames.enter state.Kernel.Leader (Set.singleton Signal.SIGINT)
+                    >> SignalFrames.enter dispatcher (Set.singleton Signal.SIGINT)
+                )
             |> sendToProcess Signal.SIGINT
             |> poll
 
@@ -608,21 +608,52 @@ module TestSignalDispatch =
         Check.One (Config.QuickThrowOnFailure.WithMaxTest 100, Prop.forAll (Arb.fromGen gen) property)
 
     [<Test>]
-    let ``two signals delivered at one return to user mode are refused`` () : unit =
-        // A kernel gives each a handler frame before any handler runs, so the
-        // native handler would write them in the reverse of the order the
-        // kernel takes them; PawPrint models no frames yet.
-        let state, _dispatcher, _ = preparedState ()
+    let ``signals delivered at one return to user mode reach the pipe in the reverse of the order they were taken``
+        ()
+        : unit
+        =
+        // The kernel takes SIGINT (2) before SIGTERM (15) and gives each a
+        // handler frame before any handler runs; the handlers run innermost
+        // first, so System.Native's writes SIGTERM first (measured by
+        // `signal-pick-order.c` and the signal fuzzer). No frame is left
+        // afterwards.
+        let state, dispatcher, _ = preparedState ()
 
         let state =
             state
+            |> withStatus dispatcher ThreadStatus.Runnable
             |> register Signal.SIGINT
             |> register Signal.SIGTERM
             |> sendToProcess Signal.SIGTERM
             |> sendToProcess Signal.SIGINT
+            |> poll
 
-        let exn = Assert.Throws (fun () -> poll state |> ignore<IlMachineState>)
-        exn.Message |> shouldContainText "at one return to user mode"
+        pipeContents state |> shouldEqual [ 15uy ; 2uy ]
+        SignalState.tasksWithFrames state.Kernel.Signals |> shouldEqual Set.empty
+        EmulatedKernel.checkInvariants state.Kernel |> shouldEqual []
+
+    [<Test>]
+    let ``a signal the leader's handler blocks is written once that handler has returned`` () : unit =
+        // Two instances of a real-time signal (Linux's 40): the first one's
+        // handler blocks the signal, so the second waits for its sigreturn,
+        // and is taken at the return to user mode that follows it, within the
+        // same poll.
+        let state, dispatcher, _ = preparedState ()
+        let rt = Signal.Other 40
+
+        let state =
+            state
+            |> withStatus dispatcher ThreadStatus.Runnable
+            |> register rt
+            |> sendToProcess rt
+            |> sendToProcess rt
+
+        state.Kernel.Signals |> SignalState.pending |> List.length |> shouldEqual 2
+
+        let state = poll state
+        pipeContents state |> shouldEqual [ 40uy ; 40uy ]
+        state.Kernel.Signals |> SignalState.pending |> shouldEqual []
+        SignalState.tasksWithFrames state.Kernel.Signals |> shouldEqual Set.empty
 
     [<Test>]
     let ``a signal read after its registration went is handled as not cancelled, by the dispatcher itself`` () : unit =
@@ -902,7 +933,9 @@ module TestSignalDispatch =
         let state =
             state
             |> mapSignals (
-                SignalState.setDisposition Signal.SIGINT (SignalDisposition.Catch NativeSignalHandler.SystemNative)
+                SignalState.setDisposition
+                    Signal.SIGINT
+                    (SignalDisposition.Catch (SignalCatch.ofHandler NativeSignalHandler.SystemNative))
             )
             |> sendToProcess Signal.SIGINT
 
@@ -921,7 +954,7 @@ module TestSignalDispatch =
         let state =
             state
             |> register Signal.SIGINT
-            |> mapSignals (SignalState.block state.Kernel.Leader Signal.SIGINT)
+            |> fun state -> state.MapKernel (SignalFrames.enter state.Kernel.Leader (Set.singleton Signal.SIGINT))
             |> sendToProcess Signal.SIGINT
 
         let exn = Assert.Throws (fun () -> poll state |> ignore<IlMachineState>)
