@@ -100,3 +100,20 @@ type EvpMdCtxHandle =
     override this.ToString () =
         match this with
         | EvpMdCtxHandle.EvpMdCtxHandle i -> $"<EVP_MD_CTX #%i{i}>"
+
+/// An assembly binder: the native half of an `AssemblyLoadContext`, which decides what an assembly
+/// reference binds to. `AssemblyNative_InitializeAssemblyLoadContext` returns one, and it round-trips
+/// through guest code as an `IntPtr` (see `NativeIntSource.AssemblyBinderPtr`) in the context's
+/// `_nativeAssemblyLoadContext` field, which is how later QCalls find the binder a context stands for.
+///
+/// One case, because PawPrint binds every assembly reference in one context. Adding a second is what
+/// makes each consumer's match non-exhaustive, so the compiler lists the sites that assume one.
+[<RequireQualifiedAccess>]
+type AssemblyBinder =
+    /// CoreCLR's `DefaultAssemblyBinder` (binder/inc/defaultassemblybinder.h): the binder for the
+    /// trusted platform assemblies, which `AssemblyLoadContext.Default` wraps.
+    | Default
+
+    override this.ToString () =
+        match this with
+        | AssemblyBinder.Default -> "<default assembly binder>"

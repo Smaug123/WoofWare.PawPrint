@@ -3,33 +3,37 @@ namespace WoofWare.PawPrint
 open System.Collections.Immutable
 open WoofWare.PosixKernel
 
-/// Drives signal delivery onto the shim's dispatcher thread allocated
-/// by `SystemNative_InitializeTerminalAndSignalHandling` (see
-/// `PosixSignalShim`). Mirrors the real
-/// CoreCLR `SignalHandlerLoop` pthread: a long-lived auxiliary thread that
-/// the runtime owns and the guest never names, woken by the kernel when a
-/// pending signal becomes deliverable, runs the installed managed handler,
-/// and returns to its idle state.
+/// What the signal half of a scheduler tick did to the process.
+[<RequireQualifiedAccess>]
+type SignalPoll =
+    /// The process carries on, in this state.
+    | Continues of IlMachineState
+    /// System.Native re-raised a signal at its default, which killed the
+    /// process; the state is the machine as it stood then.
+    | ProcessKilled of IlMachineState * signal : Signal * coreDumped : bool
+
+/// System.Native's signal handling, between two guest instructions: its native
+/// handler, which the kernel runs on the leader when a caught signal is
+/// delivered, and its dispatcher thread (`SignalHandlerLoop`), which PawPrint
+/// allocates at `SystemNative_InitializeTerminalAndSignalHandling` (see
+/// `PosixSignalShim`). The two are joined by the shim's signal pipe, a real
+/// pipe in the kernel model: the handler writes each signal's number into it
+/// as one byte, and the dispatcher reads them out in the order written.
 ///
-/// PawPrint encodes that loop as two transitions over the dispatcher's
-/// `ThreadStatus`:
+/// `poll` runs once per tick, before the scheduler picks a thread:
 ///
-///   * `trySpawnHandler` — Parked → Runnable. Polled between every guest IL
-///     step from `Program.stepPrepared`. If the process's leader, the main
-///     thread, takes a signal System.Native's handler catches now (see
-///     `UnixSignal.nextDelivery`), and the dispatcher itself is currently
-///     Parked, we take that signal and install a fresh bottom frame on the
-///     dispatcher that calls the registered handler with
-///     `(int signo, int posixSignalEnumValue)`. The frame has no
-///     `ReturnState`, so when the handler eventually `ret`urns, the bottom
-///     frame's exit surfaces as `ExecutionResult.Terminated` — that's the
-///     signal for `reParkAfterHandler` to fire.
-///
-///   * `reParkAfterHandler` — Runnable → Parked. Called from
-///     `Program.stepPrepared` when it observes the dispatcher's bottom frame
-///     returning past itself (via `ExecutionResult.Terminated`). Clears the
-///     stale frames, resets the sentinel frame id, and flips the status back
-///     to `Parked` so the next deliverable signal can wake it again.
+///   * The leader takes the signals the kernel delivers to it now (see
+///     `UnixSignal.nextDelivery`); for each one System.Native catches, its
+///     handler writes the signal's number into the pipe. No guest code runs,
+///     and the dispatcher need not be idle.
+///   * If the dispatcher is Parked, it is blocked reading the pipe: when the
+///     pipe holds a byte, it reads one. For a signal with a registration it
+///     calls the managed callback, as a fresh bottom frame on the dispatcher
+///     taking `(int signo, int posixSignalEnumValue)`; the frame has no
+///     `ReturnState`, so its `ret` surfaces as `ExecutionResult.Terminated`,
+///     which is the cue for `reParkAfterHandler`. For a signal without one it
+///     calls `SystemNative_HandleNonCanceledPosixSignal` itself, and stays
+///     Parked.
 ///
 /// The kernel delivers a signal sent to the process to its leader, and there
 /// System.Native's native handler passes it on to the dispatcher, which runs
@@ -38,11 +42,7 @@ open WoofWare.PosixKernel
 /// is asked, because nothing PawPrint answers aims a signal at any other
 /// thread: its one generator is `kill(2)`, which aims at the whole process.
 ///
-/// The handler's `int` return value is real CoreCLR's "0 = not handled,
-/// 1 = handled": on 0, `SignalHandlerLoop` goes on to call
-/// `SystemNative_HandleNonCanceledPosixSignal` itself. PawPrint does not model
-/// that step, so `reParkAfterHandler` refuses a 0. The
-/// `SignalDelivery.Default*` cases are refused loudly: a default that
+/// The `SignalDelivery.Default*` cases are refused loudly: a default that
 /// terminates or stops is applied when the signal is generated (see
 /// `NativeLibc.kill`), so one reaches this poll only by becoming receivable
 /// later, after an unblock, and nothing sets a signal mask yet.
@@ -99,117 +99,166 @@ module SignalDispatch =
         =
         if MethodInfo.arity mi <> 2 then
             failwith
-                $"SignalDispatch.trySpawnHandler: registered handler %s{mi.Name} on type %s{MethodOwner.describe mi.Owner} declares %d{MethodInfo.arity mi} parameters; expected exactly 2 ((int signo, PosixSignal signal) -> int)."
+                $"SignalDispatch.poll: registered handler %s{mi.Name} on type %s{MethodOwner.describe mi.Owner} declares %d{MethodInfo.arity mi} parameters; expected exactly 2 ((int signo, PosixSignal signal) -> int)."
 
         match mi.Signature.ReturnType with
         | MethodReturnType.Void ->
             failwith
-                $"SignalDispatch.trySpawnHandler: registered handler %s{mi.Name} on type %s{MethodOwner.describe mi.Owner} returns void; expected Int32 (the 'should run default disposition?' flag)."
+                $"SignalDispatch.poll: registered handler %s{mi.Name} on type %s{MethodOwner.describe mi.Owner} returns void; expected Int32 (the 'should run default disposition?' flag)."
         | MethodReturnType.Returns ret ->
             match ret with
             | ConcretePrimitive concreteTypes PrimitiveType.Int32 -> ()
             | _ ->
                 failwith
-                    $"SignalDispatch.trySpawnHandler: registered handler %s{mi.Name} on type %s{MethodOwner.describe mi.Owner} returns a non-Int32 type; expected Int32 (the 'should run default disposition?' flag)."
+                    $"SignalDispatch.poll: registered handler %s{mi.Name} on type %s{MethodOwner.describe mi.Owner} returns a non-Int32 type; expected Int32 (the 'should run default disposition?' flag)."
 
-    /// Polled once per tick by `Program.stepPrepared` immediately before the
-    /// scheduler picks its next thread. If a pending signal is deliverable
-    /// now and the dispatcher is currently Parked,
-    /// pop the entry off the queue, build a `(signo, posixSignal-enum)`
-    /// invocation frame for the handler, and flip the dispatcher
-    /// Parked → Runnable so the scheduler picks it up on this tick. Otherwise
-    /// returns the state unchanged: every guard path here is "no-op and let
-    /// the next tick try again", matching the long-poll cadence of the real
-    /// `SignalHandlerLoop`.
+    /// The byte System.Native's handler writes for `signal`: its number, as
+    /// `uint8_t`.
+    let private signalByte (numbering : SignalNumbering) (signal : Signal) : byte =
+        byte (Signal.toRawSignoUnder numbering signal)
+
+    /// System.Native's native handler for `entry`'s signal, run on the leader:
+    /// write the signal's number into the shim's pipe.
     ///
-    /// Fails if the signal to deliver finds no callback installed by
-    /// `SystemNative_SetPosixSignalHandler`: the shim asserts there is one,
-    /// and the BCL installs it before it enables any signal.
-    let trySpawnHandler (baseClassTypes : BaseClassTypes<DumpedAssembly>) (state : IlMachineState) : IlMachineState =
-        match PosixSignalShim.signalThread state.Kernel.PosixSignalShim with
+    /// Fails where the real handler would do more than that: where it would
+    /// first run the handler it replaced (see
+    /// `PosixSignalShim.chainsToNativeHandler`), and where its `write` would
+    /// not take the byte. The handler retries only `EINTR` and calls `abort()`
+    /// on any other failure, and a write into a full pipe blocks the leader
+    /// until the dispatcher makes room.
+    let private runNativeHandler (entry : PendingSignal<ThreadId>) (state : IlMachineState) : IlMachineState =
+        let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
+        let shim = state.Kernel.PosixSignalShim
+
+        match PosixSignalShim.chainsToNativeHandler numbering entry.Signal shim with
+        | Some chained ->
+            failwith
+                $"SignalDispatch.poll: System.Native's handler for %O{entry.Signal} would first run the handler it replaced (%O{chained}), which PawPrint does not model."
         | None ->
-            // Signal handling has not been initialised; there is no
-            // dispatcher to wake, so anything in `Pending` (there shouldn't
-            // be, but a defensive caller might enqueue early) waits.
-            state
-        | Some dispatcher ->
 
-        let dispatcherStatus =
-            match Map.tryFind dispatcher state.ThreadState with
-            | Some ts -> ts.Status
+        let pipe =
+            match PosixSignalShim.signalPipe shim with
+            | Some pipe -> pipe
             | None ->
+                // Reachable only through a hand-rolled
+                // `SystemNative_EnablePosixSignalHandling`: the BCL initialises
+                // signal handling before it enables any signal.
                 failwith
-                    $"SignalDispatch.trySpawnHandler: dispatcher thread %O{dispatcher} recorded in PosixSignalShim but no ThreadState entry exists — the initialisation path should always allocate both."
+                    $"SignalDispatch.poll: %O{entry.Signal} is caught by System.Native's handler, but signal handling was never initialised, so the handler would write it to descriptor -1, fail, and abort() the process; PawPrint does not model that abort."
 
-        match dispatcherStatus with
-        | ThreadStatus.Parked -> ()
-        | _ ->
-            // Dispatcher is already running a previous handler invocation;
-            // the next tick re-polls. Matches the single-threaded
-            // `SignalHandlerLoop` body: only one signal runs at a time.
-            ()
+        let system = EmulatedKernel.unix state.Kernel
+        let bytes = ImmutableArray.Create (signalByte numbering entry.Signal)
 
-        if dispatcherStatus <> ThreadStatus.Parked then
+        let refuse (what : string) : 'a =
+            failwith
+                $"SignalDispatch.poll: System.Native's handler for %O{entry.Signal} writes to descriptor %d{pipe.WriteEnd}, the write end of its signal pipe, and %s{what}; the real handler abort()s the process, or blocks until the dispatcher reads, and PawPrint models neither."
+
+        // The shim writes to the number it was given, whatever the guest has
+        // since put there. A byte written to a standard stream would reach the
+        // guest's output without the step effect that streams it, so anything
+        // but a pipe's write end is refused rather than half-answered.
+        match FileDescriptorRegistry.tryFindTarget pipe.WriteEnd system.Process.FileDescriptors with
+        | None
+        | Some (OpenFileTarget.Pipe (_, PipeEnd.Write)) -> ()
+        | Some other ->
+            failwith
+                $"SignalDispatch.poll: System.Native's handler for %O{entry.Signal} writes to descriptor %d{pipe.WriteEnd}, which the guest has replaced with %O{other}; PawPrint models the handler writing only to a pipe."
+
+        match UnixReadWrite.admitWrite pipe.WriteEnd UserBuffer.Mapped 1UL system with
+        | Error refusal -> refuse (WriteRefusal.describe refusal)
+        | Ok (WriteAdmission.Answered answer, _) -> refuse $"the kernel answers %O{answer} without taking the byte"
+        | Ok (WriteAdmission.Transfer _, system) ->
+
+        match UnixReadWrite.write pipe.WriteEnd bytes system with
+        | Error refusal -> refuse (WriteRefusal.describe refusal)
+        | Ok (WriteAnswer.Completed 1L, system) -> state.MapKernel (EmulatedKernel.withUnix system)
+        | Ok (answer, _) -> refuse $"the kernel answers %O{answer}"
+
+    /// The signals the kernel delivers to the leader now, each through its
+    /// disposition: System.Native's handler writes it into the pipe, and every
+    /// other disposition is refused.
+    ///
+    /// Refuses a second delivery in one poll. Every caught signal pending at a
+    /// return to user mode gets a handler frame at once, so a kernel runs the
+    /// handlers in the reverse of the order it takes the signals (measured by
+    /// `signal-pick-order.c`), and PawPrint does not model handler frames yet.
+    /// A process whose only generator is its own `kill(2)` never has two
+    /// deliverable signals at once, because the poll runs between any two
+    /// instructions.
+    let private deliverToLeader (state : IlMachineState) : IlMachineState =
+        let leader = state.Kernel.Leader
+
+        match PosixSignalShim.signalThread state.Kernel.PosixSignalShim with
+        | Some dispatcher when dispatcher = leader ->
+            failwith
+                $"SignalDispatch.poll: the dispatcher %O{dispatcher} is the process's leader, which the kernel delivers the process's signals to; the dispatcher runs handlers for the leader and is always a thread of its own."
+        | _ -> ()
+
+        // Nothing pending is nothing to deliver, and this runs between every
+        // two instructions, so it answers without assembling the kernel's view.
+        if List.isEmpty (SignalState.pending state.Kernel.Signals) then
             state
         else
 
-        let leader = state.Kernel.Leader
+        let rec deliver (delivered : Signal option) (state : IlMachineState) : IlMachineState =
+            let delivery, systemAfter =
+                match UnixSignal.nextDelivery leader (EmulatedKernel.unix state.Kernel) with
+                | Ok answer -> answer
+                | Error refusal ->
+                    failwith $"SignalDispatch.poll: the kernel will not say which thread takes a signal: %O{refusal}"
 
-        if dispatcher = leader then
-            failwith
-                $"SignalDispatch.trySpawnHandler: the dispatcher %O{dispatcher} is the process's leader, which the kernel delivers the process's signals to; the dispatcher runs handlers for the leader and is always a thread of its own."
+            // Persist the walk's state whether or not it produced an action:
+            // discarding a receivable ignored signal is a state change with no
+            // delivery, and dropping it would replay the discard every tick.
+            let state =
+                if systemAfter.Process.Signals = state.Kernel.Signals then
+                    state
+                else
+                    state.MapKernel (EmulatedKernel.withUnix systemAfter)
 
-        let delivery, systemAfter =
-            match UnixSignal.nextDelivery leader (EmulatedKernel.unix state.Kernel) with
-            | Ok answer -> answer
-            | Error refusal ->
+            match delivery, delivered with
+            | None, _ -> state
+            | Some delivery, Some first ->
                 failwith
-                    $"SignalDispatch.trySpawnHandler: the kernel will not say which thread takes a signal: %O{refusal}"
+                    $"SignalDispatch.poll: the leader takes %O{first} and then %O{delivery} at one return to user mode. A kernel gives each a handler frame before any handler runs, so System.Native's handler would write them to its pipe in the reverse order; PawPrint does not model handler frames."
+            | Some (SignalDelivery.DefaultTerminate (signal, _)), None
+            | Some (SignalDelivery.DefaultStop signal), None
+            | Some (SignalDelivery.DefaultContinue signal), None ->
+                // A pending signal at its default disposition, whose kernel
+                // default is to terminate, stop or continue the process.
+                // `SignalState.generate` applies a terminating or stopping
+                // default at generation whenever some thread can receive the
+                // signal, so it is pending here only if none could then; and
+                // every thread could, because nothing sets a signal mask yet.
+                // Reaching this is therefore a test driving the queue by hand,
+                // or a mask landing without this poll learning to apply
+                // defaults, and it is refused rather than half-modelled.
+                failwith
+                    $"SignalDispatch.poll: pending %O{signal} is at its default disposition, and its kernel default is not Ignore; applying a default disposition at delivery rather than at generation is not modelled."
+            | Some (SignalDelivery.RunHandler (entry, NativeSignalHandler.CoreClrPal)), None
+            | Some (SignalDelivery.RunHandler (entry, NativeSignalHandler.GlibcSetXid)), None ->
+                // `NativeLibc.kill` refuses to generate these, so this is a test
+                // driving the queue by hand.
+                failwith
+                    $"SignalDispatch.poll: %O{entry.Signal} is caught by a native handler the runtime or libc installed before Main, which PawPrint does not model."
+            | Some (SignalDelivery.RunHandler (entry, NativeSignalHandler.SystemNative)), None ->
+                deliver (Some entry.Signal) (runNativeHandler entry state)
 
-        // Persist the walk's state whether or not it produced an action:
-        // discarding a receivable ignored signal is a state change with no
-        // delivery, and dropping it would replay the discard every tick.
-        let state =
-            if systemAfter.Process.Signals = state.Kernel.Signals then
-                state
-            else
-                state.MapKernel (EmulatedKernel.withUnix systemAfter)
+        deliver None state
 
-        match delivery with
-        | None ->
-            // Nothing the leader takes now: nothing pending, or everything
-            // pending is blocked.
-            state
-        | Some (SignalDelivery.DefaultTerminate (signal, _))
-        | Some (SignalDelivery.DefaultStop signal)
-        | Some (SignalDelivery.DefaultContinue signal) ->
-            // A pending signal at its default disposition, whose kernel
-            // default is to terminate, stop or continue the process.
-            // `SignalState.generate` applies a terminating or stopping default
-            // at generation whenever some thread can receive the signal, so it
-            // is pending here only if none could then; and every thread
-            // could, because nothing sets a signal mask yet. Reaching this is
-            // therefore a test driving the queue by hand, or a mask landing
-            // without this poll learning to apply defaults, and it is refused
-            // rather than half-modelled.
-            failwith
-                $"SignalDispatch.trySpawnHandler: pending %O{signal} is at its default disposition, and its kernel default is not Ignore; applying a default disposition at delivery rather than at generation is not modelled."
-        | Some (SignalDelivery.RunHandler (entry, NativeSignalHandler.CoreClrPal))
-        | Some (SignalDelivery.RunHandler (entry, NativeSignalHandler.GlibcSetXid)) ->
-            // `NativeLibc.kill` refuses to generate these, so this is a test
-            // driving the queue by hand.
-            failwith
-                $"SignalDispatch.trySpawnHandler: %O{entry.Signal} is caught by a native handler the runtime or libc installed before Main, which PawPrint does not model."
-        | Some (SignalDelivery.RunHandler (entry, NativeSignalHandler.SystemNative)) ->
-
-        let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
-
-        match PosixSignalShim.chainsToNativeHandler numbering entry.Signal state.Kernel.PosixSignalShim with
-        | Some chained ->
-            failwith
-                $"SignalDispatch.trySpawnHandler: System.Native's handler for %O{entry.Signal} would first run the handler it replaced (%O{chained}), which PawPrint does not model."
-        | None ->
-
+    /// Start the managed callback for `signal` on the parked dispatcher: the
+    /// shim's `g_posixSignalHandler(signo, posixSignal)`.
+    ///
+    /// Fails if no callback was installed by `SystemNative_SetPosixSignalHandler`:
+    /// the shim asserts there is one, and the BCL installs it before it enables
+    /// any signal.
+    let private startCallback
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (dispatcher : ThreadId)
+        (signal : Signal)
+        (state : IlMachineState)
+        : IlMachineState
+        =
         let handler =
             match PosixSignalShim.handler state.Kernel.PosixSignalShim with
             | Some handler -> handler
@@ -219,7 +268,7 @@ module SignalDispatch =
                 // asserts calls a null function pointer: there is no
                 // behaviour here to model.
                 failwith
-                    $"SignalDispatch.trySpawnHandler: %O{entry.Signal} is caught by System.Native and due for delivery, but no handler has been installed with SystemNative_SetPosixSignalHandler; the real shim asserts one has."
+                    $"SignalDispatch.poll: the dispatcher read %O{signal}, which has a registration, but no handler has been installed with SystemNative_SetPosixSignalHandler; the real shim asserts one has."
 
         let mi = SignalHandler.methodInfo handler
         validateHandlerSignature state.ConcreteTypes mi
@@ -228,10 +277,11 @@ module SignalDispatch =
             state.LoadedAssembly mi.DeclaringAssemblyFullName
             |> Option.defaultWith (fun () ->
                 failwith
-                    $"SignalDispatch.trySpawnHandler: assembly %s{AssemblyDefinitionName.simpleName mi.DeclaringAssemblyFullName} for handler %s{mi.Name} is not loaded; the SetPosixSignalHandler QCall should have loaded it."
+                    $"SignalDispatch.poll: assembly %s{AssemblyDefinitionName.simpleName mi.DeclaringAssemblyFullName} for handler %s{mi.Name} is not loaded; the SetPosixSignalHandler QCall should have loaded it."
             )
 
-        let args = buildArgs numbering entry.Signal
+        let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
+        let args = buildArgs numbering signal
 
         // `MethodState.Empty` enforces an arity check against
         // `MethodInfo.arity mi` (plus 1 if non-static). The handler is
@@ -253,31 +303,180 @@ module SignalDispatch =
             | Ok ms -> ms
             | Error _ ->
                 failwith
-                    $"SignalDispatch.trySpawnHandler: failed to build MethodState for handler %s{mi.Name} on type %s{MethodOwner.describe mi.Owner}."
+                    $"SignalDispatch.poll: failed to build MethodState for handler %s{mi.Name} on type %s{MethodOwner.describe mi.Owner}."
 
-        IlMachineState.startParkedDispatcher dispatcher newMethodState state
+        state.MapKernel (fun kernel ->
+            { kernel with
+                PosixSignalShim =
+                    PosixSignalShim.beginCallback (Signal.toRawSignoUnder numbering signal) kernel.PosixSignalShim
+            }
+        )
+        |> IlMachineState.startParkedDispatcher dispatcher newMethodState
+
+    /// The loop's own `SystemNative_HandleNonCanceledPosixSignal(signo)`, on
+    /// the dispatcher: no guest code runs, and the dispatcher stays where it is.
+    let private handleNonCanceledOnDispatcher
+        (dispatcher : ThreadId)
+        (signo : int)
+        (state : IlMachineState)
+        : SignalPoll
+        =
+        match
+            NativeSystemNative.handleNonCanceledPosixSignal
+                "SignalHandlerLoop's SystemNative_HandleNonCanceledPosixSignal"
+                signo
+                state
+        with
+        | NonCanceledPosixSignal.Continues state -> SignalPoll.Continues state
+        | NonCanceledPosixSignal.ContinuesWithErrno (state, error) ->
+            let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+
+            state.MapKernel (EmulatedKernel.withLastSystemError dispatcher (UnixError.toRawErrnoUnder numbering error))
+            |> SignalPoll.Continues
+        | NonCanceledPosixSignal.Terminated (state, signal, coreDumped) ->
+            SignalPoll.ProcessKilled (state, signal, coreDumped)
+
+    /// The dispatcher's blocking `read(pipeFd, &signalCode, 1)`, if it is
+    /// Parked there and the pipe has a byte for it: what the loop then does
+    /// with the signal, and with each after it, until it starts a callback,
+    /// the pipe is empty, or the process dies.
+    let rec private wakeDispatcher
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : SignalPoll
+        =
+        match
+            PosixSignalShim.signalThread state.Kernel.PosixSignalShim,
+            PosixSignalShim.signalPipe state.Kernel.PosixSignalShim
+        with
+        | None, _
+        | _, None -> SignalPoll.Continues state
+        | Some dispatcher, Some pipe ->
+
+        let dispatcherStatus =
+            match Map.tryFind dispatcher state.ThreadState with
+            | Some ts -> ts.Status
+            | None ->
+                failwith
+                    $"SignalDispatch.poll: dispatcher thread %O{dispatcher} recorded in PosixSignalShim but no ThreadState entry exists — the initialisation path should always allocate both."
+
+        // Runnable: the dispatcher is running the callback for an earlier
+        // signal, and reads the next one only once that returns, exactly as
+        // the single-threaded `SignalHandlerLoop` does.
+        if dispatcherStatus <> ThreadStatus.Parked then
+            SignalPoll.Continues state
+        else
+
+        let refuse (what : string) : 'a =
+            failwith
+                $"SignalDispatch.poll: System.Native's dispatcher reads descriptor %d{pipe.ReadEnd}, the read end of its signal pipe, and %s{what}; the real SignalHandlerLoop then closes the descriptor and its thread exits, which PawPrint does not model."
+
+        // The loop reads the number it was given, whatever the guest has since
+        // put there; PawPrint models it reading only a pipe.
+        match FileDescriptorRegistry.tryFindTarget pipe.ReadEnd state.Kernel.Process.FileDescriptors with
+        // An empty pipe with its write end open, read through a blocking
+        // description: the read sleeps, and so does the dispatcher. Answered
+        // here because this runs between every two instructions of a process
+        // that has initialised signal handling.
+        | Some (OpenFileTarget.Pipe (pipeId, PipeEnd.Read)) when
+            PipeBuffer.held (UnixMachineState.pipe pipeId state.Kernel.Machine).Buffer = 0
+            && FileDescriptorRegistry.tryFind pipe.ReadEnd state.Kernel.Process.FileDescriptors
+               |> Option.exists (fun description -> not description.NonBlocking)
+            && FileDescriptorRegistry.tryFindTarget pipe.WriteEnd state.Kernel.Process.FileDescriptors = Some (
+                OpenFileTarget.Pipe (pipeId, PipeEnd.Write)
+            )
+            ->
+            SignalPoll.Continues state
+        | Some (OpenFileTarget.StandardStream _ as other)
+        | Some (OpenFileTarget.File _ as other)
+        | Some (OpenFileTarget.Directory _ as other)
+        | Some (OpenFileTarget.SocketEventPort _ as other)
+        | Some (OpenFileTarget.Socket _ as other)
+        | Some (OpenFileTarget.Pipe (_, PipeEnd.Write) as other) -> refuse $"the guest has replaced it with %O{other}"
+        | None
+        | Some (OpenFileTarget.Pipe (_, PipeEnd.Read)) ->
+
+        match UnixReadWrite.read pipe.ReadEnd UserBuffer.Mapped 1UL (EmulatedKernel.unix state.Kernel) with
+        // Empty, with the write end open: the read sleeps, and so does the
+        // dispatcher.
+        | Error (ReadRefusal.PipeWouldBlock _) -> SignalPoll.Continues state
+        | Error refusal -> refuse (ReadRefusal.describe refusal)
+        | Ok (ReadAnswer.Failed error, _) -> refuse $"fails with %O{error}"
+        | Ok (ReadAnswer.Completed bytes, system) ->
+
+        if bytes.Length <> 1 then
+            refuse $"reads %d{bytes.Length} bytes rather than one"
+
+        let state = state.MapKernel (EmulatedKernel.withUnix system)
+        let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
+        let signo = int bytes.[0]
+
+        // The loop indexes its tables by `signalCode - 1` without checking it,
+        // so a byte that is no signal number reached the pipe some other way
+        // than the native handler: a guest writing to the pipe itself.
+        if signo < 1 || signo > PosixSignalPal.signalMax numbering then
+            refuse
+                $"reads the byte %d{signo}, which is no signal number under the %O{numbering} numbering, and which the loop would use to index its tables out of bounds"
+
+        // For SIGCHLD, SIGCONT and SIGWINCH the loop first calls the
+        // console's terminal-invalidation callback, and for SIGCHLD the
+        // process class's child-reaping callback, or reaps every child itself
+        // if its saved disposition was SIG_IGN or it is process 1. PawPrint
+        // implements neither `SystemNative_SetTerminalInvalidationHandler` nor
+        // `SystemNative_RegisterForSigChld`, so neither callback is set, and
+        // it models no child process for a `waitpid` to find.
+        match Signal.ofRawSignoUnder numbering signo with
+        | ValueSome signal when PosixSignalShim.isRegistered numbering signal state.Kernel.PosixSignalShim ->
+            SignalPoll.Continues (startCallback baseClassTypes dispatcher signal state)
+        | ValueSome _
+        | ValueNone ->
+            // Handled without guest code, and the loop goes straight back to
+            // its read: so does this, rather than leaving the next byte for a
+            // tick that may never come if every other thread is asleep.
+            match handleNonCanceledOnDispatcher dispatcher signo state with
+            | SignalPoll.Continues state -> wakeDispatcher baseClassTypes state
+            | killed -> killed
+
+    /// System.Native's signal handling between two guest instructions: the
+    /// native handler for whatever the kernel delivers to the leader now, and
+    /// then the dispatcher, if it is idle and its pipe holds a signal. Polled
+    /// once per tick by `Program.stepPrepared`, immediately before the
+    /// scheduler picks its next thread, so a dispatcher it wakes can be picked
+    /// on the same tick.
+    let poll (baseClassTypes : BaseClassTypes<DumpedAssembly>) (state : IlMachineState) : SignalPoll =
+        deliverToLeader state |> wakeDispatcher baseClassTypes
 
     /// Called from `Program.stepPrepared` when `ExecutionResult.Terminated`
-    /// fires for the dispatcher's bottom frame (i.e. the handler `ret`urned
-    /// past its own frame), with the handler's `int` result still on the
+    /// fires for the dispatcher's bottom frame (the callback `ret`urned past
+    /// its own frame), with the callback's `int` result still on the
     /// dispatcher's evaluation stack. Resets the dispatcher to its idle shape
-    /// (Parked + sentinel frame id + no live frames) so the next deliverable
-    /// signal can wake it.
+    /// (Parked + sentinel frame id + no live frames) so it reads the pipe
+    /// again.
     ///
-    /// Fails if the handler returned 0. `OnPosixSignal` does so when it finds
-    /// no registration for the signal, which happens when the last one is
-    /// disposed after the signal was dispatched; the real `SignalHandlerLoop`
-    /// then applies the signal's default through
-    /// `SystemNative_HandleNonCanceledPosixSignal`, which this dispatcher does
-    /// not do.
-    let reParkAfterHandler (dispatcher : ThreadId) (state : IlMachineState) : IlMachineState =
-        match IlMachineState.peekEvalStack dispatcher state with
-        | Some (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ->
-            failwith
-                "SignalDispatch.reParkAfterHandler: the signal handler returned 0, reporting that nothing handled the signal (OnPosixSignal found no registration for it). The real SignalHandlerLoop would then apply the signal's default through SystemNative_HandleNonCanceledPosixSignal; PawPrint's dispatcher does not model that step."
-        | Some (EvalStackValue.Int32 (Int32Source.Verbatim _)) -> ()
-        | other ->
-            failwith
-                $"SignalDispatch.reParkAfterHandler: expected the signal handler's Int32 result on dispatcher %O{dispatcher}'s evaluation stack, found %O{other}."
+    /// A result of 0 is the callback reporting that nothing handled the
+    /// signal (`OnPosixSignal` found no registration for it, which happens
+    /// when the last one is disposed after the signal was written to the
+    /// pipe): the loop then calls `SystemNative_HandleNonCanceledPosixSignal`
+    /// itself, before it reads again.
+    let reParkAfterHandler (dispatcher : ThreadId) (state : IlMachineState) : SignalPoll =
+        let handled =
+            match IlMachineState.peekEvalStack dispatcher state with
+            | Some (EvalStackValue.Int32 (Int32Source.Verbatim result)) -> result <> 0
+            | other ->
+                failwith
+                    $"SignalDispatch.reParkAfterHandler: expected the signal handler's Int32 result on dispatcher %O{dispatcher}'s evaluation stack, found %O{other}."
 
-        IlMachineState.reParkDispatcher dispatcher state
+        let signo, shim = PosixSignalShim.endCallback state.Kernel.PosixSignalShim
+
+        let state =
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    PosixSignalShim = shim
+                }
+            )
+            |> IlMachineState.reParkDispatcher dispatcher
+
+        if handled then
+            SignalPoll.Continues state
+        else
+            handleNonCanceledOnDispatcher dispatcher signo state

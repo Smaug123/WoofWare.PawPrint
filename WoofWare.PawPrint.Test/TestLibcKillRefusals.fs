@@ -36,10 +36,9 @@ class Program
 }
 """
 
-    /// Registers SIGINFO (29 on Darwin) at the shim with nothing to dispatch
-    /// it, so a SIGINFO sent to the process stays queued, and then runs the
-    /// shim's non-cancelled handling for SIGINFO, which restores the kernel's
-    /// default of discarding it.
+    /// Registers SIGINFO (29 on Darwin) at the shim without initialising its
+    /// signal handling first, sends it, and then runs the shim's non-cancelled
+    /// handling for SIGINFO.
     let private queuedThenRestoredGuest : string =
         """
 using System;
@@ -66,10 +65,8 @@ class Program
 }
 """
 
-    /// Holds System.Native's dispatcher in a SIGWINCH handler while a stop
-    /// signal (`args[0]`) and then SIGCONT (`args[1]`) are sent, both with
-    /// handlers registered: the stop signal is still waiting for the
-    /// dispatcher when SIGCONT is generated.
+    /// Sends SIGWINCH, whose handler waits, and then a stop signal
+    /// (`args[0]`) and SIGCONT (`args[1]`), both with handlers registered.
     let private queuedStopThenContinueGuest : string =
         """
 using System;
@@ -99,9 +96,8 @@ class Program
 }
 """
 
-    /// Holds System.Native's dispatcher in a SIGWINCH handler while SIGCHLD
-    /// (`args[0]`), registered, is sent and then unregistered: the SIGCHLD is
-    /// still waiting for the dispatcher when its default is restored.
+    /// Sends SIGWINCH, whose handler waits, and then SIGCHLD (`args[0]`),
+    /// registered, which is then unregistered.
     let private queuedThenUnregisteredGuest : string =
         """
 using System;
@@ -130,9 +126,8 @@ class Program
 }
 """
 
-    /// Holds System.Native's dispatcher in a SIGWINCH handler while two
-    /// registered signals, `args[0]` and then `args[1]`, are sent: the first
-    /// is still waiting for the dispatcher when the second is generated.
+    /// Sends SIGWINCH, whose handler waits, and then two registered signals,
+    /// `args[0]` and then `args[1]`.
     let private queuedThenAnotherGuest : string =
         """
 using System;
@@ -230,61 +225,47 @@ class Program
         refused SimulatedUnixPlatform.linuxX64 18 "has no stopped state"
 
     [<Test>]
-    let ``restoring the default of a signal with an instance still queued is refused`` () : unit =
-        // The real shim has already written the queued instance to its pipe,
-        // and keeps the registration bit that sends it to the callback; the
-        // model would discard it as ignored.
+    let ``a signal System.Native catches before its signal handling is initialised is refused`` () : unit =
+        // A hand-rolled `SystemNative_EnablePosixSignalHandling` installs the
+        // shim's handler with no pipe to write to: the real handler writes to
+        // descriptor -1 and aborts.
         let exn =
             Assert.Catch<exn> (fun () ->
                 runSource queuedThenRestoredGuest SimulatedUnixPlatform.macOsArm64 29
                 |> ignore<RunOutcome>
             )
 
-        exn.Message |> shouldContainText "SystemNative_HandleNonCanceledPosixSignal"
-        exn.Message |> shouldContainText "still queued"
+        exn.Message |> shouldContainText "never initialised"
 
-    [<Test>]
-    let ``SIGCONT discarding a stop signal queued for the dispatcher is refused`` () : unit =
-        // On the real runtime both handlers run: the native handler took the
-        // stop signal before SIGCONT was sent. SIGTSTP and SIGCONT are 20 and
-        // 18 under Linux's numbering.
-        let exn =
-            Assert.Catch<exn> (fun () ->
-                runSourceWith queuedStopThenContinueGuest SimulatedUnixPlatform.linuxX64 [ "20" ; "18" ]
-                |> ignore<RunOutcome>
-            )
-
-        exn.Message |> shouldContainText "would discard the pending SIGTSTP"
-
-    [<Test>]
-    let ``unregistering a signal queued for the dispatcher is refused`` () : unit =
-        // On the real runtime the queued SIGCHLD still reaches the callback;
-        // restoring SIGCHLD's default would discard it from PawPrint's
-        // pending set. SIGCHLD is 17 under Linux's numbering.
-        let exn =
-            Assert.Catch<exn> (fun () ->
-                runSourceWith queuedThenUnregisteredGuest SimulatedUnixPlatform.linuxX64 [ "17" ]
-                |> ignore<RunOutcome>
-            )
-
-        exn.Message |> shouldContainText "SystemNative_DisablePosixSignalHandling"
-        exn.Message |> shouldContainText "still queued"
-
-    [<Test>]
-    let ``a signal the kernel takes ahead of one queued for the dispatcher is refused`` () : unit =
-        // On the real runtime the dispatcher reaches SIGTERM (15) first, having
-        // been handed it first; the kernel takes SIGINT (2) first, so PawPrint's
-        // pending set would hand them over the other way round.
-        let exn =
-            Assert.Catch<exn> (fun () ->
-                runSourceWith queuedThenAnotherGuest SimulatedUnixPlatform.linuxX64 [ "15" ; "2" ]
-                |> ignore<RunOutcome>
-            )
-
-        exn.Message |> shouldContainText "would be delivered before the pending SIGTERM"
-
-    [<Test>]
-    let ``a signal the kernel takes after one queued for the dispatcher is answered`` () : unit =
-        match runSourceWith queuedThenAnotherGuest SimulatedUnixPlatform.linuxX64 [ "2" ; "15" ] with
+    let private exitsWith42 (outcome : RunOutcome) : unit =
+        match outcome with
         | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 42
-        | other -> failwith $"expected both signals to be answered and the guest to exit 42, got %O{other}"
+        | other -> failwith $"expected the guest to exit 42, got %O{other}"
+
+    [<Test>]
+    let ``SIGCONT sent after a stop signal the native handler has already taken is answered`` () : unit =
+        // The stop signal is in System.Native's pipe by the time SIGCONT is
+        // generated, so the kernel's discard of pending stop signals does not
+        // reach it, and both handlers run, as on the real runtime. SIGTSTP and
+        // SIGCONT are 20 and 18 under Linux's numbering.
+        runSourceWith queuedStopThenContinueGuest SimulatedUnixPlatform.linuxX64 [ "20" ; "18" ]
+        |> exitsWith42
+
+    [<Test>]
+    let ``unregistering a signal the native handler has already taken is answered`` () : unit =
+        // The SIGCHLD is in System.Native's pipe; whether the dispatcher reads
+        // it before or after the registration goes, the process carries on:
+        // the callback or the loop's non-cancelled handling, which for SIGCHLD
+        // does nothing. SIGCHLD is 17 under Linux's numbering.
+        runSourceWith queuedThenUnregisteredGuest SimulatedUnixPlatform.linuxX64 [ "17" ]
+        |> exitsWith42
+
+    [<Test>]
+    let ``two signals sent while the dispatcher is busy are answered in either order`` () : unit =
+        // The dispatcher reads them in the order the native handler wrote
+        // them, whichever order the kernel would take them in.
+        runSourceWith queuedThenAnotherGuest SimulatedUnixPlatform.linuxX64 [ "15" ; "2" ]
+        |> exitsWith42
+
+        runSourceWith queuedThenAnotherGuest SimulatedUnixPlatform.linuxX64 [ "2" ; "15" ]
+        |> exitsWith42

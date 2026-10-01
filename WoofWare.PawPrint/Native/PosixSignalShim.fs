@@ -2,39 +2,57 @@ namespace WoofWare.PawPrint
 
 open WoofWare.PosixKernel
 
+/// The two descriptors of System.Native's signal pipe, as its signal
+/// initialisation's `pipe()` returned them. The shim's native handler writes
+/// each signal it catches to `WriteEnd`, as the signal's number in one byte;
+/// its dispatcher thread reads them from `ReadEnd` one at a time, in the order
+/// they were written.
+///
+/// These are the numbers the shim holds on to, which are not necessarily what
+/// the descriptor table still says: a guest can close or replace either one,
+/// and the shim goes on using the number.
+type SignalPipe =
+    {
+        ReadEnd : int
+        WriteEnd : int
+    }
+
 /// Whether System.Native's signal handling has been initialised, and if so
-/// which thread is its dispatcher. The first
-/// `SystemNative_InitializeTerminalAndSignalHandling` starts the shim's
-/// `SignalHandlerLoop` pthread, which reads each caught signal off the shim's
-/// pipe and calls the managed callback; PawPrint allocates a parked thread at
-/// the same moment to play that part (`IlMachineState.allocateParkedThread`)
-/// and records it here.
+/// which thread is its dispatcher and which pipe feeds it. The first
+/// `SystemNative_InitializeTerminalAndSignalHandling` makes the pipe and
+/// starts the shim's `SignalHandlerLoop` pthread, which reads each caught
+/// signal off the pipe and calls the managed callback; PawPrint allocates a
+/// parked thread at the same moment to play that part
+/// (`IlMachineState.allocateParkedThread`) and records it here.
 ///
 /// A DU rather than `Initialized : bool` beside `Dispatcher : ThreadId option`,
-/// so that "the dispatcher exists iff signal handling is initialised" cannot be
-/// violated. Re-initialising preserves the existing dispatcher, so the
-/// P/Invoke's handler must check `PosixSignalShim.isInitialized` before it
-/// allocates a thread, or a second call would mint a second dispatcher that
-/// nothing ever wakes.
+/// so that "the dispatcher and the pipe exist iff signal handling is
+/// initialised" cannot be violated. Re-initialising preserves the existing
+/// dispatcher and pipe, so the P/Invoke's handler must check
+/// `PosixSignalShim.isInitialized` before it makes either, or a second call
+/// would mint a second dispatcher that nothing ever wakes.
 [<RequireQualifiedAccess>]
 type SignalInitState =
     /// Signal handling has not yet been set up; no dispatcher thread
     /// exists. `PosixSignalShim.initial` starts here.
     | NotInitialized
-    /// Signal handling has been initialised at least once, and `dispatcher`
-    /// is the parked thread allocated then.
-    | Initialized of dispatcher : ThreadId
+    /// Signal handling has been initialised at least once: `dispatcher` is
+    /// the parked thread allocated then, and `pipe` the pipe made then.
+    | Initialized of dispatcher : ThreadId * pipe : SignalPipe
 
 /// What System.Native's signal code keeps in its own globals rather than
 /// asking the kernel for: whether signal handling is initialised, with the
-/// dispatcher thread that initialisation started, the managed callback
-/// installed by `SystemNative_SetPosixSignalHandler` (the shim's
-/// `g_posixSignalHandler`), and the disposition each signal had when the shim
-/// last looked, which it restores when it gives the signal up
-/// (`g_origSigHandler`).
+/// dispatcher thread and the pipe that initialisation made
+/// (`g_signalPipe`), the managed callback installed by
+/// `SystemNative_SetPosixSignalHandler` (`g_posixSignalHandler`), which
+/// signals have a managed registration (`g_hasPosixSignalRegistrations`),
+/// and the disposition each signal had when the shim last looked, which it
+/// restores when it gives the signal up (`g_origSigHandler`).
 ///
 /// The kernel's half of signal handling (each signal's disposition, what is
-/// pending, what each thread blocks) is `SignalState`, on the process.
+/// pending, what each thread blocks) is `SignalState`, on the process; the
+/// signals the native handler has taken and the dispatcher has not yet read
+/// are the bytes in the pipe, in the kernel's pipe table.
 /// `EmulatedKernel.checkInvariants` refuses a dispatcher that is not one of
 /// the kernel's tasks.
 type PosixSignalShim =
@@ -42,6 +60,20 @@ type PosixSignalShim =
         {
             Init : SignalInitState
             Handler : SignalHandler option
+            /// Every signal with a managed registration, in its canonical
+            /// spelling: set by `SystemNative_EnablePosixSignalHandling` when it
+            /// installs the handler, cleared by
+            /// `SystemNative_DisablePosixSignalHandling`. The dispatcher reads it
+            /// for each signal it takes off the pipe, and passes a signal without
+            /// one to `SystemNative_HandleNonCanceledPosixSignal` rather than to
+            /// the callback.
+            Registered : Set<Signal>
+            /// The signal number the dispatcher is calling the managed callback
+            /// for, while it is: the loop's local `signalCode`, which it hands
+            /// to `SystemNative_HandleNonCanceledPosixSignal` if the callback
+            /// reports the signal unhandled. `None` while the dispatcher is
+            /// reading the pipe.
+            Calling : int option
             /// Never holds `SignalDisposition.Default`: the shim allocates the
             /// array zeroed, which is `SIG_DFL`, so an absent key is the
             /// default.
@@ -56,6 +88,8 @@ module PosixSignalShim =
         {
             Init = SignalInitState.NotInitialized
             Handler = None
+            Registered = Set.empty
+            Calling = None
             Originals = Map.empty
         }
 
@@ -71,22 +105,30 @@ module PosixSignalShim =
     let signalThread (state : PosixSignalShim) : ThreadId option =
         match state.Init with
         | SignalInitState.NotInitialized -> None
-        | SignalInitState.Initialized dispatcher -> Some dispatcher
+        | SignalInitState.Initialized (dispatcher, _) -> Some dispatcher
 
-    /// Record `dispatcher` as the thread initialisation started. Idempotent:
-    /// once initialised, a second call preserves the existing dispatcher and
-    /// does *not* swap in the one supplied. The caller is expected to check
-    /// `isInitialized` and skip allocating a thread entirely on a second
-    /// initialisation, as the shim starts its `SignalHandlerLoop` exactly
-    /// once however often the BCL's initialisers call it; the idempotency
-    /// here means a caller that allocated anyway does not orphan the thread
-    /// already running.
-    let markInitialized (dispatcher : ThreadId) (state : PosixSignalShim) : PosixSignalShim =
+    /// `Some pipe` once signal handling has been initialised, where `pipe` is
+    /// the pipe initialisation made. `None` until then, when the shim's
+    /// `g_signalPipe` holds -1 for both ends.
+    let signalPipe (state : PosixSignalShim) : SignalPipe option =
+        match state.Init with
+        | SignalInitState.NotInitialized -> None
+        | SignalInitState.Initialized (_, pipe) -> Some pipe
+
+    /// Record `dispatcher` as the thread initialisation started, and `pipe` as
+    /// the pipe it made. Idempotent: once initialised, a second call preserves
+    /// the existing dispatcher and pipe and does *not* swap in the ones
+    /// supplied. The caller is expected to check `isInitialized` and skip
+    /// making either entirely on a second initialisation, as the shim makes its
+    /// pipe and starts its `SignalHandlerLoop` exactly once however often the
+    /// BCL's initialisers call it; the idempotency here means a caller that
+    /// made them anyway does not orphan the ones already in use.
+    let markInitialized (dispatcher : ThreadId) (pipe : SignalPipe) (state : PosixSignalShim) : PosixSignalShim =
         match state.Init with
         | SignalInitState.Initialized _ -> state
         | SignalInitState.NotInitialized ->
             { state with
-                Init = SignalInitState.Initialized dispatcher
+                Init = SignalInitState.Initialized (dispatcher, pipe)
             }
 
     /// The managed callback `SystemNative_SetPosixSignalHandler` installed, or
@@ -223,3 +265,63 @@ module PosixSignalShim =
         : SignalState<'Task, NativeSignalHandler>
         =
         SignalState.setDisposition signal (original numbering signal state) signals
+
+    /// Whether `signal` has a managed registration: whether the dispatcher
+    /// hands it to the callback (`g_hasPosixSignalRegistrations`).
+    let isRegistered (numbering : SignalNumbering) (signal : Signal) (state : PosixSignalShim) : bool =
+        Set.contains (Signal.canonicalUnder numbering signal) state.Registered
+
+    /// `SystemNative_EnablePosixSignalHandling` for a signal `sigaction`
+    /// accepts: `installHandler`, and then the registration.
+    let enable<'Task when 'Task : comparison>
+        (numbering : SignalNumbering)
+        (signal : Signal)
+        (signals : SignalState<'Task, NativeSignalHandler>)
+        (state : PosixSignalShim)
+        : SignalState<'Task, NativeSignalHandler> * PosixSignalShim
+        =
+        let signals, state = installHandler numbering signal signals state
+
+        signals,
+        { state with
+            Registered = Set.add (Signal.canonicalUnder numbering signal) state.Registered
+        }
+
+    /// `SystemNative_DisablePosixSignalHandling` for a signal `sigaction`
+    /// accepts: the registration goes, and then `restoreHandler`.
+    let disable<'Task when 'Task : comparison>
+        (numbering : SignalNumbering)
+        (signal : Signal)
+        (signals : SignalState<'Task, NativeSignalHandler>)
+        (state : PosixSignalShim)
+        : SignalState<'Task, NativeSignalHandler> * PosixSignalShim
+        =
+        restoreHandler numbering signal signals state,
+        { state with
+            Registered = Set.remove (Signal.canonicalUnder numbering signal) state.Registered
+        }
+
+    /// Record that the dispatcher is calling the managed callback for
+    /// `signo`. Fails if it already is: the loop calls it for one signal at a
+    /// time.
+    let beginCallback (signo : int) (state : PosixSignalShim) : PosixSignalShim =
+        match state.Calling with
+        | Some calling ->
+            failwith
+                $"PosixSignalShim.beginCallback: the dispatcher is already calling the callback for signal %d{calling}, and cannot begin one for %d{signo}."
+        | None ->
+            { state with
+                Calling = Some signo
+            }
+
+    /// The signal number the dispatcher was calling the managed callback for,
+    /// now that the callback has returned, and the shim with the call over.
+    /// Fails if no call was in progress.
+    let endCallback (state : PosixSignalShim) : int * PosixSignalShim =
+        match state.Calling with
+        | None -> failwith "PosixSignalShim.endCallback: the dispatcher is not calling the callback for any signal."
+        | Some signo ->
+            signo,
+            { state with
+                Calling = None
+            }

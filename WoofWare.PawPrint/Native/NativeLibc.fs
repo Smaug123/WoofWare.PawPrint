@@ -16,24 +16,6 @@ type UnmodelledSelfSignal =
     /// has no stopped state for it to resume, and would leave it pending for a
     /// dispatcher that refuses it.
     | ContinueWithoutHandler of Signal
-    /// A signal a handler is registered for, already pending. The runtime's
-    /// native handler takes each instance as it arrives and passes every one
-    /// on to its dispatcher, so both would reach managed code; the model would
-    /// merge the two into one pending instance.
-    | WouldCoalesce of Signal
-    /// Sending `sent` would discard `queued`, a pending signal a handler is
-    /// registered for: generating a stop signal discards a pending SIGCONT,
-    /// and SIGCONT pending stop signals. The runtime's native handler has
-    /// already taken that instance and passed it on to its dispatcher, so a
-    /// real process still runs its managed handler; the model would drop it.
-    | WouldDiscardQueued of sent : Signal * queued : Signal
-    /// Sending `sent` would put it ahead of `queued`, a pending signal a
-    /// handler is registered for: the model delivers pending signals in the
-    /// order the kernel takes them, and that order puts `sent` first. The
-    /// runtime's native handler has already taken `queued` and passed it on
-    /// to its dispatcher, which calls into managed code in the order signals
-    /// arrive, so a real process gets to `queued` first.
-    | WouldOvertake of sent : Signal * queued : Signal
 
 [<RequireQualifiedAccess>]
 module UnmodelledSelfSignal =
@@ -50,12 +32,6 @@ module UnmodelledSelfSignal =
             $"a real CoreCLR process runs %s{whose} for %O{signal}, which PawPrint does not model (usually the process survives the signal; on x86-64 Linux, SIGTRAP kills it with SIGILL instead)."
         | UnmodelledSelfSignal.ContinueWithoutHandler signal ->
             $"%O{signal} with no handler registered continues a stopped process, and a running one carries on regardless; PawPrint has no stopped state, and would leave the signal pending for a dispatcher that refuses it."
-        | UnmodelledSelfSignal.WouldCoalesce signal ->
-            $"%O{signal} has a handler registered and is already pending. The runtime's native handler would pass both instances to its dispatcher, where PawPrint's pending set would merge them into one."
-        | UnmodelledSelfSignal.WouldDiscardQueued (sent, queued) ->
-            $"%O{sent} would discard the pending %O{queued}, which has a handler registered. The runtime's native handler has already passed that instance to its dispatcher, which still runs the managed handler for it; PawPrint's pending set does not hold the dispatcher's queue apart from the kernel's, and would drop it."
-        | UnmodelledSelfSignal.WouldOvertake (sent, queued) ->
-            $"%O{sent} would be delivered before the pending %O{queued}, which has a handler registered, because the kernel takes %O{sent} first. The runtime's native handler has already passed %O{queued} to its dispatcher, which reaches it first; PawPrint's pending set does not hold the dispatcher's queue apart from the kernel's, and would reorder them."
 
 /// Entry points of the C library itself, which a guest reaches only through a
 /// P/Invoke of its own naming the library `libc`: the BCL calls none of them
@@ -89,84 +65,20 @@ module NativeLibc =
                 // replaces, and the shim's handler calls it before anything
                 // reaches managed code.
                 Some (UnmodelledSelfSignal.NativeHandler (signal, chained))
-            | None ->
-                if
-                    not (Signal.isRealTimeUnder numbering signal)
-                    && SignalState.pending signals
-                       |> List.exists (fun pending -> pending.Signal = signal && pending.Target = ValueNone)
-                then
-                    Some (UnmodelledSelfSignal.WouldCoalesce signal)
-                else
-                    None
+            | None -> None
         | SignalDisposition.Catch handler -> Some (UnmodelledSelfSignal.NativeHandler (signal, handler))
         | SignalDisposition.Default when Signal.defaultDispositionUnder numbering signal = DefaultDisposition.Continue ->
             Some (UnmodelledSelfSignal.ContinueWithoutHandler signal)
         | SignalDisposition.Default
         | SignalDisposition.Ignore -> None
 
-    /// Whether generating a signal, which took the signal state from `before`
-    /// to `after`, discarded a pending instance of a signal System.Native's
-    /// handler catches. `None` if it did not.
-    ///
-    /// Such an instance is one the dispatcher has not yet run the managed
-    /// handler for, which on a real process the native handler has already
-    /// taken; see `UnmodelledSelfSignal.WouldDiscardQueued`.
-    let screenGeneration<'Task when 'Task : comparison>
-        (sent : Signal)
-        (before : SignalState<'Task, NativeSignalHandler>)
-        (after : SignalState<'Task, NativeSignalHandler>)
-        : UnmodelledSelfSignal option
-        =
-        let remaining = SignalState.pending after
-
-        SignalState.pending before
-        |> List.tryFind (fun entry ->
-            SignalState.disposition entry.Signal before = SignalDisposition.Catch NativeSignalHandler.SystemNative
-            && not (List.contains entry remaining)
-        )
-        |> Option.map (fun entry ->
-            UnmodelledSelfSignal.WouldDiscardQueued (
-                Signal.canonicalUnder (SignalState.numbering before) sent,
-                entry.Signal
-            )
-        )
-
-    /// Whether generating `sent`, which took the signal state from `before` to
-    /// `after`, put it ahead of a pending signal System.Native's handler
-    /// catches in the order `leader` takes its signals. `None` if it did not.
-    ///
-    /// Such a signal is one the dispatcher has not yet run the managed handler
-    /// for, and which on a real process the dispatcher reaches first; see
-    /// `UnmodelledSelfSignal.WouldOvertake`.
-    let screenOrder<'Task when 'Task : comparison>
-        (leader : 'Task)
-        (sent : Signal)
-        (before : SignalState<'Task, NativeSignalHandler>)
-        (after : SignalState<'Task, NativeSignalHandler>)
-        : UnmodelledSelfSignal option
-        =
-        let sent = Signal.canonicalUnder (SignalState.numbering before) sent
-        let order = SignalState.pendingFor leader leader after
-
-        match order |> List.tryFindIndexBack (fun entry -> entry.Signal = sent) with
-        | None -> None
-        | Some position ->
-            order
-            |> List.skip (position + 1)
-            |> List.tryFind (fun entry ->
-                entry.Signal <> sent
-                && SignalState.disposition entry.Signal before = SignalDisposition.Catch
-                    NativeSignalHandler.SystemNative
-            )
-            |> Option.map (fun entry -> UnmodelledSelfSignal.WouldOvertake (sent, entry.Signal))
-
     /// `kill(2)`, issued by the thread `ctx` is executing, pushing its `int`
     /// result: 0, or -1 with errno set.
     ///
     /// A signal whose kernel default ends the process ends the run here, with
     /// the call never returning. A target other than the calling process, and
-    /// anything `screenSelfSignal`, `screenGeneration` or `screenOrder`
-    /// refuses, fail the run: the model has no answer to give.
+    /// anything `screenSelfSignal` refuses, fail the run: the model has no
+    /// answer to give.
     let kill (operation : string) (ctx : NativeCallContext) (pid : int) (signo : int) : NativeHandlerResult =
         let state = ctx.State
         let system = EmulatedKernel.unix state.Kernel
@@ -187,31 +99,14 @@ module NativeLibc =
             |> returning -1
         | Ok (Ok outcome) ->
 
-        let sent =
+        let refusal =
             Signal.ofRawSignoUnder (SignalState.numbering system.Process.Signals) signo
-
-        // A process that died has no signals left to have discarded one from.
-        let signalsAfter =
-            match outcome with
-            | KillOutcome.ProcessContinues after
-            | KillOutcome.ProcessStopped (_, after) -> Some after.Process.Signals
-            | KillOutcome.ProcessEnded _ -> None
-
-        match
-            sent
             |> ValueOption.bind (fun sent ->
-                match screenSelfSignal state.Kernel.PosixSignalShim system.Process.Signals sent with
-                | Some refusal -> ValueSome refusal
-                | None ->
-                    signalsAfter
-                    |> Option.bind (fun after ->
-                        match screenGeneration sent system.Process.Signals after with
-                        | Some refusal -> Some refusal
-                        | None -> screenOrder system.Leader sent system.Process.Signals after
-                    )
-                    |> ValueOption.ofOption
+                screenSelfSignal state.Kernel.PosixSignalShim system.Process.Signals sent
+                |> ValueOption.ofOption
             )
-        with
+
+        match refusal with
         | ValueSome refusal ->
             failwith
                 $"%s{operation}: kill(%d{pid}, %d{signo}) is not modelled: %s{UnmodelledSelfSignal.describe refusal}"

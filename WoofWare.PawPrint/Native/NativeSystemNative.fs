@@ -105,6 +105,20 @@ module internal BufferPointer =
         | BufferPointer.Symbolic _ -> failwith (refusalMessage pointer BufferRefusal.OpaqueAtTransfer)
         | BufferPointer.Unstatable _ -> failwith (refusalMessage pointer BufferRefusal.AddresslessAtTransfer)
 
+/// What System.Native's `SystemNative_HandleNonCanceledPosixSignal` did to the
+/// process: the signal's default, which the shim applies when no managed
+/// handler cancelled the signal.
+[<RequireQualifiedAccess>]
+type NonCanceledPosixSignal =
+    /// The process carries on, in this state.
+    | Continues of IlMachineState
+    /// The process carries on, in this state, with errno left holding `error`:
+    /// a call the shim made failed, and the shim does not check.
+    | ContinuesWithErrno of IlMachineState * error : UnixError
+    /// The shim re-raised the signal at its default, which killed the process;
+    /// the state is the machine as it stood when the signal was re-raised.
+    | Terminated of IlMachineState * signal : Signal * coreDumped : bool
+
 [<RequireQualifiedAccess>]
 module NativeSystemNative =
     let private trySystemNativeEntryPoint (ctx : NativeCallContext) : string option =
@@ -219,49 +233,6 @@ module NativeSystemNative =
 
         Signal.ofRawSignoUnder numbering signo
 
-    /// `RestoreSignalHandler` for `signal`: the kernel's disposition becomes the
-    /// one System.Native saved when it installed its handler (see
-    /// `PosixSignalShim.restoreHandler`).
-    ///
-    /// Fails, naming `operation`, if that would discard a pending instance of a
-    /// signal System.Native's handler catches. On a real process the native
-    /// handler has already passed such an instance to the dispatcher, which
-    /// still runs the managed callback for it; PawPrint's pending set does not
-    /// hold the dispatcher's queue apart from the kernel's.
-    let private restoreSignalHandler
-        (operation : string)
-        (numbering : SignalNumbering)
-        (signal : Signal)
-        (state : IlMachineState)
-        : IlMachineState
-        =
-        let before = state.Kernel.Signals
-
-        let after =
-            PosixSignalShim.restoreHandler numbering signal before state.Kernel.PosixSignalShim
-
-        let remaining = SignalState.pending after
-
-        match
-            SignalState.pending before
-            |> List.tryFind (fun entry ->
-                SignalState.disposition entry.Signal before = SignalDisposition.Catch NativeSignalHandler.SystemNative
-                && not (List.contains entry remaining)
-            )
-        with
-        | Some entry ->
-            failwith
-                $"%s{operation}: restoring the saved disposition of %O{signal} under the %O{numbering} numbering would discard the pending %O{entry.Signal}, which a real process has still queued for System.Native's dispatcher; PawPrint's pending set does not represent the shim's queue separately."
-        | None ->
-            state.MapKernel (fun kernel ->
-                { kernel with
-                    Process =
-                        { kernel.Process with
-                            Signals = after
-                        }
-                }
-            )
-
     /// Write back the system a syscall answered from, having neither failed nor
     /// been refused. Errno is left alone, as a successful syscall leaves it.
     let private withAnswered
@@ -270,6 +241,194 @@ module NativeSystemNative =
         : IlMachineState
         =
         state.MapKernel (EmulatedKernel.withUnix system)
+
+    /// `SystemNative_HandleNonCanceledPosixSignal(signo)`: apply `signo`'s
+    /// default, which no managed handler cancelled, as System.Native does.
+    /// The BCL calls it from managed code, and the shim's dispatcher calls it
+    /// itself for a signal it finds no registration for, or whose callback
+    /// reported it unhandled. `operation` names the caller, for a refusal.
+    ///
+    /// Which signal a signo names, and so which arm it takes, is read under
+    /// the configured platform's numbering: 29 is SIGIO on Linux and
+    /// terminates, and SIGINFO on Darwin and is discarded.
+    let handleNonCanceledPosixSignal
+        (operation : string)
+        (signo : int)
+        (state : IlMachineState)
+        : NonCanceledPosixSignal
+        =
+        let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
+
+        match signalWithinShimRange operation numbering signo with
+        | ValueNone ->
+            // Darwin's 32. The shim's `default:` branch restores a handler
+            // that was never installed and calls `kill(g_pid, 32)`; the kernel
+            // refuses both with EINVAL, the shim checks neither, and the
+            // process carries on with that errno.
+            NonCanceledPosixSignal.ContinuesWithErrno (state, UnixError.EINVAL)
+        | ValueSome signal when PosixSignalPal.handledWithoutRestoring numbering signal ->
+            // An explicit no-op arm (SIGCONT, SIGTSTP, SIGTTIN, SIGTTOU,
+            // SIGCHLD, SIGURG, SIGWINCH): the runtime cannot stop or continue
+            // itself, and the ignored ones are literally no-ops. What the
+            // SIGCONT and SIGCHLD arms do besides is for a terminal and for
+            // console configuration, which PawPrint has neither of. The
+            // shim's handler stays installed.
+            NonCanceledPosixSignal.Continues state
+        | ValueSome signal ->
+
+        // The `default:` arm does nothing if the disposition the shim saved
+        // when it installed its handler was a handler (which its own handler
+        // has already run, unless the signal is SIGINT, SIGQUIT or SIGTERM) or
+        // `SIG_IGN`. Otherwise it restores that saved disposition and
+        // re-raises the signal with `kill(2)`, so the process gets the
+        // kernel's default: this sends it through the kernel model as a
+        // signal the process sends itself.
+        match PosixSignalShim.original numbering signal state.Kernel.PosixSignalShim with
+        | SignalDisposition.Catch _ when not (PosixSignalShim.isCancelableTermination numbering signal) ->
+            NonCanceledPosixSignal.Continues state
+        | SignalDisposition.Catch saved ->
+            // SIGINT, SIGQUIT or SIGTERM, restored to a handler the shim did
+            // not run: that handler would run on the re-raise. PawPrint's
+            // startup table holds none for these three, and nothing else
+            // installs one.
+            failwith
+                $"%s{operation}: %O{signal} under the %O{numbering} numbering would be restored to %O{saved} and re-raised, running native code PawPrint does not model."
+        // The shim returns early for a saved SIG_IGN ("Original handler
+        // doesn't do anything"). Restoring the ignore and re-raising the
+        // signal, as below, discards it, which comes to the same thing.
+        | SignalDisposition.Ignore
+        | SignalDisposition.Default ->
+
+        match Signal.defaultDispositionUnder numbering signal with
+        | DefaultDisposition.Stop
+        | DefaultDisposition.Continue ->
+            // The `default:` arm would restore `SIG_DFL` and re-raise, and the
+            // kernel would then stop or continue the whole process, which
+            // PawPrint does not model. No signal the BCL can register gets
+            // here — the ones with these defaults either have an explicit arm
+            // or are SIGSTOP, which `EnablePosixSignalHandling` refuses — so
+            // this is a guest hand-rolling the P/Invoke, and it is refused
+            // rather than answered with an invented continuation.
+            failwith
+                $"%s{operation}: signo %d{signo} (%O{signal} under the %O{numbering} numbering) reaches the shim's default arm, which would restore the kernel's disposition and re-raise it; the kernel would then stop or continue the process, which PawPrint does not model. Only a guest bypassing PosixSignalRegistration can reach this."
+        | DefaultDisposition.Ignore
+        | DefaultDisposition.Terminate ->
+            // `RestoreSignalHandler`, then `kill(g_pid, signalCode)`. For a
+            // signal the kernel discards (Darwin's SIGIO and SIGINFO) the
+            // process carries on, with no native handler for the signal any
+            // more; `g_hasPosixSignalRegistrations` stays set, but it is only
+            // read for a signal the native handler has written to the pipe,
+            // and the handler is gone. An instance the native handler wrote
+            // before the restore is still in the pipe, and still reaches the
+            // callback.
+            //
+            // `sigaction` refuses the restore for SIGKILL, SIGSTOP and glibc's
+            // 32 and 33, which the shim does not check: it re-raises the signal
+            // under whatever disposition it has.
+            let restored =
+                if Signal.isUncatchableUnder numbering signal then
+                    state
+                else
+                    state.MapKernel (fun kernel ->
+                        { kernel with
+                            Process =
+                                { kernel.Process with
+                                    Signals =
+                                        PosixSignalShim.restoreHandler
+                                            numbering
+                                            signal
+                                            kernel.Signals
+                                            kernel.PosixSignalShim
+                                }
+                        }
+                    )
+
+            match SignalState.disposition signal restored.Kernel.Signals with
+            | SignalDisposition.Catch handler ->
+                // Linux's 33, whose handler is glibc's own.
+                failwith
+                    $"%s{operation}: re-raising %O{signal} under the %O{numbering} numbering would run its handler (%O{handler}), native code PawPrint does not model."
+            | SignalDisposition.Default
+            | SignalDisposition.Ignore -> ()
+
+            let system = EmulatedKernel.unix restored.Kernel
+
+            match UnixSignal.kill (ProcessId.toInt32 (UnixSystem.processId system)) signo system with
+            | Ok (Ok (KillOutcome.ProcessContinues after)) ->
+                NonCanceledPosixSignal.Continues (restored.MapKernel (EmulatedKernel.withUnix after))
+            | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
+                match ended.Termination with
+                | ProcessTermination.Signaled (killedBy, coreDumped) ->
+                    NonCanceledPosixSignal.Terminated (restored, killedBy, coreDumped)
+                | ProcessTermination.Exited _ ->
+                    failwith
+                        $"%s{operation}: re-raising %O{signal} ended the process with an exit status (%O{ended.Termination}), which only an exit can"
+            | other ->
+                failwith
+                    $"%s{operation}: re-raising %O{signal} under the %O{numbering} numbering at its default did not terminate or discard it: %O{other}"
+
+    /// The signal half of `SystemNative_InitializeTerminalAndSignalHandling`,
+    /// issued by `thread`: on the first call, `InitializeSignalHandlingCore`
+    /// makes the signal pipe with `pipe()` (`O_CLOEXEC`, blocking), starts the
+    /// dispatcher, and saves the console signals' dispositions (see
+    /// `PosixSignalShim.saveConsoleSignals`). Every later call finds it done
+    /// and changes nothing.
+    ///
+    /// The pipe takes the two lowest free descriptors, read end first, as any
+    /// pipe does, so every descriptor the guest is handed afterwards is two
+    /// higher than it would have been. `Error` is the errno the pipe failed
+    /// with, when no pipe or dispatcher was made.
+    let initializeSignalHandling
+        (operation : string)
+        (thread : ThreadId)
+        (state : IlMachineState)
+        : Result<IlMachineState, UnixError>
+        =
+        if PosixSignalShim.isInitialized state.Kernel.PosixSignalShim then
+            Ok state
+        else
+
+        // Measured: in a real .NET 10 process, registering the first
+        // PosixSignalRegistration took exactly the two lowest free
+        // descriptors, a pipe whose read end is the lower, O_RDONLY and O_WRONLY,
+        // both FD_CLOEXEC and neither O_NONBLOCK, on Darwin 27.0.0 (.NET 10.0.7)
+        // and Linux in a container (.NET 10.0.11); the next descriptor opened
+        // was two higher than before
+        // (docs/plans/2026-08-23-posix-kernel-extraction/signal-pipe-descriptors.cs).
+        let flags =
+            match PipeFlagsPal.decode state.Kernel.UnixPlatform PipeFlagsPal.CloseOnExec with
+            | Some flags -> flags
+            | None ->
+                failwith
+                    $"%s{operation}: PipeFlagsPal refuses PAL_O_CLOEXEC, which is the one flag SystemNative_Pipe admits (this is a bug in PipeFlagsPal)."
+
+        match UnixPipe.pipe2 flags UserBuffer.Mapped (EmulatedKernel.unix state.Kernel) with
+        | Error refusal ->
+            failwith
+                $"%s{operation}: the kernel will not make System.Native's signal pipe: %s{Pipe2Refusal.describe refusal}"
+        // `pipe2` leaves the system as it was when it fails.
+        | Ok (Pipe2Answer.Failed error, _) -> Error error
+        | Ok (Pipe2Answer.Created (readFd, writeFd), system) ->
+
+        let state, dispatcher =
+            withAnswered system state |> IlMachineState.allocateParkedThread thread
+
+        state.MapKernel (fun kernel ->
+            let numbering = SimulatedUnixPlatform.signalNumbering kernel.UnixPlatform
+
+            { kernel with
+                PosixSignalShim =
+                    kernel.PosixSignalShim
+                    |> PosixSignalShim.saveConsoleSignals numbering kernel.Signals
+                    |> PosixSignalShim.markInitialized
+                        dispatcher
+                        {
+                            ReadEnd = readFd
+                            WriteEnd = writeFd
+                        }
+            }
+        )
+        |> Ok
 
     /// The client's half of a refused `close`: which entry point asked, which
     /// descriptor it named, and what PawPrint would have to build to lift the
@@ -451,7 +610,8 @@ module NativeSystemNative =
             | NativeIntSource.LowLevelMonitorPtr _
             | NativeIntSource.WaitHandlePtr _
             | NativeIntSource.EvpMdPtr _
-            | NativeIntSource.EvpMdCtxPtr _ -> BufferPointer.Symbolic (operation, argName, arg)
+            | NativeIntSource.EvpMdCtxPtr _
+            | NativeIntSource.AssemblyBinderPtr _ -> BufferPointer.Symbolic (operation, argName, arg)
             // Not an address at all, but classification must stay total: an
             // entry point that never inspects its buffer has to keep answering,
             // so the refusal waits until something actually needs the address.
@@ -6106,39 +6266,24 @@ module NativeSystemNative =
         | Some "SystemNative_InitializeTerminalAndSignalHandling",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
-            // The real native side configures the controlling terminal, sets
-            // up a self-pipe, and installs a dedicated signal-dispatch worker
-            // thread (via `pthread_create(..., SignalHandlerLoop, ...)`).
-            // PawPrint has no terminal but mirrors the dedicated-thread shape:
-            // on first init we allocate a fresh `ThreadId` for the
-            // signal dispatcher and park it (status `ThreadStatus.Parked`),
-            // recording its id in `PosixSignalShim`. `SignalDispatch` wakes
-            // that thread out of `Parked` to invoke the managed callback.
-            // The call is idempotent: a second invocation preserves the
-            // already-allocated dispatcher (BCL initializers may run more
-            // than once across the surface). Real native code returns 0 on
-            // setup failure (e.g. EBADF from tcgetattr on a headless
-            // process); PawPrint always reports success because there is no
-            // underlying syscall that could fail.
-            let state =
-                if PosixSignalShim.isInitialized state.Kernel.PosixSignalShim then
-                    state
-                else
-                    let state, dispatcher = IlMachineState.allocateParkedThread ctx.Thread state
+            // The real native side configures the controlling terminal, makes
+            // its signal pipe, and starts a dedicated signal-dispatch thread
+            // (`pthread_create(..., SignalHandlerLoop, ...)`). PawPrint has no
+            // terminal; the pipe is a real pipe in the kernel model, and the
+            // dispatcher a parked thread that `SignalDispatch` wakes when the
+            // pipe has a signal in it. The call is idempotent: once it has
+            // succeeded, a later one changes nothing, as the BCL's several
+            // initialisers rely on. It answers 0, with errno set, if the pipe
+            // cannot be made.
+            let operation = "SystemNative_InitializeTerminalAndSignalHandling"
 
-                    state.MapKernel (fun kernel ->
-                        let numbering = SimulatedUnixPlatform.signalNumbering kernel.UnixPlatform
-
-                        { kernel with
-                            PosixSignalShim =
-                                kernel.PosixSignalShim
-                                |> PosixSignalShim.saveConsoleSignals numbering kernel.Signals
-                                |> PosixSignalShim.markInitialized dispatcher
-                        }
-                    )
+            let state, result =
+                match initializeSignalHandling operation ctx.Thread state with
+                | Ok state -> state, 1
+                | Error error -> withErrnoOnly ctx error state, 0
 
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) ctx.Thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_GetPlatformSignalNumber",
@@ -6164,12 +6309,13 @@ module NativeSystemNative =
         | Some "SystemNative_EnablePosixSignalHandling",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
-            // `InstallSignalHandler`, then the per-signo registration bit.
-            // The handler dictionary itself lives on the simulated managed
-            // heap (maintained by `PosixSignalRegistration`'s
-            // `s_registrations`); this arm installs System.Native's handler
-            // in the kernel's disposition table, saving what it replaces, or
-            // leaves an ignored signal ignored, as the shim does.
+            // `InstallSignalHandler`, then the per-signo registration bit
+            // (`PosixSignalShim.enable`). The handler dictionary itself lives
+            // on the simulated managed heap (maintained by
+            // `PosixSignalRegistration`'s `s_registrations`); this arm installs
+            // System.Native's handler in the kernel's disposition table,
+            // saving what it replaces, or leaves an ignored signal ignored, as
+            // the shim does.
             let operation = "SystemNative_EnablePosixSignalHandling"
             let signo = NativeCall.int32Argument operation instruction.Arguments.[0]
             let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
@@ -6197,7 +6343,7 @@ module NativeSystemNative =
             | ValueSome signal ->
                 state.MapKernel (fun kernel ->
                     let signals, shim =
-                        PosixSignalShim.installHandler numbering signal kernel.Signals kernel.PosixSignalShim
+                        PosixSignalShim.enable numbering signal kernel.Signals kernel.PosixSignalShim
 
                     { kernel with
                         Process =
@@ -6246,134 +6392,19 @@ module NativeSystemNative =
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
             // The BCL's managed `OnPosixSignal` calls this from a
-            // thread-pool worker after all registered handlers have run
-            // and none called `PosixSignalContext.Cancel = true`. Real
-            // native code has an explicit no-op arm for seven signals
-            // (SIGCONT, SIGTSTP, SIGTTIN, SIGTTOU, SIGCHLD, SIGURG,
-            // SIGWINCH; see `PosixSignalPal.handledWithoutRestoring`). Its
-            // `default:` arm does nothing either if the disposition it saved
-            // when it installed its handler was a handler (which its own
-            // handler has already run, unless the signal is SIGINT, SIGQUIT
-            // or SIGTERM) or `SIG_IGN`. Otherwise it restores that saved
-            // disposition and re-raises the signal with `kill(2)`, so the
-            // process gets the kernel's default: this arm sends it through
-            // the kernel model as a signal the process sends itself.
-            //
-            // Which signal a signo names, and so which arm it takes, is
-            // read under the configured platform's numbering: 29 is SIGIO
-            // on Linux and terminates, and SIGINFO on Darwin and is
-            // discarded.
+            // thread-pool worker after all registered handlers have run and
+            // none called `PosixSignalContext.Cancel = true`.
             let operation = "SystemNative_HandleNonCanceledPosixSignal"
             let signo = NativeCall.int32Argument operation instruction.Arguments.[0]
-            let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
 
-            match signalWithinShimRange operation numbering signo with
-            | ValueNone ->
-                // Darwin's 32. The shim's `default:` branch restores a
-                // handler that was never installed and calls
-                // `kill(g_pid, 32)`; the kernel refuses both with EINVAL,
-                // the shim checks neither, and the process carries on with
-                // that errno — which a guest hand-rolling the P/Invoke can
-                // read back.
-                withErrnoOnly ctx UnixError.EINVAL state
-                |> NativeHandlerResult.completed
+            match handleNonCanceledPosixSignal operation signo state with
+            | NonCanceledPosixSignal.Continues state -> NativeHandlerResult.completed state |> Some
+            | NonCanceledPosixSignal.ContinuesWithErrno (state, error) ->
+                withErrnoOnly ctx error state |> NativeHandlerResult.completed |> Some
+            | NonCanceledPosixSignal.Terminated (state, signal, coreDumped) ->
+                ExecutionResult.SignalTerminated (state, signal, coreDumped)
+                |> NativeHandlerResult.ofExecutionResult
                 |> Some
-            | ValueSome signal when PosixSignalPal.handledWithoutRestoring numbering signal ->
-                // Nothing to do: the runtime cannot stop or continue
-                // itself, and the ignored ones are literally no-ops (the
-                // terminal re-initialisation on SIGCONT is not relevant to
-                // PawPrint, which has no terminal). The shim's handler
-                // stays installed.
-                NativeHandlerResult.completed state |> Some
-            | ValueSome signal ->
-
-            match PosixSignalShim.original numbering signal state.Kernel.PosixSignalShim with
-            | SignalDisposition.Catch _ when not (PosixSignalShim.isCancelableTermination numbering signal) ->
-                // The shim's handler ran the saved handler already.
-                NativeHandlerResult.completed state |> Some
-            | SignalDisposition.Catch saved ->
-                // SIGINT, SIGQUIT or SIGTERM, restored to a handler the
-                // shim did not run: that handler would run on the re-raise.
-                // PawPrint's startup table holds none for these three, and
-                // nothing else installs one.
-                failwith
-                    $"%s{operation}: %O{signal} under the %O{numbering} numbering would be restored to %O{saved} and re-raised, running native code PawPrint does not model."
-            // The shim returns early for a saved SIG_IGN ("Original handler
-            // doesn't do anything"). Restoring the ignore and re-raising the
-            // signal, as below, discards it, which comes to the same thing.
-            | SignalDisposition.Ignore
-            | SignalDisposition.Default ->
-
-            match Signal.defaultDispositionUnder numbering signal with
-            | DefaultDisposition.Stop
-            | DefaultDisposition.Continue ->
-                // The `default:` arm would restore `SIG_DFL` and
-                // re-raise, and the kernel would then stop or continue
-                // the whole process, which PawPrint does not model. No
-                // signal the BCL can register gets here — the ones
-                // with these defaults either have an explicit arm or
-                // are SIGSTOP, which `EnablePosixSignalHandling`
-                // refuses — so this is a guest hand-rolling the
-                // P/Invoke, and it is refused rather than answered
-                // with an invented continuation.
-                failwith
-                    $"%s{operation}: signo %d{signo} (%O{signal} under the %O{numbering} numbering) reaches the shim's default arm, which would restore the kernel's disposition and re-raise it; the kernel would then stop or continue the process, which PawPrint does not model. Only a guest bypassing PosixSignalRegistration can reach this."
-            | DefaultDisposition.Ignore
-            | DefaultDisposition.Terminate ->
-                // `RestoreSignalHandler`, then `kill(g_pid, signalCode)`.
-                // For a signal the kernel discards (Darwin's SIGIO and
-                // SIGINFO) the process carries on, with no native handler
-                // for the signal any more, so nothing the BCL still records
-                // for it can be reached; `g_hasPosixSignalRegistrations`
-                // stays set there, but it is only read on a delivery that
-                // can no longer happen, and a later
-                // `EnablePosixSignalHandling` — which the BCL sends only
-                // once every token is unregistered — reinstalls the
-                // handler.
-                //
-                // An instance still pending here is one a real process's
-                // native handler has already passed to the dispatcher, and
-                // since the registration bit stays set, it still reaches the
-                // callback; `restoreSignalHandler` refuses to discard it.
-                //
-                // `sigaction` refuses the restore for SIGKILL, SIGSTOP and
-                // glibc's 32 and 33, which the shim does not check: it
-                // re-raises the signal under whatever disposition it has.
-                let restored =
-                    if Signal.isUncatchableUnder numbering signal then
-                        state
-                    else
-                        restoreSignalHandler operation numbering signal state
-
-                match SignalState.disposition signal restored.Kernel.Signals with
-                | SignalDisposition.Catch handler ->
-                    // Linux's 33, whose handler is glibc's own.
-                    failwith
-                        $"%s{operation}: re-raising %O{signal} under the %O{numbering} numbering would run its handler (%O{handler}), native code PawPrint does not model."
-                | SignalDisposition.Default
-                | SignalDisposition.Ignore -> ()
-
-                let system = EmulatedKernel.unix restored.Kernel
-
-                match UnixSignal.kill (ProcessId.toInt32 (UnixSystem.processId system)) signo system with
-                | Ok (Ok (KillOutcome.ProcessContinues after)) ->
-                    restored.MapKernel (EmulatedKernel.withUnix after)
-                    |> NativeHandlerResult.completed
-                    |> Some
-                | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
-                    match ended.Termination with
-                    | ProcessTermination.Signaled (killedBy, coreDumped) ->
-                        // The machine as it stood when the signal was re-raised, with
-                        // the handler restored.
-                        ExecutionResult.SignalTerminated (restored, killedBy, coreDumped)
-                        |> NativeHandlerResult.ofExecutionResult
-                        |> Some
-                    | ProcessTermination.Exited _ ->
-                        failwith
-                            $"%s{operation}: re-raising %O{signal} ended the process with an exit status (%O{ended.Termination}), which only an exit can"
-                | other ->
-                    failwith
-                        $"%s{operation}: re-raising %O{signal} under the %O{numbering} numbering at its default did not terminate or discard it: %O{other}"
         | Some "SystemNative_DisablePosixSignalHandling",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
@@ -6405,7 +6436,18 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
             | ValueSome signal ->
-                restoreSignalHandler operation numbering signal state
+                state.MapKernel (fun kernel ->
+                    let signals, shim =
+                        PosixSignalShim.disable numbering signal kernel.Signals kernel.PosixSignalShim
+
+                    { kernel with
+                        Process =
+                            { kernel.Process with
+                                Signals = signals
+                            }
+                        PosixSignalShim = shim
+                    }
+                )
                 |> NativeHandlerResult.completed
                 |> Some
         | _ -> None

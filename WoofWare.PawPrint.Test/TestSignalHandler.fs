@@ -82,6 +82,13 @@ module TestSignalHandler =
 
         state, method
 
+    /// A signal pipe for a shim that is never asked to read or write it.
+    let private somePipe : SignalPipe =
+        {
+            ReadEnd = 3
+            WriteEnd = 4
+        }
+
     [<Test>]
     let ``the initial shim has no handler installed`` () : unit =
         PosixSignalShim.initial |> PosixSignalShim.handler |> shouldEqual None
@@ -145,12 +152,12 @@ module TestSignalHandler =
 
         let stateA =
             PosixSignalShim.initial
-            |> PosixSignalShim.markInitialized (ThreadId 42)
+            |> PosixSignalShim.markInitialized (ThreadId 42) somePipe
             |> PosixSignalShim.setHandler (SignalHandler.ofMethodInfo methodA)
 
         let stateB =
             PosixSignalShim.initial
-            |> PosixSignalShim.markInitialized (ThreadId 42)
+            |> PosixSignalShim.markInitialized (ThreadId 42) somePipe
             |> PosixSignalShim.setHandler (SignalHandler.ofMethodInfo methodB)
 
         stateA |> shouldEqual stateB
@@ -219,7 +226,7 @@ module TestSignalHandler =
         let property (ops : Choice<int, int> list) : unit =
             let apply (shim : PosixSignalShim) (op : Choice<int, int>) : PosixSignalShim =
                 match op with
-                | Choice1Of2 thread -> PosixSignalShim.markInitialized (ThreadId thread) shim
+                | Choice1Of2 thread -> PosixSignalShim.markInitialized (ThreadId thread) somePipe shim
                 | Choice2Of2 i -> PosixSignalShim.setHandler (handlerAt i) shim
 
             let shim = List.fold apply PosixSignalShim.initial ops
@@ -249,7 +256,7 @@ module TestSignalHandler =
                 PosixSignalShim.initial
                 |> (
                     match expectedDispatcher with
-                    | Some dispatcher -> PosixSignalShim.markInitialized dispatcher
+                    | Some dispatcher -> PosixSignalShim.markInitialized dispatcher somePipe
                     | None -> id
                 )
                 |> (
