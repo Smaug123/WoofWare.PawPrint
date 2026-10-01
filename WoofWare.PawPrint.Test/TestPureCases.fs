@@ -928,6 +928,94 @@ public class Program
         exn.Message |> shouldContainText "StackTrace_GetStackFramesInternal"
         exn.Message |> shouldContainText "System.__Canon"
 
+    /// Both canonicalising entry points, reached by private reflection with an open construction
+    /// `Holder<V[]>` (the base type of `D<V>`). That construction's canonical form is
+    /// `Holder<System.__Canon>`, as the real runtime shows first, so neither may answer with the type
+    /// itself. (Not every open construction canonicalises away: `Holder<V>`, over another type's
+    /// parameter, is its own canonical form. PawPrint does not classify open arguments, so it
+    /// refuses every open construction.)
+    [<TestCase("StripMethodInstantiation")>]
+    [<TestCase("GetMethodFromCanonical")>]
+    let ``Canonicalising entry points refuse an open construction with a shared argument`` (entryPoint : string) =
+        let source =
+            """
+using System;
+using System.Reflection;
+
+public class Holder<T>
+{
+    internal static U Pair<U>(T t, U u) => u;
+}
+
+public class D<V> : Holder<V[]> { }
+
+public class Program
+{
+    public static int Main(string[] args)
+    {
+        const BindingFlags nonPublicStatic = BindingFlags.NonPublic | BindingFlags.Static;
+        Type iRuntimeMethodInfo = typeof(RuntimeMethodHandle).Assembly.GetType("System.IRuntimeMethodInfo", true);
+        Type internalHandle = typeof(RuntimeMethodHandle).Assembly.GetType("System.RuntimeMethodHandleInternal", true);
+        Type openConstruction = typeof(D<>).BaseType;
+        Type declaring;
+
+        if ("ENTRY_POINT" == "StripMethodInstantiation")
+        {
+            MethodInfo strip = typeof(RuntimeMethodHandle).GetMethod(
+                "StripMethodInstantiation", nonPublicStatic, null, new[] { iRuntimeMethodInfo }, null);
+            MethodInfo getDeclaringType = typeof(RuntimeMethodHandle).GetMethod(
+                "GetDeclaringType", nonPublicStatic, null, new[] { iRuntimeMethodInfo }, null);
+            MethodInfo bound = openConstruction.GetMethod("Pair", nonPublicStatic).MakeGenericMethod(typeof(int));
+            object stripped = strip.Invoke(null, new object[] { bound });
+            declaring = (Type) getDeclaringType.Invoke(null, new object[] { stripped });
+        }
+        else
+        {
+            MethodInfo fromCanonical = typeof(RuntimeMethodHandle).GetMethod(
+                "GetMethodFromCanonical", nonPublicStatic, null, new[] { internalHandle, typeof(Type).GetType() }, null);
+            MethodInfo getDeclaringType = typeof(RuntimeMethodHandle).GetMethod(
+                "GetDeclaringType", nonPublicStatic, null, new[] { internalHandle }, null);
+            object handle = Activator.CreateInstance(
+                internalHandle, BindingFlags.NonPublic | BindingFlags.Instance, null,
+                new object[] { typeof(Holder<int>).GetMethod("Pair", nonPublicStatic).MethodHandle.Value }, null);
+            object answer = fromCanonical.Invoke(null, new object[] { handle, openConstruction });
+            declaring = (Type) getDeclaringType.Invoke(null, new object[] { answer });
+        }
+
+        if (declaring.GetGenericTypeDefinition() != typeof(Holder<>))
+        {
+            return 1;
+        }
+
+        if (declaring.GetGenericArguments()[0].FullName != "System.__Canon")
+        {
+            return 2;
+        }
+
+        return 0;
+    }
+}
+"""
+                .Replace ("ENTRY_POINT", entryPoint)
+
+        let image = Roslyn.compile [ source ]
+
+        match RealRuntime.executeWithRealRuntime [||] image with
+        | RealRuntimeResult.NormalExit 0 -> ()
+        | other -> failwith $"expected the real runtime to report Holder<System.__Canon>, got %O{other}"
+
+        let exn =
+            Assert.Catch (fun () ->
+                runPawPrintSource
+                    $"%s{entryPoint}OpenConstruction.cs"
+                    source
+                    KernelConfig.Default
+                    (fun _image _result -> ())
+            )
+
+        exn.Message |> shouldContainText $"RuntimeMethodHandle.%s{entryPoint}"
+        exn.Message |> shouldContainText "System.__Canon"
+
     /// `float32` and `float64` are the same type (`F`) on the CLI evaluation stack, but a
     /// `calli` marshals across a method boundary, where their ABI footprints differ. Reading a
     /// `float32` return slot as `float64` yields garbage on CoreCLR rather than the target's
