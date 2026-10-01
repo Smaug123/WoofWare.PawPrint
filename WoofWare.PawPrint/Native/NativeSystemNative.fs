@@ -4956,9 +4956,10 @@ module NativeSystemNative =
             let declaredLength =
                 match ctx.Instruction.NativeLocals with
                 | Some (NativeLocals.AcceptAddressLength declaredLength) -> declaredLength
-                | Some (NativeLocals.PollEntries _) ->
+                | Some (NativeLocals.PollEntries _)
+                | Some NativeLocals.SocketEventWaitLoop ->
                     failwith
-                        $"%s{operation}: thread %O{ctx.Thread}'s accept frame keeps a poll's locals (this is an interpreter bug)."
+                        $"%s{operation}: thread %O{ctx.Thread}'s accept frame keeps another call's locals (this is an interpreter bug)."
                 | None ->
                     BinaryPrimitives.ReadInt32LittleEndian (
                         (readBytesThrough ctx operation lengthCell 4 state).AsSpan ()
@@ -5757,8 +5758,8 @@ module NativeSystemNative =
             // and the inner function is `epoll_wait(port, events, *count, -1)`
             // under epoll or `kevent(port, NULL, 0, events, *count, NULL)` under
             // kqueue — an *infinite* timeout in both cases, with the EINTR retry
-            // in the loop condition, so signal delivery must not wake a thread
-            // parked here.
+            // in the loop condition, so a signal ends a wait only for the loop
+            // to make it again, past the wrapper's screens.
             //
             // The buffer's element type is matched with a wildcard: CoreLib
             // declares it `SocketEvent*` (Interop.SocketEvent.cs), and a guest
@@ -5914,7 +5915,13 @@ module NativeSystemNative =
                 // A signal ended the sleep, and the shim's `epoll_wait` and
                 // `kevent` loops call again after EINTR.
                 | EpollWaitOutcome.Failed UnixError.EINTR ->
-                    callAgainAfterSignal ctx operation Interrupted.Eintr None system state
+                    callAgainAfterSignal
+                        ctx
+                        operation
+                        Interrupted.Eintr
+                        (Some NativeLocals.SocketEventWaitLoop)
+                        system
+                        state
                 | EpollWaitOutcome.Failed error -> failFromSyscall error
                 | EpollWaitOutcome.Answered delivered ->
                     deliver delivered (state.MapKernel (EmulatedKernel.withUnix system))
@@ -5960,7 +5967,13 @@ module NativeSystemNative =
                 let bytes = readBytesThrough ctx operation countCell 4 state
                 BinaryPrimitives.ReadInt32LittleEndian (bytes.AsSpan ())
 
-            if requestedCount < 0 then
+            // A call `WaitForSocketEventsInner`'s loop makes again runs no
+            // screen of the wrapper's: the syscall reads `*count` again, and
+            // answers a negative itself.
+            if
+                requestedCount < 0
+                && ctx.Instruction.NativeLocals <> Some NativeLocals.SocketEventWaitLoop
+            then
                 // EFAULT, which is the wrapper's own choice and neither kernel's:
                 // `epoll_wait` answers EINVAL for a non-positive `maxevents`, and
                 // never sees this value.
@@ -6270,9 +6283,10 @@ module NativeSystemNative =
             // before its loop, whatever the caller's array holds now.
             | Some (NativeLocals.PollEntries entries) ->
                 settle entries (PollEventsPal.pollConverted ctx.Thread entries milliseconds system)
-            | Some (NativeLocals.AcceptAddressLength _) ->
+            | Some (NativeLocals.AcceptAddressLength _)
+            | Some NativeLocals.SocketEventWaitLoop ->
                 failwith
-                    $"%s{operation}: thread %O{ctx.Thread}'s poll frame keeps an accept's locals (this is an interpreter bug)."
+                    $"%s{operation}: thread %O{ctx.Thread}'s poll frame keeps another call's locals (this is an interpreter bug)."
             | None ->
 
             // Decode every entry before answering, exactly as the C fills its

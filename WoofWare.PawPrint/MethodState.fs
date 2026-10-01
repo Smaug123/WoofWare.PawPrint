@@ -144,6 +144,10 @@ type NativeLocals =
     /// `Common_Poll`'s `struct pollfd` array, converted from the caller's `PollEvent`s
     /// before its `poll` loop.
     | PollEntries of WoofWare.PosixKernel.PollEntry list
+    /// `SystemNative_WaitForSocketEvents` is inside `WaitForSocketEventsInner`'s loop,
+    /// past the wrapper's screens, which a call made again does not run: `*count` is
+    /// read again, by the syscall alone.
+    | SocketEventWaitLoop
 
 type MethodReturnState =
     {

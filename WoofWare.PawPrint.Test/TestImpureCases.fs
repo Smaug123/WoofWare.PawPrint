@@ -1715,6 +1715,19 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // A socket event wait a signal interrupts is made again past the
+                // wrapper's screens, so a count rewritten to -1 meanwhile reaches
+                // epoll_wait, which answers EINVAL. Linux only: macOS's kevent
+                // answers a negative count with no events.
+                FileName = "SignalRetrySocketWaitCountLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // A blocked epoll_wait holds its port by file reference:
                 // closing the fd the wait went through, with a dup keeping
                 // the description alive, still delivers when the edge

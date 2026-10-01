@@ -271,8 +271,16 @@ module TestEpollWait =
         let counts =
             Gen.oneof
                 [
-                    Gen.choose (0, 3)
-                    Gen.elements [ 134217727 ; 134217728 ; 178956970 ; 178956971 ; System.Int32.MaxValue ]
+                    Gen.choose (-3, 3)
+                    Gen.elements
+                        [
+                            System.Int32.MinValue
+                            134217727
+                            134217728
+                            178956970
+                            178956971
+                            System.Int32.MaxValue
+                        ]
                 ]
 
         let buffers = Gen.elements [ UserBuffer.Mapped ; wild ]

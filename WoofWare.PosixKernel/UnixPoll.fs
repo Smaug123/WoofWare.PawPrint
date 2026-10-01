@@ -95,7 +95,8 @@ type SocketWaitAdmission =
     ///
     /// The one input on which the flavours disagree about whether the call
     /// blocks at all: measured, `kevent(kq, NULL, 0, evs, 0, NULL)` returns 0
-    /// immediately where `epoll_wait` with `maxevents == 0` is EINVAL.
+    /// immediately, as it does for any negative count, where `epoll_wait` with
+    /// `maxevents <= 0` is EINVAL.
     | NoEvents
     /// The call reaches the port: take up to `maxEvents` events off it, and
     /// sleep if that delivers nothing.
@@ -366,10 +367,7 @@ module UnixPoll =
     /// client needs this only for `kevent(2)`, whose wait this library does not
     /// yet answer as a call of its own.
     ///
-    /// `maxEvents` must not be negative. Neither kernel is ever asked one -- a
-    /// foreign-function layer that reads it out of a caller's cell screens it
-    /// there -- so a caller that has not is asking a question this library has no
-    /// answer for.
+    /// A negative `maxEvents` is answered as 0 is, by both kernels.
     ///
     /// Each ordering is measured, on Linux 6.18.5 and Darwin 25.6.0, rather than
     /// read off the kernel sources: the widely-reproduced `do_epoll_wait` listing
@@ -385,10 +383,6 @@ module UnixPoll =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SocketWaitAdmission, SocketWaitRefusal>
         =
-        if maxEvents < 0 then
-            failwith
-                $"UnixPoll.admitSocketWait: maxEvents %d{maxEvents} is negative, which neither kernel is ever asked -- the layer that reads it out of the caller's cell answers for a negative itself. Screen this in the client (this is a bug in the caller)."
-
         let openFile =
             FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors
 
@@ -404,9 +398,9 @@ module UnixPoll =
             let architecture = SimulatedUnixPlatform.architecture system.Machine.UnixPlatform
 
             // The kernel's predicate is `maxevents <= 0 || maxevents > EP_MAX_EVENTS`.
-            // Zero is the only non-positive value that reaches here, negatives
-            // having been screened by the caller.
-            if maxEvents = 0 || maxEvents > LinuxEpollLimits.maxEvents architecture then
+            // Measured (`epoll-wait.c`, section G): a negative maxevents is
+            // screened exactly as zero is.
+            if maxEvents <= 0 || maxEvents > LinuxEpollLimits.maxEvents architecture then
                 Ok (SocketWaitAdmission.Failed UnixError.EINVAL)
             else
 
@@ -470,7 +464,9 @@ module UnixPoll =
                 Ok (SocketWaitAdmission.Failed UnixError.EBADF)
             | OpenFileTarget.SocketEventPort portState ->
 
-            if maxEvents = 0 then
+            // Measured on 27.0.0 (`kevent-negative-count.c`): a negative
+            // `nevents` returns 0 at once, as zero does, whatever the port holds.
+            if maxEvents <= 0 then
                 Ok SocketWaitAdmission.NoEvents
             else
 
@@ -1191,18 +1187,7 @@ module UnixPoll =
         | SimulatedUnixFlavour.Darwin -> Error (EpollWaitRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin)
         | SimulatedUnixFlavour.Linux ->
 
-        let admission =
-            if maxEvents < 0 then
-                // Measured (`epoll-wait.c`, section G): a negative maxevents is
-                // screened exactly as zero is, EBADF ahead of it and it ahead of
-                // both the buffer and the kind of descriptor.
-                match FileDescriptorRegistry.tryFindId epfd system.Process.FileDescriptors with
-                | None -> Ok (SocketWaitAdmission.Failed UnixError.EBADF)
-                | Some _ -> Ok (SocketWaitAdmission.Failed UnixError.EINVAL)
-            else
-                admitSocketWait epfd maxEvents buffer system
-
-        match admission with
+        match admitSocketWait epfd maxEvents buffer system with
         | Error (SocketWaitRefusal.Buffer refusal) -> Error (EpollWaitRefusal.Buffer refusal)
         | Ok (SocketWaitAdmission.Failed error) -> Ok (EpollWaitOutcome.Failed error, system)
         | Ok SocketWaitAdmission.NoEvents ->
