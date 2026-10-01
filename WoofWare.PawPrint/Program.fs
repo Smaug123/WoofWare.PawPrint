@@ -497,6 +497,14 @@ module Program =
         | WhatWeDid.ThrowingTypeInitializationException ->
             logger.LogTrace "TypeInitializationException dispatched due to failed .cctor."
 
+    /// Where a tick's preamble leaves the program: at the scheduling decision, or ended.
+    [<RequireQualifiedAccess>]
+    type private Advanced =
+        /// The program, ready for the scheduler to pick a thread.
+        | Decide of PreparedProgram
+        /// The run ended between instructions, with this outcome.
+        | Ended of RunOutcome
+
     /// The first half of a scheduler tick: everything that happens before the policy is asked
     /// which thread runs next. Advancing the clocks, firing wait deadlines, letting the signal
     /// dispatcher wake, and jumping the virtual clock forward if nothing is Runnable.
@@ -515,7 +523,10 @@ module Program =
     ///
     /// Not idempotent: it advances `StepCounter` and the virtual clock. Callers hold the
     /// *inter-tick* value if they want to be able to replay the tick.
-    let private advanceToDecision (prepared : PreparedProgram) : PreparedProgram =
+    ///
+    /// Ends the run instead if System.Native's dispatcher, handling a signal between
+    /// instructions, re-raises it at a default that kills the process.
+    let private advanceToDecision (prepared : PreparedProgram) : Advanced =
         // Apply the spurious-wakeup strategies at the current tick, then
         // advance the counter so the next iteration sees a fresh tick.
         // For the default (`Disabled`) strategy each application is a fold
@@ -603,19 +614,23 @@ module Program =
         // scheduler from ever stalling.
         let state = fireExpiredDeadlines state
 
+        // Run System.Native's signal handling before the scheduler picks its
+        // next thread: its native handler writes whatever the kernel delivers
+        // to the leader into the signal pipe, and a Parked dispatcher with a
+        // signal in the pipe reads it and is flipped to Runnable onto the
+        // managed callback, so the scheduler can pick it on the same tick.
+        // Before the syscall wakes, because writing to the pipe and reading
+        // from it change what a syscall parked on it is waiting for.
+        match SignalDispatch.poll prepared.BaseClassTypes state with
+        | SignalPoll.ProcessKilled (state, signal, coreDumped) ->
+            Advanced.Ended (RunOutcome.SignalTerminated (state, signal, coreDumped))
+        | SignalPoll.Continues state ->
+
         // Wake anything parked in a syscall whose wake condition now holds — a
         // port that has become deliverable, a lock that has become available.
         // Before the jump-to-deadline fallback below, so neither is mistaken for
         // quiescence.
         let state = fireSyscallWakes (syscallWaiters state) state
-
-        // Drive the signal-dispatcher state machine before the scheduler
-        // picks its next thread. If a pending signal is deliverable and
-        // the dispatcher is currently Parked, this flips it to Runnable
-        // and installs a handler-invocation bottom frame; the scheduler
-        // then picks the dispatcher up on the same tick. If nothing is
-        // deliverable, this is a no-op and the next tick re-polls.
-        let state = SignalDispatch.trySpawnHandler prepared.BaseClassTypes state
 
         // Jump-to-deadline fallback: if no thread is Runnable but at
         // least one is parked with a finite-timeout wait outstanding,
@@ -677,6 +692,7 @@ module Program =
         { prepared with
             State = advanceUntilRunnableOrQuiescent state
         }
+        |> Advanced.Decide
 
     /// True iff the process waits for `thread` before it can exit: what CoreCLR's
     /// `ThreadStore::OtherThreadsComplete` counts, a foreground thread that has been started and
@@ -866,7 +882,15 @@ module Program =
                     // and let the loop continue: this thread isn't *really*
                     // terminated, the dispatcher is just between handler
                     // invocations.
-                    let state = SignalDispatch.reParkAfterHandler terminatingThread state
+                    match SignalDispatch.reParkAfterHandler terminatingThread state with
+                    | SignalPoll.ProcessKilled (state, signal, coreDumped) ->
+                        // The callback reported the signal unhandled, and the loop's
+                        // `SystemNative_HandleNonCanceledPosixSignal` re-raised it at a
+                        // default that kills the process.
+                        Tick.Stepped (
+                            ProgramStepOutcome.Completed (RunOutcome.SignalTerminated (state, signal, coreDumped))
+                        )
+                    | SignalPoll.Continues state ->
 
                     // The dispatcher retired a step and this branch reports it as
                     // `WhatWeDid.Executed`, so give it that outcome's consequences — waking
@@ -1001,7 +1025,13 @@ module Program =
 
     /// One scheduler tick, inside `annotating`: `stepDecided` after `advanceToDecision`.
     let private stepTick (loggerFactory : ILoggerFactory) (logger : ILogger) (prepared : PreparedProgram) : Tick =
-        annotating prepared.State (fun () -> stepDecided loggerFactory logger (advanceToDecision prepared))
+        annotating
+            prepared.State
+            (fun () ->
+                match advanceToDecision prepared with
+                | Advanced.Decide advanced -> stepDecided loggerFactory logger advanced
+                | Advanced.Ended outcome -> Tick.Stepped (ProgramStepOutcome.Completed outcome)
+            )
 
     /// Advance the machine by one scheduler tick.
     ///
@@ -1810,7 +1840,9 @@ module Program =
         (prepared : PreparedProgram)
         : PrefixOutcome
         =
-        let advanced = annotating prepared.State (fun () -> advanceToDecision prepared)
+        match annotating prepared.State (fun () -> advanceToDecision prepared) with
+        | Advanced.Ended outcome -> PrefixOutcome.NeverForked outcome
+        | Advanced.Decide advanced ->
 
         match Scheduler.tryContenders advanced.State with
         | Some contenders ->
@@ -1859,10 +1891,13 @@ module Program =
             // preamble runs twice per startup tick here, once for the probe and once inside
             // `stepStartup`; that is a handful of map operations against `executeOneStep`, and it
             // is paid once for a whole sweep rather than once per seed.
-            let probed =
-                annotating startup.Prepared.State (fun () -> advanceToDecision startup.Prepared)
+            let contenders =
+                match annotating startup.Prepared.State (fun () -> advanceToDecision startup.Prepared) with
+                | Advanced.Decide probed -> Scheduler.tryContenders probed.State
+                // `stepStartup` runs the same preamble, and ends the same way.
+                | Advanced.Ended _ -> None
 
-            match Scheduler.tryContenders probed.State with
+            match contenders with
             | Some contenders -> PrefixOutcome.ForkedDuringStartup contenders
             | None ->
 

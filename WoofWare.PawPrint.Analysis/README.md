@@ -5,10 +5,17 @@ Questions about a .NET method answered without running it.
 The first is which exceptions can escape it. `EscapeAnalysis.escapes` reads a method's IL and that
 of everything it calls, following calls into whatever assemblies they live in, and answers with the
 exception types it can name and whether anything it could not see through (a virtual call, a native
-method, a `rethrow`) may add more:
+method) may add more:
 
 * an exception a method constructs and throws is named exactly; one returned by a helper and thrown
   is named as "this type or a subtype";
+* `throw null` raises the `NullReferenceException` that throwing a null does, and nothing else;
+* a `rethrow` re-raises what its `catch` clause caught: what the clause's protected block raises and
+  no clause tried before it stops, of the clause's type. Something the analysis cannot name, caught
+  by a clause for one exception class, is re-raised as "that class or a subclass", where the clause
+  sees only exceptions: in an assembly that wraps non-exception throws, and a class that
+  `RuntimeWrappedException` does not derive from. A `filter`'s handler re-raises whatever reached its
+  filter;
 * the faults the runtime raises by itself come from `WoofWare.PawPrint.Semantics`' `OpcodeFaults`,
   the same table the PawPrint interpreter raises them through;
 * an `[Intrinsic]` is read as what CoreCLR runs for it (`IntrinsicBody`): the IL its VM substitutes

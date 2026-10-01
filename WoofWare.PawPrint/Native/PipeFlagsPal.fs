@@ -13,9 +13,9 @@ open WoofWare.PosixKernel
 module PipeFlagsPal =
 
     /// `PAL_O_CLOEXEC` (`pal_io.h`), which CoreLib's `Interop.Sys.PipeFlags`
-    /// restates.
+    /// restates, and which System.Native's own signal initialisation passes.
     [<Literal>]
-    let private PalCloseOnExec = 0x0010
+    let CloseOnExec = 0x0010
 
     /// What the shim hands `pipe2` for this flags argument, in `platform`'s own
     /// `<fcntl.h>` numbering, or `None` for the `default` arm, which answers
@@ -33,5 +33,5 @@ module PipeFlagsPal =
 
         match flags with
         | 0 -> Some 0
-        | PalCloseOnExec -> Some closeOnExec
+        | CloseOnExec -> Some closeOnExec
         | _ -> None
