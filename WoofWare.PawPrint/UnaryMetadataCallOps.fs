@@ -429,25 +429,8 @@ module internal UnaryMetadataCallOps =
             | false, _ -> None
         | _ -> None
 
-    /// Resolve a `constrained.`-prefixed reference to a static abstract interface member down to
-    /// the implementation the constrained type supplies, returning it alongside its declaring
-    /// type's handle.
-    ///
-    /// Shared by `constrained. call` and `constrained. ldftn`, which pick their target the same
-    /// way: CoreCLR routes both through `getCallInfo` with the constrained token, and the switch
-    /// there is `pConstrainedResolvedToken != NULL && pMD->IsInterface() && pMD->IsStatic()`
-    /// (`jitinterface.cpp`, `getCallInfo`). That test is computed before anything branches on
-    /// `CORINFO_CALLINFO_LDFTN`, so the *method chosen* cannot differ between the two opcodes;
-    /// what differs afterwards is only what the caller does with it.
-    ///
-    /// `opName` names the prefixed instruction (`constrained.call` / `Ldftn`), so a failure says
-    /// which one hit it rather than always blaming `call`.
-    ///
-    /// The instance-receiver forms of the prefix (`CORINFO_DEREF_THIS` / `CORINFO_BOX_THIS`) are
-    /// not implemented: Roslyn emits `constrained.` before `ldftn` only for static
-    /// abstract interface members, and before `call`/`callvirt` the instance cases are handled by
-    /// `executeCallvirt`'s own transformation. Anything else fails loudly here rather than being
-    /// guessed at.
+    /// `ConcreteVirtualDispatch.resolveConstrainedStaticInterfaceMethod` against the machine's type
+    /// system.
     let resolveConstrainedStaticInterfaceMethod
         (opName : string)
         (ctx : UnaryMetadataIlOpContext)
@@ -459,66 +442,18 @@ module internal UnaryMetadataCallOps =
           WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
           ConcreteTypeHandle
         =
-        let methodDeclAssy =
-            state.TypeSystem._LoadedAssemblies.ByDefinitionName methodToCall.DeclaringAssemblyFullName
-
-        let methodDeclType =
-            methodDeclAssy.TypeDefs.[methodToCall.RequiredDeclaringType.Definition.Get]
-
-        if not methodToCall.IsStatic || not methodDeclType.IsInterface then
-            failwith
-                $"%s{opName}: expected a static interface method, got %s{MethodOwner.describe methodToCall.Owner}::%s{methodToCall.Name}"
-
-        match constrainedTypeHandle with
-        | ConcreteTypeHandle.Concrete _ ->
-            // Registration is checked eagerly, and separately from rendering: an unregistered
-            // handle would otherwise surface as a confusing resolution failure below rather than
-            // as the bookkeeping error it is.
-            if (AllConcreteTypes.lookup constrainedTypeHandle state.TypeSystem.ConcreteTypes).IsNone then
-                failwith $"%s{opName}: constrained type handle %O{constrainedTypeHandle} is not registered"
-        | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _
-        | ConcreteTypeHandle.FunctionPointer _ ->
-            failwith
-                $"%s{opName}: static interface dispatch for non-concrete constrained type %O{constrainedTypeHandle} is not implemented"
-
-        let state, implementation =
-            IlMachineStateExecution.tryResolveVirtualImplementation
+        let typeSystem, implementation, declaringTypeHandle =
+            ConcreteVirtualDispatch.resolveConstrainedStaticInterfaceMethod
                 ctx.LoggerFactory
+                state.DotnetRuntimeDirs
                 ctx.BaseClassTypes
-                ctx.Thread
-                concretizedMethod.Generics
-                concretizedMethod
+                opName
                 constrainedTypeHandle
-                true
-                state
+                methodToCall
+                concretizedMethod
+                state.TypeSystem
 
-        match implementation with
-        | None ->
-            let constrained =
-                AllConcreteTypes.describe
-                    state.TypeSystem._LoadedAssemblies
-                    state.TypeSystem.ConcreteTypes
-                    constrainedTypeHandle
-
-            failwith $"%s{opName}: could not find static implementation of %s{methodToCall.Name} on %s{constrained}"
-        | Some implementation when not implementation.IsStatic ->
-            failwith
-                $"%s{opName}: resolved non-static implementation %s{MethodOwner.describe implementation.Owner}::%s{implementation.Name}"
-        | Some implementation ->
-            let declaringTypeHandle =
-                AllConcreteTypes.findExistingConcreteType
-                    state.TypeSystem.ConcreteTypes
-                    implementation.RequiredDeclaringType.Identity
-                    implementation.DeclaringTypeGenerics
-                |> Option.defaultWith (fun () ->
-                    failwith
-                        $"%s{opName}: resolved implementation declaring type %s{MethodOwner.describe implementation.Owner} is not registered"
-                )
-
-            state, implementation, declaringTypeHandle
+        state.WithTypeSystem typeSystem, implementation, declaringTypeHandle
 
     /// Refuse a `call`/`callvirt` whose arguments violate ECMA-335 III.3.19: each argument must be
     /// assignable to its declared parameter type. Returns `state` unchanged when every argument

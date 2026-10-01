@@ -39,7 +39,8 @@ What lives here:
 * `ConcreteVirtualDispatch` — which method a virtual or interface call runs on a receiver of a
   known concrete type, as CoreCLR's `MethodTable::FindDispatchImpl` decides it: the dispatch table
   and MethodImpls, the dispatch map, default interface bodies, variance, and the methods the
-  runtime supplies for an SZ array's implicit interfaces.
+  runtime supplies for an SZ array's implicit interfaces; and which implementation of a static
+  abstract interface member a `constrained.` type supplies.
 * `TypeAssignability` — whether a value of one closed type can be stored where another is
   expected, as CoreCLR's `CanCastTo` decides it: the base chain, interfaces, variance, and the
   array rules.
