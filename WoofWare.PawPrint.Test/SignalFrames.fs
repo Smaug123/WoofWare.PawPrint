@@ -22,7 +22,9 @@ module SignalFrames =
         let before = SignalState.disposition carrier kernel.Process.Signals
 
         let action =
-            { SignalCatch.ofHandler NativeSignalHandler.CoreClrPal with
+            // A handler the poll refuses to run, so a test that lets the
+            // frame's handler run by mistake fails rather than passing.
+            { SignalCatch.ofHandler NativeSignalHandler.CoreClrPalActivation with
                 Mask = mask
                 NoDefer = true
             }

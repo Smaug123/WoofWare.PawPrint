@@ -29,7 +29,9 @@ module TestEmulatedKernelAbort =
             // The runtime starts with SIGABRT caught by its own handler, which
             // `PROCAbort` takes away before it aborts.
             match SignalState.disposition Signal.SIGABRT kernel.Process.Signals with
-            | SignalDisposition.Catch action -> action.Handler |> shouldEqual NativeSignalHandler.CoreClrPal
+            | SignalDisposition.Catch action ->
+                action.Handler
+                |> shouldEqual (NativeSignalHandler.CoreClrPalFault PalReplacedDisposition.Default)
             | other -> failwith $"expected the runtime's handler, got %A{other}"
 
             EmulatedKernel.abort thread kernel

@@ -8,7 +8,7 @@ open WoofWare.PosixKernel
 ///
 /// Not every entry lasts: the runtime's handlers for the hardware-fault
 /// signals restore the default the first time they are sent one, so a process
-/// survives only the first; see `restoresDefaultWhenSent`.
+/// survives only the first; see `NativeSignalHandler.CoreClrPalFault`.
 ///
 /// A PawPrint process starts with this table, over whatever its launcher left
 /// ignored. `TestStartupSignalDispositions` checks the host's column against
@@ -101,21 +101,19 @@ module StartupSignalDispositions =
     // 2026-09-26 on the same Darwin and Linux aarch64 machines, launching the
     // probe from `bash -c "trap '' <signo>; exec ..."`.
 
-    /// The signals the runtime catches whose handler, sent the signal,
-    /// restores the default it replaced.
-    let private runtimeCaughtRestoring (numbering : SignalNumbering) : int list =
+    /// The hardware-fault signals, which the runtime catches with
+    /// `NativeSignalHandler.CoreClrPalFault`.
+    let private runtimeFaultSignos (numbering : SignalNumbering) : int list =
         match numbering with
         | SignalNumbering.Linux -> [ 4 ; 6 ; 7 ; 8 ; 11 ]
         | SignalNumbering.Darwin -> [ 4 ; 6 ; 8 ; 10 ; 11 ]
 
-    /// The signals the runtime catches whose handler stays installed.
-    let private runtimeCaughtKeeping (numbering : SignalNumbering) : int list =
+    /// The runtime's thread-activation signal, which it catches with
+    /// `NativeSignalHandler.CoreClrPalActivation`.
+    let private runtimeActivationSigno (numbering : SignalNumbering) : int =
         match numbering with
-        | SignalNumbering.Linux -> [ 5 ; 34 ]
-        | SignalNumbering.Darwin -> [ 30 ]
-
-    let private runtimeCaught (numbering : SignalNumbering) : int list =
-        runtimeCaughtRestoring numbering @ runtimeCaughtKeeping numbering
+        | SignalNumbering.Linux -> 34
+        | SignalNumbering.Darwin -> 30
 
     /// Why a set of inherited ignores cannot start a PawPrint process, or
     /// `None` if it can.
@@ -179,11 +177,11 @@ module StartupSignalDispositions =
         // alternate stack and so masks the activation signal (34) too
         // (pal/src/exception/signal.cpp). glibc installs its SIGSETXID
         // handler with `SA_RESTART` (measured with the flags read back,
-        // startup-signal-handler-owners.cs); its mask was not read. Neither is
-        // ever delivered: PawPrint refuses to send a signal these catch.
-        let palCatch (signo : int) : SignalCatch<NativeSignalHandler> =
+        // startup-signal-handler-owners.cs); its mask was not read, and
+        // PawPrint refuses to send the signal it catches.
+        let palCatch (handler : NativeSignalHandler) (signo : int) : SignalCatch<NativeSignalHandler> =
             {
-                Handler = NativeSignalHandler.CoreClrPal
+                Handler = handler
                 Mask =
                     match numbering, signo with
                     | SignalNumbering.Linux, 11 -> Set.singleton (signal 34)
@@ -193,35 +191,39 @@ module StartupSignalDispositions =
                 Restart = true
             }
 
+        // What the launcher left, before the runtime installs anything.
+        let launched = SignalState.initial numbering inheritedIgnores
+
         let caught =
             [
-                for signo in runtimeCaught numbering do
-                    signo, SignalDisposition.Catch (palCatch signo)
+                for signo in runtimeFaultSignos numbering do
+                    // The PAL saves the disposition it replaces.
+                    let replaced =
+                        match SignalState.disposition (signal signo) launched with
+                        | SignalDisposition.Default -> PalReplacedDisposition.Default
+                        | SignalDisposition.Ignore -> PalReplacedDisposition.Ignore
+                        | SignalDisposition.Catch action ->
+                            failwith
+                                $"StartupSignalDispositions.initial: signal %d{signo} is caught by %O{action.Handler} before the runtime starts; a launcher can leave a signal only ignored or at its default."
+
+                    signo, SignalDisposition.Catch (palCatch (NativeSignalHandler.CoreClrPalFault replaced) signo)
+
+                let activation = runtimeActivationSigno numbering
+                activation, SignalDisposition.Catch (palCatch NativeSignalHandler.CoreClrPalActivation activation)
+
                 match numbering with
                 | SignalNumbering.Linux ->
+                    5, SignalDisposition.Catch (palCatch NativeSignalHandler.CoreClrPalTrap 5)
+
                     33,
                     SignalDisposition.Catch
                         { SignalCatch.ofHandler NativeSignalHandler.GlibcSetXid with
                             Restart = true
                         }
                 | SignalNumbering.Darwin -> ()
+
                 13, SignalDisposition.Ignore
             ]
 
-        (SignalState.initial numbering inheritedIgnores, caught)
+        (launched, caught)
         ||> List.fold (fun state (signo, disposition) -> SignalState.setDisposition (signal signo) disposition state)
-
-    /// Whether the runtime's handler for `signal`, as `initial` installs it,
-    /// restores the default when the process is sent the signal (rather than
-    /// taking the fault it stands for), and returns: the process survives that
-    /// signal, and the next one terminates it as the default says. A handler
-    /// registered through `PosixSignalRegistration` since does not prevent
-    /// this.
-    ///
-    /// Answers for the signal the value *is* under `numbering`, so an `Other`
-    /// carrying SIGSEGV's number counts. Answers only for a process whose
-    /// launcher left the signal at its default: over an inherited ignore, the
-    /// runtime's handler aborts the process at the first, which dies of
-    /// SIGABRT.
-    let restoresDefaultWhenSent (numbering : SignalNumbering) (signal : Signal) : bool =
-        List.contains (Signal.toRawSignoUnder numbering signal) (runtimeCaughtRestoring numbering)

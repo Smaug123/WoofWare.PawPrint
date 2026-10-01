@@ -330,16 +330,15 @@ module NativeSystemNative =
                     state
                 else
                     state.MapKernel (fun kernel ->
+                        let signals, shim =
+                            PosixSignalShim.restoreHandler numbering signal kernel.Signals kernel.PosixSignalShim
+
                         { kernel with
                             Process =
                                 { kernel.Process with
-                                    Signals =
-                                        PosixSignalShim.restoreHandler
-                                            numbering
-                                            signal
-                                            kernel.Signals
-                                            kernel.PosixSignalShim
+                                    Signals = signals
                                 }
+                            PosixSignalShim = shim
                         }
                     )
 

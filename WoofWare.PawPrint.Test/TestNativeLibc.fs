@@ -41,36 +41,72 @@ module TestNativeLibc =
         =
         PosixSignalShim.installHandler numbering sent signals shim
 
+    /// The main thread, which receives every signal sent to the process.
+    let private leader : int = 0
+
+    /// `screenSelfSignal` for a signal `sender` sends, on `platform`.
+    let private screenOn
+        (platform : SimulatedUnixPlatform)
+        (sender : int)
+        (signals : SignalState<int, NativeSignalHandler>, shim : PosixSignalShim)
+        (sent : Signal)
+        : UnmodelledSelfSignal option
+        =
+        NativeLibc.screenSelfSignal platform sender leader shim signals sent
+
+    let private everyPlatform : SimulatedUnixPlatform list =
+        [
+            SimulatedUnixPlatform.linuxX64
+            SimulatedUnixPlatform.linuxArm64
+            SimulatedUnixPlatform.macOsArm64
+        ]
+
+    /// `screenOn` for a signal the main thread sends, on a platform whose
+    /// signals are numbered as `signals`' are.
     let private screen
         (signals : SignalState<int, NativeSignalHandler>, shim : PosixSignalShim)
         (sent : Signal)
         : UnmodelledSelfSignal option
         =
-        NativeLibc.screenSelfSignal shim signals sent
+        let platform =
+            match SignalState.numbering signals with
+            | SignalNumbering.Linux -> SimulatedUnixPlatform.linuxX64
+            | SignalNumbering.Darwin -> SimulatedUnixPlatform.macOsArm64
+
+        screenOn platform leader (signals, shim) sent
 
     let private fresh (numbering : SignalNumbering) : SignalState<int, NativeSignalHandler> * PosixSignalShim =
         initial numbering, PosixSignalShim.initial
 
-    let private caughtByRuntime : NativeSignalHandler = NativeSignalHandler.CoreClrPal
+    let private faultHandler : NativeSignalHandler =
+        NativeSignalHandler.CoreClrPalFault PalReplacedDisposition.Default
 
     /// Both columns of the table, as measured (see the comments in
     /// `StartupSignalDispositions`); `TestStartupSignalDispositions` checks
-    /// the host's column against the real runtime.
+    /// the host's column against the real runtime. Which of the runtime's
+    /// handlers is the fault handler is measured too: a process survives only
+    /// the first of the signals it catches.
     let private measured (numbering : SignalNumbering) : Map<int, SignalDisposition<NativeSignalHandler>> =
+        let catch (handler : NativeSignalHandler) =
+            SignalDisposition.Catch (SignalCatch.ofHandler handler)
+
         match numbering with
         | SignalNumbering.Linux ->
             Map.ofList
                 [
-                    for signo in [ 4 ; 5 ; 6 ; 7 ; 8 ; 11 ; 34 ] do
-                        signo, SignalDisposition.Catch (SignalCatch.ofHandler caughtByRuntime)
-                    33, SignalDisposition.Catch (SignalCatch.ofHandler NativeSignalHandler.GlibcSetXid)
+                    for signo in [ 4 ; 6 ; 7 ; 8 ; 11 ] do
+                        signo, catch faultHandler
+                    5, catch NativeSignalHandler.CoreClrPalTrap
+                    34, catch NativeSignalHandler.CoreClrPalActivation
+                    33, catch NativeSignalHandler.GlibcSetXid
                     13, SignalDisposition.Ignore
                 ]
         | SignalNumbering.Darwin ->
             Map.ofList
                 [
-                    for signo in [ 4 ; 6 ; 8 ; 10 ; 11 ; 30 ] do
-                        signo, SignalDisposition.Catch (SignalCatch.ofHandler caughtByRuntime)
+                    for signo in [ 4 ; 6 ; 8 ; 10 ; 11 ] do
+                        signo, catch faultHandler
+                    30, catch NativeSignalHandler.CoreClrPalActivation
                     13, SignalDisposition.Ignore
                 ]
 
@@ -94,26 +130,6 @@ module TestNativeLibc =
                 |> Map.ofSeq
 
             (numbering, actual) |> shouldEqual (numbering, measured numbering)
-
-    /// The signals of `measured`'s runtime-caught ones whose handler restores
-    /// the default when sent the signal, as measured (see the comments in
-    /// `StartupSignalDispositions`).
-    let private measuredRestoring (numbering : SignalNumbering) : Set<int> =
-        match numbering with
-        | SignalNumbering.Linux -> Set.ofList [ 4 ; 6 ; 7 ; 8 ; 11 ]
-        | SignalNumbering.Darwin -> Set.ofList [ 4 ; 6 ; 8 ; 10 ; 11 ]
-
-    [<Test>]
-    let ``the startup handlers that restore the default when sent are the measured ones`` () : unit =
-        for numbering in everyNumbering do
-            let actual =
-                [ 1 .. Signal.highestSignoUnder numbering ]
-                |> List.filter (fun signo ->
-                    StartupSignalDispositions.restoresDefaultWhenSent numbering (signal numbering signo)
-                )
-                |> Set.ofList
-
-            (numbering, actual) |> shouldEqual (numbering, measuredRestoring numbering)
 
     [<Test>]
     let ``the runtime's and glibc's handlers restart system calls, and the PAL's SIGSEGV masks its activation signal``
@@ -156,9 +172,14 @@ module TestNativeLibc =
                 StartupSignalDispositions.initial numbering (Set.ofList ignorable)
 
             for s in ignorable do
+                // The fault handler saves the ignore it replaced.
                 let expected =
                     match Map.tryFind (Signal.toRawSignoUnder numbering s) (measured numbering) with
-                    | Some (SignalDisposition.Catch handler) -> SignalDisposition.Catch handler
+                    | Some (SignalDisposition.Catch action) when action.Handler = faultHandler ->
+                        SignalDisposition.Catch (
+                            SignalCatch.ofHandler (NativeSignalHandler.CoreClrPalFault PalReplacedDisposition.Ignore)
+                        )
+                    | Some (SignalDisposition.Catch action) -> SignalDisposition.Catch action
                     | Some _
                     | None -> SignalDisposition.Ignore
 
@@ -200,11 +221,91 @@ module TestNativeLibc =
             StartupSignalDispositions.refusal numbering (Set.ofList [ Signal.SIGHUP ; Signal.SIGUSR2 ])
             |> shouldEqual None
 
+    /// The fault signals the main thread may send itself on `platform`:
+    /// those whose handler, once it has restored the default, is not needed
+    /// for a later hardware fault (see the comment in `NativeLibc`).
+    let private answeredFaultSignos (platform : SimulatedUnixPlatform) : Set<int> =
+        match SimulatedUnixPlatform.flavour platform, SimulatedUnixPlatform.architecture platform with
+        | SimulatedUnixFlavour.Linux, SimulatedUnixArchitecture.X64 -> Set.ofList [ 4 ; 6 ]
+        | SimulatedUnixFlavour.Linux, SimulatedUnixArchitecture.Arm64 -> Set.ofList [ 4 ; 6 ; 8 ]
+        | SimulatedUnixFlavour.Darwin, _ -> Set.ofList [ 4 ; 6 ; 8 ; 10 ; 11 ]
+
+    let private faultSignos (numbering : SignalNumbering) : int list =
+        measured numbering
+        |> Map.toList
+        |> List.choose (fun (signo, disposition) ->
+            if disposition = SignalDisposition.Catch (SignalCatch.ofHandler faultHandler) then
+                Some signo
+            else
+                None
+        )
+
     [<Test>]
-    let ``a signal a native handler catches from startup is refused, whatever the state`` () : unit =
+    let ``the main thread's fault signal is answered, registered or not, unless its handler is needed later``
+        ()
+        : unit
+        =
+        for platform in everyPlatform do
+            let numbering = SimulatedUnixPlatform.signalNumbering platform
+
+            for signo in faultSignos numbering do
+                let expected =
+                    if Set.contains signo (answeredFaultSignos platform) then
+                        None
+                    else
+                        Some (UnmodelledSelfSignal.FaultHandlerNeededLater (signal numbering signo))
+
+                (platform, signo, screenOn platform leader (fresh numbering) (Signal.Other signo))
+                |> shouldEqual (platform, signo, expected)
+
+                // System.Native's handler runs the fault handler first, so the
+                // same answer holds with a registration.
+                let registered = register numbering (Signal.Other signo) (fresh numbering)
+
+                PosixSignalShim.chainsToNativeHandler numbering (signal numbering signo) (snd registered)
+                |> shouldEqual (Some faultHandler)
+
+                (platform, signo, screenOn platform leader registered (Signal.Other signo))
+                |> shouldEqual (platform, signo, expected)
+
+    [<Test>]
+    let ``a fault signal another thread sends is refused, registered or not`` () : unit =
+        for platform in everyPlatform do
+            let numbering = SimulatedUnixPlatform.signalNumbering platform
+
+            for signo in faultSignos numbering do
+                let expected =
+                    Some (UnmodelledSelfSignal.FaultSignalFromOtherThread (signal numbering signo))
+
+                screenOn platform 1 (fresh numbering) (Signal.Other signo)
+                |> shouldEqual expected
+
+                screenOn platform 1 (register numbering (Signal.Other signo) (fresh numbering)) (Signal.Other signo)
+                |> shouldEqual expected
+
+    [<Test>]
+    let ``over an inherited ignore, the main thread's fault signal is answered on every platform`` () : unit =
+        // The handler aborts the process at once, so no later fault meets the
+        // default it would otherwise have restored.
+        for platform in everyPlatform do
+            let numbering = SimulatedUnixPlatform.signalNumbering platform
+            let signos = faultSignos numbering
+
+            let ignored : SignalState<int, NativeSignalHandler> =
+                StartupSignalDispositions.initial numbering (signos |> List.map (signal numbering) |> Set.ofList)
+
+            for signo in signos do
+                (platform, signo, screenOn platform leader (ignored, PosixSignalShim.initial) (Signal.Other signo))
+                |> shouldEqual (platform, signo, None)
+
+    [<Test>]
+    let ``a signal any other native handler catches from startup is refused, whatever the state`` () : unit =
         for numbering in everyNumbering do
             for KeyValue (signo, disposition) in measured numbering do
                 match disposition with
+                | SignalDisposition.Catch {
+                                              Handler = NativeSignalHandler.CoreClrPalFault _
+                                          } -> ()
                 | SignalDisposition.Catch {
                                               Handler = handler
                                           } ->
@@ -248,8 +349,41 @@ module TestNativeLibc =
 
             // Unregistering restores the ignore the shim saved.
             PosixSignalShim.restoreHandler numbering Signal.SIGPIPE signals shim
+            |> fst
             |> SignalState.disposition Signal.SIGPIPE
             |> shouldEqual SignalDisposition.Ignore
+
+    [<Test>]
+    let ``System.Native installs its handler once until it restores it, whatever the disposition does meanwhile``
+        ()
+        : unit
+        =
+        // The runtime's fault handler, run first by System.Native's, restores
+        // the default over System.Native's handler; installing again then does
+        // nothing (`g_handlerIsInstalled`), until a restore puts the runtime's
+        // handler back and forgets the installation.
+        for numbering in everyNumbering do
+            let sigill = signal numbering 4
+            let signals, shim = register numbering sigill (fresh numbering)
+
+            let restoredByRuntime =
+                SignalState.setDisposition sigill SignalDisposition.Default signals
+
+            let again, shimAgain = register numbering sigill (restoredByRuntime, shim)
+
+            SignalState.disposition sigill again |> shouldEqual SignalDisposition.Default
+            shimAgain |> shouldEqual shim
+
+            let restored, shimRestored =
+                PosixSignalShim.restoreHandler numbering sigill restoredByRuntime shim
+
+            match SignalState.disposition sigill restored with
+            | SignalDisposition.Catch action -> action.Handler |> shouldEqual faultHandler
+            | other -> failwith $"expected the runtime's handler back, got %A{other}"
+
+            match SignalState.disposition sigill (fst (register numbering sigill (restored, shimRestored))) with
+            | SignalDisposition.Catch action -> action.Handler |> shouldEqual NativeSignalHandler.SystemNative
+            | other -> failwith $"expected System.Native's handler installed afresh, got %A{other}"
 
     [<Test>]
     let ``every other signal is answered from a fresh state, but SIGCONT`` () : unit =
