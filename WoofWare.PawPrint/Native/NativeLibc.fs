@@ -25,7 +25,9 @@ module UnmodelledSelfSignal =
         | UnmodelledSelfSignal.NativeHandler (signal, handler) ->
             let whose =
                 match handler with
-                | NativeSignalHandler.CoreClrPal -> "a handler of CoreCLR's PAL"
+                | NativeSignalHandler.CoreClrPalFault _ -> "CoreCLR's PAL's hardware-fault handler"
+                | NativeSignalHandler.CoreClrPalTrap -> "CoreCLR's PAL's SIGTRAP handler"
+                | NativeSignalHandler.CoreClrPalActivation -> "CoreCLR's PAL's thread-activation handler"
                 | NativeSignalHandler.GlibcSetXid -> "glibc's own SIGSETXID handler"
                 | NativeSignalHandler.SystemNative -> "System.Native's handler"
 
@@ -61,13 +63,17 @@ module NativeLibc =
                                       Handler = NativeSignalHandler.SystemNative
                                   } ->
             match PosixSignalShim.chainsToNativeHandler numbering signal shim with
+            | Some (NativeSignalHandler.CoreClrPalFault _)
+            | None -> None
             | Some chained ->
                 // Registering a handler does not take the runtime's own away
                 // (pal_signal.c): `InstallSignalHandler` keeps the handler it
                 // replaces, and the shim's handler calls it before anything
                 // reaches managed code.
                 Some (UnmodelledSelfSignal.NativeHandler (signal, chained))
-            | None -> None
+        | SignalDisposition.Catch {
+                                      Handler = NativeSignalHandler.CoreClrPalFault _
+                                  } -> None
         | SignalDisposition.Catch action -> Some (UnmodelledSelfSignal.NativeHandler (signal, action.Handler))
         | SignalDisposition.Default when Signal.defaultDispositionUnder numbering signal = DefaultDisposition.Continue ->
             Some (UnmodelledSelfSignal.ContinueWithoutHandler signal)

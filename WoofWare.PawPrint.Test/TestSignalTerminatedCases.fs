@@ -49,6 +49,18 @@ module TestSignalTerminatedCases =
                 FileName = "PosixSignalKillNotCancelled.cs"
                 Signo = 15
             }
+            {
+                // libc's kill(2) of each hardware-fault signal to itself, all
+                // survived, and then a second SIGSEGV, which is not.
+                FileName = "LibcKillFaultSignalSecondTime.cs"
+                Signo = 11
+            }
+            {
+                // The same with a PosixSignalRegistration handler for SIGSEGV,
+                // which runs for the first.
+                FileName = "PosixSignalRegisteredFaultSignal.cs"
+                Signo = 11
+            }
         ]
 
     [<TestCaseSource(nameof cases)>]

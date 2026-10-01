@@ -203,12 +203,20 @@ class Program
 
     [<Test>]
     let ``30 is Darwin's SIGUSR1, the runtime's activation signal, and is refused there`` () : unit =
-        refused SimulatedUnixPlatform.macOsArm64 30 "runs a handler of CoreCLR's PAL for SIGUSR1"
+        refused SimulatedUnixPlatform.macOsArm64 30 "runs CoreCLR's PAL's thread-activation handler for SIGUSR1"
 
     [<Test>]
-    let ``11 is SIGSEGV, which the runtime catches, and is refused under either flavour`` () : unit =
+    let ``Linux's SIGTRAP and activation signal, which the runtime catches, are refused there`` () : unit =
+        refused SimulatedUnixPlatform.linuxX64 5 "runs CoreCLR's PAL's SIGTRAP handler"
+        refused SimulatedUnixPlatform.linuxX64 34 "runs CoreCLR's PAL's thread-activation handler"
+
+    [<Test>]
+    let ``11 is SIGSEGV, whose fault handler the runtime installs, and is survived under either flavour`` () : unit =
+        // The second is not: `TestSignalTerminatedCases` holds that half.
         for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
-            refused platform 11 "runs a handler of CoreCLR's PAL"
+            match run platform 11 with
+            | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 42
+            | other -> failwith $"expected kill(self, SIGSEGV) to be answered and the guest to exit 42, got %O{other}"
 
     [<Test>]
     let ``33 is glibc's SIGSETXID, which glibc catches, and is refused under Linux`` () : unit =

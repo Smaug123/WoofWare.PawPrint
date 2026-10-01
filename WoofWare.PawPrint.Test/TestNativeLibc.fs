@@ -51,26 +51,35 @@ module TestNativeLibc =
     let private fresh (numbering : SignalNumbering) : SignalState<int, NativeSignalHandler> * PosixSignalShim =
         initial numbering, PosixSignalShim.initial
 
-    let private caughtByRuntime : NativeSignalHandler = NativeSignalHandler.CoreClrPal
+    let private faultHandler : NativeSignalHandler =
+        NativeSignalHandler.CoreClrPalFault PalReplacedDisposition.Default
 
     /// Both columns of the table, as measured (see the comments in
     /// `StartupSignalDispositions`); `TestStartupSignalDispositions` checks
-    /// the host's column against the real runtime.
+    /// the host's column against the real runtime. Which of the runtime's
+    /// handlers is the fault handler is measured too: a process survives only
+    /// the first of the signals it catches.
     let private measured (numbering : SignalNumbering) : Map<int, SignalDisposition<NativeSignalHandler>> =
+        let catch (handler : NativeSignalHandler) =
+            SignalDisposition.Catch (SignalCatch.ofHandler handler)
+
         match numbering with
         | SignalNumbering.Linux ->
             Map.ofList
                 [
-                    for signo in [ 4 ; 5 ; 6 ; 7 ; 8 ; 11 ; 34 ] do
-                        signo, SignalDisposition.Catch (SignalCatch.ofHandler caughtByRuntime)
-                    33, SignalDisposition.Catch (SignalCatch.ofHandler NativeSignalHandler.GlibcSetXid)
+                    for signo in [ 4 ; 6 ; 7 ; 8 ; 11 ] do
+                        signo, catch faultHandler
+                    5, catch NativeSignalHandler.CoreClrPalTrap
+                    34, catch NativeSignalHandler.CoreClrPalActivation
+                    33, catch NativeSignalHandler.GlibcSetXid
                     13, SignalDisposition.Ignore
                 ]
         | SignalNumbering.Darwin ->
             Map.ofList
                 [
-                    for signo in [ 4 ; 6 ; 8 ; 10 ; 11 ; 30 ] do
-                        signo, SignalDisposition.Catch (SignalCatch.ofHandler caughtByRuntime)
+                    for signo in [ 4 ; 6 ; 8 ; 10 ; 11 ] do
+                        signo, catch faultHandler
+                    30, catch NativeSignalHandler.CoreClrPalActivation
                     13, SignalDisposition.Ignore
                 ]
 
@@ -94,26 +103,6 @@ module TestNativeLibc =
                 |> Map.ofSeq
 
             (numbering, actual) |> shouldEqual (numbering, measured numbering)
-
-    /// The signals of `measured`'s runtime-caught ones whose handler restores
-    /// the default when sent the signal, as measured (see the comments in
-    /// `StartupSignalDispositions`).
-    let private measuredRestoring (numbering : SignalNumbering) : Set<int> =
-        match numbering with
-        | SignalNumbering.Linux -> Set.ofList [ 4 ; 6 ; 7 ; 8 ; 11 ]
-        | SignalNumbering.Darwin -> Set.ofList [ 4 ; 6 ; 8 ; 10 ; 11 ]
-
-    [<Test>]
-    let ``the startup handlers that restore the default when sent are the measured ones`` () : unit =
-        for numbering in everyNumbering do
-            let actual =
-                [ 1 .. Signal.highestSignoUnder numbering ]
-                |> List.filter (fun signo ->
-                    StartupSignalDispositions.restoresDefaultWhenSent numbering (signal numbering signo)
-                )
-                |> Set.ofList
-
-            (numbering, actual) |> shouldEqual (numbering, measuredRestoring numbering)
 
     [<Test>]
     let ``the runtime's and glibc's handlers restart system calls, and the PAL's SIGSEGV masks its activation signal``
@@ -156,9 +145,14 @@ module TestNativeLibc =
                 StartupSignalDispositions.initial numbering (Set.ofList ignorable)
 
             for s in ignorable do
+                // The fault handler saves the ignore it replaced.
                 let expected =
                     match Map.tryFind (Signal.toRawSignoUnder numbering s) (measured numbering) with
-                    | Some (SignalDisposition.Catch handler) -> SignalDisposition.Catch handler
+                    | Some (SignalDisposition.Catch action) when action.Handler = faultHandler ->
+                        SignalDisposition.Catch (
+                            SignalCatch.ofHandler (NativeSignalHandler.CoreClrPalFault PalReplacedDisposition.Ignore)
+                        )
+                    | Some (SignalDisposition.Catch action) -> SignalDisposition.Catch action
                     | Some _
                     | None -> SignalDisposition.Ignore
 
@@ -201,10 +195,29 @@ module TestNativeLibc =
             |> shouldEqual None
 
     [<Test>]
-    let ``a signal a native handler catches from startup is refused, whatever the state`` () : unit =
+    let ``a signal the runtime's fault handler catches is answered, registered or not`` () : unit =
+        for numbering in everyNumbering do
+            for KeyValue (signo, disposition) in measured numbering do
+                if disposition = SignalDisposition.Catch (SignalCatch.ofHandler faultHandler) then
+                    screen (fresh numbering) (Signal.Other signo) |> shouldEqual None
+
+                    // System.Native's handler runs the fault handler first,
+                    // which PawPrint models too.
+                    let signals, shim = register numbering (Signal.Other signo) (fresh numbering)
+
+                    PosixSignalShim.chainsToNativeHandler numbering (signal numbering signo) shim
+                    |> shouldEqual (Some faultHandler)
+
+                    screen (signals, shim) (Signal.Other signo) |> shouldEqual None
+
+    [<Test>]
+    let ``a signal any other native handler catches from startup is refused, whatever the state`` () : unit =
         for numbering in everyNumbering do
             for KeyValue (signo, disposition) in measured numbering do
                 match disposition with
+                | SignalDisposition.Catch {
+                                              Handler = NativeSignalHandler.CoreClrPalFault _
+                                          } -> ()
                 | SignalDisposition.Catch {
                                               Handler = handler
                                           } ->
