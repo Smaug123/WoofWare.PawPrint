@@ -350,8 +350,9 @@ type BaseClassTypes<'corelib> =
         /// reachable from `Reflection.Emit` because `ILGenerator.Emit` accepts any `RuntimeType`.
         InvalidProgramException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         /// Reported by the JIT — not the BCL — when a token resolves to something of the wrong
-        /// shape ("Bad class token"). Reachable from `Reflection.Emit` by rewriting a
-        /// `DynamicScope` entry to a different kind after the method was minted.
+        /// shape ("Bad class token.", "Bad method token." and so on, by the kind of token asked
+        /// for). Reachable from `Reflection.Emit` by rewriting a `DynamicScope` entry to a
+        /// different kind after the method was minted.
         BadImageFormatException : TypeInfo<GenericParamFromMetadata, TypeDefn>
 
         /// <c>System.IO.FileNotFoundException</c>, which the runtime raises when an assembly a

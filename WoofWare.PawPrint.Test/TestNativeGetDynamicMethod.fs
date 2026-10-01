@@ -2454,15 +2454,23 @@ public class Box<T>
         why |> shouldContainText "generic method definition"
         why |> shouldContainText "Id"
 
-    /// `default(RuntimeMethodHandle)`, which `Emit` never stores.
+    /// `default(RuntimeMethodHandle)`, which `Emit` never stores but a guest can write into the
+    /// scope. Measured on real .NET: the `call` raises BadImageFormatException, as for any entry
+    /// naming no method.
     [<Test>]
-    let ``a RuntimeMethodHandle entry with a null m_value is unsupported`` () : unit =
+    let ``a RuntimeMethodHandle entry with a null m_value is a bad image`` () : unit =
         let loggerFactory, prepared, state = loadFixture ()
 
         let result, _ =
             resolveCallee loggerFactory prepared (ScopeEntry.MethodHandleObject None) state
 
-        expectUnsupported result |> shouldContainText "null m_value"
+        match result with
+        | Error (ScopeEntryRefusal.GuestException (exceptionType, why)) ->
+            exceptionType.Identity
+            |> shouldEqual prepared.BaseClassTypes.BadImageFormatException.Identity
+
+            why |> shouldContainText "m_value is null"
+        | other -> failwith $"expected BadImageFormatException, got %A{other}"
 
     /// The mirror image, as for type entries: `ldstr` must not accept a method entry either.
     [<Test>]
