@@ -26,6 +26,9 @@ What lives here:
   method concretisation. The interpreter's machine state holds one. Its module asks the questions
   that need nothing else: instantiating a type or signature, comparing signatures and
   instantiations as CoreCLR does, resolving a type token, and finding a concrete type's base.
+* `ConcreteMethodTable`, `ConcreteInterfaceDispatch` — the method table of a concrete type, read
+  through its definition's, and CoreCLR's interface map and dispatch map: which slot of the receiver
+  implements an interface method, before any default interface body is considered.
 * `TypeAssignability` — whether a value of one closed type can be stored where another is
   expected, as CoreCLR's `CanCastTo` decides it: the base chain, interfaces, variance, and the
   array rules.

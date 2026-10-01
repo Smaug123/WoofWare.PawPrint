@@ -8,12 +8,15 @@ open Microsoft.Extensions.Logging
 /// those slots form the vtable. This is slot *identity*; a MethodImpl changes what a slot holds
 /// without changing which slot its body was declared at, so slot *content* is a separate question.
 ///
+/// The walks are `ConcreteMethodTable`'s, lifted here to the machine state. What this module adds is
+/// the reflection QCalls' questions about a `RuntimeTypeHandleTarget`, which can name an open type.
+///
 /// Kept apart from `NativeRuntimeTypeHelpers`, where the QCalls that ask these questions live,
 /// because virtual dispatch asks them too and compiles well before those QCalls do.
 module VirtualSlotLayout =
 
     /// `SlotOwner` and `VtableSlot` were nested in this module before they moved to the namespace, so
-    /// that `IlMachineState` -- which compiles well before this file and memoises the walks below --
+    /// that `IlMachineState` -- which compiles well before this file and memoises the walks --
     /// could name them. Both are public API of a shipped package, so these keep
     /// `VirtualSlotLayout.SlotOwner` and `VirtualSlotLayout.VtableSlot` resolving for existing source.
     ///
@@ -33,47 +36,20 @@ module VirtualSlotLayout =
             SlotOwner.Description = string concreteType
         }
 
-    /// Run one of `MethodTableLayout`'s walks against the machine's load context, keeping the
-    /// assemblies it bound and the concrete types it registered.
-    let private inContext
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (walk :
-            TypeConcretization.ConcretizationContext<DumpedAssembly>
-                -> TypeConcretization.ConcretizationContext<DumpedAssembly> * 'a)
-        : IlMachineState * 'a
-        =
-        let ctx, result =
-            walk
-                {
-                    TypeConcretization.ConcretizationContext.ConcreteTypes = state.TypeSystem.ConcreteTypes
-                    TypeConcretization.ConcretizationContext.LoadedAssemblies = state.TypeSystem._LoadedAssemblies
-                    TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
-                }
-
-        { state with
-            TypeSystem =
-                { state.TypeSystem with
-                    _LoadedAssemblies = ctx.LoadedAssemblies
-                    ConcreteTypes = ctx.ConcreteTypes
-                }
-        },
-        result
-
-    /// `MethodTableLayout.definitionMetadata` against the machine's loaded assemblies.
+    /// `ConcreteMethodTable.definitionMetadata` against the machine's type system.
     let internal definitionMetadata
         (operation : string)
         (state : IlMachineState)
         (identity : ResolvedTypeIdentity)
         : DumpedAssembly * TypeInfo<GenericParamFromMetadata, TypeDefn>
         =
-        MethodTableLayout.definitionMetadata operation state.TypeSystem._LoadedAssemblies identity
+        ConcreteMethodTable.definitionMetadata operation state.TypeSystem identity
 
-    /// `MethodTableLayout.ownerOfDefinition` against the machine's loaded assemblies.
+    /// `ConcreteMethodTable.ownerOfDefinition` against the machine's type system.
     let ownerOfDefinition (operation : string) (state : IlMachineState) (identity : ResolvedTypeIdentity) : SlotOwner =
-        MethodTableLayout.ownerOfDefinition operation state.TypeSystem._LoadedAssemblies identity
+        ConcreteMethodTable.ownerOfDefinition operation state.TypeSystem identity
 
-    /// `MethodTableLayout.nominalIdentityOfSpelling` against the machine's load context.
+    /// `ConcreteMethodTable.nominalIdentityOfSpelling` against the machine's type system.
     let internal nominalIdentityOfSpelling
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -83,20 +59,19 @@ module VirtualSlotLayout =
         (ty : TypeDefn)
         : IlMachineState * ResolvedTypeIdentity
         =
-        inContext
-            baseClassTypes
-            state
-            (fun ctx ->
-                MethodTableLayout.nominalIdentityOfSpelling
-                    loggerFactory
-                    state.DotnetRuntimeDirs
-                    operation
-                    ctx
-                    assembly
-                    ty
-            )
+        let typeSystem, result =
+            ConcreteMethodTable.nominalIdentityOfSpelling
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                operation
+                state.TypeSystem
+                assembly
+                ty
 
-    /// `MethodTableLayout.baseOfDefinition` against the machine's load context.
+        state.WithTypeSystem typeSystem, result
+
+    /// `ConcreteMethodTable.baseOfDefinition` against the machine's type system.
     let internal baseOfDefinition
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -106,14 +81,19 @@ module VirtualSlotLayout =
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : IlMachineState * (ResolvedTypeIdentity * ImmutableArray<TypeConcretization.SubstitutionArgument>) option
         =
-        inContext
-            baseClassTypes
-            state
-            (fun ctx ->
-                MethodTableLayout.baseOfDefinition loggerFactory state.DotnetRuntimeDirs operation ctx owner typeInfo
-            )
+        let typeSystem, result =
+            ConcreteMethodTable.baseOfDefinition
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                operation
+                state.TypeSystem
+                owner
+                typeInfo
 
-    /// `MethodTableLayout.vtableOfDefinition` against the machine's load context.
+        state.WithTypeSystem typeSystem, result
+
+    /// `ConcreteMethodTable.vtableOfDefinition` against the machine's type system.
     let vtableOfDefinition
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -122,14 +102,18 @@ module VirtualSlotLayout =
         (identity : ResolvedTypeIdentity)
         : IlMachineState * VtableSlot list
         =
-        inContext
-            baseClassTypes
-            state
-            (fun ctx ->
-                MethodTableLayout.vtableOfDefinition loggerFactory state.DotnetRuntimeDirs operation ctx identity
-            )
+        let typeSystem, result =
+            ConcreteMethodTable.vtableOfDefinition
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                operation
+                state.TypeSystem
+                identity
 
-    /// `MethodTableLayout.contentVtableOfDefinition` against the machine's load context.
+        state.WithTypeSystem typeSystem, result
+
+    /// `ConcreteMethodTable.contentVtableOfDefinition` against the machine's type system.
     let contentVtableOfDefinition
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -138,19 +122,18 @@ module VirtualSlotLayout =
         (identity : ResolvedTypeIdentity)
         : IlMachineState * VtableSlot list
         =
-        inContext
-            baseClassTypes
-            state
-            (fun ctx ->
-                MethodTableLayout.contentVtableOfDefinition
-                    loggerFactory
-                    state.DotnetRuntimeDirs
-                    operation
-                    ctx
-                    identity
-            )
+        let typeSystem, result =
+            ConcreteMethodTable.contentVtableOfDefinition
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                operation
+                state.TypeSystem
+                identity
 
-    /// `MethodTableLayout.placedSlotsOfDefinition` against the machine's load context.
+        state.WithTypeSystem typeSystem, result
+
+    /// `ConcreteMethodTable.placedSlotsOfDefinition` against the machine's type system.
     let placedSlotsOfDefinition
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -159,14 +142,18 @@ module VirtualSlotLayout =
         (identity : ResolvedTypeIdentity)
         : IlMachineState * (VtableSlot * int) list
         =
-        inContext
-            baseClassTypes
-            state
-            (fun ctx ->
-                MethodTableLayout.placedSlotsOfDefinition loggerFactory state.DotnetRuntimeDirs operation ctx identity
-            )
+        let typeSystem, result =
+            ConcreteMethodTable.placedSlotsOfDefinition
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                operation
+                state.TypeSystem
+                identity
 
-    /// `MethodTableLayout.slotTableOfDefinition` against the machine's load context.
+        state.WithTypeSystem typeSystem, result
+
+    /// `ConcreteMethodTable.slotTableOfDefinition` against the machine's type system.
     let slotTableOfDefinition
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -175,14 +162,18 @@ module VirtualSlotLayout =
         (identity : ResolvedTypeIdentity)
         : IlMachineState * MethodTableLayout.MethodSlotTable
         =
-        inContext
-            baseClassTypes
-            state
-            (fun ctx ->
-                MethodTableLayout.slotTableOfDefinition loggerFactory state.DotnetRuntimeDirs operation ctx identity
-            )
+        let typeSystem, result =
+            ConcreteMethodTable.slotTableOfDefinition
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                operation
+                state.TypeSystem
+                identity
 
-    /// `MethodTableLayout.numVirtualsOfDefinition` against the machine's load context.
+        state.WithTypeSystem typeSystem, result
+
+    /// `ConcreteMethodTable.numVirtualsOfDefinition` against the machine's type system.
     let numVirtualsOfDefinition
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -191,28 +182,19 @@ module VirtualSlotLayout =
         (identity : ResolvedTypeIdentity)
         : IlMachineState * int
         =
-        inContext
-            baseClassTypes
-            state
-            (fun ctx ->
-                MethodTableLayout.numVirtualsOfDefinition loggerFactory state.DotnetRuntimeDirs operation ctx identity
-            )
+        let typeSystem, result =
+            ConcreteMethodTable.numVirtualsOfDefinition
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                operation
+                state.TypeSystem
+                identity
 
-    /// Both halves of what answering a `callvirt` on a receiver of this runtime type needs, from one
-    /// walk: which slot each declaration in the receiver's chain owns, and what each slot of the
-    /// receiver holds.
-    ///
-    /// Dispatch needs the slot of a declaration on some *ancestor* and the content of that slot on the
-    /// *receiver*, and it is tempting to ask two questions of two types. That doubles the work for
-    /// nothing: slot numbers are prefix-stable -- `CopyParentVtable` copies the parent's slots at the
-    /// same indices -- so the receiver's own placement list already names every ancestor's declaration
-    /// at the very index the ancestor gave it. Measured on the dispatch-saturated benchmark guest:
-    /// asking separately cost 275.4ms and asking once costs 255.2ms, against 184.7ms for the
-    /// signature-matching walk this replaced.
-    ///
-    /// `None` means the handle has no method table to read: byrefs, pointers and function pointers are
-    /// TypeDescs. A synthesised array delegates to `System.Array`, whose slots are the ones it has.
-    let rec dispatchTableOfClosed
+        state.WithTypeSystem typeSystem, result
+
+    /// `ConcreteMethodTable.dispatchTableOfClosed` against the machine's type system.
+    let dispatchTableOfClosed
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
@@ -220,92 +202,19 @@ module VirtualSlotLayout =
         (concreteType : ConcreteTypeHandle)
         : IlMachineState * DispatchTable option
         =
-        match concreteType with
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _
-        | ConcreteTypeHandle.FunctionPointer _ ->
-            // TypeDescs with no method table: no slots, so nothing to dispatch through.
-            state, None
-        | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _ ->
-            // A synthesised array's virtual slots are `System.Array`'s, as in `vtableOfClosed`.
-            let state, baseHandle =
-                IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state concreteType
+        let typeSystem, result =
+            ConcreteMethodTable.dispatchTableOfClosed
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                operation
+                state.TypeSystem
+                concreteType
 
-            match baseHandle with
-            | None -> state, None
-            | Some baseHandle -> dispatchTableOfClosed loggerFactory baseClassTypes operation state baseHandle
-        | ConcreteTypeHandle.Concrete _ ->
-            let concreteTypeInfo, _ =
-                IlMachineState.tryGetConcreteTypeInfo state concreteType
-                |> Option.defaultWith (fun () ->
-                    failwith $"%s{operation}: concrete type handle was not registered: %O{concreteType}"
-                )
+        state.WithTypeSystem typeSystem, result
 
-            // Keyed on the definition, which every instantiation of it shares -- the same reason the
-            // walk itself is defined on the definition. See `TypeSystemState._VirtualSlotTables` for why a memo is
-            // sound here and why it has to live on the state rather than beside this walk.
-            match Map.tryFind concreteTypeInfo.Identity state.TypeSystem._VirtualSlotTables with
-            | Some cached -> state, Some cached
-            | None ->
-
-            let state, (table, content) =
-                inContext
-                    baseClassTypes
-                    state
-                    (fun ctx ->
-                        let ctx, table =
-                            MethodTableLayout.ownerOfDefinition
-                                operation
-                                ctx.LoadedAssemblies
-                                concreteTypeInfo.Identity
-                            |> MethodTableLayout.placeVirtualMethodsOfDefinitionOwner
-                                loggerFactory
-                                state.DotnetRuntimeDirs
-                                operation
-                                ctx
-
-                        let ctx, content =
-                            MethodTableLayout.contentOfDefinitionOwner
-                                loggerFactory
-                                state.DotnetRuntimeDirs
-                                operation
-                                ctx
-                                table
-
-                        ctx, (table, content)
-                    )
-
-            // Indexed here rather than at each use: the memo is built once per definition and read
-            // once per `callvirt`, so the cost belongs on the build.
-            //
-            // A declaration appears at most once, every method being placed by exactly one type, so
-            // `Add` cannot collide -- and if it somehow did, throwing beats silently keeping one.
-            let byDeclaration =
-                (ImmutableDictionary.CreateBuilder<_, _> (), table.Placed)
-                ||> List.fold (fun acc (slot, index) ->
-                    acc.Add ((slot.DeclaredBy.AssemblyFullName, slot.Method.IdentityKey), index)
-                    acc
-                )
-
-            let computed =
-                {
-                    DispatchTable.SlotOfDeclaration = byDeclaration.ToImmutable ()
-                    DispatchTable.Occupants =
-                        content |> List.map (fun entry -> entry.Occupant) |> ImmutableArray.CreateRange
-                }
-
-            state.WithVirtualSlotTable concreteTypeInfo.Identity computed, Some computed
-
-
-    /// The instance vtable of a runtime type, base-first: index `i` is the method that occupies slot
-    /// `i`.
-    ///
-    /// For a nominal type this is its *definition's* vtable, which is the same list for every
-    /// instantiation -- see `vtableOfDefinition`, where the rule lives. A structural handle has no
-    /// definition to ask: byrefs, pointers and function pointers are TypeDescs with no method table,
-    /// and a synthesised array's slots are `System.Array`'s.
-    let rec vtableOfClosed
+    /// `ConcreteMethodTable.vtableOfClosed` against the machine's type system.
+    let vtableOfClosed
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
@@ -313,40 +222,18 @@ module VirtualSlotLayout =
         (concreteType : ConcreteTypeHandle)
         : IlMachineState * VtableSlot list
         =
-        match concreteType with
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _
-        | ConcreteTypeHandle.FunctionPointer _ ->
-            // Byrefs, pointers, and function pointers are TypeDescs in CoreCLR with no
-            // MethodTable, so they have no vtable at all.
-            state, []
-        | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _ ->
-            // Synthesised array MethodTables inherit their virtual slots from System.Array (and
-            // through it, System.Object); the structural array handle itself introduces none.
-            let state, baseHandle =
-                IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state concreteType
+        let typeSystem, result =
+            ConcreteMethodTable.vtableOfClosed
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                operation
+                state.TypeSystem
+                concreteType
 
-            match baseHandle with
-            | None -> state, []
-            | Some bh -> vtableOfClosed loggerFactory baseClassTypes operation state bh
-        | ConcreteTypeHandle.Concrete _ ->
-            // A nominal type's own generic arguments say nothing about which slot anything occupies:
-            // CoreCLR hands the method-table builder its parent as a raw `SigPointer` into the
-            // extends-clause blob with no substitution for the type being built
-            // (methodtablebuilder.cpp:1330-1337), and clones the canonical method table for every
-            // instantiation that shares code
-            // (`Generics::CreateTypeHandleForNonCanonicalGenericInstantiation`, generics.cpp:159-495).
-            // Measured over corelib, System.Linq, System.Text.Json, System.Collections.Concurrent and
-            // System.Private.Uri: 2683 (definition, instantiation) pairs agree on the whole layout.
-            let concreteTypeInfo, _ =
-                IlMachineState.tryGetConcreteTypeInfo state concreteType
-                |> Option.defaultWith (fun () ->
-                    failwith $"%s{operation}: concrete type handle was not registered: %O{concreteType}"
-                )
+        state.WithTypeSystem typeSystem, result
 
-            vtableOfDefinition loggerFactory baseClassTypes operation state concreteTypeInfo.Identity
-
+    /// `ConcreteMethodTable.slotTableOfClosed` against the machine's type system.
     let slotTableOfClosed
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -355,51 +242,18 @@ module VirtualSlotLayout =
         (concreteType : ConcreteTypeHandle)
         : IlMachineState * MethodTableLayout.MethodSlotTable
         =
-        // Only the vtable walk recurses through the base chain; the region beyond it is this type's
-        // alone, so it is computed once here rather than once per ancestor and discarded.
-        let state, virtualSlots =
-            vtableOfClosed loggerFactory baseClassTypes operation state concreteType
+        let typeSystem, result =
+            ConcreteMethodTable.slotTableOfClosed
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                operation
+                state.TypeSystem
+                concreteType
 
-        match concreteType with
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _
-        | ConcreteTypeHandle.FunctionPointer _ ->
-            // TypeDescs with no MethodTable, so no slots of either kind -- the same
-            // reason `vtableOfClosed` gives them an empty vtable.
-            state,
-            {
-                MethodTableLayout.MethodSlotTable.Vtable = virtualSlots
-                MethodTableLayout.MethodSlotTable.BeyondVtable = []
-            }
-        | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _ ->
-            // A synthesised array MethodTable really does carry slots beyond its vtable, for the
-            // intrinsic Get/Set/Address and the ctor, and PawPrint models none of them --
-            // `introducedMethodsOfClosed` refuses the same question for the same reason. Answering
-            // "none" would be a wrong answer rather than an absent one, so refuse. Unreachable from
-            // `GetSlot` today: a method handle always resolves to a `Concrete` declaring type, there
-            // being no way to mint one naming an array intrinsic.
-            failwith
-                $"TODO: %s{operation} for synthesised array handle %O{concreteType}; the array intrinsic methods (Get/Set/Address/.ctor) occupy slots beyond the vtable that PawPrint does not model"
-        | ConcreteTypeHandle.Concrete _ ->
-            let concreteTypeInfo, _ =
-                IlMachineState.tryGetConcreteTypeInfo state concreteType
-                |> Option.defaultWith (fun () ->
-                    failwith $"%s{operation}: concrete type handle was not registered: %O{concreteType}"
-                )
+        state.WithTypeSystem typeSystem, result
 
-            let owner = ownerOfDefinition operation state concreteTypeInfo.Identity
-            let _, typeInfo = definitionMetadata operation state concreteTypeInfo.Identity
-
-            state,
-            {
-                MethodTableLayout.MethodSlotTable.Vtable = virtualSlots
-                MethodTableLayout.MethodSlotTable.BeyondVtable =
-                    MethodTableLayout.slotsBeyondVtableOfDefinition operation owner typeInfo
-            }
-
-    /// The size of the instance vtable for a closed type, matching CoreCLR's
-    /// `MethodTable::GetNumVirtuals()`.
+    /// `ConcreteMethodTable.numVirtualsOfClosed` against the machine's type system.
     let numVirtualsOfClosed
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -408,14 +262,16 @@ module VirtualSlotLayout =
         (concreteType : ConcreteTypeHandle)
         : IlMachineState * int
         =
-        // The length of `vtableOfClosed` by definition rather than an independently-computed sum,
-        // because `PopulateMethods` compares it against `RuntimeMethodHandle.GetSlot`'s answer:
-        // two walks that had to agree by discipline would disagree silently, and the symptom
-        // would be a wrong `isVirtual` rather than a crash.
-        let state, slots =
-            vtableOfClosed loggerFactory baseClassTypes operation state concreteType
+        let typeSystem, result =
+            ConcreteMethodTable.numVirtualsOfClosed
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                operation
+                state.TypeSystem
+                concreteType
 
-        state, List.length slots
+        state.WithTypeSystem typeSystem, result
 
     let numVirtuals
         (loggerFactory : ILoggerFactory)

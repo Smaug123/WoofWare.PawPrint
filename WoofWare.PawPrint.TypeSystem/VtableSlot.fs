@@ -22,9 +22,9 @@ type SlotOwner =
 /// One entry of a type's instance vtable: the method occupying the slot, together with the type it
 /// was read from.
 ///
-/// Lives here rather than beside the walk that computes it because `IlMachineState` memoises those
-/// walks and compiles well before them: a cache of `VirtualSlotLayout`'s results cannot be typed in
-/// a file that `VirtualSlotLayout` has not reached yet.
+/// Lives here rather than beside the walk that computes it because `TypeSystemState` memoises those
+/// walks and compiles before them: a cache of `ConcreteMethodTable`'s results cannot be typed in a
+/// file that `ConcreteMethodTable` has not reached yet.
 type VtableSlot =
     {
         Method : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
