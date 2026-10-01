@@ -857,9 +857,11 @@ module NativeRuntimeMethodHandle =
     /// is CoreCLR's answer exactly. CoreCLR's `StripMethodInstantiation` takes the method from the
     /// declaring type's canonical method table (method.cpp:1774), and PawPrint does not model
     /// canonical forms, so the two agree only where the canonical method table is the type itself:
-    /// a type `isOwnCanonicalInstantiation` accepts, or an array (which has no class instantiation,
-    /// so CoreCLR returns the method before consulting any method table). An open declaring type is
-    /// not claimed to be exact, because what CoreCLR canonicalises one to has not been established.
+    /// a type `isOwnCanonicalInstantiation` accepts, an array (which has no class instantiation, so
+    /// CoreCLR returns the method before consulting any method table), or a generic type definition,
+    /// whose canonical method table is its typical instantiation (measured: stripping
+    /// `Holder<>.Pair<int>` answers with the handle of `typeof(Holder<>)`'s own `Pair`). An open
+    /// construction is not claimed to be exact; see `namedTypeIsItsOwnCanonicalForm` for why.
     let private strippedDeclaringTypeIsExact
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -871,8 +873,8 @@ module NativeRuntimeMethodHandle =
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
             isOwnCanonicalInstantiation operation baseClassTypes state handle
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
-        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _) -> true
-        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _)
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> true
         | RuntimeTypeHandleTarget.OpenConstructed _ -> false
         | other ->
             failwith
@@ -884,8 +886,9 @@ module NativeRuntimeMethodHandle =
     /// for a type `isOwnCanonicalInstantiation` accepts, and for a generic type definition, whose
     /// canonical method table is its typical instantiation (measured: named `Holder<>`, CoreCLR's
     /// answer is declared by `Holder<T>`, which is `typeof(Holder<>)`). An open construction is not
-    /// claimed to be its own canonical form, because what CoreCLR canonicalises one to has not been
-    /// established.
+    /// claimed to be its own canonical form. Whether it is depends on its arguments, and PawPrint
+    /// does not classify open arguments. Measured: `Holder<V[]>` and `Holder<List<V>>` canonicalise
+    /// to `Holder<System.__Canon>`, while `Holder<V>`, over another type's parameter, is its own.
     ///
     /// `named` must already be known to instantiate the method's own generic definition; any other
     /// spelling fails.
@@ -1439,7 +1442,7 @@ module NativeRuntimeMethodHandle =
                 && not (calledFromGetGenericMethodDefinition state ctx)
             then
                 failwith
-                    $"TODO: %s{operation} of %O{identity}, called other than by RuntimeMethodInfo.GetGenericMethodDefinition: CoreCLR answers with the method on its declaring type's canonical method table, which for this declaring type is an instantiation over System.__Canon (or an open type, whose canonical form PawPrint has not established), and the caller can see it. PawPrint does not model canonical forms. GetGenericMethodDefinition is answered because it rebinds the result onto the exact declaring type."
+                    $"TODO: %s{operation} of %O{identity}, called other than by RuntimeMethodInfo.GetGenericMethodDefinition: CoreCLR answers with the method on its declaring type's canonical method table, which for this declaring type is an instantiation over System.__Canon (or an open construction, which may canonicalise to one, depending on arguments PawPrint does not classify), and the caller can see it. PawPrint does not model canonical forms. GetGenericMethodDefinition is answered because it rebinds the result onto the exact declaring type."
 
             let stripped = MethodHandleRegistry.stripMethodInstantiation identity
 
@@ -2083,7 +2086,7 @@ module NativeRuntimeMethodHandle =
                 && not (calledFromGetMethodBase state ctx)
             then
                 failwith
-                    $"TODO: %s{operation} of %s{methodInfo.Name} on %O{target}, called other than by RuntimeType.GetMethodBase: CoreCLR answers with the method on the named type's canonical method table, which for this type is an instantiation over System.__Canon (or an open construction, whose canonical form PawPrint has not established), and the caller can see it. PawPrint does not model canonical forms. GetMethodBase is answered because it rebinds the result onto the exact named type."
+                    $"TODO: %s{operation} of %s{methodInfo.Name} on %O{target}, called other than by RuntimeType.GetMethodBase: CoreCLR answers with the method on the named type's canonical method table, which for this type is an instantiation over System.__Canon (or an open construction, which may canonicalise to one, depending on arguments PawPrint does not classify), and the caller can see it. PawPrint does not model canonical forms. GetMethodBase is answered because it rebinds the result onto the exact named type."
 
             let handleValue, registry =
                 MethodHandleRegistry.getOrAllocateInternalHandle
