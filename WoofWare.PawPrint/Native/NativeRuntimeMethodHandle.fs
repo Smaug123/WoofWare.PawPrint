@@ -1894,7 +1894,7 @@ module NativeRuntimeMethodHandle =
             // (INT32)pMethod->GetSlot(), which is a bare read of the MethodDesc's slot number as
             // assigned once during method-table building. PawPrint has no persisted slot number, so
             // the layout is recomputed from the declaring type's chain; see
-            // `VirtualSlotLayout.slotTableOfClosed` for the rule and for why MethodImpls are
+            // `ConcreteMethodTable.slotTableOfClosed` for the rule and for why MethodImpls are
             // not consulted.
             //
             // The number spans both halves of the method table, so this asks the slot table rather

@@ -70,7 +70,7 @@ type TypeSystemState =
         /// compatibility facades reference implementation assemblies as `Version=0.0.0.0`), so the
         /// two must not be conflated; see `LoadedAssemblies`.
         _LoadedAssemblies : LoadedAssemblies
-        /// Memo of `VirtualSlotLayout.dispatchTableOfClosed`, keyed on the *definition* whose method
+        /// Memo of `ConcreteMethodTable.dispatchTableOfClosed`, keyed on the *definition* whose method
         /// table it is, because every instantiation of a definition shares one table.
         ///
         /// A memo rather than state: the walk is a pure function of metadata that never changes once
@@ -94,7 +94,7 @@ type TypeSystemState =
         /// Add through `WithVirtualSlotTable`, never by assignment: an entry that disagreed with the
         /// walk would be undetectable, every later read taking the memo's word for it.
         _VirtualSlotTables : Map<ResolvedTypeIdentity, DispatchTable>
-        /// Memo of `InterfaceDispatch.ownDispatchMapOf`: the interface dispatch entries each type
+        /// Memo of `ConcreteInterfaceDispatch.ownDispatchMapOf`: the interface dispatch entries each type
         /// contributes, keyed on the type's *instantiation*, because which instantiation of an
         /// interface an entry names depends on it.
         ///
