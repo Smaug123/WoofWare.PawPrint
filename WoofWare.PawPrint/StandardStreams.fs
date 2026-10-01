@@ -3,19 +3,17 @@ namespace WoofWare.PawPrint
 open System.Collections.Immutable
 open WoofWare.PosixKernel
 
-/// <summary>
-/// Which of the simulated process's inherited standard streams an open file
-/// description refers to.
-/// </summary>
+/// Which of its standard streams a guest was launched with a pipe for: what
+/// PawPrint calls the far ends it holds (see `StandardStreams.roleOf`).
 [<RequireQualifiedAccess>]
 type FileDescriptorRole =
     | StandardInput
     | StandardOutput
     | StandardError
 
-/// One entry in `UnixProcessState.OutputLog`: the role the process targeted (a
-/// writable standard stream — stdout or stderr) and the byte payload of
-/// that single `write(2)` call. Chunks are not coalesced across
+/// One entry in `EmulatedKernel.OutputLog`: the stream a write reached
+/// (standard output or error) and the bytes that single `write(2)` delivered
+/// there. Chunks are not coalesced across
 /// calls because write boundaries matter for diagnostics (line
 /// boundaries, prompt boundaries) and are what a real reader of the stream
 /// could observe.
