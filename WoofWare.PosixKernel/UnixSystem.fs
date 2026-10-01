@@ -256,6 +256,9 @@ type UnixSystemDefect<'Task> =
     /// The machine's pipes report a device no machine of its flavour reports
     /// for them: a negative one, or on Darwin anything but 0.
     | PipeDeviceNotOfFlavour of device : int64 * flavour : SimulatedUnixFlavour
+    /// The machine sets an `fs.protected_*` sysctl its flavour does not have:
+    /// anything but `ProtectedFiles.off` on Darwin.
+    | ProtectedFilesNotOfFlavour of protection : ProtectedFiles * flavour : SimulatedUnixFlavour
 
 /// Why the directory a host named cannot be the one a simulated process starts
 /// in. `UnixSystem.withFileSystemAndCurrentDirectory` returns one instead of
@@ -843,6 +846,16 @@ module UnixSystem =
             else
                 [ UnixSystemDefect.FileSystemTypeNotReportable (flavour, fsType) ]
 
+        let protectedFiles =
+            let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+
+            if UnixMachineState.isProtectedFilesOf flavour system.Machine.ProtectedFiles then
+                []
+            else
+                [
+                    UnixSystemDefect.ProtectedFilesNotOfFlavour (system.Machine.ProtectedFiles, flavour)
+                ]
+
         let userBufferCheck =
             if UnixMachineState.isUserBufferCheckOf system.Machine.UnixPlatform system.Machine.UserBufferCheck then
                 []
@@ -1069,6 +1082,7 @@ module UnixSystem =
         @ bindings
         @ signals
         @ fileSystemType
+        @ protectedFiles
         @ userBufferCheck
         @ supplementaryGroups
         @ umask
@@ -1370,6 +1384,7 @@ module UnixSystem =
                     UnixPlatform = platform
                     FileSystem = filesystem
                     Mount = EmulatedMount.defaultFor flavour
+                    ProtectedFiles = ProtectedFiles.off
                 }
             Process =
                 {
@@ -1755,6 +1770,9 @@ module UnixSystem =
                         UserId.root
                         (GroupId.parseOrFail "UnixSystem.withFileSystemAndCurrentDirectory" 0u)
                         [])
+                    // The host names where the process starts; no process follows
+                    // a link to get there, so no sysctl screens one.
+                    SymlinkProtection.Off
                     root
                     SymlinkPolicy.Follow
                     (UnixPath.ofAbsolute directory)

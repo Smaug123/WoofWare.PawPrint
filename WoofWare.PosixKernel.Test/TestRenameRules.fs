@@ -206,6 +206,7 @@ module TestRenameRules =
             PathWalk.resolveFull
                 (SimulatedUnixPlatform.pathLimits platform)
                 (Owners.caller privilege)
+                SymlinkProtection.Off
                 startDirectory
                 SymlinkPolicy.NoFollowFinal
                 rules.TrailingSeparator

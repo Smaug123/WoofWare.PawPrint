@@ -376,6 +376,7 @@ module UnixPathResolution =
         PathWalk.resolveFull
             (SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform)
             system.Process.Credentials
+            system.Machine.ProtectedFiles.Symlinks
             system.Process.CurrentDirectoryInode
             policy
             trailingSeparatorPolicy
@@ -405,6 +406,7 @@ module UnixPathResolution =
         PathWalk.resolveParent
             (SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform)
             system.Process.Credentials
+            system.Machine.ProtectedFiles.Symlinks
             system.Process.CurrentDirectoryInode
             policy
             trailingSeparatorPolicy
@@ -1405,6 +1407,7 @@ module UnixPathResolution =
             PathWalk.resolveFull
                 (SimulatedUnixPlatform.pathLimits platform)
                 credentials
+                system.Machine.ProtectedFiles.Symlinks
                 startDirectory
                 arguments.FinalSymlink
                 TrailingSeparatorPolicy.Demand

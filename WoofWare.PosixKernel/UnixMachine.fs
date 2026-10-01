@@ -199,6 +199,14 @@ type UnixMachineState =
         /// `UnixSystem.initial` and set only by `withMount`, which refuses a
         /// type this machine's flavour cannot report.
         Mount : EmulatedMount
+        /// Linux's `fs.protected_symlinks`, `fs.protected_regular` and
+        /// `fs.protected_fifos` sysctls.
+        ///
+        /// `UnixSystem.initial` sets `ProtectedFiles.off`, the kernel's own
+        /// default, and `UnixMachineState.withProtectedFiles` any other. Only
+        /// `ProtectedFiles.off` is admitted on Darwin, which has no such
+        /// settings (`UnixSystemDefect.ProtectedFilesNotOfFlavour`).
+        ProtectedFiles : ProtectedFiles
     }
 
 /// What a socket is taking an ephemeral port for, which decides what stands
@@ -395,6 +403,33 @@ module UnixMachineState =
 
         { machine with
             Mount = resolved
+        }
+
+    /// Whether `protection` is something a machine of `flavour` can be
+    /// configured with: anything on Linux, and on Darwin, which has none of
+    /// these sysctls, only `ProtectedFiles.off`.
+    let isProtectedFilesOf (flavour : SimulatedUnixFlavour) (protection : ProtectedFiles) : bool =
+        match flavour with
+        | SimulatedUnixFlavour.Linux -> true
+        | SimulatedUnixFlavour.Darwin -> protection = ProtectedFiles.off
+
+    /// Set the `fs.protected_*` sysctls. Refused on Darwin for anything but
+    /// `ProtectedFiles.off`, since Darwin has no such settings; `context` names
+    /// the caller's knob in the refusal.
+    let withProtectedFiles
+        (context : string)
+        (protection : ProtectedFiles)
+        (machine : UnixMachineState)
+        : UnixMachineState
+        =
+        let flavour = SimulatedUnixPlatform.flavour machine.UnixPlatform
+
+        if not (isProtectedFilesOf flavour protection) then
+            failwith
+                $"%s{context}: %A{protection} sets an fs.protected_* sysctl, which a %O{flavour} kernel does not have; it applies none of their rules (measured on Darwin 27.0, protected-sysctls.c). Leave every one of them Off."
+
+        { machine with
+            ProtectedFiles = protection
         }
 
     /// Whether, and where, this machine's kernel screens a read or write buffer

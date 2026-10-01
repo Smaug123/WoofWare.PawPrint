@@ -477,6 +477,7 @@ module TestVirtualFileSystemAgainstHost =
                     // guest looking one up. `ns/kid/gk` could not be reached
                     // otherwise, since `ns` is narrowed below.
                     Owners.root
+                    SymlinkProtection.Off
                     (VirtualFileSystem.root vfs)
                     SymlinkPolicy.Follow
                     (UnixPath.parseOrFail "test" relative)
@@ -560,6 +561,7 @@ module TestVirtualFileSystemAgainstHost =
             PathWalk.resolveExisting
                 (limits ())
                 (Owners.caller (hostPrivilege ()))
+                SymlinkProtection.Off
                 (VirtualFileSystem.root vfs)
                 SymlinkPolicy.NoFollowFinal
                 (UnixPath.parseOrFail "test" relative)
@@ -838,6 +840,7 @@ module TestVirtualFileSystemAgainstHost =
                                 PathWalk.resolve
                                     (limits ())
                                     Owners.root
+                                    SymlinkProtection.Off
                                     (VirtualFileSystem.root vfs)
                                     SymlinkPolicy.Follow
                                     (UnixPath.parseOrFail "test" ("/" + linkName + suffix))
@@ -1072,6 +1075,7 @@ module TestVirtualFileSystemAgainstHost =
             PathWalk.resolveFull
                 (limits ())
                 (Owners.caller (hostPrivilege ()))
+                SymlinkProtection.Off
                 (VirtualFileSystem.root vfs)
                 policy
                 rules.TrailingSeparator
@@ -1087,6 +1091,7 @@ module TestVirtualFileSystemAgainstHost =
         match
             CreatingOpenRules.verdict
                 rules
+                ProtectedFiles.off
                 (SimulatedUnixPlatform.bindableEntryNames (hostPlatform ()))
                 (Owners.caller (hostPrivilege ()))
                 true
@@ -1570,6 +1575,7 @@ module TestVirtualFileSystemAgainstHost =
             PathWalk.resolveFull
                 (limits ())
                 (Owners.caller (hostPrivilege ()))
+                SymlinkProtection.Off
                 (VirtualFileSystem.root vfs)
                 SymlinkPolicy.NoFollowFinal
                 rules.TrailingSeparator
@@ -1900,6 +1906,7 @@ module TestVirtualFileSystemAgainstHost =
             PathWalk.resolveFull
                 (limits ())
                 (Owners.caller (hostPrivilege ()))
+                SymlinkProtection.Off
                 (VirtualFileSystem.root vfs)
                 SymlinkPolicy.NoFollowFinal
                 rules.TrailingSeparator
@@ -1981,6 +1988,7 @@ module TestVirtualFileSystemAgainstHost =
                 PathWalk.resolveFull
                     (limits ())
                     Owners.root
+                    SymlinkProtection.Off
                     root
                     SymlinkPolicy.NoFollowFinal
                     (SimulatedUnixPlatform.unlinkRules (hostPlatform ())).TrailingSeparator
@@ -2110,6 +2118,7 @@ module TestVirtualFileSystemAgainstHost =
             PathWalk.resolveFull
                 (limits ())
                 (Owners.caller (hostPrivilege ()))
+                SymlinkProtection.Off
                 (VirtualFileSystem.root vfs)
                 SymlinkPolicy.NoFollowFinal
                 rules.TrailingSeparator
@@ -2346,6 +2355,7 @@ module TestVirtualFileSystemAgainstHost =
             PathWalk.resolveFull
                 (limits ())
                 (Owners.caller (hostPrivilege ()))
+                SymlinkProtection.Off
                 (VirtualFileSystem.root vfs)
                 SymlinkPolicy.Follow
                 TrailingSeparatorPolicy.Demand
@@ -2465,6 +2475,7 @@ module TestVirtualFileSystemAgainstHost =
                 PathWalk.resolveFull
                     (limits ())
                     (Owners.caller (hostPrivilege ()))
+                    SymlinkProtection.Off
                     (VirtualFileSystem.root vfs)
                     SymlinkPolicy.Follow
                     TrailingSeparatorPolicy.Demand
@@ -2549,6 +2560,7 @@ module TestVirtualFileSystemAgainstHost =
                 PathWalk.resolveExisting
                     (limits ())
                     Owners.root
+                    SymlinkProtection.Off
                     (VirtualFileSystem.root vfs)
                     SymlinkPolicy.Follow
                     (UnixPath.parseOrFail "test" (if relative = "" then "/" else "/" + relative))
@@ -2695,6 +2707,7 @@ module TestVirtualFileSystemAgainstHost =
                 PathWalk.resolveExisting
                     (limits ())
                     Owners.root
+                    SymlinkProtection.Off
                     (VirtualFileSystem.root vfs)
                     SymlinkPolicy.NoFollowFinal
                     (UnixPath.parseOrFail "test" relative)
@@ -2723,6 +2736,7 @@ module TestVirtualFileSystemAgainstHost =
                 PathWalk.resolve
                     (limits ())
                     Owners.root
+                    SymlinkProtection.Off
                     (VirtualFileSystem.root vfs)
                     SymlinkPolicy.NoFollowFinal
                     (UnixPath.parseOrFail "test" relative)

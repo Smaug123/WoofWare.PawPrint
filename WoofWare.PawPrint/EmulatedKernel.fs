@@ -1963,6 +1963,17 @@ type KernelConfig =
         /// default (4096 on Linux, 128 on Darwin): the ceiling `listen(2)`
         /// clamps its backlog to. See `UnixMachineState.withSoMaxConn`.
         SoMaxConn : int option
+        /// Linux's `fs.protected_symlinks`, `fs.protected_regular` and
+        /// `fs.protected_fifos` sysctls, which forbid following another user's
+        /// symbolic link, or opening another user's file with `O_CREAT`, in a
+        /// sticky world-writable (or, for `protected_regular=2`, group-writable)
+        /// directory. Defaults to `ProtectedFiles.off`, the kernel's own default;
+        /// many distributions set them non-zero (Ubuntu's are 1, 2 and 1). Only
+        /// `ProtectedFiles.off` is admitted on Darwin, which has none of them.
+        ///
+        /// They decide anything only where a seed gives some inode an owner
+        /// other than the process (see `FileSystem`).
+        ProtectedFiles : ProtectedFiles
         /// The IPv4 addresses this machine holds, as prefixes. See
         /// `UnixSystem.defaultLocalAddresses`, and note the flavours read one
         /// list differently.
@@ -2029,6 +2040,7 @@ type KernelConfig =
             Mount = None
             EphemeralPortRange = None
             SoMaxConn = None
+            ProtectedFiles = ProtectedFiles.off
             LocalAddresses = UnixSystem.defaultLocalAddresses
             LocalRoutes = UnixSystem.defaultLocalRoutes
             InheritedSignalIgnores = Set.empty
@@ -2123,6 +2135,9 @@ module KernelConfig =
             )
         )
         |> EmulatedKernel.mapMachine (UnixMachineState.withSoMaxConn config.SoMaxConn)
+        |> EmulatedKernel.mapMachine (
+            UnixMachineState.withProtectedFiles "KernelConfig.ProtectedFiles" config.ProtectedFiles
+        )
         |> EmulatedKernel.mapMachine (UnixMachineState.withLocalAddresses config.LocalAddresses config.LocalRoutes)
         |> EmulatedKernel.mapUnix (UnixSystem.withUmask "KernelConfig.Umask" config.Umask)
         // The process ID before `pid_max`: the default `pid_max` is the largest

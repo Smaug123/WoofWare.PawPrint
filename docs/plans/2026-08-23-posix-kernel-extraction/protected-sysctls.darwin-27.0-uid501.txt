@@ -1,0 +1,11 @@
+RUN	Darwin 27.0.0 arm64	uid=501
+DIR	1777	owner=501	linkowner=0	fileowner=0
+DARWIN	stat(l) [Linux protected_symlinks=1: EACCES]	ok
+DARWIN	open(l, O_CREAT|O_NOFOLLOW|O_RDONLY) [Linux, every knob: EACCES where other-writable]	ELOOP
+DARWIN	open(f, O_CREAT|O_RDONLY) [Linux protected_regular=1 where other-writable, 2 also where group-writable: EACCES]	ok
+DARWIN	open(f, O_RDONLY)	ok
+DIR	1775	owner=501	linkowner=0	fileowner=0
+DARWIN	stat(l) [Linux protected_symlinks=1: EACCES]	ok
+DARWIN	open(l, O_CREAT|O_NOFOLLOW|O_RDONLY) [Linux, every knob: EACCES where other-writable]	ELOOP
+DARWIN	open(f, O_CREAT|O_RDONLY) [Linux protected_regular=1 where other-writable, 2 also where group-writable: EACCES]	ok
+DARWIN	open(f, O_RDONLY)	ok

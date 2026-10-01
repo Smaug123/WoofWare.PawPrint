@@ -443,6 +443,7 @@ module TestResolutionSplit =
             PathWalk.resolveExisting
                 (SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.linuxX64)
                 Owners.root
+                SymlinkProtection.Off
                 rootInode
                 SymlinkPolicy.Follow
                 (path p)
@@ -481,6 +482,7 @@ module TestResolutionSplit =
                                     PathWalk.resolveFull
                                         limits
                                         (Owners.caller privilege)
+                                        SymlinkProtection.Off
                                         start
                                         policy
                                         trailing
@@ -698,6 +700,7 @@ module TestResolutionSplit =
                 PathWalk.resolveFull
                     case.Limits
                     (Owners.caller case.Privilege)
+                    SymlinkProtection.Off
                     case.Start
                     case.Policy
                     case.Trailing
@@ -717,6 +720,7 @@ module TestResolutionSplit =
         PathWalk.resolveParent
             limits
             (Owners.caller privilege)
+            SymlinkProtection.Off
             (VirtualFileSystem.root vfs)
             SymlinkPolicy.NoFollowFinal
             TrailingSeparatorPolicy.Ignore

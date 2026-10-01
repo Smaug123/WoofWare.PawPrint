@@ -361,6 +361,7 @@ module UnixNamespace =
         match
             CreatingOpenRules.verdict
                 rules
+                system.Machine.ProtectedFiles
                 (SimulatedUnixPlatform.bindableEntryNames system.Machine.UnixPlatform)
                 credentials
                 flags.Create
