@@ -564,6 +564,18 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> PrivilegedExecution.NeedsAnExecuteBit
         | SimulatedUnixFlavour.Darwin -> PrivilegedExecution.Unmeasured
 
+    /// Who may change an inode's owner and group on this platform, and which
+    /// set-ID bits a change clears. See `OwnerChangeRules.verdict`.
+    let ownerChangeRule (platform : SimulatedUnixPlatform) : OwnerChangeRule =
+        // Measured by `docs/plans/2026-08-23-posix-kernel-extraction/chown-rules.c`
+        // against exactly these two rules: Linux 6.18.5 (ext4 and tmpfs) for
+        // every caller standing over every mode and every kind of ID named;
+        // Darwin 27.0 at uid 501 for its owner over every mode it could set,
+        // and for a non-owner on other users' inodes. Its output is beside it.
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> OwnerChangeRule.ClearsSetIdFromNonDirectories
+        | SimulatedUnixFlavour.Darwin -> OwnerChangeRule.ClearsSetIdWhenAnIdIsNamed
+
     /// Whether this platform's content-changing `write(2)` clears `S_ISGID` on a
     /// file that is not group-executable.
     ///

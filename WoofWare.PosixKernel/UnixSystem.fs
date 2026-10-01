@@ -32,6 +32,12 @@ type Syscall =
     | ChMod of path : UnixPath * mode : int
     /// `mode` is raw, as `fchmod(2)` takes it.
     | FChMod of fd : int * mode : int
+    /// `None` is `(uid_t)-1` or `(gid_t)-1`: leave that ID as it is.
+    | ChOwn of path : UnixPath * user : UserId option * group : GroupId option
+    /// As `ChOwn`, without following a symbolic link in the final position.
+    | LChOwn of path : UnixPath * user : UserId option * group : GroupId option
+    /// As `ChOwn`, of the inode `fd` names.
+    | FChOwn of fd : int * user : UserId option * group : GroupId option
     /// `mask` is raw, as `umask(2)` takes it: which of its bits the process
     /// keeps is behaviour this kernel models, and models per flavour. Answers
     /// the previous mask.
@@ -56,6 +62,9 @@ type SyscallRefusal<'Task> =
     | RmDir of StickyRefusal
     | ChMod of ChModRefusal
     | FChMod of FChModRefusal
+    /// `chown(2)` and `lchown(2)` alike.
+    | ChOwn of ChOwnRefusal
+    | FChOwn of FChOwnRefusal
     | Access of AccessRefusal
     | Close of CloseRefusal<'Task>
 
@@ -430,6 +439,18 @@ module UnixSystem =
             UnixPathResolution.fchmod fd mode system
             |> answered
             |> Result.mapError SyscallRefusal.FChMod
+        | Syscall.ChOwn (path, user, group) ->
+            UnixPathResolution.chown path user group system
+            |> answered
+            |> Result.mapError SyscallRefusal.ChOwn
+        | Syscall.LChOwn (path, user, group) ->
+            UnixPathResolution.lchown path user group system
+            |> answered
+            |> Result.mapError SyscallRefusal.ChOwn
+        | Syscall.FChOwn (fd, user, group) ->
+            UnixPathResolution.fchown fd user group system
+            |> answered
+            |> Result.mapError SyscallRefusal.FChOwn
         | Syscall.UMask mask ->
             let previous, system = umask mask system
 
