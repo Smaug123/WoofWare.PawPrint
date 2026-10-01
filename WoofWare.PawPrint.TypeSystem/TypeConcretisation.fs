@@ -1289,6 +1289,49 @@ module TypeConcretization =
                 Arguments = context.Arguments |> ImmutableArray.map rebaseArgument
             }
 
+    /// The runtime types a closed substitution denotes, one per argument: a `Closed` argument is
+    /// its handle, and a `Spelled` one is its spelling instantiated in its own assembly with its own
+    /// context closed first.
+    ///
+    /// Fails on a `Formal` argument, which denotes no particular type: rebase a definition-rooted
+    /// context onto closed arguments (`SubstitutionContext.rebase`) before asking.
+    let concretizeSubstitution
+        (ctx : ConcretizationContext<DumpedAssembly>)
+        (loadAssembly : IAssemblyLoad)
+        (context : SubstitutionContext)
+        : ImmutableArray<ConcreteTypeHandle> * ConcretizationContext<DumpedAssembly>
+        =
+        let rec close
+            (ctx : ConcretizationContext<DumpedAssembly>)
+            (argument : SubstitutionArgument)
+            : ConcreteTypeHandle * ConcretizationContext<DumpedAssembly>
+            =
+            match argument with
+            | SubstitutionArgument.Closed handle -> handle, ctx
+            | SubstitutionArgument.Formal (owner, index) ->
+                failwith
+                    $"Cannot concretise a substitution that mentions type variable !%d{index} of %s{owner.AssemblyFullName}/%O{owner.TypeDefinition.Get}, which denotes no particular type; rebase it onto closed arguments first"
+            | SubstitutionArgument.Spelled (assembly, spelling, inner) ->
+                let typeGenerics, ctx = closeAll ctx inner
+                concretizeType ctx loadAssembly assembly typeGenerics ImmutableArray.Empty spelling
+
+        and closeAll
+            (ctx : ConcretizationContext<DumpedAssembly>)
+            (arguments : ImmutableArray<SubstitutionArgument>)
+            : ImmutableArray<ConcreteTypeHandle> * ConcretizationContext<DumpedAssembly>
+            =
+            let handles = ImmutableArray.CreateBuilder arguments.Length
+            let mutable ctx = ctx
+
+            for argument in arguments do
+                let handle, ctx' = close ctx argument
+                ctx <- ctx'
+                handles.Add handle
+
+            handles.ToImmutable (), ctx
+
+        closeAll ctx context.Arguments
+
     /// One side of a method-signature comparison: a signature as its own blob spells it, the
     /// assembly whose token space those spellings live in, and the instantiation of the type
     /// that declared it — which is what ECMA-335 `!0` denotes in this signature.

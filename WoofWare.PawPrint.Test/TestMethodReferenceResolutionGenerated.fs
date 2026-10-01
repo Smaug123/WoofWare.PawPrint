@@ -861,6 +861,128 @@ module TestMethodReferenceResolutionGenerated =
         /// The world is one CoreCLR will not load at all, so it says nothing about the reference.
         | Refused of exn
 
+    let private qualified (ns : string) (name : string) : string =
+        if String.IsNullOrEmpty ns then name else $"%s{ns}.%s{name}"
+
+    /// A closed type as reflection sees it, in the notation `describeConcrete` uses.
+    let rec private describeReflected (ty : Type) : string =
+        if ty.IsSZArray then
+            describeReflected (ty.GetElementType ()) + "[]"
+        elif ty.IsArray then
+            describeReflected (ty.GetElementType ())
+            + "["
+            + String.replicate (ty.GetArrayRank () - 1) ","
+            + "]"
+        elif ty.IsGenericType then
+            let arguments =
+                ty.GetGenericArguments () |> Seq.map describeReflected |> String.concat ", "
+
+            qualified ty.Namespace (ty.Name.Split('`').[0]) + "<" + arguments + ">"
+        else
+            qualified ty.Namespace ty.Name
+
+    /// A closed type as the type system holds it, in the notation `describeReflected` uses.
+    let rec private describeConcrete (types : AllConcreteTypes) (handle : ConcreteTypeHandle) : string =
+        match handle with
+        | ConcreteTypeHandle.OneDimArrayZero element -> describeConcrete types element + "[]"
+        | ConcreteTypeHandle.Array (element, rank) ->
+            describeConcrete types element + "[" + String.replicate (rank - 1) "," + "]"
+        | ConcreteTypeHandle.Concrete _ ->
+            let ty =
+                AllConcreteTypes.lookup handle types
+                |> Option.defaultWith (fun () -> failwith $"%O{handle} is not registered")
+
+            if ty.Generics.IsEmpty then
+                qualified ty.Namespace ty.Name
+            else
+                let arguments =
+                    ty.Generics |> Seq.map (describeConcrete types) |> String.concat ", "
+
+                qualified ty.Namespace (ty.Name.Split('`').[0]) + "<" + arguments + ">"
+        | other -> failwith $"no generated world spells %O{other}"
+
+    /// The runtime types `Defined`'s declaring-type arguments denote, for a reference whose parent's
+    /// arguments are closed; `None` if they are not, so that only a closed context is put to the
+    /// runtime.
+    let private declaringTypeArguments
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (runtimeDirs : string seq)
+        (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
+        (referencing : DumpedAssembly)
+        (reference : MemberReferenceHandle)
+        (arguments : TypeConcretization.SubstitutionContext)
+        : (ImmutableArray<ConcreteTypeHandle> * TypeConcretization.ConcretizationContext<DumpedAssembly>) option
+        =
+        let loader = TypeResolution.directoryLoader loggerFactory runtimeDirs
+
+        let rec mentionsVariable (ty : TypeDefn) : bool =
+            match ty with
+            | TypeDefn.GenericTypeParameter _
+            | TypeDefn.GenericMethodParameter _ -> true
+            | TypeDefn.GenericInstantiation (root, args) -> mentionsVariable root || Seq.exists mentionsVariable args
+            | TypeDefn.OneDimensionalArrayLowerBoundZero element
+            | TypeDefn.Array (element, _)
+            | TypeDefn.Byref element
+            | TypeDefn.Pointer element -> mentionsVariable element
+            | TypeDefn.Modified modified -> mentionsVariable modified.Unmodified
+            | _ -> false
+
+        let parentArguments =
+            match referencing.Members.[reference].Parent with
+            | MetadataToken.TypeSpecification spec ->
+                match TypeDefn.stripCustomModifiers referencing.TypeSpecs.[spec].Signature with
+                | TypeDefn.GenericInstantiation (_, args) -> args
+                | _ -> ImmutableArray.Empty
+            | _ -> ImmutableArray.Empty
+
+        if Seq.exists mentionsVariable parentArguments then
+            None
+        else
+
+        let assemblies, parent =
+            MemberReferenceParent.resolve
+                loggerFactory
+                runtimeDirs
+                ctx.BaseTypes
+                ctx.LoadedAssemblies
+                referencing
+                reference
+
+        let ctx =
+            { ctx with
+                LoadedAssemblies = assemblies
+            }
+
+        let parentHandles, ctx =
+            ((ctx, ImmutableArray.CreateBuilder ()), parentArguments)
+            ||> Seq.fold (fun (ctx, acc) ty ->
+                let handle, ctx =
+                    TypeConcretization.concretizeType
+                        ctx
+                        loader
+                        referencing.DefinitionFullName
+                        ImmutableArray.Empty
+                        ImmutableArray.Empty
+                        ty
+
+                acc.Add handle
+                ctx, acc
+            )
+            |> fun (ctx, acc) -> acc.ToImmutable (), ctx
+
+        let closed =
+            match parent with
+            | MemberReferenceParent.Nominal identity ->
+                TypeConcretization.SubstitutionContext.rebase
+                    identity
+                    (parentHandles
+                     |> Seq.map TypeConcretization.SubstitutionArgument.Closed
+                     |> ImmutableArray.CreateRange)
+                    arguments
+            | _ -> arguments
+
+        Some (TypeConcretization.concretizeSubstitution ctx loader closed)
+
     let private askReflection (m : Module) (token : int) : Oracle =
         try
             Oracle.Method (m.ResolveMethod token)
@@ -942,12 +1064,46 @@ module TestMethodReferenceResolutionGenerated =
                                 Error e
 
                         match oracle, ours with
-                        | Oracle.Method mb, Ok (MethodReferenceTarget.Defined (declaringAssembly, method)) ->
+                        | Oracle.Method mb,
+                          Ok (MethodReferenceTarget.Defined (declaringAssembly, method, declaringArguments)) ->
                             let theirs = mb.Module.Assembly.GetName().Name, mb.MetadataToken
 
                             let ours =
                                 declaringAssembly.Name.Name,
                                 MetadataTokens.GetToken (MethodDefinitionHandle.op_Implicit method : EntityHandle)
+
+                            match
+                                declaringTypeArguments
+                                    loggerFactory
+                                    runtimeDirs
+                                    ctx
+                                    (ctx.LoadedAssemblies.ByDefinitionName analysed.DefinitionFullName)
+                                    handle
+                                    declaringArguments
+                            with
+                            | None -> ()
+                            | Some (closed, ctx') ->
+                                ctx <- ctx'
+
+                                let theirs =
+                                    mb.DeclaringType.GetGenericArguments ()
+                                    |> Array.map describeReflected
+                                    |> List.ofArray
+
+                                let ours = closed |> Seq.map (describeConcrete ctx.ConcreteTypes) |> List.ofSeq
+
+                                if theirs <> ours then
+                                    failures.Add
+                                        $"runtime's declaring type %s{describeReflected mb.DeclaringType} has arguments %A{theirs}, resolver's %A{ours}: %s{describe ()}"
+                                elif not theirs.IsEmpty then
+                                    count "declaring type's arguments compared"
+
+                                    match reference with
+                                    | GeneratedReference.OnType (parent, _, _, _, _, _) when
+                                        mb.DeclaringType.Name.Split('`').[0] <> $"T%d{parent}"
+                                        ->
+                                        count "generic ancestor's arguments compared"
+                                    | _ -> ()
 
                             if theirs = ours then
                                 if mb.Module.Assembly <> reflected then
@@ -998,6 +1154,8 @@ module TestMethodReferenceResolutionGenerated =
                 "defined in CoreLib"
                 "array method"
                 "missing"
+                "declaring type's arguments compared"
+                "generic ancestor's arguments compared"
             ] do
             match outcomes.TryGetValue outcome with
             | true, n -> n |> shouldBeGreaterThan 20
@@ -1113,7 +1271,7 @@ module TestMethodReferenceResolutionGenerated =
                 | Oracle.Missing, MethodReferenceTarget.Missing -> true
                 | Oracle.Method mb, MethodReferenceTarget.ArrayMethod (_, accessor) ->
                     TestMethodReferenceResolution.arrayAccessorIs accessor mb
-                | Oracle.Method mb, MethodReferenceTarget.Defined (declaringAssembly, method) ->
+                | Oracle.Method mb, MethodReferenceTarget.Defined (declaringAssembly, method, _) ->
                     mb.Module.Assembly.GetName().Name = declaringAssembly.Name.Name
                     && mb.MetadataToken = MetadataTokens.GetToken (
                         MethodDefinitionHandle.op_Implicit method : EntityHandle
