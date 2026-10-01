@@ -36,6 +36,10 @@ What lives here:
 * `ConcreteMethodTable`, `ConcreteInterfaceDispatch` — the method table of a concrete type, read
   through its definition's, and CoreCLR's interface map and dispatch map: which slot of the receiver
   implements an interface method, before any default interface body is considered.
+* `ConcreteVirtualDispatch` — which method a virtual or interface call runs on a receiver of a
+  known concrete type, as CoreCLR's `MethodTable::FindDispatchImpl` decides it: the dispatch table
+  and MethodImpls, the dispatch map, default interface bodies, variance, and the methods the
+  runtime supplies for an SZ array's implicit interfaces.
 * `TypeAssignability` — whether a value of one closed type can be stored where another is
   expected, as CoreCLR's `CanCastTo` decides it: the base chain, interfaces, variance, and the
   array rules.

@@ -76,7 +76,7 @@ module MethodTableLayout =
     /// This is CoreCLR's *layout* rule (`MethodTableBuilder::LoaderFindMethodInParentClass`): same
     /// name, and an exact signature match under substitution -- return type included. It is
     /// deliberately stricter than PawPrint's *dispatch* rule in
-    /// `IlMachineStateExecution.tryResolveVirtualImplementationForSlot`, which accepts an
+    /// `ConcreteVirtualDispatch.tryResolveVirtualImplementationForSlot`, which accepts an
     /// assignable return type and has variance carve-outs. That difference is not an oversight on
     /// either side: a covariant-return override is a genuinely new slot in CoreCLR (Roslyn emits it
     /// `newslot` plus a MethodImpl), so folding it into the base slot by return-assignability would
