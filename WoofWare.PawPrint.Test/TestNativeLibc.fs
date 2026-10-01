@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint.Test
 
+open FsCheck
+open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -230,66 +232,74 @@ module TestNativeLibc =
             screen (ignored, PosixSignalShim.initial) Signal.SIGCONT |> shouldEqual None
 
     [<Test>]
-    let ``a registered signal already pending is refused`` () : unit =
+    let ``a registered signal is answered whatever is already pending`` () : unit =
+        // The kernel's pending set holds only what the kernel has not
+        // delivered: once System.Native's handler has taken a signal it is a
+        // byte in the shim's pipe, which no later signal merges with,
+        // discards or overtakes. So nothing pending, registered or not, the
+        // same signal or another, process- or thread-directed, is a reason to
+        // refuse sending a registered signal.
+        let candidates =
+            [
+                Signal.SIGHUP
+                Signal.SIGINT
+                Signal.SIGQUIT
+                Signal.SIGTERM
+                Signal.SIGWINCH
+                Signal.SIGTSTP
+                Signal.SIGCONT
+                Signal.SIGUSR2
+            ]
+
+        let property (numbering : SignalNumbering) (registeredMask : bool list) (pending : (int * bool) list) =
+            let registered =
+                List.zip candidates (List.truncate candidates.Length (registeredMask @ List.replicate 8 false))
+                |> List.filter snd
+                |> List.map fst
+
+            let signals, shim =
+                (fresh numbering, registered)
+                ||> List.fold (fun state signal -> register numbering signal state)
+
+            let signals =
+                (signals, pending)
+                ||> List.fold (fun signals (index, aimedAtThread) ->
+                    let signal =
+                        candidates.[((index % candidates.Length) + candidates.Length) % candidates.Length]
+
+                    SignalState.enqueue
+                        {
+                            Signal = signal
+                            Target = if aimedAtThread then ValueSome 3 else ValueNone
+                        }
+                        signals
+                )
+
+            for sent in registered do
+                screen (signals, shim) sent |> shouldEqual None
+
+                screen (signals, shim) (Signal.Other (Signal.toRawSignoUnder numbering sent))
+                |> shouldEqual None
+
+        let gen =
+            gen {
+                let! numbering = Gen.elements everyNumbering
+                let! registeredMask = Gen.listOfLength 8 (Gen.elements [ true ; false ])
+                let! pending = Gen.listOf (Gen.zip (Gen.choose (0, 7)) (Gen.elements [ true ; false ]))
+                return numbering, registeredMask, List.truncate 10 pending
+            }
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 200,
+            Prop.forAll (Arb.fromGen gen) (fun (numbering, mask, pending) -> property numbering mask pending)
+        )
+
+        // The same signal, pending while registered, spelt either way.
         for numbering in everyNumbering do
             let signals, shim = register numbering Signal.SIGTERM (fresh numbering)
-
-            screen (signals, shim) Signal.SIGTERM |> shouldEqual None
-
             let pending = SignalState.enqueue (processDirected Signal.SIGTERM) signals, shim
-
-            screen pending Signal.SIGTERM
-            |> shouldEqual (Some (UnmodelledSelfSignal.WouldCoalesce Signal.SIGTERM))
-
-            // Spelt by number, it is still the same signal.
-            screen pending (Signal.Other 15)
-            |> shouldEqual (Some (UnmodelledSelfSignal.WouldCoalesce Signal.SIGTERM))
-
-            // A different pending signal is no reason.
-            let otherSignals, otherShim = register numbering Signal.SIGHUP (signals, shim)
-
-            screen (SignalState.enqueue (processDirected Signal.SIGHUP) otherSignals, otherShim) Signal.SIGTERM
-            |> shouldEqual None
-
-    [<Test>]
-    let ``a pending instance aimed at one thread is no reason to refuse`` () : unit =
-        // It sits in the thread's own pending set, which a signal sent to the
-        // process does not merge with.
-        let signals, shim =
-            register SignalNumbering.Linux Signal.SIGTERM (fresh SignalNumbering.Linux)
-
-        let pending =
-            signals
-            |> SignalState.enqueue
-                {
-                    Signal = Signal.SIGTERM
-                    Target = ValueSome 3
-                }
-
-        screen (pending, shim) Signal.SIGTERM |> shouldEqual None
-
-    [<Test>]
-    let ``a pending signal with no handler is no reason to refuse`` () : unit =
-        // Pending because every thread blocks it: that is the kernel's own
-        // pending set, which does merge a second instance.
-        let pending =
-            initial SignalNumbering.Linux
-            |> SignalState.block 0 Signal.SIGTERM
-            |> SignalState.enqueue (processDirected Signal.SIGTERM)
-
-        screen (pending, PosixSignalShim.initial) Signal.SIGTERM |> shouldEqual None
-
-    [<Test>]
-    let ``a pending real-time signal is no reason to refuse`` () : unit =
-        // Real-time signals queue rather than merge, in the kernel and in the
-        // model alike.
-        let realTime = Signal.Other 40
-
-        let signals, shim =
-            register SignalNumbering.Linux realTime (fresh SignalNumbering.Linux)
-
-        screen (SignalState.enqueue (processDirected realTime) signals, shim) realTime
-        |> shouldEqual None
+            screen pending Signal.SIGTERM |> shouldEqual None
+            screen pending (Signal.Other 15) |> shouldEqual None
 
     [<Test>]
     let ``inherited ignores are set only on a fresh process`` () : unit =
@@ -314,126 +324,3 @@ module TestNativeLibc =
             |> ignore<EmulatedKernel>
         )
         |> ignore<exn>
-
-    [<Test>]
-    let ``a send that would discard a signal queued for System.Native's dispatcher is refused`` () : unit =
-        for numbering in everyNumbering do
-            let registered =
-                fresh numbering
-                |> register numbering Signal.SIGTSTP
-                |> register numbering Signal.SIGCONT
-                |> fst
-
-            let generate (sent : Signal) (before : SignalState<int, NativeSignalHandler>) =
-                SignalState.generate CoreDumps.Suppressed 0 (Set.singleton 0) (processDirected sent) before
-                |> function
-                    | Ok (SignalGeneration.ProcessContinues after)
-                    | Ok (SignalGeneration.ProcessStopped (_, after)) -> after
-                    | other -> failwith $"expected %O{sent} to leave the process running, got %A{other}"
-
-            let stopPending = SignalState.enqueue (processDirected Signal.SIGTSTP) registered
-
-            NativeLibc.screenGeneration Signal.SIGCONT stopPending (generate Signal.SIGCONT stopPending)
-            |> shouldEqual (Some (UnmodelledSelfSignal.WouldDiscardQueued (Signal.SIGCONT, Signal.SIGTSTP)))
-
-            let contPending = SignalState.enqueue (processDirected Signal.SIGCONT) registered
-
-            NativeLibc.screenGeneration Signal.SIGTSTP contPending (generate Signal.SIGTSTP contPending)
-            |> shouldEqual (Some (UnmodelledSelfSignal.WouldDiscardQueued (Signal.SIGTSTP, Signal.SIGCONT)))
-
-            // A pending stop signal nothing is registered for sits in the
-            // kernel's own pending set, which SIGCONT does discard.
-            let kernelPending =
-                initial numbering
-                |> SignalState.block 0 Signal.SIGTSTP
-                |> SignalState.enqueue (processDirected Signal.SIGTSTP)
-
-            NativeLibc.screenGeneration Signal.SIGCONT kernelPending (generate Signal.SIGCONT kernelPending)
-            |> shouldEqual None
-
-            // And a send that discards nothing is no reason.
-            let usr2Pending = SignalState.block 0 Signal.SIGUSR2 stopPending
-
-            NativeLibc.screenGeneration Signal.SIGUSR2 usr2Pending (generate Signal.SIGUSR2 usr2Pending)
-            |> shouldEqual None
-
-    [<Test>]
-    let ``a send the kernel would take ahead of a signal queued for System.Native's dispatcher is refused`` () : unit =
-        for numbering in everyNumbering do
-            let registered =
-                fresh numbering
-                |> register numbering Signal.SIGTERM
-                |> register numbering Signal.SIGINT
-                |> register numbering Signal.SIGWINCH
-                |> fst
-
-            let generate (sent : Signal) (before : SignalState<int, NativeSignalHandler>) =
-                match SignalState.generate CoreDumps.Suppressed 0 (Set.singleton 0) (processDirected sent) before with
-                | Ok (SignalGeneration.ProcessContinues after) -> after
-                | other -> failwith $"expected %O{sent} to leave the process running, got %A{other}"
-
-            let screenSend (sent : Signal) (before : SignalState<int, NativeSignalHandler>) =
-                NativeLibc.screenOrder 0 sent before (generate sent before)
-
-            // SIGINT (2) is taken before SIGTERM (15), which the dispatcher
-            // already has.
-            let termPending = SignalState.enqueue (processDirected Signal.SIGTERM) registered
-
-            screenSend Signal.SIGINT termPending
-            |> shouldEqual (Some (UnmodelledSelfSignal.WouldOvertake (Signal.SIGINT, Signal.SIGTERM)))
-
-            // SIGWINCH is taken after SIGTERM, which is the order it was sent in.
-            screenSend Signal.SIGWINCH termPending |> shouldEqual None
-
-            // Ahead of a pending signal nothing is registered for, which sits
-            // in the kernel's own pending set rather than the dispatcher's.
-            let kernelPending =
-                registered
-                |> SignalState.block 0 Signal.SIGUSR2
-                |> SignalState.enqueue (processDirected Signal.SIGUSR2)
-
-            screenSend Signal.SIGINT kernelPending |> shouldEqual None
-
-            // A signal the send leaves pending on nothing, because it is
-            // discarded as ignored, overtakes nothing.
-            screenSend Signal.SIGCHLD termPending |> shouldEqual None
-
-    [<Test>]
-    let ``a send the kernel would take after every queued signal is no reason to refuse`` () : unit =
-        // Against a queue of registered signals, sending any registered signal
-        // is refused exactly when some queued one is taken after it.
-        for numbering in everyNumbering do
-            let candidates =
-                [
-                    Signal.SIGHUP
-                    Signal.SIGINT
-                    Signal.SIGQUIT
-                    Signal.SIGTERM
-                    Signal.SIGWINCH
-                ]
-
-            let registered =
-                (fresh numbering, candidates)
-                ||> List.fold (fun state signal -> register numbering signal state)
-                |> fst
-
-            let signo (signal : Signal) : int = Signal.toRawSignoUnder numbering signal
-
-            for queued in candidates do
-                for sent in candidates |> List.filter (fun s -> s <> queued) do
-                    let before = SignalState.enqueue (processDirected queued) registered
-
-                    let after =
-                        match
-                            SignalState.generate CoreDumps.Suppressed 0 (Set.singleton 0) (processDirected sent) before
-                        with
-                        | Ok (SignalGeneration.ProcessContinues after) -> after
-                        | other -> failwith $"%A{other}"
-
-                    let expected =
-                        if signo sent < signo queued then
-                            Some (UnmodelledSelfSignal.WouldOvertake (sent, queued))
-                        else
-                            None
-
-                    NativeLibc.screenOrder 0 sent before after |> shouldEqual expected
