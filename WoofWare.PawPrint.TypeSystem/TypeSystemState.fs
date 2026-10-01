@@ -53,7 +53,7 @@ type ConcreteMethodKey =
         MethodGenerics : ConcreteTypeHandle list
     }
 
-/// `ExecutionConcretization.concretizeMethodWithAllGenerics`'s answer for a `ConcreteMethodKey`.
+/// `MethodConcretisation.concretizeMethodWithAllGenerics`'s answer for a `ConcreteMethodKey`.
 type ConcretisedMethod =
     {
         Method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
@@ -122,7 +122,7 @@ type TypeSystemState =
         ///
         /// Add through `WithMemberResolution`, never by assignment.
         _MemberResolutions : Map<MemberResolutionKey, ResolvedMemberReference>
-        /// Memo of `ExecutionConcretization.concretizeMethodWithAllGenerics`, keyed on the
+        /// Memo of `MethodConcretisation.concretizeMethodWithAllGenerics`, keyed on the
         /// definition and the concrete generic arguments.
         ///
         /// Every call concretises its callee otherwise: concretising the declaring type, the
