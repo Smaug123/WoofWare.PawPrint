@@ -349,8 +349,41 @@ module TestNativeLibc =
 
             // Unregistering restores the ignore the shim saved.
             PosixSignalShim.restoreHandler numbering Signal.SIGPIPE signals shim
+            |> fst
             |> SignalState.disposition Signal.SIGPIPE
             |> shouldEqual SignalDisposition.Ignore
+
+    [<Test>]
+    let ``System.Native installs its handler once until it restores it, whatever the disposition does meanwhile``
+        ()
+        : unit
+        =
+        // The runtime's fault handler, run first by System.Native's, restores
+        // the default over System.Native's handler; installing again then does
+        // nothing (`g_handlerIsInstalled`), until a restore puts the runtime's
+        // handler back and forgets the installation.
+        for numbering in everyNumbering do
+            let sigill = signal numbering 4
+            let signals, shim = register numbering sigill (fresh numbering)
+
+            let restoredByRuntime =
+                SignalState.setDisposition sigill SignalDisposition.Default signals
+
+            let again, shimAgain = register numbering sigill (restoredByRuntime, shim)
+
+            SignalState.disposition sigill again |> shouldEqual SignalDisposition.Default
+            shimAgain |> shouldEqual shim
+
+            let restored, shimRestored =
+                PosixSignalShim.restoreHandler numbering sigill restoredByRuntime shim
+
+            match SignalState.disposition sigill restored with
+            | SignalDisposition.Catch action -> action.Handler |> shouldEqual faultHandler
+            | other -> failwith $"expected the runtime's handler back, got %A{other}"
+
+            match SignalState.disposition sigill (fst (register numbering sigill (restored, shimRestored))) with
+            | SignalDisposition.Catch action -> action.Handler |> shouldEqual NativeSignalHandler.SystemNative
+            | other -> failwith $"expected System.Native's handler installed afresh, got %A{other}"
 
     [<Test>]
     let ``every other signal is answered from a fresh state, but SIGCONT`` () : unit =

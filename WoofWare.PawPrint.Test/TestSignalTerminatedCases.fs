@@ -61,6 +61,12 @@ module TestSignalTerminatedCases =
                 FileName = "PosixSignalRegisteredFaultSignal.cs"
                 Signo = 4
             }
+            {
+                // The same, with System.Native's enabling of SIGILL called
+                // again between the two: it does not reinstall the handler.
+                FileName = "PosixSignalReenabledAfterFaultRestore.cs"
+                Signo = 4
+            }
         ]
 
     [<TestCaseSource(nameof cases)>]
