@@ -123,6 +123,14 @@ type ExceptionEscape =
     /// The wrap fires only on unwind across this frame's boundary, so a `try`/`catch` *inside*
     /// the frame that handles the exception is unaffected.
     | WrapInTargetInvocation
+    /// The runtime calls this method from native code that catches every exception and discards
+    /// it, so nothing beyond this frame ever observes one: CoreCLR's `EX_CATCH {}` around a call
+    /// into managed code. `runtimeCaller` names that native code, for diagnostics.
+    ///
+    /// PawPrint does not yet model the discard. Exception dispatch ends the run on reaching such
+    /// a frame's boundary rather than let the exception unwind into a caller that CoreCLR would
+    /// never have shown it to.
+    | SwallowedByRuntime of runtimeCaller : string
 
 type MethodReturnState =
     {

@@ -452,6 +452,7 @@ module IlMachineThreadState =
                 // No IL has run on this thread, so nothing can have asked to raise a foreign
                 // exception on it.
                 IsRaisingForeignException = false
+                PendingAssemblyLoads = PendingAssemblyLoads.empty
             }
 
         let newState =
@@ -506,6 +507,7 @@ module IlMachineThreadState =
                 YieldDebt = Set.empty
                 // As above: this thread has run no IL yet.
                 IsRaisingForeignException = false
+                PendingAssemblyLoads = PendingAssemblyLoads.empty
             }
 
         let newState =
@@ -601,6 +603,10 @@ module IlMachineThreadState =
             failwith
                 $"reParkDispatcher: thread {thread} is in status %O{other}, expected Runnable (a handler frame should have been mid-execution before its bottom `ret`)."
 
+        if not (PendingAssemblyLoads.isEmpty existing.PendingAssemblyLoads) then
+            failwith
+                $"reParkDispatcher: thread {thread} still has assemblies to announce through AppDomain.AssemblyLoad (%A{PendingAssemblyLoads.toList existing.PendingAssemblyLoads}); they would be lost when its frames are discarded."
+
         let parked : ThreadState =
             {
                 MethodStates = Map.empty
@@ -616,6 +622,12 @@ module IlMachineThreadState =
                 // is set and consumed within a single guest `throw`, and the transition
                 // happens at a handler frame's bottom `ret`.
                 IsRaisingForeignException = existing.IsRaisingForeignException
+                // Frame ids restart from zero, so a pending announcement waiting on one of the old
+                // frames could not be carried across. None can be pending (checked above): a load
+                // is announced, or forgotten for want of a subscriber, at the start of the step
+                // after it, and the final `ret` step records nothing — `AssemblyLoadEvent.recordLoads`
+                // refuses a load in that step if anything is subscribed.
+                PendingAssemblyLoads = PendingAssemblyLoads.empty
             }
 
         { state with

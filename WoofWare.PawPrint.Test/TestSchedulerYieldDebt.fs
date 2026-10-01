@@ -60,6 +60,7 @@ module TestSchedulerYieldDebt =
         {
             MethodStates = Map.empty
             YieldDebt = Set.empty
+            PendingAssemblyLoads = PendingAssemblyLoads.empty
             NextFrameId = 0
             ActiveMethodState = FrameId -1
             Status = status

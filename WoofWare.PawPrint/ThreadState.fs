@@ -527,6 +527,10 @@ type ThreadState =
         /// `IsBackground` as another per-thread runtime fact the guest can only influence
         /// indirectly.
         IsRaisingForeignException : bool
+        /// The assemblies this thread has loaded that `AppDomain.AssemblyLoad` has not yet been
+        /// raised for. Recorded after each of the thread's steps and announced at the start of its
+        /// next, by `AssemblyLoadEvent`.
+        PendingAssemblyLoads : PendingAssemblyLoads
     }
 
     // --- Frame resolution primitives ---
@@ -621,6 +625,7 @@ type ThreadState =
             Name = None
             YieldDebt = Set.empty
             IsRaisingForeignException = false
+            PendingAssemblyLoads = PendingAssemblyLoads.empty
         }
 
     static member peekEvalStack (state : ThreadState) : EvalStackValue option =

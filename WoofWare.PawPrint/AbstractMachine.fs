@@ -619,8 +619,9 @@ module AbstractMachine =
                 $"logic error: thread %O{thread} ended with an unhandled exception while also requesting the step effect %O{effect}; a step that did not retire must not emit one"
         | _ -> result
 
-    /// Execute one step of the given thread: its active frame's prologue if it still has one, and
-    /// otherwise one IL instruction.
+    /// Execute one step of the given thread: raising `AppDomain.AssemblyLoad` for an assembly an
+    /// earlier step of it loaded, if one is due; otherwise its active frame's prologue if it still
+    /// has one, and otherwise one IL instruction.
     ///
     /// A prologue that finishes does not consume the step. The check is bookkeeping the CLR emits
     /// into the callee's entry rather than an instruction the guest wrote, so charging virtual
@@ -634,14 +635,20 @@ module AbstractMachine =
         =
         let logger = logger loggerFactory
 
-        match state.ThreadState.[thread].MethodState.PendingTypeInit with
-        | None ->
-            executeOneStepInitialised loggerFactory baseClassTypes state thread logger
-            |> surfaceTerminatingStep thread
-        | Some ty ->
+        let loadedBefore = state._LoadedAssemblies.DefinitionNamesInLoadOrder.Length
 
-        match runPendingTypeInit loggerFactory baseClassTypes state thread ty with
-        | Choice1Of2 result -> result |> surfaceTerminatingStep thread
-        | Choice2Of2 state ->
-            executeOneStepInitialised loggerFactory baseClassTypes state thread logger
-            |> surfaceTerminatingStep thread
+        let result =
+            match AssemblyLoadEvent.tryAnnounce loggerFactory baseClassTypes thread state with
+            | AssemblyLoadAnnouncement.Pushed state ->
+                ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall)
+            | AssemblyLoadAnnouncement.NothingDue state ->
+                match state.ThreadState.[thread].MethodState.PendingTypeInit with
+                | None -> executeOneStepInitialised loggerFactory baseClassTypes state thread logger
+                | Some ty ->
+                    match runPendingTypeInit loggerFactory baseClassTypes state thread ty with
+                    | Choice1Of2 result -> result
+                    | Choice2Of2 state -> executeOneStepInitialised loggerFactory baseClassTypes state thread logger
+
+        result
+        |> surfaceTerminatingStep thread
+        |> AssemblyLoadEvent.recordLoads baseClassTypes thread loadedBefore

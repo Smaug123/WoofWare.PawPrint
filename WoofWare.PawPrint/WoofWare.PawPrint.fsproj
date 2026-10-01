@@ -67,6 +67,7 @@
     <Compile Include="MemoryPools.fsi" />
     <Compile Include="MemoryPools.fs" />
     <Compile Include="MethodState.fs" />
+    <Compile Include="PendingAssemblyLoads.fs" />
     <Compile Include="ThreadState.fs" />
     <Compile Include="StackFrameCapture.fs" />
     <Compile Include="StackCrawlMark.fs" />
@@ -229,6 +230,7 @@
     <Compile Include="UnsafeAccessorDispatch.fs" />
     <Compile Include="SignalDispatch.fs" />
     <Compile Include="StackShapeOfMethod.fs" />
+    <Compile Include="AssemblyLoadEvent.fs" />
     <Compile Include="AbstractMachine.fs" />
     <Compile Include="AppContextSeed.fs" />
     <Compile Include="CommandLineArgsInit.fs" />

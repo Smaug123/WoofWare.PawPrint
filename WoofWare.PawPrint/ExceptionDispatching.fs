@@ -664,6 +664,21 @@ module ExceptionDispatching =
         | None -> state, FirstPassResult.SearchConcluded (search, ExceptionSearchOutcome.NoHandler)
         | Some returnState ->
 
+        match returnState.ExceptionEscape with
+        | ExceptionEscape.SwallowedByRuntime runtimeCaller ->
+            let exceptionTypeName =
+                match AllConcreteTypes.lookup search.ExceptionType state.ConcreteTypes with
+                | Some ct ->
+                    Assembly.fullName
+                        (state._LoadedAssemblies.ByDefinitionName ct.Identity.AssemblyFullName)
+                        ct.Identity
+                | None -> $"<unknown type handle %O{search.ExceptionType}>"
+
+            failwith
+                $"An exception of type %s{exceptionTypeName} escaped %s{frame.ExecutingMethod.Name}, which the runtime called from %s{runtimeCaller}. CoreCLR catches and discards it there; PawPrint does not yet model that, so it refuses to continue rather than unwind the exception into a caller that would never have seen it."
+        | ExceptionEscape.Propagate
+        | ExceptionEscape.WrapInTargetInvocation ->
+
         if
             returnState.WasInitialisingType.IsSome
             || returnState.ExceptionEscape = ExceptionEscape.WrapInTargetInvocation
