@@ -383,6 +383,16 @@ type IlMachineState =
             _LoadedAssemblies = this._LoadedAssemblies.WithLoadedAssembly value
         }
 
+    /// Register a dynamic assembly; see `LoadedAssemblies.WithDynamicAssembly`, whose error this
+    /// passes on.
+    member this.WithDynamicAssembly (value : DumpedAssembly) : Result<IlMachineState, DumpedAssembly> =
+        this._LoadedAssemblies.WithDynamicAssembly value
+        |> Result.map (fun loaded ->
+            { this with
+                _LoadedAssemblies = loaded
+            }
+        )
+
     /// The loaded assembly with this definition identity, if it is loaded.
     member this.LoadedAssembly (definitionFullName : string) : DumpedAssembly option =
         this._LoadedAssemblies.TryByDefinitionName definitionFullName

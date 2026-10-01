@@ -459,3 +459,126 @@ module TestLoadedAssemblies =
 
         let loaded = LoadedAssemblies.empty.WithLoadedAssembly first
         expectCollisionRejected (fun () -> loaded.WithLoadedAssembly second |> ignore)
+
+    /// A dynamic assembly named `name`, with no public key, as `AppDomain_CreateDynamicAssembly`
+    /// would make it.
+    let private dynamicAssembly (name : string) : DumpedAssembly =
+        let parts : DynamicAssemblyName =
+            {
+                SimpleName = name
+                Version = Version (0, 0, 0, 0)
+                Culture = ""
+                PublicKey = System.Collections.Immutable.ImmutableArray<byte>.Empty
+                Flags = enum<AssemblyFlags> 0
+                HashAlgorithm = AssemblyHashAlgorithm.Sha1
+            }
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use stream = new MemoryStream (DynamicAssemblyImage.build parts Guid.Empty)
+        AssemblyApi.read loggerFactory None stream
+
+    /// A reference whose identity is `target`'s definition identity: the shape the exact-identity
+    /// fallback in `TryResolveReference` answers.
+    let private referenceNaming (target : DumpedAssembly) : AssemblyReference =
+        let _, reference = references.Value.[0]
+
+        { reference with
+            Name = target.Name
+            FullName = target.DefinitionFullName
+        }
+
+    [<Test>]
+    let ``a dynamic assembly is found by its own name and never by a reference`` () : unit =
+        if references.Value.Length = 0 then
+            Assert.Ignore "No shared-framework assemblies found next to corelib"
+
+        let dynamic = dynamicAssembly "Dynamic"
+
+        let loaded =
+            match LoadedAssemblies.empty.WithDynamicAssembly dynamic with
+            | Ok loaded -> loaded
+            | Error existing -> failwith $"unexpected collision with %s{existing.DefinitionFullName}"
+
+        loaded.IsDynamic dynamic.DefinitionFullName |> shouldEqual true
+
+        (loaded.TryByDefinitionName dynamic.DefinitionFullName).IsSome
+        |> shouldEqual true
+
+        (loaded.DefinitionNamesInLoadOrder |> List.ofSeq)
+        |> shouldEqual [ dynamic.DefinitionFullName ]
+
+        // An image registered the ordinary way under the same kind of identity is found by the same
+        // reference; that is the fallback the dynamic one must not take.
+        let image = dynamicAssembly "Image"
+        let withImage = loaded.WithLoadedAssembly image
+        withImage.IsDynamic image.DefinitionFullName |> shouldEqual false
+
+        (withImage.TryResolveReference (referenceNaming image)).IsSome
+        |> shouldEqual true
+
+        (withImage.TryResolveReference (referenceNaming dynamic)).IsNone
+        |> shouldEqual true
+
+    [<Test>]
+    let ``a dynamic assembly cannot share an identity already loaded`` () : unit =
+        if pool.Value.Length = 0 then
+            Assert.Ignore "No shared-framework assemblies found next to corelib"
+
+        let dynamic = dynamicAssembly "Twin"
+
+        let loaded =
+            match LoadedAssemblies.empty.WithDynamicAssembly dynamic with
+            | Ok loaded -> loaded
+            | Error existing -> failwith $"unexpected collision with %s{existing.DefinitionFullName}"
+
+        match loaded.WithDynamicAssembly (dynamicAssembly "Twin") with
+        | Ok _ -> Assert.Fail "Expected a second dynamic assembly named Twin to be refused"
+        | Error existing -> Object.ReferenceEquals (existing, dynamic) |> shouldEqual true
+
+        let image = pool.Value.[0]
+        let loaded = loaded.WithLoadedAssembly image
+
+        // Identical to the image in everything but its module version ID and contents.
+        let shadow =
+            let parts : DynamicAssemblyName =
+                {
+                    SimpleName = image.Name.Name
+                    Version = image.Name.Version
+                    Culture = image.Name.CultureName
+                    PublicKey = image.PublicKey
+                    Flags = image.Flags
+                    HashAlgorithm = image.HashAlgorithm
+                }
+
+            let _, loggerFactory = LoggerFactory.makeTest ()
+            use stream = new MemoryStream (DynamicAssemblyImage.build parts Guid.Empty)
+            AssemblyApi.read loggerFactory None stream
+
+        shadow.DefinitionFullName |> shouldEqual image.DefinitionFullName
+
+        match loaded.WithDynamicAssembly shadow with
+        | Ok _ -> Assert.Fail $"Expected a dynamic assembly named %s{image.DefinitionFullName} to be refused"
+        | Error existing -> Object.ReferenceEquals (existing, image) |> shouldEqual true
+
+    [<Test>]
+    let ``no reference binds to a dynamic assembly`` () : unit =
+        if references.Value.Length = 0 then
+            Assert.Ignore "No shared-framework assemblies found next to corelib"
+
+        let dynamic = dynamicAssembly "Unbindable"
+
+        let loaded =
+            match LoadedAssemblies.empty.WithDynamicAssembly dynamic with
+            | Ok loaded -> loaded
+            | Error existing -> failwith $"unexpected collision with %s{existing.DefinitionFullName}"
+
+        let thrown =
+            try
+                loaded.WithBoundReference (referenceNaming dynamic) dynamic |> ignore
+                None
+            with e ->
+                Some e.Message
+
+        match thrown with
+        | None -> Assert.Fail "Expected binding a reference to a dynamic assembly to be refused"
+        | Some message -> message |> shouldContainText "never binds a reference to a dynamic assembly"

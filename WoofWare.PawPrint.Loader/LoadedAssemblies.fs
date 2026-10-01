@@ -51,6 +51,9 @@ type LoadedAssemblies =
             Bindings : ImmutableDictionary<string, string>
             /// The keys of <c>ByDefinition</c>, in the order each was first registered.
             LoadOrder : ImmutableArray<string>
+            /// The keys of <c>ByDefinition</c> that name a dynamic assembly: one created at run time
+            /// by <c>AssemblyBuilder</c> rather than read from an image on disk.
+            Dynamic : ImmutableHashSet<string>
         }
 
     /// <summary>
@@ -106,6 +109,12 @@ type LoadedAssemblies =
         this.ByDefinition.ContainsKey name.FullName
 
     /// <summary>
+    /// True if the loaded assembly with this definition identity is a dynamic one, registered by
+    /// <c>WithDynamicAssembly</c>. What <c>Assembly.IsDynamic</c> reports.
+    /// </summary>
+    member this.IsDynamic (fullName : string) : bool = this.Dynamic.Contains fullName
+
+    /// <summary>
     /// Resolve an AssemblyReference to the assembly it names, if we have already bound it.
     /// </summary>
     /// <remarks>
@@ -115,13 +124,20 @@ type LoadedAssemblies =
     /// or a fixture that exists only in memory) is found the first time some other assembly
     /// references it; without this fallback we would go to disk for an assembly we already
     /// have, and fail outright for one that was never written to disk.
+    ///
+    /// A dynamic assembly is never found this way. CoreCLR's binder does not consult dynamic
+    /// assemblies, so a reference that names one is bound, if at all, to an image on disk.
     /// </remarks>
     member this.TryResolveReference (reference : WoofWare.PawPrint.AssemblyReference) : DumpedAssembly option =
         let refFullName = reference.FullName
 
         match this.Bindings.TryGetValue refFullName with
         | true, definitionName -> this.TryByDefinitionName definitionName
-        | false, _ -> this.TryByDefinitionName refFullName
+        | false, _ ->
+            if this.Dynamic.Contains refFullName then
+                None
+            else
+                this.TryByDefinitionName refFullName
 
     /// <summary>
     /// The canonical instance for <paramref name="assy"/>'s definition identity: whatever we
@@ -195,16 +211,46 @@ type LoadedAssemblies =
         : LoadedAssemblies * DumpedAssembly
         =
         let definitionName = assy.DefinitionFullName
+
+        if this.Dynamic.Contains definitionName then
+            failwithf
+                "Refusing to bind reference %s to the dynamic assembly %s: CoreCLR's binder never binds a reference to a dynamic assembly."
+                reference.FullName
+                definitionName
+
         let canonical = this.Canonicalise assy (fun () -> reference.FullName)
 
         let result =
-            {
+            { this with
                 ByDefinition = this.ByDefinition.SetItem (definitionName, canonical)
                 Bindings = this.Bindings.SetItem (reference.FullName, definitionName)
                 LoadOrder = this.LoadOrderWith definitionName
             }
 
         result, canonical
+
+    /// <summary>
+    /// Register a dynamic assembly: one created at run time, whose identity no image on disk
+    /// supplied. Such an assembly is found by its definition identity like any other, and reported
+    /// by <c>IsDynamic</c>, but no assembly reference ever binds to it.
+    /// </summary>
+    /// <returns>
+    /// An error naming the assembly already loaded under <paramref name="assy"/>'s definition identity,
+    /// if there is one. CoreCLR admits a dynamic assembly whose identity another assembly already
+    /// has, but here that would make the two one assembly.
+    /// </returns>
+    member this.WithDynamicAssembly (assy : DumpedAssembly) : Result<LoadedAssemblies, DumpedAssembly> =
+        let definitionName = assy.DefinitionFullName
+
+        match this.ByDefinition.TryGetValue definitionName with
+        | true, existing -> Error existing
+        | false, _ ->
+            { this with
+                ByDefinition = this.ByDefinition.Add (definitionName, assy)
+                LoadOrder = this.LoadOrder.Add definitionName
+                Dynamic = this.Dynamic.Add definitionName
+            }
+            |> Ok
 
 [<RequireQualifiedAccess>]
 module LoadedAssemblies =
@@ -213,6 +259,7 @@ module LoadedAssemblies =
             ByDefinition = ImmutableDictionary.Empty
             Bindings = ImmutableDictionary.Empty
             LoadOrder = ImmutableArray<string>.Empty
+            Dynamic = ImmutableHashSet.Empty
         }
 
     /// Build a load context from assemblies indexed by their own definition identities, with no

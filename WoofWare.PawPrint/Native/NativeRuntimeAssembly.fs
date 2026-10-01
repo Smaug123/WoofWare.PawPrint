@@ -332,6 +332,32 @@ module NativeRuntimeAssembly =
         | "System.Private.CoreLib",
           "System.Reflection",
           "RuntimeAssembly",
+          "GetIsDynamic",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ->
+            let operation = "RuntimeAssembly.GetIsDynamic"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let assemblyHandle, state = IlMachineState.popEvalStack ctx.Thread state
+
+            // CoreCLR is `pAssembly->GetPEAssembly()->IsReflectionEmit()`.
+            let assemblyFullName =
+                match assemblyHandle with
+                | EvalStackValue.NativeInt (NativeIntSource.AssemblyHandle assemblyFullName) -> assemblyFullName
+                | other -> failwith $"%s{operation}: expected an assembly handle, got %O{other}"
+
+            if (state.LoadedAssembly assemblyFullName).IsNone then
+                failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded"
+
+            let state =
+                IlMachineState.pushToEvalStack
+                    (CliType.ofBool (state._LoadedAssemblies.IsDynamic assemblyFullName))
+                    ctx.Thread
+                    state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System.Reflection",
+          "RuntimeAssembly",
           "GetManifestModule",
           [ CorelibType state.ConcreteTypes ("System.Reflection", "RuntimeAssembly", runtimeAssemblyGenerics) ],
           MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System.Reflection",
