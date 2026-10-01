@@ -365,8 +365,8 @@ module TestAccept =
                 SocketPhase.Idle
                 SocketPhase.EstablishedPendingReport (ConnectionId 7L)
                 SocketPhase.Established (ConnectionId 7L)
-                SocketPhase.RefusedPendingDelivery
-                SocketPhase.Dead
+                SocketPhase.Refused RefusalError.Pending
+                SocketPhase.Refused RefusalError.Reported
             ]
 
         for phase in phases do

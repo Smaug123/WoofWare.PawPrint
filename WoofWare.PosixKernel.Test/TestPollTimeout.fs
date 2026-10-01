@@ -276,7 +276,7 @@ module TestPollTimeout =
                             Map.add
                                 socketId
                                 { socket with
-                                    Phase = SocketPhase.RefusedPendingDelivery
+                                    Phase = SocketPhase.Refused RefusalError.Pending
                                 }
                                 parked.Machine.Sockets
                     }

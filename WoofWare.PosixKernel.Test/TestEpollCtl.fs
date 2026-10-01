@@ -539,7 +539,7 @@ module TestEpollCtl =
                 withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established orphan),
                 0x2145u
                 "IPv4 TCP, refused, pending delivery",
-                withSocket SocketDomain.Inet SocketKind.Stream SocketPhase.RefusedPendingDelivery,
+                withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Refused RefusalError.Pending),
                 0x215du
                 "IPv4 UDP, idle", withSocket SocketDomain.Inet SocketKind.Datagram SocketPhase.Idle, 0x0304u
                 "IPv6 UDP, idle", withSocket SocketDomain.Inet6 SocketKind.Datagram SocketPhase.Idle, 0x0304u

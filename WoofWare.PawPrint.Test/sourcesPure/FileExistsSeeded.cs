@@ -92,11 +92,8 @@ class Program
         if (!Is(Directory.Exists("cyc"), false)) return check;
 
         // Not tested here: st_size, st_uid/st_gid, st_dev/st_ino and the
-        // timestamps. FileInfo.Length would reach all of the machinery but
-        // takes FileStatus.HasReadOnlyFlag on the way, which calls
-        // SystemNative_GetEUid — not implemented, so it crashes rather than
-        // answering. StatFieldsSeeded.cs reads those fields directly instead,
-        // through a hand-rolled P/Invoke; it is a PawPrint-only test because
+        // timestamps. StatFieldsSeeded.cs reads those fields directly,
+        // through a hand-rolled P/Invoke. It is a PawPrint-only test because
         // the uid and the timestamps of a real file cannot agree with a
         // simulated one's.
         return 0;
