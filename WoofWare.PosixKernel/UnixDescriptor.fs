@@ -1473,8 +1473,7 @@ module UnixDescriptor =
                 | SocketPhase.EstablishedPendingReport connection -> [ connection ]
                 | SocketPhase.Listening listenState -> listenState.Queue
                 | SocketPhase.Idle
-                | SocketPhase.RefusedPendingDelivery
-                | SocketPhase.Dead
+                | SocketPhase.Refused _
                 | SocketPhase.DatagramPeer _ -> []
 
             let stillReferenced (connection : ConnectionId) : bool =
@@ -1485,8 +1484,7 @@ module UnixDescriptor =
                     | SocketPhase.EstablishedPendingReport c -> c = connection
                     | SocketPhase.Listening listenState -> List.contains connection listenState.Queue
                     | SocketPhase.Idle
-                    | SocketPhase.RefusedPendingDelivery
-                    | SocketPhase.Dead
+                    | SocketPhase.Refused _
                     | SocketPhase.DatagramPeer _ -> false
                 )
 
@@ -1528,8 +1526,7 @@ module UnixDescriptor =
                                 | SocketPhase.EstablishedPendingReport c -> c = candidate
                                 | SocketPhase.Listening _
                                 | SocketPhase.Idle
-                                | SocketPhase.RefusedPendingDelivery
-                                | SocketPhase.Dead
+                                | SocketPhase.Refused _
                                 | SocketPhase.DatagramPeer _ -> false
                             )
                             |> Seq.map fst
@@ -1543,8 +1540,7 @@ module UnixDescriptor =
                     | Some refusal -> Error refusal
                     | None -> Ok []
                 | SocketPhase.Idle
-                | SocketPhase.RefusedPendingDelivery
-                | SocketPhase.Dead
+                | SocketPhase.Refused _
                 | SocketPhase.DatagramPeer _ -> Ok []
 
             match establishedSurvivors with

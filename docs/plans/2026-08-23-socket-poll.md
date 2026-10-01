@@ -141,7 +141,7 @@ Recorded because it settles the next slice's shape, and because it retires the
 | `SO_ERROR` after a completed non-blocking connect | `0`; the next `connect` still answers **SUCCESS once**, then `EISCONN` | `0`; next `connect` answers `EISCONN` |
 | `SO_ERROR` after a refused connect | `ECONNREFUSED`, **and consumes it** | `ECONNREFUSED`, and consumes it |
 | poll level after that consumption | drops `ERR`: `IN\|OUT\|ERR\|HUP` → `IN\|OUT\|HUP` | unchanged, `IN\|PRI\|HUP` |
-| next `connect` after that consumption | `ECONNABORTED` | `EINVAL` (the existing `Dead` latch) |
+| next `connect` after that consumption | `ECONNABORTED` | `EISCONN`, as before the consumption (remeasured on Darwin 27, `docs/probes/so-error/`) |
 
 So `GetSocketErrorOption` needs a *new phase* on Linux ("refused, error
 consumed") with its own poll level and its own `connect` answer. That is a

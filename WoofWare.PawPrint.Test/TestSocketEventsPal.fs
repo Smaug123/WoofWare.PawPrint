@@ -515,7 +515,7 @@ module TestSocketEventsPal =
                 addSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established connection)
                 addSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established connection)
                 addSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established (ConnectionId 8L))
-                addSocket SocketDomain.Inet SocketKind.Stream SocketPhase.RefusedPendingDelivery
+                addSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Refused RefusalError.Pending)
                 addSocket SocketDomain.Inet SocketKind.Datagram SocketPhase.Idle
                 addSocket SocketDomain.Unix SocketKind.Stream SocketPhase.Idle
             ]

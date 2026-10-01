@@ -403,7 +403,7 @@ module TestPollEventsPal =
                 withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established connection)
                 withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.EstablishedPendingReport connection)
                 withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established (ConnectionId 8L))
-                withSocket SocketDomain.Inet SocketKind.Stream SocketPhase.RefusedPendingDelivery
+                withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Refused RefusalError.Pending)
             ]
 
         let fds, system =

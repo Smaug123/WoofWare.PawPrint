@@ -1609,6 +1609,40 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // `SystemNative_GetSocketErrorOption` under Linux: a pending
+                // refusal reads once and the read takes it, the connect after
+                // that answers ECONNABORTED and resets, a completed connect
+                // reads SUCCESS and keeps its report for the next connect, the
+                // shim's NULL screen, and a failed getsockopt's errno.
+                // Expectations confirmed on real Linux .NET before the handler
+                // existed.
+                FileName = "SocketErrorOptionLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                // Compared: errnos and connection outcomes on loopback only.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // `SystemNative_GetSocketErrorOption` under Darwin: as its Linux
+                // sibling, except that connect answers EISCONN after a refusal
+                // whether or not the read has taken it, and after a completed
+                // connect. Expectations confirmed on real macOS 27 .NET.
+                FileName = "SocketErrorOptionDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                // Compared, as its Linux sibling is.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // `connect(2)`'s flavour-divergent rows under Linux: EISCONN
                 // on the listening socket itself, the retry-after-async
                 // semantics (SUCCESS-once after establishment; ECONNREFUSED

@@ -220,7 +220,7 @@ module TestPoll =
                 withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established orphan),
                 0x2145s
                 "IPv4 TCP, refused, pending delivery",
-                withSocket SocketDomain.Inet SocketKind.Stream SocketPhase.RefusedPendingDelivery,
+                withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Refused RefusalError.Pending),
                 0x215ds
                 // UDP: WRBAND alongside OUT, connected or not.
                 "IPv4 UDP, idle", withSocket SocketDomain.Inet SocketKind.Datagram SocketPhase.Idle, 0x0304s
@@ -410,7 +410,7 @@ module TestPoll =
     [<Test>]
     let ``ERR is reported whatever was asked`` () : unit =
         let fd, system =
-            withSocket SocketDomain.Inet SocketKind.Stream SocketPhase.RefusedPendingDelivery linux
+            withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Refused RefusalError.Pending) linux
 
         pollOrFail [ entry fd 0s ] 0 system |> shouldEqual ([ pollErr ||| pollHup ], 1)
 

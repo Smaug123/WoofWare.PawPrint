@@ -689,7 +689,7 @@ module TestSocketTable =
                 [
                     0L,
                     { someSocket with
-                        Phase = SocketPhase.RefusedPendingDelivery
+                        Phase = SocketPhase.Refused RefusalError.Pending
                     }
                 ]
                 1L
@@ -904,7 +904,7 @@ module TestSocketTable =
         outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EINPROGRESS)
 
         (UnixMachineState.socket (SocketId 0L) kernel.Machine).Phase
-        |> shouldEqual SocketPhase.RefusedPendingDelivery
+        |> shouldEqual (SocketPhase.Refused RefusalError.Pending)
 
         let outcome, kernel = connect (SocketId 0L) true (loopback 9999us) kernel
 
@@ -936,7 +936,7 @@ module TestSocketTable =
         kernel |> shouldEqual darwinPending
 
         (UnixMachineState.socket (SocketId 0L) kernel.Machine).Phase
-        |> shouldEqual SocketPhase.RefusedPendingDelivery
+        |> shouldEqual (SocketPhase.Refused RefusalError.Pending)
 
         let outcome, _ = connect (SocketId 0L) true (loopback 9999us) kernel
         outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EISCONN)
@@ -948,7 +948,7 @@ module TestSocketTable =
         outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
 
         (UnixMachineState.socket (SocketId 0L) kernel.Machine).Phase
-        |> shouldEqual SocketPhase.Dead
+        |> shouldEqual (SocketPhase.Refused RefusalError.Reported)
 
         let outcome, afterRetry = connect (SocketId 0L) true (loopback 9999us) kernel
         outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EISCONN)
@@ -1378,7 +1378,7 @@ module TestSocketTable =
                     0L,
                     { someSocket with
                         Kind = SocketKind.Datagram
-                        Phase = SocketPhase.RefusedPendingDelivery
+                        Phase = SocketPhase.Refused RefusalError.Pending
                     }
                 ]
                 1L
@@ -1389,7 +1389,7 @@ module TestSocketTable =
                 UnixSystemDefect.SocketPhaseKindMismatch (
                     SocketId 0L,
                     SocketKind.Datagram,
-                    SocketPhase.RefusedPendingDelivery
+                    SocketPhase.Refused RefusalError.Pending
                 )
             ]
 
@@ -1766,11 +1766,15 @@ module TestSocketTable =
         outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
 
         (UnixMachineState.socket (SocketId 1L) kernel.Machine).Phase
-        |> shouldEqual SocketPhase.Dead
+        |> shouldEqual (SocketPhase.Refused RefusalError.Reported)
 
         // A refused socket's port likewise answers RST.
         let outcome, _ =
-            connect (SocketId 1L) false (loopback 5000us) (kernelWith SocketPhase.RefusedPendingDelivery Map.empty)
+            connect
+                (SocketId 1L)
+                false
+                (loopback 5000us)
+                (kernelWith (SocketPhase.Refused RefusalError.Pending) Map.empty)
 
         outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
 

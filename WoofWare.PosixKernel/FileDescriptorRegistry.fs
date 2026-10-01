@@ -156,6 +156,17 @@ type ListenState =
         Queue : ConnectionId list
     }
 
+/// Whether a refused connection's error is still waiting to be reported. The
+/// kernels keep it in a slot of its own beside the socket's state (Linux's
+/// `sk_err`, Darwin's `so_error`), and so does `SocketPhase.Refused`.
+[<RequireQualifiedAccess>]
+type RefusalError =
+    /// ECONNREFUSED is pending, and an `SO_ERROR` read will report it.
+    | Pending
+    /// The ECONNREFUSED has been reported, by a blocking connect or by an
+    /// `SO_ERROR` read, and nothing is pending.
+    | Reported
+
 /// Where a socket is in its connection lifecycle. One value, rather than an
 /// `IsListening` flag beside a connection field, because the states are
 /// mutually exclusive in the kernel being modelled: a listening socket cannot
@@ -182,15 +193,19 @@ type SocketPhase =
     | EstablishedPendingReport of connection : ConnectionId
     /// Connected. `connect(2)` answers EISCONN.
     | Established of connection : ConnectionId
-    /// A non-blocking connect was refused and the ECONNREFUSED is still
-    /// pending. On Linux the next `connect(2)` delivers it and transitions to
-    /// `Idle`. Darwin's `connect(2)` never delivers it: every one answers
-    /// EISCONN, whatever the destination, and the socket stays here.
-    | RefusedPendingDelivery
-    /// Darwin's refused socket after a *blocking* refusal, which delivered the
-    /// error inline: nothing is pending, and every later `connect(2)` answers
-    /// EISCONN, whatever the destination. Unreachable under the Linux flavour.
-    | Dead
+    /// A connect was refused.
+    ///
+    /// A non-blocking refusal leaves its ECONNREFUSED `Pending`, and an
+    /// `SO_ERROR` read reports it and leaves it `Reported`. A blocking refusal
+    /// reports it inline: Darwin's socket is then here with the error
+    /// `Reported`, and Linux's goes to `Idle` instead.
+    ///
+    /// On Linux the next `connect(2)` resets the socket to `Idle`, wherever it
+    /// is aimed, and answers ECONNREFUSED if the error is `Pending` and
+    /// ECONNABORTED if it is `Reported`. Darwin's `connect(2)` never resets
+    /// it: every one answers EISCONN, whatever the destination, and the socket
+    /// stays here.
+    | Refused of error : RefusalError
     /// A datagram socket's default peer, set by `connect(2)` on it. Filters
     /// nothing yet — no receive path exists — but re-connect re-targets it
     /// and a Linux `AF_UNSPEC` connect dissolves it back to `Idle`, both
@@ -207,8 +222,7 @@ module SocketPhase =
         | SocketPhase.Idle
         | SocketPhase.EstablishedPendingReport _
         | SocketPhase.Established _
-        | SocketPhase.RefusedPendingDelivery
-        | SocketPhase.Dead
+        | SocketPhase.Refused _
         | SocketPhase.DatagramPeer _ -> false
 
 /// A socket, as the emulated kernel's socket table holds it.

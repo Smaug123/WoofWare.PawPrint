@@ -1,0 +1,20 @@
+Darwin 27.0.0
+  SO_ERROR, null value, null length            rc=-1 errno=14, then SO_ERROR=0
+  SO_ERROR, null value, unmapped length        rc=-1 errno=14, then SO_ERROR=0
+  SO_ERROR, null value, length 4               rc=0 errno=0, then SO_ERROR=0
+  SO_ERROR, null value, length -1              rc=0 errno=0, then SO_ERROR=0
+  SO_ERROR, unmapped value, null length        rc=-1 errno=14, then SO_ERROR=61
+  SO_ERROR, real value, null length            rc=-1 errno=14, then SO_ERROR=61
+  SO_ERROR, real value, unmapped length        rc=-1 errno=14, then SO_ERROR=61
+  SO_REUSEADDR, null value, null length        rc=-1 errno=14, then SO_ERROR=61
+  SO_REUSEADDR, null value, unmapped length    rc=-1 errno=14, then SO_ERROR=61
+Linux 6.18.5
+  SO_ERROR, null value, null length            rc=-1 errno=14, then SO_ERROR=111
+  SO_ERROR, null value, unmapped length        rc=-1 errno=14, then SO_ERROR=111
+  SO_ERROR, null value, length 4               rc=-1 errno=14, then SO_ERROR=0
+  SO_ERROR, null value, length -1              rc=-1 errno=22, then SO_ERROR=111
+  SO_ERROR, unmapped value, null length        rc=-1 errno=14, then SO_ERROR=111
+  SO_ERROR, real value, null length            rc=-1 errno=14, then SO_ERROR=111
+  SO_ERROR, real value, unmapped length        rc=-1 errno=14, then SO_ERROR=111
+  SO_REUSEADDR, null value, null length        rc=-1 errno=14, then SO_ERROR=111
+  SO_REUSEADDR, null value, unmapped length    rc=-1 errno=14, then SO_ERROR=111

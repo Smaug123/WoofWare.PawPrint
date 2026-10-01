@@ -519,6 +519,64 @@ module TestSocketEventDelivery =
 
         assertSound kernel
 
+    /// `getsockopt(SO_ERROR)` through real buffers, answering the value read.
+    let private readSocketError (fd : int) (kernel : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+        let platform = kernel.Machine.UnixPlatform
+        let level = SimulatedUnixPlatform.socketOptionLevel platform
+        let optionName = SimulatedUnixPlatform.socketErrorOption platform
+
+        match UnixSocket.getsockopt fd level optionName UserBuffer.Mapped UserBuffer.Mapped (Some 4u) kernel with
+        | Ok (GetSockOptAnswer.Reported (value, 4u), kernel) -> value, kernel
+        | other -> failwith $"getsockopt(SO_ERROR) answered %A{other}"
+
+    /// Taking the refusal with an `SO_ERROR` read lowers the level without
+    /// signalling, and the ECONNABORTED connect that follows resets the
+    /// socket and signals the idle level, as the delivering connect of row M
+    /// does (`consumed-epoll.c` R2).
+    [<Test>]
+    let ``taking a refusal signals nothing, and the aborting connect re-signals`` () : unit =
+        let portFd, portId, kernel = addPort initialSystem
+        let clientFd, clientId, kernel = addStream kernel
+        let kernel = register portFd clientFd 5UL kernel
+        let _, kernel = deliverSocketEvents portId 8 kernel
+        let _, kernel = connect clientId true (loopback 5999us) kernel
+        let _, kernel = deliverSocketEvents portId 8 kernel
+
+        let value, kernel = readSocketError clientFd kernel
+        value |> shouldEqual 111
+
+        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        delivered |> shouldEqual []
+
+        let outcome, kernel = connect clientId true (loopback 5999us) kernel
+        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNABORTED)
+
+        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        delivered |> shouldEqual [ 5UL, (EpollEvents.Out ||| EpollEvents.Hup) ]
+
+        assertSound kernel
+
+    /// An edge still pending when the refusal is taken reports the level at
+    /// collection, which has lost ERR (`consumed-epoll.c` R3).
+    [<Test>]
+    let ``an edge collected after the refusal is taken reports the level without ERR`` () : unit =
+        let portFd, portId, kernel = addPort initialSystem
+        let clientFd, clientId, kernel = addStream kernel
+        let kernel = register portFd clientFd 5UL kernel
+        let _, kernel = deliverSocketEvents portId 8 kernel
+        let _, kernel = connect clientId true (loopback 5999us) kernel
+        let _, kernel = readSocketError clientFd kernel
+
+        let delivered, kernel = deliverSocketEvents portId 8 kernel
+
+        delivered
+        |> shouldEqual
+            [
+                5UL, (EpollEvents.In ||| EpollEvents.Out ||| EpollEvents.RdHup ||| EpollEvents.Hup)
+            ]
+
+        assertSound kernel
+
     // --- registration bookkeeping ---
 
     /// A DEL takes the pending entry with the registration, so a later

@@ -280,7 +280,7 @@ module TestSockOptAgainstHost =
                                         (Some 4u)
                                         system
                                 with
-                                | Ok (GetSockOptAnswer.Reported (read, 4u)) -> read
+                                | Ok (GetSockOptAnswer.Reported (read, 4u), _) -> read
                                 | other -> failwith $"reading the model back answered %A{other}"
 
                             let hostRead = hostReadBack platform hostFd
@@ -388,7 +388,15 @@ module TestSockOptAgainstHost =
                         let modelLength = userBuffer lengthBuffer
 
                         let read =
-                            match UnixSocket.admitGetSockOpt modelFd level optionName modelLength system with
+                            match
+                                UnixSocket.admitGetSockOpt
+                                    modelFd
+                                    level
+                                    optionName
+                                    (userBuffer valueBuffer)
+                                    modelLength
+                                    system
+                            with
                             | Ok GetSockOptAdmission.ReadLength -> Some declaredLength
                             | _ -> None
 
@@ -408,7 +416,7 @@ module TestSockOptAgainstHost =
                         | Error refusal ->
                             failwith
                                 $"%s{describe}: the model refused (%s{SocketOptionRefusal.describe refusal}) where this kernel answered errno %d{hostErrno}"
-                        | Ok (GetSockOptAnswer.Failed error) ->
+                        | Ok (GetSockOptAnswer.Failed error, _) ->
                             if errnoOf platform error <> hostErrno then
                                 failwith
                                     $"%s{describe}: the model answered %O{error}, this kernel errno %d{hostErrno}"
@@ -423,7 +431,7 @@ module TestSockOptAgainstHost =
                             | Some length when length <> declaredLength ->
                                 failwith $"%s{describe}: this kernel failed yet left %d{length} in the length cell"
                             | _ -> ()
-                        | Ok (GetSockOptAnswer.Reported (value, length)) ->
+                        | Ok (GetSockOptAnswer.Reported (value, length), _) ->
                             if hostErrno <> 0 then
                                 failwith
                                     $"%s{describe}: the model succeeded, this kernel answered errno %d{hostErrno}"
