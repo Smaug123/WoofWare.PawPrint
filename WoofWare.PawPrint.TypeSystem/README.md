@@ -22,6 +22,9 @@ What lives here:
   rather than beside the Loader's field resolver because CoreCLR binds a method reference by
   searching each type's method table, as `MethodTableLayout` lays it out, in the order CoreCLR does;
   it is checked against the real runtime's own answer.
+* `MemberReferenceInstantiation` — a `MemberRef` resolved as `MethodReferenceResolution` and the
+  Loader's `FieldReferenceResolution` bind it, then instantiated for one generic context: the method
+  or field it names, with the arguments of the type that declares it, memoised per context.
 * `TypeSystemState` — the state all of the above is computed over: the assemblies loaded, the
   concrete types instantiated so far, and the memos of method-table walks, member resolution and
   method concretisation. The interpreter's machine state holds one. Its module asks the questions

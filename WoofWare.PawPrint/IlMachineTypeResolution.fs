@@ -370,6 +370,7 @@ module IlMachineTypeResolution =
 
         state.WithTypeSystem typeSystem, assembly, typeInfo
 
+    /// `TypeSystemState.resolveType` against the machine's type system.
     let resolveType
         (loggerFactory : ILoggerFactory)
         (ty : TypeReferenceHandle)
@@ -378,23 +379,10 @@ module IlMachineTypeResolution =
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
-        let assemblies, resolvedAssy, typeInfo =
-            TypeResolution.resolveType
-                loggerFactory
-                state.DotnetRuntimeDirs
-                ty
-                genericArgs
-                assy
-                state.TypeSystem._LoadedAssemblies
+        let typeSystem, resolvedAssy, typeInfo =
+            TypeSystemState.resolveType loggerFactory state.DotnetRuntimeDirs ty genericArgs assy state.TypeSystem
 
-        { state with
-            TypeSystem =
-                { state.TypeSystem with
-                    _LoadedAssemblies = assemblies
-                }
-        },
-        resolvedAssy,
-        typeInfo
+        state.WithTypeSystem typeSystem, resolvedAssy, typeInfo
 
     let resolveTypeFromDefn
         (loggerFactory : ILoggerFactory)
@@ -426,6 +414,7 @@ module IlMachineTypeResolution =
         resolvedAssy,
         typeInfo
 
+    /// `TypeSystemState.resolveTypeFromSpec` against the machine's type system.
     let resolveTypeFromSpec
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -436,8 +425,8 @@ module IlMachineTypeResolution =
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
-        let assemblies, resolvedAssy, typeInfo =
-            TypeResolution.resolveTypeFromSpec
+        let typeSystem, resolvedAssy, typeInfo =
+            TypeSystemState.resolveTypeFromSpec
                 loggerFactory
                 state.DotnetRuntimeDirs
                 baseClassTypes
@@ -445,16 +434,9 @@ module IlMachineTypeResolution =
                 assy
                 typeGenericArgs
                 methodGenericArgs
-                state.TypeSystem._LoadedAssemblies
+                state.TypeSystem
 
-        { state with
-            TypeSystem =
-                { state.TypeSystem with
-                    _LoadedAssemblies = assemblies
-                }
-        },
-        resolvedAssy,
-        typeInfo
+        state.WithTypeSystem typeSystem, resolvedAssy, typeInfo
 
     /// Resolve a TypeSpecification using concrete type handles from execution context
     let resolveTypeFromSpecConcrete
