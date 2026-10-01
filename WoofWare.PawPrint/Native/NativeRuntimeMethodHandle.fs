@@ -827,14 +827,37 @@ module NativeRuntimeMethodHandle =
             (ManagedPointerSource.requireAddressed refMethod)
             (CliType.ObjectRef (Some stubAddress))
 
+    /// Whether CoreCLR's canonical method table for `handle`, a closed type, is `handle` itself:
+    /// true of a non-generic type, and of an instantiation in which `isSharedTypeArgument` finds no
+    /// shared argument, so that CoreCLR compiles its code for it alone. Otherwise the canonical method
+    /// table is an instantiation over `System.__Canon`, which PawPrint does not model.
+    let private isOwnCanonicalInstantiation
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (handle : ConcreteTypeHandle)
+        : bool
+        =
+        let concreteType =
+            AllConcreteTypes.lookup handle state.ConcreteTypes
+            |> Option.defaultWith (fun () ->
+                failwith $"%s{operation}: type %O{handle} is not registered in ConcreteTypes"
+            )
+
+        let describe =
+            AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes handle
+
+        concreteType.Generics
+        |> Seq.exists (IlMachineRuntimeMetadata.isSharedTypeArgument baseClassTypes state describe)
+        |> not
+
     /// Whether `MethodHandleRegistry.stripMethodInstantiation` of a method with this declaring type
     /// is CoreCLR's answer exactly. CoreCLR's `StripMethodInstantiation` takes the method from the
     /// declaring type's canonical method table (method.cpp:1774), and PawPrint does not model
     /// canonical forms, so the two agree only where the canonical method table is the type itself:
-    /// a non-generic type, an array (which has no class instantiation, so CoreCLR returns the method
-    /// before consulting any method table), or an instantiation `isSharedTypeArgument` finds no
-    /// shared argument in. An open declaring type is not claimed to be exact, because what CoreCLR
-    /// canonicalises one to has not been established.
+    /// a type `isOwnCanonicalInstantiation` accepts, or an array (which has no class instantiation,
+    /// so CoreCLR returns the method before consulting any method table). An open declaring type is
+    /// not claimed to be exact, because what CoreCLR canonicalises one to has not been established.
     let private strippedDeclaringTypeIsExact
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -844,18 +867,7 @@ module NativeRuntimeMethodHandle =
         =
         match declaringType with
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
-            let concreteType =
-                AllConcreteTypes.lookup handle state.ConcreteTypes
-                |> Option.defaultWith (fun () ->
-                    failwith $"%s{operation}: declaring type %O{handle} is not registered in ConcreteTypes"
-                )
-
-            let describe =
-                AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes handle
-
-            concreteType.Generics
-            |> Seq.exists (IlMachineRuntimeMetadata.isSharedTypeArgument baseClassTypes state describe)
-            |> not
+            isOwnCanonicalInstantiation operation baseClassTypes state handle
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _) -> true
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
@@ -863,6 +875,56 @@ module NativeRuntimeMethodHandle =
         | other ->
             failwith
                 $"%s{operation}: declaring type %O{other} cannot declare a metadata-backed method, so no RuntimeMethodHandleInternal should name one"
+
+    /// Whether the method named by `RuntimeMethodHandle.GetMethodFromCanonical`'s answer for the
+    /// named type `named` is declared by `named` itself, as PawPrint's answer is. CoreCLR answers from
+    /// the named type's canonical method table (runtimehandles.cpp:1973), which is the type itself
+    /// for a type `isOwnCanonicalInstantiation` accepts, and for a generic type definition, whose
+    /// canonical method table is its typical instantiation (measured: named `Holder<>`, CoreCLR's
+    /// answer is declared by `Holder<T>`, which is `typeof(Holder<>)`). An open construction is not
+    /// claimed to be its own canonical form, because what CoreCLR canonicalises one to has not been
+    /// established.
+    ///
+    /// `named` must already be known to instantiate the method's own generic definition; any other
+    /// spelling fails.
+    let private namedTypeIsItsOwnCanonicalForm
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (named : RuntimeTypeHandleTarget)
+        : bool
+        =
+        match named with
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
+            isOwnCanonicalInstantiation operation baseClassTypes state handle
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> true
+        | RuntimeTypeHandleTarget.OpenConstructed _ -> false
+        | other ->
+            failwith
+                $"%s{operation}: named type %O{other} is not an instantiation of any generic definition, so it should already have been refused"
+
+    /// The frame that called `frame` on `thread`, if any.
+    let private callerOf (state : IlMachineState) (thread : ThreadId) (frame : MethodState) : MethodState option =
+        frame.ReturnState
+        |> Option.map (fun returnState -> IlMachineState.getFrame thread returnState.JumpTo state)
+
+    /// Whether `frame` is executing the CoreLib method with this declaring type, name and parameter
+    /// count.
+    let private isCorelibMethod
+        (typeNamespace : string)
+        (typeName : string)
+        (methodName : string)
+        (parameterCount : int)
+        (frame : MethodState)
+        : bool
+        =
+        let method = frame.ExecutingMethod
+
+        AssemblyDefinitionName.isNamed "System.Private.CoreLib" method.DeclaringAssemblyFullName
+        && method.RequiredDeclaringType.Namespace = typeNamespace
+        && method.RequiredDeclaringType.Name = typeName
+        && method.Name = methodName
+        && method.Signature.ParameterTypes.Length = parameterCount
 
     /// Whether the `RuntimeMethodHandle_StripMethodInstantiation` QCall executing in `frame` was
     /// called by `RuntimeMethodInfo.GetGenericMethodDefinition`, through the managed wrapper
@@ -876,33 +938,28 @@ module NativeRuntimeMethodHandle =
     /// can invoke the wrapper by reflection, and then the wrapper's caller is the reflection
     /// invoker, and the guest holds the unrebound answer.
     let private calledFromGetGenericMethodDefinition (state : IlMachineState) (ctx : NativeCallContext) : bool =
-        let callerOf (frame : MethodState) : MethodState option =
-            frame.ReturnState
-            |> Option.map (fun returnState -> IlMachineState.getFrame ctx.Thread returnState.JumpTo state)
-
-        let isCorelibMethod
-            (typeNamespace : string)
-            (typeName : string)
-            (methodName : string)
-            (parameterCount : int)
-            (frame : MethodState)
-            : bool
-            =
-            let method = frame.ExecutingMethod
-
-            AssemblyDefinitionName.isNamed "System.Private.CoreLib" method.DeclaringAssemblyFullName
-            && method.RequiredDeclaringType.Namespace = typeNamespace
-            && method.RequiredDeclaringType.Name = typeName
-            && method.Name = methodName
-            && method.Signature.ParameterTypes.Length = parameterCount
-
-        match callerOf ctx.Instruction with
+        match callerOf state ctx.Thread ctx.Instruction with
         | Some wrapper when isCorelibMethod "System" "RuntimeMethodHandle" "StripMethodInstantiation" 1 wrapper ->
-            match callerOf wrapper with
+            match callerOf state ctx.Thread wrapper with
             | Some caller ->
                 isCorelibMethod "System.Reflection" "RuntimeMethodInfo" "GetGenericMethodDefinition" 0 caller
             | None -> false
         | _ -> false
+
+    /// Whether the `RuntimeMethodHandle.GetMethodFromCanonical` FCall executing in `ctx` was called
+    /// by `RuntimeType.GetMethodBase(RuntimeType, RuntimeMethodHandleInternal)`
+    /// (RuntimeType.CoreCLR.cs:1911), its only CoreLib caller.
+    ///
+    /// That caller cannot see the declaring type of what the FCall hands back: it passes the answer
+    /// to `GetStubIfNeeded` and the reflected type's member cache together with the exact type it
+    /// named, so CoreCLR's canonical declaring type and PawPrint's exact one reach the same
+    /// `MethodBase`. The FCall has no managed wrapper, so its immediate caller is the whole check:
+    /// invoked by reflection, that caller is the reflection invoker instead, and the guest holds the
+    /// unrebound answer.
+    let private calledFromGetMethodBase (state : IlMachineState) (ctx : NativeCallContext) : bool =
+        match callerOf state ctx.Thread ctx.Instruction with
+        | Some caller -> isCorelibMethod "System" "RuntimeType" "GetMethodBase" 2 caller
+        | None -> false
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
@@ -1961,8 +2018,10 @@ module NativeRuntimeMethodHandle =
             // The canonical method table is the shared-generic-code artifact: `Holder<string>`
             // canonicalises to `Holder<__Canon>`, while `Holder<int>` -- having no shareable
             // instantiation -- canonicalises to itself. PawPrint shares no generic code at all, so
-            // a type's canonical method table is that type, and the answer is the method occupying
-            // that slot on the type the caller named.
+            // it answers with the method on the type the caller named. That is CoreCLR's answer
+            // exactly only where the named type is its own canonical form; elsewhere it is served
+            // only to `RuntimeType.GetMethodBase`, which cannot tell the two apart. See
+            // `namedTypeIsItsOwnCanonicalForm` and `calledFromGetMethodBase`.
             //
             // The slot lookup and "the same MethodDef row" coincide here because the sole caller
             // has already established that the named type and the handle's declaring type are
@@ -1993,8 +2052,7 @@ module NativeRuntimeMethodHandle =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
             // The generic definition the named type is an instantiation of. Only the three
-            // method-table-backed spellings can be one; the rest cannot declare a metadata method
-            // at all, and `MethodHandleRegistry.getOrAllocateInternalHandle` refuses them below.
+            // method-table-backed spellings other than an array can be one.
             let namedDefinition : ResolvedTypeIdentity option =
                 match target with
                 | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
@@ -2008,14 +2066,21 @@ module NativeRuntimeMethodHandle =
                 | _ -> None
 
             match namedDefinition with
-            | Some definition when definition <> methodInfo.RequiredDeclaringType.Identity ->
+            | Some definition when definition = methodInfo.RequiredDeclaringType.Identity -> ()
+            | _ ->
                 // CoreCLR would answer with the slot's occupant on the named type, which is a
                 // different method; PawPrint would instead mint "this MethodDef row, declared on
                 // that type", which is a lie about metadata. Neither is useful, and the caller
                 // established this cannot happen, so say so rather than serve either.
                 failwith
                     $"%s{operation}: asked for %s{methodInfo.Name} on %O{target}, but its MethodDef row is declared by %s{MethodOwner.describe methodInfo.Owner} in %s{identity.GetAssemblyFullName ()}; RuntimeType.GetMethodBase only names a type sharing the method's own generic definition"
-            | _ -> ()
+
+            if
+                not (namedTypeIsItsOwnCanonicalForm operation ctx.BaseClassTypes state target)
+                && not (calledFromGetMethodBase state ctx)
+            then
+                failwith
+                    $"TODO: %s{operation} of %s{methodInfo.Name} on %O{target}, called other than by RuntimeType.GetMethodBase: CoreCLR answers with the method on the named type's canonical method table, which for this type is an instantiation over System.__Canon (or an open construction, whose canonical form PawPrint has not established), and the caller can see it. PawPrint does not model canonical forms. GetMethodBase is answered because it rebinds the result onto the exact named type."
 
             let handleValue, registry =
                 MethodHandleRegistry.getOrAllocateInternalHandle
