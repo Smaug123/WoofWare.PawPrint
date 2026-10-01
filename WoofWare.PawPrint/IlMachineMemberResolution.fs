@@ -8,6 +8,19 @@ open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
 module IlMachineMemberResolution =
+    /// <summary>
+    /// The member a MemberRef row of <paramref name="assy" /> names, as CoreCLR binds it
+    /// (<c>MethodReferenceResolution</c>, <c>FieldReferenceResolution</c>), with the generic
+    /// arguments of the type that declares it: the reference's parent as the frame whose generic
+    /// context is <paramref name="typeGenerics" /> and <paramref name="methodGenerics" />
+    /// instantiates it, or the ancestor of the parent that declares the method.
+    /// </summary>
+    /// <remarks>
+    /// Refuses a reference CoreCLR would fail to bind (it throws while compiling the method that
+    /// uses it, which is not modelled), one whose target depends on how a type variable of the
+    /// referencing context is instantiated, and one naming a method the runtime supplies on an array
+    /// type, which callers handle before resolving.
+    /// </remarks>
     let resolveMemberWithGenerics
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -27,20 +40,35 @@ module IlMachineMemberResolution =
         =
         // TODO: do we need to initialise the parent class here?
         let mem = assy.Members.[m]
-        let sourceAssembly = assy
-
         let memberName : string = assy.Strings mem.Name
 
-        let state, assy, targetType, extractedTypeArgs =
+        let refuse (outcome : string) : 'a =
+            failwith
+                $"MemberRef %s{memberName} (row %d{MetadataTokens.GetRowNumber (MemberReferenceHandle.op_Implicit m : EntityHandle)}) of %s{assy.DefinitionFullName} %s{outcome}"
+
+        let withAssemblies (assemblies : LoadedAssemblies) (state : IlMachineState) : IlMachineState =
+            { state with
+                TypeSystem =
+                    { state.TypeSystem with
+                        _LoadedAssemblies = assemblies
+                    }
+            }
+
+        // The parent as the frame instantiates it, and the arguments the row spells for it. A
+        // TypeReference spells none: naming a generic definition that way names its typical
+        // instantiation, which callers recognise by the empty arguments and refuse.
+        let resolveParent
+            (state : IlMachineState)
+            : IlMachineState * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn> * ImmutableArray<TypeDefn>
+            =
             match mem.Parent with
             | MetadataToken.TypeReference parent ->
-                // TODO: generics here?
-                let state, assy, targetType =
+                let state, _, targetType =
                     IlMachineTypeResolution.resolveType loggerFactory parent ImmutableArray.Empty assy state
 
-                state, assy, targetType, ImmutableArray.Empty // No type args from TypeReference
+                state, targetType, ImmutableArray.Empty
             | MetadataToken.TypeSpecification parent ->
-                let state, assy, targetType =
+                let state, _, targetType =
                     IlMachineTypeResolution.resolveTypeFromSpec
                         loggerFactory
                         baseClassTypes
@@ -50,137 +78,207 @@ module IlMachineMemberResolution =
                         methodGenerics
                         state
 
-                // Extract type arguments from the resolved type
-                let extractedTypeArgs = targetType.Generics
+                state, targetType, targetType.Generics
+            | parent -> refuse $"has a parent %O{parent} that names no type with members"
 
-                state, assy, targetType, extractedTypeArgs
-            | parent -> failwith $"Unexpected: {parent}"
-
-        let state, concreteExtractedTypeArgs =
-            ((state, ImmutableArray.CreateBuilder ()), extractedTypeArgs)
-            ||> Seq.fold (fun (state, acc) ty ->
-                // TODO: generics?
-                let state, t =
-                    IlMachineTypeResolution.concretizeType
-                        loggerFactory
-                        baseClassTypes
-                        state
-                        targetType.AssemblyFullName
-                        ImmutableArray.Empty
-                        ImmutableArray.Empty
-                        ty
-
-                acc.Add t
-                state, acc
+        // Whether a substitution still mentions a type variable of the parent, which only a generic
+        // definition named without an instantiation leaves standing.
+        let rec mentionsTypeVariable (arguments : ImmutableArray<TypeConcretization.SubstitutionArgument>) : bool =
+            arguments
+            |> Seq.exists (fun argument ->
+                match argument with
+                | TypeConcretization.SubstitutionArgument.Formal _ -> true
+                | TypeConcretization.SubstitutionArgument.Closed _ -> false
+                | TypeConcretization.SubstitutionArgument.Spelled (_, _, context) -> mentionsTypeVariable context
             )
-            |> Tuple.rmap (fun x -> x.ToImmutable ())
 
         match mem.Signature with
-        | MemberSignature.Field (_, fieldSig) ->
-            // Concretize the field signature from the member reference
-            let state, concreteFieldSig =
-                IlMachineTypeResolution.concretizeType
+        | MemberSignature.Field _ ->
+            let assemblies, target =
+                FieldReferenceResolution.resolve
                     loggerFactory
+                    state.DotnetRuntimeDirs
                     baseClassTypes
-                    state
-                    sourceAssembly.DefinitionFullName
-                    concreteExtractedTypeArgs
-                    ImmutableArray.Empty
-                    fieldSig
+                    state.TypeSystem._LoadedAssemblies
+                    assy
+                    m
 
-            // Find matching fields by comparing concretized signatures
-            let state, availableFields =
-                ((state, []), targetType.Fields)
-                ||> List.fold (fun (state, acc) fi ->
-                    if fi.Name <> memberName then
-                        state, acc
-                    else
-                        // Concretize the field's signature for comparison
-                        let state, fieldSigConcrete =
+            let state = withAssemblies assemblies state
+
+            match target with
+            | FieldReferenceTarget.Defined (declaringAssembly, field) ->
+                // Fields are not inherited, so the parent is the declaring type.
+                let state, targetType, spelledArguments = resolveParent state
+
+                let field =
+                    declaringAssembly.Fields.[field]
+                    |> FieldInfo.mapTypeGenerics (fun _ (par, _) -> targetType.Generics.[par.SequenceNumber])
+
+                state, declaringAssembly.Name, Choice2Of2 field, spelledArguments
+            | FieldReferenceTarget.Missing ->
+                refuse "binds to no field, so CoreCLR throws MissingFieldException; that is not modelled"
+            | FieldReferenceTarget.ParentTypeMissing miss ->
+                refuse
+                    $"has a parent that names no type (%O{miss}), so CoreCLR throws TypeLoadException; that is not modelled"
+            | FieldReferenceTarget.DependsOnInstantiation ->
+                refuse
+                    "has a type variable for its parent, whose instantiation resolution does not yet take into account"
+
+        | MemberSignature.Method _ ->
+            let ctx : TypeConcretization.ConcretizationContext<DumpedAssembly> =
+                {
+                    ConcreteTypes = state.TypeSystem.ConcreteTypes
+                    LoadedAssemblies = state.TypeSystem._LoadedAssemblies
+                    BaseTypes = baseClassTypes
+                }
+
+            let ctx, target =
+                MethodReferenceResolution.resolve loggerFactory state.DotnetRuntimeDirs ctx assy m
+
+            let state =
+                { state with
+                    TypeSystem =
+                        { state.TypeSystem with
+                            ConcreteTypes = ctx.ConcreteTypes
+                            _LoadedAssemblies = ctx.LoadedAssemblies
+                        }
+                }
+
+            match target with
+            | MethodReferenceTarget.Defined (declaringAssembly, method, declaringTypeArguments) when
+                (match mem.Parent with
+                 | MetadataToken.TypeReference _ -> true
+                 | _ -> false)
+                && mentionsTypeVariable declaringTypeArguments.Arguments
+                ->
+                // A generic definition named without an instantiation: its typical instantiation.
+                let state, parent, spelledArguments = resolveParent state
+
+                let declaredByParent =
+                    declaringTypeArguments.Arguments
+                    |> Seq.forall (fun argument ->
+                        match argument with
+                        | TypeConcretization.SubstitutionArgument.Formal (owner, _) -> owner = parent.Identity
+                        | TypeConcretization.SubstitutionArgument.Closed _
+                        | TypeConcretization.SubstitutionArgument.Spelled _ -> false
+                    )
+
+                if not declaredByParent then
+                    refuse
+                        $"names generic type definition %O{parent} without an instantiation, and an ancestor of it declares the method; the typical instantiation of a generic declaring type is not supported"
+
+                let method =
+                    declaringAssembly.Methods.[method]
+                    |> MethodInfo.mapTypeGenerics (fun (par, _) -> parent.Generics.[par.SequenceNumber])
+
+                state, declaringAssembly.Name, Choice1Of2 method, spelledArguments
+            | MethodReferenceTarget.Defined (declaringAssembly, method, declaringTypeArguments) ->
+                let state, parent, spelledArguments = resolveParent state
+
+                // The parent's own arguments, concretised the first time an ancestor's extends
+                // clause turns out to spell one of the declaring type's arguments in terms of them.
+                let parentHandles (state : IlMachineState) : IlMachineState * ImmutableArray<ConcreteTypeHandle> =
+                    ((state, ImmutableArray.CreateBuilder spelledArguments.Length), spelledArguments)
+                    ||> Seq.fold (fun (state, handles) ty ->
+                        let state, handle =
                             IlMachineTypeResolution.concretizeType
                                 loggerFactory
                                 baseClassTypes
                                 state
-                                assy.DefinitionFullName
-                                concreteExtractedTypeArgs
+                                parent.AssemblyFullName
                                 ImmutableArray.Empty
-                                fi.Signature
+                                ImmutableArray.Empty
+                                ty
 
-                        if fieldSigConcrete = concreteFieldSig then
-                            state, fi :: acc
-                        else
-                            state, acc
-                )
+                        handles.Add handle
+                        state, handles
+                    )
+                    |> fun (state, handles) -> state, handles.ToImmutable ()
 
-            let field =
-                match availableFields with
-                | [] ->
-                    failwith
-                        $"Could not find field member {memberName} with the right signature on {targetType.Namespace}.{targetType.Name}"
-                | [ x ] ->
-                    x
-                    |> FieldInfo.mapTypeGenerics (fun _ (par, md) -> targetType.Generics.[par.SequenceNumber])
-                | _ ->
-                    failwith
-                        $"Multiple overloads matching signature for {targetType.Namespace}.{targetType.Name}'s field {memberName}!"
+                // One of the declaring type's arguments, which the parent's arguments close.
+                let closeArgument
+                    (state : IlMachineState)
+                    (handles : ImmutableArray<ConcreteTypeHandle>)
+                    (argument : TypeConcretization.SubstitutionArgument)
+                    : IlMachineState * TypeDefn
+                    =
+                    let closedArguments =
+                        TypeConcretization.SubstitutionContext.rebase
+                            parent.Identity
+                            (handles |> ImmutableArray.map TypeConcretization.SubstitutionArgument.Closed)
+                            {
+                                TypeConcretization.SubstitutionContext.Arguments = ImmutableArray.Create argument
+                            }
 
-            state, assy.Name, Choice2Of2 field, extractedTypeArgs
-
-        | MemberSignature.Method memberSig ->
-            let availableMethods =
-                targetType.Methods |> List.filter (fun mi -> mi.Name = memberName)
-
-            // CoreCLR answers this off the signature blobs, with `MemberLoader::FindMethod` ->
-            // `MetaSig::CompareMethodSigs`, so `signaturesEquivalent` is what makes a reference
-            // written in one assembly comparable to a definition declared in another: the same type
-            // is a TypeRef in the referrer and a TypeDef in the declarer, and the target type's
-            // instantiation supplies `!0` on both sides. Equality of two *concretised* signatures
-            // would answer a different question, one blind to custom modifiers -- which is how a
-            // reference to `Take(delegate* unmanaged[Cdecl, SuppressGCTransition]<void>)` came to
-            // match its `Stdcall` sibling as well, both overloads being legal C#.
-            let referenceComparand : TypeConcretization.SignatureComparand =
-                {
-                    Signature = memberSig
-                    AssemblyFullName = sourceAssembly.DefinitionFullName
-                    DeclaringTypeGenerics = TypeConcretization.SubstitutionContext.ofClosed concreteExtractedTypeArgs
-                }
-
-            let state, availableMethods =
-                ((state, []), availableMethods)
-                ||> List.fold (fun (state, acc) meth ->
-                    let candidateComparand : TypeConcretization.SignatureComparand =
+                    let ctx : TypeConcretization.ConcretizationContext<DumpedAssembly> =
                         {
-                            Signature = meth.Signature
-                            AssemblyFullName = assy.DefinitionFullName
-                            DeclaringTypeGenerics =
-                                TypeConcretization.SubstitutionContext.ofClosed concreteExtractedTypeArgs
+                            ConcreteTypes = state.TypeSystem.ConcreteTypes
+                            LoadedAssemblies = state.TypeSystem._LoadedAssemblies
+                            BaseTypes = baseClassTypes
                         }
 
-                    let state, matches =
-                        IlMachineTypeResolution.signaturesEquivalent
-                            loggerFactory
-                            baseClassTypes
-                            state
-                            false
-                            referenceComparand
-                            candidateComparand
+                    let closed, ctx =
+                        TypeConcretization.concretizeSubstitution
+                            ctx
+                            (IlMachineTypeResolution.loader loggerFactory state)
+                            closedArguments
 
-                    if matches then state, meth :: acc else state, acc
-                )
+                    let state =
+                        { state with
+                            TypeSystem =
+                                { state.TypeSystem with
+                                    ConcreteTypes = ctx.ConcreteTypes
+                                    _LoadedAssemblies = ctx.LoadedAssemblies
+                                }
+                        }
 
-            let method =
-                match availableMethods with
-                | [] ->
-                    failwith
-                        $"Could not find member {memberName} with the right signature {memberSig} on {targetType.Namespace}.{targetType.Name}"
-                | [ x ] ->
-                    x
-                    |> MethodInfo.mapTypeGenerics (fun (par, _) -> targetType.Generics.[par.SequenceNumber])
-                | _ ->
-                    failwith
-                        $"Multiple overloads matching signature for call to {targetType.Namespace}.{targetType.Name}'s {memberName}!"
+                    state,
+                    Concretization.concreteHandleToTypeDefn
+                        baseClassTypes
+                        closed.[0]
+                        state.TypeSystem.ConcreteTypes
+                        state.TypeSystem._LoadedAssemblies
 
-            state, assy.Name, Choice1Of2 method, extractedTypeArgs
+                let state, _, declaringTypeGenerics =
+                    ((state, None, ImmutableArray.CreateBuilder declaringTypeArguments.Arguments.Length),
+                     declaringTypeArguments.Arguments)
+                    ||> Seq.fold (fun (state, handles, acc) argument ->
+                        match argument with
+                        | TypeConcretization.SubstitutionArgument.Formal (owner, index) when owner = parent.Identity ->
+                            acc.Add spelledArguments.[index]
+                            state, handles, acc
+                        | TypeConcretization.SubstitutionArgument.Formal (owner, index) ->
+                            failwith
+                                $"%s{memberName}: the declaring type's arguments mention variable !%d{index} of %O{owner}, not of the parent %O{parent}"
+                        | TypeConcretization.SubstitutionArgument.Closed _
+                        | TypeConcretization.SubstitutionArgument.Spelled _ ->
+                            let state, handles =
+                                match handles with
+                                | Some handles -> state, handles
+                                | None -> parentHandles state
+
+                            let state, closed = closeArgument state handles argument
+                            acc.Add closed
+                            state, Some handles, acc
+                    )
+                    |> fun (state, handles, acc) -> state, handles, acc.ToImmutable ()
+
+                let method =
+                    declaringAssembly.Methods.[method]
+                    |> MethodInfo.mapTypeGenerics (fun (par, _) -> declaringTypeGenerics.[par.SequenceNumber])
+
+                state, declaringAssembly.Name, Choice1Of2 method, declaringTypeGenerics
+            | MethodReferenceTarget.ArrayMethod (arrayType, accessor) ->
+                refuse
+                    $"names %A{accessor} of the array type %O{arrayType}, which the runtime supplies; callers handle these before resolving a MemberRef"
+            | MethodReferenceTarget.Missing ->
+                refuse "binds to no method, so CoreCLR throws MissingMethodException; that is not modelled"
+            | MethodReferenceTarget.ParentTypeMissing miss ->
+                refuse
+                    $"has a parent that names no type (%O{miss}), so CoreCLR throws TypeLoadException; that is not modelled"
+            | MethodReferenceTarget.DependsOnInstantiation ->
+                refuse
+                    "names a method that depends on how a type variable of the referencing context is instantiated, which resolution does not yet take into account"
 
     let resolveMember
         (loggerFactory : ILoggerFactory)
