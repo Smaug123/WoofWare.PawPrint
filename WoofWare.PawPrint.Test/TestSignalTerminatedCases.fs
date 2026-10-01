@@ -50,16 +50,16 @@ module TestSignalTerminatedCases =
                 Signo = 15
             }
             {
-                // libc's kill(2) of each hardware-fault signal to itself, all
-                // survived, and then a second SIGSEGV, which is not.
+                // libc's kill(2) of SIGILL and SIGABRT to itself, both
+                // survived, and then a second SIGILL, which is not.
                 FileName = "LibcKillFaultSignalSecondTime.cs"
-                Signo = 11
+                Signo = 4
             }
             {
-                // The same with a PosixSignalRegistration handler for SIGSEGV,
+                // The same with a PosixSignalRegistration handler for SIGILL,
                 // which runs for the first.
                 FileName = "PosixSignalRegisteredFaultSignal.cs"
-                Signo = 11
+                Signo = 4
             }
         ]
 

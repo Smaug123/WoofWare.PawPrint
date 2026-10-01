@@ -157,6 +157,31 @@ class Program
 }
 """
 
+    /// Sends the signal its argument names from a thread other than the main
+    /// thread.
+    let private fromWorkerGuest : string =
+        """
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+class Program
+{
+    [DllImport("libc", EntryPoint = "kill", SetLastError = true)]
+    static extern int Kill(int pid, int sig);
+
+    static int Main(string[] args)
+    {
+        int signo = int.Parse(args[0]);
+        int result = -1;
+        var worker = new Thread(() => result = Kill(Environment.ProcessId, signo));
+        worker.Start();
+        worker.Join();
+        return result == 0 ? 42 : 1;
+    }
+}
+"""
+
     let private runSourceWith (source : string) (platform : SimulatedUnixPlatform) (argv : string list) : RunOutcome =
         let arguments = String.concat " " argv
         let description = $"kill(self, %s{arguments})"
@@ -210,13 +235,55 @@ class Program
         refused SimulatedUnixPlatform.linuxX64 5 "runs CoreCLR's PAL's SIGTRAP handler"
         refused SimulatedUnixPlatform.linuxX64 34 "runs CoreCLR's PAL's thread-activation handler"
 
+    /// The guest sends `signo` once from its main thread, survives it, and
+    /// exits 42.
+    let private survived (platform : SimulatedUnixPlatform) (signo : int) : unit =
+        match run platform signo with
+        | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 42
+        | other -> failwith $"expected kill(self, %d{signo}) to be answered and the guest to exit 42, got %O{other}"
+
     [<Test>]
-    let ``11 is SIGSEGV, whose fault handler the runtime installs, and is survived under either flavour`` () : unit =
-        // The second is not: `TestSignalTerminatedCases` holds that half.
-        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
-            match run platform 11 with
-            | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 42
-            | other -> failwith $"expected kill(self, SIGSEGV) to be answered and the guest to exit 42, got %O{other}"
+    let ``11 is SIGSEGV, survived on Darwin, and refused on Linux, whose later null dereferences need its handler``
+        ()
+        : unit
+        =
+        // The second SIGILL is fatal: `TestSignalTerminatedCases` holds that.
+        survived SimulatedUnixPlatform.macOsArm64 11
+
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.linuxArm64 ] do
+            refused platform 11 "is also how a later hardware fault in managed code becomes a managed exception"
+
+    [<Test>]
+    let ``8 is SIGFPE, refused on x86-64 Linux, whose division needs its handler, and survived on arm64`` () : unit =
+        refused
+            SimulatedUnixPlatform.linuxX64
+            8
+            "is also how a later hardware fault in managed code becomes a managed exception"
+
+        survived SimulatedUnixPlatform.linuxArm64 8
+        survived SimulatedUnixPlatform.macOsArm64 8
+
+    [<Test>]
+    let ``SIGILL and SIGABRT are survived on every platform`` () : unit =
+        for platform in
+            [
+                SimulatedUnixPlatform.linuxX64
+                SimulatedUnixPlatform.linuxArm64
+                SimulatedUnixPlatform.macOsArm64
+            ] do
+            survived platform 4
+            survived platform 6
+
+    [<Test>]
+    let ``a fault signal sent from a thread other than the main thread is refused`` () : unit =
+        let exn =
+            Assert.Catch<exn> (fun () ->
+                runSource fromWorkerGuest SimulatedUnixPlatform.macOsArm64 4
+                |> ignore<RunOutcome>
+            )
+
+        exn.Message |> shouldContainText "is not modelled"
+        exn.Message |> shouldContainText "sent by a thread other than the main thread"
 
     [<Test>]
     let ``33 is glibc's SIGSETXID, which glibc catches, and is refused under Linux`` () : unit =

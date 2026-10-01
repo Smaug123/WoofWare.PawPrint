@@ -11,6 +11,18 @@ type UnmodelledSelfSignal =
     /// `handler` is the signal's disposition, or the handler System.Native's
     /// own runs first (see `PosixSignalShim.chainsToNativeHandler`).
     | NativeHandler of Signal * handler : NativeSignalHandler
+    /// A hardware-fault signal sent by a thread other than the process's main
+    /// thread, which is the thread that receives it. If the main thread is
+    /// running managed code then, the runtime's fault handler can raise a
+    /// managed exception there rather than restore the default; PawPrint does
+    /// not model which code the main thread is running.
+    | FaultSignalFromOtherThread of Signal
+    /// A hardware-fault signal whose handler, run, would restore the default,
+    /// on a platform where the same handler is how a later hardware fault in
+    /// managed code (a null dereference, say) becomes a managed exception:
+    /// once the default is back, such a fault kills the process instead, and
+    /// PawPrint cannot tell which faults the JIT leaves to the hardware.
+    | FaultHandlerNeededLater of Signal
     /// A signal whose kernel default is to continue a stopped process, with no
     /// handler registered. A real process, never stopped, carries on; the model
     /// has no stopped state for it to resume, and would leave it pending for a
@@ -32,6 +44,10 @@ module UnmodelledSelfSignal =
                 | NativeSignalHandler.SystemNative -> "System.Native's handler"
 
             $"a real CoreCLR process runs %s{whose} for %O{signal}, which PawPrint does not model (usually the process survives the signal; on x86-64 Linux, SIGTRAP kills it with SIGILL instead)."
+        | UnmodelledSelfSignal.FaultSignalFromOtherThread signal ->
+            $"%O{signal} is sent by a thread other than the main thread, which receives it; a real CoreCLR process's fault handler raises a managed exception on the main thread if that thread is running managed code, and PawPrint does not model which code it is running."
+        | UnmodelledSelfSignal.FaultHandlerNeededLater signal ->
+            $"a real CoreCLR process's handler for %O{signal} would restore the default, and on this platform that handler is also how a later hardware fault in managed code becomes a managed exception; afterwards such a fault kills the process, and PawPrint cannot tell which faults the JIT leaves to the hardware."
         | UnmodelledSelfSignal.ContinueWithoutHandler signal ->
             $"%O{signal} with no handler registered continues a stopped process, and a running one carries on regardless; PawPrint has no stopped state, and would leave the signal pending for a dispatcher that refuses it."
 
@@ -42,14 +58,50 @@ module UnmodelledSelfSignal =
 [<RequireQualifiedAccess>]
 module NativeLibc =
 
-    /// Whether PawPrint's kernel model can answer a signal sent to its own
-    /// process, given the signal state and System.Native's state before it is
-    /// sent. `None` if it can.
+    /// Whether, on `platform`, CoreCLR's handler for the hardware-fault signal
+    /// `signal` is also how a hardware fault in managed code becomes a managed
+    /// exception, so that once it has restored the default, such a fault
+    /// kills the process instead.
+    let private faultHandlerNeededLater (platform : SimulatedUnixPlatform) (signal : Signal) : bool =
+        // Measured 2026-10-01 by sending each signal to the process and then
+        // dereferencing null in a non-inlined field read, and dividing by a
+        // zero the JIT cannot see: .NET 10.0.7 on Darwin 27.0.0 arm64, and
+        // .NET 10.0.12 on Linux 6.18.5 aarch64 and under Rosetta x86-64. On
+        // Linux, after SIGSEGV the null dereference killed the process with
+        // SIGSEGV where it had raised NullReferenceException, on both CPUs;
+        // and on x86-64, after SIGFPE the division killed it with SIGFPE.
+        // arm64's JIT checks a divisor itself, so its division still raised
+        // DivideByZeroException. Darwin takes faults as Mach exceptions, and
+        // raised both exceptions after every signal. SIGILL and SIGABRT
+        // changed neither on any platform. Linux's SIGBUS was not measured
+        // (nothing simple raises it), but its handler hands a bus error to the
+        // same managed-exception path as a segmentation fault's
+        // (pal/src/exception/signal.cpp, sigbus_handler and sigsegv_handler,
+        // each calling common_signal_handler), so it is refused too.
+        let numbering = SimulatedUnixPlatform.signalNumbering platform
+
+        match SimulatedUnixPlatform.flavour platform, Signal.toRawSignoUnder numbering signal with
+        | SimulatedUnixFlavour.Darwin, _ -> false
+        | SimulatedUnixFlavour.Linux, 11
+        | SimulatedUnixFlavour.Linux, 7 -> true
+        | SimulatedUnixFlavour.Linux, 8 ->
+            match SimulatedUnixPlatform.architecture platform with
+            | SimulatedUnixArchitecture.X64 -> true
+            | SimulatedUnixArchitecture.Arm64 -> false
+        | SimulatedUnixFlavour.Linux, _ -> false
+
+    /// Whether PawPrint's kernel model can answer a signal that `sender` sends
+    /// to its own process, on `platform`, given the signal state and
+    /// System.Native's state before it is sent. `None` if it can. `leader` is
+    /// the process's main thread.
     ///
     /// Asked only of a signal that is actually being sent to the calling
     /// process: the null signal, an invalid number and another target are all
     /// answered or refused by `UnixSignal.kill` before this matters.
     let screenSelfSignal<'Task when 'Task : comparison>
+        (platform : SimulatedUnixPlatform)
+        (sender : 'Task)
+        (leader : 'Task)
         (shim : PosixSignalShim)
         (signals : SignalState<'Task, NativeSignalHandler>)
         (signal : Signal)
@@ -58,13 +110,30 @@ module NativeLibc =
         let numbering = SignalState.numbering signals
         let signal = Signal.canonicalUnder numbering signal
 
+        // The PAL's fault handler, run for a signal the main thread sent
+        // itself, interrupts its `kill` in libc, so it finds no managed code
+        // to raise an exception in, and restores what it replaced (see
+        // `NativeSignalHandler.CoreClrPalFault`). Over an ignore it aborts the
+        // process there and then, so no later fault meets the default.
+        let faultHandler (replaced : PalReplacedDisposition) : UnmodelledSelfSignal option =
+            if sender <> leader then
+                Some (UnmodelledSelfSignal.FaultSignalFromOtherThread signal)
+            else
+                match replaced with
+                | PalReplacedDisposition.Ignore -> None
+                | PalReplacedDisposition.Default ->
+                    if faultHandlerNeededLater platform signal then
+                        Some (UnmodelledSelfSignal.FaultHandlerNeededLater signal)
+                    else
+                        None
+
         match SignalState.disposition signal signals with
         | SignalDisposition.Catch {
                                       Handler = NativeSignalHandler.SystemNative
                                   } ->
             match PosixSignalShim.chainsToNativeHandler numbering signal shim with
-            | Some (NativeSignalHandler.CoreClrPalFault _)
             | None -> None
+            | Some (NativeSignalHandler.CoreClrPalFault replaced) -> faultHandler replaced
             | Some chained ->
                 // Registering a handler does not take the runtime's own away
                 // (pal_signal.c): `InstallSignalHandler` keeps the handler it
@@ -72,8 +141,8 @@ module NativeLibc =
                 // reaches managed code.
                 Some (UnmodelledSelfSignal.NativeHandler (signal, chained))
         | SignalDisposition.Catch {
-                                      Handler = NativeSignalHandler.CoreClrPalFault _
-                                  } -> None
+                                      Handler = NativeSignalHandler.CoreClrPalFault replaced
+                                  } -> faultHandler replaced
         | SignalDisposition.Catch action -> Some (UnmodelledSelfSignal.NativeHandler (signal, action.Handler))
         | SignalDisposition.Default when Signal.defaultDispositionUnder numbering signal = DefaultDisposition.Continue ->
             Some (UnmodelledSelfSignal.ContinueWithoutHandler signal)
@@ -110,7 +179,13 @@ module NativeLibc =
         let refusal =
             Signal.ofRawSignoUnder (SignalState.numbering system.Process.Signals) signo
             |> ValueOption.bind (fun sent ->
-                screenSelfSignal state.Kernel.PosixSignalShim system.Process.Signals sent
+                screenSelfSignal
+                    state.Kernel.UnixPlatform
+                    ctx.Thread
+                    state.Kernel.Leader
+                    state.Kernel.PosixSignalShim
+                    system.Process.Signals
+                    sent
                 |> ValueOption.ofOption
             )
 
