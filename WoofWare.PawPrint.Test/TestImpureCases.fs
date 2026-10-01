@@ -543,8 +543,8 @@ module TestImpureCases =
                 name "dang", SeedEntry.Symlink (target "nx", None)
                 name "cyc", SeedEntry.Symlink (target "cyc", None)
                 // A parent carrying S_ISGID, which only Linux passes on. Seeded
-                // rather than chmod'ed into place: there is no `SystemNative_ChMod`,
-                // and on a real host a non-root `chmod` would drop the bit anyway.
+                // rather than chmod'ed into place, so that this case does not also
+                // depend on `chmod`'s own rules for the bit.
                 name "sg", SeedEntry.Directory (Map.empty, mode 0o2777, None)
                 // Searchable but not writable, and holding a child: the child
                 // answers EEXIST while a free name beside it answers EACCES,

@@ -10,9 +10,8 @@ using System.Text;
 // filesystem can agree with. So there is no oracle here and the expectations
 // are PawPrint's own contract.
 //
-// Going through the BCL instead is not an option today. FileInfo.Length reaches
-// FileStatus.HasReadOnlyFlag, which calls SystemNative_GetEUid — unimplemented,
-// so it crashes before returning a length. Declaring the struct here also
+// The BCL exposes only some of these fields (FileInfo has no st_dev, st_ino or
+// st_uid), so they are read through the shim directly. Declaring the struct here also
 // exercises the deliberate looseness of the handler's parameter match: the real
 // Interop.Sys.FileStatus is internal to CoreLib, so a guest can only reach this
 // entry point with a layout-identical struct of its own.
