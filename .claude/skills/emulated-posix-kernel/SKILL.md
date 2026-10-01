@@ -67,16 +67,22 @@ truthful reading**:
   honest default processor index, and an arbitrary one aliases thread ids, which
   silently breaks `System.Threading.Lock`. As a field, the compiler asks every
   future thread-creation site which value it wants.
-- **`Map<ThreadId, _>` on the kernel** when it does — `SignalState.Blocked`
-  (empty mask), the last-error slots (errno 0).
+- **`Map<ThreadId, _>` on the kernel** when it does — `SignalState`'s handler
+  frames (no frame, so an empty mask), the last-error slots (errno 0).
 
 The map form carries an obligation that is easy to miss: **remove the entry when
 the value returns to the default.** `EmulatedKernel` is compared for equality to
 decide whether a step changed anything, so a stored default is a state that looks
 different while behaving identically. No guest can observe it; it corrodes
-determinism. `SignalState.unblock` says so, and `TestSignalState.fs` /
-`TestLastError.fs` property-test it against a store-everything oracle: reads must
-agree, **and** no default may ever be stored.
+determinism. `SignalState.sigreturn` drops a task's last frame rather than
+storing an empty stack, and `TestSignalState.fs` / `TestLastError.fs`
+property-test that against a store-everything oracle: reads must agree, **and** no
+default may ever be stored.
+
+A task's signal mask is exactly its innermost handler frame's: the library models
+no `sigprocmask(2)`, so a mask exists only while a handler runs, and a test that
+needs a task to block signals puts it in a handler (`HandlerFrames` in
+`WoofWare.PosixKernel.Test`, `SignalFrames` in `WoofWare.PawPrint.Test`).
 
 ## 3. Whose encoding is this?
 

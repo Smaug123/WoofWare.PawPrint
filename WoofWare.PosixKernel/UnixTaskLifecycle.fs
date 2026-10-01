@@ -168,10 +168,12 @@ module UnixTaskLifecycle =
         // Measured on Linux 6.18.5 (aarch64 and x86-64) and Darwin 27.0.0 by
         // `docs/plans/2026-08-23-posix-kernel-extraction/thread-spawn-mask.c`: a new
         // thread's mask is exactly its creator's, and nothing pending on the
-        // creator alone is pending on it.
-        let signals =
-            (system.Process.Signals, SignalState.blockedFor parent system.Process.Signals)
-            ||> Set.fold (fun signals signal -> SignalState.block child signal signals)
+        // creator alone is pending on it. A task's mask is its handler frames'
+        // here, and a new task has none, so it starts with the empty mask its
+        // creator has when that has no frame.
+        if not (Set.isEmpty (SignalState.maskOf parent system.Process.Signals)) then
+            failwith
+                $"UnixTaskLifecycle.spawn: task %O{parent} creates a thread from inside a signal handler, whose mask the new thread would inherit; this library holds a mask only as a task's handler frames, so it cannot give the new thread one."
 
         Ok (
             id,
@@ -179,10 +181,6 @@ module UnixTaskLifecycle =
                 Machine =
                     { system.Machine with
                         ThreadIds = threadIds
-                    }
-                Process =
-                    { system.Process with
-                        Signals = signals
                     }
                 Tasks = UnixTaskTable.add child cpu id system.Tasks
             }

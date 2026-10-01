@@ -62,25 +62,35 @@ module TestNativeLibc =
             Map.ofList
                 [
                     for signo in [ 4 ; 5 ; 6 ; 7 ; 8 ; 11 ; 34 ] do
-                        signo, SignalDisposition.Catch caughtByRuntime
-                    33, SignalDisposition.Catch NativeSignalHandler.GlibcSetXid
+                        signo, SignalDisposition.Catch (SignalCatch.ofHandler caughtByRuntime)
+                    33, SignalDisposition.Catch (SignalCatch.ofHandler NativeSignalHandler.GlibcSetXid)
                     13, SignalDisposition.Ignore
                 ]
         | SignalNumbering.Darwin ->
             Map.ofList
                 [
                     for signo in [ 4 ; 6 ; 8 ; 10 ; 11 ; 30 ] do
-                        signo, SignalDisposition.Catch caughtByRuntime
+                        signo, SignalDisposition.Catch (SignalCatch.ofHandler caughtByRuntime)
                     13, SignalDisposition.Ignore
                 ]
 
     [<Test>]
     let ``the startup dispositions are the measured ones`` () : unit =
         for numbering in everyNumbering do
+            // Which handler catches each signal is measured; the handlers' own
+            // masks and flags are the PAL's source, pinned below.
             let actual =
                 SignalState.dispositions (initial numbering)
                 |> Map.toSeq
-                |> Seq.map (fun (signal, disposition) -> Signal.toRawSignoUnder numbering signal, disposition)
+                |> Seq.map (fun (signal, disposition) ->
+                    let handlerOnly =
+                        match disposition with
+                        | SignalDisposition.Catch action ->
+                            SignalDisposition.Catch (SignalCatch.ofHandler action.Handler)
+                        | other -> other
+
+                    Signal.toRawSignoUnder numbering signal, handlerOnly
+                )
                 |> Map.ofSeq
 
             (numbering, actual) |> shouldEqual (numbering, measured numbering)
@@ -106,6 +116,32 @@ module TestNativeLibc =
             (numbering, actual) |> shouldEqual (numbering, measuredRestoring numbering)
 
     [<Test>]
+    let ``the runtime's and glibc's handlers restart system calls, and the PAL's SIGSEGV masks its activation signal``
+        ()
+        : unit
+        =
+        // pal/src/exception/signal.cpp `handle_signal`: SA_RESTART, an empty
+        // sa_mask, and on Linux SA_ONSTACK for SIGSEGV, whose mask then holds
+        // the activation signal (34). glibc's SIGSETXID handler's flags were
+        // read back as SA_SIGINFO | SA_RESTART | SA_RESTORER.
+        for numbering in everyNumbering do
+            for KeyValue (signal, disposition) in SignalState.dispositions (initial numbering) do
+                match disposition with
+                | SignalDisposition.Catch action ->
+                    action.Restart |> shouldEqual true
+                    action.NoDefer |> shouldEqual false
+                    action.ResetHand |> shouldEqual false
+
+                    let expectedMask =
+                        match numbering, Signal.toRawSignoUnder numbering signal with
+                        | SignalNumbering.Linux, 11 -> Set.singleton (Signal.Other 34)
+                        | _ -> Set.empty
+
+                    action.Mask |> shouldEqual expectedMask
+                | SignalDisposition.Ignore
+                | SignalDisposition.Default -> ()
+
+    [<Test>]
     let ``inherited ignores stay ignored except where the runtime installs its own handler`` () : unit =
         // Measured by starting the startup probes with every catchable signal
         // ignored (see the comment in StartupSignalDispositions): the runtime's
@@ -126,8 +162,12 @@ module TestNativeLibc =
                     | Some _
                     | None -> SignalDisposition.Ignore
 
-                (numbering, s, SignalState.disposition s state)
-                |> shouldEqual (numbering, s, expected)
+                let actual =
+                    match SignalState.disposition s state with
+                    | SignalDisposition.Catch action -> SignalDisposition.Catch (SignalCatch.ofHandler action.Handler)
+                    | other -> other
+
+                (numbering, s, actual) |> shouldEqual (numbering, s, expected)
 
     [<Test>]
     let ``inherited ignores refuse what a launcher cannot ignore, and SIGTERM`` () : unit =
@@ -165,7 +205,9 @@ module TestNativeLibc =
         for numbering in everyNumbering do
             for KeyValue (signo, disposition) in measured numbering do
                 match disposition with
-                | SignalDisposition.Catch handler ->
+                | SignalDisposition.Catch {
+                                              Handler = handler
+                                          } ->
                     let sent = signal numbering signo
 
                     screen (fresh numbering) (Signal.Other signo)
@@ -177,8 +219,13 @@ module TestNativeLibc =
                     if not (Signal.isUncatchableUnder numbering sent) then
                         let signals, shim = register numbering (Signal.Other signo) (fresh numbering)
 
-                        SignalState.disposition sent signals
-                        |> shouldEqual (SignalDisposition.Catch NativeSignalHandler.SystemNative)
+                        match SignalState.disposition sent signals with
+                        | SignalDisposition.Catch action ->
+                            action.Handler |> shouldEqual NativeSignalHandler.SystemNative
+                            // Over the runtime's handler, System.Native keeps its
+                            // mask and flags, and adds SA_RESTART.
+                            action.Restart |> shouldEqual true
+                        | other -> failwith $"expected System.Native's handler, got %A{other}"
 
                         let registered = SignalState.enqueue (processDirected sent) signals, shim
 

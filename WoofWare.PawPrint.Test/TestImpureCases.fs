@@ -359,7 +359,12 @@ module TestImpureCases =
     /// The signals whose disposition is System.Native's handler.
     let private caughtBySystemNative (state : IlMachineState) : Set<Signal> =
         SignalState.dispositions state.Kernel.Signals
-        |> Map.filter (fun _ disposition -> disposition = SignalDisposition.Catch NativeSignalHandler.SystemNative)
+        |> Map.filter (fun _ disposition ->
+            match disposition with
+            | SignalDisposition.Catch action -> action.Handler = NativeSignalHandler.SystemNative
+            | SignalDisposition.Default
+            | SignalDisposition.Ignore -> false
+        )
         |> Map.toSeq
         |> Seq.map fst
         |> Set.ofSeq
@@ -2888,6 +2893,27 @@ module TestImpureCases =
                         Map.ofList
                             [
                                 "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // `AppDomain_CreateDynamicAssembly`: the assembly that anonymously hosts every
+                // ownerless `DynamicMethod`, and one a guest defines by name. Dynamic-code switch
+                // overridden to true like its siblings; verified by hand to exit 0 on real .NET.
+                FileName = "DynamicAssemblyHosting.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                                // PawPrint runs with invariant globalization, which admits no culture
+                                // but the invariant one unless this is off; the guest names `fr-FR`.
+                                "System.Globalization.PredefinedCulturesOnly", "false"
                             ]
                     )
                 Oracle = OraclePolicy.Never

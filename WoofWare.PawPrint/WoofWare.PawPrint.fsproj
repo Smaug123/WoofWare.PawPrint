@@ -20,6 +20,7 @@
     <Compile Include="AssemblyInfo.fs" />
     <Compile Include="EmulatedRuntime.fs" />
     <Compile Include="LoaderAllocator.fs" />
+    <Compile Include="DynamicAssemblyImage.fs" />
     <Compile Include="Tuple.fs" />
     <Compile Include="List.fs" />
     <Compile Include="ImmutableArray.fs" />
@@ -209,6 +210,7 @@
          of that module's `concretizeNonGenericCorelibType`. -->
     <Compile Include="Native\NativeRuntimeModule.fs" />
     <Compile Include="Native\NativeAssemblyLoadContext.fs" />
+    <Compile Include="Native\NativeRuntimeAssemblyBuilder.fs" />
     <!-- After NativeRuntimeTypeHelpers.fs: the CastHelpers QCall formats CoreCLR's
          InvalidCastException message with that module's type-name renderer. -->
     <Compile Include="Native\NativeDelegate.fs" />

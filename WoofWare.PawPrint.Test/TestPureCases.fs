@@ -39,7 +39,6 @@ module TestPureCases =
             "MethodHandleGetFunctionPointerSharedCode.cs" // `RuntimeMethodHandle.GetFunctionPointer` on an instance method of a generic class instantiated over a reference type (or over a value type instantiated over one), or on a virtual method of a generic value type so instantiated. CoreCLR compiles every such instantiation to one body over `System.__Canon`, which reads its instantiation from `this` (or, behind a value type's unboxing stub, from the box), and reflection hands out that shared entry point rather than an instantiating stub, so `GC<string>.Inst` and `GC<object>.Inst` have one address, and calling the `GC<object>` one on a `GC<string>` answers for `string`. PawPrint does not model shared generic code: a `FunctionPointerTarget.Managed` names one exact instantiation, so it would compare unequal and run the wrong instantiation's body. `NativeRuntimeMethodHandle.functionPointerOutcome` classifies the shape as `SharedCode` and the QCall refuses it: "TODO: RuntimeMethodHandle.GetFunctionPointer on ... an instance method of a shared generic instantiation". Un-park when a function pointer can name shared code whose instantiation comes from the receiver; `ldftn` of the same shape (reachable from IL, not from C#) has the same gap but does not refuse. Verified to exit 0 on real .NET.
             "StackTraceFromExceptionNeedFileInfo.cs" // `new StackTrace(exception, fNeedFileInfo: true)` on an exception with no captured trace. The blocker is not the frame count, which is zero and correctly reported: `InitializeSourceInfo` calls `CreateStackTraceSymbols()` *before* the loop over frames, gated only on `fNeedFileInfo` (StackFrameHelper.cs:95-113), so an empty capture does not avoid it. `CreateStackTraceSymbols` is an `[UnsafeAccessor]` constructor whose return type is named by `[UnsafeAccessorType("System.Diagnostics.StackTraceSymbols, System.Diagnostics.StackTrace, ...")]`, and `UnsafeAccessorDispatch.resolve` refuses any accessor that names a type that way (measured: "names at least one of its types with [UnsafeAccessorType]"). Raising that refusal as a guest exception for CoreLib's surrounding `try { } catch { }` to absorb would not be faithful: `System.Diagnostics.StackTrace` ships in the shared framework, so real .NET resolves the name and constructs a `StackTraceSymbols`. Un-park with `[UnsafeAccessorType]` resolution. CoreCLR resolves the name through the managed `TypeNameResolver.GetTypeHelper` (vm/typeparse.cpp), which loads the named assembly with `RuntimeAssembly.InternalLoad`, so that needs the `AssemblyNative_InternalLoad` QCall, which PawPrint does not yet answer. This is the blocker standing between `Exception.StackTrace` (Exception.cs:232) and `ExceptionDispatchInfo.SetCurrentStackTrace` (Exception.cs:247) and working, both of which pass `fNeedFileInfo: true`. Verified to exit 0 on real .NET.
             "MarshalOffsetOfSharedGeneric.cs" // `Marshal.OffsetOf` on a generic struct instantiated over a reference type. CoreCLR answers for the field's approximate enclosing MethodTable, which for such an instantiation is its canonical form over `System.__Canon`, so a `T` field is a `__Canon` and has no native form -- even when `[MarshalAs(ByValTStr)]` would have accepted the `string` it really holds -- while a struct not mentioning `T` in a field is answered as usual. PawPrint does not model canonical forms, so the QCall refuses every shared instantiation rather than answer for the exact one: "TODO: MarshalNative_OffsetOf: Program+Phantom`1<System.String> ... is an instantiation shared over System.__Canon, whose native layout CoreCLR computes for the canonical form; PawPrint does not model canonical forms" (measured). Un-park when a type's canonical form can be laid out. Verified to exit 0 on real .NET.
-            "ExpressionLambdaCompileWide.cs" // `Expression.Compile` of a delegate of three or more parameters, whose thunk the expression interpreter emits as an anonymously hosted `DynamicMethod` whatever the dynamic-code switch says. Stops at `AppDomain_CreateDynamicAssembly`, reached from `DynamicMethod.GetDynamicMethodsModule`: stage 3 of `docs/plans/2026-09-26-expression-thunk-dynamic-method.md`. Verified to exit 0 on real .NET.
         ]
         |> Set.ofList
 
@@ -753,6 +752,79 @@ public class Program
             )
 
         exn.Message |> shouldContainText "StripMethodInstantiation"
+        exn.Message |> shouldContainText "System.__Canon"
+
+    /// `RuntimeMethodHandle.GetMethodFromCanonical` reached by private reflection rather than from
+    /// `RuntimeType.GetMethodBase`, so that nothing rebinds its answer onto the exact named type.
+    /// CoreCLR answers from the named type's canonical method table, so the guest can see
+    /// `Holder<System.__Canon>`, which PawPrint does not model; the real runtime is run first to
+    /// show that the difference is really there to be seen. The named types for which the two agree
+    /// are `sourcesPure/ReflectionGetMethodFromCanonicalUnshared.cs`.
+    [<Test>]
+    let ``GetMethodFromCanonical refuses a caller that could see the canonical declaring type`` () =
+        let source =
+            """
+using System;
+using System.Reflection;
+
+public class Program
+{
+    class Holder<T>
+    {
+        internal static int Plain(T t) => 0;
+    }
+
+    public static int Main(string[] args)
+    {
+        const BindingFlags nonPublicStatic = BindingFlags.NonPublic | BindingFlags.Static;
+        Type internalHandle = typeof(RuntimeMethodHandle).Assembly.GetType("System.RuntimeMethodHandleInternal", true);
+        MethodInfo fromCanonical = typeof(RuntimeMethodHandle).GetMethod(
+            "GetMethodFromCanonical", nonPublicStatic, null, new[] { internalHandle, typeof(Type).GetType() }, null);
+        MethodInfo getDeclaringType = typeof(RuntimeMethodHandle).GetMethod(
+            "GetDeclaringType", nonPublicStatic, null, new[] { internalHandle }, null);
+
+        if (fromCanonical == null || getDeclaringType == null)
+        {
+            return 1;
+        }
+
+        object handle = Activator.CreateInstance(
+            internalHandle, BindingFlags.NonPublic | BindingFlags.Instance, null,
+            new object[] { typeof(Holder<int>).GetMethod("Plain", nonPublicStatic).MethodHandle.Value }, null);
+        object answer = fromCanonical.Invoke(null, new object[] { handle, typeof(Holder<string>) });
+        Type declaring = (Type) getDeclaringType.Invoke(null, new object[] { answer });
+
+        if (declaring.GetGenericTypeDefinition() != typeof(Holder<>))
+        {
+            return 2;
+        }
+
+        if (declaring.GetGenericArguments()[0].FullName != "System.__Canon")
+        {
+            return 3;
+        }
+
+        return 0;
+    }
+}
+"""
+
+        let image = Roslyn.compile [ source ]
+
+        match RealRuntime.executeWithRealRuntime [||] image with
+        | RealRuntimeResult.NormalExit 0 -> ()
+        | other -> failwith $"expected the real runtime to report Holder<System.__Canon>, got %O{other}"
+
+        let exn =
+            Assert.Catch (fun () ->
+                runPawPrintSource
+                    "GetMethodFromCanonicalCanonical.cs"
+                    source
+                    KernelConfig.Default
+                    (fun _image _result -> ())
+            )
+
+        exn.Message |> shouldContainText "GetMethodFromCanonical"
         exn.Message |> shouldContainText "System.__Canon"
 
     /// `float32` and `float64` are the same type (`F`) on the CLI evaluation stack, but a

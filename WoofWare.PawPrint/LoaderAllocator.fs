@@ -32,9 +32,10 @@ module LoaderAllocator =
     ///     `AssemblyBuilder.DefineDynamicAssembly` with `AssemblyBuilderAccess.RunAndCollect`,
     ///     reached through the `AppDomain_CreateDynamicAssembly` QCall.
     ///
-    /// PawPrint refuses the first's collectible branch and does not implement the second, and a
-    /// guest has no other way to load an assembly at runtime (`Assembly.Load` included), so it has
-    /// no route to a second arena and `true` is unreachable by construction.
+    /// PawPrint refuses both: the first's collectible branch, and the second for any access with
+    /// the collect bit set. A guest has no other way to load an assembly at runtime
+    /// (`Assembly.Load` included), so it has no route to a second arena and `true` is unreachable
+    /// by construction.
     ///
     /// Those two QCalls are therefore what to revisit here, and nothing before one of them admits a
     /// collectible arena.

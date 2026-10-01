@@ -107,23 +107,38 @@ module UnixSignal =
 
                 Ok (Ok (KillOutcome.ProcessEnded ended))
 
-    /// What the kernel does next with the signals `task` could take, as
-    /// `SignalState.nextDelivery` decides: `task` takes its own, and if it is the
-    /// process's leader, the process's too.
+    let private withSignals<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (signals : SignalState<'Task, 'Handler>)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        { system with
+            Process =
+                { system.Process with
+                    Signals = signals
+                }
+        }
+
+    /// What `task` takes as it returns to user mode, as
+    /// `SignalState.onReturnToUser` decides: `task` takes its own signals, and if
+    /// it is the process's leader, the process's too. Asked before `task` next
+    /// runs its own code, including after `sigreturn`.
     ///
     /// Fails loudly if `task` names no task, which is a bug in the client.
-    let nextDelivery<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let onReturnToUser<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SignalDelivery<'Task, 'Handler> option * UnixSystem<'Task, 'Handler>, SignalReceiverRefusal>
         =
-        SignalState.nextDelivery system.Process.CoreDumps system.Leader (tasksOf system) task system.Process.Signals
-        |> Result.map (fun (delivery, signals) ->
-            delivery,
-            { system with
-                Process =
-                    { system.Process with
-                        Signals = signals
-                    }
-            }
-        )
+        SignalState.onReturnToUser system.Process.CoreDumps system.Leader (tasksOf system) task system.Process.Signals
+        |> Result.map (fun (delivery, signals) -> delivery, withSignals signals system)
+
+    /// `sigreturn(2)`: the handler for `task`'s innermost frame, `frame`, has
+    /// returned. See `SignalState.sigreturn`.
+    let sigreturn<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (frame : HandlerFrameId)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        withSignals (SignalState.sigreturn task frame system.Process.Signals) system

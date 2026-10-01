@@ -28,25 +28,27 @@ module TestEmulatedKernelAbort =
 
             // The runtime starts with SIGABRT caught by its own handler, which
             // `PROCAbort` takes away before it aborts.
-            SignalState.disposition Signal.SIGABRT kernel.Process.Signals
-            |> shouldEqual (SignalDisposition.Catch NativeSignalHandler.CoreClrPal)
+            match SignalState.disposition Signal.SIGABRT kernel.Process.Signals with
+            | SignalDisposition.Catch action -> action.Handler |> shouldEqual NativeSignalHandler.CoreClrPal
+            | other -> failwith $"expected the runtime's handler, got %A{other}"
 
             EmulatedKernel.abort thread kernel
             |> shouldEqual (ProcessTermination.Signaled (Signal.SIGABRT, false))
 
     [<Test>]
-    let ``a thread that blocks SIGABRT still dies of its own abort`` () : unit =
+    let ``an abort from inside a handler that blocks SIGABRT is refused`` () : unit =
+        // `abort(3)` unblocks SIGABRT before raising it, which would change the
+        // mask of the handler it is called from. The model holds a mask only as
+        // handler frames, and PawPrint never leaves one pushed between
+        // instructions, so this is a state only a test builds; the abort is
+        // refused rather than answered as if the signal were unblocked.
         for platform in platforms do
             let kernel =
                 kernelOn platform CoreDumps.Suppressed
-                |> EmulatedKernel.mapProcess (fun proc ->
-                    { proc with
-                        Signals = SignalState.block thread Signal.SIGABRT proc.Signals
-                    }
-                )
+                |> SignalFrames.enter thread (Set.singleton Signal.SIGABRT)
 
-            EmulatedKernel.abort thread kernel
-            |> shouldEqual (ProcessTermination.Signaled (Signal.SIGABRT, false))
+            Assert.Throws (fun () -> EmulatedKernel.abort thread kernel |> ignore<ProcessTermination>)
+            |> ignore<exn>
 
     [<Test>]
     let ``an abort dumps core exactly when the process writes dumps`` () : unit =

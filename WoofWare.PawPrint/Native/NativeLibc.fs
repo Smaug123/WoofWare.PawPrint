@@ -57,7 +57,9 @@ module NativeLibc =
         let signal = Signal.canonicalUnder numbering signal
 
         match SignalState.disposition signal signals with
-        | SignalDisposition.Catch NativeSignalHandler.SystemNative ->
+        | SignalDisposition.Catch {
+                                      Handler = NativeSignalHandler.SystemNative
+                                  } ->
             match PosixSignalShim.chainsToNativeHandler numbering signal shim with
             | Some chained ->
                 // Registering a handler does not take the runtime's own away
@@ -66,7 +68,7 @@ module NativeLibc =
                 // reaches managed code.
                 Some (UnmodelledSelfSignal.NativeHandler (signal, chained))
             | None -> None
-        | SignalDisposition.Catch handler -> Some (UnmodelledSelfSignal.NativeHandler (signal, handler))
+        | SignalDisposition.Catch action -> Some (UnmodelledSelfSignal.NativeHandler (signal, action.Handler))
         | SignalDisposition.Default when Signal.defaultDispositionUnder numbering signal = DefaultDisposition.Continue ->
             Some (UnmodelledSelfSignal.ContinueWithoutHandler signal)
         | SignalDisposition.Default
