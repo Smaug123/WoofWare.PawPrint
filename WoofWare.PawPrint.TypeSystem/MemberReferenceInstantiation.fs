@@ -55,8 +55,8 @@ module MemberReferenceInstantiation =
             }
 
         // The parent as the frame instantiates it, and the arguments the row spells for it. A
-        // TypeReference spells none: naming a generic definition that way names its typical
-        // instantiation, which callers recognise by the empty arguments and refuse.
+        // TypeReference or TypeDefinition spells none: naming a generic definition that way names its
+        // typical instantiation, which callers recognise by the empty arguments and refuse.
         let resolveParent
             (state : TypeSystemState)
             : TypeSystemState * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn> * ImmutableArray<TypeDefn>
@@ -67,6 +67,22 @@ module MemberReferenceInstantiation =
                     TypeSystemState.resolveType loggerFactory dotnetRuntimeDirs parent ImmutableArray.Empty assy state
 
                 state, targetType, ImmutableArray.Empty
+            | MetadataToken.TypeDefinition parent ->
+                // The bare definition, as a TypeReference parent resolves to it (base chain loaded):
+                // its formals stand, rather than being substituted from an environment the parent
+                // supplies none of.
+                let assemblies, _, targetType =
+                    TypeResolution.resolveTypeFromDefn
+                        loggerFactory
+                        dotnetRuntimeDirs
+                        baseClassTypes
+                        (TypeDefn.FromDefinition (assy.TypeDefs.[parent].Identity, SignatureTypeKind.Unknown))
+                        ImmutableArray.Empty
+                        ImmutableArray.Empty
+                        assy
+                        state._LoadedAssemblies
+
+                withAssemblies assemblies state, targetType, ImmutableArray.Empty
             | MetadataToken.TypeSpecification parent ->
                 let state, _, targetType =
                     TypeSystemState.resolveTypeFromSpec
@@ -145,7 +161,8 @@ module MemberReferenceInstantiation =
             match target with
             | MethodReferenceTarget.Defined (declaringAssembly, method, declaringTypeArguments) when
                 (match mem.Parent with
-                 | MetadataToken.TypeReference _ -> true
+                 | MetadataToken.TypeReference _
+                 | MetadataToken.TypeDefinition _ -> true
                  | _ -> false)
                 && mentionsTypeVariable declaringTypeArguments.Arguments
                 ->

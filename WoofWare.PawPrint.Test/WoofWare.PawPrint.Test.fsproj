@@ -342,6 +342,7 @@
     <Compile Include="TestIntrinsicBody.fs" />
     <Compile Include="TestUnsafeStubs.fs" />
     <Compile Include="TestFabricatedFieldMarshal.fs" />
+    <Compile Include="TestFabricatedFieldReference.fs" />
     <Compile Include="TestSetupShape.fs" />
     <Compile Include="TestUnresolvableDeclaration.fs" />
     <Compile Include="TestCrossAssemblySlotContent.fs" />

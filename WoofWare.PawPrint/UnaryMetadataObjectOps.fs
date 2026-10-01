@@ -429,10 +429,17 @@ module internal UnaryMetadataObjectOps =
                 state, MethodInfo.mapTypeGenerics (fun _ -> failwith "non-generic method") method, None
             | MemberReference mr ->
                 let state, _, method, extractedTypeArgs =
-                    IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssy mr state
+                    IlMachineState.resolveMember
+                        (MemberReferenceUse.Other "newobj")
+                        loggerFactory
+                        baseClassTypes
+                        thread
+                        activeAssy
+                        mr
+                        state
 
                 match method with
-                | Choice1Of2 mr -> state, mr, Some extractedTypeArgs
+                | Choice1Of2 ctor -> state, ctor, Some extractedTypeArgs
                 | Choice2Of2 _field -> failwith "unexpectedly NewObj found a constructor which is a field"
             | x -> failwith $"Unexpected metadata token for constructor: %O{x}"
 

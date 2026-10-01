@@ -37,6 +37,13 @@ type internal LdtokenTarget =
 
 [<RequireQualifiedAccess>]
 module internal UnaryMetadataTokenOps =
+    /// What the executing instruction does with a MemberRef it names: `ldtoken` may name a member of
+    /// a generic definition's typical instantiation, which every other instruction refuses.
+    let private memberReferenceUse (ctx : UnaryMetadataIlOpContext) : MemberReferenceUse =
+        match ctx.Op with
+        | UnaryMetadataTokenIlOp.Ldtoken -> MemberReferenceUse.Ldtoken
+        | op -> MemberReferenceUse.Other (string<UnaryMetadataTokenIlOp> op)
+
     /// Refuse a `MemberReference` whose parent named a *generic type definition* without supplying
     /// an instantiation -- `G`1::M()` rather than `G`1<int>::M()`.
     ///
@@ -91,7 +98,14 @@ module internal UnaryMetadataTokenOps =
         let thread = ctx.Thread
 
         let state, _, resolved, extractedTypeArgs =
-            IlMachineState.resolveMember loggerFactory baseClassTypes thread ctx.ActiveAssembly handle state
+            IlMachineState.resolveMember
+                (memberReferenceUse ctx)
+                loggerFactory
+                baseClassTypes
+                thread
+                ctx.ActiveAssembly
+                handle
+                state
 
         match resolved with
         | Choice1Of2 method when not method.Generics.IsEmpty ->
@@ -226,7 +240,14 @@ module internal UnaryMetadataTokenOps =
             let methodGenerics = List.rev methodGenerics |> ImmutableArray.CreateRange
 
             let state, _, method, extractedTypeArgs =
-                IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssy ref state
+                IlMachineState.resolveMember
+                    (memberReferenceUse ctx)
+                    loggerFactory
+                    baseClassTypes
+                    thread
+                    activeAssy
+                    ref
+                    state
 
             match method with
             | Choice2Of2 _field ->
