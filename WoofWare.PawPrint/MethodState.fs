@@ -132,6 +132,19 @@ type ExceptionEscape =
     /// never have shown it to.
     | SwallowedByRuntime of runtimeCaller : string
 
+/// What a C function in the runtime's native shim, which PawPrint implements, read from
+/// guest memory once, before a loop that makes a syscall again: the values a call made
+/// again must use, where reading the guest's memory afresh would see whatever another
+/// thread has written there since.
+[<RequireQualifiedAccess>]
+type NativeLocals =
+    /// `SystemNative_Accept`'s `socklen_t addrLen`, read from `*socketAddressLen` before
+    /// its `accept4` loop.
+    | AcceptAddressLength of int
+    /// `Common_Poll`'s `struct pollfd` array, converted from the caller's `PollEvent`s
+    /// before its `poll` loop.
+    | PollEntries of WoofWare.PosixKernel.PollEntry list
+
 type MethodReturnState =
     {
         /// Handle to the caller's frame
@@ -202,6 +215,9 @@ and MethodState =
         ///
         /// Meaningless for any other frame.
         LastErrorCleared : bool
+        /// For a native frame whose call a signal interrupted, what the C function kept in
+        /// its own locals for the call it makes again. `None` for every other frame.
+        NativeLocals : NativeLocals option
     }
 
     member this.IlOpIndex = this._IlOpIndex
@@ -316,6 +332,12 @@ and MethodState =
     static member markLastErrorCleared (state : MethodState) : MethodState =
         { state with
             LastErrorCleared = true
+        }
+
+    /// Keep `locals` for the call this native frame makes again. See `NativeLocals`.
+    static member withNativeLocals (locals : NativeLocals option) (state : MethodState) : MethodState =
+        { state with
+            NativeLocals = locals
         }
 
     /// Clear any pending prefix opcodes. Must be called whenever the PC is set to a
@@ -459,5 +481,6 @@ and MethodState =
             PendingPrefix = PrefixState.empty
             PendingTypeInit = None
             LastErrorCleared = false
+            NativeLocals = None
         }
         |> Ok

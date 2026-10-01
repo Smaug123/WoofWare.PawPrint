@@ -1701,6 +1701,20 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // A shim function a signal interrupts calls again with what it
+                // copied from the caller's memory before its loop: accept's
+                // length and poll's descriptors, rewritten by another thread
+                // while the call slept. Compared on every host: both shims copy,
+                // on both kernels.
+                FileName = "SignalRetryKeepsShimCopies.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Always
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // A blocked epoll_wait holds its port by file reference:
                 // closing the fd the wait went through, with a dup keeping
                 // the description alive, still delivers when the edge

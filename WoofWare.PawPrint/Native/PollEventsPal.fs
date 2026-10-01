@@ -81,29 +81,31 @@ module PollEventsPal =
         | PollOutcome.WouldBlock condition -> PollOutcome.WouldBlock condition
         | PollOutcome.Failed error -> PollOutcome.Failed error
 
-    /// `Common_Poll` between its argument screens and its copy-out: convert each
-    /// entry's PAL `Events` and ask the kernel's `poll(2)`, made by `task`.
+    /// `Common_Poll`'s conversion of the caller's `PollEvent`s into `struct pollfd`s:
+    /// each `PollEvent.FileDescriptor` paired with its PAL `Events` becomes that
+    /// descriptor with the flavour's own events.
+    let convert (entries : (int * int16) list) : PollEntry list =
+        entries
+        |> List.map (fun (fd, palEvents) ->
+            {
+                PollEntry.Fd = fd
+                Events = toPlatform palEvents
+            }
+        )
+
+    /// `Common_Poll` between its conversion and its copy-out: ask the kernel's
+    /// `poll(2)`, made by `task`, of `entries` (see `convert`).
     ///
-    /// `entries` pairs each `PollEvent.FileDescriptor` with its PAL `Events`.
     /// An answer carries the PAL `TriggeredEvents` for each entry, in order, and
     /// `poll(2)`'s own return value; a park is finished with `finish`.
-    let poll<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let pollConverted<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
-        (entries : (int * int16) list)
+        (entries : PollEntry list)
         (milliseconds : int)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<PollOutcome * UnixSystem<'Task, 'Handler>, PollRefusal>
         =
-        let platformEntries =
-            entries
-            |> List.map (fun (fd, palEvents) ->
-                {
-                    PollEntry.Fd = fd
-                    Events = toPlatform palEvents
-                }
-            )
-
-        UnixPoll.poll task platformEntries milliseconds system
+        UnixPoll.poll task entries milliseconds system
         |> Result.map (fun (outcome, system) -> ofKernel outcome, system)
 
     /// Finish the `poll` `task` parked in, as `poll` answers one.

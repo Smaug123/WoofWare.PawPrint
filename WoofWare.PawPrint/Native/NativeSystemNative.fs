@@ -260,14 +260,14 @@ module NativeSystemNative =
     /// the thread Runnable to issue the call again from the top. The signal's
     /// handlers run before that, as the leader returns to user mode between two
     /// steps (`SignalDispatch.poll`). A re-entered handler finds no park and
-    /// makes the call afresh, so it reads the arguments again; the shim reads
-    /// them again too, except a `PollEvent` array and an accept's length cell,
-    /// which it copied before its loop, and which differ only if another thread
-    /// rewrote them while the call slept.
+    /// makes the call again. It reads its arguments again, as the shim does,
+    /// except `locals`: what the shim read from guest memory once, before its
+    /// loop, which the frame keeps for the handler to use instead.
     let private callAgainAfterSignal
         (ctx : NativeCallContext)
         (operation : string)
         (interrupted : Interrupted)
+        (locals : NativeLocals option)
         (system : UnixSystem<ThreadId, NativeSignalHandler>)
         (state : IlMachineState)
         : NativeHandlerResult option
@@ -283,6 +283,10 @@ module NativeSystemNative =
             match interrupted with
             | Interrupted.Eintr -> withErrno ctx UnixError.EINTR system state
             | Interrupted.Restarted -> withAnswered system state
+            |> IlMachineState.mapFrame
+                ctx.Thread
+                state.ThreadState.[ctx.Thread].ActiveMethodState
+                (MethodState.withNativeLocals locals)
 
         NativeHandlerResult.reenterRetainingFrame state |> Some
 
@@ -3647,9 +3651,9 @@ module NativeSystemNative =
                 // A signal ended the sleep. The shim's `flock` loop calls again
                 // after EINTR, and a restart calls again with no EINTR.
                 | Ok (SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.EINTR), system) ->
-                    callAgainAfterSignal ctx operation Interrupted.Eintr system state
+                    callAgainAfterSignal ctx operation Interrupted.Eintr None system state
                 | Ok (SyscallOutcome.Restarts, system) ->
-                    callAgainAfterSignal ctx operation Interrupted.Restarted system state
+                    callAgainAfterSignal ctx operation Interrupted.Restarted None system state
                 | Ok (SyscallOutcome.Answered (SyscallAnswer.Failed error), _) ->
                     failwith
                         $"%s{operation}: finishing a parked acquisition on %O{parked.Requester} answered %O{error}. A resume acquires on a description the close path is obliged to keep alive, so it can only be granted, still blocked, or ended by a signal (this is an interpreter bug)."
@@ -4819,9 +4823,21 @@ module NativeSystemNative =
                 // A signal ended the sleep. The shim's `accept4` loop calls again
                 // after EINTR, and a restart calls again with no EINTR.
                 | Ok (AcceptOutcome.Failed UnixError.EINTR, system) ->
-                    callAgainAfterSignal ctx operation Interrupted.Eintr system state
+                    callAgainAfterSignal
+                        ctx
+                        operation
+                        Interrupted.Eintr
+                        (Some (NativeLocals.AcceptAddressLength declaredLength))
+                        system
+                        state
                 | Ok (AcceptOutcome.Restarts, system) ->
-                    callAgainAfterSignal ctx operation Interrupted.Restarted system state
+                    callAgainAfterSignal
+                        ctx
+                        operation
+                        Interrupted.Restarted
+                        (Some (NativeLocals.AcceptAddressLength declaredLength))
+                        system
+                        state
                 | Ok (AcceptOutcome.Failed error, _) ->
                     // No system is carried back: the library documents that a failing
                     // accept changes nothing, so writing one would be a no-op that
@@ -4935,8 +4951,18 @@ module NativeSystemNative =
 
             let lengthCell = requireStorage operation "socketAddressLen" lengthArgument
 
+            // The shim copies the cell into its own `addrLen` once, before its
+            // `accept4` loop, so a call made again after a signal uses that copy.
             let declaredLength =
-                BinaryPrimitives.ReadInt32LittleEndian ((readBytesThrough ctx operation lengthCell 4 state).AsSpan ())
+                match ctx.Instruction.NativeLocals with
+                | Some (NativeLocals.AcceptAddressLength declaredLength) -> declaredLength
+                | Some (NativeLocals.PollEntries _) ->
+                    failwith
+                        $"%s{operation}: thread %O{ctx.Thread}'s accept frame keeps a poll's locals (this is an interpreter bug)."
+                | None ->
+                    BinaryPrimitives.ReadInt32LittleEndian (
+                        (readBytesThrough ctx operation lengthCell 4 state).AsSpan ()
+                    )
 
             // The shim's own screen, before the cast to `socklen_t` that would
             // otherwise make the bound SIZE_MAX. No kernel is ever asked, which
@@ -5888,7 +5914,7 @@ module NativeSystemNative =
                 // A signal ended the sleep, and the shim's `epoll_wait` and
                 // `kevent` loops call again after EINTR.
                 | EpollWaitOutcome.Failed UnixError.EINTR ->
-                    callAgainAfterSignal ctx operation Interrupted.Eintr system state
+                    callAgainAfterSignal ctx operation Interrupted.Eintr None system state
                 | EpollWaitOutcome.Failed error -> failFromSyscall error
                 | EpollWaitOutcome.Answered delivered ->
                     deliver delivered (state.MapKernel (EmulatedKernel.withUnix system))
@@ -6144,7 +6170,10 @@ module NativeSystemNative =
                     state
                 |> complete UnixErrorPal.palSuccess
 
+            // `entries` are the `struct pollfd`s the call was made with, which
+            // `Common_Poll` makes it again with.
             let settle
+                (entries : PollEntry list)
                 (outcome : Result<PollOutcome * UnixSystem<ThreadId, NativeSignalHandler>, PollRefusal>)
                 : NativeHandlerResult option
                 =
@@ -6173,7 +6202,13 @@ module NativeSystemNative =
                 // A signal ended the sleep, and `Common_Poll`'s loop calls again
                 // after EINTR, with the same timeout in full.
                 | Ok (PollOutcome.Failed UnixError.EINTR, system) ->
-                    callAgainAfterSignal ctx operation Interrupted.Eintr system state
+                    callAgainAfterSignal
+                        ctx
+                        operation
+                        Interrupted.Eintr
+                        (Some (NativeLocals.PollEntries entries))
+                        system
+                        state
                 | Ok (PollOutcome.Failed error, _) ->
                     failwith
                         $"%s{operation}: the kernel's poll failed with %O{error}, which only a signal ending its sleep answers, with EINTR (this is an interpreter bug)."
@@ -6200,7 +6235,24 @@ module NativeSystemNative =
                     failwith
                         $"%s{operation}: thread %O{ctx.Thread} re-entered a poll of %d{eventCount} entries, but its park records %d{List.length parked.Entries}. A re-entry runs the same call with the same arguments (this is an interpreter bug)."
 
-                settle (PollEventsPal.finish ctx.Thread (EmulatedKernel.unix state.Kernel))
+                let entries =
+                    parked.Entries
+                    |> List.map (fun entry ->
+                        match entry with
+                        // A negative descriptor's events are never read.
+                        | ParkedPollEntry.Ignored fd ->
+                            {
+                                PollEntry.Fd = fd
+                                Events = 0s
+                            }
+                        | ParkedPollEntry.Watched (fd, _, events) ->
+                            {
+                                PollEntry.Fd = fd
+                                Events = events
+                            }
+                    )
+
+                settle entries (PollEventsPal.finish ctx.Thread (EmulatedKernel.unix state.Kernel))
             | Some (ParkedSyscall.SocketWait _)
             | Some (ParkedSyscall.Flock _)
             | Some (ParkedSyscall.Accept _) ->
@@ -6211,9 +6263,22 @@ module NativeSystemNative =
                     $"%s{operation}: thread %O{ctx.Thread} entered a poll while its task is parked in %A{UnixTaskTable.parkedFor ctx.Thread state.Kernel.Tasks}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
             | None ->
 
+            let system = EmulatedKernel.unix state.Kernel
+
+            match ctx.Instruction.NativeLocals with
+            // Made again after a signal: with the `struct pollfd`s the C converted
+            // before its loop, whatever the caller's array holds now.
+            | Some (NativeLocals.PollEntries entries) ->
+                settle entries (PollEventsPal.pollConverted ctx.Thread entries milliseconds system)
+            | Some (NativeLocals.AcceptAddressLength _) ->
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread}'s poll frame keeps an accept's locals (this is an interpreter bug)."
+            | None ->
+
             // Decode every entry before answering, exactly as the C fills its
             // whole `struct pollfd` array before calling `poll(2)`. Each is the
-            // descriptor and the PAL `Events`; `PollEventsPal.poll` converts.
+            // descriptor and the PAL `Events`, which `PollEventsPal.convert`
+            // converts.
             let entries : (int * int16) list =
                 match entriesStorage with
                 | None -> []
@@ -6244,7 +6309,8 @@ module NativeSystemNative =
                         BinaryPrimitives.ReadInt16LittleEndian (eventsBytes.AsSpan ())
                     )
 
-            settle (PollEventsPal.poll ctx.Thread entries milliseconds (EmulatedKernel.unix state.Kernel))
+            let entries = PollEventsPal.convert entries
+            settle entries (PollEventsPal.pollConverted ctx.Thread entries milliseconds system)
         | Some "SystemNative_IsATty",
           [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
