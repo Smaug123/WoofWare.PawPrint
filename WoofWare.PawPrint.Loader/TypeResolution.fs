@@ -155,7 +155,7 @@ module TypeResolution =
         (ty : WoofWare.PawPrint.TypeInfo<'generic, TypeDefn>)
         : LoadedAssemblies * BaseChainFailure option
         =
-        Concretization.tryEnsureTypeDefinitionBaseAssembliesLoaded
+        BaseChainLoading.tryEnsureTypeDefinitionBaseAssembliesLoaded
             (directoryLoader loggerFactory dotnetRuntimeDirs)
             assemblies
             definedIn

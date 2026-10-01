@@ -1,0 +1,28 @@
+# WoofWare.PawPrint.TypeSystem
+
+The CLI type system as CoreCLR lays it out, over the whole set of loaded assemblies.
+
+`WoofWare.PawPrint.Loader` answers "which image, and which definition in it, does this reference
+name?". This library answers what the runtime builds from those definitions: the concrete type a
+generic instantiation denotes, and a type's method table — which slot each method owns, and what
+each slot holds. Like the Loader, it runs no code.
+
+What lives here:
+
+* `TypeConcretization` — instantiating a generic type definition over the whole set of loaded
+  assemblies, to a handle that identifies one concrete type, and comparing signatures and
+  substitutions in terms of those handles.
+* `VtableSlot`, `MethodTableLayout` — a type definition's method table as CoreCLR's
+  `MethodTableBuilder` lays it out: which slot each declaration owns, what each vtable slot holds
+  once MethodImpls are applied, and the slots beyond the vtable.
+* `MethodReferenceResolution` — which method a `MemberRef` names, as CoreCLR binds it: the
+  `MethodDef` of a generic definition, a method the runtime supplies on an array type, or nothing
+  (a `MissingMethodException`, or a `TypeLoadException` if the parent names no type). It lives here
+  rather than beside the Loader's field resolver because CoreCLR binds a method reference by
+  searching each type's method table, as `MethodTableLayout` lays it out, in the order CoreCLR does;
+  it is checked against the real runtime's own answer.
+
+The motivating consumer, besides PawPrint's interpreter, is an analyser that answers questions about
+a method without running it. Such a thing must know which method a call runs exactly as the
+interpreter does, and must never see the interpreter's machine state; this package depends on
+`WoofWare.PawPrint.Domain` and `WoofWare.PawPrint.Loader` alone, and the project graph enforces that.

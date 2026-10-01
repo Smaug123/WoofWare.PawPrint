@@ -191,7 +191,7 @@ public class Outer<A>
         =
         let assy = state._LoadedAssemblies.ByDefinitionName typeInfo.AssemblyFullName
 
-        Concretization.ensureTypeDefinitionBaseAssembliesLoaded
+        BaseChainLoading.ensureTypeDefinitionBaseAssembliesLoaded
             (IlMachineState.loader loggerFactory state)
             state._LoadedAssemblies
             assy

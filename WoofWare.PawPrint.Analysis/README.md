@@ -75,5 +75,5 @@ caller are not checked, and are not reported: a member made inaccessible to it
 constraint added since now rejects, and a type it names whose own base type, interfaces or fields
 are no longer there (`TypeLoadException`).
 
-This package sees `WoofWare.PawPrint.Domain`, `WoofWare.PawPrint.Loader` and
-`WoofWare.PawPrint.Semantics`, and never the interpreter.
+This package sees `WoofWare.PawPrint.Domain`, `WoofWare.PawPrint.Loader`,
+`WoofWare.PawPrint.TypeSystem` and `WoofWare.PawPrint.Semantics`, and never the interpreter.

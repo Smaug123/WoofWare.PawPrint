@@ -8,7 +8,8 @@ names a type by the assembly reference it is scoped to, and answering "which typ
 binding the reference to an image, following that image's type forwarders, and perhaps doing the same
 again for a nested type's parent. Whether a type is a value type is decided by its base-type chain,
 which crosses assemblies freely. This library holds the rules for all of that, and nothing that runs
-code.
+code. What the runtime builds from the definitions once they are found — concrete instantiations and
+method tables — is `WoofWare.PawPrint.TypeSystem`'s.
 
 What lives here:
 
@@ -21,24 +22,15 @@ What lives here:
 * `LoadedTypeResolution` — resolving a `TypeRef`, a forwarded `ExportedType` or a
   namespace-qualified name to its definition, using only what is loaded, and naming the assembly
   reference to bind when that is not enough. `TypeResolution` is the loop that binds it and asks
-  again, and also makes sure a type's whole base chain is loaded.
+  again, and also makes sure a type's whole base chain is loaded, which `BaseChainLoading` walks.
 * `LoadedTypeInfo` — whether a type is a value type, an enum or byref-like, and how a signature
   encodes it, decided by walking its base chain across the loaded assemblies.
 * `SignatureComparison` — whether two method signatures from different assemblies denote the same
   types.
-* `MethodReferenceResolution` — which method a `MemberRef` names, as CoreCLR binds it: the
-  `MethodDef` of a generic definition, a method the runtime supplies on an array type, or nothing
-  (a `MissingMethodException`, or a `TypeLoadException` if the parent names no type). It searches
-  each type's method table as `MethodTableLayout` lays it out, in the order CoreCLR does, and is
-  checked against the real runtime's own answer.
 * `FieldReferenceResolution` — which field a `MemberRef` names: the parent's own fields only, never
   a literal one, matched by name and exact type, as CoreCLR's `FindField` binds it, or nothing (a
-  `MissingFieldException`). `MemberReferenceParent` reads the parent token both resolvers share.
-* `TypeConcretization` — instantiating a generic type definition over the whole set of loaded
-  assemblies, to a handle that identifies one concrete type.
-* `VtableSlot`, `MethodTableLayout` — a type definition's method table as CoreCLR's
-  `MethodTableBuilder` lays it out: which slot each declaration owns, what each vtable slot holds
-  once MethodImpls are applied, and the slots beyond the vtable.
+  `MissingFieldException`). `MemberReferenceParent` reads the parent token, which
+  `WoofWare.PawPrint.TypeSystem`'s method resolver reads too.
 
 The motivating consumer, besides PawPrint's interpreter, is an analyser that answers questions about
 a method without running it. Such a thing must resolve a call's target in another assembly exactly as

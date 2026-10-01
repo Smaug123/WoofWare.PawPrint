@@ -283,7 +283,7 @@ public struct Outer
         // loading only the outer's base chain and confirming netstandard is
         // still absent.
         let assembliesAfterOuterBaseChain =
-            Concretization.ensureTypeDefinitionBaseAssembliesLoaded
+            BaseChainLoading.ensureTypeDefinitionBaseAssembliesLoaded
                 loadAssembly
                 concretizeCtx.LoadedAssemblies
                 concretizeCtx.LoadedAssemblies.[outerAssembly.Name]

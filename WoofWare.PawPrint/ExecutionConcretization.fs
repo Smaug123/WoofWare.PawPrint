@@ -358,7 +358,7 @@ module ExecutionConcretization =
         : IlMachineState * ConcreteTypeHandle * ImmutableArray<ConcreteTypeHandle>
         =
         let loadedAssemblies =
-            Concretization.ensureTypeDefinitionBaseAssembliesLoaded
+            BaseChainLoading.ensureTypeDefinitionBaseAssembliesLoaded
                 (IlMachineState.loader loggerFactory state)
                 state._LoadedAssemblies
                 (state._LoadedAssemblies.ByDefinitionName field.DeclaringType.AssemblyFullName)
