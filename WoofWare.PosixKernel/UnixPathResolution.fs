@@ -172,6 +172,50 @@ module FChModRefusal =
         | FChModRefusal.Socket socket ->
             $"the descriptor is socket %O{socket}. Measured on Linux, fchmod on a socket of every domain and kind succeeds and changes the mode fstat then reports (0777 to 0600, say); this kernel holds no inode for a socket and so no mode to change, and answering success while changing nothing would be a lie the moment one is modelled."
 
+/// Why this kernel will not answer a `chown(2)` or `lchown(2)`.
+[<RequireQualifiedAccess>]
+type ChOwnRefusal =
+    /// What the owner change would do to the inode at `inode` has not been
+    /// measured for this caller.
+    | UnmeasuredOwnerChange of inode : InodeNumber * refusal : OwnerChangeRefusal
+
+[<RequireQualifiedAccess>]
+module ChOwnRefusal =
+    /// What this kernel knows about why it will not answer. A client adds which
+    /// entry point asked, and with which path.
+    let describe (refusal : ChOwnRefusal) : string =
+        match refusal with
+        | ChOwnRefusal.UnmeasuredOwnerChange (inode, refusal) ->
+            $"changing the owner of inode %O{inode}: %s{OwnerChangeRefusal.describe refusal}"
+
+/// Why this kernel will not answer an `fchown(2)`.
+[<RequireQualifiedAccess>]
+type FChOwnRefusal =
+    /// What the owner change would do to the inode at `inode` has not been
+    /// measured for this caller.
+    | UnmeasuredOwnerChange of inode : InodeNumber * refusal : OwnerChangeRefusal
+    /// The descriptor is an end of a pipe the process was launched with, on a
+    /// flavour where `fchown` changes a pipe's owner if the caller may. Whether
+    /// it may depends on the pipe's owner, which is the launcher's, and the
+    /// launch table does not state it.
+    | LaunchedPipe of pipe : PipeId
+    /// The descriptor is a socket, on a flavour whose sockets have an owner
+    /// that `fchown` changes. This kernel holds no such owner.
+    | Socket of socket : SocketId
+
+[<RequireQualifiedAccess>]
+module FChOwnRefusal =
+    /// What this kernel knows about why it will not answer. A client adds which
+    /// entry point asked, and with which descriptor.
+    let describe (refusal : FChOwnRefusal) : string =
+        match refusal with
+        | FChOwnRefusal.UnmeasuredOwnerChange (inode, refusal) ->
+            $"changing the owner of inode %O{inode}: %s{OwnerChangeRefusal.describe refusal}"
+        | FChOwnRefusal.LaunchedPipe pipe ->
+            $"the descriptor is an end of pipe %O{pipe}, which the process was launched with rather than one it made. Measured on Linux, fchown on a pipe end changes the owner fstat then reports by the same rule as a file's, which depends on who owns the pipe; this pipe's owner is whoever launched the process, which the launch table does not state, so any answer would be a guess."
+        | FChOwnRefusal.Socket socket ->
+            $"the descriptor is socket %O{socket}. Measured on Linux, fchown on a socket of every domain and kind changes the owner fstat then reports, by the same rule as a file's (the owner may give it one of its groups, a non-owner naming a user is EPERM, root may do anything); this kernel holds no owner for a socket, so it has nothing to judge the call against or to change."
+
 /// <summary>
 /// What <c>fstat(2)</c> reported.
 /// </summary>
@@ -706,6 +750,232 @@ module UnixPathResolution =
                     Origin =
                         PipeOrigin.Made
                             { status with
+                                Permissions = bits
+                                Times =
+                                    { status.Times with
+                                        StatusChange = UnixMachineState.realtime system.Machine
+                                    }
+                            }
+                }
+
+            Ok (
+                SyscallAnswer.Completed 0L,
+                { system with
+                    Machine =
+                        { system.Machine with
+                            Pipes = Map.add pipeId changed system.Machine.Pipes
+                        }
+                }
+            )
+
+    /// What `chown`, `lchown` and `fchown` do once they have reached `inode`,
+    /// which is an inode of any kind this filesystem holds: EPERM changing
+    /// nothing, success changing nothing, or the new owner and bits with
+    /// `ctime` moved.
+    let private changeOwnerOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (inode : InodeNumber)
+        (user : UserId option)
+        (group : GroupId option)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, InodeNumber * OwnerChangeRefusal>
+        =
+        let entry =
+            match VirtualFileSystem.tryGet inode system.Machine.FileSystem with
+            | Some entry -> entry
+            | None ->
+                failwith
+                    $"UnixPathResolution.changeOwnerOf: inode %O{inode} is not in the filesystem, but a path or a descriptor resolved to it. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
+
+        let platform = system.Machine.UnixPlatform
+        let credentials = system.Process.Credentials
+
+        let target, bits =
+            match entry.Content with
+            | InodeContent.RegularFile (_, bits) -> OwnerChangeTarget.NonDirectory, bits
+            | InodeContent.Directory directory -> OwnerChangeTarget.Directory, directory.Permissions
+            | InodeContent.Symlink _ ->
+                OwnerChangeTarget.NonDirectory, SimulatedUnixPlatform.symlinkPermissions platform
+
+        match
+            OwnerChangeRules.verdict
+                (SimulatedUnixPlatform.ownerChangeRule platform)
+                (Standing.toward credentials entry.Owner)
+                (OwnerChangeRequest.classify credentials entry.Owner user group)
+                target
+                bits
+        with
+        | Error refusal -> Error (inode, refusal)
+        | Ok OwnerChange.Forbidden -> Ok (SyscallAnswer.Failed UnixError.EPERM, system)
+        | Ok OwnerChange.Untouched -> Ok (SyscallAnswer.Completed 0L, system)
+        | Ok (OwnerChange.Changed changed) ->
+
+        let now = UnixMachineState.realtime system.Machine
+
+        let owner =
+            {
+                User = defaultArg user entry.Owner.User
+                Group = defaultArg group entry.Owner.Group
+            }
+
+        let vfs = VirtualFileSystem.setOwner inode owner now system.Machine.FileSystem
+
+        let vfs =
+            if changed = bits then
+                vfs
+            else
+
+            match entry.Content with
+            | InodeContent.RegularFile _
+            | InodeContent.Directory _ -> VirtualFileSystem.setPermissions inode changed now vfs
+            | InodeContent.Symlink _ ->
+                failwith
+                    $"UnixPathResolution.changeOwnerOf: the owner-change rule changed symbolic link %O{inode}'s permission bits from %O{bits} to %O{changed}, but a link's bits are the platform's and carry no set-ID bit for a rule to clear (this is a bug in this library)."
+
+        Ok (
+            SyscallAnswer.Completed 0L,
+            { system with
+                Machine =
+                    { system.Machine with
+                        FileSystem = vfs
+                    }
+            }
+        )
+
+    /// `chown(2)`: change the owner and group of the inode `path` names.
+    ///
+    /// `None` is `(uid_t)-1` or `(gid_t)-1`, which leaves that ID as it is.
+    /// See `OwnerChangeRules.verdict` for who may name which IDs, and which
+    /// set-ID bits a change clears.
+    ///
+    /// A symbolic link in the final position is followed, so the link's target
+    /// changes and a dangling link is ENOENT. Every other failure but EPERM is
+    /// the path resolution's own, and comes first: a path through a directory
+    /// the caller may not search is EACCES whatever it asks.
+    ///
+    /// Refuses where the change has not been measured for this caller; see
+    /// `ChOwnRefusal`.
+    let chown<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : UnixPath)
+        (user : UserId option)
+        (group : GroupId option)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, ChOwnRefusal>
+        =
+        // Measured on both platforms (`chown-rules.c`): through a link to a
+        // file or a directory the target changes and the link does not;
+        // "d/" and "ld/" are the directory, "f/" and "lf/" ENOTDIR, a
+        // dangling link and an absent name ENOENT, a link to itself ELOOP,
+        // the empty path ENOENT, "f/under" ENOTDIR, and a path through an
+        // unsearchable directory EACCES even naming another's uid. Someone
+        // else's file named as "f/" or "f/under" is ENOTDIR, not EPERM.
+        match resolvePath SymlinkPolicy.Follow path system with
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Ok inode ->
+            changeOwnerOf inode user group system
+            |> Result.mapError ChOwnRefusal.UnmeasuredOwnerChange
+
+    /// `lchown(2)`: change the owner and group of the inode `path` names,
+    /// without following a symbolic link in the final position, so a link
+    /// itself changes.
+    ///
+    /// A trailing separator makes the final component a directory, so "l/" for
+    /// a link to a directory changes the directory, and for a link to anything
+    /// else is ENOTDIR. Otherwise as `chown`.
+    let lchown<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : UnixPath)
+        (user : UserId option)
+        (group : GroupId option)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, ChOwnRefusal>
+        =
+        // Measured on both platforms (`chown-rules.c`): a link to a file, a
+        // link to a directory, a dangling link and a link to itself each
+        // change themselves; "ld/" changes the directory and "lf/" is
+        // ENOTDIR; the remaining path rows answer as `chown`'s do.
+        match resolvePath SymlinkPolicy.NoFollowFinal path system with
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Ok inode ->
+            changeOwnerOf inode user group system
+            |> Result.mapError ChOwnRefusal.UnmeasuredOwnerChange
+
+    /// `fchown(2)`: change the owner and group of the inode `fd` names.
+    ///
+    /// `None` is `(uid_t)-1` or `(gid_t)-1`, as for `chown`. The descriptor's
+    /// access mode plays no part: a descriptor open only for reading will do.
+    ///
+    /// A descriptor naming something other than a regular file or a directory
+    /// answers as its flavour does, which on Linux can be a refusal; see
+    /// `FChOwnRefusal`.
+    let fchown<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (user : UserId option)
+        (group : GroupId option)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, FChOwnRefusal>
+        =
+        // Measured on both platforms (`chown-rules.c`): a regular file open
+        // read-only, write-only and read-write, a directory, and a file whose
+        // last name has gone, all change; someone else's file opened for
+        // reading answers as `chown` would; a closed descriptor and -1 are
+        // EBADF. Per flavour: Linux changes the owner of a pipe end (by the
+        // same rule as a file, over every mode, for every caller standing,
+        // seen through both ends, moving both ends' ctime) and of an AF_INET,
+        // AF_INET6 and AF_UNIX socket, stream or datagram, and answers
+        // EOPNOTSUPP for an epoll instance whoever asks; Darwin answers EINVAL
+        // for a pipe end, every one of those sockets, and a kqueue.
+        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+
+        match FileDescriptorRegistry.tryFindObject fd system.Process.FileDescriptors with
+        | None -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
+        | Some (OpenFileObject.File inode) ->
+            changeOwnerOf inode user group system
+            |> Result.mapError FChOwnRefusal.UnmeasuredOwnerChange
+        | Some OpenFileObject.AnonymousInode ->
+            match flavour with
+            | SimulatedUnixFlavour.Linux -> Ok (SyscallAnswer.Failed UnixError.EOPNOTSUPP, system)
+            | SimulatedUnixFlavour.Darwin -> Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
+        | Some (OpenFileObject.Socket socket) ->
+            match flavour with
+            | SimulatedUnixFlavour.Linux -> Error (FChOwnRefusal.Socket socket)
+            | SimulatedUnixFlavour.Darwin -> Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
+        | Some (OpenFileObject.Pipe pipeId) ->
+            match flavour with
+            | SimulatedUnixFlavour.Darwin -> Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
+            | SimulatedUnixFlavour.Linux ->
+
+            let pipe = UnixMachineState.pipe pipeId system.Machine
+
+            match pipe.Origin with
+            | PipeOrigin.Launched _ -> Error (FChOwnRefusal.LaunchedPipe pipeId)
+            | PipeOrigin.Made status ->
+
+            let credentials = system.Process.Credentials
+
+            match
+                OwnerChangeRules.verdict
+                    (SimulatedUnixPlatform.ownerChangeRule system.Machine.UnixPlatform)
+                    (Standing.toward credentials status.Owner)
+                    (OwnerChangeRequest.classify credentials status.Owner user group)
+                    OwnerChangeTarget.NonDirectory
+                    status.Permissions
+            with
+            | Error refusal ->
+                failwith
+                    $"UnixPathResolution.fchown: a Linux platform's owner-change rule refused a caller (%s{OwnerChangeRefusal.describe refusal}), but Linux's rule answers every caller (this is a bug in this library)."
+            | Ok OwnerChange.Forbidden -> Ok (SyscallAnswer.Failed UnixError.EPERM, system)
+            | Ok OwnerChange.Untouched -> Ok (SyscallAnswer.Completed 0L, system)
+            | Ok (OwnerChange.Changed bits) ->
+
+            let changed =
+                { pipe with
+                    Origin =
+                        PipeOrigin.Made
+                            { status with
+                                Owner =
+                                    {
+                                        User = defaultArg user status.Owner.User
+                                        Group = defaultArg group status.Owner.Group
+                                    }
                                 Permissions = bits
                                 Times =
                                     { status.Times with

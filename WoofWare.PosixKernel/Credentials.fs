@@ -170,6 +170,14 @@ module Credentials =
         else
             CallerPrivilege.Unprivileged
 
+    /// Whether a process with these credentials is in `group`: it is the
+    /// effective group, or one of the supplementary groups.
+    ///
+    /// The real and saved groups play no part.
+    let isInGroup (credentials : Credentials) (group : GroupId) : bool =
+        group = credentials.EffectiveGroup
+        || List.contains group credentials.SupplementaryGroups
+
     /// These credentials with the real user and group standing in for the
     /// effective ones: who `access(2)` checks a path as, at every step of the
     /// walk and at the inode it reaches.
