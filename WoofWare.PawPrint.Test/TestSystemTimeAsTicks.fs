@@ -30,7 +30,7 @@ module TestSystemTimeAsTicks =
     /// clock reports to the nanosecond. Darwin's reports whole microseconds, and
     /// has its own tests below.
     let private initialMachine : UnixMachineState =
-        (EmulatedKernel.create SimulatedUnixPlatform.linuxX64 ImmutableArray.Empty).Machine
+        (EmulatedKernel.create SimulatedUnixPlatform.linuxX64 StandardStreamsConfig.piped).Machine
 
     /// Fold an arbitrary int64 into `[0, bound]`. Deliberately not `abs`, which
     /// throws on `Int64.MinValue` — a value FsCheck does generate.
@@ -44,7 +44,7 @@ module TestSystemTimeAsTicks =
     /// clock is in the 100 ns ticks PawPrint counts it in. Reached through the
     /// setters `KernelConfig.toKernel` and the driver loop use.
     let private machineOn (platform : SimulatedUnixPlatform) (epochMs : int64) (clockTicks : int64) : UnixMachineState =
-        (EmulatedKernel.create platform ImmutableArray.Empty
+        (EmulatedKernel.create platform StandardStreamsConfig.piped
          |> EmulatedKernel.withWallClockEpochMs epochMs
          |> EmulatedKernel.withVirtualClockTicks clockTicks)
             .Machine

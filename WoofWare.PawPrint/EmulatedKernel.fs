@@ -1031,11 +1031,11 @@ module EmulatedKernel =
 
 
     /// A freshly-minted simulated process on a machine of the given platform,
-    /// as PawPrint starts one, with `standardInput` the bytes its launcher
-    /// writes into its standard input before closing it (see
-    /// `StandardStreams.launch`). The platform and the launch are fixed here
-    /// for the kernel's life: every field derived from the platform is derived
-    /// once, by this constructor and the setters that read it back.
+    /// as PawPrint starts one, with its standard streams launched as
+    /// `standardStreams` says (see `StandardStreams.launch`). The platform and
+    /// the launch are fixed here for the kernel's life: every field derived
+    /// from the platform is derived once, by this constructor and the setters
+    /// that read it back.
     ///
     /// Its one task is the thread `Main` will run on, `ThreadId 0`, on processor 0:
     /// `IlMachineState.addThread` gives that thread its first frame, and every
@@ -1052,11 +1052,11 @@ module EmulatedKernel =
     /// change what a recorded trace observes. The entropy pool's seed,
     /// `UnixSystem.defaultEntropySeed`, is part of the same contract, and
     /// PawPrint's tests pin it rather than a second copy of the value.
-    let create (platform : SimulatedUnixPlatform) (standardInput : ImmutableArray<byte>) : EmulatedKernel =
+    let create (platform : SimulatedUnixPlatform) (standardStreams : StandardStreamsConfig) : EmulatedKernel =
         // Processor 0 is where the CPU rotation puts the first thread it places
         // (`cpuForRotation 0`), which is this one.
         let system : UnixSystem<ThreadId, NativeSignalHandler> =
-            UnixSystem.initial platform (StandardStreams.launch standardInput) (ThreadId 0) (CpuId 0)
+            UnixSystem.initial platform (StandardStreams.launch standardStreams) (ThreadId 0) (CpuId 0)
 
         let signals =
             StartupSignalDispositions.initial (SimulatedUnixPlatform.signalNumbering platform) Set.empty
@@ -1092,7 +1092,8 @@ module EmulatedKernel =
 
 
     /// `create` on `UnixSystem.defaultUnixPlatform`, the platform a host that
-    /// configures nothing gets, with nothing on standard input.
+    /// configures nothing gets, with its standard streams
+    /// `StandardStreamsConfig.piped`.
     ///
     /// That platform, Linux/x64, suits PawPrint as a default for two reasons of
     /// its own: it is the platform whose CoreLib routes `Environment.OSVersion`
@@ -1100,7 +1101,7 @@ module EmulatedKernel =
     /// `Interop.libobjc.GetOperatingSystemVersion` instead), and it is what
     /// PawPrint's CI runs on.
     let initial : EmulatedKernel =
-        create UnixSystem.defaultUnixPlatform ImmutableArray.Empty
+        create UnixSystem.defaultUnixPlatform StandardStreamsConfig.piped
 
     /// Apply an operation to the simulated process's own state. Those operations
     /// live in `UnixProcessState`, which takes that state rather than the kernel.
@@ -2011,16 +2012,12 @@ type KernelConfig =
         /// 32 and 33, which no launcher can ignore through `sigaction`, and
         /// SIGTERM; see `StartupSignalDispositions.refusal`.
         InheritedSignalIgnores : Set<Signal>
-        /// The bytes the simulated process's launcher writes into its standard
-        /// input, a pipe, with one blocking write before closing its end, as
-        /// `cmd < file` or a harness feeding a child does. Empty by default: the
-        /// guest reads end of file at once.
-        ///
-        /// What the pipe cannot hold yet goes in as the guest reads, so a guest
-        /// never waits for input and sees end of file only after the last
-        /// byte. More than one `write(2)` moves on `UnixPlatform` (0x7FFFF000
-        /// bytes on Linux) is refused.
-        StandardInput : ImmutableArray<byte>
+        /// How the simulated process's launcher set up its standard streams:
+        /// the bytes it writes into standard input, and whether it reads each
+        /// output stream or had closed its reader before the process started.
+        /// `StandardStreamsConfig.piped` by default: nothing on standard input,
+        /// and both output streams read.
+        StandardStreams : StandardStreamsConfig
         /// Whether the simulated process writes a core dump when a signal
         /// whose default action dumps core kills it (`Signal.dumpsCoreUnder`),
         /// which a host sees as the core flag of `RunOutcome.termination`.
@@ -2071,7 +2068,7 @@ type KernelConfig =
             LocalAddresses = UnixSystem.defaultLocalAddresses
             LocalRoutes = UnixSystem.defaultLocalRoutes
             InheritedSignalIgnores = Set.empty
-            StandardInput = ImmutableArray.Empty
+            StandardStreams = StandardStreamsConfig.piped
             CoreDumps = UnixSystem.defaultCoreDumps
             PidMax = None
             LeaderThreadId = None
@@ -2129,7 +2126,7 @@ module KernelConfig =
                 (config.SupplementaryGroups
                  |> List.map (GroupId.parseOrFail "KernelConfig.SupplementaryGroups"))
 
-        EmulatedKernel.create platform config.StandardInput
+        EmulatedKernel.create platform config.StandardStreams
         |> EmulatedKernel.withInheritedSignalIgnores "KernelConfig.InheritedSignalIgnores" config.InheritedSignalIgnores
         |> EmulatedKernel.mapProcess (UnixProcessState.withCoreDumps config.CoreDumps)
         |> EmulatedKernel.withEnvironment "KernelConfig.Environment" config.Environment

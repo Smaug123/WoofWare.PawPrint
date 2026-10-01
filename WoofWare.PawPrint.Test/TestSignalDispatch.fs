@@ -120,7 +120,9 @@ module TestSignalDispatch =
         // is made in it.
         let state =
             state.MapKernel (
-                EmulatedKernel.mapMachine (fun _ -> (EmulatedKernel.create platform ImmutableArray.Empty).Machine)
+                EmulatedKernel.mapMachine (fun _ ->
+                    (EmulatedKernel.create platform StandardStreamsConfig.piped).Machine
+                )
             )
 
         let state =
@@ -888,12 +890,16 @@ module TestSignalDispatch =
 
         // Fill the pipe to capacity through its write end.
         let rec fill (system : UnixSystem<ThreadId, NativeSignalHandler>) =
-            match UnixReadWrite.admitWrite pipe.WriteEnd UserBuffer.Mapped 4096UL system with
-            | Ok (WriteAdmission.Transfer count, system) ->
+            match UnixReadWrite.admitWrite system.Leader pipe.WriteEnd UserBuffer.Mapped 4096UL system with
+            | Ok (WriteOutcome.Returns (WriteAdmission.Transfer count, system)) ->
                 match
-                    UnixReadWrite.write pipe.WriteEnd (ImmutableArray.CreateRange (Array.create count 1uy)) system
+                    UnixReadWrite.write
+                        system.Leader
+                        pipe.WriteEnd
+                        (ImmutableArray.CreateRange (Array.create count 1uy))
+                        system
                 with
-                | Ok (WriteAnswer.Completed _, system) -> fill system
+                | Ok (WriteOutcome.Returns (WriteAnswer.Completed _, system)) -> fill system
                 | other -> failwith $"filling the pipe answered %O{other}"
             | Error (WriteRefusal.PipeWouldBlock _) -> system
             | other -> failwith $"filling the pipe was admitted as %O{other}"
@@ -922,8 +928,10 @@ module TestSignalDispatch =
 
         let written =
             state.MapKernel (fun kernel ->
-                match UnixReadWrite.write pipe.WriteEnd (ImmutableArray.Create 0uy) (EmulatedKernel.unix kernel) with
-                | Ok (WriteAnswer.Completed 1L, system) -> EmulatedKernel.withUnix system kernel
+                let system = EmulatedKernel.unix kernel
+
+                match UnixReadWrite.write system.Leader pipe.WriteEnd (ImmutableArray.Create 0uy) system with
+                | Ok (WriteOutcome.Returns (WriteAnswer.Completed 1L, system)) -> EmulatedKernel.withUnix system kernel
                 | other -> failwith $"writing to the pipe answered %O{other}"
             )
 

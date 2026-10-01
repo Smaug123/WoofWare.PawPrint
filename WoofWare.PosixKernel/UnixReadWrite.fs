@@ -110,10 +110,14 @@ type WriteRefusal =
     /// sleeps until the rest fit (having written the first `taken` already, on
     /// Linux); this kernel does not yet park a write.
     | PipeWouldBlock of pipe : PipeId * count : int * taken : int
-    /// A write into a pipe whose read end no description names. A real kernel
-    /// answers `EPIPE` and raises `SIGPIPE`, and what the signal does depends on
-    /// the process's disposition for it, which this kernel does not yet model.
-    | BrokenPipe of pipe : PipeId
+    /// A write into a pipe with no reader, which answers `EPIPE` and raises
+    /// `SIGPIPE`, when which task would receive the signal is not modelled.
+    | SignalReceiver of pipe : PipeId * refusal : SignalReceiverRefusal
+    /// A write into a pipe with no reader, which raises `SIGPIPE`, by process
+    /// ID 1. An init process ignores, from inside its own PID namespace, every
+    /// signal it has not installed a handler for, and this library does not
+    /// model that.
+    | InitProcess of pipe : PipeId
 
 [<RequireQualifiedAccess>]
 module WriteRefusal =
@@ -137,9 +141,32 @@ module WriteRefusal =
             describeExceedsRepresentableLength inode offset count
         | WriteRefusal.PipeWouldBlock (pipe, count, taken) ->
             $"the descriptor is the write end of pipe %O{pipe}, the description does not carry O_NONBLOCK, and the pipe has room for %d{taken} of the %d{count} bytes. A real kernel puts the writer to sleep until a reader makes room for the rest (on Linux, having already written what fitted; on Darwin, answering EPIPE for the whole call if the reader closes meanwhile). This kernel does not yet park a write, so it refuses rather than answer a short count, which only a non-blocking write earns."
-        | WriteRefusal.BrokenPipe pipe ->
-            $"the descriptor is the write end of pipe %O{pipe}, and no descriptor names its read end any more. A real kernel answers EPIPE and raises SIGPIPE: measured on both flavours, the signal is raised before write returns (to the writing thread on Linux, to the process on Darwin), and a process that has not ignored it dies of it. This kernel does not yet hold the signal dispositions that decide which, so it refuses."
+        | WriteRefusal.InitProcess pipe ->
+            $"the descriptor is the write end of pipe %O{pipe}, which has no reader, so the write raises SIGPIPE; but the process is process ID 1, and what an init process does with a signal it has no handler for is not modelled."
+        | WriteRefusal.SignalReceiver (pipe, refusal) ->
+            $"the descriptor is the write end of pipe %O{pipe}, which has no reader, so the write answers EPIPE and raises SIGPIPE; but which task would take that signal is not modelled (%A{refusal})."
         | WriteRefusal.UnmeasuredSetIdChange (inode, refusal) -> describeUnmeasuredSetIdChange inode refusal
+
+/// What a `write(2)` this kernel answered did to the process that made it,
+/// besides answering: `'Answer` is what the call answered, a `WriteAdmission`
+/// from `UnixReadWrite.admitWrite` or a `WriteAnswer` from
+/// `UnixReadWrite.write`.
+[<RequireQualifiedAccess>]
+type WriteOutcome<'Answer, 'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    /// The call answers `answer`, having raised no signal, and the process
+    /// carries on as `system`.
+    | Returns of answer : 'Answer * system : UnixSystem<'Task, 'Handler>
+    /// The call answers `answer`, having generated `signal`, and the process
+    /// carries on as `system`: the signal is pending there, or was discarded as
+    /// it was generated (see `SignalState.generate`).
+    ///
+    /// The one signal a write raises is `SIGPIPE`, for a write into a pipe
+    /// with no reader, which answers `EPIPE`.
+    | ReturnsRaising of answer : 'Answer * signal : PendingSignal<'Task> * system : UnixSystem<'Task, 'Handler>
+    /// The call generated a signal whose default action ended the process,
+    /// which never returns from it. `EndedProcess.Termination` names the
+    /// signal.
+    | ProcessEnded of EndedProcess<'Task, 'Handler>
 
 /// Why this kernel will not answer a `pwrite`.
 ///
@@ -247,6 +274,9 @@ type private PipeWriteStep =
     /// leaves the buffer as `PipeBuffer.withoutTaking` says.
     | TakesNothing of WriteAnswer
     | Refused of WriteRefusal
+    /// The pipe has no reader: the write answers `EPIPE` and raises `SIGPIPE`,
+    /// takes nothing, and leaves the pipe and its timestamps alone.
+    | Broken
     /// The write takes `taken` of the bytes offered, from the start.
     | Takes of taken : int
 
@@ -535,7 +565,8 @@ module UnixReadWrite =
     /// holds the bytes.
     ///
     /// Changes nothing: `touchedByWrite` is the caller's to apply, to every
-    /// outcome but a refusal, and `leftUntaken` to `TakesNothing`.
+    /// outcome but a refusal and `Broken`, `leftUntaken` to `TakesNothing`,
+    /// and `brokenPipe` to `Broken`.
     let private pipeWriteStep<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (pipeId : PipeId)
         (nonBlocking : bool)
@@ -550,17 +581,19 @@ module UnixReadWrite =
             UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Read system.Process
 
         // A write of no bytes, and a write with no reader: measured
-        // (pipe-sigpipe.c and pipe-syscalls.c), Linux answers
-        // 0 to the first whatever else holds -- a closed reader and a full
-        // blocking pipe included -- while Darwin answers EPIPE ahead of it.
+        // (pipe-sigpipe.c, pipe-syscalls.c and pipe-epipe-sweep.c), Linux
+        // answers 0 to the first whatever else holds -- a closed reader and a
+        // full blocking pipe included -- and raises no SIGPIPE, while Darwin
+        // answers EPIPE ahead of it, and raises SIGPIPE.
         match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
         | SimulatedUnixFlavour.Linux when count = 0 -> PipeWriteStep.Answered (WriteAnswer.Completed 0L)
         | SimulatedUnixFlavour.Linux
         | SimulatedUnixFlavour.Darwin ->
 
-        // EPIPE is ahead of EAGAIN and EFAULT on both, measured.
+        // EPIPE is ahead of EAGAIN, EFAULT and a short count on both, and
+        // moves no timestamp even on Darwin, measured (pipe-epipe-sweep.c).
         if not readerOpen then
-            PipeWriteStep.Refused (WriteRefusal.BrokenPipe pipeId)
+            PipeWriteStep.Broken
         elif count = 0 then
             // Darwin's zero-length write to a pipe with a reader: 0, full or
             // not, blocking or not, measured.
@@ -608,6 +641,78 @@ module UnixReadWrite =
             // A non-blocking write takes what fits and answers that count:
             // `PipeBuffer.write` is the measured rule.
             PipeWriteStep.Takes taken
+
+    /// A write by `task` into `pipeId`, which has no reader: it answers
+    /// `answer`, `EPIPE`, and raises `SIGPIPE` before it returns, which the
+    /// process's disposition for the signal then decides the fate of.
+    let private brokenPipe<'Answer, 'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (answer : 'Answer)
+        (task : 'Task)
+        (pipeId : PipeId)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<WriteOutcome<'Answer, 'Task, 'Handler>, WriteRefusal>
+        =
+        // Measured (pipe-sigpipe.c), a worker thread's write: Linux's handler
+        // ran on the writing thread, before its write returned; Darwin's ran on
+        // the main thread, after the worker's write had returned, as a signal
+        // sent to the process is delivered (see `SignalState.generate`).
+        if ProcessId.toInt32 system.Process.ProcessId = 1 then
+            Error (WriteRefusal.InitProcess pipeId)
+        else
+
+        let target =
+            match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+            | SimulatedUnixFlavour.Linux -> ValueSome task
+            | SimulatedUnixFlavour.Darwin -> ValueNone
+
+        let entry =
+            {
+                Signal = Signal.SIGPIPE
+                Target = target
+            }
+
+        let generation =
+            SignalState.generate
+                system.Process.CoreDumps
+                system.Leader
+                (system.Tasks |> Map.keys |> Set.ofSeq)
+                entry
+                system.Process.Signals
+
+        match generation with
+        | Error refusal -> Error (WriteRefusal.SignalReceiver (pipeId, refusal))
+        | Ok (SignalGeneration.ProcessContinues signals) ->
+            Ok (
+                WriteOutcome.ReturnsRaising (
+                    answer,
+                    entry,
+                    { system with
+                        Process =
+                            { system.Process with
+                                Signals = signals
+                            }
+                    }
+                )
+            )
+        | Ok (SignalGeneration.ProcessTerminated (signal, coreDumped)) ->
+            UnixTaskLifecycle.endProcess (ProcessTermination.Signaled (signal, coreDumped)) system
+            |> WriteOutcome.ProcessEnded
+            |> Ok
+        | Ok (SignalGeneration.ProcessStopped (signal, _)) ->
+            failwith
+                $"UnixReadWrite: generating %O{signal} for a write into pipe %O{pipeId} stopped the process, but SIGPIPE's default is to terminate on every flavour (this is a bug in this library)."
+
+    /// Fails loudly unless `task` is one of `system`'s tasks: a write is made
+    /// by one, and the signal a write can raise may be aimed at it.
+    let private checkWriter<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (syscall : string)
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : unit
+        =
+        if not (Map.containsKey task system.Tasks) then
+            failwith
+                $"UnixReadWrite.%s{syscall}: task %O{task} is not one of the process's tasks, so it cannot be making a write (this is a bug in the client)."
 
     /// The object's own read operation on a regular file, which `read` and
     /// `pread` reach identically: the transfer window, the shortcut that touches
@@ -1153,25 +1258,41 @@ module UnixReadWrite =
             failwith
                 $"UnixReadWrite.write: fd %d{fd} names directory %O{inode} with an access mode that permits writing. A directory can only be opened for reading (open answers EISDIR otherwise), so FileDescriptorRegistry.checkInvariants reports this as WritableDirectory (this is a bug in this library)."
 
-    /// Every answer `write(2)` gives *without* reading the caller's buffer, and
-    /// otherwise how many bytes to extract. See `WriteAdmission` for why this is
-    /// a separate call rather than a `write` that takes the bytes.
+    /// Every answer `write(2)` by `task` gives *without* reading the caller's
+    /// buffer, and otherwise how many bytes to extract. See `WriteAdmission`
+    /// for why this is a separate call rather than a `write` that takes the
+    /// bytes.
     ///
     /// The system that comes back is the one a real kernel is in by the time it
     /// either answers or copies. It is the one that arrived, except that on
     /// Darwin a write reaching a pipe moves the pipe's timestamps whatever it
-    /// answers; so an answer here must be reported with it, and a transfer
+    /// answers but `EPIPE`, and that a write into a pipe with no reader raises
+    /// `SIGPIPE`; so an answer here must be reported with it, and a transfer
     /// passed to `write` against it.
+    ///
+    /// A write into a pipe with no reader answers `EPIPE` without the buffer,
+    /// ahead of `EAGAIN`, `EFAULT` and a short count, and raises `SIGPIPE`
+    /// before it returns. That is a zero-length write too, except on Linux,
+    /// where one answers 0 and raises nothing. The signal is `task`'s own on
+    /// Linux and the process's on Darwin; what it does is then
+    /// `SignalState.generate`'s to say, and if its disposition is the
+    /// default, it ends the process.
+    ///
+    /// Fails loudly if `task` is not one of the process's tasks.
     let admitWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
         (fd : int)
         (buffer : UserBuffer)
         (count : uint64)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<WriteAdmission * UnixSystem<'Task, 'Handler>, WriteRefusal>
+        : Result<WriteOutcome<WriteAdmission, 'Task, 'Handler>, WriteRefusal>
         =
+        checkWriter "admitWrite" task system
+
         let platform = system.Machine.UnixPlatform
 
-        let unchanged (admission : WriteAdmission) = admission, system
+        let unchanged (admission : WriteAdmission) =
+            WriteOutcome.Returns (admission, system)
 
         if countRefused platform count then
             Ok (unchanged (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EINVAL)))
@@ -1215,13 +1336,22 @@ module UnixReadWrite =
 
             match pipeWriteStep pipeId nonBlocking count buffer system with
             | PipeWriteStep.Refused refusal -> Error refusal
-            | PipeWriteStep.Answered answer -> Ok (WriteAdmission.Answered answer, touchedByWrite pipeId system)
+            | PipeWriteStep.Broken ->
+                brokenPipe (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EPIPE)) task pipeId system
+            | PipeWriteStep.Answered answer ->
+                Ok (WriteOutcome.Returns (WriteAdmission.Answered answer, touchedByWrite pipeId system))
             | PipeWriteStep.TakesNothing answer ->
-                Ok (WriteAdmission.Answered answer, touchedByWrite pipeId (leftUntaken pipeId count system))
+                Ok (
+                    WriteOutcome.Returns (
+                        WriteAdmission.Answered answer,
+                        touchedByWrite pipeId (leftUntaken pipeId count system)
+                    )
+                )
             // Only the bytes the pipe will take: a short write never reads the
             // rest of the caller's buffer, and `write` offered this prefix takes
             // all of it and leaves the pipe as the whole would have.
-            | PipeWriteStep.Takes taken -> Ok (WriteAdmission.Transfer taken, touchedByWrite pipeId system)
+            | PipeWriteStep.Takes taken ->
+                Ok (WriteOutcome.Returns (WriteAdmission.Transfer taken, touchedByWrite pipeId system))
         | WriteTarget.File (_, offset) ->
 
         // Ahead of the zero-length no-op below: Darwin's EFBIG at INT64_MAX
@@ -1267,21 +1397,30 @@ module UnixReadWrite =
     /// and a write that would sleep is refused.
     ///
     /// A write into a pipe the client drains is read by the client as it is
-    /// written, and recorded in `UnixMachineState.Delivered`.
+    /// written, and recorded in `UnixMachineState.Delivered`. A write into a
+    /// pipe with no reader answers `EPIPE` and raises `SIGPIPE`, as
+    /// `admitWrite` describes.
+    ///
+    /// Fails loudly if `task` is not one of the process's tasks.
     let write<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
         (fd : int)
         (bytes : ImmutableArray<byte>)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<WriteAnswer * UnixSystem<'Task, 'Handler>, WriteRefusal>
+        : Result<WriteOutcome<WriteAnswer, 'Task, 'Handler>, WriteRefusal>
         =
         if bytes.IsDefault then
             failwith
                 "UnixReadWrite.write: bytes is the default ImmutableArray, whose underlying array is null. That is not an empty write; pass ImmutableArray<byte>.Empty."
 
+        checkWriter "write" task system
         assertOneCallsWorth "write" system.Machine.UnixPlatform bytes
 
+        let returns (answer : WriteAnswer) (system : UnixSystem<'Task, 'Handler>) =
+            Ok (WriteOutcome.Returns (answer, system))
+
         match writeTarget fd system with
-        | Error error -> Ok (WriteAnswer.Failed error, system)
+        | Error error -> returns (WriteAnswer.Failed error) system
         | Ok (WriteTarget.Socket socketId) ->
             // There is no buffer here to screen, so the socket's own answer is
             // all there is — and this kernel models no write on a socket, so it
@@ -1293,9 +1432,10 @@ module UnixReadWrite =
         | Ok (WriteTarget.Pipe (pipeId, nonBlocking)) ->
             match pipeWriteStep pipeId nonBlocking bytes.Length UserBuffer.Mapped system with
             | PipeWriteStep.Refused refusal -> Error refusal
-            | PipeWriteStep.Answered answer -> Ok (answer, touchedByWrite pipeId system)
+            | PipeWriteStep.Broken -> brokenPipe (WriteAnswer.Failed UnixError.EPIPE) task pipeId system
+            | PipeWriteStep.Answered answer -> returns answer (touchedByWrite pipeId system)
             | PipeWriteStep.TakesNothing answer ->
-                Ok (answer, touchedByWrite pipeId (leftUntaken pipeId bytes.Length system))
+                returns answer (touchedByWrite pipeId (leftUntaken pipeId bytes.Length system))
             | PipeWriteStep.Takes taken ->
                 let pipe = UnixMachineState.pipe pipeId system.Machine
 
@@ -1324,9 +1464,9 @@ module UnixReadWrite =
                         else
                             system.Process.FileDescriptors
 
-                    Ok (
-                        WriteAnswer.Completed (int64 taken),
-                        { system with
+                    returns
+                        (WriteAnswer.Completed (int64 taken))
+                        ({ system with
                             Process =
                                 { system.Process with
                                     FileDescriptors = registry
@@ -1347,9 +1487,8 @@ module UnixReadWrite =
                                                 Bytes = delivered
                                             }
                                 }
-                        }
-                        |> touchedByWrite pipeId
-                    )
+                         }
+                         |> touchedByWrite pipeId)
                 | None ->
 
                 let written, buffer = PipeBuffer.write bytes pipe.Buffer
@@ -1358,23 +1497,22 @@ module UnixReadWrite =
                     failwith
                         $"UnixReadWrite.write: pipe %O{pipeId} was to take %d{taken} of %d{bytes.Length} bytes and took %d{written}; PipeBuffer.wouldTake and PipeBuffer.write disagree (this is a bug in this library)."
 
-                Ok (
-                    WriteAnswer.Completed (int64 written),
-                    touchedByWrite
+                returns
+                    (WriteAnswer.Completed (int64 written))
+                    (touchedByWrite
                         pipeId
                         (withPipe
                             pipeId
                             { pipe with
                                 Buffer = buffer
                             }
-                            system)
-                )
+                            system))
         | Ok (WriteTarget.File (inode, offset)) ->
 
         // Ahead of the zero-length no-op: Darwin's EFBIG at INT64_MAX answers
         // a count of zero too, measured.
         match writeFailedByPosition (positionCheck system.Machine.UnixPlatform offset (uint64 bytes.Length)) with
-        | Some error -> Ok (WriteAnswer.Failed error, system)
+        | Some error -> returns (WriteAnswer.Failed error) system
         | None ->
 
         if bytes.IsEmpty then
@@ -1389,7 +1527,7 @@ module UnixReadWrite =
             //
             // After the descriptor checks, not before: `write(rdonlyFd, buf, 0)`
             // is EBADF rather than 0, measured on both.
-            Ok (WriteAnswer.Completed 0L, system)
+            returns (WriteAnswer.Completed 0L) system
         else
 
         let now = UnixMachineState.realtime system.Machine
@@ -1415,8 +1553,8 @@ module UnixReadWrite =
         // The commit comes first, so the advance cannot overflow: a write that
         // would carry the offset past what the model can represent has already
         // been refused there.
-        Ok (
-            WriteAnswer.Completed (int64 bytes.Length),
+        returns
+            (WriteAnswer.Completed (int64 bytes.Length))
             { system with
                 Machine =
                     { system.Machine with
@@ -1431,7 +1569,6 @@ module UnixReadWrite =
                                 system.Process.FileDescriptors
                     }
             }
-        )
 
     /// The inode a `pwrite` will write into, once every question that precedes
     /// the buffer screen has been settled.

@@ -1298,7 +1298,9 @@ module UnixSystem =
     /// most test harnesses do: descriptor 0 reads a pipe whose writer supplied
     /// nothing, and descriptors 1 and 2 write to pipes the client drains. A
     /// client supplying bytes on standard input replaces entry 0 with
-    /// `LaunchDescriptor.Supplied` of them.
+    /// `LaunchDescriptor.Supplied` of them, and one that closed the reader of
+    /// an output stream before the process started replaces its entry with
+    /// `LaunchDescriptor.Gone`.
     ///
     /// Not the only shape a real process can inherit, and not the terminal one.
     /// Under a tty, descriptors 0, 1 and 2 are `dup`s of a single `O_RDWR`
@@ -1318,7 +1320,7 @@ module UnixSystem =
     ///
     /// Each entry of `launch` is a descriptor the launcher set up before the
     /// process started, at that number: a pipe end of its own, whose other end
-    /// the client holds as the entry says (see `LaunchDescriptor`). The pipes
+    /// is the client's, as the entry says (see `LaunchDescriptor`). The pipes
     /// are the first the machine makes, in descriptor order. A launch table
     /// naming a negative descriptor is refused.
     ///

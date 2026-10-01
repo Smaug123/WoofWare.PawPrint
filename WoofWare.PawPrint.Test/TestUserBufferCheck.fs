@@ -143,7 +143,7 @@ module TestUserBufferCheck =
     // ------------------------------------------------- the platforms' answers
 
     let private kernelOn (platform : SimulatedUnixPlatform) (limit : uint64) : EmulatedKernel =
-        EmulatedKernel.create platform ImmutableArray.Empty
+        EmulatedKernel.create platform StandardStreamsConfig.piped
         |> EmulatedKernel.mapMachine (UnixMachineState.withUserAddressLimit limit)
 
     /// macOS performs no up-front check at all: measured, every address at
@@ -153,7 +153,7 @@ module TestUserBufferCheck =
     [<Test>]
     let ``Darwin checks at copy time`` () : unit =
         UnixMachineState.userBufferCheck
-            (EmulatedKernel.create SimulatedUnixPlatform.macOsArm64 ImmutableArray.Empty).Machine
+            (EmulatedKernel.create SimulatedUnixPlatform.macOsArm64 StandardStreamsConfig.piped).Machine
         |> shouldEqual UserBufferCheck.AtCopyTime
 
         for limit in [ 1UL ; ObservedUserAddressLimit.Arm64FortyEightBit ; UInt64.MaxValue ] do
@@ -316,7 +316,7 @@ module TestUserBufferCheck =
     /// A kernel on the given platform with its default buffer check. Only the
     /// screening behaviour is under test here, so the limit is incidental.
     let private kernelFor (platform : SimulatedUnixPlatform) : EmulatedKernel =
-        EmulatedKernel.create platform ImmutableArray.Empty
+        EmulatedKernel.create platform StandardStreamsConfig.piped
 
     let private storage : BufferPointer =
         BufferPointer.Storage (ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 1), [])

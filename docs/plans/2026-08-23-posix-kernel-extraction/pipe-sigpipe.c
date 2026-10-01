@@ -12,9 +12,9 @@
 //   the reader leaves during a blocking write    Linux: the partial count and
 //                                                SIGPIPE. Darwin: EPIPE.
 //
-// So the library refuses a write with no reader until it holds the signal
-// dispositions that decide what the signal does, and answers Linux's
-// zero-length write, which raises nothing.
+// The kernel library answers every row but the last, which only a write that
+// sleeps can reach (`UnixReadWrite.admitWrite`); pipe-epipe-sweep.c sweeps the
+// first two further.
 //
 // Build: `nix develop -c clang -O0 -pthread -o /tmp/p <this file>` on Darwin,
 // `gcc -O0 -pthread -o /tmp/p <this file>` on Linux.

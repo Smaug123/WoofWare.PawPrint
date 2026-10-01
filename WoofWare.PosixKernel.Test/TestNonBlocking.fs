@@ -392,7 +392,7 @@ module TestNonBlocking =
                 |> Seq.map (fun delivery -> delivery.Endpoint, List.ofSeq delivery.Bytes)
                 |> List.ofSeq
 
-            match UnixReadWrite.write fd bytes flagged, UnixReadWrite.write fd bytes clear with
+            match WriteOutcomes.write fd bytes flagged, WriteOutcomes.write fd bytes clear with
             | Ok (answer, after), Ok (blockingAnswer, blockingAfter) when count <= emptyPipeTakes ->
                 answer |> shouldEqual (WriteAnswer.Completed (int64 count))
                 answer |> shouldEqual blockingAnswer
@@ -441,11 +441,11 @@ module TestNonBlocking =
         for platform in streamPlatforms do
             let flagged = set 1 true (systemOn platform)
 
-            match UnixReadWrite.write 1 (ImmutableArray.Create<byte> (Array.zeroCreate 65536)) flagged with
+            match WriteOutcomes.write 1 (ImmutableArray.Create<byte> (Array.zeroCreate 65536)) flagged with
             | Ok (WriteAnswer.Completed 65536L, _) -> ()
             | other -> failwith $"%O{platform}: a 65536-byte write answered %A{Result.map fst other}"
 
-            match UnixReadWrite.write 1 (ImmutableArray.Create<byte> (Array.zeroCreate 65537)) flagged with
+            match WriteOutcomes.write 1 (ImmutableArray.Create<byte> (Array.zeroCreate 65537)) flagged with
             | Ok (WriteAnswer.Completed 65536L, after) ->
                 after.Machine.Delivered
                 |> Seq.map (fun delivery -> delivery.Bytes.Length)

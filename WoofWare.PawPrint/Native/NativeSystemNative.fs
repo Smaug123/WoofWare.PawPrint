@@ -1566,10 +1566,19 @@ module NativeSystemNative =
                 Ok state
             else
 
-            match UnixReadWrite.write destination bytes (system state) with
+            // The destination was opened by path, and only a pipe raises a
+            // signal on write, so the raising outcomes mean the filesystem
+            // handed back something CoreLib's open never makes.
+            match UnixReadWrite.write ctx.Thread destination bytes (system state) with
             | Error refusal -> failwith $"%s{operation}: write: %s{WriteRefusal.describe refusal}"
-            | Ok (WriteAnswer.Failed error, system) -> Error (withErrno ctx error system state)
-            | Ok (WriteAnswer.Completed written, system) ->
+            | Ok (WriteOutcome.ReturnsRaising (answer, signal, _)) ->
+                failwith
+                    $"%s{operation}: writing the destination answered %A{answer} and raised %A{signal}, but a destination opened by path is never a pipe"
+            | Ok (WriteOutcome.ProcessEnded ended) ->
+                failwith
+                    $"%s{operation}: writing the destination ended the process (%A{ended.Termination}), but a destination opened by path is never a pipe"
+            | Ok (WriteOutcome.Returns (WriteAnswer.Failed error, system)) -> Error (withErrno ctx error system state)
+            | Ok (WriteOutcome.Returns (WriteAnswer.Completed written, system)) ->
                 writeAll
                     (ImmutableArray.Create (bytes, int written, bytes.Length - int written))
                     (withAnswered system state)
@@ -6645,7 +6654,10 @@ module NativeSystemNative =
             // for part of it. A guest depending on EAGAIN or a partial write
             // from a non-blocking socket would need connection state PawPrint
             // does not model, which `UnixReadWrite.write` refuses rather than
-            // guesses.
+            // guesses. A write into a pipe with no reader answers EPIPE and
+            // raises SIGPIPE, which PawPrint's startup ignores, as CoreCLR's
+            // does, so the guest sees the EPIPE alone unless it has given the
+            // signal a disposition of its own.
             let operation = "SystemNative_Write"
             let fd = fdArgument operation instruction.Arguments.[0]
             let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
@@ -6661,8 +6673,9 @@ module NativeSystemNative =
                         "Write less, or raise the model's file-length limit (issue #956)."
                     | WriteRefusal.PipeWouldBlock _ ->
                         "PawPrint parks no task in a write yet. A guest reaching this writes more into a pipe it made with `SystemNative_Pipe` than the pipe has room for; give the write end O_NONBLOCK, or read from the pipe first."
-                    | WriteRefusal.BrokenPipe _ ->
-                        "PawPrint's startup ignores SIGPIPE, as CoreCLR does, so a real run would see EPIPE here; the kernel does not yet hold the disposition that says so."
+                    | WriteRefusal.InitProcess _ -> "Configure a process ID other than 1 (KernelConfig.ProcessId)."
+                    | WriteRefusal.SignalReceiver _ ->
+                        "The guest catches SIGPIPE, and its main thread blocks it while another thread does not; PawPrint delivers a process's signals to its main thread only (SignalDispatch)."
                     | WriteRefusal.Buffer _ -> "Pass a buffer that names guest storage."
                     | WriteRefusal.UnmeasuredSetIdChange _ ->
                         $"(WriteRefusal.UnmeasuredSetIdChange) %s{unmeasuredDarwinRow}"
@@ -6679,7 +6692,53 @@ module NativeSystemNative =
                 | WriteAnswer.Completed written ->
                     shimTransferCount operation bufferSize written, withAnswered system state
 
-            let result, effect, state =
+            // A signal the write raised is delivered as `kill`'s are, through
+            // `SignalDispatch`, which delivers only to the main thread.
+            let screenRaised
+                (raised : PendingSignal<ThreadId>)
+                (after : UnixSystem<ThreadId, NativeSignalHandler>)
+                : unit
+                =
+                match
+                    NativeLibc.screenRaisedSignal
+                        state.Kernel.UnixPlatform
+                        ctx.Thread
+                        state.Kernel.Leader
+                        state.Kernel.PosixSignalShim
+                        state.Kernel.Signals
+                        raised
+                        after.Process.Signals
+                with
+                | Some refusal ->
+                    failwith
+                        $"%s{operation}: fd %d{fd}: the write raised %O{raised.Signal}, which is not modelled: %s{UnmodelledSelfSignal.describe refusal}"
+                | None -> ()
+
+            /// What `outcome` leaves the guest with: the call's result, its
+            /// effect, and the state; or the process killed by the signal the
+            /// write raised, from which the call never returns.
+            let finish
+                (outcome : WriteOutcome<WriteAnswer, ThreadId, NativeSignalHandler>)
+                (effectOf : UnixSystem<ThreadId, NativeSignalHandler> -> StepEffect)
+                : Choice<int * StepEffect * IlMachineState, ExecutionResult>
+                =
+                match outcome with
+                | WriteOutcome.Returns (answer, system) ->
+                    let result, state = answered answer system state
+                    Choice1Of2 (result, effectOf system, state)
+                | WriteOutcome.ReturnsRaising (answer, raised, system) ->
+                    screenRaised raised system
+                    let result, state = answered answer system state
+                    Choice1Of2 (result, effectOf system, state)
+                | WriteOutcome.ProcessEnded ended ->
+                    match ended.Termination with
+                    | ProcessTermination.Signaled (signal, coreDumped) ->
+                        Choice2Of2 (ExecutionResult.SignalTerminated (state, signal, coreDumped))
+                    | ProcessTermination.Exited _ ->
+                        failwith
+                            $"%s{operation}: fd %d{fd}: a write ended the process with an exit status (%O{ended.Termination}), which only an exit can"
+
+            let outcome =
                 if bufferSize < 0 then
                     // `Common_Write`'s own guard, which refuses before any
                     // dereference of `buffer`. ERANGE, where `Common_Read`
@@ -6692,7 +6751,7 @@ module NativeSystemNative =
                     let _, state =
                         answered (WriteAnswer.Failed UnixError.ERANGE) (EmulatedKernel.unix state.Kernel) state
 
-                    -1, StepEffect.NoEffect, state
+                    Choice1Of2 (-1, StepEffect.NoEffect, state)
                 else
 
                 // Decoding the buffer pointer is deferred until the kernel says
@@ -6702,8 +6761,11 @@ module NativeSystemNative =
                 // itself is total, so it is the *extraction* below that waits.
                 let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 
+                let noEffect (_ : UnixSystem<ThreadId, NativeSignalHandler>) = StepEffect.NoEffect
+
                 match
                     UnixReadWrite.admitWrite
+                        ctx.Thread
                         fd
                         (BufferPointer.toUserBuffer buffer)
                         (uint64 bufferSize)
@@ -6711,10 +6773,15 @@ module NativeSystemNative =
                 with
                 | Error (WriteRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
                 | Error refusal -> refused refusal
-                | Ok (WriteAdmission.Answered answer, admitted) ->
-                    let result, state = answered answer admitted state
-                    result, StepEffect.NoEffect, state
-                | Ok (WriteAdmission.Transfer count, admitted) ->
+                | Ok (WriteOutcome.Returns (WriteAdmission.Answered answer, admitted)) ->
+                    finish (WriteOutcome.Returns (answer, admitted)) noEffect
+                | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Answered answer, raised, admitted)) ->
+                    finish (WriteOutcome.ReturnsRaising (answer, raised, admitted)) noEffect
+                | Ok (WriteOutcome.ProcessEnded ended) -> finish (WriteOutcome.ProcessEnded ended) noEffect
+                | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Transfer count, raised, _)) ->
+                    failwith
+                        $"%s{operation}: fd %d{fd}: the kernel raised %O{raised.Signal} and still asked for %d{count} bytes; a write that raises a signal takes none (this is a bug in the kernel library)."
+                | Ok (WriteOutcome.Returns (WriteAdmission.Transfer count, admitted)) ->
 
                 let source =
                     match BufferPointer.dereferenceable buffer with
@@ -6725,16 +6792,16 @@ module NativeSystemNative =
 
                 let bytes = readBytesThrough ctx operation source count state
 
-                match UnixReadWrite.write fd bytes admitted with
+                match UnixReadWrite.write ctx.Thread fd bytes admitted with
                 | Error refusal -> refused refusal
-                | Ok (answer, system) ->
+                | Ok outcome ->
 
                 // The host's own view of what the guest printed, which is
                 // PawPrint's business rather than the kernel's: the kernel
                 // records what reached the pipes PawPrint drains, and this is
                 // what makes it appear on a console. One write delivers at most
                 // once, and exactly the bytes it moved.
-                let effect =
+                let effectOf (system : UnixSystem<ThreadId, NativeSignalHandler>) : StepEffect =
                     let before = admitted.Machine.Delivered.Length
 
                     match system.Machine.Delivered.Length - before with
@@ -6746,14 +6813,15 @@ module NativeSystemNative =
                         failwith
                             $"%s{operation}: fd %d{fd}: one write delivered %d{delivered} times to the pipes PawPrint drains; a write delivers once or not at all (this is an interpreter bug)."
 
-                let result, state = answered answer system state
+                finish outcome effectOf
 
-                result, effect, state
-
-            state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) ctx.Thread
-            |> NativeHandlerResult.completedWith effect
-            |> Some
+            match outcome with
+            | Choice1Of2 (result, effect, state) ->
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) ctx.Thread
+                |> NativeHandlerResult.completedWith effect
+                |> Some
+            | Choice2Of2 ended -> NativeHandlerResult.ofExecutionResult ended |> Some
         | Some "SystemNative_GetNonCryptographicallySecureRandomBytes",
           [ ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
             ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],

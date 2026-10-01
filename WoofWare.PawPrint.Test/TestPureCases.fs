@@ -449,20 +449,27 @@ module TestPureCases =
     let environmentCaseNames : string list =
         environmentCases |> Map.toList |> List.map fst
 
-    /// Guests that read their standard input, with the bytes each is given
-    /// there. One description drives both sides: PawPrint's launcher writes
-    /// them into the guest's standard input pipe (`KernelConfig.StandardInput`),
-    /// and `RealRuntime.executeWithSeed` writes the same bytes into the oracle
-    /// process's, each then closing the pipe.
-    let standardInputCases : Map<string, ImmutableArray<byte>> =
+    /// Guests launched with standard streams of their own, as each says. One
+    /// description drives both sides: PawPrint's launcher sets the streams up
+    /// so (`KernelConfig.StandardStreams`), and `RealRuntime.executeWithSeed`
+    /// sets up the oracle process's the same way. Standard input is a pipe
+    /// into which each launcher writes the bytes before closing it, and an
+    /// output stream that is gone has no reader.
+    let standardStreamsCases : Map<string, StandardStreamsConfig> =
         let utf8 (text : string) : ImmutableArray<byte> =
             ImmutableArray.Create<byte> (System.Text.UTF8Encoding(false).GetBytes text)
+
+        let input (bytes : ImmutableArray<byte>) : StandardStreamsConfig =
+            { StandardStreamsConfig.piped with
+                Input = bytes
+            }
 
         [
             "StandardInputReadLine.cs",
             utf8
                 "first line\nsecond line, after a CRLF\r\n\nafter an empty line\nafter a lone CR\rcaf\u00e9 \u2603 \U0001F600\nlast, with no newline"
-            "StandardInputReadToEnd.cs", utf8 "one\ntwo\r\nthree \u00e9\u00e8 \u20ac \U0001F600\n\nend"
+            |> input
+            "StandardInputReadToEnd.cs", utf8 "one\ntwo\r\nthree \u00e9\u00e8 \u20ac \U0001F600\n\nend" |> input
             // More than a pipe holds on either flavour, so the launcher's write
             // is still going in while the guest reads; the guests regenerate
             // the same bytes to check them.
@@ -470,16 +477,26 @@ module TestPureCases =
             ImmutableArray.Create<byte> (
                 Array.init 100000 (fun i -> byte ((int64 i * 131L + (int64 i >>> 8) * 7L) &&& 0xffL))
             )
+            |> input
             "StandardInputReadLineLarge.cs",
             [ 0..69 ]
             |> List.map (fun i -> System.String (char (int 'a' + i % 26), 1000) + "\n")
             |> String.concat ""
             |> utf8
+            |> input
+            "StandardOutputGone.cs",
+            { StandardStreamsConfig.piped with
+                Output = OutputStreamReader.Gone
+            }
+            "StandardErrorGone.cs",
+            { StandardStreamsConfig.piped with
+                Error = OutputStreamReader.Gone
+            }
         ]
         |> Map.ofList
 
-    let standardInputCaseNames : string list =
-        standardInputCases |> Map.toList |> List.map fst
+    let standardStreamsCaseNames : string list =
+        standardStreamsCases |> Map.toList |> List.map fst
 
     let simpleCases : string list =
         allPure
@@ -489,7 +506,7 @@ module TestPureCases =
              || expectsUnhandledException.Contains s
              || seededCases.ContainsKey s
              || environmentCases.ContainsKey s
-             || standardInputCases.ContainsKey s)
+             || standardStreamsCases.ContainsKey s)
             |> not
         )
         |> Seq.toList
@@ -611,7 +628,7 @@ module TestPureCases =
             (RealRuntime.executeWithSeed
                 case.KernelConfig.FileSystem
                 case.KernelConfig.Environment
-                case.KernelConfig.StandardInput
+                case.KernelConfig.StandardStreams
                 [||])
             (fun realResult pawPrintResult ->
                 DifferentialOracle.compareOutcomes
@@ -1442,14 +1459,14 @@ class Program
         }
         |> runTest
 
-    [<TestCaseSource(nameof standardInputCaseNames)>]
-    let ``Standard input tests`` (fileName : string) =
+    [<TestCaseSource(nameof standardStreamsCaseNames)>]
+    let ``Standard streams tests`` (fileName : string) =
         {
             FileName = fileName
             ExpectedReturnCode = 0
             KernelConfig =
                 { KernelConfig.Default with
-                    StandardInput = standardInputCases.[fileName]
+                    StandardStreams = standardStreamsCases.[fileName]
                 }
             AppContext = AppContextProperties.empty
             Oracle = OraclePolicy.Always

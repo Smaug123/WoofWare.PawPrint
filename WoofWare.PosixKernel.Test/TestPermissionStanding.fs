@@ -1060,7 +1060,7 @@ module TestPermissionStanding =
 
         let changes : (string * (int -> UnixSystem<int, string> -> UnixSystem<int, string>)) list =
             [
-                "write", (fun fd system -> UnixReadWrite.write fd one system |> ok |> snd)
+                "write", (fun fd system -> WriteOutcomes.write fd one system |> ok |> snd)
                 "pwrite", (fun fd system -> UnixReadWrite.pwrite fd one 0L system |> ok |> snd)
                 "ftruncate", (fun fd system -> UnixDescriptor.ftruncate fd 0L system |> ok |> snd)
             ]
@@ -1111,7 +1111,7 @@ module TestPermissionStanding =
 
         let one = ImmutableArray.Create 9uy
 
-        match UnixReadWrite.write fd one opened with
+        match WriteOutcomes.write fd one opened with
         | Error refusal -> refusal |> shouldEqual (WriteRefusal.UnmeasuredSetIdChange (inode, written))
         | Ok (answer, _) -> failwith $"write answered %A{answer}"
 
@@ -1345,7 +1345,7 @@ module TestPermissionStanding =
                 let fd = int fd
 
                 [
-                    UnixReadWrite.write fd one opened |> refused
+                    WriteOutcomes.write fd one opened |> refused
                     UnixReadWrite.pwrite fd one 0L opened |> refused
                     UnixDescriptor.ftruncate fd 0L opened |> refused
                     UnixDescriptor.ftruncate fd 4L opened |> refused

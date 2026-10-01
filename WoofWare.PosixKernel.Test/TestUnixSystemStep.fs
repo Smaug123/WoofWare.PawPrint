@@ -529,7 +529,7 @@ module TestUnixSystemStep =
     let ``a write to a file lands, and advances the offset by what moved`` () : unit =
         let fd, system = withOpenFile linux
 
-        match UnixReadWrite.write fd (ImmutableArray.CreateRange [ 9uy ; 9uy ]) system with
+        match WriteOutcomes.write fd (ImmutableArray.CreateRange [ 9uy ; 9uy ]) system with
         | Ok (WriteAnswer.Completed written, after) ->
             written |> shouldEqual 2L
 
@@ -548,7 +548,7 @@ module TestUnixSystemStep =
     let ``a write to a drained standard stream is delivered rather than stored`` () : unit =
         let bytes = ImmutableArray.CreateRange [ 0x68uy ; 0x69uy ]
 
-        match UnixReadWrite.write 1 bytes linux with
+        match WriteOutcomes.write 1 bytes linux with
         | Ok (WriteAnswer.Completed written, after) ->
             written |> shouldEqual 2L
 
@@ -571,12 +571,12 @@ module TestUnixSystemStep =
     let ``write answers the descriptor questions itself`` () : unit =
         // A caller that skipped the admission gets a kernel's answer rather than
         // an inconsistent one, which is what lets the second call take no buffer.
-        UnixReadWrite.write 7 (ImmutableArray.CreateRange [ 1uy ]) linux
+        WriteOutcomes.write 7 (ImmutableArray.CreateRange [ 1uy ]) linux
         |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EBADF, linux))
 
         let fd, system = withReadOnlyFile linux
 
-        UnixReadWrite.write fd (ImmutableArray.CreateRange [ 1uy ]) system
+        WriteOutcomes.write fd (ImmutableArray.CreateRange [ 1uy ]) system
         |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EBADF, system))
 
     [<Test>]
@@ -589,19 +589,19 @@ module TestUnixSystemStep =
         // that reason.
         let fd, system = withOpenFile linux
 
-        UnixReadWrite.write fd ImmutableArray<byte>.Empty system
+        WriteOutcomes.write fd ImmutableArray<byte>.Empty system
         |> shouldEqual (Ok (WriteAnswer.Completed 0L, system))
 
         // The standard-stream arm too, where the failure would be a phantom
         // entry in the output log rather than a restamped inode.
-        UnixReadWrite.write 1 ImmutableArray<byte>.Empty linux
+        WriteOutcomes.write 1 ImmutableArray<byte>.Empty linux
         |> shouldEqual (Ok (WriteAnswer.Completed 0L, linux))
 
         // ...and it really is *after* the descriptor checks: measured,
         // `write(rdonlyFd, buf, 0)` is EBADF rather than 0.
         let readOnlyFd, readOnly = withReadOnlyFile linux
 
-        UnixReadWrite.write readOnlyFd ImmutableArray<byte>.Empty readOnly
+        WriteOutcomes.write readOnlyFd ImmutableArray<byte>.Empty readOnly
         |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EBADF, readOnly))
 
     [<Test>]
@@ -650,7 +650,7 @@ module TestUnixSystemStep =
         WriteAdmissions.unchanged fd UserBuffer.Mapped 0UL system
         |> shouldEqual expected
 
-        UnixReadWrite.write fd (ImmutableArray.CreateRange [ 1uy ]) system
+        WriteOutcomes.write fd (ImmutableArray.CreateRange [ 1uy ]) system
         |> shouldEqual expected
 
     [<Test>]
@@ -706,7 +706,7 @@ module TestUnixSystemStep =
 
         let exn =
             Assert.Throws<System.Exception> (fun () ->
-                UnixReadWrite.write fd Unchecked.defaultof<ImmutableArray<byte>> system
+                WriteOutcomes.write fd Unchecked.defaultof<ImmutableArray<byte>> system
                 |> ignore<Result<WriteAnswer * UnixSystem<int, string>, WriteRefusal>>
             )
 
