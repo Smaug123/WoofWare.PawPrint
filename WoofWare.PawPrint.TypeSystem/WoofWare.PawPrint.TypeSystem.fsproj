@@ -26,6 +26,7 @@
         <Compile Include="MethodTableLayout.fs" />
         <Compile Include="MethodReferenceResolution.fs" />
         <Compile Include="TypeSystemState.fs" />
+        <Compile Include="TypeAssignability.fs" />
         <EmbeddedResource Include="version.json" />
     </ItemGroup>
 

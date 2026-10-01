@@ -2,6 +2,8 @@ namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
 open System.Reflection
+open System.Reflection.Metadata
+open Microsoft.Extensions.Logging
 
 /// What `TypeSystemState` memoises a MemberRef resolution under: the row, and the generic
 /// context the frame reading it was executing in. Two frames of the same method body with
@@ -189,3 +191,570 @@ type TypeSystemState =
     /// The loaded assembly with this definition identity, if it is loaded.
     member this.LoadedAssembly (definitionFullName : string) : DumpedAssembly option =
         this._LoadedAssemblies.TryByDefinitionName definitionFullName
+
+/// The type system's questions over a `TypeSystemState`: instantiating types and signatures, comparing
+/// signatures and instantiations as CoreCLR does, resolving type tokens and base types, and reading a
+/// concrete type's row. Whatever loads an assembly or registers a concrete type on the way returns the
+/// state it leaves behind; `dotnetRuntimeDirs` is where the loader looks for an assembly not yet loaded.
+[<RequireQualifiedAccess>]
+module TypeSystemState =
+    let concretizeType
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : TypeSystemState)
+        (declaringAssemblyFullName : string)
+        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (ty : TypeDefn)
+        : TypeSystemState * ConcreteTypeHandle
+        =
+        let ctx =
+            {
+                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
+            }
+
+        let handle, ctx =
+            TypeConcretization.concretizeType
+                ctx
+                (TypeResolution.directoryLoader loggerFactory dotnetRuntimeDirs)
+                declaringAssemblyFullName
+                typeGenerics
+                methodGenerics
+                ty
+
+        let state =
+            { state with
+                _LoadedAssemblies = ctx.LoadedAssemblies
+                ConcreteTypes = ctx.ConcreteTypes
+            }
+
+        state, handle
+
+    /// Concretise a decoded method signature: its parameter types, and its return column.
+    ///
+    /// This is the only way to turn a `TypeMethodSignature&lt;TypeDefn&gt;` into a
+    /// `TypeMethodSignature&lt;ConcreteTypeHandle&gt;`, and going through it is what makes two such
+    /// signatures comparable — several callers concretise one signature here and compare it against
+    /// another that arrived via `Concretization.concretizeMethod`, so a caller that mapped the types
+    /// itself could disagree with them about the return shape of a method whose return carries a
+    /// custom modifier.
+    let concretizeMethodSignature
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : TypeSystemState)
+        (declaringAssemblyFullName : string)
+        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (signature : TypeMethodSignature<TypeDefn>)
+        : TypeSystemState * TypeMethodSignature<ConcreteTypeHandle>
+        =
+        let ctx =
+            {
+                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
+            }
+
+        let signature, ctx =
+            TypeConcretization.concretizeMethodSignature
+                ctx
+                (TypeResolution.directoryLoader loggerFactory dotnetRuntimeDirs)
+                declaringAssemblyFullName
+                typeGenerics
+                methodGenerics
+                signature
+
+        let state =
+            { state with
+                _LoadedAssemblies = ctx.LoadedAssemblies
+                ConcreteTypes = ctx.ConcreteTypes
+            }
+
+        state, signature
+
+    /// Concretise a method's return column alone. Use this rather than folding a
+    /// `MethodReturnType&lt;TypeDefn&gt;` by hand: a `void` under custom modifiers returns no value, and
+    /// two consumers that decide that separately can disagree.
+    let concretizeReturnColumn
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : TypeSystemState)
+        (declaringAssemblyFullName : string)
+        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (returnType : MethodReturnType<TypeDefn>)
+        : TypeSystemState * MethodReturnType<ConcreteTypeHandle>
+        =
+        let ctx =
+            {
+                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
+            }
+
+        let ctx, returnType =
+            TypeConcretization.concretizeReturnColumn
+                ctx
+                (TypeResolution.directoryLoader loggerFactory dotnetRuntimeDirs)
+                declaringAssemblyFullName
+                typeGenerics
+                methodGenerics
+                returnType
+
+        let state =
+            { state with
+                _LoadedAssemblies = ctx.LoadedAssemblies
+                ConcreteTypes = ctx.ConcreteTypes
+            }
+
+        state, returnType
+
+    /// Do the constraints on a generic method's type parameters permit `impl` to override `decl`?
+    /// CoreCLR asks this only once the signatures already match, and a mismatch means the type does
+    /// not load at all rather than that the method gets a slot of its own.
+    let methodConstraintsMatch
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : TypeSystemState)
+        (impl : TypeConcretization.ConstraintComparand)
+        (decl : TypeConcretization.ConstraintComparand)
+        : TypeSystemState * bool
+        =
+        let ctx =
+            {
+                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
+            }
+
+        let matches, ctx =
+            TypeConcretization.methodConstraintsMatch
+                ctx
+                (TypeResolution.directoryLoader loggerFactory dotnetRuntimeDirs)
+                impl
+                decl
+
+        let state =
+            { state with
+                _LoadedAssemblies = ctx.LoadedAssemblies
+                ConcreteTypes = ctx.ConcreteTypes
+            }
+
+        state, matches
+
+    /// Do these two method signatures name the same signature, in the sense of CoreCLR's
+    /// `MetaSig::CompareMethodSigs`? Use this, and not equality of two concretised signatures, for
+    /// any question CoreCLR answers off the signature blob — which virtual slot a method fills, and
+    /// which MethodDef a MemberRef names. Concretisation deliberately looks through custom modifiers
+    /// and normalises away the choice of encoding, both of which are part of the signature to those
+    /// questions.
+    ///
+    /// `skipReturnType` omits the return column, which is how CoreCLR expresses "a covariant return
+    /// is acceptable"; the caller then applies its own rule to the return types.
+    ///
+    /// `caller` is the side whose vararg sentinel bounds the comparison, where the two differ in
+    /// parameter count.
+    let signaturesEquivalent
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : TypeSystemState)
+        (skipReturnType : bool)
+        (caller : TypeConcretization.SignatureComparand)
+        (callee : TypeConcretization.SignatureComparand)
+        : TypeSystemState * bool
+        =
+        let ctx =
+            {
+                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
+            }
+
+        let equivalent, ctx =
+            TypeConcretization.signaturesEquivalent
+                ctx
+                (TypeResolution.directoryLoader loggerFactory dotnetRuntimeDirs)
+                skipReturnType
+                caller
+                callee
+
+        let state =
+            { state with
+                _LoadedAssemblies = ctx.LoadedAssemblies
+                ConcreteTypes = ctx.ConcreteTypes
+            }
+
+        state, equivalent
+
+    /// `TypeConcretization.signaturesEquivalentWithoutSubstitution`: the comparison `[UnsafeAccessor]`
+    /// matching makes, in which a type variable on either side is compared by its index alone.
+    let signaturesEquivalentWithoutSubstitution
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : TypeSystemState)
+        (skipReturnType : bool)
+        (caller : TypeConcretization.UnsubstitutedComparand)
+        (callee : TypeConcretization.UnsubstitutedComparand)
+        : TypeSystemState * bool
+        =
+        let ctx =
+            {
+                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
+            }
+
+        let equivalent, ctx =
+            TypeConcretization.signaturesEquivalentWithoutSubstitution
+                ctx
+                (TypeResolution.directoryLoader loggerFactory dotnetRuntimeDirs)
+                skipReturnType
+                caller
+                callee
+
+        let state =
+            { state with
+                _LoadedAssemblies = ctx.LoadedAssemblies
+                ConcreteTypes = ctx.ConcreteTypes
+            }
+
+        state, equivalent
+
+    /// Do these two instantiations of one generic definition name the same type, in the sense of
+    /// CoreCLR's `MetaSig::CompareTypeDefsUnderSubstitutions`? See
+    /// `TypeConcretization.substitutionsEquivalent`.
+    let substitutionsEquivalent
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : TypeSystemState)
+        (left : TypeConcretization.SubstitutionContext)
+        (right : TypeConcretization.SubstitutionContext)
+        : TypeSystemState * bool
+        =
+        let ctx =
+            {
+                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
+            }
+
+        let equivalent, ctx =
+            TypeConcretization.substitutionsEquivalent
+                ctx
+                (TypeResolution.directoryLoader loggerFactory dotnetRuntimeDirs)
+                left
+                right
+
+        let state =
+            { state with
+                _LoadedAssemblies = ctx.LoadedAssemblies
+                ConcreteTypes = ctx.ConcreteTypes
+            }
+
+        state, equivalent
+
+    let resolveTypeFromRef
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (referencedInAssembly : DumpedAssembly)
+        (target : TypeRef)
+        (typeGenericArgs : ImmutableArray<TypeDefn>)
+        (state : TypeSystemState)
+        : TypeSystemState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        =
+        let assemblies, resolvedAssy, typeInfo =
+            TypeResolution.resolveTypeFromRef
+                loggerFactory
+                dotnetRuntimeDirs
+                referencedInAssembly
+                target
+                typeGenericArgs
+                state._LoadedAssemblies
+
+        { state with
+            _LoadedAssemblies = assemblies
+        },
+        resolvedAssy,
+        typeInfo
+
+    let lookupTypeDefn
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : TypeSystemState)
+        (activeAssy : DumpedAssembly)
+        (typeDef : TypeDefinitionHandle)
+        : TypeSystemState * TypeDefn
+        =
+        let defn = activeAssy.TypeDefs.[typeDef]
+        state, LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies defn
+
+    /// Resolve a `TypeReference` token to the type it names.
+    ///
+    /// No generic context is taken, and none may be: a `TypeReference` row names a type and carries
+    /// no type arguments, so there is nothing for a caller to instantiate it with. `resolveTypeRef`
+    /// substitutes whatever it is handed into the *referenced type's own* formal parameters,
+    /// positionally (`Assembly.applyGenericArgs`), so passing the executing frame's generics binds
+    /// them into an unrelated type's slots whenever the arities happen to line up: `ldtoken List`1`
+    /// from a frame on `Holder<string>` came back as `List<string>`.
+    ///
+    /// A caller that does have arguments for the type is looking at a `TypeSpecification`, whose
+    /// signature spells them out and which resolves by a different route. Callers that need the
+    /// frame's context apply it downstream, when concretizing the `TypeDefn` this returns.
+    let lookupTypeRef
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : TypeSystemState)
+        (activeAssy : DumpedAssembly)
+        (ref : TypeReferenceHandle)
+        : TypeSystemState * TypeDefn * DumpedAssembly
+        =
+        let ref = activeAssy.TypeRefs.[ref]
+
+        let state, assy, resolved =
+            resolveTypeFromRef loggerFactory dotnetRuntimeDirs activeAssy ref ImmutableArray.Empty state
+
+        state, LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolved, assy
+
+    /// Resolve a MetadataToken (TypeDefinition, TypeReference, or TypeSpecification) to a TypeDefn,
+    /// together with the assembly the type was resolved in.
+    ///
+    /// Takes no generic context, for the reason `lookupTypeRef` gives: none of the three token
+    /// kinds carries one. A `TypeSpecification`'s signature is returned verbatim, `!0` and all,
+    /// for the caller to concretize against whatever context it means.
+    let resolveTypeMetadataToken
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : TypeSystemState)
+        (activeAssy : DumpedAssembly)
+        (token : MetadataToken)
+        : TypeSystemState * TypeDefn * DumpedAssembly
+        =
+        match token with
+        | MetadataToken.TypeDefinition h ->
+            let state, ty = lookupTypeDefn baseClassTypes state activeAssy h
+            state, ty, activeAssy
+        | MetadataToken.TypeReference ref ->
+            lookupTypeRef loggerFactory dotnetRuntimeDirs baseClassTypes state activeAssy ref
+        | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
+        | m -> failwith $"unexpected type metadata token {m}"
+
+    /// Resolve a BaseTypeInfo to the assembly and TypeDefn of the base type.
+    let resolveBaseTypeInfo
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : TypeSystemState)
+        (currentAssembly : DumpedAssembly)
+        (baseTypeInfo : BaseTypeInfo)
+        : TypeSystemState * DumpedAssembly * TypeDefn
+        =
+        match baseTypeInfo with
+        | BaseTypeInfo.TypeDef handle ->
+            let typeInfo = currentAssembly.TypeDefs.[handle]
+
+            let typeDefn =
+                LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies typeInfo
+
+            state, currentAssembly, typeDefn
+        | BaseTypeInfo.TypeRef handle ->
+            let state, assy, resolved =
+                resolveTypeFromRef
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    currentAssembly
+                    (currentAssembly.TypeRefs.[handle])
+                    ImmutableArray.Empty
+                    state
+
+            let typeDefn =
+                LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolved
+
+            state, assy, typeDefn
+        | BaseTypeInfo.TypeSpec handle ->
+            let signature = currentAssembly.TypeSpecs.[handle].Signature
+            state, currentAssembly, signature
+
+    /// Given a ConcreteTypeHandle, resolve and return its base type as a ConcreteTypeHandle.
+    /// Returns None for types without a base type (System.Object).
+    let resolveBaseConcreteType
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : TypeSystemState)
+        (concreteType : ConcreteTypeHandle)
+        : TypeSystemState * ConcreteTypeHandle option
+        =
+        match concreteType with
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ ->
+            // Structural array handles keep their own runtime identity; their base type is System.Array.
+            let state, arrayHandle =
+                LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Array
+                |> concretizeType
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    baseClassTypes
+                    state
+                    baseClassTypes.Corelib.DefinitionFullName
+                    ImmutableArray.Empty
+                    ImmutableArray.Empty
+
+            state, Some arrayHandle
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            failwith
+                $"TODO: resolveBaseConcreteType: function pointer types (%O{concreteType}) not yet supported; the runtime base type is System.ValueType but the lookup path needs adjusting"
+        | ConcreteTypeHandle.Concrete _
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _ ->
+
+            match AllConcreteTypes.lookup concreteType state.ConcreteTypes with
+            | None -> failwith $"ConcreteTypeHandle {concreteType} not found in AllConcreteTypes"
+            | Some ct ->
+                let assy = state._LoadedAssemblies.ByDefinitionName ct.Identity.AssemblyFullName
+
+                let typeInfo = assy.TypeDefs.[ct.Identity.TypeDefinition.Get]
+
+                match typeInfo.BaseType with
+                | None -> state, None
+                | Some baseTypeInfo ->
+                    let state, baseAssy, baseTypeDefn =
+                        resolveBaseTypeInfo loggerFactory dotnetRuntimeDirs baseClassTypes state assy baseTypeInfo
+
+                    let state, baseHandle =
+                        concretizeType
+                            loggerFactory
+                            dotnetRuntimeDirs
+                            baseClassTypes
+                            state
+                            baseAssy.DefinitionFullName
+                            ct.Generics
+                            ImmutableArray.Empty
+                            baseTypeDefn
+
+                    state, Some baseHandle
+
+    /// Get the metadata row directly represented by this concrete handle.
+    /// Structural arrays, byrefs, and pointers have no direct TypeDef row; callers that are walking
+    /// inheritance should ask for their base type explicitly.
+    let tryGetConcreteTypeInfo
+        (state : TypeSystemState)
+        (concreteType : ConcreteTypeHandle)
+        : (ConcreteType<ConcreteTypeHandle> * TypeInfo<GenericParamFromMetadata, TypeDefn>) option
+        =
+        // Deliberately not just `AllConcreteTypes.tryTypeInfo`: this distinguishes the two
+        // reasons that returns `None`. A structural handle is an ordinary answer of "no nominal
+        // type here", but a `Concrete` handle with no row is a broken invariant and is raised.
+        match concreteType with
+        | ConcreteTypeHandle.Concrete _ ->
+            match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes concreteType with
+            | None -> failwith $"ConcreteTypeHandle {concreteType} not found in AllConcreteTypes"
+            | resolved -> resolved
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> None
+
+    /// Does this handle denote a reference type (as opposed to a value type)?
+    ///
+    /// The structural handles answer without any metadata: arrays of every rank are reference
+    /// types, while byrefs, pointers and function pointers are not (they are neither, strictly,
+    /// but every caller asks this question to decide whether reference-type rules — covariance,
+    /// array-store checks, atomic reference exchange — apply, and for those the answer is "no").
+    /// Nominal handles defer to the TypeDef row.
+    ///
+    /// `context` names the caller in the diagnostic raised when a nominal handle has no TypeDef
+    /// row, which would be a bug in whatever produced the handle.
+    let isReferenceTypeHandle
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (context : string)
+        (state : TypeSystemState)
+        (handle : ConcreteTypeHandle)
+        : bool
+        =
+        match handle with
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ -> true
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> false
+        | ConcreteTypeHandle.Concrete _ ->
+            match tryGetConcreteTypeInfo state handle with
+            | Some (_, typeInfo) -> LoadedTypeInfo.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
+            | None -> failwith $"%s{context}: concrete type handle %O{handle} has no TypeDef row"
+
+    /// Returns true if `handle` is a CLR enum value type — a nominal type whose immediate runtime
+    /// base is `System.Enum`.
+    let isEnumValueType
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : TypeSystemState)
+        (handle : ConcreteTypeHandle)
+        : TypeSystemState * bool
+        =
+        match handle with
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> state, false
+        | ConcreteTypeHandle.Concrete _ ->
+            let state, baseHandle =
+                resolveBaseConcreteType loggerFactory dotnetRuntimeDirs baseClassTypes state handle
+
+            match baseHandle with
+            | None -> state, false
+            | Some bh ->
+                match AllConcreteTypes.lookup bh state.ConcreteTypes with
+                | Some baseTy -> state, baseTy.Identity = baseClassTypes.Enum.Identity
+                | None -> state, false
+
+    /// For an enum `ConcreteTypeHandle`, return the `ConcreteTypeHandle` of its underlying integer
+    /// type by concretising the signature of its sole instance field (`value__`, the CLR-reserved
+    /// name for the integer slot of an enum; ECMA-335 §II.14.3). Returns `None` if `handle` is not
+    /// an enum, has no TypeDef row, or — defensively — has a malformed Fields list. The caller is
+    /// expected to have first verified enum-ness via `isEnumValueType`; this helper does the
+    /// metadata read.
+    let enumUnderlyingHandle
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : TypeSystemState)
+        (handle : ConcreteTypeHandle)
+        : (TypeSystemState * ConcreteTypeHandle) option
+        =
+        match tryGetConcreteTypeInfo state handle with
+        | None -> None
+        | Some (ct, typeInfo) ->
+            let instanceFields =
+                typeInfo.Fields
+                |> List.filter (fun f -> not (f.Attributes.HasFlag FieldAttributes.Static))
+
+            match instanceFields with
+            | [ valueField ] when valueField.Name = "value__" ->
+                let assy = state._LoadedAssemblies.ByDefinitionName ct.Identity.AssemblyFullName
+
+                let state, underlying =
+                    concretizeType
+                        loggerFactory
+                        dotnetRuntimeDirs
+                        baseClassTypes
+                        state
+                        assy.DefinitionFullName
+                        ct.Generics
+                        ImmutableArray.Empty
+                        valueField.Signature
+
+                Some (state, underlying)
+            | _ -> None

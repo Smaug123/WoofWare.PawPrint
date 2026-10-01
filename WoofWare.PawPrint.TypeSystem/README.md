@@ -23,7 +23,12 @@ What lives here:
   it is checked against the real runtime's own answer.
 * `TypeSystemState` — the state all of the above is computed over: the assemblies loaded, the
   concrete types instantiated so far, and the memos of method-table walks, member resolution and
-  method concretisation. The interpreter's machine state holds one.
+  method concretisation. The interpreter's machine state holds one. Its module asks the questions
+  that need nothing else: instantiating a type or signature, comparing signatures and
+  instantiations as CoreCLR does, resolving a type token, and finding a concrete type's base.
+* `TypeAssignability` — whether a value of one closed type can be stored where another is
+  expected, as CoreCLR's `CanCastTo` decides it: the base chain, interfaces, variance, and the
+  array rules.
 
 The motivating consumer, besides PawPrint's interpreter, is an analyser that answers questions about
 a method without running it. Such a thing must know which method a call runs exactly as the
