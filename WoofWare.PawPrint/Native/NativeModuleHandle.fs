@@ -33,7 +33,8 @@ module NativeModuleHandle =
     /// <see cref="PEImageHeaders"/> can only describe a managed image with NT headers — an
     /// image without either never becomes a <c>DumpedAssembly</c>. So is
     /// <c>PEAssembly::GetPEKindAndMachine</c>'s <c>IsReflectionEmit</c> case, which reports
-    /// <c>(0, 0)</c>: PawPrint has no reflection-emitted assemblies to report it for.
+    /// <c>(0, 0)</c>: a dynamic assembly's headers are ones PawPrint built, so the caller must
+    /// answer for it without asking this.
     /// </remarks>
     let peKindAndMachine (context : string) (headers : PEImageHeaders) : PEKindAndMachine =
         // CorPEKind, corhdr.h.
@@ -231,9 +232,17 @@ module NativeModuleHandle =
             // CoreCLR reaches `PEDecoder::GetPEKindAndMachine` through
             // `pModule->GetPEAssembly()->GetPEKindAndMachine`, so the answer is a function of
             // the image's headers alone — nothing here comes from the metadata tables, unlike
-            // the rest of the QCalls behind `Assembly.GetName()`.
+            // the rest of the QCalls behind `Assembly.GetName()`. A dynamic assembly has no image
+            // there, and answers zero for both (measured: `NotAPortableExecutableImage` and
+            // machine 0); the headers PawPrint built it with are not the guest's to see.
             let kindAndMachine =
-                peKindAndMachine $"%s{operation}: assembly %s{assemblyFullName}" assembly.PEImageHeaders
+                if state._LoadedAssemblies.IsDynamic assemblyFullName then
+                    {
+                        PEKind = 0
+                        Machine = 0
+                    }
+                else
+                    peKindAndMachine $"%s{operation}: assembly %s{assemblyFullName}" assembly.PEImageHeaders
 
             let writeOut (argIndex : int) (argName : string) (value : int) (state : IlMachineState) =
                 let target =

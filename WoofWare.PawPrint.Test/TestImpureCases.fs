@@ -2900,6 +2900,27 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // `AppDomain_CreateDynamicAssembly`: the assembly that anonymously hosts every
+                // ownerless `DynamicMethod`, and one a guest defines by name. Dynamic-code switch
+                // overridden to true like its siblings; verified by hand to exit 0 on real .NET.
+                FileName = "DynamicAssemblyHosting.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                                // PawPrint runs with invariant globalization, which admits no culture
+                                // but the invariant one unless this is off; the guest names `fr-FR`.
+                                "System.Globalization.PredefinedCulturesOnly", "false"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // `Delegate_BindToMethodInfo`, the QCall behind `DynamicMethod.CreateDelegate`.
                 // Registered with the dynamic-code switch overridden to true, like its
                 // `ModuleHandle_GetDynamicMethod` sibling above. The guest walks every binding
