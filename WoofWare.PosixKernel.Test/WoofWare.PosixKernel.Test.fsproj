@@ -104,6 +104,8 @@
     <Compile Include="TestBind.fs" />
     <Compile Include="TestSockOpt.fs" />
     <Compile Include="TestSockOptAgainstHost.fs" />
+    <Compile Include="TestSocketErrorOption.fs" />
+    <Compile Include="TestSocketErrorAgainstHost.fs" />
     <Compile Include="TestSocketBinding.fs" />
     <Compile Include="TestEphemeralPorts.fs" />
     <Compile Include="TestListen.fs" />

@@ -117,6 +117,26 @@ module TestSockOpt =
 
     /// The whole `getsockopt(2)` a client makes: ask the admission, read the
     /// length cell only if the kernel would, then make the call.
+    let private getWithSystem
+        (fd : int)
+        (level : int)
+        (optionName : int)
+        (value : UserBuffer)
+        (length : UserBuffer)
+        (declaredLength : uint32)
+        (system : UnixSystem<int, string>)
+        : Result<GetSockOptAnswer * UnixSystem<int, string>, SocketOptionRefusal>
+        =
+        let read =
+            match UnixSocket.admitGetSockOpt fd level optionName value length system with
+            | Ok GetSockOptAdmission.ReadLength -> Some declaredLength
+            | Ok GetSockOptAdmission.SkipLength
+            | Ok (GetSockOptAdmission.Answered _)
+            | Error _ -> None
+
+        UnixSocket.getsockopt fd level optionName value length read system
+
+    /// `getWithSystem`'s answer alone.
     let private getWith
         (fd : int)
         (level : int)
@@ -127,13 +147,8 @@ module TestSockOpt =
         (system : UnixSystem<int, string>)
         : Result<GetSockOptAnswer, SocketOptionRefusal>
         =
-        let read =
-            match UnixSocket.admitGetSockOpt fd level optionName length system with
-            | Ok GetSockOptAdmission.ReadLength -> Some declaredLength
-            | Ok (GetSockOptAdmission.Answered _)
-            | Error _ -> None
-
-        UnixSocket.getsockopt fd level optionName value length read system
+        getWithSystem fd level optionName value length declaredLength system
+        |> Result.map fst
 
     /// Which option a row asks about, named so that each flavour can number it.
     [<RequireQualifiedAccess>]
@@ -355,8 +370,9 @@ module TestSockOpt =
                 |> shouldEqual (Ok (SetSockOptAdmission.Answered UnixError.EBADF))
 
     /// The same for `getsockopt`'s two buffers. The length cell is read on both
-    /// flavours; the value buffer only when something is copied, and Darwin
-    /// asks whether it is null first.
+    /// flavours, except that Darwin asks first whether the value buffer is null
+    /// and reads no length through one; the value buffer is read only when
+    /// something is copied.
     [<Test>]
     let ``an opaque or addressless getsockopt buffer is refused only where it is read`` () : unit =
         for platform in platforms do
@@ -368,31 +384,33 @@ module TestSockOpt =
                     UserBuffer.Opaque, BufferRefusal.OpaqueAtTransfer
                     UserBuffer.Addressless, BufferRefusal.AddresslessAtTransfer
                 ] do
-                UnixSocket.admitGetSockOpt socketFd level optionName buffer system
+                UnixSocket.admitGetSockOpt socketFd level optionName UserBuffer.Mapped buffer system
                 |> shouldEqual (Error (SocketOptionRefusal.Buffer refusal))
 
-                UnixSocket.admitGetSockOpt closedFd level optionName buffer system
+                UnixSocket.admitGetSockOpt closedFd level optionName UserBuffer.Mapped buffer system
                 |> shouldEqual (Ok (GetSockOptAdmission.Answered UnixError.EBADF))
 
             let get value declaredLength =
                 UnixSocket.getsockopt socketFd level optionName value UserBuffer.Mapped (Some declaredLength) system
+                |> Result.map fst
 
             get UserBuffer.Opaque 4u
             |> shouldEqual (Error (SocketOptionRefusal.Buffer BufferRefusal.OpaqueAtTransfer))
 
             get UserBuffer.Opaque 0u |> shouldEqual (Ok (GetSockOptAnswer.Reported (0, 0u)))
 
-            get UserBuffer.Addressless 0u
-            |> shouldEqual (Ok (GetSockOptAnswer.Reported (0, 0u)))
+            match SimulatedUnixPlatform.flavour platform with
+            | SimulatedUnixFlavour.Linux ->
+                get UserBuffer.Addressless 0u
+                |> shouldEqual (Ok (GetSockOptAnswer.Reported (0, 0u)))
 
-            get UserBuffer.Addressless 4u
-            |> shouldEqual (
-                Error (
-                    SocketOptionRefusal.Buffer (
-                        flavourColumn platform BufferRefusal.AddresslessAtTransfer BufferRefusal.AddresslessAtScreen
-                    )
-                )
-            )
+                get UserBuffer.Addressless 4u
+                |> shouldEqual (Error (SocketOptionRefusal.Buffer BufferRefusal.AddresslessAtTransfer))
+            | SimulatedUnixFlavour.Darwin ->
+                // Whether the length cell is read at all turns on whether the
+                // value buffer is null, which an addressless one cannot say.
+                UnixSocket.admitGetSockOpt socketFd level optionName UserBuffer.Addressless UserBuffer.Mapped system
+                |> shouldEqual (Error (SocketOptionRefusal.Buffer BufferRefusal.AddresslessAtScreen))
 
     /// Every phase this kernel models, measured through a `setsockopt` of 1 and
     /// then of 0. Darwin refuses both on a socket whose connection was refused,
@@ -412,8 +430,8 @@ module TestSockOpt =
                 SocketPhase.Established (ConnectionId 0L), false
                 SocketPhase.EstablishedPendingReport (ConnectionId 0L), false
                 SocketPhase.DatagramPeer (loopback 5000us), false
-                SocketPhase.RefusedPendingDelivery, true
-                SocketPhase.Dead, true
+                SocketPhase.Refused RefusalError.Pending, true
+                SocketPhase.Refused RefusalError.Reported, true
             ]
 
         for platform in platforms do
@@ -637,7 +655,7 @@ module TestSockOpt =
             getRow "socket, unmapped value, length -1" sock reuse unmapped real minus1 einval efault
             getRow "socket, unknown level" sock unknownLevel real real 4u refused refused
             getRow "socket, unknown SOL_SOCKET option" sock unknownOption real real 4u refused refused
-            getRow "socket, SO_ERROR" sock Option.SocketError real real 4u refused refused
+            getRow "socket, SO_ERROR" sock Option.SocketError real real 4u ok ok
         ]
 
     [<Test>]
@@ -711,7 +729,11 @@ module TestSockOpt =
     [<Test>]
     let ``getsockopt reads the option in every phase`` () : unit =
         for platform in platforms do
-            for phase in [ SocketPhase.RefusedPendingDelivery ; SocketPhase.Dead ] do
+            for phase in
+                [
+                    SocketPhase.Refused RefusalError.Pending
+                    SocketPhase.Refused RefusalError.Reported
+                ] do
                 let socketFd, _, system = systemWith platform phase
                 let level, optionName = numbered platform Option.ReuseAddress
 
