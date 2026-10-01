@@ -6,9 +6,9 @@ using System.Reflection;
 // `StackTraceCurrentThreadFrames.cs`, which captures only from non-generic types; this one exists
 // because that difference is exactly what decides whether the capture needs a QCall.
 //
-// CoreCLR's frame fill strips the *method* instantiation from each frame's MethodDesc and leaves
-// the class instantiation alone (debugdebugger.cpp:449-452), so a frame on `Holder<int>.Capture`
-// arrives at `StackFrameHelper.GetMethodBase` still bound to `int`. That answers false to
+// CoreCLR's frame fill strips the *method* instantiation from each frame's MethodDesc and keeps
+// the class instantiation of the code that ran (debugdebugger.cpp:449-453). `Holder<int>` shares no
+// code, so a frame on `Holder<int>.Capture` arrives at `StackFrameHelper.GetMethodBase` still bound to `int`. That answers false to
 // `RuntimeMethodHandle.IsTypicalMethodDefinition`, so `GetTypicalMethodDefinition`
 // (RuntimeHandles.cs:1291-1300) falls through to its
 // `RuntimeMethodHandle_GetTypicalMethodDefinition` QCall, which loads `Holder<>.Capture` and

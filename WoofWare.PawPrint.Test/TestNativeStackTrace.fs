@@ -737,8 +737,8 @@ public static class Entry
                 |> Option.defaultWith (fun () -> failwith $"method handle id %d{id} is not registered")
             )
 
-        // A stack frame names the *typical* method definition: CoreCLR strips the method
-        // instantiation and leaves the class instantiation alone (debugdebugger.cpp:449-452).
+        // A stack frame names its method with the method's own instantiation stripped, as CoreCLR
+        // does (debugdebugger.cpp:449-453).
         for handle in resolved do
             match handle with
             | MethodHandle.FromMetadata identity -> identity.GetMethodGenerics () |> List.isEmpty |> shouldEqual true

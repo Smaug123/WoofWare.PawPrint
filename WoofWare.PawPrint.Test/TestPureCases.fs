@@ -827,6 +827,107 @@ public class Program
         exn.Message |> shouldContainText "GetMethodFromCanonical"
         exn.Message |> shouldContainText "System.__Canon"
 
+    /// `StackTrace.GetStackFramesInternal` reached by private reflection rather than through
+    /// `new StackTrace()` or `new StackFrame()`, so that the guest reads `rgMethodHandle` itself
+    /// instead of through `StackFrameHelper.GetMethodBase`, which reduces every frame to its typical
+    /// definition. CoreCLR reports a frame running shared generic code by its canonical method, so
+    /// the guest can see `Holder<System.__Canon>`, which PawPrint does not model; the real runtime is
+    /// run first to show that the difference is really there to be seen. The frames for which the
+    /// two agree are `sourcesPure/StackFrameHelperUnsharedFrames.cs`.
+    ///
+    /// The guest enters at each frame between the QCall and CoreLib's own captures that it can hold
+    /// the helper from: the wrapper `GetStackFramesInternal(StackFrameHelper, bool, Exception)`, and
+    /// `StackFrameHelper.InitializeSourceInfo`, which calls it.
+    [<TestCase "capture.Invoke(null, new object[] { helper, false, null });">]
+    [<TestCase "initializeSourceInfo.Invoke(helper, new object[] { false, null });">]
+    let ``GetStackFramesInternal refuses a caller that could see a canonical frame`` (entry : string) =
+        let source =
+            """
+using System;
+using System.Diagnostics;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+
+public class Program
+{
+    class Holder<T>
+    {
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        internal static Type Capture() => DeclaringTypeOfHolderFrame();
+    }
+
+    static Type DeclaringTypeOfHolderFrame()
+    {
+        const BindingFlags nonPublicStatic = BindingFlags.NonPublic | BindingFlags.Static;
+        Assembly corelib = typeof(object).Assembly;
+        Type helperType = corelib.GetType("System.Diagnostics.StackFrameHelper", true);
+        Type internalHandle = corelib.GetType("System.RuntimeMethodHandleInternal", true);
+        MethodInfo capture = typeof(StackTrace).GetMethod(
+            "GetStackFramesInternal", nonPublicStatic, null, new[] { helperType, typeof(bool), typeof(Exception) }, null);
+        MethodInfo initializeSourceInfo = helperType.GetMethod(
+            "InitializeSourceInfo", BindingFlags.NonPublic | BindingFlags.Instance);
+        MethodInfo getDeclaringType = typeof(RuntimeMethodHandle).GetMethod(
+            "GetDeclaringType", nonPublicStatic, null, new[] { internalHandle }, null);
+
+        object helper = Activator.CreateInstance(helperType, nonPublic: true);
+        ENTRY
+        IntPtr[] handles = (IntPtr[]) helperType
+            .GetField("rgMethodHandle", BindingFlags.NonPublic | BindingFlags.Instance)
+            .GetValue(helper);
+
+        foreach (IntPtr handle in handles)
+        {
+            object wrapped = Activator.CreateInstance(
+                internalHandle, BindingFlags.NonPublic | BindingFlags.Instance, null, new object[] { handle }, null);
+            Type declaring = (Type) getDeclaringType.Invoke(null, new object[] { wrapped });
+
+            if (declaring.IsGenericType && declaring.GetGenericTypeDefinition() == typeof(Holder<>))
+            {
+                return declaring;
+            }
+        }
+
+        return null;
+    }
+
+    public static int Main(string[] args)
+    {
+        Type declaring = Holder<string>.Capture();
+
+        if (declaring == null)
+        {
+            return 1;
+        }
+
+        if (declaring.GetGenericArguments()[0].FullName != "System.__Canon")
+        {
+            return 2;
+        }
+
+        return 0;
+    }
+}
+"""
+            |> fun template -> template.Replace ("ENTRY", entry)
+
+        let image = Roslyn.compile [ source ]
+
+        match RealRuntime.executeWithRealRuntime [||] image with
+        | RealRuntimeResult.NormalExit 0 -> ()
+        | other -> failwith $"expected the real runtime to report Holder<System.__Canon>, got %O{other}"
+
+        let exn =
+            Assert.Catch (fun () ->
+                runPawPrintSource
+                    "GetStackFramesInternalCanonical.cs"
+                    source
+                    KernelConfig.Default
+                    (fun _image _result -> ())
+            )
+
+        exn.Message |> shouldContainText "StackTrace_GetStackFramesInternal"
+        exn.Message |> shouldContainText "System.__Canon"
+
     /// `float32` and `float64` are the same type (`F`) on the CLI evaluation stack, but a
     /// `calli` marshals across a method boundary, where their ABI footprints differ. Reading a
     /// `float32` return slot as `float64` yields garbage on CoreCLR rather than the target's

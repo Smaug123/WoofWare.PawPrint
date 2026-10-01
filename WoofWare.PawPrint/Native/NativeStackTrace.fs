@@ -56,7 +56,68 @@ module NativeStackTrace =
 
         state, CliType.ObjectRef (Some arrayAddr)
 
+    /// Whether CoreCLR reports a frame running `method` with the declaring type PawPrint names.
+    ///
+    /// CoreCLR fills `rgMethodHandle` with the `MethodDesc` of the code that ran (debugdebugger.cpp:447-458,
+    /// which deliberately does not recover the exact instantiation), and a method of a type with a
+    /// shareable argument runs code compiled once for its canonical form. Measured on CoreCLR, for
+    /// the current-thread and the exception walk alike, a frame in `Holder<string>.Capture` reports
+    /// `Holder<System.__Canon>` where one in `Holder<int>.Capture` reports `Holder<int>`. PawPrint
+    /// does not model canonical forms, so the two agree exactly when `isSharedTypeArgument` finds no
+    /// shared argument in the declaring type's instantiation. The method's own instantiation does
+    /// not matter, because both strip it.
+    let private frameReportsItsOwnDeclaringType
+        (ctx : NativeCallContext)
+        (state : IlMachineState)
+        (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        : bool
+        =
+        method.DeclaringTypeGenerics
+        |> Seq.exists (
+            IlMachineRuntimeMetadata.isSharedTypeArgument ctx.BaseClassTypes state $"the declaring type of %O{method}"
+        )
+        |> not
+
+    /// Whether the `StackTrace_GetStackFramesInternal` QCall executing in `ctx` was called on behalf
+    /// of `StackTrace.CaptureStackTrace` or `StackFrame.BuildStackFrame` (StackTrace.CoreCLR.cs:59,
+    /// StackFrame.CoreCLR.cs:31), CoreLib's only two captures. Each reaches it through
+    /// `StackFrameHelper.InitializeSourceInfo`, then the managed wrapper
+    /// `StackTrace.GetStackFramesInternal(StackFrameHelper, bool, Exception)`, then the
+    /// `LibraryImport` marshalling stub for the QCall, which converts the `bool`.
+    ///
+    /// Those callers cannot see the declaring type of what the QCall writes into `rgMethodHandle`.
+    /// Each allocates the `StackFrameHelper` itself, never lets it escape, and reads the handles only
+    /// through `StackFrameHelper.GetMethodBase`, which reduces each to its typical definition before
+    /// anything else, so CoreCLR's canonical declaring type and PawPrint's exact one reach the same
+    /// `MethodBase`. `InitializeSourceInfo` reads none of the handles. Every frame in between is
+    /// checked, not only the outermost: a guest can invoke any of them by reflection, and then it
+    /// holds the helper and reads the handles itself.
+    let private calledFromCorelibCapture (state : IlMachineState) (ctx : NativeCallContext) : bool =
+        let caller (frame : MethodState) : MethodState option =
+            NativeCall.callerOf state ctx.Thread frame
+
+        // The stub and the wrapper are overloads with the same parameter count, which
+        // `isCorelibMethod` does not tell apart. The chain still pins each: `InitializeSourceInfo`
+        // calls only the wrapper, and the wrapper calls only the stub.
+        caller ctx.Instruction
+        |> Option.filter (NativeCall.isCorelibMethod "System.Diagnostics" "StackTrace" "GetStackFramesInternal" 3)
+        |> Option.bind caller
+        |> Option.filter (NativeCall.isCorelibMethod "System.Diagnostics" "StackTrace" "GetStackFramesInternal" 3)
+        |> Option.bind caller
+        |> Option.filter (NativeCall.isCorelibMethod "System.Diagnostics" "StackFrameHelper" "InitializeSourceInfo" 2)
+        |> Option.bind caller
+        |> Option.exists (fun frame ->
+            NativeCall.isCorelibMethod "System.Diagnostics" "StackTrace" "CaptureStackTrace" 3 frame
+            || NativeCall.isCorelibMethod "System.Diagnostics" "StackFrame" "BuildStackFrame" 2 frame
+        )
+
     /// The registry id naming `frame`'s method, as `rgMethodHandle` carries it.
+    ///
+    /// That id names the method on the frame's exact declaring type, where CoreCLR's names it on
+    /// the canonical form of shared code (`frameReportsItsOwnDeclaringType`). So unless
+    /// `callerSeesOnlyTypicalDefinitions` says the handles will be read only through
+    /// `StackFrameHelper.GetMethodBase`, which cannot tell the two apart, a frame in shared code is
+    /// refused.
     ///
     /// A dynamic method is *not* metadata-backed but is still perfectly nameable: its
     /// `DynamicMethodHandle` already carries a registry id, minted when `Reflection.Emit` built it,
@@ -73,12 +134,26 @@ module NativeStackTrace =
     /// visibly.
     let private methodHandleIdOfFrame
         (operation : string)
+        (ctx : NativeCallContext)
+        (callerSeesOnlyTypicalDefinitions : bool)
         (state : IlMachineState)
         (frame : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         : IlMachineState * int64
         =
         match frame.Method.SynthesisedKind with
         | None ->
+            if
+                not callerSeesOnlyTypicalDefinitions
+                && not (frameReportsItsOwnDeclaringType ctx state frame.Method)
+            then
+                let arguments =
+                    frame.Method.DeclaringTypeGenerics
+                    |> Seq.map (AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes)
+                    |> String.concat ", "
+
+                failwith
+                    $"TODO: %s{operation}: a captured frame runs %O{frame.Method} on the instantiation <%s{arguments}>, which has a shareable type argument, so CoreCLR reports the frame by the canonical method declared on an instantiation over System.__Canon, which PawPrint does not model. The capture was not requested by StackTrace.CaptureStackTrace or StackFrame.BuildStackFrame, which read the frame only as its typical definition, so the caller could observe the difference."
+
             let id, registry =
                 MethodHandleRegistry.getOrAllocateDefinitionId state.ConcreteTypes frame.Method state.MethodHandles
 
@@ -243,10 +318,13 @@ module NativeStackTrace =
             // `new RuntimeMethodHandleInternal(mh)`. `MethodHandlePtr` is the `IntPtr`-shaped
             // spelling of a registry id, which is what a value that has travelled through an
             // `IntPtr` array cell decodes to.
+            let callerSeesOnlyTypicalDefinitions = calledFromCorelibCapture state ctx
+
             let state, methodHandles =
                 ((state, []), frames)
                 ||> List.fold (fun (state, acc) frame ->
-                    let state, id = methodHandleIdOfFrame operation state frame
+                    let state, id =
+                        methodHandleIdOfFrame operation ctx callerSeesOnlyTypicalDefinitions state frame
 
                     state,
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.MethodHandlePtr id))
