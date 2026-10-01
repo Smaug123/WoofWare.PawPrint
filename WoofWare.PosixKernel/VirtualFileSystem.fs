@@ -1592,6 +1592,41 @@ module VirtualFileSystem =
                     vfs.Inodes
         }
 
+    /// Give the inode at `inode`, of any kind, the owner `owner`, and move its
+    /// `ctime`.
+    ///
+    /// `ctime` moves even when `owner` is the owner the inode already had, and
+    /// no other timestamp moves.
+    ///
+    /// Partial in the inode, which must be one this filesystem contains.
+    let setOwner
+        (inode : InodeNumber)
+        (owner : InodeOwner)
+        (now : UnixTimestamp)
+        (vfs : VirtualFileSystem)
+        : VirtualFileSystem
+        =
+        // Measured on both platforms (`chown-rules.c`): a successful `chown`,
+        // `lchown` or `fchown` moves `ctime` and neither `atime` nor `mtime`,
+        // on a regular file, a directory and a symbolic link, whether or not
+        // the owner or the group changed.
+        match Map.tryFind inode vfs.Inodes with
+        | None ->
+            failwith
+                $"VirtualFileSystem.setOwner: inode %O{inode} is not in this filesystem. The caller resolved a path or a descriptor to it, and a descriptor outliving its inode means an unlink removed a still-open file (this is a bug in the caller)."
+        | Some entry ->
+
+        { vfs with
+            Inodes =
+                Map.add
+                    inode
+                    { entry with
+                        Owner = owner
+                        Times = InodeTimes.statusChangedAt now entry.Times
+                    }
+                    vfs.Inodes
+        }
+
     // ------------------------------------------------------------ resolution
 
     /// Every (directory, name, target) binding in the graph, including those in

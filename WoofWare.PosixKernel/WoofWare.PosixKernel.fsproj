@@ -49,6 +49,7 @@
         <Compile Include="RemovalRules.fs" />
         <Compile Include="RenameRules.fs" />
         <Compile Include="AccessRules.fs" />
+        <Compile Include="OwnerChangeRules.fs" />
         <Compile Include="SimulatedUnixPlatform.fs" />
         <Compile Include="ProcessTermination.fs" />
         <Compile Include="PipeBuffer.fs" />
