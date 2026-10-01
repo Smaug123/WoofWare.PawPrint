@@ -227,7 +227,11 @@ public struct NestCharUnicode { public E8 T; public char K; }
 
         let state =
             { state with
-                ConcreteTypes = Corelib.concretizeAll state._LoadedAssemblies bct AllConcreteTypes.Empty
+                TypeSystem =
+                    { state.TypeSystem with
+                        ConcreteTypes =
+                            Corelib.concretizeAll state.TypeSystem._LoadedAssemblies bct AllConcreteTypes.Empty
+                    }
             }
 
         state.WithLoadedAssembly corpusAssembly
@@ -270,7 +274,13 @@ public struct NestCharUnicode { public E8 T; public char K; }
                 let vt, state = pawPrintZero shape
 
                 let actual =
-                    match CliValueType.TryComputeMarshalLayout state.ConcreteTypes state._LoadedAssemblies bct vt with
+                    match
+                        CliValueType.TryComputeMarshalLayout
+                            state.TypeSystem.ConcreteTypes
+                            state.TypeSystem._LoadedAssemblies
+                            bct
+                            vt
+                    with
                     | Result.Error err -> Result.Error err.Reason
                     | Result.Ok (size, placements) ->
                         Result.Ok (size.Size, placements |> List.map (fun p -> p.Field.Name, p.NativeOffset))
@@ -318,8 +328,8 @@ public struct NestCharUnicode { public E8 T; public char K; }
 
                 let blittable =
                     StructMarshalStub.isBlittableStruct
-                        state.ConcreteTypes
-                        state._LoadedAssemblies
+                        state.TypeSystem.ConcreteTypes
+                        state.TypeSystem._LoadedAssemblies
                         bct
                         (CliType.ValueType vt)
 

@@ -18,10 +18,10 @@ module NativeType =
           "System",
           "Type",
           "GetField",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.String ; ty ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.String ; ty ],
           MethodReturnType.Returns ret ->
-            let ty = AllConcreteTypes.lookup ty state.ConcreteTypes |> Option.get
-            let ret = AllConcreteTypes.lookup ret state.ConcreteTypes |> Option.get
+            let ty = AllConcreteTypes.lookup ty state.TypeSystem.ConcreteTypes |> Option.get
+            let ret = AllConcreteTypes.lookup ret state.TypeSystem.ConcreteTypes |> Option.get
 
             match ty.Namespace, ty.Name, ty.Generics.IsEmpty, ret.Namespace, ret.Name, ret.Generics.IsEmpty with
             | "System.Reflection", "BindingFlags", true, "System.Reflection", "FieldInfo", true ->

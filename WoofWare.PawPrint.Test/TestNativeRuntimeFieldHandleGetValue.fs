@@ -194,7 +194,7 @@ module TestNativeRuntimeFieldHandleGetValue =
 
         let targetInvocationHandle =
             AllConcreteTypes.getRequiredNonGenericHandle
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 fixture.BaseClassTypes.TargetInvocationException
 
         wrapperType |> shouldEqual targetInvocationHandle

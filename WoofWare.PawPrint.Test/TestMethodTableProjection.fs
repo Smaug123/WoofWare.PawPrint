@@ -30,8 +30,13 @@ module TestMethodTableProjection =
         Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
 
     let private stateWithLogger (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) : IlMachineState =
-        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
-            ConcreteTypes = concreteTypes
+        let initialState = IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+
+        { initialState with
+            TypeSystem =
+                { initialState.TypeSystem with
+                    ConcreteTypes = concreteTypes
+                }
         }
 
     let private state () : IlMachineState =
@@ -185,7 +190,12 @@ public interface IOpenInterface<T>
                     MarshallingDescriptor = None
                 }
             ]
-            |> SynthesisedLayoutKind.ofFields bct state.ConcreteTypes intPtrHandle Layout.Default CharSet.Ansi
+            |> SynthesisedLayoutKind.ofFields
+                bct
+                state.TypeSystem.ConcreteTypes
+                intPtrHandle
+                Layout.Default
+                CharSet.Ansi
 
         IlMachineState.allocateManagedObject intPtrHandle valueType state
 
@@ -193,7 +203,13 @@ public interface IOpenInterface<T>
         let objectHandle = handleFor bct.Object
 
         let objectValue =
-            SynthesisedLayoutKind.ofFields bct state.ConcreteTypes objectHandle Layout.Default CharSet.Ansi []
+            SynthesisedLayoutKind.ofFields
+                bct
+                state.TypeSystem.ConcreteTypes
+                objectHandle
+                Layout.Default
+                CharSet.Ansi
+                []
 
         IlMachineState.allocateManagedObject objectHandle objectValue state
 
@@ -217,7 +233,7 @@ public interface IOpenInterface<T>
             ]
             |> SynthesisedLayoutKind.ofFields
                 bct
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 declared
                 (Layout.Custom (size = 8, packingSize = 0))
                 CharSet.Ansi
@@ -242,7 +258,7 @@ public interface IOpenInterface<T>
         ]
         |> SynthesisedLayoutKind.ofFields
             bct
-            state.ConcreteTypes
+            state.TypeSystem.ConcreteTypes
             declared
             (Layout.Custom (size = 8, packingSize = 0))
             CharSet.Ansi
@@ -282,7 +298,7 @@ public interface IOpenInterface<T>
             ]
             |> SynthesisedLayoutKind.ofFields
                 bct
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 objectHandle
                 (Layout.Custom (size = 8, packingSize = 0))
                 CharSet.Ansi
@@ -553,7 +569,7 @@ public unsafe struct PointerWrapper
         =
         let state, handle =
             typeInfo
-            |> LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies
+            |> LoadedTypeInfo.typeInfoToTypeDefn' bct state.TypeSystem._LoadedAssemblies
             |> IlMachineState.concretizeType
                 loggerFactory
                 bct
@@ -746,7 +762,7 @@ public unsafe struct PointerWrapper
         : IlMachineState * ConcreteTypeHandle
         =
         typeInfo
-        |> LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies
+        |> LoadedTypeInfo.typeInfoToTypeDefn' bct state.TypeSystem._LoadedAssemblies
         |> IlMachineState.concretizeType
             loggerFactory
             bct
@@ -823,9 +839,9 @@ public unsafe struct PointerWrapper
         let methodState =
             match
                 MethodState.Empty
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     bct
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     corelib
                     method
                     ImmutableArray.Empty
@@ -1331,7 +1347,7 @@ public unsafe struct PointerWrapper
         : IlMachineState * ConcreteTypeHandle
         =
         topLevelType "System" "Nullable`1"
-        |> LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies
+        |> LoadedTypeInfo.typeInfoToTypeDefn' bct state.TypeSystem._LoadedAssemblies
         |> IlMachineState.concretizeType
             loggerFactory
             bct
@@ -1383,7 +1399,7 @@ public unsafe struct PointerWrapper
 
         let state, listIntHandle =
             topLevelType "System.Collections.Generic" "List`1"
-            |> LoadedTypeInfo.typeInfoToTypeDefn' bct (stateWithLogger loggerFactory)._LoadedAssemblies
+            |> LoadedTypeInfo.typeInfoToTypeDefn' bct (stateWithLogger loggerFactory).TypeSystem._LoadedAssemblies
             |> IlMachineState.concretizeType
                 loggerFactory
                 bct
@@ -3861,7 +3877,7 @@ public unsafe struct PointerWrapper
             ]
             |> SynthesisedLayoutKind.ofFields
                 bct
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 (handleFor bct.TypedReference)
                 (Layout.Custom (size = 8, packingSize = 0))
                 CharSet.Ansi
@@ -4668,7 +4684,7 @@ public unsafe struct PointerWrapper
             ]
             |> SynthesisedLayoutKind.ofFields
                 bct
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 objectHandle
                 (Layout.Custom (size = 4, packingSize = 0))
                 CharSet.Ansi

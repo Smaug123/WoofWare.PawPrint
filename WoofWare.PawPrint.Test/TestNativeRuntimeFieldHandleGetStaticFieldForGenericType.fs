@@ -31,7 +31,7 @@ module TestNativeRuntimeFieldHandleGetStaticFieldForGenericType =
         : IlMachineState * ConcreteTypeHandle
         =
         let argDefn =
-            LoadedTypeInfo.typeInfoToTypeDefn' fixture.BaseClassTypes state._LoadedAssemblies arg
+            LoadedTypeInfo.typeInfoToTypeDefn' fixture.BaseClassTypes state.TypeSystem._LoadedAssemblies arg
 
         let openDefn =
             TypeDefn.FromDefinition (

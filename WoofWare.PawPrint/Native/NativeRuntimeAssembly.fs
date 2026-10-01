@@ -312,8 +312,8 @@ module NativeRuntimeAssembly =
           "System.Reflection",
           "RuntimeAssembly",
           ("GetToken" | "GetTokenInternal"),
-          [ CorelibType state.ConcreteTypes ("System.Reflection", "RuntimeAssembly", runtimeAssemblyGenerics) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection", "RuntimeAssembly", runtimeAssemblyGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
             runtimeAssemblyGenerics.IsEmpty
             ->
             let operation = "RuntimeAssembly.GetToken"
@@ -333,8 +333,8 @@ module NativeRuntimeAssembly =
           "System.Reflection",
           "RuntimeAssembly",
           "GetIsDynamic",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) ->
             let operation = "RuntimeAssembly.GetIsDynamic"
             let state = IlMachineState.loadArgument ctx.Thread 0 state
             let assemblyHandle, state = IlMachineState.popEvalStack ctx.Thread state
@@ -350,7 +350,7 @@ module NativeRuntimeAssembly =
 
             let state =
                 IlMachineState.pushToEvalStack
-                    (CliType.ofBool (state._LoadedAssemblies.IsDynamic assemblyFullName))
+                    (CliType.ofBool (state.TypeSystem._LoadedAssemblies.IsDynamic assemblyFullName))
                     ctx.Thread
                     state
 
@@ -359,10 +359,10 @@ module NativeRuntimeAssembly =
           "System.Reflection",
           "RuntimeAssembly",
           "GetManifestModule",
-          [ CorelibType state.ConcreteTypes ("System.Reflection", "RuntimeAssembly", runtimeAssemblyGenerics) ],
-          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System.Reflection",
-                                                                     "RuntimeModule",
-                                                                     runtimeModuleGenerics)) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection", "RuntimeAssembly", runtimeAssemblyGenerics) ],
+          MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection",
+                                                                                "RuntimeModule",
+                                                                                runtimeModuleGenerics)) when
             runtimeAssemblyGenerics.IsEmpty && runtimeModuleGenerics.IsEmpty
             ->
             let operation = "RuntimeAssembly.GetManifestModule"
@@ -542,7 +542,7 @@ module NativeRuntimeAssembly =
 
                 let byteConcreteType =
                     AllConcreteTypes.findExistingNonGenericConcreteType
-                        state.ConcreteTypes
+                        state.TypeSystem.ConcreteTypes
                         ctx.BaseClassTypes.Byte.Identity
                     |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Byte is not concretized")
 
@@ -704,7 +704,7 @@ module NativeRuntimeAssembly =
             let firstHop =
                 match export.Data with
                 | ExportedTypeData.ForwardsTo reference ->
-                    state._LoadedAssemblies.TryResolveReference assembly.AssemblyReferences.[reference]
+                    state.TypeSystem._LoadedAssemblies.TryResolveReference assembly.AssemblyReferences.[reference]
                 | ExportedTypeData.ParentExportedType _
                 | ExportedTypeData.AssemblyFile _ ->
                     failwith
@@ -799,24 +799,33 @@ module NativeRuntimeAssembly =
                     TypeResolution.tryPrimeBaseChain
                         ctx.LoggerFactory
                         state.DotnetRuntimeDirs
-                        state._LoadedAssemblies
+                        state.TypeSystem._LoadedAssemblies
                         definingAssembly
                         typeInfo
                 with
                 | assemblies, None ->
                     Choice2Of2 typeInfo,
                     { state with
-                        _LoadedAssemblies = assemblies
+                        TypeSystem =
+                            { state.TypeSystem with
+                                _LoadedAssemblies = assemblies
+                            }
                     }
                 | assemblies, Some (BaseChainFailure.LoadFailed (AssemblyLoadFailure.NoSuchAssembly reference)) ->
                     Choice1Of2 (ForwarderMiss.AssemblyUnavailable reference),
                     { state with
-                        _LoadedAssemblies = assemblies
+                        TypeSystem =
+                            { state.TypeSystem with
+                                _LoadedAssemblies = assemblies
+                            }
                     }
                 | assemblies, Some (BaseChainFailure.BaseTypeAbsent typeMiss) ->
                     Choice1Of2 (ForwarderMiss.BaseTypeAbsent typeMiss),
                     { state with
-                        _LoadedAssemblies = assemblies
+                        TypeSystem =
+                            { state.TypeSystem with
+                                _LoadedAssemblies = assemblies
+                            }
                     }
                 | _, Some (BaseChainFailure.LoadFailed (AssemblyLoadFailure.LoadingNotPermitted _) as failure) ->
                     // Unreachable: the loader used here reads files.
@@ -909,10 +918,12 @@ module NativeRuntimeAssembly =
           "System.Private.CoreLib",
           "System.Reflection",
           "RuntimeAssembly",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallAssembly", qCallAssemblyGenerics)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32) ],
-          MethodReturnType.Returns (ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallAssembly",
+                                                        qCallAssemblyGenerics)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt16)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32) ],
+          MethodReturnType.Returns (ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)) when
             qCallAssemblyGenerics.IsEmpty
             ->
             let operation = "AssemblyNative_GetResource"
@@ -978,13 +989,15 @@ module NativeRuntimeAssembly =
           "System.Private.CoreLib",
           "System.Reflection",
           "RuntimeAssembly",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallAssembly", qCallAssemblyGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "StringHandleOnStack",
-                                             stringHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallAssembly",
+                                                        qCallAssemblyGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "StringHandleOnStack",
+                                                        stringHandleGenerics) ],
           // `[return: MarshalAs(UnmanagedType.Bool)]` over a native `BOOL`, so the signature
           // the interpreter sees is Int32-returning rather than Boolean-returning.
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
             qCallAssemblyGenerics.IsEmpty && stringHandleGenerics.IsEmpty
             ->
             let operation = "AssemblyNative_GetCodeBase"
@@ -1047,9 +1060,9 @@ module NativeRuntimeAssembly =
           "System.Private.CoreLib",
           "System.Reflection",
           "Assembly",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when objectHandleGenerics.IsEmpty ->
             let operation = "AssemblyNative_GetEntryAssembly"
 
@@ -1093,9 +1106,9 @@ module NativeRuntimeAssembly =
           "System.Private.CoreLib",
           "System.Runtime.Loader",
           "AssemblyLoadContext",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when objectHandleGenerics.IsEmpty ->
             let operation = "AssemblyNative_GetLoadedAssemblies"
 
@@ -1108,13 +1121,14 @@ module NativeRuntimeAssembly =
             // Load order, not the dictionary's enumeration order — that one is a hash order over
             // per-process-randomised string hashes, so handing it to a guest would make a replay
             // depend on the process that produced it. See `DefinitionNames`.
-            let loadOrder = state._LoadedAssemblies.DefinitionNamesInLoadOrder
+            let loadOrder = state.TypeSystem._LoadedAssemblies.DefinitionNamesInLoadOrder
 
             // The two are denormalised views of one fact, and only the dictionary is consulted
             // everywhere else, so a registration path that updated one and not the other would
             // show up here as an assembly silently missing from the guest's array rather than as
             // any failure. Cheap to check at the one place the order is read.
-            let definitionCount = state._LoadedAssemblies.DefinitionNames |> Seq.length
+            let definitionCount =
+                state.TypeSystem._LoadedAssemblies.DefinitionNames |> Seq.length
 
             if loadOrder.Length <> definitionCount then
                 failwith
@@ -1189,12 +1203,12 @@ module NativeRuntimeAssembly =
           "System.Private.CoreLib",
           "System.Reflection",
           "Assembly",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "StackCrawlMarkHandle",
-                                             stackMarkGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "StackCrawlMarkHandle",
+                                                        stackMarkGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when stackMarkGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
             let operation = "AssemblyNative_GetExecutingAssembly"
 
@@ -1272,10 +1286,12 @@ module NativeRuntimeAssembly =
           "System.Private.CoreLib",
           "System.Reflection",
           "RuntimeAssembly",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallAssembly", qCallAssemblyGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "StringHandleOnStack",
-                                             stringHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallAssembly",
+                                                        qCallAssemblyGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "StringHandleOnStack",
+                                                        stringHandleGenerics) ],
           MethodReturnType.Void when qCallAssemblyGenerics.IsEmpty && stringHandleGenerics.IsEmpty ->
             let operation = "AssemblyNative_GetLocation"
 
@@ -1325,10 +1341,12 @@ module NativeRuntimeAssembly =
           "System.Private.CoreLib",
           "System.Reflection",
           "RuntimeAssembly",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallAssembly", qCallAssemblyGenerics) ],
-          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System.Reflection",
-                                                                     "AssemblyNameFlags",
-                                                                     flagsGenerics)) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallAssembly",
+                                                        qCallAssemblyGenerics) ],
+          MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection",
+                                                                                "AssemblyNameFlags",
+                                                                                flagsGenerics)) when
             qCallAssemblyGenerics.IsEmpty && flagsGenerics.IsEmpty
             ->
             let operation = "AssemblyNative_GetFlags"
@@ -1381,8 +1399,10 @@ module NativeRuntimeAssembly =
           "System.Private.CoreLib",
           "System.Reflection",
           "RuntimeAssembly",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallAssembly", qCallAssemblyGenerics) ],
-          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallAssembly",
+                                                        qCallAssemblyGenerics) ],
+          MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("", "BOOL", boolGenerics)) when
             qCallAssemblyGenerics.IsEmpty && boolGenerics.IsEmpty
             ->
             let operation = "AssemblyNative_GetIsCollectible"
@@ -1417,10 +1437,12 @@ module NativeRuntimeAssembly =
           "System.Private.CoreLib",
           "System.Reflection",
           "RuntimeAssembly",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallAssembly", qCallAssemblyGenerics) ],
-          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System.Configuration.Assemblies",
-                                                                     "AssemblyHashAlgorithm",
-                                                                     hashAlgorithmGenerics)) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallAssembly",
+                                                        qCallAssemblyGenerics) ],
+          MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("System.Configuration.Assemblies",
+                                                                                "AssemblyHashAlgorithm",
+                                                                                hashAlgorithmGenerics)) when
             qCallAssemblyGenerics.IsEmpty && hashAlgorithmGenerics.IsEmpty
             ->
             let operation = "AssemblyNative_GetHashAlgorithm"
@@ -1458,10 +1480,12 @@ module NativeRuntimeAssembly =
           "System.Private.CoreLib",
           "System.Reflection",
           "RuntimeAssembly",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallAssembly", qCallAssemblyGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "StringHandleOnStack",
-                                             stringHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallAssembly",
+                                                        qCallAssemblyGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "StringHandleOnStack",
+                                                        stringHandleGenerics) ],
           MethodReturnType.Void when qCallAssemblyGenerics.IsEmpty && stringHandleGenerics.IsEmpty ->
             let operation = "AssemblyNative_GetLocale"
 
@@ -1516,10 +1540,12 @@ module NativeRuntimeAssembly =
           "System.Private.CoreLib",
           "System.Reflection",
           "RuntimeAssembly",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallAssembly", qCallAssemblyGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallAssembly",
+                                                        qCallAssemblyGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when qCallAssemblyGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
             let operation = "AssemblyNative_GetPublicKey"
 
@@ -1564,10 +1590,12 @@ module NativeRuntimeAssembly =
           "System.Private.CoreLib",
           "System.Reflection",
           "RuntimeAssembly",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallAssembly", qCallAssemblyGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "StringHandleOnStack",
-                                             stringHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallAssembly",
+                                                        qCallAssemblyGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "StringHandleOnStack",
+                                                        stringHandleGenerics) ],
           MethodReturnType.Void when qCallAssemblyGenerics.IsEmpty && stringHandleGenerics.IsEmpty ->
             let operation = "AssemblyNative_GetSimpleName"
 
@@ -1625,10 +1653,12 @@ module NativeRuntimeAssembly =
           "System.Private.CoreLib",
           "System.Reflection",
           "RuntimeAssembly",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallAssembly", qCallAssemblyGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "StringHandleOnStack",
-                                             stringHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallAssembly",
+                                                        qCallAssemblyGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "StringHandleOnStack",
+                                                        stringHandleGenerics) ],
           MethodReturnType.Void when qCallAssemblyGenerics.IsEmpty && stringHandleGenerics.IsEmpty ->
             let operation = "AssemblyNative_GetFullName"
 
@@ -1694,11 +1724,13 @@ module NativeRuntimeAssembly =
           "System.Private.CoreLib",
           "System.Reflection",
           "RuntimeAssembly",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallAssembly", qCallAssemblyGenerics)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallAssembly",
+                                                        qCallAssemblyGenerics)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ],
           MethodReturnType.Void when qCallAssemblyGenerics.IsEmpty ->
             let operation = "AssemblyNative_GetVersion"
 
@@ -1772,12 +1804,14 @@ module NativeRuntimeAssembly =
           "System.Private.CoreLib",
           "System.Reflection",
           "RuntimeAssembly",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallAssembly", qCallAssemblyGenerics)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallAssembly",
+                                                        qCallAssemblyGenerics)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when qCallAssemblyGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
             // `AssemblyNative_GetModules` (coreclr/vm/assemblynative.cpp:696), behind
             // `Assembly.GetModules()`, `GetModules(bool)` and `GetLoadedModules(bool)`. CoreCLR
@@ -1891,26 +1925,30 @@ module NativeRuntimeAssembly =
           "System.Private.CoreLib",
           "System.Reflection",
           "RuntimeAssembly",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallAssembly", qCallAssemblyGenerics)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallAssembly",
+                                                        qCallAssemblyGenerics)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when qCallAssemblyGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
             executeGetTypeCore "AssemblyNative_GetTypeCore" TypeNameEncoding.Utf8 false ctx
         | "AssemblyNative_GetTypeCoreIgnoreCase",
           "System.Private.CoreLib",
           "System.Reflection",
           "RuntimeAssembly",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallAssembly", qCallAssemblyGenerics)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallAssembly",
+                                                        qCallAssemblyGenerics)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt16)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when qCallAssemblyGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
             executeGetTypeCore "AssemblyNative_GetTypeCoreIgnoreCase" TypeNameEncoding.Utf16 true ctx
         | _ -> None

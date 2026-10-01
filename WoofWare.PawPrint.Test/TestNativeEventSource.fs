@@ -316,7 +316,7 @@ public static class Entry
         : EvalStackValue
         =
         let int32Handle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes prepared.BaseClassTypes.Int32
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes prepared.BaseClassTypes.Int32
 
         let signature =
             { donor.Signature with
@@ -502,10 +502,10 @@ public static class Entry
         let state = withEnvironment [ "DOTNET_EnableEventLog", "1" ] state
 
         let int32Handle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes prepared.BaseClassTypes.Int32
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes prepared.BaseClassTypes.Int32
 
         let uint16Handle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes prepared.BaseClassTypes.UInt16
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes prepared.BaseClassTypes.UInt16
 
         let charPtrHandle = ConcreteTypeHandle.Pointer uint16Handle
 

@@ -212,7 +212,7 @@ module NativeSignature =
         | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
             RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
         | RuntimeTypeHandleTarget.Closed handle ->
-            match AllConcreteTypes.lookup handle state.ConcreteTypes with
+            match AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes with
             | Some ct -> ct.Generics
             | None ->
                 failwith
@@ -257,7 +257,7 @@ module NativeSignature =
         let typeGenerics =
             match fieldHandle.GetDeclaringTypeHandle () with
             | RuntimeTypeHandleTarget.Closed declaringTypeHandle ->
-                match AllConcreteTypes.lookup declaringTypeHandle state.ConcreteTypes with
+                match AllConcreteTypes.lookup declaringTypeHandle state.TypeSystem.ConcreteTypes with
                 | Some declaringType -> declaringType.Generics
                 | None ->
                     failwith
@@ -554,7 +554,7 @@ module NativeSignature =
 
                 DeclaringTypeContext.OpenConstruction (definition, ImmutableArray.CreateRange arguments)
             | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as declaringTypeHandle) ->
-                match AllConcreteTypes.lookup declaringTypeHandle state.ConcreteTypes with
+                match AllConcreteTypes.lookup declaringTypeHandle state.TypeSystem.ConcreteTypes with
                 | Some declaringType -> DeclaringTypeContext.Instantiation declaringType.Generics
                 | None ->
                     failwith
@@ -982,17 +982,21 @@ module NativeSignature =
           "System",
           "Signature",
           _,
-          [ ConcretePointer (ConcreteVoid state.ConcreteTypes)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", leftHandleGenerics)
-            ConcretePointer (ConcreteVoid state.ConcreteTypes)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", rightHandleGenerics) ],
+          [ ConcretePointer (ConcreteVoid state.TypeSystem.ConcreteTypes)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        leftHandleGenerics)
+            ConcretePointer (ConcreteVoid state.TypeSystem.ConcreteTypes)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        rightHandleGenerics) ],
           returnType when leftHandleGenerics.IsEmpty && rightHandleGenerics.IsEmpty ->
             let operation = "Signature_AreEqual"
 
             match returnType with
-            | MethodReturnType.Returns (CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)) when
+            | MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("", "BOOL", boolGenerics)) when
                 boolGenerics.IsEmpty
                 ->
                 ()
@@ -1022,7 +1026,7 @@ module NativeSignature =
                     ctx.LoggerFactory
                     state.DotnetRuntimeDirs
                     operation
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     leftAssembly
                     leftBytes
                     left
@@ -1032,7 +1036,10 @@ module NativeSignature =
 
             let state =
                 { state with
-                    _LoadedAssemblies = assemblies
+                    TypeSystem =
+                        { state.TypeSystem with
+                            _LoadedAssemblies = assemblies
+                        }
                 }
 
             // Interop.BOOL is int32-backed, with FALSE = 0 and TRUE = 1.
@@ -1048,13 +1055,13 @@ module NativeSignature =
           "System",
           "Signature",
           "Init",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics)
-            ConcretePointer (ConcreteVoid state.ConcreteTypes)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            CorelibType state.ConcreteTypes ("System", "RuntimeFieldHandleInternal", fieldHandleGenerics)
-            CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", methodHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics)
+            ConcretePointer (ConcreteVoid state.TypeSystem.ConcreteTypes)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeFieldHandleInternal", fieldHandleGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", methodHandleGenerics) ],
           MethodReturnType.Void when
             objectHandleGenerics.IsEmpty
             && fieldHandleGenerics.IsEmpty
@@ -1171,10 +1178,14 @@ module NativeSignature =
           "System",
           "Signature",
           "GetCustomModifiersAtOffset",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", sigObjGenerics)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", resultGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        sigObjGenerics)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.TypeSystem.ConcreteTypes ("", "BOOL", boolGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        resultGenerics) ],
           MethodReturnType.Void when sigObjGenerics.IsEmpty && boolGenerics.IsEmpty && resultGenerics.IsEmpty ->
             // CoreCLR's Signature_GetCustomModifiersAtOffset (runtimehandles.cpp:1461)
             // walks the field/method signature blob from `offset`, collecting
@@ -1413,10 +1424,10 @@ module NativeSignature =
           "System",
           "Signature",
           "GetParameterOffsetInternal",
-          [ ConcretePointer (ConcreteVoid state.ConcreteTypes)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePointer (ConcreteVoid state.TypeSystem.ConcreteTypes)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // Static InternalCall: `int GetParameterOffsetInternal(void* sig, int csig, int parameterIndex)`.
             // Mirrors CoreCLR's `SignatureNative::GetParameterOffsetInternal`: for the
             // FIELD calling convention (0x06) the only valid parameter index is 0 and
@@ -1459,11 +1470,11 @@ module NativeSignature =
           "System",
           "Signature",
           "GetSignature",
-          [ ConcretePointer (ConcreteVoid state.ConcreteTypes)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            CorelibType state.ConcreteTypes ("System", "RuntimeFieldHandleInternal", fieldHandleGenerics)
-            CorelibType state.ConcreteTypes ("System", "IRuntimeMethodInfo", methodHandleGenerics)
-            CorelibType state.ConcreteTypes ("System", "RuntimeType", declaringTypeGenerics) ],
+          [ ConcretePointer (ConcreteVoid state.TypeSystem.ConcreteTypes)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeFieldHandleInternal", fieldHandleGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System", "IRuntimeMethodInfo", methodHandleGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeType", declaringTypeGenerics) ],
           MethodReturnType.Void when
             fieldHandleGenerics.IsEmpty
             && methodHandleGenerics.IsEmpty

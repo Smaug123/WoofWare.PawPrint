@@ -35,7 +35,7 @@ module NativeEnvironment =
           "Environment",
           "GetProcessorCount",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // Answered from kernel state, never from the host: see the
             // `EmulatedKernel.ProcessorCount` doc comment for why a host read
             // here would be a replayability bug rather than a mere impurity.
@@ -67,7 +67,7 @@ module NativeEnvironment =
           "Environment",
           "get_CurrentManagedThreadId",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let state =
                 state
                 |> IlMachineState.pushToEvalStack'
@@ -82,7 +82,7 @@ module NativeEnvironment =
           "Environment",
           "get_ExitCode",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `SystemNative::GetExitCode` (classlibnative/bcltype/system.cpp): whatever has
             // been latched so far, 0 until something writes it.
             let state =
@@ -96,7 +96,7 @@ module NativeEnvironment =
           "System",
           "Environment",
           "set_ExitCode",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
             // `SystemNative::SetExitCode`: `SetLatchedExitCode(exitcode)` and nothing else. The
             // write is process-wide, so a worker that makes it after `Main` has returned still
@@ -116,7 +116,7 @@ module NativeEnvironment =
           "System",
           "Environment",
           "_Exit",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
             // `Environment.Exit(int)` is `=> _Exit(exitCode)` and nothing else
             // (see the pinned runtime's
@@ -169,14 +169,14 @@ module NativeEnvironment =
             match
                 instruction.ExecutingMethod.Signature.ParameterTypes, instruction.ExecutingMethod.Signature.ReturnType
             with
-            | [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                                 "StackCrawlMarkHandle",
-                                                 stackMarkGenerics)
-                ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16)
-                CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                                 "ObjectHandleOnStack",
-                                                 objHandleGenerics)
-                ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16) ],
+            | [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                            "StackCrawlMarkHandle",
+                                                            stackMarkGenerics)
+                ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt16)
+                CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                            "ObjectHandleOnStack",
+                                                            objHandleGenerics)
+                ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt16) ],
               MethodReturnType.Void when stackMarkGenerics.IsEmpty && objHandleGenerics.IsEmpty ->
                 if instruction.Arguments.Length <> 4 then
                     failwith

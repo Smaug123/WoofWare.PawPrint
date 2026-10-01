@@ -85,7 +85,7 @@ module internal RuntimeFieldProjection =
         (state : IlMachineState)
         : ConcreteTypeHandle
         =
-        AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
+        AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.Byte
 
     let private isRawDataField
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

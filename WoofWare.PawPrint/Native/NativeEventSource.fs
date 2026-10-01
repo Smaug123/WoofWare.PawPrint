@@ -65,8 +65,8 @@ module NativeEventSource =
           "System.Private.CoreLib",
           "System.Diagnostics.Tracing",
           "XplatEventLogger",
-          [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16) ],
-          MethodReturnType.Returns (ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Char)) ->
+          [ ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt16) ],
+          MethodReturnType.Returns (ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Char)) ->
             let operation = "EventSource_GetClrConfig"
 
             let namePtr =
@@ -95,7 +95,7 @@ module NativeEventSource =
           "System.Diagnostics.Tracing",
           "XplatEventLogger",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // The C# wrapper carries `[return: MarshalAs(UnmanagedType.Bool)]`,
             // which causes the LibraryImport source generator to declare the
             // underlying QCall as `int32`-returning (the wrapper converts via
@@ -124,10 +124,10 @@ module NativeEventSource =
           "System.Private.CoreLib",
           "System.Diagnostics.Tracing",
           "XplatEventLogger",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16) ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt16)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt16)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt16) ],
           MethodReturnType.Void ->
             // Only reachable when the guest enabled tracing via
             // `DOTNET_EnableEventLog`; the `XplatEventLogger` listener forwards

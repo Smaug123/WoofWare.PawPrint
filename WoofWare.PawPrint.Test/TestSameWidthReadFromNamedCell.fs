@@ -34,8 +34,13 @@ module TestSameWidthReadFromNamedCell =
     let private loggerFactory = snd (LoggerFactory.makeTest ())
 
     let private preparedState : IlMachineState =
-        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
-            ConcreteTypes = Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
+        let initialState = IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+
+        { initialState with
+            TypeSystem =
+                { initialState.TypeSystem with
+                    ConcreteTypes = Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
+                }
         }
 
     type private CellKind =
@@ -66,7 +71,7 @@ module TestSameWidthReadFromNamedCell =
         ]
         |> List.map (fun (name, typeInfo) ->
             let handle =
-                AllConcreteTypes.getRequiredNonGenericHandle preparedState.ConcreteTypes typeInfo
+                AllConcreteTypes.getRequiredNonGenericHandle preparedState.TypeSystem.ConcreteTypes typeInfo
 
             let zero, _ = IlMachineState.cliTypeZeroOfHandle preparedState bct handle
 
@@ -81,10 +86,10 @@ module TestSameWidthReadFromNamedCell =
         cellKinds |> List.find (fun k -> k.Name = name)
 
     let private objectHandle : ConcreteTypeHandle =
-        AllConcreteTypes.getRequiredNonGenericHandle preparedState.ConcreteTypes bct.Object
+        AllConcreteTypes.getRequiredNonGenericHandle preparedState.TypeSystem.ConcreteTypes bct.Object
 
     let private storageDeclared : ConcreteTypeHandle =
-        AllConcreteTypes.getRequiredNonGenericHandle preparedState.ConcreteTypes bct.TypedReference
+        AllConcreteTypes.getRequiredNonGenericHandle preparedState.TypeSystem.ConcreteTypes bct.TypedReference
 
     /// The templates the primitive `ldind` opcodes read with: `ldind.i1`, `.u1`, `.i2`, `.u2`,
     /// `.i4` (and `.u4`), `.i8` (and `.u8`), `.i`, `.r4` and `.r8`.
@@ -134,7 +139,12 @@ module TestSameWidthReadFromNamedCell =
             if withReference then
                 yield field refId objectHandle (CliType.ObjectRef (Some (ManagedHeapAddress.ManagedHeapAddress 7)))
         ]
-        |> SynthesisedLayoutKind.ofFields bct preparedState.ConcreteTypes storageDeclared Layout.Default CharSet.Ansi
+        |> SynthesisedLayoutKind.ofFields
+            bct
+            preparedState.TypeSystem.ConcreteTypes
+            storageDeclared
+            Layout.Default
+            CharSet.Ansi
 
     type private Root =
         /// The storage is a boxed value: `ByrefRoot.HeapValue`.
@@ -248,7 +258,7 @@ module TestSameWidthReadFromNamedCell =
                 [ field innerId storageDeclared (CliType.ValueType storage) ]
                 |> SynthesisedLayoutKind.ofFields
                     bct
-                    preparedState.ConcreteTypes
+                    preparedState.TypeSystem.ConcreteTypes
                     storageDeclared
                     Layout.Default
                     CharSet.Ansi,

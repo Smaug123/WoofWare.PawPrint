@@ -86,15 +86,15 @@ module internal UnaryMetadataFieldOps =
             let typeGenerics =
                 match fieldHandle.GetDeclaringTypeHandle () with
                 | RuntimeTypeHandleTarget.Closed declaringTypeHandle ->
-                    match AllConcreteTypes.lookup declaringTypeHandle state.ConcreteTypes with
+                    match AllConcreteTypes.lookup declaringTypeHandle state.TypeSystem.ConcreteTypes with
                     | Some declaringType ->
                         declaringType.Generics
                         |> Seq.map (fun handle ->
                             Concretization.concreteHandleToTypeDefn
                                 ctx.BaseClassTypes
                                 handle
-                                state.ConcreteTypes
-                                state._LoadedAssemblies
+                                state.TypeSystem.ConcreteTypes
+                                state.TypeSystem._LoadedAssemblies
                         )
                         |> ImmutableArray.CreateRange
                     | None ->
@@ -232,7 +232,7 @@ module internal UnaryMetadataFieldOps =
         let isCorelibNonGeneric =
             match declaringType with
             | ConcreteTypeHandle.Concrete _ ->
-                match AllConcreteTypes.lookup declaringType state.ConcreteTypes with
+                match AllConcreteTypes.lookup declaringType state.TypeSystem.ConcreteTypes with
                 | Some ct ->
                     ct.AssemblyFullName = baseClassTypes.Corelib.DefinitionFullName
                     && ct.Generics.IsEmpty

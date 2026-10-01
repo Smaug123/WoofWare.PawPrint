@@ -192,9 +192,14 @@ public static class Driver
     let private loggerFactory = snd (LoggerFactory.makeTest ())
 
     let private state () : IlMachineState =
-        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
-            ConcreteTypes = concreteTypes
-            _LoadedAssemblies = loaded
+        let initialState = IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+
+        { initialState with
+            TypeSystem =
+                { initialState.TypeSystem with
+                    ConcreteTypes = concreteTypes
+                    _LoadedAssemblies = loaded
+                }
         }
 
     /// A generic type's metadata name carries its arity, so the spelling `AG` that the driver uses is
@@ -443,7 +448,7 @@ public static class Driver
             | None -> failwith "fabricated assembly has no type C"
 
         let state, closedC =
-            LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies cTypeInfo
+            LoadedTypeInfo.typeInfoToTypeDefn' bct state.TypeSystem._LoadedAssemblies cTypeInfo
             |> IlMachineState.concretizeType
                 loggerFactory
                 bct

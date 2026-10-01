@@ -242,11 +242,11 @@ module NativeDelegate =
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
             | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
                 let typeInfo =
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                         .ByDefinitionName(identity.AssemblyFullName)
                         .TypeDefs.[identity.TypeDefinition.Get]
 
-                if not (LoadedTypeInfo.isEnum baseClassTypes state._LoadedAssemblies typeInfo) then
+                if not (LoadedTypeInfo.isEnum baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo) then
                     state, None
                 else
 
@@ -678,10 +678,12 @@ module NativeDelegate =
           "System",
           "Delegate",
           "GetInvokeMethod",
-          [ ConcretePointer (CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                                              "MethodTable",
-                                                              methodTableGenerics)) ],
-          MethodReturnType.Returns (ConcretePointer (ConcreteVoid state.ConcreteTypes)) when methodTableGenerics.IsEmpty ->
+          [ ConcretePointer (CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                                         "MethodTable",
+                                                                         methodTableGenerics)) ],
+          MethodReturnType.Returns (ConcretePointer (ConcreteVoid state.TypeSystem.ConcreteTypes)) when
+            methodTableGenerics.IsEmpty
+            ->
             // `COMDelegate::GetInvokeMethod` (comdelegate.cpp:2156): the `MethodDesc*` of the
             // delegate type's own `Invoke`, read off the `DelegateEEClass` the type loader filled
             // in. Despite the `void*` return this is a method identity and not a code address --
@@ -718,7 +720,7 @@ module NativeDelegate =
                 MulticastDelegateStub.invokeMethodOf ctx.LoggerFactory ctx.BaseClassTypes operation delegateType state
 
             let registryId, registry =
-                MethodHandleRegistry.getOrAllocateConcreteId state.ConcreteTypes invoke state.MethodHandles
+                MethodHandleRegistry.getOrAllocateConcreteId state.TypeSystem.ConcreteTypes invoke state.MethodHandles
 
             let state =
                 { state with
@@ -736,10 +738,12 @@ module NativeDelegate =
           "System",
           "Delegate",
           "GetMulticastInvoke",
-          [ ConcretePointer (CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                                              "MethodTable",
-                                                              methodTableGenerics)) ],
-          MethodReturnType.Returns (ConcretePointer (ConcreteVoid state.ConcreteTypes)) when methodTableGenerics.IsEmpty ->
+          [ ConcretePointer (CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                                         "MethodTable",
+                                                                         methodTableGenerics)) ],
+          MethodReturnType.Returns (ConcretePointer (ConcreteVoid state.TypeSystem.ConcreteTypes)) when
+            methodTableGenerics.IsEmpty
+            ->
             // `COMDelegate::GetMulticastInvoke` (comdelegate.cpp:2167): the code address of the
             // delegate type's multicast invoke stub, which `NewMulticastDelegate` stores in a new
             // multicast delegate's `_methodPtr` (MulticastDelegate.CoreCLR.cs:182). CoreCLR answers
@@ -782,16 +786,18 @@ module NativeDelegate =
           "System.Private.CoreLib",
           "System",
           "Delegate",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             delegateHandleGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             targetHandleGenerics)
-            CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", methodHandleGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", typeHandleGenerics)
-            CorelibType state.ConcreteTypes ("System", "DelegateBindingFlags", flagsGenerics) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        delegateHandleGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        targetHandleGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", methodHandleGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        typeHandleGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System", "DelegateBindingFlags", flagsGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
             delegateHandleGenerics.IsEmpty
             && targetHandleGenerics.IsEmpty
             && methodHandleGenerics.IsEmpty
@@ -1169,7 +1175,7 @@ module NativeDelegate =
                                 ManagedHeap.getObjectConcreteType targetAddr.Value state.ManagedHeap
 
                             let definitionInfo =
-                                state._LoadedAssemblies
+                                state.TypeSystem._LoadedAssemblies
                                     .ByDefinitionName(definition.AssemblyFullName)
                                     .TypeDefs.[definition.TypeDefinition.Get]
 
@@ -1258,7 +1264,7 @@ module NativeDelegate =
                                 // default, real .NET binds the definition's own default body where
                                 // the closed instantiation would dispatch to the override.
                                 let implementationIsOnInterface =
-                                    state._LoadedAssemblies
+                                    state.TypeSystem._LoadedAssemblies
                                         .ByDefinitionName(implementation.DeclaringAssemblyFullName)
                                         .TypeDefs.[implementation.RequiredDeclaringType.Definition.Get].IsInterface
 
@@ -1368,12 +1374,12 @@ module NativeDelegate =
           "System.Private.CoreLib",
           "System",
           "Delegate",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             delegateHandleGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             resultHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        delegateHandleGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        resultHandleGenerics) ],
           MethodReturnType.Void when delegateHandleGenerics.IsEmpty && resultHandleGenerics.IsEmpty ->
             // `Delegate_FindMethodHandle` (comdelegate.cpp:2122): which method does this delegate
             // point at? `Delegate.GetMethodImpl` asks whenever its `_methodBase` cache is empty,
@@ -1431,13 +1437,13 @@ module NativeDelegate =
             // makes `someDelegate.Method` and `GetMethod(...)` agree.
             let runtimeMethodInfoStubType =
                 AllConcreteTypes.getRequiredNonGenericHandle
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     ctx.BaseClassTypes.RuntimeMethodInfoStub
 
             let stubAddress, state =
                 MethodHandleRegistry.allocateFreshStubForId
                     ctx.BaseClassTypes
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     state
                     (fun fields state -> IlMachineState.allocateManagedObject runtimeMethodInfoStubType fields state)
                     registryId
@@ -1455,9 +1461,13 @@ module NativeDelegate =
           "System.Private.CoreLib",
           "System",
           "Delegate",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", leftGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", rightGenerics) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        leftGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        rightGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
             leftGenerics.IsEmpty && rightGenerics.IsEmpty
             ->
             // `Delegate_InternalEqualMethodHandles` (comdelegate.cpp:2137): are two delegates

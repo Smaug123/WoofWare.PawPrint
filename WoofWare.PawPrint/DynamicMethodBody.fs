@@ -136,7 +136,7 @@ module internal DynamicMethodBody =
         let rec describeType (handle : ConcreteTypeHandle) : string =
             match handle with
             | ConcreteTypeHandle.Concrete _ ->
-                match AllConcreteTypes.lookup handle state.ConcreteTypes with
+                match AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes with
                 | Some ty -> $"%s{ty.Namespace}.%s{ty.Name}"
                 | None -> $"an unconcretized type %O{handle}"
             | ConcreteTypeHandle.OneDimArrayZero element -> $"%s{describeType element}[]"
@@ -448,7 +448,7 @@ module internal DynamicMethodBody =
         let obj = ManagedHeap.get resolver state.ManagedHeap
 
         let resolverType =
-            AllConcreteTypes.lookup obj.ConcreteType state.ConcreteTypes
+            AllConcreteTypes.lookup obj.ConcreteType state.TypeSystem.ConcreteTypes
             |> Option.defaultWith (fun () ->
                 failwith $"%s{operation}: the resolver's type %O{obj.ConcreteType} is not concretized"
             )

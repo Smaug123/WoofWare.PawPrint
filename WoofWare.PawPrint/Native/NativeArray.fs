@@ -15,7 +15,7 @@ module NativeArray =
         (state : IlMachineState)
         : ConcreteTypeHandle
         =
-        AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Int32.Identity
+        AllConcreteTypes.findExistingNonGenericConcreteType state.TypeSystem.ConcreteTypes baseClassTypes.Int32.Identity
         |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Int32 is not concretized")
 
     /// Read `buffer[index]` of an `int*` argument. The native side indexes the pointer in
@@ -71,10 +71,12 @@ module NativeArray =
         | ConcreteTypeHandle.Array _ ->
             // An array-typed element (`int[][,]`) has no nominal TypeDef to ask, and is
             // neither byref-like nor `System.Void`, so `None` is the right answer for it.
-            match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes element with
+            match
+                AllConcreteTypes.tryTypeInfo state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes element
+            with
             | None -> None
             | Some (concreteType, typeInfo) ->
-                if LoadedTypeInfo.isByRefLike baseClassTypes state._LoadedAssemblies typeInfo then
+                if LoadedTypeInfo.isByRefLike baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo then
                     Some "Cannot create arrays of ByRef-like values."
                 elif concreteType.Identity = baseClassTypes.Void.Identity then
                     Some "Arrays of System.Void are not supported."
@@ -157,14 +159,16 @@ module NativeArray =
           "System.Private.CoreLib",
           "System",
           "Array",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        qCallGenerics)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when qCallGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
             let operation = "Array.CreateInstance"
 

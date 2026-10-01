@@ -108,7 +108,11 @@ public unsafe class FnPtrHolder<T>
             (IlMachineState.initial loggerFactory ImmutableArray.Empty guest).WithLoadedAssembly corelib
 
         { withAssemblies with
-            ConcreteTypes = Corelib.concretizeAll withAssemblies._LoadedAssemblies bct AllConcreteTypes.Empty
+            TypeSystem =
+                { withAssemblies.TypeSystem with
+                    ConcreteTypes =
+                        Corelib.concretizeAll withAssemblies.TypeSystem._LoadedAssemblies bct AllConcreteTypes.Empty
+                }
         }
 
     /// Corpus types are looked up by simple name, except that the two `NestedOver` structs share
@@ -150,7 +154,7 @@ public unsafe class FnPtrHolder<T>
     let private definitionDefn (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) : TypeDefn =
         TypeDefn.FromDefinition (
             typeInfo.Identity,
-            LoadedTypeInfo.signatureTypeKind bct initialState._LoadedAssemblies typeInfo
+            LoadedTypeInfo.signatureTypeKind bct initialState.TypeSystem._LoadedAssemblies typeInfo
         )
 
     let private closedGeneric (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) (arg : TypeDefn) : TypeDefn =

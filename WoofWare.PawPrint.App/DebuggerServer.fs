@@ -699,7 +699,7 @@ module DebuggerServer =
         writeValueArray
             writer
             "loadedAssemblies"
-            state._LoadedAssemblies.DefinitionNames
+            state.TypeSystem._LoadedAssemblies.DefinitionNames
             (fun writer assemblyName -> writer.WriteStringValue assemblyName)
 
         writeValueArray
@@ -894,7 +894,7 @@ module DebuggerServer =
     /// the handle and assembly tell apart two types of the same name. It never throws, so a handle
     /// the registry cannot name still renders, as a placeholder that says so.
     let private typeDescription (state : IlMachineState) (handle : ConcreteTypeHandle) : string =
-        AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes handle
+        AllConcreteTypes.describe state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes handle
 
     let private writeLocalType
         (writer : Utf8JsonWriter)
@@ -972,7 +972,7 @@ module DebuggerServer =
             let frame = threadState.MethodState
 
             let assembly =
-                state._LoadedAssemblies.ByDefinitionName frame.ExecutingMethod.DeclaringAssemblyFullName
+                state.TypeSystem._LoadedAssemblies.ByDefinitionName frame.ExecutingMethod.DeclaringAssemblyFullName
 
             let qualifiedTypeName = qualifiedTypeNameForMethod assembly frame.ExecutingMethod
 
@@ -1241,7 +1241,12 @@ module DebuggerServer =
                     written |> List.filter (fun (f, _) -> f = field) |> List.map snd
 
                 let declared =
-                    match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes ty with
+                    match
+                        AllConcreteTypes.tryTypeInfo
+                            state.TypeSystem._LoadedAssemblies
+                            state.TypeSystem.ConcreteTypes
+                            ty
+                    with
                     | None -> []
                     | Some (_, typeInfo) ->
                         typeInfo.Fields

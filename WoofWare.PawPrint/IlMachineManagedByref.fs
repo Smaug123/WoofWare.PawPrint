@@ -789,11 +789,11 @@ module IlMachineManagedByref =
                     | CliType.ValueType vt -> CliValueType.DereferenceFieldById field vt
                     | v -> failwith $"could not find field {field.Name} on non-ValueType {v}"
                 | ByrefProjection.ReinterpretAs ty ->
-                    if isSafeReinterpretPassthrough state.ConcreteTypes value ty then
+                    if isSafeReinterpretPassthrough state.TypeSystem.ConcreteTypes value ty then
                         value
                     else
                         failwith
-                            $"TODO: read through `ReinterpretAs` from value %O{value} as type %s{AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes ty}; needs a bytewise implementation"
+                            $"TODO: read through `ReinterpretAs` from value %O{value} as type %s{AllConcreteTypes.describe state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes ty}; needs a bytewise implementation"
                 | ByrefProjection.ByteOffset n ->
                     failwith
                         $"TODO: readManagedByref via ByteOffset %d{n} requires a trailing byte-view byref shape; generic Ldind at a non-normalised byte offset is not modelled (value: %O{value})"
@@ -1215,7 +1215,7 @@ module IlMachineManagedByref =
     /// Render a `ConcreteTypeHandle` for diagnostic messages. See `AllConcreteTypes.describe`
     /// for why this never throws.
     let private describeConcreteType (state : IlMachineState) (handle : ConcreteTypeHandle) : string =
-        AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes handle
+        AllConcreteTypes.describe state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes handle
 
     let private heapValueForByteView
         (operation : string)
@@ -1235,7 +1235,7 @@ module IlMachineManagedByref =
             let typeDescription = describeConcreteType state obj.ConcreteType
 
             failwith
-                $"%s{operation}: refusing byte view over boxed %s{rejection.Description} of %s{typeDescription} at %O{addr}. Boxed value layout:\n%s{CliValueType.DescribeByteLayout (Some state.ConcreteTypes) obj.Contents}"
+                $"%s{operation}: refusing byte view over boxed %s{rejection.Description} of %s{typeDescription} at %O{addr}. Boxed value layout:\n%s{CliValueType.DescribeByteLayout (Some state.TypeSystem.ConcreteTypes) obj.Contents}"
 
     let private heapValueByteSize
         (operation : string)
@@ -1461,7 +1461,12 @@ module IlMachineManagedByref =
         // upstream by `Concretization.concretizeMethod`'s priming sweep; should a reinterpret
         // target ever escape that sweep, this raises rather than silently re-reading the
         // assembly and throwing the result away. See `IAssemblyLoad.alreadyLoadedOnly`.
-        CliType.zeroOf IAssemblyLoad.alreadyLoadedOnly state.ConcreteTypes state._LoadedAssemblies baseClassTypes handle
+        CliType.zeroOf
+            IAssemblyLoad.alreadyLoadedOnly
+            state.TypeSystem.ConcreteTypes
+            state.TypeSystem._LoadedAssemblies
+            baseClassTypes
+            handle
         |> fun (zero, _, _) -> zero
 
     /// Forward walk through a `ByrefProjection` chain, accumulating a byte
@@ -3311,7 +3316,7 @@ module IlMachineManagedByref =
         loop [] projs
 
     let private describeCliStorage (state : IlMachineState) (value : CliType) : string =
-        CliType.DescribeByteLayout (Some state.ConcreteTypes) value
+        CliType.DescribeByteLayout (Some state.TypeSystem.ConcreteTypes) value
 
     let private reinterpretStorageBytes
         (state : IlMachineState)

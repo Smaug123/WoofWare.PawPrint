@@ -18,9 +18,9 @@ module NativeDependentHandle =
           "System.Runtime",
           "DependentHandle",
           "InternalAlloc",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Object
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Object ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr) ->
             let target =
                 instruction.Arguments.[0]
                 |> EvalStackValue.ofCliType
@@ -47,8 +47,8 @@ module NativeDependentHandle =
           "System.Runtime",
           "DependentHandle",
           "InternalGetTarget",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Object) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Object) ->
             let handle =
                 instruction.Arguments.[0]
                 |> EvalStackValue.ofCliType
@@ -63,8 +63,8 @@ module NativeDependentHandle =
           "System.Runtime",
           "DependentHandle",
           "InternalGetDependent",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Object) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Object) ->
             let operation = "DependentHandle.InternalGetDependent"
 
             let handle =
@@ -93,9 +93,9 @@ module NativeDependentHandle =
           "System.Runtime",
           "DependentHandle",
           "InternalGetTargetAndDependent",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Object) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Object) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Object) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Object) ->
             let operation = "DependentHandle.InternalGetTargetAndDependent"
 
             let handle =
@@ -134,8 +134,8 @@ module NativeDependentHandle =
           "System.Runtime",
           "DependentHandle",
           "InternalSetDependent",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Object ],
           MethodReturnType.Void ->
             let operation = "DependentHandle.InternalSetDependent"
 
@@ -159,7 +159,7 @@ module NativeDependentHandle =
           "System.Runtime",
           "DependentHandle",
           "InternalSetTargetToNull",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr ],
           MethodReturnType.Void ->
             let handle =
                 instruction.Arguments.[0]
@@ -176,8 +176,8 @@ module NativeDependentHandle =
           "System.Runtime",
           "DependentHandle",
           "InternalFree",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) ->
             let handle =
                 instruction.Arguments.[0]
                 |> EvalStackValue.ofCliType

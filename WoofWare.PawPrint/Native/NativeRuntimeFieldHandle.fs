@@ -54,8 +54,8 @@ module NativeRuntimeFieldHandle =
           "System",
           "RuntimeFieldHandle",
           "GetUtf8NameInternal",
-          [ CorelibType state.ConcreteTypes ("System", "RuntimeFieldHandleInternal", generics) ],
-          MethodReturnType.Returns (ConcretePointer (ConcreteVoid state.ConcreteTypes)) when generics.IsEmpty ->
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeFieldHandleInternal", generics) ],
+          MethodReturnType.Returns (ConcretePointer (ConcreteVoid state.TypeSystem.ConcreteTypes)) when generics.IsEmpty ->
             // CoreCLR's RuntimeFieldHandle::GetUtf8NameInternal (runtimehandles.cpp:2167)
             // is an FCall that dereferences a FieldDesc* and reads the field's UTF-8 name
             // from the metadata string heap. The managed wrapper RuntimeFieldHandle.GetUtf8Name
@@ -85,8 +85,10 @@ module NativeRuntimeFieldHandle =
           "System",
           "RuntimeFieldHandle",
           "GetAttributes",
-          [ CorelibType state.ConcreteTypes ("System", "RuntimeFieldHandleInternal", generics) ],
-          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System.Reflection", "FieldAttributes", retGenerics)) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeFieldHandleInternal", generics) ],
+          MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection",
+                                                                                "FieldAttributes",
+                                                                                retGenerics)) when
             generics.IsEmpty && retGenerics.IsEmpty
             ->
             let operation = "RuntimeFieldHandle.GetAttributes"
@@ -110,8 +112,8 @@ module NativeRuntimeFieldHandle =
           "System",
           "RuntimeFieldHandle",
           "GetToken",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `RtFieldInfo.MetadataToken` (RtFieldInfo.cs:62) is this call and nothing else, and
             // it is what `CustomAttribute.GetCustomAttributes` keys the CustomAttribute table on
             // when it looks for a field's attributes.
@@ -134,10 +136,10 @@ module NativeRuntimeFieldHandle =
           "System",
           "RuntimeFieldHandle",
           "GetApproxDeclaringMethodTable",
-          [ CorelibType state.ConcreteTypes ("System", "RuntimeFieldHandleInternal", generics) ],
-          MethodReturnType.Returns (ConcretePointer (CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                                                                      "MethodTable",
-                                                                                      methodTableGenerics))) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeFieldHandleInternal", generics) ],
+          MethodReturnType.Returns (ConcretePointer (CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                                                                 "MethodTable",
+                                                                                                 methodTableGenerics))) when
             generics.IsEmpty && methodTableGenerics.IsEmpty
             ->
             // CoreCLR's RuntimeFieldHandle::GetApproxDeclaringMethodTable
@@ -173,11 +175,13 @@ module NativeRuntimeFieldHandle =
           "System",
           "RuntimeFieldHandle",
           "GetStaticFieldForGenericType",
-          [ CorelibType state.ConcreteTypes ("System", "RuntimeFieldHandleInternal", generics)
-            ConcretePointer (CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                                              "MethodTable",
-                                                              methodTableGenerics)) ],
-          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System", "RuntimeFieldHandleInternal", retGenerics)) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeFieldHandleInternal", generics)
+            ConcretePointer (CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                                         "MethodTable",
+                                                                         methodTableGenerics)) ],
+          MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("System",
+                                                                                "RuntimeFieldHandleInternal",
+                                                                                retGenerics)) when
             generics.IsEmpty && methodTableGenerics.IsEmpty && retGenerics.IsEmpty
             ->
             // CoreCLR's RuntimeFieldHandle::GetStaticFieldForGenericType (runtimehandles.cpp:2220)
@@ -223,8 +227,10 @@ module NativeRuntimeFieldHandle =
           "System",
           "RuntimeFieldHandle",
           "AcquiresContextFromThis",
-          [ CorelibType state.ConcreteTypes ("System", "RuntimeFieldHandleInternal", generics) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when generics.IsEmpty ->
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeFieldHandleInternal", generics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) when
+            generics.IsEmpty
+            ->
             // CoreCLR's RuntimeFieldHandle::AcquiresContextFromThis (runtimehandles.cpp:250) answers
             // `pField->IsSharedByGenericInstantiations()`: true for an *instance* field whose
             // FieldDesc belongs to a canonical `__Canon` MethodTable (field.h:398), which is when the
@@ -275,8 +281,10 @@ module NativeRuntimeFieldHandle =
           "System",
           "RuntimeFieldHandle",
           "IsFastPathSupported",
-          [ CorelibType state.ConcreteTypes ("System.Reflection", "RtFieldInfo", generics) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when generics.IsEmpty ->
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection", "RtFieldInfo", generics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) when
+            generics.IsEmpty
+            ->
             // The question this predicate asks is "may you ask me for this field's raw offset or
             // address?": its only two consumers, `RuntimeFieldHandle.GetInstanceFieldOffset` and
             // `GetStaticFieldAddress`, each open with
@@ -528,8 +536,8 @@ module NativeRuntimeFieldHandle =
         // (`CanValueSpecialCast` and `InvokeUtils.TryConvertPointer`); every other type is
         // refused there. So those two are the only payloads this reads.
         match boxed.ConcreteType with
-        | ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-        | ConcretePrimitive state.ConcreteTypes PrimitiveType.UIntPtr ->
+        | ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+        | ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UIntPtr ->
             let contents, state =
                 BoxedValue.contents ctx.BaseClassTypes boxed.ConcreteType boxed.Contents state
 
@@ -676,12 +684,20 @@ module NativeRuntimeFieldHandle =
           "System.Private.CoreLib",
           "System",
           "RuntimeFieldHandle",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", instanceGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", fieldTypeGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", declaringTypeGenerics)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", resultGenerics) ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        instanceGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        fieldTypeGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        declaringTypeGenerics)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        resultGenerics) ],
           MethodReturnType.Void when
             instanceGenerics.IsEmpty
             && fieldTypeGenerics.IsEmpty
@@ -801,12 +817,20 @@ module NativeRuntimeFieldHandle =
           "System.Private.CoreLib",
           "System",
           "RuntimeFieldHandle",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", instanceGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", valueGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", fieldTypeGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", declaringTypeGenerics)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        instanceGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        valueGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        fieldTypeGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        declaringTypeGenerics)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ],
           MethodReturnType.Void when
             instanceGenerics.IsEmpty
             && valueGenerics.IsEmpty
@@ -942,10 +966,12 @@ module NativeRuntimeFieldHandle =
           "System.Private.CoreLib",
           "System",
           "RuntimeFieldHandle",
-          [ CorelibType state.ConcreteTypes ("System", "RuntimeFieldHandleInternal", generics)
-            ConcretePointer (ConcretePointer (ConcreteVoid state.ConcreteTypes))
-            ConcretePointer (ConcreteUInt32 state.ConcreteTypes) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when generics.IsEmpty ->
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeFieldHandleInternal", generics)
+            ConcretePointer (ConcretePointer (ConcreteVoid state.TypeSystem.ConcreteTypes))
+            ConcretePointer (ConcreteUInt32 state.TypeSystem.ConcreteTypes) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
+            generics.IsEmpty
+            ->
             let operation = "RuntimeFieldHandle_GetRVAFieldInfo"
 
             let addressOut =

@@ -140,7 +140,10 @@ module DelegateRepresentation =
                         // `SetInvocationCount((INT_PTR)(void *)pTargetMethod)`: the `MethodDesc*`,
                         // which is what `COMDelegate::GetMethodDesc` reads the target back from.
                         let registryId, registry =
-                            MethodHandleRegistry.getOrAllocateConcreteId state.ConcreteTypes method state.MethodHandles
+                            MethodHandleRegistry.getOrAllocateConcreteId
+                                state.TypeSystem.ConcreteTypes
+                                method
+                                state.MethodHandles
 
                         { state with
                             MethodHandles = registry
@@ -165,7 +168,11 @@ module DelegateRepresentation =
             (heap : ManagedHeap)
             : ManagedHeap
             =
-            ManagedHeap.setFieldById delegateAddr (DelegateLayout.fieldId state.ConcreteTypes field) value heap
+            ManagedHeap.setFieldById
+                delegateAddr
+                (DelegateLayout.fieldId state.TypeSystem.ConcreteTypes field)
+                value
+                heap
 
         let heap =
             match layout with
@@ -236,9 +243,9 @@ module DelegateRepresentation =
         let fields = DelegateLayout.require baseClassTypes |> DelegateLayout.binding
         let delegateObject = ManagedHeap.get delegateAddr state.ManagedHeap
 
-        match functionPointerField operation state.ConcreteTypes fields.MethodPtr delegateObject with
+        match functionPointerField operation state.TypeSystem.ConcreteTypes fields.MethodPtr delegateObject with
         | FunctionPointerTarget.OpenDelegateShuffleThunk ->
-            match functionPointerField operation state.ConcreteTypes fields.MethodPtrAux delegateObject with
+            match functionPointerField operation state.TypeSystem.ConcreteTypes fields.MethodPtrAux delegateObject with
             | FunctionPointerTarget.OpenDelegateShuffleThunk
             | FunctionPointerTarget.RuntimeAllocator as aux ->
                 failwith $"%s{operation}: an open delegate's _methodPtrAux names %O{aux}, which is not a call target"
@@ -250,7 +257,7 @@ module DelegateRepresentation =
             | aux -> DelegateInvocation.ThroughShuffleThunk aux
         | methodPtr ->
             let target =
-                objectRefField operation state.ConcreteTypes fields.Target delegateObject
+                objectRefField operation state.TypeSystem.ConcreteTypes fields.Target delegateObject
 
             DelegateInvocation.ThroughMethodPtr (target, methodPtr)
 
@@ -281,7 +288,10 @@ module DelegateRepresentation =
             match target with
             | FunctionPointerTarget.Managed method ->
                 let registryId, registry =
-                    MethodHandleRegistry.getOrAllocateConcreteId state.ConcreteTypes method state.MethodHandles
+                    MethodHandleRegistry.getOrAllocateConcreteId
+                        state.TypeSystem.ConcreteTypes
+                        method
+                        state.MethodHandles
 
                 { state with
                     MethodHandles = registry
@@ -299,7 +309,7 @@ module DelegateRepresentation =
                     $"%s{operation}: the delegate's %s{fieldName} names %O{target}, which no PawPrint delegate binding produces"
 
         let methodPtrAux =
-            nativeIntField operation state.ConcreteTypes fields.MethodPtrAux delegateObject
+            nativeIntField operation state.TypeSystem.ConcreteTypes fields.MethodPtrAux delegateObject
 
         // The rows of CoreCLR's table that the invocation fields decide, or `None` for a delegate
         // whose binding fields alone say what it is bound to.
@@ -307,14 +317,14 @@ module DelegateRepresentation =
             match layout with
             | DelegateLayout.InvocationListAndCount (_, invocations) ->
                 let invocationCount =
-                    nativeIntField operation state.ConcreteTypes invocations.InvocationCount delegateObject
+                    nativeIntField operation state.TypeSystem.ConcreteTypes invocations.InvocationCount delegateObject
 
                 if NativeIntSource.isZero invocationCount then
                     None
                 else
 
                 let invocationList =
-                    objectRefField operation state.ConcreteTypes invocations.InvocationList delegateObject
+                    objectRefField operation state.TypeSystem.ConcreteTypes invocations.InvocationList delegateObject
 
                 match invocationList, invocationCount with
                 | Some list, _ when ManagedHeap.isArray list state.ManagedHeap ->
@@ -328,7 +338,10 @@ module DelegateRepresentation =
                             state
 
                     let registryId, registry =
-                        MethodHandleRegistry.getOrAllocateConcreteId state.ConcreteTypes invoke state.MethodHandles
+                        MethodHandleRegistry.getOrAllocateConcreteId
+                            state.TypeSystem.ConcreteTypes
+                            invoke
+                            state.MethodHandles
 
                     Some (
                         { state with
@@ -370,7 +383,7 @@ module DelegateRepresentation =
             | NativeIntSource.FunctionPointer target -> idOfTarget state fields.MethodPtrAux.Name target
             | other -> failwith $"%s{operation}: expected _methodPtrAux to hold a function pointer, got %O{other}"
         else
-            functionPointerField operation state.ConcreteTypes fields.MethodPtr delegateObject
+            functionPointerField operation state.TypeSystem.ConcreteTypes fields.MethodPtr delegateObject
             |> idOfTarget state fields.MethodPtr.Name
 
     /// <summary>
@@ -432,7 +445,7 @@ module DelegateRepresentation =
                 else
                     let declaringType =
                         AllConcreteTypes.findExistingConcreteType
-                            state.ConcreteTypes
+                            state.TypeSystem.ConcreteTypes
                             method.RequiredDeclaringType.Identity
                             method.DeclaringTypeGenerics
                         |> Option.defaultWith (fun () ->

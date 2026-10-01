@@ -97,7 +97,7 @@ public sealed class MethodSignatureHost
         : IlMachineState * ConcreteTypeHandle
         =
         let typeDefn =
-            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies typeInfo
+            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo
 
         IlMachineState.concretizeType
             loggerFactory
@@ -182,7 +182,7 @@ public sealed class MethodSignatureHost
         =
         RuntimeFieldInfoStubLayout.value
             fixture.BaseClassTypes
-            state.ConcreteTypes
+            state.TypeSystem.ConcreteTypes
             allocated.ConcreteType
             allocated.Contents
 
@@ -221,12 +221,14 @@ public sealed class MethodSignatureHost
                 closedHostDefn
 
         let runtimeFieldInfoStubHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.RuntimeFieldInfoStub
+            AllConcreteTypes.getRequiredNonGenericHandle
+                state.TypeSystem.ConcreteTypes
+                fixture.BaseClassTypes.RuntimeFieldInfoStub
 
         let runtimeFieldHandle, fieldHandles, state =
             FieldHandleRegistry.getOrAllocate
                 fixture.BaseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 state
                 (fun fields state -> IlMachineState.allocateManagedObject runtimeFieldInfoStubHandle fields state)
                 (RuntimeTypeHandleTarget.Closed closedHostHandle)
@@ -316,9 +318,9 @@ public sealed class MethodSignatureHost
             |> List.rev
             |> CliValueType.OfFields
                 fixture.BaseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 typeHandle
-                (DeclaredTypeFacts.ofTypeInfo fixture.BaseClassTypes state._LoadedAssemblies typeInfo)
+                (DeclaredTypeFacts.ofTypeInfo fixture.BaseClassTypes state.TypeSystem._LoadedAssemblies typeInfo)
 
         IlMachineState.allocateManagedObject typeHandle contents state
 
@@ -345,7 +347,7 @@ public sealed class MethodSignatureHost
         : ManagedPointerSource * IlMachineState
         =
         let objectHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.Object
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes fixture.BaseClassTypes.Object
 
         let arrayAddr, state =
             IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero objectHandle) (fun () -> value) 1 state
@@ -427,9 +429,9 @@ public sealed class MethodSignatureHost
         let methodState =
             match
                 MethodState.Empty
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     fixture.BaseClassTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     fixture.BaseClassTypes.Corelib
                     signatureInitMethod
                     ImmutableArray.Empty
@@ -517,7 +519,7 @@ public sealed class MethodSignatureHost
         let handle, methodHandles =
             MethodHandleRegistry.getOrAllocateConcreteInternalHandle
                 fixture.BaseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 concretised
                 state.MethodHandles
 
@@ -539,13 +541,13 @@ public sealed class MethodSignatureHost
             concretizeTypeInfo fixture.LoggerFactory fixture.BaseClassTypes state (methodSignatureHost fixture)
 
         let declaringType =
-            AllConcreteTypes.lookup hostHandle state.ConcreteTypes
+            AllConcreteTypes.lookup hostHandle state.TypeSystem.ConcreteTypes
             |> Option.defaultWith (fun () -> failwith "MethodSignatureHost was not concretized")
 
         let handle, methodHandles =
             internalHandleForClosed
                 fixture.BaseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 declaringType
                 (requiredHostMethod fixture methodName)
                 state.MethodHandles
@@ -1029,9 +1031,9 @@ public sealed class MethodSignatureHost
         let methodState =
             match
                 MethodState.Empty
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     fixture.BaseClassTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     fixture.BaseClassTypes.Corelib
                     signatureInitMethod
                     ImmutableArray.Empty
@@ -1224,7 +1226,7 @@ public sealed class MethodSignatureHost
         let declaringTypeAddr, _, state = closedHostDeclaringType fixture fixture.State
 
         let byteHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.Byte
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes fixture.BaseClassTypes.Byte
 
         let arrayAddr, state =
             IlMachineState.allocateArray

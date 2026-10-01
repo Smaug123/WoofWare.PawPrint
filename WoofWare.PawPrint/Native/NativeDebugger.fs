@@ -21,7 +21,7 @@ module NativeDebugger =
           "Debugger",
           "IsManagedDebuggerAttached",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // .NET 10 QCall backing Debugger.get_IsAttached. Returns nonzero when a managed
             // debugger is attached; PawPrint never has one attached.
             let isAttached = if DebuggerState.isAttached state.Debugger then 1 else 0
@@ -49,7 +49,7 @@ module NativeDebugger =
           "Debugger",
           "get_IsAttached",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) ->
             // Pre-.NET 10 InternalCall path. .NET 10 routes the same observation through the
             // DebugDebugger_IsManagedDebuggerAttached QCall above.
             let isAttached = DebuggerState.isAttached state.Debugger

@@ -130,8 +130,10 @@ public static class Program
         (name : string)
         : TypeInfo<GenericParamFromMetadata, TypeDefn>
         =
-        state._LoadedAssemblies.DefinitionNames
-        |> Seq.collect (fun assemblyName -> state._LoadedAssemblies.ByDefinitionName(assemblyName).TypeDefs.Values)
+        state.TypeSystem._LoadedAssemblies.DefinitionNames
+        |> Seq.collect (fun assemblyName ->
+            state.TypeSystem._LoadedAssemblies.ByDefinitionName(assemblyName).TypeDefs.Values
+        )
         |> Seq.filter (fun ty -> ty.Name = name && ty.Namespace = ns)
         |> Seq.toList
         |> function
@@ -142,7 +144,7 @@ public static class Program
     let private nonGeneric (state : IlMachineState) (ns : string) (name : string) : ConcreteTypeHandle =
         let ty = typeInfo state ns name
 
-        AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes ty.Identity
+        AllConcreteTypes.findExistingNonGenericConcreteType state.TypeSystem.ConcreteTypes ty.Identity
         |> Option.defaultWith (fun () -> failwith $"%s{ns}.%s{name} was never concretized by the guest")
 
     /// The handle of the instantiation `ns.name&lt;args&gt;`, looked up by identity rather than by
@@ -157,7 +159,10 @@ public static class Program
         =
         let ty = typeInfo state ns name
 
-        AllConcreteTypes.findExistingConcreteType state.ConcreteTypes ty.Identity (ImmutableArray.CreateRange args)
+        AllConcreteTypes.findExistingConcreteType
+            state.TypeSystem.ConcreteTypes
+            ty.Identity
+            (ImmutableArray.CreateRange args)
         |> Option.defaultWith (fun () -> failwith $"%s{ns}.%s{name} was never concretized at those arguments")
 
     let private arg0 (state : IlMachineState) (target : RuntimeTypeHandleTarget) : ConcreteTypeHandle =

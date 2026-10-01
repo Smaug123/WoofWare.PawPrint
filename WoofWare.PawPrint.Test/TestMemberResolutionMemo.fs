@@ -92,12 +92,12 @@ static class Program
         // The corelib instance the run resolved against, so that a fresh resolution reads the
         // same metadata objects the memoised one did.
         let baseClassTypes =
-            state._LoadedAssemblies.DefinitionNames
+            state.TypeSystem._LoadedAssemblies.DefinitionNames
             |> Seq.find (fun name -> name.StartsWith ("System.Private.CoreLib,", System.StringComparison.Ordinal))
-            |> state._LoadedAssemblies.ByDefinitionName
+            |> state.TypeSystem._LoadedAssemblies.ByDefinitionName
             |> BaseClassTypes.ofCorelib
 
-        let entries = state._MemberResolutions |> Map.toList
+        let entries = state.TypeSystem._MemberResolutions |> Map.toList
 
         // The guest is chosen to reach every shape of key; a run that memoised only
         // context-free rows would pass the comparison below without testing the claim.
@@ -125,14 +125,14 @@ static class Program
                 $"the guest memoised %d{entries.Length} rows, %d{withTypeGenerics.Length} under type generics, %d{withMethodGenerics.Length} under method generics, %d{fields.Length} fields; it is not exercising the key"
 
         for key, memoised in entries do
-            let assy = state._LoadedAssemblies.ByDefinitionName key.Assembly
+            let assy = state.TypeSystem._LoadedAssemblies.ByDefinitionName key.Assembly
 
             let toTypeDefn (handle : ConcreteTypeHandle) : TypeDefn =
                 Concretization.concreteHandleToTypeDefn
                     baseClassTypes
                     handle
-                    state.ConcreteTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem.ConcreteTypes
+                    state.TypeSystem._LoadedAssemblies
 
             let typeGenerics =
                 key.DeclaringTypeGenerics |> Seq.map toTypeDefn |> ImmutableArray.CreateRange
@@ -171,9 +171,9 @@ static class Program
 
             // A miss's side effects on the state persist, which is what lets a hit skip them:
             // so resolving again against the final state must load and register nothing new.
-            afterState._LoadedAssemblies.DefinitionNames
+            afterState.TypeSystem._LoadedAssemblies.DefinitionNames
             |> List.ofSeq
-            |> shouldEqual (List.ofSeq state._LoadedAssemblies.DefinitionNames)
+            |> shouldEqual (List.ofSeq state.TypeSystem._LoadedAssemblies.DefinitionNames)
 
-            afterState._MemberResolutions.Count
-            |> shouldEqual state._MemberResolutions.Count
+            afterState.TypeSystem._MemberResolutions.Count
+            |> shouldEqual state.TypeSystem._MemberResolutions.Count

@@ -1047,8 +1047,14 @@ public class OpenBox<T> { }
             TypeConcretization.concretizeTypeDefinition (emptyConcretizationContext [ defining ]) argumentIdentity
 
         let state =
-            { IlMachineState.initial loggerFactory ImmutableArray.Empty defining with
-                ConcreteTypes = ctx.ConcreteTypes
+            let initialState =
+                IlMachineState.initial loggerFactory ImmutableArray.Empty defining
+
+            { initialState with
+                TypeSystem =
+                    { initialState.TypeSystem with
+                        ConcreteTypes = ctx.ConcreteTypes
+                    }
             }
 
         let _, target =
@@ -1107,7 +1113,7 @@ public class OpenBox<T> { }
             failwith "TypeSpec-like token was incorrectly classified as a shape over a generic variable"
         | RuntimeTypeHandleTarget.Closed handle ->
             let constructed =
-                AllConcreteTypes.lookup handle state.ConcreteTypes
+                AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes
                 |> Option.defaultWith (fun () ->
                     failwith $"Expected constructed type handle %O{handle} to be registered"
                 )

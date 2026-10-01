@@ -201,10 +201,10 @@ module NativeKernel32 =
         | "GetEnvironmentVariableW",
           "System.Private.CoreLib",
           "Kernel32",
-          [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Char)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32) ->
+          [ ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt16)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Char)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32) ->
             let operation = "GetEnvironmentVariableW"
 
             let namePtr =
@@ -244,7 +244,7 @@ module NativeKernel32 =
           "System.Private.CoreLib",
           "Kernel32",
           [],
-          MethodReturnType.Returns (ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Char)) ->
+          MethodReturnType.Returns (ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Char)) ->
             let ptr, state =
                 NativeCall.allocateNativeHeapBlob
                     "GetEnvironmentStringsW"
@@ -266,8 +266,8 @@ module NativeKernel32 =
         | "FreeEnvironmentStringsW",
           "System.Private.CoreLib",
           "Kernel32",
-          [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Char) ],
-          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)) when
+          [ ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Char) ],
+          MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("", "BOOL", boolGenerics)) when
             boolGenerics.IsEmpty
             ->
             let operation = "FreeEnvironmentStringsW"

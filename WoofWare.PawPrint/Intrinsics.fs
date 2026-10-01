@@ -370,13 +370,13 @@ module Intrinsics =
         : IntrinsicResult
         =
         match methodToCall.Signature.ParameterTypes with
-        | [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ] -> ()
+        | [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Object ] -> ()
         | _ -> failwith "bad signature RuntimeHelpers.GetMethodTable"
 
         match methodToCall.Signature.ReturnType with
-        | MethodReturnType.Returns (ConcreteTypeHandle.Pointer (CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                                                                                 "MethodTable",
-                                                                                                 generics))) when
+        | MethodReturnType.Returns (ConcreteTypeHandle.Pointer (CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                                                                            "MethodTable",
+                                                                                                            generics))) when
             generics.IsEmpty
             ->
             ()
@@ -422,7 +422,7 @@ module Intrinsics =
         =
         // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.CoreCLR.cs#L207
         match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-        | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
+        | [], MethodReturnType.Returns (ConcreteBool state.TypeSystem.ConcreteTypes) -> ()
         | _ -> failwith "bad signature for System.Private.CoreLib.RuntimeHelpers.IsReferenceOrContainsReference"
 
         let arg = Seq.exactlyOne methodToCall.Generics
@@ -445,7 +445,7 @@ module Intrinsics =
         : IntrinsicResult
         =
         match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-        | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
+        | [], MethodReturnType.Returns (ConcreteBool state.TypeSystem.ConcreteTypes) -> ()
         | _ -> failwith "bad signature for System.Private.CoreLib.RuntimeHelpers.IsBitwiseEquatable"
 
         let ty = Seq.exactlyOne methodToCall.Generics
@@ -523,15 +523,14 @@ module Intrinsics =
         match generic with
         | Some generic ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteGenericArray state.ConcreteTypes generic ], MethodReturnType.Returns (ConcreteByref t) when
-                t = generic
-                ->
-                ()
+            | [ ConcreteGenericArray state.TypeSystem.ConcreteTypes generic ],
+              MethodReturnType.Returns (ConcreteByref t) when t = generic -> ()
             | _ -> failwith $"bad signature MemoryMarshal.GetArrayDataReference<T>: %A{methodToCall.Signature}"
         | None ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteSystemArray state.ConcreteTypes ],
-              MethodReturnType.Returns (ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)) -> ()
+            | [ ConcreteSystemArray state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)) ->
+                ()
             | _ -> failwith $"bad signature MemoryMarshal.GetArrayDataReference: %A{methodToCall.Signature}"
 
         let arr, state = IlMachineState.popEvalStack site.Thread state
@@ -774,7 +773,7 @@ module Intrinsics =
             // corresponding primitive: a same-shaped object holding the same cells, which is
             // exactly the shallow copy the method promises.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [], MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System", "Object", generics)) when
+            | [], MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("System", "Object", generics)) when
                 generics.IsEmpty
                 ->
                 ()
@@ -804,7 +803,7 @@ module Intrinsics =
             | other -> failwith $"Object.MemberwiseClone: expected an object reference receiver, got %O{other}"
         | CorelibAssembly, "Object", "GetType" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [], MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System", "Type", generics)) when
+            | [], MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("System", "Type", generics)) when
                 generics.IsEmpty
                 ->
                 ()
@@ -980,7 +979,10 @@ module Intrinsics =
                     failwith $"bad generics Unsafe.IsNullRef: expected exactly one generic argument, got %A{generics}"
 
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteByref param ], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) when param = t -> ()
+            | [ ConcreteByref param ], MethodReturnType.Returns (ConcreteBool state.TypeSystem.ConcreteTypes) when
+                param = t
+                ->
+                ()
             | _ ->
                 failwith
                     $"bad signature Unsafe.IsNullRef: expected one byref parameter matching %O{t} and bool return, got %A{methodToCall.Signature}"
@@ -1014,7 +1016,7 @@ module Intrinsics =
                 | _ -> failwith $"bad generics Unsafe.Unbox: expected exactly one generic argument, got %A{generics}"
 
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
+            | [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Object ],
               MethodReturnType.Returns (ConcreteByref ret) when ret = t -> ()
             | _ ->
                 failwith
@@ -1045,15 +1047,19 @@ module Intrinsics =
             let operation = $"Interlocked.%s{methodToCall.Name}"
 
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteByref (ConcreteInt32 state.ConcreteTypes) ; ConcreteInt32 state.ConcreteTypes ],
-              MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes)
-            | [ ConcreteByref (ConcreteUInt32 state.ConcreteTypes) ; ConcreteUInt32 state.ConcreteTypes ],
-              MethodReturnType.Returns (ConcreteUInt32 state.ConcreteTypes) ->
+            | [ ConcreteByref (ConcreteInt32 state.TypeSystem.ConcreteTypes)
+                ConcreteInt32 state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteInt32 state.TypeSystem.ConcreteTypes)
+            | [ ConcreteByref (ConcreteUInt32 state.TypeSystem.ConcreteTypes)
+                ConcreteUInt32 state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteUInt32 state.TypeSystem.ConcreteTypes) ->
                 addInt32 site operation returnsOriginalValue state
-            | [ ConcreteByref (ConcreteInt64 state.ConcreteTypes) ; ConcreteInt64 state.ConcreteTypes ],
-              MethodReturnType.Returns (ConcreteInt64 state.ConcreteTypes)
-            | [ ConcreteByref (ConcreteUInt64 state.ConcreteTypes) ; ConcreteUInt64 state.ConcreteTypes ],
-              MethodReturnType.Returns (ConcreteUInt64 state.ConcreteTypes) ->
+            | [ ConcreteByref (ConcreteInt64 state.TypeSystem.ConcreteTypes)
+                ConcreteInt64 state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteInt64 state.TypeSystem.ConcreteTypes)
+            | [ ConcreteByref (ConcreteUInt64 state.TypeSystem.ConcreteTypes)
+                ConcreteUInt64 state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteUInt64 state.TypeSystem.ConcreteTypes) ->
                 addInt64 site operation returnsOriginalValue state
             | _ -> IntrinsicResult.Unrecognised
 
@@ -1154,10 +1160,12 @@ module Intrinsics =
             let operation = $"Interlocked.%s{methodToCall.Name}"
 
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteByref (ConcreteInt32 state.ConcreteTypes) ; ConcreteInt32 state.ConcreteTypes ],
-              MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) -> executeInt32 operation state
-            | [ ConcreteByref (ConcreteInt64 state.ConcreteTypes) ; ConcreteInt64 state.ConcreteTypes ],
-              MethodReturnType.Returns (ConcreteInt64 state.ConcreteTypes) -> executeInt64 operation state
+            | [ ConcreteByref (ConcreteInt32 state.TypeSystem.ConcreteTypes)
+                ConcreteInt32 state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteInt32 state.TypeSystem.ConcreteTypes) -> executeInt32 operation state
+            | [ ConcreteByref (ConcreteInt64 state.TypeSystem.ConcreteTypes)
+                ConcreteInt64 state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteInt64 state.TypeSystem.ConcreteTypes) -> executeInt64 operation state
             | _ -> IntrinsicResult.Unrecognised
 
         | CorelibAssembly, "Interlocked", "CompareExchange" ->
@@ -1168,10 +1176,10 @@ module Intrinsics =
             // those primitives here instead of executing their Unsafe.As / InternalCall wrappers.
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Threading/Interlocked.cs#L452
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes locationPrimitive)
-                ConcretePrimitive state.ConcreteTypes valuePrimitive
-                ConcretePrimitive state.ConcreteTypes comparandPrimitive ],
-              MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes returnPrimitive) when
+            | [ ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes locationPrimitive)
+                ConcretePrimitive state.TypeSystem.ConcreteTypes valuePrimitive
+                ConcretePrimitive state.TypeSystem.ConcreteTypes comparandPrimitive ],
+              MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes returnPrimitive) when
                 isNativeIntPrimitive locationPrimitive
                 && locationPrimitive = valuePrimitive
                 && locationPrimitive = comparandPrimitive
@@ -1244,10 +1252,10 @@ module Intrinsics =
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt currentSrc) currentThread
                     |> advanceCaller
                     |> IntrinsicResult.Completed
-            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes locationPrimitive)
-                ConcretePrimitive state.ConcreteTypes valuePrimitive
-                ConcretePrimitive state.ConcreteTypes comparandPrimitive ],
-              MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes returnPrimitive) when
+            | [ ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes locationPrimitive)
+                ConcretePrimitive state.TypeSystem.ConcreteTypes valuePrimitive
+                ConcretePrimitive state.TypeSystem.ConcreteTypes comparandPrimitive ],
+              MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes returnPrimitive) when
                 isScalarIntegralLikePrimitive locationPrimitive
                 && locationPrimitive = valuePrimitive
                 && locationPrimitive = comparandPrimitive
@@ -1355,9 +1363,9 @@ module Intrinsics =
             // intrinsic at the wrong width. Implement the primitive directly.
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Threading/Interlocked.cs#L80
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes locationPrimitive)
-                ConcretePrimitive state.ConcreteTypes valuePrimitive ],
-              MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes returnPrimitive) when
+            | [ ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes locationPrimitive)
+                ConcretePrimitive state.TypeSystem.ConcreteTypes valuePrimitive ],
+              MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes returnPrimitive) when
                 isNativeIntPrimitive locationPrimitive
                 && locationPrimitive = valuePrimitive
                 && locationPrimitive = returnPrimitive
@@ -1418,9 +1426,9 @@ module Intrinsics =
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt currentSrc) currentThread
                     |> advanceCaller
                     |> IntrinsicResult.Completed
-            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes locationPrimitive)
-                ConcretePrimitive state.ConcreteTypes valuePrimitive ],
-              MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes returnPrimitive) when
+            | [ ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes locationPrimitive)
+                ConcretePrimitive state.TypeSystem.ConcreteTypes valuePrimitive ],
+              MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes returnPrimitive) when
                 isScalarIntegralLikePrimitive locationPrimitive
                 && locationPrimitive = valuePrimitive
                 && locationPrimitive = returnPrimitive
@@ -1487,7 +1495,8 @@ module Intrinsics =
                 IntrinsicResult.Unrecognised
         | CorelibAssembly, "BitConverter", "SingleToInt32Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteSingle state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) -> ()
+            | [ ConcreteSingle state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteInt32 state.TypeSystem.ConcreteTypes) -> ()
             | _ -> failwith "bad signature BitConverter.SingleToInt32Bits"
 
             let arg, state = IlMachineState.popEvalStack currentThread state
@@ -1506,7 +1515,8 @@ module Intrinsics =
             |> IntrinsicResult.Completed
         | CorelibAssembly, "BitConverter", "Int32BitsToSingle" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteSingle state.ConcreteTypes) -> ()
+            | [ ConcreteInt32 state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteSingle state.TypeSystem.ConcreteTypes) -> ()
             | _ -> failwith "bad signature BitConverter.Int32BitsToSingle"
 
             let arg, state = IlMachineState.popEvalStack currentThread state
@@ -1525,8 +1535,8 @@ module Intrinsics =
             |> IntrinsicResult.Completed
         | CorelibAssembly, "BitConverter", "DoubleToUInt64Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteDouble state.ConcreteTypes ], MethodReturnType.Returns (ConcreteUInt64 state.ConcreteTypes) ->
-                ()
+            | [ ConcreteDouble state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteUInt64 state.TypeSystem.ConcreteTypes) -> ()
             | _ -> failwith "bad signature BitConverter.DoubleToUInt64Bits"
 
             let arg, state = IlMachineState.popEvalStack currentThread state
@@ -1549,8 +1559,8 @@ module Intrinsics =
             |> IntrinsicResult.Completed
         | CorelibAssembly, "BitConverter", "UInt64BitsToDouble" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteUInt64 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) ->
-                ()
+            | [ ConcreteUInt64 state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteDouble state.TypeSystem.ConcreteTypes) -> ()
             | _ -> failwith "bad signature BitConverter.UInt64BitsToDouble"
 
             let arg, state = IlMachineState.popEvalStack currentThread state
@@ -1569,7 +1579,8 @@ module Intrinsics =
             |> IntrinsicResult.Completed
         | CorelibAssembly, "BitConverter", "Int64BitsToDouble" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteInt64 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) -> ()
+            | [ ConcreteInt64 state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteDouble state.TypeSystem.ConcreteTypes) -> ()
             | _ -> failwith "bad signature BitConverter.Int64BitsToDouble"
 
             let arg, state = IlMachineState.popEvalStack currentThread state
@@ -1588,7 +1599,8 @@ module Intrinsics =
             |> IntrinsicResult.Completed
         | CorelibAssembly, "BitConverter", "DoubleToInt64Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteDouble state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt64 state.ConcreteTypes) -> ()
+            | [ ConcreteDouble state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteInt64 state.TypeSystem.ConcreteTypes) -> ()
             | _ -> failwith "bad signature BitConverter.DoubleToInt64Bits"
 
             let arg, state = IlMachineState.popEvalStack currentThread state
@@ -1607,8 +1619,8 @@ module Intrinsics =
             |> IntrinsicResult.Completed
         | CorelibAssembly, "BitConverter", "SingleToUInt32Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteSingle state.ConcreteTypes ], MethodReturnType.Returns (ConcreteUInt32 state.ConcreteTypes) ->
-                ()
+            | [ ConcreteSingle state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteUInt32 state.TypeSystem.ConcreteTypes) -> ()
             | _ -> failwith "bad signature BitConverter.SingleToUInt32Bits"
 
             let arg, state = IlMachineState.popEvalStack currentThread state
@@ -1628,8 +1640,8 @@ module Intrinsics =
             |> IntrinsicResult.Completed
         | CorelibAssembly, "BitConverter", "UInt32BitsToSingle" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteUInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteSingle state.ConcreteTypes) ->
-                ()
+            | [ ConcreteUInt32 state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteSingle state.TypeSystem.ConcreteTypes) -> ()
             | _ -> failwith "bad signature BitConverter.UInt32BitsToSingle"
 
             let arg, state = IlMachineState.popEvalStack currentThread state
@@ -1663,7 +1675,8 @@ module Intrinsics =
             // disagree about (hence the BCL's own explicit zero check).
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Numerics/BitOperations.cs#L526-L577
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteUInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
+            | [ ConcreteUInt32 state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteInt32 state.TypeSystem.ConcreteTypes) ->
                 let arg, state = IlMachineState.popEvalStack currentThread state
 
                 // The bits arrive widened to int64; narrow to the operand's own width,
@@ -1713,7 +1726,8 @@ module Intrinsics =
                 |> IntrinsicResult.Completed
 
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteUInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
+            | [ ConcreteUInt32 state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteInt32 state.TypeSystem.ConcreteTypes) ->
                 let arg, state = IlMachineState.popEvalStack currentThread state
 
                 let value =
@@ -1721,7 +1735,8 @@ module Intrinsics =
                     |> uint32<int64>
 
                 complete (System.Numerics.BitOperations.LeadingZeroCount value) state
-            | [ ConcreteUInt64 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
+            | [ ConcreteUInt64 state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteInt32 state.TypeSystem.ConcreteTypes) ->
                 let arg, state = IlMachineState.popEvalStack currentThread state
 
                 let value =
@@ -1739,7 +1754,8 @@ module Intrinsics =
             // Model the boundary directly instead: delegate to the host BCL, which honours
             // the documented `Log2(0) = 0` contract.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteUInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
+            | [ ConcreteUInt32 state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteInt32 state.TypeSystem.ConcreteTypes) ->
                 let arg, state = IlMachineState.popEvalStack currentThread state
 
                 let value =
@@ -1753,7 +1769,8 @@ module Intrinsics =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) currentThread
                 |> advanceCaller
                 |> IntrinsicResult.Completed
-            | [ ConcreteUInt64 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
+            | [ ConcreteUInt64 state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteInt32 state.TypeSystem.ConcreteTypes) ->
                 let arg, state = IlMachineState.popEvalStack currentThread state
 
                 let value =
@@ -1767,7 +1784,8 @@ module Intrinsics =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) currentThread
                 |> advanceCaller
                 |> IntrinsicResult.Completed
-            | [ ConcreteUIntPtr state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
+            | [ ConcreteUIntPtr state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteInt32 state.TypeSystem.ConcreteTypes) ->
                 let arg, state = IlMachineState.popEvalStack currentThread state
 
                 let value : unativeint =
@@ -1800,8 +1818,8 @@ module Intrinsics =
             // hill-climbing controller, which is what bounds how many blocking thread-pool
             // waits a guest can perform (issue #755).
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteDouble state.ConcreteTypes ; ConcreteDouble state.ConcreteTypes ],
-              MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) -> ()
+            | [ ConcreteDouble state.TypeSystem.ConcreteTypes ; ConcreteDouble state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteDouble state.TypeSystem.ConcreteTypes) -> ()
             | _ -> failwith $"Math.Pow: unexpected signature %s{formatMethodKey intrinsicKey}"
 
             // The exponent was pushed last, so it pops first.
@@ -1834,8 +1852,8 @@ module Intrinsics =
             // (PortableThreadPool.HillClimbing.cs:448) is what a guest doing enough blocking
             // thread-pool waits eventually runs.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteDouble state.ConcreteTypes ], MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) ->
-                ()
+            | [ ConcreteDouble state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteDouble state.TypeSystem.ConcreteTypes) -> ()
             | _ -> failwith $"Math.Cos: unexpected signature %s{formatMethodKey intrinsicKey}"
 
             let argument, state = IlMachineState.popEvalStack currentThread state
@@ -1865,8 +1883,8 @@ module Intrinsics =
             // (PortableThreadPool.HillClimbing.cs:457), nine lines after the `Math.Cos` call
             // that the same controller makes.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteDouble state.ConcreteTypes ], MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) ->
-                ()
+            | [ ConcreteDouble state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteDouble state.TypeSystem.ConcreteTypes) -> ()
             | _ -> failwith $"Math.Sin: unexpected signature %s{formatMethodKey intrinsicKey}"
 
             let argument, state = IlMachineState.popEvalStack currentThread state
@@ -1902,8 +1920,8 @@ module Intrinsics =
             // and `Math.Cos` calls produce: its own private `Complex.Abs`
             // (PortableThreadPool.HillClimbing.Complex.cs:35) is a bare `Math.Sqrt`.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteDouble state.ConcreteTypes ], MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) ->
-                ()
+            | [ ConcreteDouble state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteDouble state.TypeSystem.ConcreteTypes) -> ()
             | _ -> failwith $"Math.Sqrt: unexpected signature %s{formatMethodKey intrinsicKey}"
 
             let argument, state = IlMachineState.popEvalStack currentThread state
@@ -1938,8 +1956,8 @@ module Intrinsics =
             // on `DeclaringTypeFullName` keeps this arm off any other type that happens to
             // have a `Ceiling`, and the signature check below rejects anything else.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteDouble state.ConcreteTypes ], MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) ->
-                ()
+            | [ ConcreteDouble state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteDouble state.TypeSystem.ConcreteTypes) -> ()
             | _ -> failwith $"Math.Ceiling: unexpected signature %s{formatMethodKey intrinsicKey}"
 
             let argument, state = IlMachineState.popEvalStack currentThread state
@@ -1983,8 +2001,8 @@ module Intrinsics =
             // guard on `ParameterShapes` keeps it off the multi-argument overloads should any
             // of them ever become intrinsic.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteDouble state.ConcreteTypes ], MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) ->
-                ()
+            | [ ConcreteDouble state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteDouble state.TypeSystem.ConcreteTypes) -> ()
             | _ -> failwith $"Math.Round: unexpected signature %s{formatMethodKey intrinsicKey}"
 
             let argument, state = IlMachineState.popEvalStack currentThread state
@@ -2027,8 +2045,8 @@ module Intrinsics =
             // operation on a different width), and the guard on `ParameterShapes` keeps it off
             // any single-argument overload of another type that might arrive in future.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteDouble state.ConcreteTypes ], MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) ->
-                ()
+            | [ ConcreteDouble state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteDouble state.TypeSystem.ConcreteTypes) -> ()
             | _ -> failwith $"Math.Truncate: unexpected signature %s{formatMethodKey intrinsicKey}"
 
             let argument, state = IlMachineState.popEvalStack currentThread state
@@ -2046,8 +2064,8 @@ module Intrinsics =
             |> IntrinsicResult.Completed
         | CorelibAssembly, "String", "Equals" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteString state.ConcreteTypes ; ConcreteString state.ConcreteTypes ],
-              MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) ->
+            | [ ConcreteString state.TypeSystem.ConcreteTypes ; ConcreteString state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteBool state.TypeSystem.ConcreteTypes) ->
                 let arg1, state = IlMachineState.popEvalStack currentThread state
 
                 let arg1 =
@@ -2261,13 +2279,13 @@ module Intrinsics =
             // any body. Both overloads accept the byref and pointer forms uniformly via
             // managedPointerOfPointerArgument.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
-                ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte
-                ConcreteUInt32 state.ConcreteTypes ],
+            | [ ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+                ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte
+                ConcreteUInt32 state.TypeSystem.ConcreteTypes ],
               MethodReturnType.Void
             | [ ConcretePointer _
-                ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte
-                ConcreteUInt32 state.ConcreteTypes ],
+                ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte
+                ConcreteUInt32 state.TypeSystem.ConcreteTypes ],
               MethodReturnType.Void ->
                 let operation = $"Unsafe.%s{methodToCall.Name}"
 
@@ -2283,11 +2301,12 @@ module Intrinsics =
             // implementation is what runs here rather than any body. Both overloads accept
             // the byref and pointer forms uniformly via managedPointerOfPointerArgument.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
-                ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
-                ConcreteUInt32 state.ConcreteTypes ],
+            | [ ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+                ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+                ConcreteUInt32 state.TypeSystem.ConcreteTypes ],
               MethodReturnType.Void
-            | [ ConcretePointer _ ; ConcretePointer _ ; ConcreteUInt32 state.ConcreteTypes ], MethodReturnType.Void ->
+            | [ ConcretePointer _ ; ConcretePointer _ ; ConcreteUInt32 state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Void ->
                 let operation = $"Unsafe.%s{methodToCall.Name}"
 
                 match IntrinsicHelpers.executeCopyBlock baseClassTypes currentThread operation state with
@@ -2305,9 +2324,9 @@ module Intrinsics =
             // (provenance, ObjectRef cells) when both endpoints anchor on cell-aware roots, and
             // falls back to the byte walk for byte-addressable storage.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
-                ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
-                ConcreteUIntPtr state.ConcreteTypes ],
+            | [ ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+                ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+                ConcreteUIntPtr state.TypeSystem.ConcreteTypes ],
               MethodReturnType.Void ->
                 let operation = "SpanHelpers.Memmove"
 
@@ -2326,8 +2345,8 @@ module Intrinsics =
             // destination cell's own zero, preserving cell shape for storage that is not
             // byte-addressable, and falls back to the byte walk for flat storage.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
-                ConcreteUIntPtr state.ConcreteTypes ],
+            | [ ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+                ConcreteUIntPtr state.TypeSystem.ConcreteTypes ],
               MethodReturnType.Void ->
                 let operation = "SpanHelpers.ClearWithoutReferences"
 
@@ -2337,8 +2356,11 @@ module Intrinsics =
         | CorelibAssembly, "String", "op_Implicit" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ par ], MethodReturnType.Returns ret ->
-                let par = state.ConcreteTypes |> AllConcreteTypes.lookup par |> Option.get
-                let ret = state.ConcreteTypes |> AllConcreteTypes.lookup ret |> Option.get
+                let par =
+                    state.TypeSystem.ConcreteTypes |> AllConcreteTypes.lookup par |> Option.get
+
+                let ret =
+                    state.TypeSystem.ConcreteTypes |> AllConcreteTypes.lookup ret |> Option.get
 
                 if
                     par.Namespace = "System"
@@ -2348,7 +2370,8 @@ module Intrinsics =
                 then
                     match ret.Generics |> Seq.toList with
                     | [ gen ] ->
-                        let gen = state.ConcreteTypes |> AllConcreteTypes.lookup gen |> Option.get
+                        let gen =
+                            state.TypeSystem.ConcreteTypes |> AllConcreteTypes.lookup gen |> Option.get
 
                         if gen.Namespace = "System" && gen.Name = "Char" then
                             // This is just an optimisation
@@ -2363,7 +2386,8 @@ module Intrinsics =
         | CorelibAssembly, "RuntimeHelpers", "InitializeArray" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/coreclr/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.CoreCLR.cs#L18
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteSystemArray state.ConcreteTypes ; ConcreteRuntimeFieldHandle state.ConcreteTypes ],
+            | [ ConcreteSystemArray state.TypeSystem.ConcreteTypes
+                ConcreteRuntimeFieldHandle state.TypeSystem.ConcreteTypes ],
               MethodReturnType.Void -> ()
             | _ -> failwith "bad signature for System.Private.CoreLib.RuntimeHelpers.InitializeArray"
 
@@ -2629,7 +2653,7 @@ module Intrinsics =
             IntrinsicResult.Completed state
         | CorelibAssembly, "GC", "KeepAlive" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ], MethodReturnType.Void -> ()
+            | [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Object ], MethodReturnType.Void -> ()
             | _ -> failwith "bad signature for System.Private.CoreLib.GC.KeepAlive"
 
             let _, state = IlMachineState.popEvalStack currentThread state
@@ -2696,7 +2720,7 @@ module Intrinsics =
                 IntrinsicResult.Completed state
 
             match methodToCall.Signature.ParameterTypes, Seq.toList methodToCall.Generics with
-            | [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ], [ target ] ->
+            | [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Object ], [ target ] ->
                 if methodToCall.Signature.ReturnType <> MethodReturnType.Returns target then
                     failwith "bad return type Unsafe.As<T>(object)"
 
@@ -2837,7 +2861,7 @@ module Intrinsics =
         | CorelibAssembly, "Unsafe", "SizeOf" ->
             // https://github.com/dotnet/runtime/blob/721fdf6dcb032da1f883d30884e222e35e3d3c99/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L51
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) -> ()
+            | [], MethodReturnType.Returns (ConcreteInt32 state.TypeSystem.ConcreteTypes) -> ()
             | _ -> failwith "bad signature Unsafe.SizeOf"
 
             let ty =
@@ -2857,7 +2881,8 @@ module Intrinsics =
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L55
             // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with ceq on two byrefs.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteByref _ ; ConcreteByref _ ], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
+            | [ ConcreteByref _ ; ConcreteByref _ ],
+              MethodReturnType.Returns (ConcreteBool state.TypeSystem.ConcreteTypes) -> ()
             | _ -> failwith "bad signature Unsafe.AreSame"
 
             let right, state = IlMachineState.popEvalStack currentThread state
@@ -2909,7 +2934,8 @@ module Intrinsics =
             // including the null-byref arms, the resolution by byte coordinates of a pair the
             // byrefs' structure cannot order, and the refusal of a pair nothing can.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteByref _ ; ConcreteByref _ ], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
+            | [ ConcreteByref _ ; ConcreteByref _ ],
+              MethodReturnType.Returns (ConcreteBool state.TypeSystem.ConcreteTypes) -> ()
             | _ ->
                 failwith
                     $"bad signature Unsafe.IsAddressLessThan: expected two byref parameters and bool return, got %A{methodToCall.Signature}"
@@ -2939,11 +2965,11 @@ module Intrinsics =
             // `sizeof * offset + base`, so we treat them uniformly.
             let modelled =
                 match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-                | [ ConcreteByref tFromParam ; ConcreteInt32 state.ConcreteTypes ],
+                | [ ConcreteByref tFromParam ; ConcreteInt32 state.TypeSystem.ConcreteTypes ],
                   MethodReturnType.Returns (ConcreteByref tFromRet)
-                | [ ConcreteByref tFromParam ; ConcreteIntPtr state.ConcreteTypes ],
+                | [ ConcreteByref tFromParam ; ConcreteIntPtr state.TypeSystem.ConcreteTypes ],
                   MethodReturnType.Returns (ConcreteByref tFromRet)
-                | [ ConcreteByref tFromParam ; ConcreteUIntPtr state.ConcreteTypes ],
+                | [ ConcreteByref tFromParam ; ConcreteUIntPtr state.TypeSystem.ConcreteTypes ],
                   MethodReturnType.Returns (ConcreteByref tFromRet) when tFromParam = t && tFromRet = t -> true
                 | _ -> false
 
@@ -2982,11 +3008,11 @@ module Intrinsics =
             // byref, which is a different walk; like `Unsafe.Add`'s, it runs the VM's stub.
             let modelled =
                 match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-                | [ ConcreteByref tFromParam ; ConcreteInt32 state.ConcreteTypes ],
+                | [ ConcreteByref tFromParam ; ConcreteInt32 state.TypeSystem.ConcreteTypes ],
                   MethodReturnType.Returns (ConcreteByref tFromRet)
-                | [ ConcreteByref tFromParam ; ConcreteIntPtr state.ConcreteTypes ],
+                | [ ConcreteByref tFromParam ; ConcreteIntPtr state.TypeSystem.ConcreteTypes ],
                   MethodReturnType.Returns (ConcreteByref tFromRet)
-                | [ ConcreteByref tFromParam ; ConcreteUIntPtr state.ConcreteTypes ],
+                | [ ConcreteByref tFromParam ; ConcreteUIntPtr state.TypeSystem.ConcreteTypes ],
                   MethodReturnType.Returns (ConcreteByref tFromRet) when tFromParam = t && tFromRet = t -> true
                 | _ -> false
 
@@ -3026,9 +3052,9 @@ module Intrinsics =
                 | _ -> failwith "bad generics Unsafe.AddByteOffset"
 
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteByref tFromParam ; ConcreteIntPtr state.ConcreteTypes ],
+            | [ ConcreteByref tFromParam ; ConcreteIntPtr state.TypeSystem.ConcreteTypes ],
               MethodReturnType.Returns (ConcreteByref tFromRet)
-            | [ ConcreteByref tFromParam ; ConcreteUIntPtr state.ConcreteTypes ],
+            | [ ConcreteByref tFromParam ; ConcreteUIntPtr state.TypeSystem.ConcreteTypes ],
               MethodReturnType.Returns (ConcreteByref tFromRet) when tFromParam = t && tFromRet = t -> ()
             | _ ->
                 failwith
@@ -3305,7 +3331,9 @@ module Intrinsics =
                 methodToCall.DeclaringTypeGenerics |> Seq.exactlyOne
 
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteByref ret) when ret = elementType ->
+            | [ ConcreteInt32 state.TypeSystem.ConcreteTypes ], MethodReturnType.Returns (ConcreteByref ret) when
+                ret = elementType
+                ->
                 ()
             | _ ->
                 failwith
@@ -3469,7 +3497,7 @@ module Intrinsics =
             // the boundary is "allocate a same-shaped array holding the same element cells",
             // which `IlMachineState.cloneArray` performs directly.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [], MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System", "Object", generics)) when
+            | [], MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("System", "Object", generics)) when
                 generics.IsEmpty
                 ->
                 ()
@@ -3518,8 +3546,8 @@ module Intrinsics =
             // `GetLongLength` is not itself `[Intrinsic]` — it just widens `GetLength`, so it starts
             // working via ordinary interpretation once this arm exists.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-              MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) -> ()
+            | [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+              MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) -> ()
             | _ -> failwith $"bad signature Array.%s{boundKind}"
 
             // Instance method with one argument: the receiver sits below the argument.

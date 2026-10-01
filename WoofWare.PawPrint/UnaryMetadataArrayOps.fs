@@ -68,10 +68,15 @@ module internal UnaryMetadataArrayOps =
         // from a `DynamicScope`. It is only *reachable* from the latter, because no compiler
         // emits it.
         let state, elementIsByRefLike =
-            match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes concreteTypeHandle with
+            match
+                AllConcreteTypes.tryTypeInfo
+                    state.TypeSystem._LoadedAssemblies
+                    state.TypeSystem.ConcreteTypes
+                    concreteTypeHandle
+            with
             | None -> state, false
             | Some (_, elementDefn) ->
-                state, LoadedTypeInfo.isByRefLike baseClassTypes state._LoadedAssemblies elementDefn
+                state, LoadedTypeInfo.isByRefLike baseClassTypes state.TypeSystem._LoadedAssemblies elementDefn
 
         if elementIsByRefLike then
             // The exception *type* is reproduced; its message and `TypeName` are not. CoreCLR's
@@ -370,7 +375,7 @@ module internal UnaryMetadataArrayOps =
         | ArrayElementOperands.InRange (arr, index) ->
 
         let elementType =
-            LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies elementType
+            LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes state.TypeSystem._LoadedAssemblies elementType
 
         let state, zeroOfType, concreteTypeHandle =
             IlMachineState.cliTypeZeroOf

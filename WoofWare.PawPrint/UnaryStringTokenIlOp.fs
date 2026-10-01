@@ -56,7 +56,8 @@ module internal UnaryStringTokenIlOp =
                         match state.LoadedAssembly sh.SourceAssembly.FullName with
                         | Some assy -> assy.Strings sh.Token
                         | None ->
-                            let available = state._LoadedAssemblies.DefinitionNames |> String.concat " ; "
+                            let available =
+                                state.TypeSystem._LoadedAssemblies.DefinitionNames |> String.concat " ; "
 
                             failwith
                                 $"Tried to resolve ldstr token %O{sh.Token} from assembly {sh.SourceAssembly.FullName}, but only had the following available: {available}"

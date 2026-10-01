@@ -152,17 +152,17 @@ module NativeCryptoNative =
         // throws `InvalidOperationException` on anything but 0. There is no libcrypto to set up.
         | Some "CryptoNative_EnsureOpenSslInitialized",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             pushInt32 0 ctx state |> Some
         // `int32_t CryptoNative_GetMaxMdSize(void)`: `EVP_MAX_MD_SIZE`.
         | Some "CryptoNative_GetMaxMdSize",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             pushInt32 evpMaxMdSize ctx state |> Some
         // `const EVP_MD* CryptoNative_EvpSha256(void)`: `EVP_sha256()`.
         | Some "CryptoNative_EvpSha256",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr) ->
             pushNativeInt (NativeIntSource.EvpMdPtr EvpDigestAlgorithm.Sha256) ctx state
             |> Some
         | Some ("CryptoNative_EvpMd5" as entryPoint), [], MethodReturnType.Returns _ ->
@@ -185,8 +185,8 @@ module NativeCryptoNative =
             unmodelledAlgorithm entryPoint "SHAKE256"
         // `int32_t CryptoNative_EvpMdSize(const EVP_MD* md)`: `EVP_MD_get_size`.
         | Some "CryptoNative_EvpMdSize",
-          [ ConcreteIntPtr state.ConcreteTypes ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "CryptoNative_EvpMdSize"
             let algorithm = algorithmOfEvpMd operation "md" instruction.Arguments.[0]
             pushInt32 (EvpDigestAlgorithm.digestSize algorithm) ctx state |> Some
@@ -194,8 +194,8 @@ module NativeCryptoNative =
         // then `EVP_DigestInit_ex(ctx, type, NULL)`. The managed wrapper wraps the answer in a
         // `SafeEvpMdCtxHandle`, whose `IsInvalid` is a comparison with `IntPtr.Zero`.
         | Some "CryptoNative_EvpMdCtxCreate",
-          [ ConcreteIntPtr state.ConcreteTypes ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) ->
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr) ->
             let operation = "CryptoNative_EvpMdCtxCreate"
             let algorithm = algorithmOfEvpMd operation "type" instruction.Arguments.[0]
 
@@ -207,8 +207,8 @@ module NativeCryptoNative =
         // `EVP_MD_CTX* CryptoNative_EvpMdCtxCopyEx(const EVP_MD_CTX* ctx)`: a fresh context
         // that `EVP_MD_CTX_copy_ex` has made a duplicate of `ctx`.
         | Some "CryptoNative_EvpMdCtxCopyEx",
-          [ ConcreteIntPtr state.ConcreteTypes ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) ->
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr) ->
             let operation = "CryptoNative_EvpMdCtxCopyEx"
             let source = ctxHandleOfArgument operation "ctx" instruction.Arguments.[0]
 
@@ -221,7 +221,7 @@ module NativeCryptoNative =
         // one argument here whose answer does not depend on the shim's unread C: OpenSSL
         // documents `EVP_MD_CTX_free(NULL)` as a no-op, so a null screen and a pass-through
         // agree.
-        | Some "CryptoNative_EvpMdCtxDestroy", [ ConcreteIntPtr state.ConcreteTypes ], MethodReturnType.Void ->
+        | Some "CryptoNative_EvpMdCtxDestroy", [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ], MethodReturnType.Void ->
             let operation = "CryptoNative_EvpMdCtxDestroy"
 
             match evpPointerArgument operation "ctx" instruction.Arguments.[0] with
@@ -236,8 +236,8 @@ module NativeCryptoNative =
         // `int32_t CryptoNative_EvpDigestReset(EVP_MD_CTX* ctx, const EVP_MD* type)`:
         // `EVP_DigestInit_ex(ctx, type, NULL)`, which discards whatever the context was doing.
         | Some "CryptoNative_EvpDigestReset",
-          [ ConcreteIntPtr state.ConcreteTypes ; ConcreteIntPtr state.ConcreteTypes ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ; ConcreteIntPtr state.TypeSystem.ConcreteTypes ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "CryptoNative_EvpDigestReset"
             let handle = ctxHandleOfArgument operation "ctx" instruction.Arguments.[0]
             let algorithm = algorithmOfEvpMd operation "type" instruction.Arguments.[1]
@@ -249,10 +249,10 @@ module NativeCryptoNative =
         // `int32_t CryptoNative_EvpDigestUpdate(EVP_MD_CTX* ctx, const void* d, int32_t cnt)`:
         // `EVP_DigestUpdate(ctx, d, (size_t)cnt)`.
         | Some "CryptoNative_EvpDigestUpdate",
-          [ ConcreteIntPtr state.ConcreteTypes
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes
             ConcretePointer _
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "CryptoNative_EvpDigestUpdate"
             let handle = ctxHandleOfArgument operation "ctx" instruction.Arguments.[0]
             let count = NativeCall.int32Argument operation instruction.Arguments.[2]
@@ -283,8 +283,8 @@ module NativeCryptoNative =
         // `int32_t CryptoNative_EvpDigestFinalEx(EVP_MD_CTX* ctx, uint8_t* md, uint32_t* s)`:
         // `EVP_DigestFinal_ex`, after which the context accepts only a reset.
         | Some "CryptoNative_EvpDigestFinalEx",
-          [ ConcreteIntPtr state.ConcreteTypes ; ConcretePointer _ ; ConcretePointer _ ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ; ConcretePointer _ ; ConcretePointer _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "CryptoNative_EvpDigestFinalEx"
             let handle = ctxHandleOfArgument operation "ctx" instruction.Arguments.[0]
 
@@ -308,8 +308,8 @@ module NativeCryptoNative =
         // `EVP_DigestFinal_ex` on an `EVP_MD_CTX_copy_ex` of the context, so the context itself
         // keeps running.
         | Some "CryptoNative_EvpDigestCurrent",
-          [ ConcreteIntPtr state.ConcreteTypes ; ConcretePointer _ ; ConcretePointer _ ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ; ConcretePointer _ ; ConcretePointer _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "CryptoNative_EvpDigestCurrent"
             let handle = ctxHandleOfArgument operation "ctx" instruction.Arguments.[0]
 
@@ -328,12 +328,12 @@ module NativeCryptoNative =
         // int32_t sourceSize, uint8_t* md, uint32_t* mdSize)`: init, update and final on a
         // context of its own.
         | Some "CryptoNative_EvpDigestOneShot",
-          [ ConcreteIntPtr state.ConcreteTypes
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes
             ConcretePointer _
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
             ConcretePointer _
             ConcretePointer _ ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "CryptoNative_EvpDigestOneShot"
             let algorithm = algorithmOfEvpMd operation "type" instruction.Arguments.[0]
             let sourceSize = NativeCall.int32Argument operation instruction.Arguments.[2]

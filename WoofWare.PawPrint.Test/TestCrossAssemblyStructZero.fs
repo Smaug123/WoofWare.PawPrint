@@ -186,8 +186,14 @@ class Program
         let state = IlMachineState.initial loggerFactory runtimeDirs corelib
 
         let state =
-            { state.WithLoadedAssembly lib with
-                ConcreteTypes = Corelib.concretizeAll state._LoadedAssemblies bct AllConcreteTypes.Empty
+            let initialState = state.WithLoadedAssembly lib
+
+            { initialState with
+                TypeSystem =
+                    { initialState.TypeSystem with
+                        ConcreteTypes =
+                            Corelib.concretizeAll state.TypeSystem._LoadedAssemblies bct AllConcreteTypes.Empty
+                    }
             }
 
         let sTypeDef =
@@ -206,7 +212,7 @@ class Program
 
         // Concretizing `S` itself does not touch its fields, so `ArrCopy.Dep` must still be absent.
         // If a future change primes it here, every assertion below would hold for the wrong reason.
-        state._LoadedAssemblies.DefinitionNames
+        state.TypeSystem._LoadedAssemblies.DefinitionNames
         |> Seq.exists (fun (name : string) -> name.StartsWith ("ArrCopy.Dep,", System.StringComparison.Ordinal))
         |> shouldEqual false
 

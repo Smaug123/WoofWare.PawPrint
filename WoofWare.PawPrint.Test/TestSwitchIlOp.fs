@@ -123,8 +123,13 @@ module TestSwitchIlOp =
             ]
 
     let private initialState (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) : IlMachineState =
-        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
-            ConcreteTypes = concreteTypes
+        let initialState = IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+
+        { initialState with
+            TypeSystem =
+                { initialState.TypeSystem with
+                    ConcreteTypes = concreteTypes
+                }
         }
 
     let private methodWithSwitch
@@ -175,9 +180,9 @@ module TestSwitchIlOp =
         let methodState =
             match
                 MethodState.Empty
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     baseClassTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     corelib
                     method
                     ImmutableArray.Empty

@@ -35,8 +35,13 @@ module TestSameWidthStoreIntoNamedCell =
     let private loggerFactory = snd (LoggerFactory.makeTest ())
 
     let private preparedState : IlMachineState =
-        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
-            ConcreteTypes = Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
+        let initialState = IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+
+        { initialState with
+            TypeSystem =
+                { initialState.TypeSystem with
+                    ConcreteTypes = Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
+                }
         }
 
     type private CellKind =
@@ -67,7 +72,7 @@ module TestSameWidthStoreIntoNamedCell =
         ]
         |> List.map (fun (name, typeInfo) ->
             let handle =
-                AllConcreteTypes.getRequiredNonGenericHandle preparedState.ConcreteTypes typeInfo
+                AllConcreteTypes.getRequiredNonGenericHandle preparedState.TypeSystem.ConcreteTypes typeInfo
 
             let zero, _ = IlMachineState.cliTypeZeroOfHandle preparedState bct handle
 
@@ -79,10 +84,10 @@ module TestSameWidthStoreIntoNamedCell =
         )
 
     let private objectHandle : ConcreteTypeHandle =
-        AllConcreteTypes.getRequiredNonGenericHandle preparedState.ConcreteTypes bct.Object
+        AllConcreteTypes.getRequiredNonGenericHandle preparedState.TypeSystem.ConcreteTypes bct.Object
 
     let private storageDeclared : ConcreteTypeHandle =
-        AllConcreteTypes.getRequiredNonGenericHandle preparedState.ConcreteTypes bct.TypedReference
+        AllConcreteTypes.getRequiredNonGenericHandle preparedState.TypeSystem.ConcreteTypes bct.TypedReference
 
     /// The payloads the primitive `stind` opcodes store, as `EvalStackValue.toCliTypeCoerced`
     /// shapes them: `stind.i1`, `.i2`, `.i4`, `.i8`, `.i`, `.r4` and `.r8`.
@@ -124,7 +129,12 @@ module TestSameWidthStoreIntoNamedCell =
             if withReference then
                 yield field refId objectHandle (CliType.ObjectRef (Some (ManagedHeapAddress.ManagedHeapAddress 7)))
         ]
-        |> SynthesisedLayoutKind.ofFields bct preparedState.ConcreteTypes storageDeclared Layout.Default CharSet.Ansi
+        |> SynthesisedLayoutKind.ofFields
+            bct
+            preparedState.TypeSystem.ConcreteTypes
+            storageDeclared
+            Layout.Default
+            CharSet.Ansi
 
     type private Route =
         /// `[Field Cell]`: `ldflda` of the cell, then `stind`.

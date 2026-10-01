@@ -39,7 +39,7 @@ module UnhandledExceptionReport =
         (state : IlMachineState)
         : (TypeInfo<GenericParamFromMetadata, TypeDefn> * ConcreteTypeHandle) option
         =
-        state._LoadedAssemblies.DefinitionNamesInLoadOrder
+        state.TypeSystem._LoadedAssemblies.DefinitionNamesInLoadOrder
         |> Seq.tryFind (AssemblyDefinitionName.isNamed "System.Private.CoreLib")
         |> Option.bind state.LoadedAssembly
         |> Option.bind (fun corelib ->
@@ -47,7 +47,7 @@ module UnhandledExceptionReport =
             |> Seq.tryFind (fun ti -> ti.Namespace = "System" && ti.Name = "Exception")
         )
         |> Option.bind (fun exceptionType ->
-            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes exceptionType.Identity
+            AllConcreteTypes.findExistingNonGenericConcreteType state.TypeSystem.ConcreteTypes exceptionType.Identity
             |> Option.map (fun handle -> exceptionType, handle)
         )
 
@@ -75,7 +75,7 @@ module UnhandledExceptionReport =
         }
 
     let private typeName (state : IlMachineState) (handle : ConcreteTypeHandle) : string =
-        match AllConcreteTypes.lookup handle state.ConcreteTypes with
+        match AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes with
         | None -> $"<type %O{handle}>"
         | Some ty ->
             match state.LoadedAssembly ty.AssemblyFullName with

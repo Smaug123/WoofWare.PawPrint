@@ -408,8 +408,8 @@ module ContextSwitchPrior =
         // Token-resolution ops. Each resolves a type / method / field
         // token through `IlMachineState.resolveTypeMetadataToken` /
         // `ExecutionConcretizationModule.concretizeMethodForExecution`,
-        // both of which lazily populate `state.ConcreteTypes` and may
-        // load assemblies into `_LoadedAssemblies`.
+        // both of which lazily populate `state.TypeSystem.ConcreteTypes` and may
+        // load assemblies into `TypeSystem._LoadedAssemblies`.
         //   - `Ldftn`: `concretizeMethodForExecution` + `resolveMember`.
         //   - `Sizeof`: `resolveTypeMetadataToken` + `concretizeType`.
         //   - `Constrained`: prefix that resolves the constrained type.
@@ -423,7 +423,7 @@ module ContextSwitchPrior =
         // identity, so their *values* are deterministic once filled and
         // only their fill order varies with the schedule — bookkeeping
         // leakage, which on its own would band these `InterpreterOnly`.
-        // `_LoadedAssemblies` is not in that position: it is exactly what
+        // `TypeSystem._LoadedAssemblies` is not in that position: it is exactly what
         // `AppDomain.GetAssemblies()` reports, both in membership and in
         // order, so which of two threads first touches a type from an
         // as-yet-unloaded assembly is directly guest-readable. (That

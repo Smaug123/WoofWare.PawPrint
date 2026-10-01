@@ -42,8 +42,13 @@ module TestVirtualMethodSlots =
     let private loggerFactory = snd (LoggerFactory.makeTest ())
 
     let private state () : IlMachineState =
-        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
-            ConcreteTypes = concreteTypes
+        let initialState = IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+
+        { initialState with
+            TypeSystem =
+                { initialState.TypeSystem with
+                    ConcreteTypes = concreteTypes
+                }
         }
 
     let private concretize
@@ -57,7 +62,7 @@ module TestVirtualMethodSlots =
             | None -> failwith $"%s{``namespace``}.%s{name} not found in corelib"
             | Some typeInfo -> typeInfo
 
-        LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
+        LoadedTypeInfo.typeInfoToTypeDefn' bct state.TypeSystem._LoadedAssemblies typeInfo
         |> IlMachineState.concretizeType
             loggerFactory
             bct
@@ -83,7 +88,7 @@ module TestVirtualMethodSlots =
             | Some typeInfo -> typeInfo
 
         let openDefn =
-            LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
+            LoadedTypeInfo.typeInfoToTypeDefn' bct state.TypeSystem._LoadedAssemblies typeInfo
 
         let state, argHandles =
             ((state, []), args)
@@ -349,7 +354,7 @@ module TestVirtualMethodSlots =
             | Some typeInfo -> typeInfo
 
         let openDefn =
-            LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
+            LoadedTypeInfo.typeInfoToTypeDefn' bct state.TypeSystem._LoadedAssemblies typeInfo
 
         // `typeInfoToTypeDefn'` already yields the instantiation shape `INumberBase`1<!0>`, so close
         // it by supplying Int32 as the type-generic context rather than by wrapping it again.

@@ -234,7 +234,9 @@ module TestNativeRuntimeFieldHandlePointerFields =
         : ManagedHeapAddress * IlMachineState
         =
         let handle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes (primitive fixtures.Get.BaseClassTypes)
+            AllConcreteTypes.getRequiredNonGenericHandle
+                state.TypeSystem.ConcreteTypes
+                (primitive fixtures.Get.BaseClassTypes)
 
         Boxing.boxValueType fixtures.Get.LoggerFactory fixtures.Get.BaseClassTypes handle value state
 
@@ -289,7 +291,9 @@ module TestNativeRuntimeFieldHandlePointerFields =
 
         boxed.ConcreteType
         |> shouldEqual (
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixtures.Get.BaseClassTypes.IntPtr
+            AllConcreteTypes.getRequiredNonGenericHandle
+                state.TypeSystem.ConcreteTypes
+                fixtures.Get.BaseClassTypes.IntPtr
         )
 
         BoxedValue.contents fixtures.Get.BaseClassTypes boxed.ConcreteType boxed.Contents state

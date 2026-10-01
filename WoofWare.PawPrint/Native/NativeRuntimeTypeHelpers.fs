@@ -102,7 +102,9 @@ module NativeRuntimeTypeHelpers =
         else
 
         let intPtrType =
-            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.IntPtr.Identity
+            AllConcreteTypes.findExistingNonGenericConcreteType
+                state.TypeSystem.ConcreteTypes
+                baseClassTypes.IntPtr.Identity
             |> Option.defaultWith (fun () ->
                 failwith $"%s{operation}: System.IntPtr is not concretized, so the buffer cannot be strided"
             )
@@ -219,7 +221,7 @@ module NativeRuntimeTypeHelpers =
         | ConcreteTypeHandle.Array _ -> state, []
         | ConcreteTypeHandle.Concrete _ ->
             let concreteType =
-                AllConcreteTypes.lookup typeHandle state.ConcreteTypes
+                AllConcreteTypes.lookup typeHandle state.TypeSystem.ConcreteTypes
                 |> Option.defaultWith (fun () ->
                     failwith $"%s{operation}: concrete type handle was not registered: %O{typeHandle}"
                 )
@@ -239,7 +241,7 @@ module NativeRuntimeTypeHelpers =
         (typeInfo : TypeInfo<_, _>)
         : int32
         =
-        if LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+        if LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo then
             0x11
         else
             0x12
@@ -289,8 +291,8 @@ module NativeRuntimeTypeHelpers =
         | RuntimeTypeHandleTarget.FunctionPointer _ -> 0x1B
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             match typeHandle with
-            | ConcreteVoid state.ConcreteTypes -> 0x01
-            | ConcretePrimitive state.ConcreteTypes primitive -> primitiveCorElementType primitive
+            | ConcreteVoid state.TypeSystem.ConcreteTypes -> 0x01
+            | ConcretePrimitive state.TypeSystem.ConcreteTypes primitive -> primitiveCorElementType primitive
             | ConcreteTypeHandle.Byref _ -> 0x10
             | ConcreteTypeHandle.Pointer _ -> 0x0F
             | ConcreteTypeHandle.FunctionPointer _ -> 0x1B
@@ -298,7 +300,7 @@ module NativeRuntimeTypeHelpers =
             | ConcreteTypeHandle.Array _ -> 0x14
             | ConcreteTypeHandle.Concrete _ ->
                 let concreteType =
-                    AllConcreteTypes.lookup typeHandle state.ConcreteTypes
+                    AllConcreteTypes.lookup typeHandle state.TypeSystem.ConcreteTypes
                     |> Option.defaultWith (fun () ->
                         failwith $"%s{operation}: concrete type handle was not registered: %O{typeHandle}"
                     )
@@ -332,10 +334,10 @@ module NativeRuntimeTypeHelpers =
         : int32
         =
         match methodTableFor with
-        | ConcretePrimitive state.ConcreteTypes primitive -> primitiveCorElementType primitive
+        | ConcretePrimitive state.TypeSystem.ConcreteTypes primitive -> primitiveCorElementType primitive
         | ConcreteTypeHandle.Concrete _ ->
             let concreteType =
-                AllConcreteTypes.lookup methodTableFor state.ConcreteTypes
+                AllConcreteTypes.lookup methodTableFor state.TypeSystem.ConcreteTypes
                 |> Option.defaultWith (fun () ->
                     failwith $"%s{operation}: concrete type handle was not registered: %O{methodTableFor}"
                 )
@@ -501,7 +503,7 @@ module NativeRuntimeTypeHelpers =
                     failwith
                         $"MethodTable_CanCompareBitsOrUseFastGetHashCode: concrete type handle was not registered: %O{methodTableFor}"
 
-            if not (LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo) then
+            if not (LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo) then
                 failwith
                     $"MethodTable_CanCompareBitsOrUseFastGetHashCode: expected value-type MethodTable, got %s{typeInfo.Namespace}.%s{typeInfo.Name}"
 
@@ -664,7 +666,7 @@ module NativeRuntimeTypeHelpers =
             match typeHandle with
             | ConcreteTypeHandle.Concrete _ ->
                 let concreteType =
-                    AllConcreteTypes.lookup typeHandle state.ConcreteTypes
+                    AllConcreteTypes.lookup typeHandle state.TypeSystem.ConcreteTypes
                     |> Option.defaultWith (fun () ->
                         failwith $"%s{operation}: concrete type handle was not registered: %O{typeHandle}"
                     )
@@ -699,7 +701,7 @@ module NativeRuntimeTypeHelpers =
                 $"getOrAllocateNonGenericRuntimeType: expected non-generic runtime type for %s{typeInfo.Name}, but metadata has %i{typeInfo.Generics.Length} generic parameters"
 
         let stk =
-            LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies typeInfo
+            LoadedTypeInfo.signatureTypeKind baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo
 
         let state, typeHandle =
             IlMachineState.concretizeType
@@ -748,7 +750,7 @@ module NativeRuntimeTypeHelpers =
         | None -> None, state
         | Some declaringTypeInfo when declaringTypeInfo.Generics.IsEmpty ->
             let stk =
-                LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies declaringTypeInfo
+                LoadedTypeInfo.signatureTypeKind baseClassTypes state.TypeSystem._LoadedAssemblies declaringTypeInfo
 
             let state, typeHandle =
                 IlMachineState.concretizeType
@@ -859,7 +861,7 @@ module NativeRuntimeTypeHelpers =
             | ConcreteTypeHandle.Array _ -> None, state
             | ConcreteTypeHandle.Concrete _ ->
                 let concreteType =
-                    AllConcreteTypes.lookup typeHandle state.ConcreteTypes
+                    AllConcreteTypes.lookup typeHandle state.TypeSystem.ConcreteTypes
                     |> Option.defaultWith (fun () ->
                         failwith
                             $"RuntimeTypeHandle.GetDeclaringType: concrete type handle was not registered: %O{typeHandle}"
@@ -1041,7 +1043,7 @@ module NativeRuntimeTypeHelpers =
         let typeInfo = findCorelibType baseClassTypes ``namespace`` name
 
         let stk =
-            LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies typeInfo
+            LoadedTypeInfo.signatureTypeKind baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo
 
         let state, typeHandle =
             IlMachineState.concretizeType
@@ -1129,7 +1131,7 @@ module NativeRuntimeTypeHelpers =
         // to — but callers here have it to hand already, so it stays in the signature and is
         // checked against the handle rather than trusted.
         let resolved =
-            AllConcreteTypes.lookup typeHandle state.ConcreteTypes
+            AllConcreteTypes.lookup typeHandle state.TypeSystem.ConcreteTypes
             |> Option.defaultWith (fun () ->
                 failwith
                     $"allocateManagedObjectOfConcreteType: ConcreteTypeHandle %O{typeHandle} not found in AllConcreteTypes"
@@ -1197,7 +1199,7 @@ module NativeRuntimeTypeHelpers =
                 genericArguments
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as typeHandle) ->
             let concreteType =
-                AllConcreteTypes.lookup typeHandle state.ConcreteTypes
+                AllConcreteTypes.lookup typeHandle state.TypeSystem.ConcreteTypes
                 |> Option.defaultWith (fun () ->
                     failwith $"%s{operation}: concrete type handle was not registered: %O{typeHandle}"
                 )
@@ -1252,7 +1254,7 @@ module NativeRuntimeTypeHelpers =
                 $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeHelpers.fs:%s{__LINE__}; got %O{openConstructed}"
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity -> lookupFromIdentity identity
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
-            match AllConcreteTypes.lookup handle state.ConcreteTypes with
+            match AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes with
             | None -> None
             | Some concreteType -> lookupFromIdentity concreteType.Identity
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
@@ -1282,7 +1284,7 @@ module NativeRuntimeTypeHelpers =
         =
         match arg with
         | ConcreteTypeHandle.Concrete _ ->
-            match AllConcreteTypes.lookup arg state.ConcreteTypes with
+            match AllConcreteTypes.lookup arg state.TypeSystem.ConcreteTypes with
             | None -> None
             | Some concreteType ->
                 match state.LoadedAssembly concreteType.AssemblyFullName with
@@ -1303,7 +1305,7 @@ module NativeRuntimeTypeHelpers =
         =
         match nominalTypeInfoOfArgument state arg with
         | None -> false // arrays / byref / pointer are not value types
-        | Some typeInfo -> LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo
+        | Some typeInfo -> LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo
 
     /// True iff `arg` is the corelib's `System.Nullable\`1` definition. Roslyn emits
     /// the value-type constraint for `where T : struct` as the
@@ -1333,7 +1335,7 @@ module NativeRuntimeTypeHelpers =
         match nominalTypeInfoOfArgument state arg with
         | None -> false
         | Some typeInfo ->
-            if LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+            if LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo then
                 true
             elif typeInfo.IsInterface then
                 false
@@ -1354,8 +1356,8 @@ module NativeRuntimeTypeHelpers =
         =
         RuntimeTypeHandleTarget.isByRefLike
             baseClassTypes
-            state._LoadedAssemblies
-            state.ConcreteTypes
+            state.TypeSystem._LoadedAssemblies
+            state.TypeSystem.ConcreteTypes
             (RuntimeTypeHandleTarget.Closed arg)
 
     /// Why CoreCLR's type loader will not construct an szarray over `element`, if it will not.
@@ -1376,18 +1378,27 @@ module NativeRuntimeTypeHelpers =
         | RuntimeTypeHandleTarget.Composite (CompositeShape.Byref, _) -> state, Some SzArrayElementRefusal.ByRef
         | _ ->
 
-        if RuntimeTypeHandleTarget.isByRefLike baseClassTypes state._LoadedAssemblies state.ConcreteTypes element then
+        if
+            RuntimeTypeHandleTarget.isByRefLike
+                baseClassTypes
+                state.TypeSystem._LoadedAssemblies
+                state.TypeSystem.ConcreteTypes
+                element
+        then
             state, Some SzArrayElementRefusal.ByRefLike
         else
 
         match element with
         // `TypeHandle::GetSignatureCorElementType() == ELEMENT_TYPE_VOID`: only the `System.Void`
         // MethodTable itself, never a shape over it.
-        | RuntimeTypeHandleTarget.Closed (ConcreteVoid state.ConcreteTypes) -> state, Some SzArrayElementRefusal.Void
+        | RuntimeTypeHandleTarget.Closed (ConcreteVoid state.TypeSystem.ConcreteTypes) ->
+            state, Some SzArrayElementRefusal.Void
         | (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity | RuntimeTypeHandleTarget.OpenConstructed (identity,
                                                                                                                  _)) when
-            state._LoadedAssemblies.ByDefinitionName(identity.AssemblyFullName).TypeDefs.[identity.TypeDefinition.Get]
-            |> LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies
+            state.TypeSystem._LoadedAssemblies
+                .ByDefinitionName(identity.AssemblyFullName)
+                .TypeDefs.[identity.TypeDefinition.Get]
+            |> LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies
             ->
             // Real .NET applies the size limit to an open value type too, sizing its canonical
             // form: measured on .NET 10, `BigWrapper<>[]` and `BigWrapper<T>[]` throw where
@@ -1716,7 +1727,7 @@ module NativeRuntimeTypeHelpers =
             )
 
         let stk =
-            LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies moduleTypeInfo
+            LoadedTypeInfo.signatureTypeKind baseClassTypes state.TypeSystem._LoadedAssemblies moduleTypeInfo
 
         let state, moduleTypeHandle =
             IlMachineState.concretizeType
@@ -1874,7 +1885,7 @@ module NativeRuntimeTypeHelpers =
                 $"%s{concreteTypeHandleName inner}[%s{dims}]"
             | ConcreteTypeHandle.Concrete _ ->
                 let concreteType =
-                    AllConcreteTypes.lookup typeHandle state.ConcreteTypes
+                    AllConcreteTypes.lookup typeHandle state.TypeSystem.ConcreteTypes
                     |> Option.defaultWith (fun () ->
                         failwith $"%s{operation}: concrete type handle was not registered: %O{typeHandle}"
                     )
@@ -2152,7 +2163,7 @@ module NativeRuntimeTypeHelpers =
                 $"%s{getNameOfHandle inner}[%s{dims}]"
             | ConcreteTypeHandle.Concrete _ ->
                 let concreteType =
-                    AllConcreteTypes.lookup handle state.ConcreteTypes
+                    AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes
                     |> Option.defaultWith (fun () ->
                         failwith $"%s{operation}: concrete type handle was not registered: %O{handle}"
                     )
@@ -2350,12 +2361,15 @@ module NativeRuntimeTypeHelpers =
         // thing that touches it. Same discharge as `ExecutionConcretization.concretizeFieldDeclaringType`.
         let state =
             { state with
-                _LoadedAssemblies =
-                    BaseChainLoading.ensureTypeDefinitionBaseAssembliesLoaded
-                        (IlMachineState.loader loggerFactory state)
-                        state._LoadedAssemblies
-                        assembly
-                        method.RequiredDeclaringType.Definition.Get
+                TypeSystem =
+                    { state.TypeSystem with
+                        _LoadedAssemblies =
+                            BaseChainLoading.ensureTypeDefinitionBaseAssembliesLoaded
+                                (IlMachineState.loader loggerFactory state)
+                                state.TypeSystem._LoadedAssemblies
+                                assembly
+                                method.RequiredDeclaringType.Definition.Get
+                    }
             }
 
         let state, declaringTypeDefn =
@@ -2476,7 +2490,7 @@ module ActivationInfo =
         | ConcreteTypeHandle.Concrete _ ->
 
         let ct, typeInfo =
-            AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes handle
+            AllConcreteTypes.tryTypeInfo state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes handle
             |> Option.defaultWith (fun () ->
                 failwith $"%s{operation}: ConcreteTypeHandle %O{handle} not found in AllConcreteTypes"
             )
@@ -2495,7 +2509,7 @@ module ActivationInfo =
             match directBase with
             | None -> false
             | Some baseHandle ->
-                match AllConcreteTypes.lookup baseHandle state.ConcreteTypes with
+                match AllConcreteTypes.lookup baseHandle state.TypeSystem.ConcreteTypes with
                 | None -> false
                 | Some baseCt -> baseCt.Identity = baseClassTypes.MulticastDelegateType.Identity
 
@@ -2519,7 +2533,7 @@ module ActivationInfo =
         | InternalTypeKind.NativeUInt ->
 
         let isValueType =
-            LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo
+            LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo
 
         // Visibility-blind, matching CoreCLR's `HasDefaultConstructor` / `GetDefaultConstructor`:
         // a private parameterless ctor *is* found, and its publicness is reported separately so
@@ -2641,7 +2655,7 @@ module BoxInfo =
         | ConcreteTypeHandle.Concrete _ ->
 
         let ct, typeInfo =
-            AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes handle
+            AllConcreteTypes.tryTypeInfo state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes handle
             |> Option.defaultWith (fun () ->
                 failwith $"%s{operation}: ConcreteTypeHandle %O{handle} not found in AllConcreteTypes"
             )
@@ -2651,10 +2665,10 @@ module BoxInfo =
         // wave it through.
         if TypeInfo.NominallyEqual typeInfo baseClassTypes.Void then
             state, BoxInfo.Rejected BoxRejection.Void
-        elif not (LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo) then
+        elif not (LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo) then
             failwith
                 $"%s{operation}: reached for the reference type %s{typeInfo.Namespace}.%s{typeInfo.Name}; RuntimeType.BoxCache calls this QCall only when MethodTable::IsValueType"
-        elif LoadedTypeInfo.isByRefLike baseClassTypes state._LoadedAssemblies typeInfo then
+        elif LoadedTypeInfo.isByRefLike baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo then
             state, BoxInfo.Rejected BoxRejection.ByRefLike
         else
 
@@ -2795,7 +2809,7 @@ module UninitializedObjectInfo =
         | None -> state, false
         | Some baseTypeInfo ->
             let definingAssembly =
-                state._LoadedAssemblies.ByDefinitionName typeInfo.AssemblyFullName
+                state.TypeSystem._LoadedAssemblies.ByDefinitionName typeInfo.AssemblyFullName
 
             let state, _, baseDefn =
                 IlMachineState.resolveBaseTypeInfo loggerFactory baseClassTypes state definingAssembly baseTypeInfo
@@ -2840,7 +2854,9 @@ module UninitializedObjectInfo =
         : IlMachineState * UninitializedObjectInfo
         =
         let typeInfoOfIdentity (identity : ResolvedTypeIdentity) : TypeInfo<GenericParamFromMetadata, TypeDefn> =
-            state._LoadedAssemblies.ByDefinitionName(identity.AssemblyFullName).TypeDefs.[identity.TypeDefinition.Get]
+            state.TypeSystem._LoadedAssemblies
+                .ByDefinitionName(identity.AssemblyFullName)
+                .TypeDefs.[identity.TypeDefinition.Get]
 
         match target with
         | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
@@ -2876,7 +2892,7 @@ module UninitializedObjectInfo =
         | ConcreteTypeHandle.Concrete _ ->
 
         let ct, typeInfo =
-            AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes handle
+            AllConcreteTypes.tryTypeInfo state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes handle
             |> Option.defaultWith (fun () ->
                 failwith $"%s{operation}: ConcreteTypeHandle %O{handle} not found in AllConcreteTypes"
             )
@@ -2894,7 +2910,7 @@ module UninitializedObjectInfo =
             state, UninitializedObjectInfo.Rejected UninitializedObjectRejection.VariableLength
         elif typeInfo.TypeAttributes.HasFlag TypeAttributes.Abstract then
             state, UninitializedObjectInfo.Rejected UninitializedObjectRejection.Abstract
-        elif LoadedTypeInfo.isByRefLike baseClassTypes state._LoadedAssemblies typeInfo then
+        elif LoadedTypeInfo.isByRefLike baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo then
             state, UninitializedObjectInfo.Rejected UninitializedObjectRejection.ByRefLike
         else
 
@@ -2920,7 +2936,7 @@ module UninitializedObjectInfo =
 
         let isPrecise (handle : ConcreteTypeHandle) : bool =
             let _, typeInfo =
-                AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes handle
+                AllConcreteTypes.tryTypeInfo state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes handle
                 |> Option.defaultWith (fun () ->
                     failwith $"%s{operation}: ancestor %O{handle} of %O{methodTable} not found in AllConcreteTypes"
                 )

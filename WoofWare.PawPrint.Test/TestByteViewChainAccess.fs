@@ -60,8 +60,13 @@ module TestByteViewChainAccess =
     /// does after `Concretization.concretizeMethod`'s priming sweep.
     let private prepared : IlMachineState * Element list =
         let initial =
-            { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
-                ConcreteTypes = Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
+            let initialState = IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+
+            { initialState with
+                TypeSystem =
+                    { initialState.TypeSystem with
+                        ConcreteTypes = Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
+                    }
             }
 
         ((initial, []), universe)
@@ -72,7 +77,7 @@ module TestByteViewChainAccess =
                 | None -> failwith $"%s{ns}.%s{name} not found in corelib"
 
             let state, handle =
-                LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
+                LoadedTypeInfo.typeInfoToTypeDefn' bct state.TypeSystem._LoadedAssemblies typeInfo
                 |> IlMachineState.concretizeType
                     loggerFactory
                     bct
@@ -98,7 +103,7 @@ module TestByteViewChainAccess =
     let private elements : Element list = snd prepared
 
     let private storageDeclared : ConcreteTypeHandle =
-        AllConcreteTypes.getRequiredNonGenericHandle preparedState.ConcreteTypes bct.TypedReference
+        AllConcreteTypes.getRequiredNonGenericHandle preparedState.TypeSystem.ConcreteTypes bct.TypedReference
 
     let private elementCount : int = 3
 
@@ -117,7 +122,12 @@ module TestByteViewChainAccess =
                 MarshallingDescriptor = None
             }
         )
-        |> SynthesisedLayoutKind.ofFields bct preparedState.ConcreteTypes storageDeclared Layout.Default CharSet.Ansi
+        |> SynthesisedLayoutKind.ofFields
+            bct
+            preparedState.TypeSystem.ConcreteTypes
+            storageDeclared
+            Layout.Default
+            CharSet.Ansi
 
     let private fieldsOf (value : CliType) : CliField list =
         match value with

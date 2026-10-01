@@ -82,7 +82,7 @@ static class Program
     /// Every method the run entered is concretised on the way in, so the memo's values are the
     /// set of methods that ran at least once.
     let private enteredMethodNamed (name : string) (state : IlMachineState) : bool =
-        state._ConcretisedMethods
+        state.TypeSystem._ConcretisedMethods
         |> Map.exists (fun _ concretised -> concretised.Method.Name = name)
 
     [<Test>]

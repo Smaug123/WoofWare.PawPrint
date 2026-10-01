@@ -172,7 +172,8 @@ module ExceptionDispatching =
         match state.LoadedAssembly name with
         | Some assy -> assy
         | None ->
-            let available = state._LoadedAssemblies.DefinitionNames |> String.concat " ; "
+            let available =
+                state.TypeSystem._LoadedAssemblies.DefinitionNames |> String.concat " ; "
 
             failwith
                 $"Exception dispatch searching %s{method.Name} needs its declaring assembly %O{name}, which is not loaded; loaded assemblies are: %s{available}"
@@ -800,9 +801,11 @@ module ExceptionDispatching =
             | None -> state, cliException, exceptionType
             | Some finishedInitialising ->
                 let typeFullName =
-                    match AllConcreteTypes.lookup finishedInitialising state.ConcreteTypes with
+                    match AllConcreteTypes.lookup finishedInitialising state.TypeSystem.ConcreteTypes with
                     | Some ct ->
-                        let assy = state._LoadedAssemblies.ByDefinitionName ct.Identity.AssemblyFullName
+                        let assy =
+                            state.TypeSystem._LoadedAssemblies.ByDefinitionName ct.Identity.AssemblyFullName
+
                         Assembly.fullName assy ct.Identity
                     | None ->
                         failwith
@@ -1216,7 +1219,7 @@ module ExceptionDispatching =
         : IlMachineState
         =
         let exceptionHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes corelib.Exception
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes corelib.Exception
 
         [ "_remoteStackTraceString" ; "_stackTrace" ; "_stackTraceString" ]
         |> List.fold
@@ -1372,7 +1375,7 @@ module ExceptionDispatching =
                 $"allocateRuntimeException: exception type %s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name} has %d{exceptionTypeInfo.Generics.Length} generic parameter(s), but this helper only supports non-generic exception types"
 
         let stk =
-            LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies exceptionTypeInfo
+            LoadedTypeInfo.signatureTypeKind baseClassTypes state.TypeSystem._LoadedAssemblies exceptionTypeInfo
 
         let state, exnHandle =
             IlMachineState.concretizeType
@@ -1400,7 +1403,10 @@ module ExceptionDispatching =
         let hresult = hresultForExceptionType baseClassTypes exceptionTypeInfo
 
         let hresultField =
-            FieldIdentity.requiredNonGenericInstanceFieldId state.ConcreteTypes baseClassTypes.Exception "_HResult"
+            FieldIdentity.requiredNonGenericInstanceFieldId
+                state.TypeSystem.ConcreteTypes
+                baseClassTypes.Exception
+                "_HResult"
 
         let state =
             IlMachineState.setInstanceFieldById addr hresultField (CliType.Numeric (CliNumericType.Int32 hresult)) state
@@ -1419,18 +1425,21 @@ module ExceptionDispatching =
         : IlMachineState
         =
         let ct =
-            AllConcreteTypes.lookup exnType state.ConcreteTypes
+            AllConcreteTypes.lookup exnType state.TypeSystem.ConcreteTypes
             |> Option.defaultWith (fun () ->
                 failwith "overwriteHResultPostCtor: ConcreteTypeHandle not found in AllConcreteTypes"
             )
 
         let typeInfo =
-            (state._LoadedAssemblies.ByDefinitionName ct.Identity.AssemblyFullName)
+            (state.TypeSystem._LoadedAssemblies.ByDefinitionName ct.Identity.AssemblyFullName)
                 .TypeDefs.[ct.Identity.TypeDefinition.Get]
 
         let hresult = hresultForExceptionType baseClassTypes typeInfo
 
         let hresultField =
-            FieldIdentity.requiredNonGenericInstanceFieldId state.ConcreteTypes baseClassTypes.Exception "_HResult"
+            FieldIdentity.requiredNonGenericInstanceFieldId
+                state.TypeSystem.ConcreteTypes
+                baseClassTypes.Exception
+                "_HResult"
 
         IlMachineState.setInstanceFieldById exnAddr hresultField (CliType.Numeric (CliNumericType.Int32 hresult)) state

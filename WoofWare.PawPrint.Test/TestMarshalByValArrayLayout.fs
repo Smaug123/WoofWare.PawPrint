@@ -249,7 +249,11 @@ public enum E64 : long { A = 1 }
 
         let state =
             { state with
-                ConcreteTypes = Corelib.concretizeAll state._LoadedAssemblies bct AllConcreteTypes.Empty
+                TypeSystem =
+                    { state.TypeSystem with
+                        ConcreteTypes =
+                            Corelib.concretizeAll state.TypeSystem._LoadedAssemblies bct AllConcreteTypes.Empty
+                    }
             }
 
         state.WithLoadedAssembly corpusAssembly
@@ -274,7 +278,11 @@ public enum E64 : long { A = 1 }
 
         match IlMachineState.cliTypeZeroOfHandle state bct handle with
         | CliType.ValueType vt, state ->
-            CliValueType.TryComputeMarshalLayout state.ConcreteTypes state._LoadedAssemblies bct vt
+            CliValueType.TryComputeMarshalLayout
+                state.TypeSystem.ConcreteTypes
+                state.TypeSystem._LoadedAssemblies
+                bct
+                vt
             |> Result.map (fun (size, placements) ->
                 size.Size, placements |> List.map (fun p -> p.Field.Name, p.NativeOffset)
             )

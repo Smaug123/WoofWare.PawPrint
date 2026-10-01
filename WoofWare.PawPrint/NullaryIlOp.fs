@@ -1178,7 +1178,7 @@ module NullaryIlOp =
             match targetType with
             | LdindI ->
                 let concreteType =
-                    match AllConcreteTypes.lookup handle state.ConcreteTypes with
+                    match AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes with
                     | Some c -> c
                     | None ->
                         failwith $"Ldind on PerInstDictPtr: handle %O{handle} was not registered in AllConcreteTypes"

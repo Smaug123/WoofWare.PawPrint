@@ -294,7 +294,7 @@ module TestImpureCases =
 
     /// Is this the concrete handle for `System.Runtime.ExceptionServices.ExceptionDispatchInfo`?
     let private isExceptionDispatchInfo (state : IlMachineState) (handle : ConcreteTypeHandle) : bool =
-        match AllConcreteTypes.lookup handle state.ConcreteTypes with
+        match AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes with
         | None -> false
         | Some ct ->
             AssemblyDefinitionName.isNamed "System.Private.CoreLib" ct.AssemblyFullName

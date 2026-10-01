@@ -169,7 +169,11 @@ public class H2_BaseThenMarker<A, B> where A : BaseType where B : IMarker { }
             (IlMachineState.initial loggerFactory ImmutableArray.Empty guest).WithLoadedAssembly corelib
 
         { withAssemblies with
-            ConcreteTypes = Corelib.concretizeAll withAssemblies._LoadedAssemblies bct AllConcreteTypes.Empty
+            TypeSystem =
+                { withAssemblies.TypeSystem with
+                    ConcreteTypes =
+                        Corelib.concretizeAll withAssemblies.TypeSystem._LoadedAssemblies bct AllConcreteTypes.Empty
+                }
         }
 
     let private guestType (name : string) : TypeInfo<GenericParamFromMetadata, TypeDefn> =
@@ -192,7 +196,7 @@ public class H2_BaseThenMarker<A, B> where A : BaseType where B : IMarker { }
             let defn =
                 TypeDefn.FromDefinition (
                     typeInfo.Identity,
-                    LoadedTypeInfo.signatureTypeKind bct initialState._LoadedAssemblies typeInfo
+                    LoadedTypeInfo.signatureTypeKind bct initialState.TypeSystem._LoadedAssemblies typeInfo
                 )
 
             name, defn, hostType name

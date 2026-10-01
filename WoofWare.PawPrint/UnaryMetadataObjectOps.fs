@@ -352,7 +352,7 @@ module internal UnaryMetadataObjectOps =
         let allocatedAddr, state =
             let ty =
                 AllConcreteTypes.findExistingConcreteType
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     concretizedCtor.RequiredDeclaringType.Identity
                     concretizedCtor.DeclaringTypeGenerics
                 |> Option.get
@@ -360,7 +360,7 @@ module internal UnaryMetadataObjectOps =
             IlMachineState.allocateManagedObject ty fields state
 
         let state =
-            if LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies ctorType then
+            if LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies ctorType then
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer (heapValueByref allocatedAddr)) thread
             else
@@ -520,8 +520,12 @@ module internal UnaryMetadataObjectOps =
         // measured on real .NET as InvalidProgramException, against `sizeof Span<int>` as a control
         // (legal, answers 16). Universe-independent, because the same IL is illegal either way; it
         // is only *reachable* from a `DynamicScope` operand, because no compiler emits it.
-        match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes typeHandle with
-        | Some (_, boxedDefn) when LoadedTypeInfo.isByRefLike baseClassTypes state._LoadedAssemblies boxedDefn ->
+        match
+            AllConcreteTypes.tryTypeInfo state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes typeHandle
+        with
+        | Some (_, boxedDefn) when
+            LoadedTypeInfo.isByRefLike baseClassTypes state.TypeSystem._LoadedAssemblies boxedDefn
+            ->
             // Don't advance the PC: exception dispatch needs the faulting instruction's offset.
             IlMachineStateExecution.raiseRuntimeExceptionWithMessage
                 loggerFactory
@@ -534,13 +538,14 @@ module internal UnaryMetadataObjectOps =
         | _ ->
 
         let targetType =
-            AllConcreteTypes.lookup typeHandle state.ConcreteTypes |> Option.get
+            AllConcreteTypes.lookup typeHandle state.TypeSystem.ConcreteTypes |> Option.get
 
         let defn =
-            (state._LoadedAssemblies.ByDefinitionName targetType.AssemblyFullName).TypeDefs.[targetType.Definition.Get]
+            (state.TypeSystem._LoadedAssemblies.ByDefinitionName targetType.AssemblyFullName)
+                .TypeDefs.[targetType.Definition.Get]
 
         let toPush, state =
-            if LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies defn then
+            if LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies defn then
                 // Boxing a value type: wrap it in a heap object and push an ObjectRef. A
                 // `Nullable<T>` boxes to null or to a boxed `T`; `boxValue` owns that rule.
                 Boxing.boxValue loggerFactory baseClassTypes typeHandle toBox state
@@ -671,14 +676,17 @@ module internal UnaryMetadataObjectOps =
         | ConcreteTypeHandle.Concrete _ ->
 
         let targetConcreteType, targetDefn =
-            AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes targetConcreteTypeHandle
+            AllConcreteTypes.tryTypeInfo
+                state.TypeSystem._LoadedAssemblies
+                state.TypeSystem.ConcreteTypes
+                targetConcreteTypeHandle
             |> Option.get
 
         let isNullable =
             InternalTypeKind.kind baseClassTypes targetConcreteType = InternalTypeKind.Nullable
 
         let isValueType =
-            LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies targetDefn
+            LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies targetDefn
 
         if isNullable then
             // ECMA-335 III.4.33 / CoreCLR `Nullable::UnBox` (src/coreclr/vm/object.cpp). `box` of a

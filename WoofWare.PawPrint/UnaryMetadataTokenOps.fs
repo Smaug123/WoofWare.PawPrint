@@ -568,7 +568,7 @@ module internal UnaryMetadataTokenOps =
             let state, runtimeTypeHandleHandle =
                 LoadedTypeInfo.typeInfoToTypeDefn'
                     baseClassTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     baseClassTypes.RuntimeTypeHandle
                 |> IlMachineState.concretizeType
                     loggerFactory
@@ -587,15 +587,17 @@ module internal UnaryMetadataTokenOps =
                     runtimeTypeHandleHandle
                     mTypeField
                     (CliType.ObjectRef (Some alloc))
-                    (AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeType)
+                    (AllConcreteTypes.getRequiredNonGenericHandle
+                        state.TypeSystem.ConcreteTypes
+                        baseClassTypes.RuntimeType)
                 |> List.singleton
                 |> CliValueType.OfFields
                     baseClassTypes
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     runtimeTypeHandleHandle
                     (DeclaredTypeFacts.ofTypeInfo
                         baseClassTypes
-                        state._LoadedAssemblies
+                        state.TypeSystem._LoadedAssemblies
                         baseClassTypes.RuntimeTypeHandle)
 
             IlMachineState.pushToEvalStack (CliType.ValueType vt) thread state
@@ -672,8 +674,8 @@ module internal UnaryMetadataTokenOps =
 
                 let concretizationCtx : TypeConcretization.ConcretizationContext<_> =
                     {
-                        ConcreteTypes = state.ConcreteTypes
-                        LoadedAssemblies = state._LoadedAssemblies
+                        ConcreteTypes = state.TypeSystem.ConcreteTypes
+                        LoadedAssemblies = state.TypeSystem._LoadedAssemblies
                         BaseTypes = baseClassTypes
                     }
 
@@ -682,8 +684,11 @@ module internal UnaryMetadataTokenOps =
 
                 let state =
                     { state with
-                        ConcreteTypes = concretizationCtx.ConcreteTypes
-                        _LoadedAssemblies = concretizationCtx.LoadedAssemblies
+                        TypeSystem =
+                            { state.TypeSystem with
+                                ConcreteTypes = concretizationCtx.ConcreteTypes
+                                _LoadedAssemblies = concretizationCtx.LoadedAssemblies
+                            }
                     }
 
                 state, LdtokenTarget.Field (RuntimeTypeHandleTarget.Closed closedDeclaringHandle, h)

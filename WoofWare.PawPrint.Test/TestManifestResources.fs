@@ -197,7 +197,7 @@ public static class Entry
         : ManagedPointerSource * IlMachineState
         =
         let charHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Char
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.Char
 
         let arrayAddr, state =
             IlMachineState.allocateArray
@@ -224,7 +224,7 @@ public static class Entry
         : ManagedPointerSource * IlMachineState
         =
         let uint32Handle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.UInt32
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.UInt32
 
         let arrayAddr, state =
             IlMachineState.allocateArray

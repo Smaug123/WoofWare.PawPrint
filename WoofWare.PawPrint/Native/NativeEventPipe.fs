@@ -84,14 +84,14 @@ module NativeEventPipe =
           "System.Private.CoreLib",
           "System.Diagnostics.Tracing",
           "EventPipeInternal",
-          [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Char)
-            CorelibType state.ConcreteTypes ("System.Diagnostics.Tracing",
-                                             "EventPipeSerializationFormat",
-                                             formatGenerics)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32
+          [ ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Char)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Diagnostics.Tracing",
+                                                        "EventPipeSerializationFormat",
+                                                        formatGenerics)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32
             ConcretePointer _
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt64) when
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt64) when
             formatGenerics.IsEmpty
             ->
             // No tracing session is ever opened in PawPrint, so we always report a zero
@@ -103,7 +103,7 @@ module NativeEventPipe =
           "System.Private.CoreLib",
           "System.Diagnostics.Tracing",
           "EventPipeInternal",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt64 ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt64 ],
           MethodReturnType.Void ->
             // No session was ever enabled; ignore the supplied sessionID.
             state |> justStep |> Some
@@ -112,10 +112,10 @@ module NativeEventPipe =
           "System.Private.CoreLib",
           "System.Diagnostics.Tracing",
           "EventPipeInternal",
-          [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16)
+          [ ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt16)
             ConcreteFunctionPointer _
-            ConcretePointer (ConcreteVoid state.ConcreteTypes) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) ->
+            ConcretePointer (ConcreteVoid state.TypeSystem.ConcreteTypes) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr) ->
             // The provider name (UTF-16, char* in CoreCLR but System.Char in metadata is U2),
             // the unmanaged callback function pointer, and the callback context are all
             // accepted but discarded: PawPrint never invokes the callback or filters by
@@ -128,14 +128,14 @@ module NativeEventPipe =
           "System.Private.CoreLib",
           "System.Diagnostics.Tracing",
           "EventPipeInternal",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32
-            ConcretePointer (ConcreteVoid state.ConcreteTypes)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int64
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32
+            ConcretePointer (ConcreteVoid state.TypeSystem.ConcreteTypes)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr) ->
             let operation = "EventPipeInternal_DefineEvent"
 
             // Validate that the supplied provider handle is one we minted. EventSource only
@@ -156,8 +156,8 @@ module NativeEventPipe =
           "System.Private.CoreLib",
           "System.Diagnostics.Tracing",
           "EventPipeInternal",
-          [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) ->
+          [ ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt16) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr) ->
             // Real EventPipe returns the handle of an already-registered provider with this
             // name, or IntPtr.Zero if none. PawPrint does not retain provider registrations,
             // so the truthful answer is "no provider matches" — return zero. EventSource
@@ -168,7 +168,7 @@ module NativeEventPipe =
           "System.Private.CoreLib",
           "System.Diagnostics.Tracing",
           "EventPipeInternal",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr ],
           MethodReturnType.Void ->
             let operation = "EventPipeInternal_DeleteProvider"
 
@@ -185,10 +185,10 @@ module NativeEventPipe =
           "System.Private.CoreLib",
           "System.Diagnostics.Tracing",
           "EventPipeInternal",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32 ; ConcretePointer guidPtrHandle ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32 ; ConcretePointer guidPtrHandle ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
             (match guidPtrHandle with
-             | CorelibType state.ConcreteTypes ("System", "Guid", guidGenerics) -> guidGenerics.IsEmpty
+             | CorelibType state.TypeSystem.ConcreteTypes ("System", "Guid", guidGenerics) -> guidGenerics.IsEmpty
              | _ -> false)
             ->
             // The C# wrapper takes `ref Guid`, but the LibraryImport source generator marshals
@@ -240,11 +240,11 @@ module NativeEventPipe =
           "System.Private.CoreLib",
           "System.Diagnostics.Tracing",
           "EventPipeInternal",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
             ConcretePointer _
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32
-            ConcretePointer (CorelibType state.ConcreteTypes ("System", "Guid", activityGuidGenerics))
-            ConcretePointer (CorelibType state.ConcreteTypes ("System", "Guid", relatedGuidGenerics)) ],
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32
+            ConcretePointer (CorelibType state.TypeSystem.ConcreteTypes ("System", "Guid", activityGuidGenerics))
+            ConcretePointer (CorelibType state.TypeSystem.ConcreteTypes ("System", "Guid", relatedGuidGenerics)) ],
           MethodReturnType.Void when activityGuidGenerics.IsEmpty && relatedGuidGenerics.IsEmpty ->
             let operation = "EventPipeInternal_WriteEventData"
 
@@ -267,8 +267,8 @@ module NativeEventPipe =
           "System.Private.CoreLib",
           "System.Diagnostics.Tracing",
           "EventPipeInternal",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt64 ; ConcretePointer _ ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt64 ; ConcretePointer _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // No session was ever opened, so reporting "no session info available" is correct.
             // The pSessionInfo out-pointer is left untouched.
             state |> pushInt32 0 ctx.Thread |> Some
@@ -277,8 +277,8 @@ module NativeEventPipe =
           "System.Private.CoreLib",
           "System.Diagnostics.Tracing",
           "EventPipeInternal",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt64 ; ConcretePointer _ ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt64 ; ConcretePointer _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // No session is enabled, so there is never a next event to drain.
             state |> pushInt32 0 ctx.Thread |> Some
 
@@ -286,8 +286,8 @@ module NativeEventPipe =
           "System.Private.CoreLib",
           "System.Diagnostics.Tracing",
           "EventPipeInternal",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt64 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt64 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // No session to signal; report failure.
             state |> pushInt32 0 ctx.Thread |> Some
 
@@ -295,9 +295,9 @@ module NativeEventPipe =
           "System.Private.CoreLib",
           "System.Diagnostics.Tracing",
           "EventPipeInternal",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt64
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt64
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // No session to wait on; report failure immediately rather than blocking.
             state |> pushInt32 0 ctx.Thread |> Some
 

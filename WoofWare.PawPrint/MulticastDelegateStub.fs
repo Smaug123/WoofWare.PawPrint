@@ -90,7 +90,7 @@ module MulticastDelegateStub =
             invokeMethodOf loggerFactory baseClassTypes operation delegateType state
 
         let declaringType =
-            AllConcreteTypes.lookup delegateType state.ConcreteTypes
+            AllConcreteTypes.lookup delegateType state.TypeSystem.ConcreteTypes
             |> Option.defaultWith (fun () ->
                 failwith $"%s{operation}: delegate type %O{delegateType} is not registered in AllConcreteTypes"
             )
@@ -147,7 +147,9 @@ module MulticastDelegateStub =
         let multicast = ManagedHeap.get multicastAddr state.ManagedHeap
 
         let read (field : FieldInfo<GenericParamFromMetadata, TypeDefn>) : CliType =
-            AllocatedNonArrayObject.DereferenceFieldById (DelegateLayout.fieldId state.ConcreteTypes field) multicast
+            AllocatedNonArrayObject.DereferenceFieldById
+                (DelegateLayout.fieldId state.TypeSystem.ConcreteTypes field)
+                multicast
 
         // Read on every step, as CoreCLR's stub reloads both fields on every iteration. Neither
         // changes after `NewMulticastDelegate` publishes the delegate, but the backing array is
@@ -222,7 +224,7 @@ module MulticastDelegateStub =
 
             let delegateType =
                 AllConcreteTypes.findExistingConcreteType
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     instruction.ExecutingMethod.RequiredDeclaringType.Identity
                     instruction.ExecutingMethod.DeclaringTypeGenerics
                 |> Option.defaultWith (fun () ->

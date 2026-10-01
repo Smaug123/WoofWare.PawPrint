@@ -132,7 +132,7 @@ module TestConcurrencyBugs =
     let private exceptionTypeFullName (state : IlMachineState) (addr : ManagedHeapAddress) : string =
         let handle = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
 
-        match AllConcreteTypes.lookup handle state.ConcreteTypes with
+        match AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes with
         | Some ct ->
             if System.String.IsNullOrEmpty ct.Namespace then
                 ct.Name

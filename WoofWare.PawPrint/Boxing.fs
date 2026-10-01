@@ -34,12 +34,12 @@ module internal Boxing =
         : ManagedHeapAddress * IlMachineState
         =
         let targetType, defn =
-            AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes typeHandle
+            AllConcreteTypes.tryTypeInfo state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes typeHandle
             |> Option.defaultWith (fun () ->
                 failwith $"boxValueType: ConcreteTypeHandle %O{typeHandle} is not registered in AllConcreteTypes"
             )
 
-        if not (LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies defn) then
+        if not (LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies defn) then
             failwith
                 $"boxValueType: %s{defn.Namespace}.%s{defn.Name} is not a value type; boxing a reference type is a no-op and must not reach here"
 
@@ -56,7 +56,7 @@ module internal Boxing =
                 // Primitive value on the eval stack (Int32, Int64, Float, etc.)
                 // Construct a CliValueType from the type definition's instance fields
                 let targetAssembly =
-                    state._LoadedAssemblies.ByDefinitionName targetType.AssemblyFullName
+                    state.TypeSystem._LoadedAssemblies.ByDefinitionName targetType.AssemblyFullName
 
                 let instanceFields =
                     defn.Fields
@@ -100,13 +100,13 @@ module internal Boxing =
                         (fun () -> $"%s{defn.Namespace}.%s{defn.Name}")
                         defn.Layout
                         (InlineArrayStorage.effectiveLength
-                            (LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies defn)
+                            (LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies defn)
                             defn.InlineArrayLength)
                     |> CliValueType.OfFields
                         baseClassTypes
-                        state.ConcreteTypes
+                        state.TypeSystem.ConcreteTypes
                         typeHandle
-                        (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies defn)
+                        (DeclaredTypeFacts.ofTypeInfo baseClassTypes state.TypeSystem._LoadedAssemblies defn)
 
                 cvt, state
 
@@ -130,7 +130,7 @@ module internal Boxing =
         : EvalStackValue * IlMachineState
         =
         let targetType =
-            AllConcreteTypes.lookup typeHandle state.ConcreteTypes
+            AllConcreteTypes.lookup typeHandle state.TypeSystem.ConcreteTypes
             |> Option.defaultWith (fun () ->
                 failwith $"boxValue: ConcreteTypeHandle %O{typeHandle} is not registered in AllConcreteTypes"
             )

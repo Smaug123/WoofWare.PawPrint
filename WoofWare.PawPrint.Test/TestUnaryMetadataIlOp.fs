@@ -27,8 +27,13 @@ module TestUnaryMetadataIlOp =
         Corelib.concretizeAll loadedAssemblies baseClassTypes AllConcreteTypes.Empty
 
     let private initialState (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) : IlMachineState =
-        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
-            ConcreteTypes = concreteTypes
+        let initialState = IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+
+        { initialState with
+            TypeSystem =
+                { initialState.TypeSystem with
+                    ConcreteTypes = concreteTypes
+                }
         }
 
     let private methodWithSingleInstruction
@@ -76,9 +81,9 @@ module TestUnaryMetadataIlOp =
         let methodState =
             match
                 MethodState.Empty
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     baseClassTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     corelib
                     method
                     ImmutableArray.Empty
@@ -127,7 +132,7 @@ module TestUnaryMetadataIlOp =
         : IlMachineState * ConcreteTypeHandle
         =
         let typeDefn =
-            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies ty
+            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state.TypeSystem._LoadedAssemblies ty
 
         let state, handle =
             IlMachineState.concretizeType

@@ -237,7 +237,7 @@ public class Box<T>
         : CliType * ManagedPointerSource * IlMachineState
         =
         let objectHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Object
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.Object
 
         let arrayAddr, state =
             IlMachineState.allocateArray
@@ -723,9 +723,9 @@ public class Box<T>
         let fields =
             CliValueType.OfFields
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 handle
-                (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies typeInfo)
+                (DeclaredTypeFacts.ofTypeInfo baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo)
                 allFields
 
         IlMachineState.allocateManagedObject handle fields state
@@ -2289,7 +2289,7 @@ public class Box<T>
 
         MethodHandleRegistry.allocateFreshStubForId
             baseClassTypes
-            state.ConcreteTypes
+            state.TypeSystem.ConcreteTypes
             state
             (fun fields state -> IlMachineState.allocateManagedObject stubType fields state)
             registryId
@@ -3009,7 +3009,7 @@ public class Box<T>
             |> Option.defaultWith (fun () -> failwith "entry assembly has no <Module> type")
 
         let stk =
-            LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies moduleTypeInfo
+            LoadedTypeInfo.signatureTypeKind baseClassTypes state.TypeSystem._LoadedAssemblies moduleTypeInfo
 
         let state, handle =
             IlMachineState.concretizeType

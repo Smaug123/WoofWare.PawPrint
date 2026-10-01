@@ -66,7 +66,7 @@ module internal FieldRvaData =
         let typeGenerics =
             match fieldHandle.GetDeclaringTypeHandle () with
             | RuntimeTypeHandleTarget.Closed declaringTypeHandle ->
-                match AllConcreteTypes.lookup declaringTypeHandle state.ConcreteTypes with
+                match AllConcreteTypes.lookup declaringTypeHandle state.TypeSystem.ConcreteTypes with
                 | Some declaringType -> declaringType.Generics
                 | None ->
                     failwith

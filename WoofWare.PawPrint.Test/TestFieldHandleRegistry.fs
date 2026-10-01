@@ -110,7 +110,7 @@ public class GenericHolder<T>
              ])
             ||> List.fold (fun state ty ->
                 let typeDefn =
-                    LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies ty
+                    LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state.TypeSystem._LoadedAssemblies ty
 
                 let state, _ =
                     IlMachineState.concretizeType
@@ -149,8 +149,8 @@ public class GenericHolder<T>
             if field.DeclaringType.Generics.IsEmpty then
                 let ctx : TypeConcretization.ConcretizationContext<_> =
                     {
-                        ConcreteTypes = state.ConcreteTypes
-                        LoadedAssemblies = state._LoadedAssemblies
+                        ConcreteTypes = state.TypeSystem.ConcreteTypes
+                        LoadedAssemblies = state.TypeSystem._LoadedAssemblies
                         BaseTypes = fixture.BaseClassTypes
                     }
 
@@ -159,8 +159,11 @@ public class GenericHolder<T>
 
                 let state =
                     { state with
-                        ConcreteTypes = ctx.ConcreteTypes
-                        _LoadedAssemblies = ctx.LoadedAssemblies
+                        TypeSystem =
+                            { state.TypeSystem with
+                                ConcreteTypes = ctx.ConcreteTypes
+                                _LoadedAssemblies = ctx.LoadedAssemblies
+                            }
                     }
 
                 RuntimeTypeHandleTarget.Closed handle, state
@@ -190,7 +193,7 @@ public class GenericHolder<T>
         =
         RuntimeFieldInfoStubLayout.value
             fixture.BaseClassTypes
-            state.ConcreteTypes
+            state.TypeSystem.ConcreteTypes
             allocated.ConcreteType
             allocated.Contents
 
@@ -223,13 +226,13 @@ public class GenericHolder<T>
         : ManagedHeapAddress * IlMachineState
         =
         let objectType =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.Object
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes fixture.BaseClassTypes.Object
 
         let contents =
             ([] : CliField list)
             |> SynthesisedLayoutKind.ofFields
                 fixture.BaseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 objectType
                 Layout.Default
                 CharSet.Ansi
@@ -246,7 +249,9 @@ public class GenericHolder<T>
         let allocated = ManagedHeap.get runtimeFieldInfoStubAddr state.ManagedHeap
 
         let runtimeFieldInfoStubType =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.RuntimeFieldInfoStub
+            AllConcreteTypes.getRequiredNonGenericHandle
+                state.TypeSystem.ConcreteTypes
+                fixture.BaseClassTypes.RuntimeFieldInfoStub
 
         allocated.ConcreteType |> shouldEqual runtimeFieldInfoStubType
 
@@ -311,7 +316,7 @@ public class GenericHolder<T>
 
         let declaringType =
             AllConcreteTypes.findExistingNonGenericConcreteType
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 fixture.OtherField.DeclaringType.Identity
             |> Option.defaultWith (fun () -> failwith "HasField was not concretized by the first allocation")
 
@@ -331,7 +336,11 @@ public class GenericHolder<T>
 
         let read =
             Assert.Throws<System.Exception> (fun () ->
-                RuntimeFieldInfoStubLayout.value otherLayout state.ConcreteTypes stub.ConcreteType stub.Contents
+                RuntimeFieldInfoStubLayout.value
+                    otherLayout
+                    state.TypeSystem.ConcreteTypes
+                    stub.ConcreteType
+                    stub.Contents
                 |> ignore<CliType>
             )
 
@@ -510,7 +519,7 @@ public class GenericHolder<T>
         let int32Defn =
             LoadedTypeInfo.typeInfoToTypeDefn'
                 fixture.BaseClassTypes
-                state._LoadedAssemblies
+                state.TypeSystem._LoadedAssemblies
                 fixture.BaseClassTypes.Int32
 
         let openHolderDefn =
@@ -718,11 +727,11 @@ public class GenericHolder<T>
         =
         let runtimeFieldHandleInternalType =
             AllConcreteTypes.getRequiredNonGenericHandle
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 fixture.BaseClassTypes.RuntimeFieldHandleInternal
 
         let intPtrType =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.IntPtr
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes fixture.BaseClassTypes.IntPtr
 
         let field =
             fixture.BaseClassTypes.RuntimeFieldHandleInternal.Fields |> List.exactlyOne
@@ -734,7 +743,7 @@ public class GenericHolder<T>
         |> List.singleton
         |> SynthesisedLayoutKind.ofFields
             fixture.BaseClassTypes
-            state.ConcreteTypes
+            state.TypeSystem.ConcreteTypes
             runtimeFieldHandleInternalType
             Layout.Default
             CharSet.Ansi
@@ -788,7 +797,7 @@ public class GenericHolder<T>
             runtimeTypeHandleGetFieldsMethod fixture state
 
         let intPtrHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.IntPtr
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes fixture.BaseClassTypes.IntPtr
 
         let resultBufferAddr, state =
             IlMachineState.allocateArray
@@ -805,7 +814,7 @@ public class GenericHolder<T>
                 }
 
         let int32Handle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.Int32
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes fixture.BaseClassTypes.Int32
 
         let countAddr, state =
             IlMachineState.allocateArray
@@ -848,9 +857,9 @@ public class GenericHolder<T>
         let methodState =
             match
                 MethodState.Empty
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     fixture.BaseClassTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     fixture.BaseClassTypes.Corelib
                     getFieldsMethod
                     ImmutableArray.Empty
@@ -917,9 +926,9 @@ public class GenericHolder<T>
         let methodState =
             match
                 MethodState.Empty
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     fixture.BaseClassTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     fixture.BaseClassTypes.Corelib
                     getAttributesMethod
                     ImmutableArray.Empty

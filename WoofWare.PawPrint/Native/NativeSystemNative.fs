@@ -1450,13 +1450,13 @@ module NativeSystemNative =
         with
         | Some ("SystemNative_LChflagsCanSetHiddenFlag" | "SystemNative_CanGetHiddenFlag"),
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // PawPrint does not model Unix file flags. Report that hidden flags
             // are unsupported so CoreLib follows the portable attribute path.
             pushInt32 0 ctx |> Some
         | Some "SystemNative_GetSocketAddressSizes",
           [ ConcretePointer _ ; ConcretePointer _ ; ConcretePointer _ ; ConcretePointer _ ],
-          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
             // `int32_t SystemNative_GetSocketAddressSizes(int32_t*, int32_t*,
             // int32_t*, int32_t*)` (pal_networking.c:700): four `sizeof`s of the
             // shim's own compile, with no socket, no errno and no state involved.
@@ -1522,8 +1522,8 @@ module NativeSystemNative =
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_GetAddressFamily",
-          [ ConcretePointer _ ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ; ConcretePointer _ ],
-          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+          [ ConcretePointer _ ; ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ; ConcretePointer _ ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
             // `int32_t SystemNative_GetAddressFamily(const uint8_t* socketAddress,
             // int32_t socketAddressLen, int32_t* addressFamily)`
             // (pal_networking.c:714). Reads the family out of a blob the guest
@@ -1587,9 +1587,9 @@ module NativeSystemNative =
             |> Some
         | Some "SystemNative_SetAddressFamily",
           [ ConcretePointer _
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
             // `int32_t SystemNative_SetAddressFamily(uint8_t* socketAddress,
             // int32_t socketAddressLen, int32_t addressFamily)`
             // (pal_networking.c:735).
@@ -1656,8 +1656,8 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
         | Some "SystemNative_GetPort",
-          [ ConcretePointer _ ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ; ConcretePointer _ ],
-          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+          [ ConcretePointer _ ; ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ; ConcretePointer _ ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
             // `int32_t SystemNative_GetPort(const uint8_t* socketAddress,
             // int32_t socketAddressLen, uint16_t* port)` (pal_networking.c:752).
             //
@@ -1733,9 +1733,9 @@ module NativeSystemNative =
             |> complete UnixErrorPal.palSuccess
         | Some "SystemNative_SetPort",
           [ ConcretePointer _
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16 ],
-          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt16 ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
             // `int32_t SystemNative_SetPort(uint8_t* socketAddress, int32_t
             // socketAddressLen, uint16_t port)` (pal_networking.c:794): the mirror
             // of `SystemNative_GetPort` above, screen for screen.
@@ -1792,8 +1792,8 @@ module NativeSystemNative =
                 state
             |> complete UnixErrorPal.palSuccess
         | Some "SystemNative_GetIPv4Address",
-          [ ConcretePointer _ ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ; ConcretePointer _ ],
-          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+          [ ConcretePointer _ ; ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ; ConcretePointer _ ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
             // `int32_t SystemNative_GetIPv4Address(const uint8_t* socketAddress,
             // int32_t socketAddressLen, uint32_t* address)`
             // (pal_networking.c:836).
@@ -1850,9 +1850,9 @@ module NativeSystemNative =
             |> complete UnixErrorPal.palSuccess
         | Some "SystemNative_SetIPv4Address",
           [ ConcretePointer _
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32 ],
-          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32 ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
             // `int32_t SystemNative_SetIPv4Address(uint8_t* socketAddress,
             // int32_t socketAddressLen, uint32_t address)` (pal_networking.c:861).
             let operation = "SystemNative_SetIPv4Address"
@@ -1904,11 +1904,11 @@ module NativeSystemNative =
             |> complete UnixErrorPal.palSuccess
         | Some "SystemNative_GetIPv6Address",
           [ ConcretePointer _
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
             ConcretePointer _
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
             ConcretePointer _ ],
-          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
             // `int32_t SystemNative_GetIPv6Address(const uint8_t* socketAddress,
             // int32_t socketAddressLen, uint8_t* address, int32_t addressLen,
             // uint32_t* scopeId)` (pal_networking.c:882).
@@ -1987,11 +1987,11 @@ module NativeSystemNative =
             |> complete UnixErrorPal.palSuccess
         | Some "SystemNative_SetIPv6Address",
           [ ConcretePointer _
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
             ConcretePointer _
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32 ],
-          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32 ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
             // `int32_t SystemNative_SetIPv6Address(uint8_t* socketAddress,
             // int32_t socketAddressLen, uint8_t* address, int32_t addressLen,
             // uint32_t scopeId)` (pal_networking.c:912).
@@ -2083,7 +2083,7 @@ module NativeSystemNative =
             |> complete UnixErrorPal.palSuccess
         | Some "SystemNative_GetMaximumAddressSize",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `int32_t SystemNative_GetMaximumAddressSize(void)` (pal_networking.c)
             // is `return sizeof(struct sockaddr_storage);` — a compile-time
             // constant of the shim, with no socket, no errno and no state
@@ -2099,7 +2099,7 @@ module NativeSystemNative =
             pushInt32 SimulatedUnixPlatform.maximumSocketAddressSize ctx |> Some
         | Some "SystemNative_PlatformSupportsDualModeIPv4PacketInfo",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `int32_t SystemNative_PlatformSupportsDualModeIPv4PacketInfo(void)`
             // (pal_networking.c) is nothing but `return 1;` or `return 0;` under
             // an `#if` on how the shim was built — no socket, no errno and no
@@ -2136,12 +2136,12 @@ module NativeSystemNative =
             pushInt32 (if supported then 1 else 0) ctx |> Some
         | Some "SystemNative_GetErrNo",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             pushInt32 (EmulatedKernel.lastSystemErrorFor ctx.Thread state.Kernel) ctx
             |> Some
         | Some "SystemNative_ConvertErrorPlatformToPal",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
             // `int32_t SystemNative_ConvertErrorPlatformToPal(int32_t platformErrno)`
             // (pal_errno.c:6) is a one-line wrapper around
             // `ConvertErrorPlatformToPal` in `pal_error_common.h:146`, a pure
@@ -2173,7 +2173,7 @@ module NativeSystemNative =
             pushInt32 (UnixErrorPal.ofRawErrnoUnder numbering raw) ctx |> Some
         | Some "SystemNative_GetCpuUtilization",
           [ ConcretePointer _ ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Double) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Double) ->
             // `double SystemNative_GetCpuUtilization(ProcessCpuInformation* previous)`
             // (declared in `src/native/libs/System.Native/pal_time.h`, defined
             // in `pal_time.c` -- *not* `pal_process.c`, where you might
@@ -2246,7 +2246,7 @@ module NativeSystemNative =
             |> Some
         | Some "SystemNative_GetLowResolutionTimestamp",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int64) ->
             // PAL entry behind `Environment.TickCount64` on Unix: the kernel's
             // monotonic clock in milliseconds, read from whichever clock the
             // real shim reads on the simulated flavour (see `ClockPal`).
@@ -2259,7 +2259,7 @@ module NativeSystemNative =
             |> Some
         | Some "SystemNative_SchedGetCpu",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `int32_t SystemNative_SchedGetCpu(void)` lives in
             // pal_threading.c, not pal_process.c. It is `sched_getcpu()` under
             // `#if HAVE_SCHED_GETCPU` and a hard `-1` otherwise -- Linux has
@@ -2301,7 +2301,7 @@ module NativeSystemNative =
             pushInt32 cpu ctx |> Some
         | Some "SystemNative_TryGetUInt32OSThreadId",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32) ->
             // `Lock.ThreadId.InitializeForCurrentThread` (Lock.NonNativeAot.cs) is
             // `#if`-split per target: a Linux CoreLib calls this, and a macOS one calls
             // `GetUInt64OSThreadId` below. `OsThreadIdPal` says what each reports of the
@@ -2320,7 +2320,7 @@ module NativeSystemNative =
             |> Some
         | Some "SystemNative_GetUInt64OSThreadId",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt64) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt64) ->
             let id =
                 OsThreadIdPal.getUInt64 (osThreadIdOf "SystemNative_GetUInt64OSThreadId" ctx)
 
@@ -2330,7 +2330,7 @@ module NativeSystemNative =
             |> Some
         | Some "SystemNative_GetTimestamp",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int64) ->
             // `int64_t SystemNative_GetTimestamp(void)` (pal_time.c) is a
             // one-line forward to `minipal_hires_ticks()`
             // (src/native/minipal/time.c): `clock_gettime_nsec_np(CLOCK_UPTIME_RAW)`
@@ -2367,7 +2367,7 @@ module NativeSystemNative =
             |> Some
         | Some "SystemNative_GetSystemTimeAsTicks",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int64) ->
             // PAL entry behind `DateTime.UtcNow` on Unix: 100ns ticks since the
             // Unix epoch, which CoreLib offsets by `UnixEpochTicks` and stamps
             // `DateTimeKind.Utc` (DateTime.Unix.cs). Real CoreCLR reads
@@ -2483,8 +2483,8 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
         | Some "SystemNative_GetCwd",
-          [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          [ ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Returns (ConcretePointer _) ->
             // `char* SystemNative_GetCwd(char* buffer, int32_t bufferSize)`
             // (pal_process.c:1302) guards a negative size and otherwise
@@ -2608,7 +2608,7 @@ module NativeSystemNative =
             |> Some
         | Some "SystemNative_GetPid",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `int32_t SystemNative_GetPid(void)` (pal_process.c:684) is
             // `return getpid();`, infallible as `getpid(2)` is.
             let pid = UnixSystem.processId (EmulatedKernel.unix state.Kernel)
@@ -2620,13 +2620,13 @@ module NativeSystemNative =
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_Kill",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ; signalArgument ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ; signalArgument ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
             (match signalArgument with
-             | ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 -> true
+             | ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 -> true
              // `Interop.Sys.Signals`, the enum `Process.Kill` passes; a guest's
              // own P/Invoke may declare the parameter as a plain `int`.
-             | NamedType state.ConcreteTypes ("", "Signals", generics) -> generics.IsEmpty
+             | NamedType state.TypeSystem.ConcreteTypes ("", "Signals", generics) -> generics.IsEmpty
              | _ -> false)
             ->
             // `int32_t SystemNative_Kill(int32_t pid, int32_t signal)`
@@ -2645,7 +2645,7 @@ module NativeSystemNative =
             | Some signo -> NativeLibc.kill operation ctx pid signo |> Some
         | Some "SystemNative_GetEUid",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32) ->
             // `uint32_t SystemNative_GetEUid(void)` (pal_uid.c:91) is
             // `return geteuid();` — infallible, as `geteuid(2)` is.
             //
@@ -2662,7 +2662,7 @@ module NativeSystemNative =
             |> Some
         | Some "SystemNative_GetEGid",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32) ->
             // `uint32_t SystemNative_GetEGid(void)` (pal_uid.c:96) is
             // `return getegid();`, infallible as `getegid(2)` is. CoreLib's
             // `Interop.Sys.IsMemberOfGroup` asks it first, and asks `GetGroups`
@@ -2675,8 +2675,8 @@ module NativeSystemNative =
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_GetGroups",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ; ConcretePointer _ ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ; ConcretePointer _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `int32_t SystemNative_GetGroups(int32_t ngroups, uint32_t* groups)`
             // (pal_uid.c:234) is `return getgroups(ngroups, groups);`. It also
             // asserts `ngroups >= 0` and `groups != NULL`, which a retail build
@@ -2740,11 +2740,11 @@ module NativeSystemNative =
         // field layout is derived from.
         | Some "SystemNative_Stat",
           [ ConcretePointer _ ; ConcretePointer fileStatusHandle ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             statLike ctx "SystemNative_Stat" SymlinkPolicy.Follow fileStatusHandle state
         | Some "SystemNative_LStat",
           [ ConcretePointer _ ; ConcretePointer fileStatusHandle ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             statLike ctx "SystemNative_LStat" SymlinkPolicy.NoFollowFinal fileStatusHandle state
         // `intptr_t SystemNative_Open(const char* path, int32_t flags, int32_t mode)`
         // (pal_io.c:319). The flags parameter is matched loosely because
@@ -2752,8 +2752,8 @@ module NativeSystemNative =
         // hand-rolling the P/Invoke writes `int`; `int32Argument` peels enum
         // boxing, so both reach the same decode.
         | Some "SystemNative_Open",
-          [ ConcretePointer _ ; _ ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (ConcreteIntPtr state.ConcreteTypes) ->
+          [ ConcretePointer _ ; _ ; ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcreteIntPtr state.TypeSystem.ConcreteTypes) ->
             let operation = "SystemNative_Open"
             let flags = NativeCall.int32Argument operation instruction.Arguments.[1]
 
@@ -2877,7 +2877,7 @@ module NativeSystemNative =
         // `mkdir`.
         | Some "SystemNative_MkDir",
           [ ConcretePointer _ ; _ ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "SystemNative_MkDir"
             // Read before the path, and harmlessly so: it is an immediate rather
             // than a pointer, so decoding it dereferences nothing and cannot
@@ -2892,7 +2892,7 @@ module NativeSystemNative =
         // `SystemNative_MkDir` takes.
         | Some "SystemNative_Unlink",
           [ ConcretePointer _ ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             pathSyscall
                 ctx
                 "SystemNative_Unlink"
@@ -2909,14 +2909,14 @@ module NativeSystemNative =
         // pointer `SystemNative_MkDir` takes.
         | Some "SystemNative_ChDir",
           [ ConcretePointer _ ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             pathSyscall ctx "SystemNative_ChDir" (fun path system -> Ok (UnixPathResolution.chdir path system)) state
         // `int32_t SystemNative_RmDir(const char* path)` (pal_io.c): an
         // EINTR-retrying `rmdir(2)` and nothing else, taking a UTF-8 path
         // exactly as `SystemNative_Unlink` does.
         | Some "SystemNative_RmDir",
           [ ConcretePointer _ ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             pathSyscall
                 ctx
                 "SystemNative_RmDir"
@@ -2934,8 +2934,8 @@ module NativeSystemNative =
         // reaches it from `File.SetUnixFileMode`, `FileSystemInfo.UnixFileMode`'s
         // setter and `File.SetAttributes`, each given a path.
         | Some "SystemNative_ChMod",
-          [ ConcretePointer _ ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePointer _ ; ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "SystemNative_ChMod"
             // Read before the path, harmlessly, as `SystemNative_MkDir`'s is.
             let mode = NativeCall.int32Argument operation instruction.Arguments.[1]
@@ -2958,7 +2958,7 @@ module NativeSystemNative =
         // pair of NUL-terminated byte pointers.
         | Some "SystemNative_Rename",
           [ ConcretePointer _ ; ConcretePointer _ ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             renameSyscall ctx state
         // `DIR* SystemNative_OpenDir(const char* path)` (pal_io.c:532), an
         // EINTR-retrying `opendir(3)` and nothing else. NULL with errno set on
@@ -2966,7 +2966,7 @@ module NativeSystemNative =
         // to `ReadDir` and `CloseDir`.
         | Some "SystemNative_OpenDir",
           [ ConcretePointer _ ],
-          MethodReturnType.Returns (ConcreteIntPtr state.ConcreteTypes) ->
+          MethodReturnType.Returns (ConcreteIntPtr state.TypeSystem.ConcreteTypes) ->
             let operation = "SystemNative_OpenDir"
 
             let fail (error : UnixError) : NativeHandlerResult option =
@@ -3082,8 +3082,8 @@ module NativeSystemNative =
         // layout-identical struct. The pointee handle is bound because the
         // field offsets are derived from it.
         | Some "SystemNative_ReadDir",
-          [ ConcreteIntPtr state.ConcreteTypes ; ConcretePointer directoryEntryHandle ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ; ConcretePointer directoryEntryHandle ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "SystemNative_ReadDir"
 
             let block =
@@ -3216,8 +3216,8 @@ module NativeSystemNative =
         // `int32_t SystemNative_CloseDir(DIR* dir)` (pal_io.c:542), which is
         // `closedir(3)` with EINTR folded into success.
         | Some "SystemNative_CloseDir",
-          [ ConcreteIntPtr state.ConcreteTypes ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "SystemNative_CloseDir"
 
             let block =
@@ -3247,8 +3247,8 @@ module NativeSystemNative =
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_GetFileSystemType",
-          [ ConcreteIntPtr state.ConcreteTypes ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32) ->
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32) ->
             // `uint32_t SystemNative_GetFileSystemType(intptr_t fd)`
             // (pal_io.c:1700): `fstatfs(2)` behind an EINTR retry. **Every
             // failure is reported as 0**, not -1, which is why the answer table
@@ -3295,8 +3295,9 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
         | Some "SystemNative_FTruncate",
-          [ ConcreteIntPtr state.ConcreteTypes ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int64 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `int32_t SystemNative_FTruncate(intptr_t fd, int64_t length)`
             // (pal_io.c:1094): `ftruncate(2)` verbatim behind an EINTR retry, with
             // no validation of its own, so the order the library applies is the
@@ -3328,8 +3329,9 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
         | Some "SystemNative_FChMod",
-          [ ConcreteIntPtr state.ConcreteTypes ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `int32_t SystemNative_FChMod(intptr_t fd, int32_t mode)`
             // (pal_io.c): an EINTR-retrying `fchmod(2)` and nothing else, the
             // mode raw as `SystemNative_ChMod`'s is. CoreLib reaches it from
@@ -3363,11 +3365,11 @@ module NativeSystemNative =
         // operation is: CoreLib declares it as the `Interop.Sys.FileAdvice` enum
         // while a guest hand-rolling the P/Invoke writes `int`.
         | Some "SystemNative_PosixFAdvise",
-          [ ConcreteIntPtr state.ConcreteTypes
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int64
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int64
             _ ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // Unlike its neighbours this one reports failure by *returning* the
             // raw errno and leaving errno alone — the managed declaration says
             // `SetLastError = false`, "explicitly called out in the man page" —
@@ -3418,8 +3420,8 @@ module NativeSystemNative =
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_FStat",
-          [ ConcreteIntPtr state.ConcreteTypes ; ConcretePointer fileStatusHandle ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ; ConcretePointer fileStatusHandle ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `int32_t SystemNative_FStat(intptr_t fd, FileStatus* output)`
             // (pal_io.c). The same struct `Stat`/`LStat` fill in, from a
             // descriptor rather than a path — so it shares their encoder, and
@@ -3459,8 +3461,8 @@ module NativeSystemNative =
         // the `Interop.Sys.LockOperations` enum while a guest hand-rolling the
         // P/Invoke writes `int`.
         | Some "SystemNative_FLock",
-          [ ConcreteIntPtr state.ConcreteTypes ; _ ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ; _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `int32_t SystemNative_FLock(intptr_t fd, int32_t operation)`
             // (pal_io.c). The operation bits are passed straight through to
             // `flock(2)` — they are not PAL values that the C translates — so
@@ -3559,11 +3561,11 @@ module NativeSystemNative =
         // with an EINTR retry and — unlike `SystemNative_Read`, which goes
         // through `Common_Read` — no argument validation of its own.
         | Some "SystemNative_PRead",
-          [ ConcreteIntPtr state.ConcreteTypes
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes
             ConcretePointer _
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int64 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "SystemNative_PRead"
             let fd = fdArgument operation instruction.Arguments.[0]
             let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
@@ -3648,11 +3650,11 @@ module NativeSystemNative =
         // random access, and falls back to `SystemNative_Write` only on ENXIO or
         // ESPIPE (RandomAccess.Unix.cs:113).
         | Some "SystemNative_PWrite",
-          [ ConcreteIntPtr state.ConcreteTypes
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes
             ConcretePointer _
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int64 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "SystemNative_PWrite"
             let fd = fdArgument operation instruction.Arguments.[0]
             let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
@@ -3766,10 +3768,10 @@ module NativeSystemNative =
         // and the file operation together, so that the screen appears exactly
         // once.
         | Some "SystemNative_Read",
-          [ ConcreteIntPtr state.ConcreteTypes
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes
             ConcretePointer _
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "SystemNative_Read"
             let fd = fdArgument operation instruction.Arguments.[0]
             let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
@@ -3853,8 +3855,10 @@ module NativeSystemNative =
         // call the BCL itself makes. `NativeCall.int32Argument` unwraps the
         // enum to its underlying value.
         | Some "SystemNative_LSeek",
-          [ ConcreteIntPtr state.ConcreteTypes ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64 ; _ ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64) ->
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int64
+            _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int64) ->
             let operation = "SystemNative_LSeek"
             let fd = fdArgument operation instruction.Arguments.[0]
             let offset = NativeCall.int64Argument operation instruction.Arguments.[1]
@@ -3887,8 +3891,8 @@ module NativeSystemNative =
                 |> Some
 
         | Some "SystemNative_ReadLink",
-          [ ConcretePointer _ ; ConcretePointer _ ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePointer _ ; ConcretePointer _ ; ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `int32_t SystemNative_ReadLink(const char* path, char* buffer,
             // int32_t bufferSize)` (pal_io.c:1183): a `bufferSize <= 0` guard,
             // then `readlink(2)` verbatim.
@@ -4000,7 +4004,7 @@ module NativeSystemNative =
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_SetErrNo",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
             let error =
                 NativeCall.int32Argument "SystemNative_SetErrNo" instruction.Arguments.[0]
@@ -4009,7 +4013,7 @@ module NativeSystemNative =
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_Malloc",
-          [ ConcreteUIntPtr state.ConcreteTypes ],
+          [ ConcreteUIntPtr state.TypeSystem.ConcreteTypes ],
           MethodReturnType.Returns (ConcretePointer _) ->
             // C malloc returns an uninitialised block; mirror that here so guest
             // code that reads before writing is caught by the use-of-uninit
@@ -4028,7 +4032,7 @@ module NativeSystemNative =
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_Calloc",
-          [ ConcreteUIntPtr state.ConcreteTypes ; ConcreteUIntPtr state.ConcreteTypes ],
+          [ ConcreteUIntPtr state.TypeSystem.ConcreteTypes ; ConcreteUIntPtr state.TypeSystem.ConcreteTypes ],
           MethodReturnType.Returns (ConcretePointer _) ->
             // C calloc multiplies count * size and zero-fills the block. If
             // either argument is unrepresentable or the product overflows the
@@ -4056,8 +4060,8 @@ module NativeSystemNative =
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_Dup",
-          [ ConcreteIntPtr state.ConcreteTypes ],
-          MethodReturnType.Returns (ConcreteIntPtr state.ConcreteTypes) ->
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ],
+          MethodReturnType.Returns (ConcreteIntPtr state.TypeSystem.ConcreteTypes) ->
             // `dup(2)`: allocate the lowest non-negative fd not in use, sharing
             // the OFD of `oldFd`. On EBADF we return -1 and set errno=EBADF so
             // CoreLib's `Interop.CheckIo` raises an IOException, matching the
@@ -4077,8 +4081,8 @@ module NativeSystemNative =
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_Close",
-          [ ConcreteIntPtr state.ConcreteTypes ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `close(2)`: remove the fd from the per-process table and return 0.
             // On EBADF (fd not currently live) return -1 and set errno=EBADF, so
             // CoreLib's `Interop.CheckIo` raises an IOException, matching the
@@ -4105,7 +4109,7 @@ module NativeSystemNative =
         // `Interop.Sys.PipeFlags` enum.
         | Some "SystemNative_Pipe",
           [ ConcretePointer _ ; _ ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "SystemNative_Pipe"
             let flags = NativeCall.int32Argument operation instruction.Arguments.[1]
 
@@ -4152,8 +4156,8 @@ module NativeSystemNative =
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_FcntlSetIsNonBlocking",
-          [ ConcreteIntPtr state.ConcreteTypes ; _ ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ; _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `int32_t SystemNative_FcntlSetIsNonBlocking(intptr_t fd,
             // int32_t isNonBlocking)` (pal_io.c:655): `fcntl(F_GETFL)`, toggle
             // `O_NONBLOCK`, `fcntl(F_SETFL)`. Returns 0, or -1-and-errno; any
@@ -4197,8 +4201,8 @@ module NativeSystemNative =
                 state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
                 |> complete (-1)
         | Some "SystemNative_FcntlGetIsNonBlocking",
-          [ ConcreteIntPtr state.ConcreteTypes ; ConcretePointer _ ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ; ConcretePointer _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `int32_t SystemNative_FcntlGetIsNonBlocking(intptr_t fd,
             // int32_t* isNonBlocking)` (pal_io.c:677). A NULL out-pointer is
             // answered with `Error_EFAULT` — the PAL *enum* value, from a
@@ -4253,7 +4257,7 @@ module NativeSystemNative =
         // the shim leaves it set.
         | Some "SystemNative_Socket",
           [ _ ; _ ; _ ; ConcretePointer _ ],
-          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
             let operation = "SystemNative_Socket"
 
             let palAddressFamily = NativeCall.int32Argument operation instruction.Arguments.[0]
@@ -4344,11 +4348,11 @@ module NativeSystemNative =
         // the answer, and then calls `bind(2)`. Both screens precede
         // `ToFileDescriptor`, so they beat EBADF.
         | Some "SystemNative_Bind",
-          [ ConcreteIntPtr state.ConcreteTypes
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes
             _
             ConcretePointer _
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
             let operation = "SystemNative_Bind"
             let fd = fdArgument operation instruction.Arguments.[0]
             let palProtocolType = NativeCall.int32Argument operation instruction.Arguments.[1]
@@ -4549,8 +4553,9 @@ module NativeSystemNative =
         // (pal_networking.c:1892). No screens of its own: it is `listen(2)`,
         // which is why this handler is nothing but the errno write.
         | Some "SystemNative_Listen",
-          [ ConcreteIntPtr state.ConcreteTypes ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
             let operation = "SystemNative_Listen"
             let fd = fdArgument operation instruction.Arguments.[0]
             let backlog = NativeCall.int32Argument operation instruction.Arguments.[1]
@@ -4600,8 +4605,8 @@ module NativeSystemNative =
         // int32_t* socketAddressLen, intptr_t* acceptedSocket)`
         // (pal_networking.c:1705).
         | Some "SystemNative_Accept",
-          [ ConcreteIntPtr state.ConcreteTypes ; ConcretePointer _ ; ConcretePointer _ ; ConcretePointer _ ],
-          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ; ConcretePointer _ ; ConcretePointer _ ; ConcretePointer _ ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
             let operation = "SystemNative_Accept"
 
             let addressArgument =
@@ -4830,10 +4835,10 @@ module NativeSystemNative =
         // `connect(2)`'s own ladder — `UnixConnection.connect`, which holds the
         // measured per-flavour table.
         | Some "SystemNative_Connect",
-          [ ConcreteIntPtr state.ConcreteTypes
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes
             ConcretePointer _
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
             let operation = "SystemNative_Connect"
 
             let addressArgument =
@@ -4986,8 +4991,8 @@ module NativeSystemNative =
         // `int32_t SystemNative_GetSockName(intptr_t socket, uint8_t* socketAddress,
         // int32_t* socketAddressLen)` (pal_networking.c:1871).
         | Some "SystemNative_GetSockName",
-          [ ConcreteIntPtr state.ConcreteTypes ; ConcretePointer _ ; ConcretePointer _ ],
-          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ; ConcretePointer _ ; ConcretePointer _ ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
             let operation = "SystemNative_GetSockName"
             let fd = fdArgument operation instruction.Arguments.[0]
 
@@ -5106,7 +5111,7 @@ module NativeSystemNative =
             |> complete UnixErrorPal.palSuccess
         | Some "SystemNative_CreateSocketEventPort",
           [ ConcretePointer _ ],
-          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
             // `int32_t SystemNative_CreateSocketEventPort(intptr_t* port)`
             // (pal_networking.c:3429). `epoll_create1(EPOLL_CLOEXEC)` on Linux
             // and `kqueue()` on Darwin, both of which hand back an ordinary
@@ -5189,8 +5194,8 @@ module NativeSystemNative =
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_CloseSocketEventPort",
-          [ ConcreteIntPtr state.ConcreteTypes ],
-          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
             // `int32_t SystemNative_CloseSocketEventPort(intptr_t port)`
             // (pal_networking.c:3442), which is `close(2)` on the descriptor and
             // nothing else. It does *not* check that the descriptor names a
@@ -5222,8 +5227,8 @@ module NativeSystemNative =
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_CreateSocketEventBuffer",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ; ConcretePointer _ ],
-          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ; ConcretePointer _ ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
             // `int32_t SystemNative_CreateSocketEventBuffer(int32_t count,
             // SocketEvent** buffer)` (pal_networking.c:3447):
             //
@@ -5359,7 +5364,7 @@ module NativeSystemNative =
             |> Some
         | Some "SystemNative_FreeSocketEventBuffer",
           [ ConcretePointer _ ],
-          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
             // `int32_t SystemNative_FreeSocketEventBuffer(SocketEvent* buffer)`
             // (pal_networking.c:3464), which is `free(buffer)` and then
             // `return Error_SUCCESS` — no screen of any kind, so `free(NULL)`'s
@@ -5392,8 +5397,8 @@ module NativeSystemNative =
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_TryChangeSocketEventRegistration",
-          [ ConcreteIntPtr state.ConcreteTypes ; ConcreteIntPtr state.ConcreteTypes ; _ ; _ ; _ ],
-          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ; ConcreteIntPtr state.TypeSystem.ConcreteTypes ; _ ; _ ; _ ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
             // `int32_t SystemNative_TryChangeSocketEventRegistration(intptr_t
             // port, intptr_t socket, int32_t currentEvents, int32_t newEvents,
             // uintptr_t data)` (pal_networking.c:3471):
@@ -5511,10 +5516,10 @@ module NativeSystemNative =
                 state.MapKernel (EmulatedKernel.withUnix system)
                 |> complete UnixErrorPal.palSuccess
         | Some "SystemNative_WaitForSocketEvents",
-          [ ConcreteIntPtr state.ConcreteTypes
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes
             ConcretePointer _
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
-          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
             // `int32_t SystemNative_WaitForSocketEvents(intptr_t port,
             // SocketEvent* buffer, int32_t* count)` (pal_networking.c:3492):
             //
@@ -5783,10 +5788,10 @@ module NativeSystemNative =
                     (UnixWait.park ctx.Thread parked system)
         | Some "SystemNative_Poll",
           [ ConcretePointer _
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
             ConcretePointer _ ],
-          MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
             // `int32_t SystemNative_Poll(PollEvent* pollEvents, uint32_t
             // eventCount, int32_t milliseconds, uint32_t* triggered)`
             // (pal_io.c:1109), whose whole body is `Common_Poll`
@@ -6029,8 +6034,8 @@ module NativeSystemNative =
 
             settle (PollEventsPal.poll ctx.Thread entries milliseconds (EmulatedKernel.unix state.Kernel))
         | Some "SystemNative_IsATty",
-          [ ConcreteIntPtr state.ConcreteTypes ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `int32_t SystemNative_IsATty(intptr_t fd)` (pal_console.c:43)
             // delegates to libc `isatty(3)`, which is `tcgetattr` reduced to 1
             // or 0. Nothing the kernel models is a terminal, so this always
@@ -6054,10 +6059,10 @@ module NativeSystemNative =
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_Write",
-          [ ConcreteIntPtr state.ConcreteTypes
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `int32_t SystemNative_Write(intptr_t fd, const void* buffer, int32_t bufferSize)`
             // delegates to `Common_Write` in `pal_io_common.h`. The C path:
             //   * negative `bufferSize`            -> errno = ERANGE, return -1
@@ -6178,8 +6183,8 @@ module NativeSystemNative =
             |> NativeHandlerResult.completedWith effect
             |> Some
         | Some "SystemNative_GetNonCryptographicallySecureRandomBytes",
-          [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          [ ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
             // The C library's stream, not the kernel's pool: see
             // `EmulatedKernel.NonCryptoRandomState`.
@@ -6202,9 +6207,9 @@ module NativeSystemNative =
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_GetCryptographicallySecureRandomBytes",
-          [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // The kernel's entropy pool. On Linux CoreCLR's shim `open`s and
             // `read`s `/dev/urandom`; the emulated kernel has no device inodes,
             // so this draws from the pool directly rather than through a
@@ -6265,7 +6270,7 @@ module NativeSystemNative =
             NativeHandlerResult.completed state |> Some
         | Some "SystemNative_InitializeTerminalAndSignalHandling",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // The real native side configures the controlling terminal, makes
             // its signal pipe, and starts a dedicated signal-dispatch thread
             // (`pthread_create(..., SignalHandlerLoop, ...)`). PawPrint has no
@@ -6287,8 +6292,8 @@ module NativeSystemNative =
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_GetPlatformSignalNumber",
-          [ PosixSignalParam state.ConcreteTypes ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ PosixSignalParam state.TypeSystem.ConcreteTypes ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // Real native code keys off the <signal.h> it was compiled
             // against; PawPrint keys off the configured platform's, so the
             // answer is a fact about `KernelConfig.UnixPlatform` rather than
@@ -6307,8 +6312,8 @@ module NativeSystemNative =
 
             pushInt32 (PosixSignalPal.platformSignalNumber numbering raw) ctx |> Some
         | Some "SystemNative_EnablePosixSignalHandling",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `InstallSignalHandler`, then the per-signo registration bit
             // (`PosixSignalShim.enable`). The handler dictionary itself lives
             // on the simulated managed heap (maintained by
@@ -6389,7 +6394,7 @@ module NativeSystemNative =
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_HandleNonCanceledPosixSignal",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
             // The BCL's managed `OnPosixSignal` calls this from a
             // thread-pool worker after all registered handlers have run and
@@ -6406,7 +6411,7 @@ module NativeSystemNative =
                 |> NativeHandlerResult.ofExecutionResult
                 |> Some
         | Some "SystemNative_DisablePosixSignalHandling",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
             // Mirror image of `SystemNative_EnablePosixSignalHandling`: clear
             // the per-signo registration bit and `RestoreSignalHandler`, which

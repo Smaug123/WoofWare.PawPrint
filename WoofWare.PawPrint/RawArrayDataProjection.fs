@@ -30,7 +30,7 @@ module internal RawArrayDataProjection =
         (state : IlMachineState)
         : ConcreteTypeHandle
         =
-        AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
+        AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.Byte
 
     let tryProjectField
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

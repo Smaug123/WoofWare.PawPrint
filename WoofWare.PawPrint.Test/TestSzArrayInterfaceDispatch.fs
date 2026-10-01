@@ -39,8 +39,13 @@ module TestSzArrayInterfaceDispatch =
         loggerFactory
 
     let private state () : IlMachineState =
-        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
-            ConcreteTypes = concreteTypes
+        let initialState = IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+
+        { initialState with
+            TypeSystem =
+                { initialState.TypeSystem with
+                    ConcreteTypes = concreteTypes
+                }
         }
 
     /// Virtual resolution takes a thread only to resolve MemberRef tokens while scanning
@@ -58,7 +63,7 @@ module TestSzArrayInterfaceDispatch =
         (state : IlMachineState)
         : IlMachineState * ConcreteTypeHandle
         =
-        LoadedTypeInfo.typeInfoToTypeDefn' bct state._LoadedAssemblies ti
+        LoadedTypeInfo.typeInfoToTypeDefn' bct state.TypeSystem._LoadedAssemblies ti
         |> IlMachineState.concretizeType
             loggerFactory
             bct

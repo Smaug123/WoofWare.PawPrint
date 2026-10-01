@@ -21,7 +21,7 @@ module NativeMarshal =
           "Marshal",
           "GetLastPInvokeError",
           [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             state
             |> IlMachineState.pushToEvalStack'
                 (EvalStackValue.Int32 (
@@ -34,7 +34,7 @@ module NativeMarshal =
           "System.Runtime.InteropServices",
           "Marshal",
           "SetLastPInvokeError",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
             let error =
                 NativeCall.int32Argument "Marshal.SetLastPInvokeError" instruction.Arguments.[0]
@@ -79,7 +79,12 @@ module NativeMarshal =
         =
         // `System.Object`, `System.String` and every class without `[StructLayout]` stop here,
         // without their chains being built.
-        if CliValueType.IsAutoLayoutHandle state.ConcreteTypes state._LoadedAssemblies classHandle then
+        if
+            CliValueType.IsAutoLayoutHandle
+                state.TypeSystem.ConcreteTypes
+                state.TypeSystem._LoadedAssemblies
+                classHandle
+        then
             state,
             MarshalSizeError.NotMarshalable "type has LayoutKind.Auto, so has no native layout"
             |> Result.Error
@@ -90,7 +95,7 @@ module NativeMarshal =
 
         for level in chain do
             let shared =
-                match AllConcreteTypes.lookup level.Declared state.ConcreteTypes with
+                match AllConcreteTypes.lookup level.Declared state.TypeSystem.ConcreteTypes with
                 | None ->
                     failwith
                         $"NativeMarshal.classMarshalLayout: %O{level.Declared}, in the base chain of %O{classHandle}, is not a registered concrete type"
@@ -100,17 +105,21 @@ module NativeMarshal =
                         IlMachineRuntimeMetadata.isSharedTypeArgument
                             baseClassTypes
                             state
-                            $"NativeMarshal.classMarshalLayout: %s{AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes level.Declared}"
+                            $"NativeMarshal.classMarshalLayout: %s{AllConcreteTypes.describe state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes level.Declared}"
                     )
 
             // CoreCLR keeps a native layout per `EEClass`, which every instantiation sharing a
             // canonical form shares, so such a base's layout is its canonical form's.
             if shared then
                 failwith
-                    $"TODO: NativeMarshal.classMarshalLayout: %s{AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes level.Declared}, in the base chain of %s{AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes classHandle}, is an instantiation shared over System.__Canon, whose native layout CoreCLR computes for the canonical form; PawPrint does not model canonical forms"
+                    $"TODO: NativeMarshal.classMarshalLayout: %s{AllConcreteTypes.describe state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes level.Declared}, in the base chain of %s{AllConcreteTypes.describe state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes classHandle}, is an instantiation shared over System.__Canon, whose native layout CoreCLR computes for the canonical form; PawPrint does not model canonical forms"
 
         state,
-        CliValueType.TryComputeClassMarshalLayout state.ConcreteTypes state._LoadedAssemblies baseClassTypes chain
+        CliValueType.TryComputeClassMarshalLayout
+            state.TypeSystem.ConcreteTypes
+            state.TypeSystem._LoadedAssemblies
+            baseClassTypes
+            chain
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
@@ -128,9 +137,11 @@ module NativeMarshal =
           "System.Private.CoreLib",
           "System.Runtime.InteropServices",
           "Marshal",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        qCallGenerics)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
             qCallGenerics.IsEmpty
             ->
             let operation = "MarshalNative_SizeOfHelper"
@@ -162,7 +173,11 @@ module NativeMarshal =
                     state, MarshalSizeError.NotMarshalable "an array is not a structure" |> Result.Error
                 | _ ->
                     state,
-                    CliType.TryComputeMarshalSize state.ConcreteTypes state._LoadedAssemblies ctx.BaseClassTypes zero
+                    CliType.TryComputeMarshalSize
+                        state.TypeSystem.ConcreteTypes
+                        state.TypeSystem._LoadedAssemblies
+                        ctx.BaseClassTypes
+                        zero
 
             match size with
             | Result.Error (MarshalSizeError.NotMarshalable _) when throwIfNotMarshalable ->
@@ -193,8 +208,8 @@ module NativeMarshal =
           "System.Private.CoreLib",
           "System.Runtime.InteropServices",
           "Marshal",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr) ->
             // `Marshal.OffsetOf(Type, string)` (Marshal.CoreCLR.cs:41) has already done every
             // check that depends on the *name*: a null type or name, and a field that is not an
             // instance field of the type, are all refused in managed code. What reaches us is the
@@ -223,7 +238,7 @@ module NativeMarshal =
                 raiseCannotMarshal operation ctx declaringType state |> Some
             | RuntimeTypeHandleTarget.Closed declaringType ->
                 let sharedInstantiation =
-                    match AllConcreteTypes.lookup declaringType state.ConcreteTypes with
+                    match AllConcreteTypes.lookup declaringType state.TypeSystem.ConcreteTypes with
                     | None ->
                         failwith $"%s{operation}: declaring type %O{declaringType} is not a registered concrete type"
                     | Some concrete ->
@@ -232,7 +247,7 @@ module NativeMarshal =
                             IlMachineRuntimeMetadata.isSharedTypeArgument
                                 ctx.BaseClassTypes
                                 state
-                                $"%s{operation}: the declaring type %s{AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes declaringType}"
+                                $"%s{operation}: the declaring type %s{AllConcreteTypes.describe state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes declaringType}"
                         )
 
                 if sharedInstantiation then
@@ -243,7 +258,7 @@ module NativeMarshal =
                     // `[MarshalAs(ByValTStr)]`, which `S<string>`'s own layout would accept -- and
                     // answered when it does not.
                     failwith
-                        $"TODO: %s{operation}: %s{AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes declaringType} is an instantiation shared over System.__Canon, whose native layout CoreCLR computes for the canonical form; PawPrint does not model canonical forms"
+                        $"TODO: %s{operation}: %s{AllConcreteTypes.describe state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes declaringType} is an instantiation shared over System.__Canon, whose native layout CoreCLR computes for the canonical form; PawPrint does not model canonical forms"
 
                 let zero, state =
                     IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes declaringType
@@ -262,8 +277,8 @@ module NativeMarshal =
                     | _ ->
                         state,
                         CliType.TryComputeMarshalFieldOffset
-                            state.ConcreteTypes
-                            state._LoadedAssemblies
+                            state.TypeSystem.ConcreteTypes
+                            state.TypeSystem._LoadedAssemblies
                             ctx.BaseClassTypes
                             declaringType
                             zero
@@ -275,7 +290,7 @@ module NativeMarshal =
                     |> Some
                 | Result.Error (MarshalSizeError.NotImplemented reason) ->
                     failwith
-                        $"TODO %s{operation}: unimplemented marshalling case for %s{AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes declaringType}: %s{reason}"
+                        $"TODO %s{operation}: unimplemented marshalling case for %s{AllConcreteTypes.describe state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes declaringType}: %s{reason}"
                 | Result.Ok offset ->
                     state
                     |> IlMachineState.pushToEvalStack
@@ -296,12 +311,12 @@ module NativeMarshal =
           "System.Private.CoreLib",
           "System.Runtime.InteropServices",
           "Marshal",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
             ConcretePointer (ConcreteFunctionPointer _)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UIntPtr) ],
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UIntPtr) ],
           // The CoreLib declaration is `[return: MarshalAs(UnmanagedType.Bool)] bool`, which
           // the QCall PInvoke stub presents to us as an Int32 return (Win32 BOOL is 4 bytes).
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "MarshalNative_TryGetStructMarshalStub"
 
             let methodTableArg = instruction.Arguments.[0] |> EvalStackValue.ofCliType
@@ -339,7 +354,12 @@ module NativeMarshal =
             // sequential class) — surfaces a host TODO. Each future widening wants its own
             // motivating PawPrint test before being added to the classifier or the plan.
 
-            if CliValueType.IsAutoLayoutHandle state.ConcreteTypes state._LoadedAssemblies typeHandle then
+            if
+                CliValueType.IsAutoLayoutHandle
+                    state.TypeSystem.ConcreteTypes
+                    state.TypeSystem._LoadedAssemblies
+                    typeHandle
+            then
                 // No-layout branch: write *stub = NULL, *size = 0, return FALSE so the
                 // managed `Marshal.StructureToPtr` / `PtrToStructureHelper` / `DestroyStructure`
                 // wrappers throw `ArgumentException` (resource `Argument_MustHaveLayoutOrBeBlittable`).
@@ -377,7 +397,11 @@ module NativeMarshal =
             // memmoved *as a field*, though a standalone Decimal is its own native layout, and a
             // standalone DateTime is filtered earlier by the AutoLayout gate.
             let isBlittableStruct (t : CliType) : bool =
-                StructMarshalStub.isBlittableStruct state.ConcreteTypes state._LoadedAssemblies ctx.BaseClassTypes t
+                StructMarshalStub.isBlittableStruct
+                    state.TypeSystem.ConcreteTypes
+                    state.TypeSystem._LoadedAssemblies
+                    ctx.BaseClassTypes
+                    t
 
             if isBlittableStruct zero then
                 // The eventual `*structMarshalStub` we write here is null: the blittable path
@@ -421,7 +445,11 @@ module NativeMarshal =
             // reported at the QCall — where the type is named and the guest has not yet committed
             // to the stub path — rather than at the `calli`, which is several BCL frames away.
             match
-                StructMarshalStub.tryComputePlan state.ConcreteTypes state._LoadedAssemblies ctx.BaseClassTypes zero
+                StructMarshalStub.tryComputePlan
+                    state.TypeSystem.ConcreteTypes
+                    state.TypeSystem._LoadedAssemblies
+                    ctx.BaseClassTypes
+                    zero
             with
             // The two error cases are kept apart because they call for different eventual
             // handling, and flattening them to a string would destroy the distinction the sibling

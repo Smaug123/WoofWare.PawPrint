@@ -120,8 +120,8 @@ public static class Program
     /// `BaseClassTypes`.
     let private probeAddresses (state : IlMachineState) : ManagedHeapAddress * ManagedHeapAddress =
         let probeType =
-            state._LoadedAssemblies.DefinitionNames
-            |> Seq.collect (fun name -> state._LoadedAssemblies.ByDefinitionName(name).TypeDefs.Values)
+            state.TypeSystem._LoadedAssemblies.DefinitionNames
+            |> Seq.collect (fun name -> state.TypeSystem._LoadedAssemblies.ByDefinitionName(name).TypeDefs.Values)
             |> Seq.filter (fun ty -> ty.Name = "Probe" && ty.Namespace = "")
             |> Seq.toList
             |> function
@@ -129,7 +129,7 @@ public static class Program
                 | other -> failwith $"expected exactly one `Probe` type across loaded assemblies, got %d{other.Length}"
 
         let probeHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes probeType
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes probeType
 
         let readStatic (name : string) : ManagedHeapAddress =
             let field = FieldIdentity.requiredOwnStaticField probeType name

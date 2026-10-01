@@ -237,7 +237,11 @@ public class LayoutClass { public int A; }
 
         let state =
             { state with
-                ConcreteTypes = Corelib.concretizeAll state._LoadedAssemblies bct AllConcreteTypes.Empty
+                TypeSystem =
+                    { state.TypeSystem with
+                        ConcreteTypes =
+                            Corelib.concretizeAll state.TypeSystem._LoadedAssemblies bct AllConcreteTypes.Empty
+                    }
             }
 
         state.WithLoadedAssembly corpusAssembly
@@ -268,16 +272,34 @@ public class LayoutClass { public int A; }
             | other -> failwith $"%s{name} should be a value type, but its zero is %O{other}"
 
         let layout =
-            match CliValueType.TryComputeMarshalLayout state.ConcreteTypes state._LoadedAssemblies bct vt with
+            match
+                CliValueType.TryComputeMarshalLayout
+                    state.TypeSystem.ConcreteTypes
+                    state.TypeSystem._LoadedAssemblies
+                    bct
+                    vt
+            with
             | Result.Error (MarshalSizeError.NotMarshalable _) -> Result.Ok None
             | Result.Error (MarshalSizeError.NotImplemented reason) -> Result.Error reason
             | Result.Ok (size, placements) -> Result.Ok (Some (size.Size, placements |> List.map _.NativeOffset))
 
         let stub =
-            if StructMarshalStub.isBlittableStruct state.ConcreteTypes state._LoadedAssemblies bct zero then
+            if
+                StructMarshalStub.isBlittableStruct
+                    state.TypeSystem.ConcreteTypes
+                    state.TypeSystem._LoadedAssemblies
+                    bct
+                    zero
+            then
                 Stub.Blittable
             else
-                match StructMarshalStub.tryComputePlan state.ConcreteTypes state._LoadedAssemblies bct zero with
+                match
+                    StructMarshalStub.tryComputePlan
+                        state.TypeSystem.ConcreteTypes
+                        state.TypeSystem._LoadedAssemblies
+                        bct
+                        zero
+                with
                 | Result.Error (MarshalSizeError.NotMarshalable _) -> Stub.Refused
                 // A plan PawPrint cannot yet execute is still a stub CoreCLR would build.
                 | Result.Error (MarshalSizeError.NotImplemented _)
@@ -478,12 +500,20 @@ public struct IllegalLast {{ public string S; [MarshalAs(UnmanagedType.I1)] publ
             | other, _ -> failwith $"%s{name} should be a value type, but its zero is %O{other}"
 
         // PawPrint cannot lay the type out at all, because of the string field...
-        match CliValueType.TryComputeNativeLayout state.ConcreteTypes state._LoadedAssemblies bct vt with
+        match
+            CliValueType.TryComputeNativeLayout state.TypeSystem.ConcreteTypes state.TypeSystem._LoadedAssemblies bct vt
+        with
         | Result.Error (MarshalSizeError.NotImplemented _) -> ()
         | other -> failwith $"%s{name}: expected PawPrint not to lay out a string field, got %A{other}"
 
         // ...but it need not, to know that `Marshal.SizeOf` refuses it.
-        match CliValueType.TryComputeMarshalLayout state.ConcreteTypes state._LoadedAssemblies bct vt with
+        match
+            CliValueType.TryComputeMarshalLayout
+                state.TypeSystem.ConcreteTypes
+                state.TypeSystem._LoadedAssemblies
+                bct
+                vt
+        with
         | Result.Error (MarshalSizeError.NotMarshalable _) -> ()
         | other -> failwith $"%s{name}: expected NotMarshalable, got %A{other}"
 
@@ -574,7 +604,13 @@ public struct IllegalLast {{ public string S; [MarshalAs(UnmanagedType.I1)] publ
                 | CliType.ValueType vt -> vt
                 | other -> failwith $"%s{name} should be a value type, but its zero is %O{other}"
 
-            match CliValueType.TryComputeMarshalLayout state.ConcreteTypes state._LoadedAssemblies bct vt with
+            match
+                CliValueType.TryComputeMarshalLayout
+                    state.TypeSystem.ConcreteTypes
+                    state.TypeSystem._LoadedAssemblies
+                    bct
+                    vt
+            with
             | Result.Ok (size, _) -> Result.Ok (Some size.Size)
             | Result.Error (MarshalSizeError.NotMarshalable _) -> Result.Ok None
             | Result.Error (MarshalSizeError.NotImplemented reason) -> Result.Error reason

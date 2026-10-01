@@ -498,9 +498,9 @@ module TestPointerStructByteViewCells =
         let methodState =
             match
                 MethodState.Empty
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     bct
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     corelib
                     method
                     ImmutableArray.Empty
@@ -530,8 +530,13 @@ module TestPointerStructByteViewCells =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let state =
-            { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
-                ConcreteTypes = concreteTypes
+            let initialState = IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+
+            { initialState with
+                TypeSystem =
+                    { initialState.TypeSystem with
+                        ConcreteTypes = concreteTypes
+                    }
             }
 
         let populate (atByte : int -> ManagedPointerSource) (state : IlMachineState) : IlMachineState =

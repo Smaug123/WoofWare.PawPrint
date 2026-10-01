@@ -18,9 +18,13 @@ module NativeGcHandle =
           "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.InteropServices", "GCHandleType", gcHandleTypeGenerics) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        qCallGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.InteropServices",
+                                                        "GCHandleType",
+                                                        gcHandleTypeGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr) when
             qCallGenerics.IsEmpty && gcHandleTypeGenerics.IsEmpty
             ->
             let operation = "RuntimeTypeHandle.GetGCHandle (QCall_GetGCHandleForTypeHandle)"
@@ -48,8 +52,10 @@ module NativeGcHandle =
           "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        qCallGenerics)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr ],
           returnType when qCallGenerics.IsEmpty ->
             let operation = "RuntimeTypeHandle.FreeGCHandle (QCall_FreeGCHandleForTypeHandle)"
             let qCallHandle = instruction.Arguments.[0] |> EvalStackValue.ofCliType
@@ -71,7 +77,7 @@ module NativeGcHandle =
 
             match returnType with
             | MethodReturnType.Void -> NativeHandlerResult.completed state |> Some
-            | MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) ->
+            | MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr) ->
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)) ctx.Thread
                 |> NativeHandlerResult.completed
@@ -95,9 +101,11 @@ module NativeGcHandle =
           "System.Runtime.InteropServices",
           "GCHandle",
           "_InternalAlloc",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object
-            CorelibType state.ConcreteTypes ("System.Runtime.InteropServices", "GCHandleType", gcHandleTypeGenerics) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) when
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Object
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.InteropServices",
+                                                        "GCHandleType",
+                                                        gcHandleTypeGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr) when
             gcHandleTypeGenerics.IsEmpty
             ->
             let target =
@@ -126,8 +134,8 @@ module NativeGcHandle =
           "System.Runtime.InteropServices",
           "GCHandle",
           "_InternalFree",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) ->
             let handle =
                 instruction.Arguments.[0]
                 |> EvalStackValue.ofCliType
@@ -145,7 +153,7 @@ module NativeGcHandle =
           "System.Runtime.InteropServices",
           "GCHandle",
           "_InternalFreeWithGCTransition",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr ],
           MethodReturnType.Void ->
             let handle =
                 instruction.Arguments.[0]
@@ -162,8 +170,8 @@ module NativeGcHandle =
           "System.Runtime.InteropServices",
           "GCHandle",
           "InternalSet",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Object ],
           MethodReturnType.Void ->
             let handle =
                 instruction.Arguments.[0]
@@ -185,10 +193,10 @@ module NativeGcHandle =
           "System.Runtime.InteropServices",
           "GCHandle",
           "InternalCompareExchange",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Object
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Object) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Object
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Object ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Object) ->
             let handle =
                 instruction.Arguments.[0]
                 |> EvalStackValue.ofCliType

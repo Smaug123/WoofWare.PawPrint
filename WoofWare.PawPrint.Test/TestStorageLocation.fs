@@ -271,8 +271,14 @@ module TestStorageLocationResolve =
     let private freshState () : IlMachineState =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
-        { IlMachineState.initial loggerFactory System.Collections.Immutable.ImmutableArray.Empty corelib with
-            ConcreteTypes = concreteTypes
+        let initialState =
+            IlMachineState.initial loggerFactory System.Collections.Immutable.ImmutableArray.Empty corelib
+
+        { initialState with
+            TypeSystem =
+                { initialState.TypeSystem with
+                    ConcreteTypes = concreteTypes
+                }
         }
 
     let private intField (name : string) (offset : int) (value : int) : CliField =

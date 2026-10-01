@@ -137,7 +137,8 @@ module IlMachineStateExecution =
             | ConcreteTypeHandle.FunctionPointer _ -> false
             | ConcreteTypeHandle.Concrete _ ->
                 match IlMachineState.tryGetConcreteTypeInfo state handle with
-                | Some (_, typeInfo) -> LoadedTypeInfo.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
+                | Some (_, typeInfo) ->
+                    LoadedTypeInfo.isReferenceType baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo
                 | None ->
                     failwith
                         $"SZ-array interface dispatch: type argument %O{handle} of %s{MethodOwner.describe methodToCall.Owner} has no TypeDef row"
@@ -149,7 +150,10 @@ module IlMachineStateExecution =
             if dispatchThroughEnumerable || not (isReferenceType theT) then
                 state, theT
             else
-                LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Object
+                LoadedTypeInfo.typeInfoToTypeDefn'
+                    baseClassTypes
+                    state.TypeSystem._LoadedAssemblies
+                    baseClassTypes.Object
                 |> IlMachineState.concretizeType
                     loggerFactory
                     baseClassTypes
@@ -428,8 +432,8 @@ module IlMachineStateExecution =
                 Concretization.concreteHandleToTypeDefn
                     baseClassTypes
                     handle
-                    state.ConcreteTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem.ConcreteTypes
+                    state.TypeSystem._LoadedAssemblies
             )
             |> ImmutableArray.CreateRange
 
@@ -499,7 +503,7 @@ module IlMachineStateExecution =
               WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list
             =
             let currentAssy =
-                state._LoadedAssemblies.ByDefinitionName currentTy.Identity.AssemblyFullName
+                state.TypeSystem._LoadedAssemblies.ByDefinitionName currentTy.Identity.AssemblyFullName
 
             ((state, []), currentTypeInfo.MethodImpls.Values)
             ||> Seq.fold (fun (state, acc) impl ->
@@ -545,14 +549,21 @@ module IlMachineStateExecution =
                         (generics : ImmutableArray<ConcreteTypeHandle>)
                         : IlMachineState * ConcreteTypeHandle
                         =
-                        match AllConcreteTypes.findExistingConcreteType state.ConcreteTypes identity generics with
+                        match
+                            AllConcreteTypes.findExistingConcreteType state.TypeSystem.ConcreteTypes identity generics
+                        with
                         | Some handle -> state, handle
                         | None ->
                             let ct = ConcreteType.makeFromIdentity identity ns name generics
-                            let handle, newConcreteTypes = AllConcreteTypes.add ct state.ConcreteTypes
+
+                            let handle, newConcreteTypes =
+                                AllConcreteTypes.add ct state.TypeSystem.ConcreteTypes
 
                             { state with
-                                ConcreteTypes = newConcreteTypes
+                                TypeSystem =
+                                    { state.TypeSystem with
+                                        ConcreteTypes = newConcreteTypes
+                                    }
                             },
                             handle
 
@@ -616,7 +627,7 @@ module IlMachineStateExecution =
             : IlMachineState * WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
             =
             let typeGenerics =
-                AllConcreteTypes.lookup implementationTypeHandle state.ConcreteTypes
+                AllConcreteTypes.lookup implementationTypeHandle state.TypeSystem.ConcreteTypes
                 |> Option.defaultWith (fun () ->
                     failwith
                         $"Implementation declaring type handle %O{implementationTypeHandle} was not registered while concretizing %s{MethodOwner.describe implementation.Owner}::%s{implementation.Name}"
@@ -771,17 +782,20 @@ module IlMachineStateExecution =
             let state, targetHandle =
                 match
                     AllConcreteTypes.findExistingConcreteType
-                        state.ConcreteTypes
+                        state.TypeSystem.ConcreteTypes
                         methodToCall.RequiredDeclaringType.Identity
                         methodToCall.DeclaringTypeGenerics
                 with
                 | Some handle -> state, handle
                 | None ->
                     let handle, newConcreteTypes =
-                        AllConcreteTypes.add methodToCall.RequiredDeclaringType state.ConcreteTypes
+                        AllConcreteTypes.add methodToCall.RequiredDeclaringType state.TypeSystem.ConcreteTypes
 
                     { state with
-                        ConcreteTypes = newConcreteTypes
+                        TypeSystem =
+                            { state.TypeSystem with
+                                ConcreteTypes = newConcreteTypes
+                            }
                     },
                     handle
 
@@ -1405,17 +1419,20 @@ module IlMachineStateExecution =
         let state, targetHandle =
             match
                 AllConcreteTypes.findExistingConcreteType
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     methodToCall.RequiredDeclaringType.Identity
                     methodToCall.DeclaringTypeGenerics
             with
             | Some handle -> state, handle
             | None ->
                 let handle, newConcreteTypes =
-                    AllConcreteTypes.add methodToCall.RequiredDeclaringType state.ConcreteTypes
+                    AllConcreteTypes.add methodToCall.RequiredDeclaringType state.TypeSystem.ConcreteTypes
 
                 { state with
-                    ConcreteTypes = newConcreteTypes
+                    TypeSystem =
+                        { state.TypeSystem with
+                            ConcreteTypes = newConcreteTypes
+                        }
                 },
                 handle
 
@@ -1983,7 +2000,8 @@ module IlMachineStateExecution =
                     | ConcreteTypeHandle.Concrete _ ->
                         match IlMachineState.tryGetConcreteTypeInfo state tHandle with
                         | Some (_, typeInfo) ->
-                            LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo, Some typeInfo
+                            LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo,
+                            Some typeInfo
                         | None ->
                             failwith
                                 $"Activator.CreateInstance<T>(): concrete type handle %O{tHandle} has no TypeDef row"
@@ -2071,7 +2089,7 @@ module IlMachineStateExecution =
                 | Some ctor ->
 
                 let ct =
-                    AllConcreteTypes.lookup tHandle state.ConcreteTypes
+                    AllConcreteTypes.lookup tHandle state.TypeSystem.ConcreteTypes
                     |> Option.defaultWith (fun () ->
                         failwith
                             $"Activator.CreateInstance<T>(): concrete type handle %O{tHandle} not found in AllConcreteTypes"
@@ -2316,7 +2334,7 @@ module IlMachineStateExecution =
             let declaringType =
                 declaringAssembly.TypeDefs.[methodToCall.RequiredDeclaringType.Definition.Get]
 
-            if LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies declaringType then
+            if LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies declaringType then
                 CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
             else
                 CliType.ObjectRef None
@@ -2419,9 +2437,9 @@ module IlMachineStateExecution =
 
             match
                 MethodState.Empty
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     baseClassTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     declaringAssy
                     methodToCall
                     methodGenerics
@@ -2490,7 +2508,7 @@ module IlMachineStateExecution =
             let handle =
                 match
                     AllConcreteTypes.findExistingConcreteType
-                        state.ConcreteTypes
+                        state.TypeSystem.ConcreteTypes
                         methodToCall.RequiredDeclaringType.Identity
                         methodToCall.DeclaringTypeGenerics
                 with
@@ -2525,7 +2543,11 @@ module IlMachineStateExecution =
                     // implies its constructor chain ran, and construction is itself a trigger,
                     // whereas `default(S)` runs nothing.
                     // `DelegateToValueTypeInstanceMethodRunsCctor.cs` is the case.
-                    AllConcreteTypes.tryIsValueType baseClassTypes state._LoadedAssemblies state.ConcreteTypes handle
+                    AllConcreteTypes.tryIsValueType
+                        baseClassTypes
+                        state.TypeSystem._LoadedAssemblies
+                        state.TypeSystem.ConcreteTypes
+                        handle
                     |> Option.defaultValue false
 
             if initialises then
@@ -2680,7 +2702,7 @@ module IlMachineStateExecution =
 
             // Look up the concrete type from the handle
             let concreteType =
-                match AllConcreteTypes.lookup ty state.ConcreteTypes with
+                match AllConcreteTypes.lookup ty state.TypeSystem.ConcreteTypes with
                 | Some ct -> ct
                 | None -> failwith $"ConcreteTypeHandle {ty} not found in ConcreteTypes mapping"
 
@@ -2866,7 +2888,7 @@ module IlMachineStateExecution =
 
         // 2. Find the parameterless .ctor on the exception type.
         let assy =
-            state._LoadedAssemblies.ByDefinitionName exceptionTypeInfo.AssemblyFullName
+            state.TypeSystem._LoadedAssemblies.ByDefinitionName exceptionTypeInfo.AssemblyFullName
 
         let typeDef = assy.TypeDefs.[exceptionTypeInfo.Identity.TypeDefinition.Get]
 

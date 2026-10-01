@@ -44,8 +44,13 @@ module TestArrayConstructor =
     let private state () : IlMachineState =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
-        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
-            ConcreteTypes = concreteTypes
+        let initialState = IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+
+        { initialState with
+            TypeSystem =
+                { initialState.TypeSystem with
+                    ConcreteTypes = concreteTypes
+                }
         }
 
     /// A type built from `byte` by making arrays of it.

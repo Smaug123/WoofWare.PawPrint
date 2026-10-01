@@ -16,11 +16,11 @@ module NativeClrConfig =
         | "ClrConfig_GetConfigBoolValue",
           "System.Private.CoreLib",
           "CLRConfig",
-          [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
+          [ ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt16)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ],
           // CoreLib declares `[return: MarshalAs(UnmanagedType.Bool)] bool`; the QCall
           // PInvoke stub presents this to us as a 4-byte Int32 (Win32 BOOL).
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "ClrConfig_GetConfigBoolValue"
 
             // Read the LPCWSTR knob name for diagnostics / future env-routing, even

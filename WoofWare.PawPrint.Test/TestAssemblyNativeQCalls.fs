@@ -605,7 +605,7 @@ public static class StreamVersionLibrary
         : CliType * ManagedPointerSource * IlMachineState
         =
         let objectHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Object
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.Object
 
         let arrayAddr, state =
             IlMachineState.allocateArray
@@ -663,7 +663,7 @@ public static class StreamVersionLibrary
         : ManagedPointerSource * IlMachineState
         =
         let int32Handle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Int32
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.Int32
 
         let arrayAddr, state =
             IlMachineState.allocateArray
@@ -1095,7 +1095,7 @@ public static class StreamVersionLibrary
             | None -> failwith $"expected a live byte array at %O{addr}"
 
         let byteHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.Byte
 
         array.Shape.ConcreteType
         |> shouldEqual (ConcreteTypeHandle.OneDimArrayZero byteHandle)
@@ -1150,7 +1150,7 @@ public static class StreamVersionLibrary
         let heapObj = ManagedHeap.get addr state.ManagedHeap
 
         let stringHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.String
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.String
 
         heapObj.ConcreteType |> shouldEqual stringHandle
 
@@ -2729,7 +2729,7 @@ public static class StreamVersionLibrary
             requiredTopLevelType prepared.BaseClassTypes.Corelib "System.Reflection" "RuntimeModule"
 
         let runtimeModuleHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes runtimeModuleType
+            AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes runtimeModuleType
 
         (ManagedHeap.getArrayShape arrayAddr state.ManagedHeap).ConcreteType
         |> shouldEqual (ConcreteTypeHandle.OneDimArrayZero runtimeModuleHandle)

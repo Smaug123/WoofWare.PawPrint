@@ -199,7 +199,11 @@ module internal UnaryMetadataMemoryOps =
             | ConcreteTypeHandle.Concrete _ ->
 
             match
-                AllConcreteTypes.tryIsValueType baseClassTypes state._LoadedAssemblies state.ConcreteTypes typeHandle
+                AllConcreteTypes.tryIsValueType
+                    baseClassTypes
+                    state.TypeSystem._LoadedAssemblies
+                    state.TypeSystem.ConcreteTypes
+                    typeHandle
             with
             | Some isValueType -> isValueType
             | None -> failwith $"Ldobj: concrete type handle %O{typeHandle} has no row in AllConcreteTypes"

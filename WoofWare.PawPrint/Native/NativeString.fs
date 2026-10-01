@@ -64,11 +64,11 @@ module NativeString =
           "System",
           "String",
           "FastAllocateString",
-          [ ConcretePointer (CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                                              "MethodTable",
-                                                              methodTableGenerics))
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.String) when
+          [ ConcretePointer (CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                                         "MethodTable",
+                                                                         methodTableGenerics))
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.String) when
             methodTableGenerics.IsEmpty
             ->
             // .NET 10 InternalCall: `FastAllocateString(MethodTable* pMT, nint length)`. This is
@@ -87,7 +87,7 @@ module NativeString =
                 NativeCall.methodTableOfEvalStackValue operation (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
 
             match methodTableHandle with
-            | ConcretePrimitive state.ConcreteTypes PrimitiveType.String -> ()
+            | ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.String -> ()
             | other -> failwith $"%s{operation}: expected MethodTable for System.String, got %O{other}"
 
             let length = nintLengthOfArgument operation instruction.Arguments.[1]

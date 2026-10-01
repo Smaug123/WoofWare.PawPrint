@@ -275,14 +275,14 @@ module ArithmeticOperation =
         (state : IlMachineState)
         : ConcreteTypeHandle
         =
-        AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Char
+        AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.Char
 
     let private byteConcreteType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         : ConcreteTypeHandle
         =
-        AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
+        AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.Byte
 
     let private crossArrayPointerDelta
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

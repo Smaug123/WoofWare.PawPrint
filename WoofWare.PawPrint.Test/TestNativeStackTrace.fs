@@ -224,12 +224,12 @@ public static class Entry
         let stubAddr, registry, state =
             MethodHandleRegistry.mintDynamicMethod
                 baseClassTypes
-                state.ConcreteTypes
+                state.TypeSystem.ConcreteTypes
                 state
                 (fun fields state ->
                     IlMachineState.allocateManagedObject
                         (AllConcreteTypes.getRequiredNonGenericHandle
-                            state.ConcreteTypes
+                            state.TypeSystem.ConcreteTypes
                             baseClassTypes.RuntimeMethodInfoStub)
                         fields
                         state
@@ -285,9 +285,9 @@ public static class Entry
         let frame =
             match
                 MethodState.Empty
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     baseClassTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     baseClassTypes.Corelib
                     method
                     ImmutableArray.Empty
@@ -341,9 +341,9 @@ public static class Entry
         let frame =
             match
                 MethodState.Empty
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     baseClassTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     baseClassTypes.Corelib
                     method
                     ImmutableArray.Empty
@@ -386,7 +386,7 @@ public static class Entry
                 | methods -> failwith $"System.Array::Empty<T> was ambiguous: %d{methods.Length} matches"
 
         let int32Defn =
-            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Int32
+            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state.TypeSystem._LoadedAssemblies baseClassTypes.Int32
 
         let state, method, _ =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
@@ -417,9 +417,9 @@ public static class Entry
         let frame =
             match
                 MethodState.Empty
-                    state.ConcreteTypes
+                    state.TypeSystem.ConcreteTypes
                     baseClassTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem._LoadedAssemblies
                     baseClassTypes.Corelib
                     method
                     ImmutableArray.Empty

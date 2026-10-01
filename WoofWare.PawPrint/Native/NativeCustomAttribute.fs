@@ -134,7 +134,7 @@ module NativeCustomAttribute =
                 paramType
 
         match handle with
-        | CorelibType state.ConcreteTypes ("System", "Type", typeGenerics) when typeGenerics.IsEmpty ->
+        | CorelibType state.TypeSystem.ConcreteTypes ("System", "Type", typeGenerics) when typeGenerics.IsEmpty ->
             // CoreCLR's fixed-arg loop classifies the parameter by its signature element type and
             // maps `ELEMENT_TYPE_CLASS` on `CLASS__TYPE` to `SERIALIZATION_TYPE_TYPE`
             // (customattribute.cpp:757); a subclass of `System.Type` is not that class and falls
@@ -162,7 +162,7 @@ module NativeCustomAttribute =
             )
 
         match underlyingHandle with
-        | ConcretePrimitive state.ConcreteTypes underlying ->
+        | ConcretePrimitive state.TypeSystem.ConcreteTypes underlying ->
             match EnumUnderlyingType.ofPrimitive underlying with
             | Some underlying -> state, CustomAttribArgPlan.Enum underlying
             | None ->
@@ -241,19 +241,19 @@ module NativeCustomAttribute =
           "System.Private.CoreLib",
           "System.Reflection",
           "CustomAttribute",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", moduleGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             typeHandleGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             ctorHandleGenerics)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             instanceHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", moduleGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        typeHandleGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        ctorHandleGenerics)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        instanceHandleGenerics) ],
           MethodReturnType.Void when
             moduleGenerics.IsEmpty
             && typeHandleGenerics.IsEmpty
@@ -390,7 +390,7 @@ module NativeCustomAttribute =
                             $"%s{operation}: attribute type was %O{composite}, a shape over a generic variable; the BCL filter should never surface this"
 
                 let concreteType =
-                    AllConcreteTypes.lookup instantiatedHandle state.ConcreteTypes
+                    AllConcreteTypes.lookup instantiatedHandle state.TypeSystem.ConcreteTypes
                     |> Option.defaultWith (fun () ->
                         failwith
                             $"%s{operation}: attribute type handle %O{instantiatedHandle} was not registered in ConcreteTypes"
@@ -405,7 +405,7 @@ module NativeCustomAttribute =
 
                 let attrTypeInfo = attrAssembly.TypeDefs.[concreteType.Definition.Get]
 
-                if LoadedTypeInfo.isValueType ctx.BaseClassTypes state._LoadedAssemblies attrTypeInfo then
+                if LoadedTypeInfo.isValueType ctx.BaseClassTypes state.TypeSystem._LoadedAssemblies attrTypeInfo then
                     failwith
                         $"TODO: %s{operation}: value-typed attribute %s{attrTypeInfo.Namespace}.%s{attrTypeInfo.Name} would need unboxing for `this` slot; CoreCLR's value-type branch is unreachable from the BCL filter and is not yet modelled here"
 
@@ -771,13 +771,19 @@ module NativeCustomAttribute =
           "System.Private.CoreLib",
           "System.Reflection",
           "CustomAttribute",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", moduleGenerics)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "StringHandleOnStack", nameGenerics)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", typeGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", valueGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", moduleGenerics)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "StringHandleOnStack",
+                                                        nameGenerics)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        typeGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        valueGenerics) ],
           MethodReturnType.Void when
             moduleGenerics.IsEmpty
             && nameGenerics.IsEmpty
@@ -1015,14 +1021,14 @@ module NativeCustomAttribute =
           "System.Private.CoreLib",
           "System.Reflection",
           "CustomAttribute",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ],
           // CoreLib declares `[return: MarshalAs]`-free `int`, and the three out-params as `int*`
           // even though the native side writes a `ULONG` and two `BOOL`s.
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "CustomAttribute.ParseAttributeUsageAttribute"
 
             if instruction.Arguments.Length <> 5 then

@@ -25,11 +25,13 @@ module NativeRuntimeTypeQCall =
           "System",
           "RuntimeTypeHandle",
           "ConstructName",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics)
-            CorelibType state.ConcreteTypes ("System", "TypeNameFormatFlags", flagsGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "StringHandleOnStack",
-                                             stringHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        qCallGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System", "TypeNameFormatFlags", flagsGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "StringHandleOnStack",
+                                                        stringHandleGenerics) ],
           MethodReturnType.Void when qCallGenerics.IsEmpty && flagsGenerics.IsEmpty && stringHandleGenerics.IsEmpty ->
             let operation = "RuntimeTypeHandle.ConstructName"
             let qCallHandle = instruction.Arguments.[0] |> EvalStackValue.ofCliType
@@ -63,8 +65,8 @@ module NativeRuntimeTypeQCall =
           "System.Runtime.CompilerServices",
           "TypeHandle",
           _,
-          [ ConcretePointer (ConcreteVoid state.ConcreteTypes) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+          [ ConcretePointer (ConcreteVoid state.TypeSystem.ConcreteTypes) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "TypeHandle.GetCorElementType"
 
             if instruction.Arguments.Length <> 1 then
@@ -86,7 +88,8 @@ module NativeRuntimeTypeQCall =
           "System.Runtime.CompilerServices",
           "TypeHandle",
           _,
-          [ ConcretePointer (ConcreteVoid state.ConcreteTypes) ; ConcretePointer (ConcreteVoid state.ConcreteTypes) ],
+          [ ConcretePointer (ConcreteVoid state.TypeSystem.ConcreteTypes)
+            ConcretePointer (ConcreteVoid state.TypeSystem.ConcreteTypes) ],
           returnType ->
             // The managed wrapper short-circuits identity, the "ref-type → TypeDesc" rejection,
             // and the reflection-only Nullable<T> ⇆ T rule *before* invoking this QCall. By the
@@ -96,7 +99,7 @@ module NativeRuntimeTypeQCall =
             let operation = "TypeHandle.CanCastTo_NoCacheLookup"
 
             match returnType with
-            | MethodReturnType.Returns (CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)) when
+            | MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("", "BOOL", boolGenerics)) when
                 boolGenerics.IsEmpty
                 ->
                 ()
@@ -135,15 +138,15 @@ module NativeRuntimeTypeQCall =
           "System",
           "ValueType",
           _,
-          [ ConcretePointer (CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                                              "MethodTable",
-                                                              methodTableGenerics)) ],
+          [ ConcretePointer (CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                                         "MethodTable",
+                                                                         methodTableGenerics)) ],
           returnType when methodTableGenerics.IsEmpty ->
             let operation = "MethodTable_CanCompareBitsOrUseFastGetHashCode"
 
             match returnType with
-            | MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean)
-            | MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) -> ()
+            | MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean)
+            | MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) -> ()
             | other -> failwith $"%s{operation}: unexpected QCall stub return type %O{other}"
 
             if instruction.Arguments.Length <> 1 then
@@ -166,8 +169,12 @@ module NativeRuntimeTypeQCall =
           "System",
           "RuntimeTypeHandle",
           "RegisterCollectibleTypeDependency",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallAssembly", assemblyGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        qCallGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallAssembly",
+                                                        assemblyGenerics) ],
           MethodReturnType.Void when qCallGenerics.IsEmpty && assemblyGenerics.IsEmpty ->
             let operation = "RuntimeTypeHandle.RegisterCollectibleTypeDependency"
 
@@ -197,8 +204,10 @@ module NativeRuntimeTypeQCall =
           "System",
           "RuntimeTypeHandle",
           "IsCollectible",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics) ],
-          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        qCallGenerics) ],
+          MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("", "BOOL", boolGenerics)) when
             qCallGenerics.IsEmpty && boolGenerics.IsEmpty
             ->
             let operation = "RuntimeTypeHandle.IsCollectible"
@@ -234,10 +243,12 @@ module NativeRuntimeTypeQCall =
           "System",
           "RuntimeTypeHandle",
           "MakeByRef",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        qCallGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when qCallGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
             let operation = "RuntimeTypeHandle.MakeByRef"
 
@@ -328,10 +339,12 @@ module NativeRuntimeTypeQCall =
           "System",
           "RuntimeTypeHandle",
           "MakeSZArray",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        qCallGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when qCallGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
             let operation = "RuntimeTypeHandle.MakeSZArray"
 
@@ -420,12 +433,14 @@ module NativeRuntimeTypeQCall =
           "System",
           "RuntimeTypeHandle",
           "Instantiate",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        qCallGenerics)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when qCallGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
             let operation = "RuntimeTypeHandle.Instantiate"
 
@@ -506,10 +521,12 @@ module NativeRuntimeTypeQCall =
           "System",
           "RuntimeTypeHandle",
           "GetInstantiation",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics)
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        qCallGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics)
             _ ],
           MethodReturnType.Void when qCallGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
             let operation = "RuntimeTypeHandle.GetInstantiation"
@@ -540,7 +557,7 @@ module NativeRuntimeTypeQCall =
                     match handle with
                     | ConcreteTypeHandle.Concrete _ ->
                         let concreteType =
-                            AllConcreteTypes.lookup handle state.ConcreteTypes
+                            AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes
                             |> Option.defaultWith (fun () ->
                                 failwith $"%s{operation}: concrete type handle was not registered: %O{handle}"
                             )
@@ -601,10 +618,12 @@ module NativeRuntimeTypeQCall =
           "System",
           "RuntimeTypeHandle",
           "GetGenericTypeDefinition",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        qCallGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when qCallGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
             let operation = "RuntimeTypeHandle.GetGenericTypeDefinition"
 
@@ -647,7 +666,7 @@ module NativeRuntimeTypeQCall =
                     RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition
                 | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
                     let concreteType =
-                        AllConcreteTypes.lookup handle state.ConcreteTypes
+                        AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes
                         |> Option.defaultWith (fun () ->
                             failwith $"%s{operation}: concrete type handle was not registered: %O{handle}"
                         )
@@ -692,10 +711,12 @@ module NativeRuntimeTypeQCall =
           "System",
           "RuntimeTypeHandle",
           "GetConstraints",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        qCallGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when qCallGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
             let operation = "RuntimeTypeHandle.GetConstraints"
             let qCallHandle = instruction.Arguments.[0] |> EvalStackValue.ofCliType
@@ -739,12 +760,14 @@ module NativeRuntimeTypeQCall =
           "System",
           "RuntimeTypeHandle",
           "CreateInstanceForAnotherGenericParameter",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        qCallGenerics)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when qCallGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
             let operation = "RuntimeTypeHandle.CreateInstanceForAnotherGenericParameter"
 
@@ -841,7 +864,7 @@ module NativeRuntimeTypeQCall =
                 | WhatWeDid.Executed ->
 
                 let concreteType =
-                    AllConcreteTypes.lookup instantiatedHandle state.ConcreteTypes
+                    AllConcreteTypes.lookup instantiatedHandle state.TypeSystem.ConcreteTypes
                     |> Option.defaultWith (fun () ->
                         failwith $"%s{operation}: instantiated handle was not registered: %O{instantiatedHandle}"
                     )
@@ -854,7 +877,7 @@ module NativeRuntimeTypeQCall =
 
                 let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
 
-                if LoadedTypeInfo.isValueType ctx.BaseClassTypes state._LoadedAssemblies typeInfo then
+                if LoadedTypeInfo.isValueType ctx.BaseClassTypes state.TypeSystem._LoadedAssemblies typeInfo then
                     // CoreCLR's QCall asserts !pVMT->IsByRefLike() and routes value types
                     // away from this path elsewhere; the only documented consumer
                     // (ArraySortHelper) instantiates reference types. If a value-type ever
@@ -929,8 +952,8 @@ module NativeRuntimeTypeQCall =
           "System",
           "RuntimeTypeHandle",
           "GetDeclaringTypeHandle",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr) ->
             let operation = "RuntimeTypeHandle.GetDeclaringTypeHandle"
 
             if instruction.Arguments.Length <> 1 then
@@ -968,7 +991,7 @@ module NativeRuntimeTypeQCall =
                     match typeHandle with
                     | ConcreteTypeHandle.Concrete _ ->
                         let concreteType =
-                            AllConcreteTypes.lookup typeHandle state.ConcreteTypes
+                            AllConcreteTypes.lookup typeHandle state.TypeSystem.ConcreteTypes
                             |> Option.defaultWith (fun () ->
                                 failwith $"%s{operation}: concrete type handle was not registered: %O{typeHandle}"
                             )
@@ -1025,8 +1048,8 @@ module NativeRuntimeTypeQCall =
           "System",
           "RuntimeTypeHandle",
           "GetDeclaringTypeHandleForGenericVariable",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) ->
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr) ->
             let operation = "RuntimeTypeHandle.GetDeclaringTypeHandleForGenericVariable"
 
             if instruction.Arguments.Length <> 1 then
@@ -1073,7 +1096,10 @@ module NativeRuntimeTypeQCall =
 
                     if typeInfo.Generics.IsEmpty then
                         let stk =
-                            LoadedTypeInfo.signatureTypeKind ctx.BaseClassTypes state._LoadedAssemblies typeInfo
+                            LoadedTypeInfo.signatureTypeKind
+                                ctx.BaseClassTypes
+                                state.TypeSystem._LoadedAssemblies
+                                typeInfo
 
                         let state, typeHandle =
                             IlMachineState.concretizeType
@@ -1107,10 +1133,12 @@ module NativeRuntimeTypeQCall =
           "System",
           "RuntimeTypeHandle",
           "GetDeclaringMethodForGenericParameter",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics)
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallTypeHandle",
+                                                        qCallGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when qCallGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
             let operation = "RuntimeTypeHandle.GetDeclaringMethodForGenericParameter"
 
@@ -1157,15 +1185,17 @@ module NativeRuntimeTypeQCall =
           "System",
           "ModuleHandle",
           "ResolveType",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", qCallModuleGenerics)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallModule",
+                                                        qCallModuleGenerics)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when qCallModuleGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
             let operation = "ModuleHandle.ResolveType"
 
@@ -1319,15 +1349,17 @@ module NativeRuntimeTypeQCall =
           "System",
           "ModuleHandle",
           "ResolveMethod",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", qCallModuleGenerics)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System",
-                                                                     "RuntimeMethodHandleInternal",
-                                                                     returnGenerics)) when
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallModule",
+                                                        qCallModuleGenerics)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("System",
+                                                                                "RuntimeMethodHandleInternal",
+                                                                                returnGenerics)) when
             qCallModuleGenerics.IsEmpty && returnGenerics.IsEmpty
             ->
             let operation = "ModuleHandle.ResolveMethod"
@@ -1432,7 +1464,7 @@ module NativeRuntimeTypeQCall =
                     let value, reg =
                         MethodHandleRegistry.getOrAllocateInternalHandle
                             ctx.BaseClassTypes
-                            state.ConcreteTypes
+                            state.TypeSystem.ConcreteTypes
                             method.DeclaringAssemblyFullName
                             declaringTarget
                             method
@@ -1457,8 +1489,8 @@ module NativeRuntimeTypeQCall =
                             Concretization.concreteHandleToTypeDefn
                                 ctx.BaseClassTypes
                                 handle
-                                state.ConcreteTypes
-                                state._LoadedAssemblies
+                                state.TypeSystem.ConcreteTypes
+                                state.TypeSystem._LoadedAssemblies
                         )
                         |> ImmutableArray.CreateRange
 
@@ -1468,8 +1500,8 @@ module NativeRuntimeTypeQCall =
                             Concretization.concreteHandleToTypeDefn
                                 ctx.BaseClassTypes
                                 handle
-                                state.ConcreteTypes
-                                state._LoadedAssemblies
+                                state.TypeSystem.ConcreteTypes
+                                state.TypeSystem._LoadedAssemblies
                         )
                         |> ImmutableArray.CreateRange
 
@@ -1525,7 +1557,7 @@ module NativeRuntimeTypeQCall =
                     let value, reg =
                         MethodHandleRegistry.getOrAllocateConcreteInternalHandle
                             ctx.BaseClassTypes
-                            state.ConcreteTypes
+                            state.TypeSystem.ConcreteTypes
                             concretized
                             state.MethodHandles
 
@@ -1552,11 +1584,11 @@ module NativeRuntimeTypeQCall =
           "System",
           "RuntimeTypeHandle",
           _,
-          [ ConcretePointer (CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                                              "MethodTable",
-                                                              methodTableGenerics))
-            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) when
+          [ ConcretePointer (CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                                         "MethodTable",
+                                                                         methodTableGenerics))
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr) when
             methodTableGenerics.IsEmpty
             ->
             // CoreCLR (runtimehandles.cpp:399): the `MethodDesc` at a slot of a method table --
@@ -1623,11 +1655,11 @@ module NativeRuntimeTypeQCall =
           "System",
           "RuntimeTypeHandle",
           _,
-          [ ConcretePointer (CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                                              "MethodTable",
-                                                              methodTableGenerics))
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
-            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
+          [ ConcretePointer (CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                                         "MethodTable",
+                                                                         methodTableGenerics))
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ],
           returnType when methodTableGenerics.IsEmpty ->
             let operation = "RuntimeTypeHandle.GetFields"
 
@@ -1638,7 +1670,7 @@ module NativeRuntimeTypeQCall =
             // wrapper unpacks Span<IntPtr> into a pinned ptr[intptr] before invoking the
             // QCall stub, so we see three raw pointers here, not a Span value type.
             match returnType with
-            | MethodReturnType.Returns (CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)) when
+            | MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("", "BOOL", boolGenerics)) when
                 boolGenerics.IsEmpty
                 ->
                 ()
@@ -1739,12 +1771,12 @@ module NativeRuntimeTypeQCall =
           "System",
           "RuntimeTypeHandle",
           _,
-          [ ConcretePointer (CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                                              "MethodTable",
-                                                              methodTableGenerics))
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ ConcretePointer (CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                                         "MethodTable",
+                                                                         methodTableGenerics))
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when methodTableGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
             // CoreCLR's RuntimeTypeHandle_GetInterfaces (runtimehandles.cpp:518) walks
             // MethodTable::IterateInterfaceMap, allocates a fresh PTRARRAYREF of length
@@ -2015,12 +2047,12 @@ module NativeRuntimeTypeQCall =
           "System",
           "RuntimeTypeHandle",
           "InternalAllocNoChecks",
-          [ ConcretePointer (CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                                              "MethodTable",
-                                                              methodTableGenerics))
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ ConcretePointer (CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                                         "MethodTable",
+                                                                         methodTableGenerics))
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when methodTableGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
             // CoreCLR: `RuntimeTypeHandle_InternalAllocNoChecks`, reflectioninvocation.cpp:134,
             // which is `pMT->AllocateNoChecks()`. This is the slow half of
@@ -2073,7 +2105,7 @@ module NativeRuntimeTypeQCall =
             //
             // The invariant properly belongs at the chokepoint
             // (`IlMachineState.allocateUninitialisedInstance`), which would subsume both copies.
-            match AllConcreteTypes.lookup typeHandle state.ConcreteTypes with
+            match AllConcreteTypes.lookup typeHandle state.TypeSystem.ConcreteTypes with
             | Some ct when InternalTypeKind.kind ctx.BaseClassTypes ct = InternalTypeKind.Nullable ->
                 failwith
                     $"%s{operation}: refusing to allocate a Nullable<T> (%O{typeHandle}) on the heap; PawPrint boxes the underlying value instead, so no reader can interpret such an object. CoreCLR does allow this, for runtime-async continuation result boxes, which preserve a nullable's layout — if that is what you are hitting, PawPrint needs a layout-preserving boxed-Nullable representation"
@@ -2098,12 +2130,12 @@ module NativeRuntimeTypeQCall =
           "System",
           "RuntimeTypeHandle",
           "InternalAlloc",
-          [ ConcretePointer (CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                                              "MethodTable",
-                                                              methodTableGenerics))
-            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics) ],
+          [ ConcretePointer (CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                                         "MethodTable",
+                                                                         methodTableGenerics))
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
           MethodReturnType.Void when methodTableGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
             // CoreCLR: `RuntimeTypeHandle_InternalAlloc`, reflectioninvocation.cpp:119, which is
             // `pMT->Allocate()`. The checked counterpart of `RuntimeTypeHandle_InternalAllocNoChecks`
@@ -2132,7 +2164,7 @@ module NativeRuntimeTypeQCall =
                 NativeCall.methodTableOfEvalStackValue operation (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
 
             let concreteType =
-                AllConcreteTypes.lookup typeHandle state.ConcreteTypes
+                AllConcreteTypes.lookup typeHandle state.TypeSystem.ConcreteTypes
                 |> Option.defaultWith (fun () ->
                     failwith $"%s{operation}: MethodTable handle was not registered: %O{typeHandle}"
                 )
@@ -2165,7 +2197,7 @@ module NativeRuntimeTypeQCall =
                     $"TODO: %s{operation} was asked to allocate the Nullable %s{typeInfo.Namespace}.%s{typeInfo.Name}, as RuntimeMethodHandle.ReboxToNullable does when reflection coerces an argument to a Nullable<T> parameter; PawPrint boxes the underlying value instead, so there is no object here whose raw data Unbox_Nullable could write the nullable's layout into"
             | _ -> ()
 
-            if LoadedTypeInfo.isValueType ctx.BaseClassTypes state._LoadedAssemblies typeInfo then
+            if LoadedTypeInfo.isValueType ctx.BaseClassTypes state.TypeSystem._LoadedAssemblies typeInfo then
                 // Any other value type: `pMT->Allocate()` produces a box, and PawPrint's heap has
                 // no representation for one that arrived here rather than through `box`. Neither
                 // caller can produce this — `Delegate.InternalAlloc` asserts its argument derives
@@ -2254,14 +2286,14 @@ module NativeRuntimeTypeQCall =
           "System",
           "RuntimeTypeHandle",
           "GetActivationInfo",
-          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
-                                             "ObjectHandleOnStack",
-                                             objectHandleGenerics)
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics)
             ConcretePointer (ConcreteFunctionPointer _)
-            ConcretePointer (ConcretePointer (ConcreteVoid state.ConcreteTypes))
+            ConcretePointer (ConcretePointer (ConcreteVoid state.TypeSystem.ConcreteTypes))
             ConcretePointer (ConcreteFunctionPointer _)
             ConcretePointer (ConcreteFunctionPointer _)
-            ConcretePointer (CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)) ],
+            ConcretePointer (CorelibType state.TypeSystem.ConcreteTypes ("", "BOOL", boolGenerics)) ],
           MethodReturnType.Void when objectHandleGenerics.IsEmpty && boolGenerics.IsEmpty ->
             // CoreCLR: `RuntimeTypeHandle_GetActivationInfo`, reflectioninvocation.cpp. Describes
             // how `RuntimeType.ActivatorCache` should activate a type via `calli`: an allocator
@@ -2384,7 +2416,7 @@ module NativeRuntimeTypeQCall =
                 |> Some
             | ActivationInfo.WithConstructor (methodTable, ctor, isPublic, isValueType) ->
                 let declaringType =
-                    AllConcreteTypes.lookup methodTable state.ConcreteTypes
+                    AllConcreteTypes.lookup methodTable state.TypeSystem.ConcreteTypes
                     |> Option.defaultWith (fun () ->
                         failwith $"%s{operation}: ConcreteTypeHandle %O{methodTable} not found in AllConcreteTypes"
                     )

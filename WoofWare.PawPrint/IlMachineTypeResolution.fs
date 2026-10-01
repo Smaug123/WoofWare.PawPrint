@@ -32,10 +32,13 @@ module IlMachineTypeResolution =
                 state.DotnetRuntimeDirs
                 referencedInAssembly
                 r
-                state._LoadedAssemblies
+                state.TypeSystem._LoadedAssemblies
 
         { state with
-            _LoadedAssemblies = assemblies
+            TypeSystem =
+                { state.TypeSystem with
+                    _LoadedAssemblies = assemblies
+                }
         },
         dumped,
         assyName
@@ -55,8 +58,8 @@ module IlMachineTypeResolution =
         =
         let ctx =
             {
-                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
-                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                TypeConcretization.ConcretizationContext.ConcreteTypes = state.TypeSystem.ConcreteTypes
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = state.TypeSystem._LoadedAssemblies
                 TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
             }
 
@@ -71,8 +74,11 @@ module IlMachineTypeResolution =
 
         let state =
             { state with
-                _LoadedAssemblies = ctx.LoadedAssemblies
-                ConcreteTypes = ctx.ConcreteTypes
+                TypeSystem =
+                    { state.TypeSystem with
+                        _LoadedAssemblies = ctx.LoadedAssemblies
+                        ConcreteTypes = ctx.ConcreteTypes
+                    }
             }
 
         state, handle
@@ -97,8 +103,8 @@ module IlMachineTypeResolution =
         =
         let ctx =
             {
-                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
-                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                TypeConcretization.ConcretizationContext.ConcreteTypes = state.TypeSystem.ConcreteTypes
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = state.TypeSystem._LoadedAssemblies
                 TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
             }
 
@@ -113,8 +119,11 @@ module IlMachineTypeResolution =
 
         let state =
             { state with
-                _LoadedAssemblies = ctx.LoadedAssemblies
-                ConcreteTypes = ctx.ConcreteTypes
+                TypeSystem =
+                    { state.TypeSystem with
+                        _LoadedAssemblies = ctx.LoadedAssemblies
+                        ConcreteTypes = ctx.ConcreteTypes
+                    }
             }
 
         state, signature
@@ -134,8 +143,8 @@ module IlMachineTypeResolution =
         =
         let ctx =
             {
-                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
-                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                TypeConcretization.ConcretizationContext.ConcreteTypes = state.TypeSystem.ConcreteTypes
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = state.TypeSystem._LoadedAssemblies
                 TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
             }
 
@@ -150,8 +159,11 @@ module IlMachineTypeResolution =
 
         let state =
             { state with
-                _LoadedAssemblies = ctx.LoadedAssemblies
-                ConcreteTypes = ctx.ConcreteTypes
+                TypeSystem =
+                    { state.TypeSystem with
+                        _LoadedAssemblies = ctx.LoadedAssemblies
+                        ConcreteTypes = ctx.ConcreteTypes
+                    }
             }
 
         state, returnType
@@ -169,8 +181,8 @@ module IlMachineTypeResolution =
         =
         let ctx =
             {
-                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
-                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                TypeConcretization.ConcretizationContext.ConcreteTypes = state.TypeSystem.ConcreteTypes
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = state.TypeSystem._LoadedAssemblies
                 TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
             }
 
@@ -179,8 +191,11 @@ module IlMachineTypeResolution =
 
         let state =
             { state with
-                _LoadedAssemblies = ctx.LoadedAssemblies
-                ConcreteTypes = ctx.ConcreteTypes
+                TypeSystem =
+                    { state.TypeSystem with
+                        _LoadedAssemblies = ctx.LoadedAssemblies
+                        ConcreteTypes = ctx.ConcreteTypes
+                    }
             }
 
         state, matches
@@ -208,8 +223,8 @@ module IlMachineTypeResolution =
         =
         let ctx =
             {
-                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
-                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                TypeConcretization.ConcretizationContext.ConcreteTypes = state.TypeSystem.ConcreteTypes
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = state.TypeSystem._LoadedAssemblies
                 TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
             }
 
@@ -218,8 +233,11 @@ module IlMachineTypeResolution =
 
         let state =
             { state with
-                _LoadedAssemblies = ctx.LoadedAssemblies
-                ConcreteTypes = ctx.ConcreteTypes
+                TypeSystem =
+                    { state.TypeSystem with
+                        _LoadedAssemblies = ctx.LoadedAssemblies
+                        ConcreteTypes = ctx.ConcreteTypes
+                    }
             }
 
         state, equivalent
@@ -237,8 +255,8 @@ module IlMachineTypeResolution =
         =
         let ctx =
             {
-                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
-                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                TypeConcretization.ConcretizationContext.ConcreteTypes = state.TypeSystem.ConcreteTypes
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = state.TypeSystem._LoadedAssemblies
                 TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
             }
 
@@ -252,8 +270,11 @@ module IlMachineTypeResolution =
 
         let state =
             { state with
-                _LoadedAssemblies = ctx.LoadedAssemblies
-                ConcreteTypes = ctx.ConcreteTypes
+                TypeSystem =
+                    { state.TypeSystem with
+                        _LoadedAssemblies = ctx.LoadedAssemblies
+                        ConcreteTypes = ctx.ConcreteTypes
+                    }
             }
 
         state, equivalent
@@ -271,8 +292,8 @@ module IlMachineTypeResolution =
         =
         let ctx =
             {
-                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
-                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                TypeConcretization.ConcretizationContext.ConcreteTypes = state.TypeSystem.ConcreteTypes
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = state.TypeSystem._LoadedAssemblies
                 TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
             }
 
@@ -281,8 +302,11 @@ module IlMachineTypeResolution =
 
         let state =
             { state with
-                _LoadedAssemblies = ctx.LoadedAssemblies
-                ConcreteTypes = ctx.ConcreteTypes
+                TypeSystem =
+                    { state.TypeSystem with
+                        _LoadedAssemblies = ctx.LoadedAssemblies
+                        ConcreteTypes = ctx.ConcreteTypes
+                    }
             }
 
         state, equivalent
@@ -304,10 +328,13 @@ module IlMachineTypeResolution =
                 name
                 genericArgs
                 assy
-                state._LoadedAssemblies
+                state.TypeSystem._LoadedAssemblies
 
         { state with
-            _LoadedAssemblies = assemblies
+            TypeSystem =
+                { state.TypeSystem with
+                    _LoadedAssemblies = assemblies
+                }
         },
         resolvedAssy,
         typeInfo
@@ -334,10 +361,13 @@ module IlMachineTypeResolution =
                 fromAssembly
                 ty
                 genericArgs
-                state._LoadedAssemblies
+                state.TypeSystem._LoadedAssemblies
 
         { state with
-            _LoadedAssemblies = assemblies
+            TypeSystem =
+                { state.TypeSystem with
+                    _LoadedAssemblies = assemblies
+                }
         },
         outcome
 
@@ -361,10 +391,13 @@ module IlMachineTypeResolution =
                 state.DotnetRuntimeDirs
                 definedIn
                 typeDef
-                state._LoadedAssemblies
+                state.TypeSystem._LoadedAssemblies
 
         { state with
-            _LoadedAssemblies = assemblies
+            TypeSystem =
+                { state.TypeSystem with
+                    _LoadedAssemblies = assemblies
+                }
         },
         outcome
 
@@ -390,10 +423,13 @@ module IlMachineTypeResolution =
                 fromAssembly
                 ty
                 genericArgs
-                state._LoadedAssemblies
+                state.TypeSystem._LoadedAssemblies
 
         { state with
-            _LoadedAssemblies = assemblies
+            TypeSystem =
+                { state.TypeSystem with
+                    _LoadedAssemblies = assemblies
+                }
         },
         outcome
 
@@ -412,10 +448,13 @@ module IlMachineTypeResolution =
                 fromAssembly
                 ty
                 genericArgs
-                state._LoadedAssemblies
+                state.TypeSystem._LoadedAssemblies
 
         { state with
-            _LoadedAssemblies = assemblies
+            TypeSystem =
+                { state.TypeSystem with
+                    _LoadedAssemblies = assemblies
+                }
         },
         resolvedAssy,
         typeInfo
@@ -435,10 +474,13 @@ module IlMachineTypeResolution =
                 referencedInAssembly
                 target
                 typeGenericArgs
-                state._LoadedAssemblies
+                state.TypeSystem._LoadedAssemblies
 
         { state with
-            _LoadedAssemblies = assemblies
+            TypeSystem =
+                { state.TypeSystem with
+                    _LoadedAssemblies = assemblies
+                }
         },
         resolvedAssy,
         typeInfo
@@ -452,10 +494,19 @@ module IlMachineTypeResolution =
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         let assemblies, resolvedAssy, typeInfo =
-            TypeResolution.resolveType loggerFactory state.DotnetRuntimeDirs ty genericArgs assy state._LoadedAssemblies
+            TypeResolution.resolveType
+                loggerFactory
+                state.DotnetRuntimeDirs
+                ty
+                genericArgs
+                assy
+                state.TypeSystem._LoadedAssemblies
 
         { state with
-            _LoadedAssemblies = assemblies
+            TypeSystem =
+                { state.TypeSystem with
+                    _LoadedAssemblies = assemblies
+                }
         },
         resolvedAssy,
         typeInfo
@@ -479,10 +530,13 @@ module IlMachineTypeResolution =
                 typeGenericArgs
                 methodGenericArgs
                 assy
-                state._LoadedAssemblies
+                state.TypeSystem._LoadedAssemblies
 
         { state with
-            _LoadedAssemblies = assemblies
+            TypeSystem =
+                { state.TypeSystem with
+                    _LoadedAssemblies = assemblies
+                }
         },
         resolvedAssy,
         typeInfo
@@ -506,10 +560,13 @@ module IlMachineTypeResolution =
                 assy
                 typeGenericArgs
                 methodGenericArgs
-                state._LoadedAssemblies
+                state.TypeSystem._LoadedAssemblies
 
         { state with
-            _LoadedAssemblies = assemblies
+            TypeSystem =
+                { state.TypeSystem with
+                    _LoadedAssemblies = assemblies
+                }
         },
         resolvedAssy,
         typeInfo
@@ -534,8 +591,8 @@ module IlMachineTypeResolution =
                 Concretization.concreteHandleToTypeDefn
                     baseClassTypes
                     handle
-                    state.ConcreteTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem.ConcreteTypes
+                    state.TypeSystem._LoadedAssemblies
             )
 
         let methodGenericArgsAsDefn =
@@ -544,8 +601,8 @@ module IlMachineTypeResolution =
                 Concretization.concreteHandleToTypeDefn
                     baseClassTypes
                     handle
-                    state.ConcreteTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem.ConcreteTypes
+                    state.TypeSystem._LoadedAssemblies
             )
 
         resolveTypeFromDefn loggerFactory baseClassTypes sign typeGenericArgsAsDefn methodGenericArgsAsDefn assy state
@@ -570,8 +627,8 @@ module IlMachineTypeResolution =
                 Concretization.concreteHandleToTypeDefn
                     baseClassTypes
                     handle
-                    state.ConcreteTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem.ConcreteTypes
+                    state.TypeSystem._LoadedAssemblies
             )
             |> ImmutableArray.CreateRange
 
@@ -581,8 +638,8 @@ module IlMachineTypeResolution =
                 Concretization.concreteHandleToTypeDefn
                     baseClassTypes
                     handle
-                    state.ConcreteTypes
-                    state._LoadedAssemblies
+                    state.TypeSystem.ConcreteTypes
+                    state.TypeSystem._LoadedAssemblies
             )
             |> ImmutableArray.CreateRange
 
@@ -797,15 +854,18 @@ module IlMachineTypeResolution =
         let zero, updatedConcreteTypes, updatedAssemblies =
             CliType.zeroOf
                 (loader state.LoggerFactory state)
-                state.ConcreteTypes
-                state._LoadedAssemblies
+                state.TypeSystem.ConcreteTypes
+                state.TypeSystem._LoadedAssemblies
                 baseClassTypes
                 handle
 
         let newState =
             { state with
-                ConcreteTypes = updatedConcreteTypes
-                _LoadedAssemblies = updatedAssemblies
+                TypeSystem =
+                    { state.TypeSystem with
+                        ConcreteTypes = updatedConcreteTypes
+                        _LoadedAssemblies = updatedAssemblies
+                    }
             }
 
         zero, newState.WithZeroValue handle zero
@@ -821,8 +881,8 @@ module IlMachineTypeResolution =
         // Create a concretization context from the current state
         let ctx : TypeConcretization.ConcretizationContext<_> =
             {
-                ConcreteTypes = state.ConcreteTypes
-                LoadedAssemblies = state._LoadedAssemblies
+                ConcreteTypes = state.TypeSystem.ConcreteTypes
+                LoadedAssemblies = state.TypeSystem._LoadedAssemblies
                 BaseTypes = baseClassTypes
             }
 
@@ -851,8 +911,11 @@ module IlMachineTypeResolution =
 
             let newState =
                 { state with
-                    ConcreteTypes = currentCtx.ConcreteTypes
-                    _LoadedAssemblies = currentCtx.LoadedAssemblies
+                    TypeSystem =
+                        { state.TypeSystem with
+                            ConcreteTypes = currentCtx.ConcreteTypes
+                            _LoadedAssemblies = currentCtx.LoadedAssemblies
+                        }
                 }
 
             handle, newState
@@ -867,8 +930,11 @@ module IlMachineTypeResolution =
                 // Type already exists, just return it
                 handle,
                 { state with
-                    ConcreteTypes = currentCtx.ConcreteTypes
-                    _LoadedAssemblies = currentCtx.LoadedAssemblies
+                    TypeSystem =
+                        { state.TypeSystem with
+                            ConcreteTypes = currentCtx.ConcreteTypes
+                            _LoadedAssemblies = currentCtx.LoadedAssemblies
+                        }
                 }
             | None ->
                 // Create the concrete type using mapGeneric to transform from TypeDefn to ConcreteTypeHandle
@@ -882,8 +948,11 @@ module IlMachineTypeResolution =
                 // Update the state with the new concrete types
                 let newState =
                     { state with
-                        ConcreteTypes = newConcreteTypes
-                        _LoadedAssemblies = currentCtx.LoadedAssemblies
+                        TypeSystem =
+                            { state.TypeSystem with
+                                ConcreteTypes = newConcreteTypes
+                                _LoadedAssemblies = currentCtx.LoadedAssemblies
+                            }
                     }
 
                 handle, newState
@@ -919,7 +988,7 @@ module IlMachineTypeResolution =
         : IlMachineState * ConcreteTypeHandle
         =
         let byteTypeDefn =
-            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Byte
+            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state.TypeSystem._LoadedAssemblies baseClassTypes.Byte
 
         concretizeType
             loggerFactory
@@ -937,7 +1006,7 @@ module IlMachineTypeResolution =
         : IlMachineState * ConcreteTypeHandle
         =
         let charTypeDefn =
-            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Char
+            LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state.TypeSystem._LoadedAssemblies baseClassTypes.Char
 
         concretizeType
             loggerFactory

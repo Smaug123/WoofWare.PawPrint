@@ -21,6 +21,9 @@ What lives here:
   rather than beside the Loader's field resolver because CoreCLR binds a method reference by
   searching each type's method table, as `MethodTableLayout` lays it out, in the order CoreCLR does;
   it is checked against the real runtime's own answer.
+* `TypeSystemState` — the state all of the above is computed over: the assemblies loaded, the
+  concrete types instantiated so far, and the memos of method-table walks, member resolution and
+  method concretisation. The interpreter's machine state holds one.
 
 The motivating consumer, besides PawPrint's interpreter, is an analyser that answers questions about
 a method without running it. Such a thing must know which method a call runs exactly as the

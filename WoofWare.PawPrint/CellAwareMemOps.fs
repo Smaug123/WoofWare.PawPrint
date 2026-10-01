@@ -40,7 +40,7 @@ module internal CellAwareMemOps =
         (state : IlMachineState)
         : ConcreteTypeHandle
         =
-        AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Byte.Identity
+        AllConcreteTypes.findExistingNonGenericConcreteType state.TypeSystem.ConcreteTypes baseClassTypes.Byte.Identity
         |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Byte is not concretized")
 
     let private readByte

@@ -45,8 +45,13 @@ module TestByrefContainer =
     let private state () : IlMachineState =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
-        { IlMachineState.initial loggerFactory ImmutableArray.Empty corelib with
-            ConcreteTypes = concreteTypes
+        let initialState = IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+
+        { initialState with
+            TypeSystem =
+                { initialState.TypeSystem with
+                    ConcreteTypes = concreteTypes
+                }
         }
 
     /// Stands in for a real field row. The whole-container arms never resolve it.
@@ -217,7 +222,7 @@ module TestByrefContainer =
         [ field "A" 111 ; field "B" 222 ]
         |> SynthesisedLayoutKind.ofFields
             baseClassTypes
-            state.ConcreteTypes
+            state.TypeSystem.ConcreteTypes
             int32Handle
             Layout.Default
             System.Runtime.InteropServices.CharSet.Ansi
