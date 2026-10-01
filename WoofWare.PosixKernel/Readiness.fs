@@ -15,8 +15,7 @@ namespace WoofWare.PosixKernel
 /// `uint32` states both.
 ///
 /// Answers for the socket phases `UnixMachineState.socketReadinessLevel`
-/// answers, the launch shape's standard streams, both ends of a pipe, and
-/// regular files and directories (which epoll will not register, but `poll`
+/// answers, both ends of a pipe, and regular files and directories (which epoll will not register, but `poll`
 /// answers). A socket
 /// event port is refused: what either waiter reports for one is not modelled.
 [<RequireQualifiedAccess>]
@@ -91,17 +90,6 @@ module LinuxReadiness =
             // same missing handler is why `epoll_ctl` answers EPERM for one, so
             // only `poll` asks.
             EpollEvents.In ||| EpollEvents.Out ||| EpollEvents.RdNorm ||| EpollEvents.WrNorm
-        | OpenFileTarget.StandardStream FileDescriptorRole.StandardInput ->
-            // The launch shape this library models (measured, `pipes.c`):
-            // stdin is the read end of a pipe whose write end the launcher
-            // closed -- the same claim `UnixReadWrite.read`'s immediate
-            // end-of-file makes -- which presents HUP alone.
-            EpollEvents.Hup
-        | OpenFileTarget.StandardStream FileDescriptorRole.StandardOutput
-        | OpenFileTarget.StandardStream FileDescriptorRole.StandardError ->
-            // Write ends of pipes with space and a live reader. No WRBAND:
-            // a pipe's handler does not set it.
-            EpollEvents.Out ||| EpollEvents.WrNorm
         | OpenFileTarget.Pipe (pipeId, PipeEnd.Read) ->
             // Measured on Linux 6.18.5 (`pipe-states.c` in
             // docs/plans/2026-08-23-posix-kernel-extraction, and the live
@@ -114,7 +102,7 @@ module LinuxReadiness =
                  EpollEvents.In ||| EpollEvents.RdNorm
              else
                  0u)
-            ||| (if UnixProcessState.pipeEndOpen pipeId PipeEnd.Write system.Process then
+            ||| (if UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Write system.Process then
                      0u
                  else
                      EpollEvents.Hup)
@@ -128,7 +116,7 @@ module LinuxReadiness =
                  EpollEvents.Out ||| EpollEvents.WrNorm
              else
                  0u)
-            ||| (if UnixProcessState.pipeEndOpen pipeId PipeEnd.Read system.Process then
+            ||| (if UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Read system.Process then
                      0u
                  else
                      EpollEvents.Err)
@@ -193,7 +181,6 @@ module SocketEventPort =
         | Some description ->
 
         match description.Target with
-        | OpenFileTarget.StandardStream _
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.Socket _
@@ -235,7 +222,6 @@ module SocketEventPort =
         | Some description ->
 
         match description.Target with
-        | OpenFileTarget.StandardStream _
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.Socket _

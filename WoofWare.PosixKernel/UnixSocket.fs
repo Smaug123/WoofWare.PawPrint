@@ -430,7 +430,6 @@ module UnixSocket =
         match description.Target with
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
-        | OpenFileTarget.StandardStream _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.SocketEventPort _ -> answered (UnixError.ENOTSOCK)
         | OpenFileTarget.Socket socketId ->
@@ -899,8 +898,7 @@ module UnixSocket =
     /// each transfer that lands must too. Both kernels give it no effect on a
     /// regular file, so an operation there that never looks is right not to. A
     /// socket event port's waits block per their own timeout argument, never
-    /// per this flag. On a standard stream it changes one answer, which
-    /// `UnixReadWrite.write` refuses: a write longer than an empty pipe holds.
+    /// per this flag.
     let setNonBlocking<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (isNonBlocking : bool)
@@ -927,16 +925,13 @@ module UnixSocket =
             match SimulatedUnixPlatform.eventPortSetStatusFlagsError system.Machine.UnixPlatform with
             | None -> SetNonBlockingAnswer.Set, system
             | Some error -> SetNonBlockingAnswer.Failed error, system
-        | Some (OpenFileTarget.StandardStream _) ->
-            // Measured on both flavours under the launch shape this library
-            // models (stdio-nonblock.c): `F_SETFL` answers 0 on each of the
-            // three streams, and `F_GETFL` reads the flag back.
-            SetNonBlockingAnswer.Set, stored system
         | Some (OpenFileTarget.Pipe _) ->
             // Measured on both ends, on both flavours (pipe-states.c and
             // `TestPipeAgainstHost`): `F_SETFL` answers 0 and
             // the flag governs whether a read or write that would wait answers
-            // EAGAIN instead.
+            // EAGAIN instead. Likewise on the three standard streams of a
+            // process launched onto pipes (stdio-nonblock.c), where `F_GETFL`
+            // reads the flag back.
             SetNonBlockingAnswer.Set, stored system
         | Some (OpenFileTarget.File _)
         | Some (OpenFileTarget.Directory _)
@@ -1187,7 +1182,6 @@ module UnixSocket =
         match target with
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
-        | OpenFileTarget.StandardStream _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.SocketEventPort _ -> Ok (ListenAnswer.Failed UnixError.ENOTSOCK, system)
         | OpenFileTarget.Socket socketId ->
@@ -1332,7 +1326,6 @@ module UnixSocket =
         match target with
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
-        | OpenFileTarget.StandardStream _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.SocketEventPort _ -> Ok (GetSockNameAnswer.Failed (UnixError.ENOTSOCK, None))
         | OpenFileTarget.Socket socketId ->
@@ -1412,7 +1405,6 @@ module UnixSocket =
         | None -> Error UnixError.EBADF
         | Some (OpenFileTarget.File _)
         | Some (OpenFileTarget.Directory _)
-        | Some (OpenFileTarget.StandardStream _)
         | Some (OpenFileTarget.Pipe _)
         | Some (OpenFileTarget.SocketEventPort _) -> Error UnixError.ENOTSOCK
         | Some (OpenFileTarget.Socket socketId) -> Ok socketId

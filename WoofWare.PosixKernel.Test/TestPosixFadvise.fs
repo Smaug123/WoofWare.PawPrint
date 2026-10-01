@@ -51,7 +51,7 @@ module TestPosixFadvise =
 
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
         match
-            UnixSystem.initial<int, string> platform 0 (CpuId 0)
+            UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
             |> UnixSystem.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault seed (absolute "/dir")
         with
         | Ok system -> system

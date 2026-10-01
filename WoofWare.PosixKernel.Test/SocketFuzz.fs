@@ -577,7 +577,7 @@ module SocketFuzz =
     let executeEmulated (ops : FuzzOp list) : EmulatedRun =
         let mutable state =
             {
-                Kernel = UnixSystem.initial SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
+                Kernel = UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
                 SlotFd = Map.empty
                 NextListenerPort = listenerPortBase
             }

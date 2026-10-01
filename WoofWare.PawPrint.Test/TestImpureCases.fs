@@ -947,9 +947,20 @@ module TestImpureCases =
             AssertTerminalState =
                 Some (fun state ->
                     let machine = (EmulatedKernel.unix state.Kernel).Machine
-                    Map.isEmpty machine.Pipes |> shouldEqual true
-                    // Two pipes were made, so the next is the third.
-                    machine.NextPipeId |> shouldEqual (PipeId 2L)
+
+                    // Only the standard streams' pipes are left, which the
+                    // guest was launched with and still holds.
+                    machine.Pipes
+                    |> Map.forall (fun _ pipe ->
+                        match pipe.Origin with
+                        | PipeOrigin.Launched _ -> true
+                        | PipeOrigin.Made _ -> false
+                    )
+                    |> shouldEqual true
+
+                    // The launch made three pipes and the guest two, so the
+                    // next is the sixth.
+                    machine.NextPipeId |> shouldEqual (PipeId 5L)
                 )
         }
 

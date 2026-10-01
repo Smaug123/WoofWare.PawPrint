@@ -17,7 +17,7 @@ module TestUnixSignal =
         [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ]
 
     let private systemOn (flavour : SimulatedUnixFlavour) : UnixSystem<int, string> =
-        UnixSystem.initial (HostPlatform.platformOf flavour) 0 (CpuId 0)
+        UnixSystem.initial (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private linux : UnixSystem<int, string> = systemOn SimulatedUnixFlavour.Linux
 

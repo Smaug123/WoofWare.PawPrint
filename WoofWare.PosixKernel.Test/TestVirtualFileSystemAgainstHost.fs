@@ -877,7 +877,7 @@ module TestVirtualFileSystemAgainstHost =
 
     let private modelReadLink (vfs : VirtualFileSystem) (relative : string) (capacity : int) : Result<int, int> =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial (hostPlatform ()) 0 (CpuId 0)
+            UnixSystem.initial (hostPlatform ()) UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let system =
             { system with
@@ -2844,7 +2844,7 @@ module TestVirtualFileSystemAgainstHost =
     /// A system at this host's flavour and privilege, holding `vfs`.
     let private renameModelSystem (vfs : VirtualFileSystem) : UnixSystem<int, string> =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial (hostPlatform ()) 0 (CpuId 0)
+            UnixSystem.initial (hostPlatform ()) UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let userId =
             match hostPrivilege () with
@@ -3161,7 +3161,7 @@ module TestVirtualFileSystemAgainstHost =
 
     let private modelChDirOutcome (vfs : VirtualFileSystem) (relative : string) : ChDirOutcome =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial (hostPlatform ()) 0 (CpuId 0)
+            UnixSystem.initial (hostPlatform ()) UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let userId =
             match hostPrivilege () with

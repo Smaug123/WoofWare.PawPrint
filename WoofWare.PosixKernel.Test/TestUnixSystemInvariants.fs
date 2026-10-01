@@ -28,7 +28,7 @@ module TestUnixSystemInvariants =
     /// platform.
     let private system : UnixSystem<int, string> =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
+            UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         { system with
             Machine =
@@ -37,6 +37,19 @@ module TestUnixSystemInvariants =
                 }
         }
 
+
+    /// `system` launched with no descriptors at all, and so no pipes: the base
+    /// for a row that replaces the whole descriptor table.
+    let private unlaunched : UnixSystem<int, string> =
+        let bare : UnixSystem<int, string> =
+            UnixSystem.initial SimulatedUnixPlatform.linuxX64 Map.empty 0 (CpuId 0)
+
+        { bare with
+            Machine =
+                { bare.Machine with
+                    LocalRoutes = []
+                }
+        }
 
     /// A sound system is the control every row below is a single edit away
     /// from: without it, a row that reported *some* defect would pass while
@@ -62,9 +75,9 @@ module TestUnixSystemInvariants =
             SocketPhase.DatagramPeer (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 80us)
 
         let forged =
-            { system with
+            { unlaunched with
                 Machine =
-                    { system.Machine with
+                    { unlaunched.Machine with
                         Sockets =
                             Map.ofList
                                 [
@@ -81,7 +94,7 @@ module TestUnixSystemInvariants =
                         NextSocketId = SocketId 1L
                     }
                 Process =
-                    { system.Process with
+                    { unlaunched.Process with
                         FileDescriptors =
                             FileDescriptorRegistry.Unchecked.ofParts
                                 (Map.ofList [ 3, OpenFileDescriptionId 0L ])
@@ -116,9 +129,9 @@ module TestUnixSystemInvariants =
         let connection = ConnectionId 2L
 
         let forged =
-            { system with
+            { unlaunched with
                 Machine =
-                    { system.Machine with
+                    { unlaunched.Machine with
                         Sockets =
                             Map.ofList
                                 [
@@ -146,7 +159,7 @@ module TestUnixSystemInvariants =
                         NextConnectionId = connection
                     }
                 Process =
-                    { system.Process with
+                    { unlaunched.Process with
                         FileDescriptors =
                             FileDescriptorRegistry.Unchecked.ofParts
                                 (Map.ofList [ 3, OpenFileDescriptionId 0L ])
@@ -196,13 +209,13 @@ module TestUnixSystemInvariants =
             }
 
         let forged =
-            { system with
+            { unlaunched with
                 Machine =
-                    { system.Machine with
+                    { unlaunched.Machine with
                         NextSocketEventRegistrationOrdinal = ordinal
                     }
                 Process =
-                    { system.Process with
+                    { unlaunched.Process with
                         FileDescriptors =
                             FileDescriptorRegistry.Unchecked.ofParts
                                 (Map.ofList [ 4, portId ])
@@ -247,7 +260,7 @@ module TestUnixSystemInvariants =
                 ]
 
         match
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
             |> UnixSystem.withFileSystemAndCurrentDirectory
                 epoch
                 Owners.linuxDefault
@@ -649,7 +662,7 @@ module TestUnixSystemInvariants =
         // `UnixMachineState.withMount` refuses one the machine's
         // flavour cannot mount.
         let linux =
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         { linux with
             Machine =
@@ -664,7 +677,7 @@ module TestUnixSystemInvariants =
             ]
 
         // A hand-built machine whose pair does describe one system is sound.
-        UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 0 (CpuId 0)
+        UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
         |> fun darwin ->
             { darwin with
                 Machine =
@@ -680,7 +693,13 @@ module TestUnixSystemInvariants =
     // `UnixSystem.initial`, `UnixTaskLifecycle.spawn` and the identity setters.
 
     let private spawned (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        match UnixTaskLifecycle.spawn 0 1 (CpuId 0) (UnixSystem.initial<int, string> platform 0 (CpuId 0)) with
+        match
+            UnixTaskLifecycle.spawn
+                0
+                1
+                (CpuId 0)
+                (UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0))
+        with
         | Ok (_, system) -> system
         | Error error -> failwith $"spawn failed: %O{error}"
 
@@ -746,7 +765,7 @@ module TestUnixSystemInvariants =
         let linux = spawned SimulatedUnixPlatform.linuxX64
 
         let lowered =
-            (UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
+            (UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
              |> UnixSystem.withProcessId "test" (ProcessId.parseOrFail "test" 5)
              |> UnixSystem.withPidMax "test" 1000)
                 .Machine.ThreadIds
@@ -768,7 +787,11 @@ module TestUnixSystemInvariants =
         let darwin = spawned SimulatedUnixPlatform.macOsArm64
 
         let behind =
-            (UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 0 (CpuId 0)
+            (UnixSystem.initial<int, string>
+                SimulatedUnixPlatform.macOsArm64
+                UnixSystem.pipedStandardStreams
+                0
+                (CpuId 0)
              |> UnixSystem.withLeaderThreadId "test" 4242UL)
                 .Machine.ThreadIds
 
@@ -787,10 +810,10 @@ module TestUnixSystemInvariants =
     [<Test>]
     let ``a thread ID counter of the other flavour is a defect`` () : unit =
         let linux =
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let darwin =
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 0 (CpuId 0)
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let swapped (system : UnixSystem<int, string>) (from : UnixSystem<int, string>) =
             { system with

@@ -20,10 +20,10 @@ open WoofWare.PosixKernel
 module TestEpollCreate1 =
 
     let private linux : UnixSystem<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
+        UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private darwin : UnixSystem<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.macOsArm64 0 (CpuId 0)
+        UnixSystem.initial SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private cloExec : int = 0x80000
 
@@ -137,7 +137,8 @@ module TestEpollCreate1 =
             | SimulatedUnixFlavour.Darwin -> Assert.Ignore "epoll is a Linux interface"
             | SimulatedUnixFlavour.Linux -> ()
 
-            let modelled = UnixSystem.initial<int, string> platform 0 (CpuId 0)
+            let modelled =
+                UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             for flags, _ in measured do
                 let fd = hostEpollCreate1 flags

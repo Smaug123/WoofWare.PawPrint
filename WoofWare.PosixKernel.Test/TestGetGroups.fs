@@ -26,7 +26,7 @@ module TestGetGroups =
     let private gid (raw : uint32) : GroupId = GroupId.parseOrFail context raw
 
     let private systemWith (platform : SimulatedUnixPlatform) (credentials : Credentials) : UnixSystem<int, string> =
-        UnixSystem.initial platform 0 (CpuId 0)
+        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
         |> UnixSystem.withCredentials context credentials
 
     let private linuxWithGroups (groups : uint32 list) : UnixSystem<int, string> =
@@ -343,7 +343,7 @@ module TestGetGroupsAgainstHost =
                 // so handing the model the reported list is handing it the
                 // installed one.
                 let system : UnixSystem<int, string> =
-                    UnixSystem.initial platform 0 (CpuId 0)
+                    UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
                     |> UnixSystem.withCredentials
                         context
                         (Credentials.ofIds

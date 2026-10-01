@@ -225,7 +225,7 @@ module TestPollEventsPal =
 
     let private linux : UnixSystem<int, string> =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
+            UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let system =
             match UnixTaskLifecycle.spawn system.Leader poller (CpuId 0) system with
@@ -327,17 +327,21 @@ module TestPollEventsPal =
                     In = true
                     Out = true
                 }
-            | OpenFileTarget.StandardStream FileDescriptorRole.StandardInput ->
-                { ReadinessLevel.none with
-                    Hup = true
-                }
-            | OpenFileTarget.StandardStream FileDescriptorRole.StandardOutput
-            | OpenFileTarget.StandardStream FileDescriptorRole.StandardError ->
-                { ReadinessLevel.none with
-                    Out = true
-                }
             | OpenFileTarget.SocketEventPort _ -> failwith "TestPollEventsPal: no row polls a socket event port."
-            | OpenFileTarget.Pipe _ -> failwith "TestPollEventsPal: no row polls a pipe."
+            | OpenFileTarget.Pipe (pipeId, _) ->
+                // The standard streams of a process launched onto pipes: input
+                // whose writer has gone and supplied nothing, and output a
+                // client drains.
+                match (UnixMachineState.pipe pipeId system.Machine).Origin with
+                | PipeOrigin.Launched (_, LaunchDescriptor.SuppliedNothing) ->
+                    { ReadinessLevel.none with
+                        Hup = true
+                    }
+                | PipeOrigin.Launched (_, LaunchDescriptor.Drained) ->
+                    { ReadinessLevel.none with
+                        Out = true
+                    }
+                | PipeOrigin.Made _ -> failwith "TestPollEventsPal: no row polls a pipe the guest made."
 
         (if level.In && palEvents &&& pal.["PAL_POLLIN"] <> 0s then
              pal.["PAL_POLLIN"]
