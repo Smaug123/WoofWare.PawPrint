@@ -76,7 +76,8 @@ module DebuggerServer =
     /// keeps both which syscall it is in and what it is waiting for: `BlockedInSyscall`
     /// carries neither, so a renderer handed only the status could say that a thread is
     /// parked and nothing else. `None` is what a terminated thread has, since its exit
-    /// removed its task; for any other thread it is an interpreter bug that
+    /// removed its task, and what an unstarted one has, since it has no OS thread yet;
+    /// for any other thread it is an interpreter bug that
     /// `EmulatedKernel.checkTaskInvariants` names, and this reports it rather than raising,
     /// because a debugger is most wanted when the machine is already wrong.
     let private writeThreadStatus
@@ -87,7 +88,7 @@ module DebuggerServer =
         =
         match status with
         | ThreadStatus.Runnable -> writer.WriteStringValue "runnable"
-        | ThreadStatus.NotStarted -> writer.WriteStringValue "notStarted"
+        | ThreadStatus.NotStarted _ -> writer.WriteStringValue "notStarted"
         | ThreadStatus.BlockedOnJoin (target, deadlineTicks) ->
             writer.WriteStartObject ()
             writer.WriteString ("kind", "blockedOnJoin")

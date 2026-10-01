@@ -221,7 +221,7 @@ module Program =
         // the kernel. There is deliberately no `FiredDeadline` case for one.
         | ThreadStatus.BlockedInSyscall
         | ThreadStatus.Runnable
-        | ThreadStatus.NotStarted
+        | ThreadStatus.NotStarted _
         | ThreadStatus.BlockedOnClassInit _
         | ThreadStatus.BlockedOnMonitorAcquire _
         | ThreadStatus.Terminated
