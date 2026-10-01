@@ -292,11 +292,11 @@ run before that method's first instruction. A dynamic assembly is announced insi
 **PawPrint**: an image is announced on the thread that loaded it, before the instruction that first
 needed it runs, and so before anything in the assembly runs, its type initialisers included. The
 interpreter loads an assembly partway through a step, so a step that loads one while something is
-subscribed is discarded, keeping only the assemblies it loaded; the announcements run; and then the
-step runs again from where it began, finding its assemblies already loaded. A step that loaded
-several assemblies announces them one after another, each handler running to completion first, and
-a load made inside a handler is announced inside it, as on CoreCLR. Corelib is never announced, and
-with nothing subscribed no managed code runs and no step is spent or repeated.
+subscribed is discarded, keeping only the first assembly it loaded; that assembly is announced; and
+then the step runs again from where it began, finding it already loaded. If the step needs another
+assembly too, it loads that one afresh and is discarded again to announce it, unless a handler
+needed it first, in which case it was announced inside that handler, as on CoreCLR. Corelib is never
+announced, and with nothing subscribed no managed code runs and no step is spent or repeated.
 
 Two things are not modelled, and each ends the run rather than diverge silently:
 
@@ -325,7 +325,12 @@ that load an assembly could be resumed afterwards: by the time type resolution l
 instruction has typically consumed operands or changed other state. Discarding the whole step
 needs none of them to be resumable, because the interpreter's state is immutable and a step is a
 function of the state it began in; loading is idempotent and writes nothing but the load context,
-so that is all that is carried over.
+so that is all that is carried over. Each discard leaves one more assembly loaded for good, so a
+step is repeated at most once per assembly it loads.
+
+Only one assembly is carried over at a time. If every assembly the step loaded were kept, a handler
+for the first could run code in a later one, which then needs no loading, so would run before it
+was announced. One `newobj` of a class whose base class is in another assembly loads both.
 
 Announcing *after* the loading step instead, at the start of the thread's next one, is not enough.
 The step that needs an assembly can already have started a type initialiser in it: an
@@ -368,15 +373,12 @@ assembly's cached `RuntimeAssembly`; that corelib is never announced; and that n
 once the only handler is removed. `TestCrossAssemblyAssemblyLoadEvent` does the same for an assembly
 whose first use starts a type initialiser in it: the handler runs before that initialiser, and a
 handler reading the type's statics sees them initialised.
-`sourcesPure/AssemblyLoadHandlerThrowIsSwallowed.cs` is parked on the swallowed exception, and
-`TestAssemblyLoadEvent` pins the refusal in its place.
-`TestPendingAssemblyLoads` checks the order of announcements against CoreCLR's, over generated
-programs whose handlers themselves load assemblies.
+It also has a handler for one assembly call into another that the same `newobj` loaded, which must
+by then have been announced. `sourcesPure/AssemblyLoadHandlerThrowIsSwallowed.cs` is parked on the
+swallowed exception, and `TestAssemblyLoadEvent` pins the refusal in its place.
 
-**Where this lives in code**: `AssemblyLoadEvent` (`announceBeforeStep` discards a step that loaded
-something to announce; `tryAnnounce` pushes the next announcement at the start of a step), over
-`PendingAssemblyLoads` (what each thread has still to announce, and when each is due), both called
-from `AbstractMachine.executeOneStep`; the refusal is in `ExceptionDispatching.firstPass`.
+**Where this lives in code**: `AssemblyLoadEvent.announceBeforeStep`, called from
+`AbstractMachine.executeOneStep`; the refusal is in `ExceptionDispatching.firstPass`.
 
 ## `Environment.ProcessPath` reports no executable, and is never resolved against the filesystem
 

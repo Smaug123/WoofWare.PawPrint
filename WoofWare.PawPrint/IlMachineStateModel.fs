@@ -262,26 +262,6 @@ type IlMachineState =
     member this.WithDynamicAssembly (value : DumpedAssembly) : Result<IlMachineState, DumpedAssembly> =
         this.TypeSystem.WithDynamicAssembly value |> Result.map this.WithTypeSystem
 
-    /// <summary>
-    /// This state with <paramref name="later"/>'s load context, which must extend this one's: the
-    /// same assemblies first, in the same order, then perhaps more. Loading is idempotent and
-    /// writes nothing else, so this is a state in which the assemblies were loaded earlier.
-    /// </summary>
-    member this.WithLoadContextOf (later : IlMachineState) =
-        let mine = this._LoadedAssemblies.DefinitionNamesInLoadOrder
-        let theirs = later._LoadedAssemblies.DefinitionNamesInLoadOrder
-
-        if
-            theirs.Length < mine.Length
-            || Seq.exists2 (fun (a : string) (b : string) -> a <> b) mine theirs
-        then
-            failwith
-                $"WithLoadContextOf: the later load context (%d{theirs.Length} assemblies) does not extend this one (%d{mine.Length}); assemblies are never unloaded or reordered"
-
-        { this with
-            _LoadedAssemblies = later._LoadedAssemblies
-        }
-
     /// The loaded assembly with this definition identity, if it is loaded.
     member this.LoadedAssembly (definitionFullName : string) : DumpedAssembly option =
         this.TypeSystem.LoadedAssembly definitionFullName

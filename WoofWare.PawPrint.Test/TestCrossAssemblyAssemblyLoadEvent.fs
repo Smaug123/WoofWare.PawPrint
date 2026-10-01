@@ -104,3 +104,100 @@ class Program
             ExpectedReturnCode = 0
         }
         |> CrossAssemblyHarness.runTest
+
+    let private baseLibrary : CrossAssemblySpec =
+        CrossAssemblySpec.library
+            "AssemblyLoadEvent.BaseLib"
+            []
+            [
+                """
+namespace AssemblyLoadEventBase;
+
+public class Base
+{
+}
+
+public static class BaseCode
+{
+    public static int Answer() => 7;
+}
+"""
+            ]
+
+    let private derivedLibrary : CrossAssemblySpec =
+        CrossAssemblySpec.library
+            "AssemblyLoadEvent.DerivedLib"
+            [ "AssemblyLoadEvent.BaseLib" ]
+            [
+                """
+namespace AssemblyLoadEventDerived;
+
+public class Derived : AssemblyLoadEventBase.Base
+{
+}
+"""
+            ]
+
+    /// Constructing `Derived` needs both its own assembly and its base class's, and PawPrint resolves
+    /// both while executing the one `newobj`. The handler announcing the first runs code in the
+    /// second; by then that second assembly must have been announced too, as it is on CoreCLR, where
+    /// it is loaded (and announced, inside the first handler) only when that call is compiled.
+    [<Test>]
+    let ``code a handler runs in another assembly is announced before it runs`` () : unit =
+        {
+            Assemblies =
+                [
+                    baseLibrary
+                    derivedLibrary
+                    CrossAssemblySpec.entryPoint
+                        "AssemblyLoadEvent.Reentrant"
+                        [ "AssemblyLoadEvent.BaseLib" ; "AssemblyLoadEvent.DerivedLib" ]
+                        [
+                            """
+using System;
+using System.Runtime.CompilerServices;
+using AssemblyLoadEventBase;
+using AssemblyLoadEventDerived;
+
+class Program
+{
+    static bool s_baseAnnounced;
+    static int s_result = -1;
+
+    static void OnLoad(object sender, AssemblyLoadEventArgs args)
+    {
+        string name = args.LoadedAssembly.GetName().Name;
+
+        if (name == "AssemblyLoadEvent.BaseLib")
+            s_baseAnnounced = true;
+
+        if (name == "AssemblyLoadEvent.DerivedLib")
+        {
+            int answer = CallBase();
+            s_result = answer != 7 ? 2 : s_baseAnnounced ? 0 : 1;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int CallBase() => BaseCode.Answer();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static object Make() => new Derived();
+
+    static int Main(string[] argv)
+    {
+        AppDomain.CurrentDomain.AssemblyLoad += OnLoad;
+
+        if (Make() == null)
+            return 100;
+
+        return s_result;
+    }
+}
+"""
+                        ]
+                ]
+            EntryAssemblyName = "AssemblyLoadEvent.Reentrant"
+            ExpectedReturnCode = 0
+        }
+        |> CrossAssemblyHarness.runTest

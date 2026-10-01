@@ -209,7 +209,6 @@
     <Compile Include="TestAssemblyDefinitionName.fs" />
     <Compile Include="TestAssemblyDictionaryKeying.fs" />
     <Compile Include="TestLoadedAssemblies.fs" />
-    <Compile Include="TestPendingAssemblyLoads.fs" />
     <Compile Include="TestAssemblyLoadEvent.fs" />
     <Compile Include="TestForwarderResolutionOutcomes.fs" />
     <Compile Include="TestCaseInsensitiveTypeLookup.fs" />

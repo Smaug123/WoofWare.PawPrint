@@ -67,7 +67,6 @@
     <Compile Include="MemoryPools.fsi" />
     <Compile Include="MemoryPools.fs" />
     <Compile Include="MethodState.fs" />
-    <Compile Include="PendingAssemblyLoads.fs" />
     <Compile Include="ThreadState.fs" />
     <Compile Include="StackFrameCapture.fs" />
     <Compile Include="StackCrawlMark.fs" />
