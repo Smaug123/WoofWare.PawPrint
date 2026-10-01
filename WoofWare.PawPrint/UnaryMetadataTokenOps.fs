@@ -114,11 +114,11 @@ module internal UnaryMetadataTokenOps =
                 method.DeclaringTypeGenerics
                 (fun () -> $"%s{MethodOwner.describe method.Owner}::%s{method.Name}")
 
-            // `extractedTypeArgs` are the parent TypeSpec's arguments, already substituted against
-            // this frame. Handing them over explicitly is what keeps a member of `G<List<T>>`
-            // resolving at `G<List<string>>` rather than at the frame's own `G<string>`:
-            // `concretizeMethodForExecution` falls back to the frame's declaring-type generics when
-            // given none.
+            // `extractedTypeArgs` are the declaring type's arguments, read from the parent TypeSpec
+            // already substituted against this frame. Handing them over explicitly is what keeps a
+            // member of `G<List<T>>` resolving at `G<List<string>>` rather than at the frame's own
+            // `G<string>`: `concretizeMethodForExecution` falls back to the frame's declaring-type
+            // generics when given none.
             let state, concretized, _ =
                 ExecutionConcretization.concretizeMethodForExecution
                     loggerFactory

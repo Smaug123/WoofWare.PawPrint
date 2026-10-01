@@ -1523,10 +1523,10 @@ module NativeRuntimeTypeQCall =
                             failwith
                                 $"%s{operation}: MemberRef token 0x%08x{methodToken} resolved to a field, but ResolveMethod expects a method"
 
-                    // `extractedTypeArgs` are the TypeDefn args of the parent TypeSpec, already
-                    // substituted via the caller-supplied type/method instantiation context
-                    // above. They are therefore closed and can be concretized with an empty
-                    // substitution context.
+                    // `extractedTypeArgs` are the TypeDefn args of the method's declaring type, read
+                    // from the parent TypeSpec already substituted via the caller-supplied
+                    // type/method instantiation context above. They are therefore closed and can
+                    // be concretized with an empty substitution context.
                     let state, declaringTypeGenerics =
                         ((state, ImmutableArray.CreateBuilder ()), extractedTypeArgs)
                         ||> Seq.fold (fun (state, acc) ty ->
