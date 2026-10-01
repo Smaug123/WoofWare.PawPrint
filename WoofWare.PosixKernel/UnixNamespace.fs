@@ -208,6 +208,109 @@ module RenameRefusal =
             $"a pathname's bytes hold a NUL at offset %d{offset}, so they are not a C string: the caller read past the string's end, or built the bytes from something that was never one."
         | RenameRefusal.Sticky refusal -> StickyRefusal.describe refusal
 
+/// Why this kernel will not answer a `clonefile(2)`.
+[<RequireQualifiedAccess>]
+type CloneFileRefusal =
+    /// This kernel is not Darwin-flavoured, and only Darwin has `clonefile`.
+    | UnmodelledFlavour of flavour : SimulatedUnixFlavour
+    /// The machine's mount is of this type, where whether a file can be cloned
+    /// is unmeasured.
+    | UnmeasuredFileSystem of fileSystem : EmulatedFileSystemType
+    /// `flags` asks for `CLONE_NOFOLLOW`, `CLONE_NOFOLLOW_ANY` or
+    /// `CLONE_RESOLVE_BENEATH`, which change how a pathname resolves in ways
+    /// this kernel does not model.
+    | UnmodelledFlags of flags : int
+    /// The caller is privileged, which changes who owns the clone and which
+    /// permission bits it keeps, unmeasured.
+    | PrivilegedCaller
+    /// One of the pathnames' bytes are not a pathname at all.
+    | PathArgument of refusal : PathArgumentRefusal
+    /// The source is the directory at `inode`; cloning one copies its whole
+    /// tree, which this kernel does not model.
+    | DirectorySource of inode : InodeNumber
+    /// The source at `inode` carries set-ID or sticky bits, and the caller
+    /// stands towards it as `standing`: which of those bits a clone keeps has
+    /// been measured only for an owner in the source's group, and for an
+    /// owner outside it without `S_ISGID`.
+    | UnmeasuredSpecialBits of inode : InodeNumber * standing : Standing * permissions : PermissionBits
+
+[<RequireQualifiedAccess>]
+module CloneFileRefusal =
+    /// What this kernel knows about why it will not answer. A client adds which
+    /// entry point asked, and with which paths.
+    let describe (refusal : CloneFileRefusal) : string =
+        match refusal with
+        | CloneFileRefusal.UnmodelledFlavour flavour ->
+            $"this kernel is %O{flavour}-flavoured, and clonefile exists on Darwin only."
+        | CloneFileRefusal.UnmeasuredFileSystem fileSystem ->
+            $"the machine's mount is %O{fileSystem}, where whether clonefile can share a file's blocks (or answers ENOTSUP or EXDEV) has not been measured."
+        | CloneFileRefusal.UnmodelledFlags flags ->
+            $"flags 0x%x{flags} ask for CLONE_NOFOLLOW (0x1), CLONE_NOFOLLOW_ANY (0x8) or CLONE_RESOLVE_BENEATH (0x10). Each changes how a pathname resolves, and cloning a symbolic link itself is not modelled."
+        | CloneFileRefusal.PrivilegedCaller ->
+            "the caller is privileged. A privileged clone keeps the source's owner unless CLONE_NOOWNERCOPY is given, and which permission bits it keeps has not been measured."
+        | CloneFileRefusal.PathArgument (PathArgumentRefusal.InteriorNul offset) ->
+            $"a pathname's bytes hold a NUL at offset %d{offset}, so they are not a C string: the caller read past the string's end, or built the bytes from something that was never one."
+        | CloneFileRefusal.DirectorySource inode ->
+            $"the source is directory %O{inode}. clonefile clones a directory's whole tree, which this kernel does not model."
+        | CloneFileRefusal.UnmeasuredSpecialBits (inode, standing, permissions) ->
+            $"the source, inode %O{inode}, has mode 0o%o{PermissionBits.toInt permissions}, and the caller stands towards it as %O{standing}. A clone drops both set-ID bits and keeps the sticky bit when an unprivileged owner in the source's group clones it, but which of these bits survive any other caller's clone has not been measured."
+
+/// A `clonefile(2)` whose flags have been screened, stopped at the point
+/// where the kernel copies its source pathname in.
+///
+/// It stops there because reading a pathname out of a process's address space
+/// can fail, and a call whose flags are refused never reads either pathname.
+///
+/// Opaque: the only thing to do with one is give it to
+/// `UnixNamespace.cloneFileSourcePhase`.
+[<NoEquality ; NoComparison>]
+type PausedCloneFileSource<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    private
+        {
+            System : UnixSystem<'Task, 'Handler>
+        }
+
+/// What `UnixNamespace.cloneFileFlagsPhase` found: either the call is over
+/// without either pathname having been read, or the kernel has reached the
+/// point where it copies the source pathname in.
+[<RequireQualifiedAccess>]
+[<NoEquality ; NoComparison>]
+type CloneFileScreen<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    /// Finished. Neither pathname was read, and neither must be.
+    | Answered of answer : SyscallAnswer * system : UnixSystem<'Task, 'Handler>
+    /// The kernel is at the source's copy-in. Hand its bytes to
+    /// `UnixNamespace.cloneFileSourcePhase`.
+    | NeedsSource of paused : PausedCloneFileSource<'Task, 'Handler>
+
+/// A `clonefile(2)` that has resolved its source and stopped at the point
+/// where the kernel copies its destination pathname in.
+///
+/// It stops rather than taking both pathnames up front because reading a
+/// pathname out of a process's address space can fail, and a call whose
+/// source fails never reads the destination.
+///
+/// Opaque: the only thing to do with one is give it to
+/// `UnixNamespace.cloneFileWithDestination`.
+[<NoEquality ; NoComparison>]
+type PausedCloneFile<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    private
+        {
+            System : UnixSystem<'Task, 'Handler>
+            Source : InodeNumber
+        }
+
+/// What `UnixNamespace.cloneFileSourcePhase` found: either the call is over
+/// without the destination having been read, or the kernel has reached the
+/// point where it copies that pathname in.
+[<RequireQualifiedAccess>]
+[<NoEquality ; NoComparison>]
+type CloneFileProgress<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    /// Finished. The destination pathname was never read, and must not be.
+    | Answered of answer : SyscallAnswer * system : UnixSystem<'Task, 'Handler>
+    /// The kernel is at the destination's copy-in. Hand its bytes to
+    /// `UnixNamespace.cloneFileWithDestination`.
+    | NeedsDestination of paused : PausedCloneFile<'Task, 'Handler>
+
 /// Why this kernel will not answer an `open(2)`.
 [<RequireQualifiedAccess>]
 type OpenRefusal =
@@ -1154,3 +1257,274 @@ module UnixNamespace =
         | Error refusal -> Error (RenameRefusal.PathArgument refusal)
         | Ok (RenameProgress.Answered (answer, system)) -> Ok (answer, system)
         | Ok (RenameProgress.NeedsDestination paused) -> renameWithDestination destination paused
+
+
+    /// `clonefile(source, destination, flags)`, up to the point where the
+    /// kernel copies the source pathname in: the flags are screened.
+    ///
+    /// `flags` is raw: any bit above `CLONE_RESOLVE_BENEATH` (0x10) is EINVAL
+    /// before either pathname is read. `CLONE_ACL` (0x4) and
+    /// `CLONE_NOOWNERCOPY` (0x2) change nothing for an unprivileged caller of a
+    /// filesystem without access control lists, which is what this kernel
+    /// models. See `PausedCloneFileSource`.
+    let cloneFileFlagsPhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<CloneFileScreen<'Task, 'Handler>, CloneFileRefusal>
+        =
+        // Measured on Darwin 27.0 at uid 501 (`clonefile-rules.c`, APFS): bits
+        // 0 to 4 alone are accepted and every higher bit alone is EINVAL, and
+        // EINVAL beats an absent source and an existing destination.
+        let cloneNoFollow = 0x1
+        let cloneNoFollowAny = 0x8
+        let cloneResolveBeneath = 0x10
+        let known = 0x1F
+
+        match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+        | SimulatedUnixFlavour.Linux -> Error (CloneFileRefusal.UnmodelledFlavour SimulatedUnixFlavour.Linux)
+        | SimulatedUnixFlavour.Darwin ->
+
+        match EmulatedMount.fileSystemType system.Machine.Mount with
+        | EmulatedFileSystemType.Tmpfs
+        | EmulatedFileSystemType.Nfs as fileSystem -> Error (CloneFileRefusal.UnmeasuredFileSystem fileSystem)
+        | EmulatedFileSystemType.Apfs ->
+
+        if flags &&& ~~~known <> 0 then
+            Ok (CloneFileScreen.Answered (SyscallAnswer.Failed UnixError.EINVAL, system))
+        elif flags &&& (cloneNoFollow ||| cloneNoFollowAny ||| cloneResolveBeneath) <> 0 then
+            Error (CloneFileRefusal.UnmodelledFlags flags)
+        elif Credentials.privilege system.Process.Credentials = CallerPrivilege.Privileged then
+            Error CloneFileRefusal.PrivilegedCaller
+        else
+            Ok (
+                CloneFileScreen.NeedsSource
+                    {
+                        System = system
+                    }
+            )
+
+    /// The next part of `clonefile(2)`, given the source pathname the kernel
+    /// has just reached the point of copying in: it is resolved, following a
+    /// final symbolic link, up to the point where the kernel copies the
+    /// destination pathname in. See `PausedCloneFile`.
+    let cloneFileSourcePhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (source : PathArgumentBytes)
+        (paused : PausedCloneFileSource<'Task, 'Handler>)
+        : Result<CloneFileProgress<'Task, 'Handler>, CloneFileRefusal>
+        =
+        // Measured on Darwin 27.0 at uid 501 (`clonefile-rules.c`, APFS): the
+        // source is resolved before anything about the destination: an absent
+        // source is ENOENT whether the destination exists or its parent is
+        // unwritable, and a source in an unsearchable directory is EACCES with
+        // an existing destination. "f/" and "f/x" for a regular `f` are
+        // ENOTDIR, a link to a file clones the file, and a dangling or cyclic
+        // link is ENOENT or ELOOP.
+        match box paused with
+        | null ->
+            failwith
+                "UnixNamespace.cloneFileSourcePhase: this paused clonefile is null, which it can only be if it came from `Unchecked.defaultof` or C# `default`; obtain one from UnixNamespace.cloneFileFlagsPhase instead."
+        | _ ->
+
+        let system = paused.System
+
+        let limits = SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform
+
+        match copiedIn limits source with
+        | Error (RenameStop.Refused refusal) -> Error (CloneFileRefusal.PathArgument refusal)
+        | Error (RenameStop.Errno error) -> Ok (CloneFileProgress.Answered (SyscallAnswer.Failed error, system))
+        | Ok sourcePath ->
+
+        match UnixPathResolution.resolvePath SymlinkPolicy.Follow sourcePath system with
+        | Error error -> Ok (CloneFileProgress.Answered (SyscallAnswer.Failed error, system))
+        | Ok inode ->
+
+        match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
+        | Some (InodeContent.Directory _) -> Error (CloneFileRefusal.DirectorySource inode)
+        | Some (InodeContent.RegularFile _) ->
+            Ok (
+                CloneFileProgress.NeedsDestination
+                    {
+                        System = system
+                        Source = inode
+                    }
+            )
+        | Some (InodeContent.Symlink _)
+        | None ->
+            failwith
+                $"UnixNamespace.cloneFileSourcePhase: following every link, the source resolved to inode %O{inode}, which is a symbolic link or absent (this is a bug in this library)."
+
+    /// The rest of `clonefile(2)`, given the destination pathname the kernel
+    /// has just reached the point of copying in.
+    ///
+    /// The destination resolves as a creating `open(2)`'s does, following a
+    /// final symbolic link, so a dangling link is replaced by a file at its
+    /// target. Anything already there is EEXIST; then the source must be
+    /// readable (EACCES), the destination's directory writable (EACCES), and
+    /// its name one the filesystem admits (EILSEQ).
+    ///
+    /// The clone is a new regular file holding the source's bytes and its
+    /// permission bits less both set-ID bits, owned as any new file in that
+    /// directory is, with the source's access, modification and birth times;
+    /// its status-change time is now, and the directory's modification and
+    /// status-change times move. The source does not change.
+    let cloneFileWithDestination<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (destination : PathArgumentBytes)
+        (paused : PausedCloneFile<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, CloneFileRefusal>
+        =
+        // Measured on Darwin 27.0 at uid 501 (`clonefile-rules.c`, APFS). The
+        // destination: an existing file, directory ("e" and "e/"), link to a
+        // file or a directory, "/", "." and a hard link to the source are all
+        // EEXIST, and so is an existing name in an unwritable directory; a
+        // dangling link creates its target (and is EEXIST under
+        // CLONE_NOFOLLOW); a cyclic link is ELOOP; "new/" and "nx/new" are
+        // ENOENT, "f/new" ENOTDIR, a 299-byte name ENAMETOOLONG, an
+        // unsearchable parent EACCES, and a removed current directory ENOENT.
+        // Each of those beats an unreadable source, which beats an unwritable
+        // parent (both EACCES) and a name that is not UTF-8 (EILSEQ, last).
+        // The clone: over every mode an owner can give a source, in a
+        // directory of its own group, the clone's mode is the source's less
+        // both set-ID bits (0 mismatches over 2048 readable modes); in a wheel
+        // directory, where S_ISGID cannot be set, likewise. A source the
+        // caller cannot read (no owner read bit) is EACCES. uid is the
+        // caller's and gid the directory's, either way round; the umask plays
+        // no part; atime, mtime and birth time are the source's to the
+        // nanosecond, ctime is now; the parent's mtime and ctime move and its
+        // atime does not; the source's times do not move.
+        match box paused with
+        | null ->
+            failwith
+                "UnixNamespace.cloneFileWithDestination: this paused clonefile is null, which it can only be if it came from `Unchecked.defaultof` or C# `default`; obtain one from UnixNamespace.cloneFileSourcePhase instead."
+        | _ ->
+
+        let system = paused.System
+        let failed (error : UnixError) = Ok (SyscallAnswer.Failed error, system)
+        let limits = SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform
+        let rules = SimulatedUnixPlatform.creatingOpenRules system.Machine.UnixPlatform
+        let credentials = system.Process.Credentials
+
+        match copiedIn limits destination with
+        | Error (RenameStop.Refused refusal) -> Error (CloneFileRefusal.PathArgument refusal)
+        | Error (RenameStop.Errno error) -> failed error
+        | Ok destinationPath ->
+
+        match
+            UnixPathResolution.resolvePathFull SymlinkPolicy.Follow rules.TrailingSeparator destinationPath system
+        with
+        | Error error -> failed error
+        | Ok resolution ->
+
+        match resolution.Target with
+        | ResolvedTarget.Directory _
+        | ResolvedTarget.Entry (_, _, Some _) -> failed UnixError.EEXIST
+        | ResolvedTarget.Entry (_, _, None) when resolution.TrailingSeparatorDemanded -> failed UnixError.ENOENT
+        | ResolvedTarget.Entry (directory, name, None) ->
+
+        if VirtualFileSystem.isOrphanedDirectory directory system.Machine.FileSystem then
+            failed UnixError.ENOENT
+        else
+
+        let source =
+            match VirtualFileSystem.tryGet paused.Source system.Machine.FileSystem with
+            | Some entry -> entry
+            | None ->
+                failwith
+                    $"UnixNamespace.cloneFileWithDestination: the source, inode %O{paused.Source}, is no longer in the filesystem, but nothing ran between resolving it and now (this is a bug in this library)."
+
+        let sourceBits =
+            match source.Content with
+            | InodeContent.RegularFile (_, bits) -> bits
+            | InodeContent.Directory _
+            | InodeContent.Symlink _ ->
+                failwith
+                    $"UnixNamespace.cloneFileWithDestination: the source, inode %O{paused.Source}, is not a regular file, but the source phase admitted only a regular file (this is a bug in this library)."
+
+        let sourceStanding = Standing.toward credentials source.Owner
+
+        if PermissionBits.deniedTo sourceStanding AccessRequest.Read sourceBits then
+            failed UnixError.EACCES
+        else
+
+        let parent =
+            match VirtualFileSystem.tryGet directory system.Machine.FileSystem with
+            | Some ({
+                        Content = InodeContent.Directory parent
+                    } as entry) -> entry, parent
+            | Some _
+            | None ->
+                failwith
+                    $"UnixNamespace.cloneFileWithDestination: the walk resolved \"%s{DirectoryEntryName.toEscaped name}\" inside inode %O{directory}, which is absent or not a directory (this is a bug in this library)."
+
+        if
+            PermissionBits.deniedTo
+                (Standing.toward credentials (fst parent).Owner)
+                AccessRequest.Write
+                (snd parent).Permissions
+        then
+            failed UnixError.EACCES
+        elif
+            not (BindableEntryNames.admits (SimulatedUnixPlatform.bindableEntryNames system.Machine.UnixPlatform) name)
+        then
+            failed UnixError.EILSEQ
+        else
+
+        let setUserId = 0o4000
+        let setGroupId = 0o2000
+        let sticky = 0o1000
+        let raw = PermissionBits.toInt sourceBits
+
+        let measured =
+            raw &&& (setUserId ||| setGroupId ||| sticky) = 0
+            || (sourceStanding.Owns && sourceStanding.InGroup)
+            || (sourceStanding.Owns && raw &&& setGroupId = 0)
+
+        if not measured then
+            Error (CloneFileRefusal.UnmeasuredSpecialBits (paused.Source, sourceStanding, sourceBits))
+        else
+
+        let permissions =
+            PermissionBits.parseOrFail "UnixNamespace.cloneFileWithDestination" (raw &&& ~~~(setUserId ||| setGroupId))
+
+        let now = UnixMachineState.realtime system.Machine
+
+        match
+            VirtualFileSystem.cloneFile
+                paused.Source
+                directory
+                name
+                permissions
+                (newInodeOwner "UnixNamespace.cloneFileWithDestination" directory system)
+                now
+                system.Machine.FileSystem
+        with
+        | Error error ->
+            failwith
+                $"UnixNamespace.cloneFileWithDestination: binding \"%s{DirectoryEntryName.toEscaped name}\" in inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and does not hold that name (this is a bug in this library)."
+        | Ok (_, filesystem) ->
+            Ok (
+                SyscallAnswer.Completed 0L,
+                { system with
+                    Machine =
+                        { system.Machine with
+                            FileSystem = filesystem
+                        }
+                }
+            )
+
+    /// `clonefile(2)` in one call, for a caller holding both pathnames already.
+    let cloneFile<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (source : PathArgumentBytes)
+        (destination : PathArgumentBytes)
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, CloneFileRefusal>
+        =
+        match cloneFileFlagsPhase flags system with
+        | Error refusal -> Error refusal
+        | Ok (CloneFileScreen.Answered (answer, system)) -> Ok (answer, system)
+        | Ok (CloneFileScreen.NeedsSource paused) ->
+
+        match cloneFileSourcePhase source paused with
+        | Error refusal -> Error refusal
+        | Ok (CloneFileProgress.Answered (answer, system)) -> Ok (answer, system)
+        | Ok (CloneFileProgress.NeedsDestination paused) -> cloneFileWithDestination destination paused

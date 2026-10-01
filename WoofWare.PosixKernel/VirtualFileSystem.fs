@@ -778,6 +778,65 @@ module VirtualFileSystem =
 
         bind directory name inode now allocated |> Result.map (fun vfs -> inode, vfs)
 
+    /// Create a regular file under `name` in `directory` holding the contents of
+    /// the regular file at `source`, with `permissions` and owned by `owner`,
+    /// whose `atime`, `mtime` and birth time are `source`'s and whose `ctime`
+    /// is `now`. `source` itself does not change.
+    ///
+    /// Partial in `source`, which must name a regular file this filesystem
+    /// contains. Fails as `createFile` does when `directory` cannot take the
+    /// name.
+    let cloneFile
+        (source : InodeNumber)
+        (directory : InodeNumber)
+        (name : DirectoryEntryName)
+        (permissions : PermissionBits)
+        (owner : InodeOwner)
+        (now : UnixTimestamp)
+        (vfs : VirtualFileSystem)
+        : Result<InodeNumber * VirtualFileSystem, UnixError>
+        =
+        let contents, sourceTimes =
+            match Map.tryFind source vfs.Inodes with
+            | Some {
+                       Content = InodeContent.RegularFile (contents, _)
+                       Times = times
+                   } -> contents, times
+            | Some _ ->
+                failwith
+                    $"VirtualFileSystem.cloneFile: inode %O{source} is not a regular file; only a regular file's contents can be cloned here (this is a bug in the caller)."
+            | None ->
+                failwith
+                    $"VirtualFileSystem.cloneFile: inode %O{source} is not in this filesystem, but the caller resolved a path to it (this is a bug in the caller)."
+
+        match ensureBindable directory name vfs with
+        | Error error -> Error error
+        | Ok () ->
+
+        let inode, allocated =
+            allocate (InodeContent.RegularFile (contents, permissions)) owner now vfs
+
+        let allocated =
+            { allocated with
+                Inodes =
+                    Map.change
+                        inode
+                        (Option.map (fun entry ->
+                            { entry with
+                                Times =
+                                    {
+                                        Access = sourceTimes.Access
+                                        Modification = sourceTimes.Modification
+                                        StatusChange = now
+                                        Birth = sourceTimes.Birth
+                                    }
+                            }
+                        ))
+                        allocated.Inodes
+            }
+
+        bind directory name inode now allocated |> Result.map (fun vfs -> inode, vfs)
+
     /// Create a symbolic link holding `target` verbatim, owned by `owner`. Mirrors `symlink(2)`,
     /// including that the target is not resolved, need not exist, and may be
     /// relative. An empty target is unrepresentable by construction; see
@@ -1623,6 +1682,40 @@ module VirtualFileSystem =
                     { entry with
                         Owner = owner
                         Times = InodeTimes.statusChangedAt now entry.Times
+                    }
+                    vfs.Inodes
+        }
+
+    /// Set the `atime` and `mtime` of the inode at `inode` to `access` and
+    /// `modification`, and move its `ctime` to `now`. Its birth time stays
+    /// where it was.
+    ///
+    /// Partial in the inode, which must be one this filesystem contains.
+    let setTimes
+        (inode : InodeNumber)
+        (access : UnixTimestamp)
+        (modification : UnixTimestamp)
+        (now : UnixTimestamp)
+        (vfs : VirtualFileSystem)
+        : VirtualFileSystem
+        =
+        match Map.tryFind inode vfs.Inodes with
+        | None ->
+            failwith
+                $"VirtualFileSystem.setTimes: inode %O{inode} is not in this filesystem. The caller resolved a descriptor to it, and a descriptor outliving its inode means an unlink removed a still-open file (this is a bug in the caller)."
+        | Some entry ->
+
+        { vfs with
+            Inodes =
+                Map.add
+                    inode
+                    { entry with
+                        Times =
+                            { entry.Times with
+                                Access = access
+                                Modification = modification
+                                StatusChange = now
+                            }
                     }
                     vfs.Inodes
         }
