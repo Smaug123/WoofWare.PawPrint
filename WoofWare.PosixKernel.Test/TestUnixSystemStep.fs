@@ -43,7 +43,8 @@ module TestUnixSystemStep =
     /// A simulated process on the flavour asked for, before anything has
     /// happened to it.
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
+        let system : UnixSystem<int, string> =
+            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         { system with
             Machine =
@@ -542,22 +543,26 @@ module TestUnixSystemStep =
         | other -> failwith $"unexpected: %A{other}"
 
     [<Test>]
-    let ``a write to a standard stream is recorded rather than stored`` () : unit =
+    let ``a write to a drained standard stream is delivered rather than stored`` () : unit =
         let bytes = ImmutableArray.CreateRange [ 0x68uy ; 0x69uy ]
 
         match UnixReadWrite.write 1 bytes linux with
         | Ok (WriteAnswer.Completed written, after) ->
             written |> shouldEqual 2L
 
-            after.Process.OutputLog
+            after.Machine.Delivered
             |> List.ofSeq
             |> shouldEqual
                 [
                     {
-                        OutputLogEntry.Role = FileDescriptorRole.StandardOutput
-                        OutputLogEntry.Bytes = bytes
+                        Endpoint = ExternalEndpoint 1
+                        Bytes = bytes
                     }
                 ]
+
+            after.Machine.Pipes
+            |> Map.forall (fun _ pipe -> PipeBuffer.held pipe.Buffer = 0)
+            |> shouldEqual true
         | other -> failwith $"unexpected: %A{other}"
 
     [<Test>]
@@ -1555,12 +1560,14 @@ module TestUnixSystemStep =
     let ``a descriptor with no inode is refused, and the refusal names which kind`` () : unit =
         // Three shapes of one refusal, distinguished because their measurements
         // are different: a real kernel answers all three, and this kernel has no
-        // inode to answer them from.
+        // inode to answer them from, or for a launched pipe no owner or
+        // timestamps. The launch table's pipes are the machine's first, in
+        // descriptor order.
         UnixPathResolution.fstat 0 linux
-        |> shouldEqual (Error (FStatRefusal.StandardStream FileDescriptorRole.StandardInput))
+        |> shouldEqual (Error (FStatRefusal.LaunchedPipe (PipeId 0L)))
 
         UnixPathResolution.fstat 1 linux
-        |> shouldEqual (Error (FStatRefusal.StandardStream FileDescriptorRole.StandardOutput))
+        |> shouldEqual (Error (FStatRefusal.LaunchedPipe (PipeId 1L)))
 
         let portFd, portSystem = withSocketEventPort linux
 
@@ -1577,8 +1584,8 @@ module TestUnixSystemStep =
         // One `describe` per shape rather than one for the genus: the reason a
         // pipe cannot be reported is not the reason a socket cannot, and a
         // client rendering either must not be handed the other's evidence.
-        FStatRefusal.describe (FStatRefusal.StandardStream FileDescriptorRole.StandardInput)
-        |> shouldContainText "pipe"
+        FStatRefusal.describe (FStatRefusal.LaunchedPipe (PipeId 0L))
+        |> shouldContainText "launched"
 
         FStatRefusal.describe FStatRefusal.SocketEventPort
         |> shouldContainText "anonymous kernel object"
@@ -1590,7 +1597,7 @@ module TestUnixSystemStep =
         // would have to build, is the client's half of the message.
         for refusal in
             [
-                FStatRefusal.StandardStream FileDescriptorRole.StandardInput
+                FStatRefusal.LaunchedPipe (PipeId 0L)
                 FStatRefusal.SocketEventPort
                 FStatRefusal.Socket socketZero
             ] do
@@ -2577,7 +2584,7 @@ module TestUnixSystemStep =
 
     [<Test>]
     let ``flock on a pipe is Linux's business and Darwin's refusal`` () : unit =
-        // The standard streams are pipes here. Linux permits `flock` on one and
+        // The standard streams are pipes. Linux permits `flock` on one and
         // returns 0; Darwin answers ENOTSUP, and what that leaves the lock state
         // as is unmeasured.
         UnixDescriptor.flock holderTask 0 2 (withTask holderTask linux)
@@ -2585,8 +2592,8 @@ module TestUnixSystemStep =
         |> shouldEqual (SyscallAnswer.Completed 0L)
 
         match UnixDescriptor.flock holderTask 0 2 (withTask holderTask darwin) with
-        | Error (FLockRefusal.DarwinStandardStream _) -> ()
-        | other -> failwith $"expected a Darwin standard-stream refusal, got %O{other}"
+        | Error (FLockRefusal.DarwinPipe (PipeId 0L)) -> ()
+        | other -> failwith $"expected a Darwin pipe refusal, got %O{other}"
 
     [<Test>]
     let ``a contended blocking lock parks, and a non-blocking one is EAGAIN`` () : unit =

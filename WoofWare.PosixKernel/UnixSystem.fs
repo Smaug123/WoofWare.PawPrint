@@ -36,6 +36,14 @@ type Syscall =
     /// keeps is behaviour this kernel models, and models per flavour. Answers
     /// the previous mask.
     | UMask of mask : int
+    /// `path` is the argument's bytes, which this kernel copies in at the
+    /// point it measured; `mode` is raw, as `access(2)` takes it, because
+    /// which of its bits are rejected is behaviour this kernel models per
+    /// flavour.
+    | Access of path : PathArgumentBytes * mode : int
+    /// `dirfd`, `mode` and `flags` are raw, as `faccessat(2)` takes them: each
+    /// flavour numbers `AT_FDCWD` and the flags its own way.
+    | FAccessAt of dirfd : int * path : PathArgumentBytes * mode : int * flags : int
 
 /// Why this kernel will not answer a syscall at all. The client decides what a
 /// refusal means for it; nothing here is recoverable by retrying.
@@ -48,6 +56,7 @@ type SyscallRefusal<'Task> =
     | RmDir of StickyRefusal
     | ChMod of ChModRefusal
     | FChMod of FChModRefusal
+    | Access of AccessRefusal
     | Close of CloseRefusal<'Task>
 
 /// A way this system's tables disagree with each other — a state no kernel
@@ -215,9 +224,13 @@ type UnixSystemDefect<'Task> =
     | ThreadIdAllocatorNotOfFlavour of flavour : SimulatedUnixFlavour * allocator : ThreadIdAllocator
     /// A live open file description names a pipe the pipe table does not hold.
     | DanglingPipe of description : OpenFileDescriptionId * pipe : PipeId
-    /// The pipe table holds a pipe no live description names either end of: a
-    /// close that should have freed it did not.
+    /// The pipe table holds a pipe neither of whose ends is open: no live
+    /// description names either end, and the client holds neither. A close that
+    /// should have freed it did not.
     | UnreferencedPipe of pipe : PipeId
+    /// A pipe the client drains holds bytes. The client reads every byte the
+    /// moment it is written, so a write into such a pipe leaves it empty.
+    | DrainedPipeHoldsBytes of pipe : PipeId * held : int
     /// A pipe in the table has an identity at or above the next one to
     /// allocate, so a future `pipe2` would mint a duplicate.
     | NextPipeIdNotFresh of nextPipeId : PipeId * existing : PipeId
@@ -421,6 +434,14 @@ module UnixSystem =
             let previous, system = umask mask system
 
             Ok (SyscallOutcome.Answered (SyscallAnswer.Completed (int64 (PermissionBits.toInt previous))), system)
+        | Syscall.Access (path, mode) ->
+            UnixPathResolution.access path mode system
+            |> Result.map (fun answer -> SyscallOutcome.Answered answer, system)
+            |> Result.mapError SyscallRefusal.Access
+        | Syscall.FAccessAt (dirfd, path, mode, flags) ->
+            UnixPathResolution.faccessat dirfd path mode flags system
+            |> Result.map (fun answer -> SyscallOutcome.Answered answer, system)
+            |> Result.mapError SyscallRefusal.Access
 
     /// Every way this system's tables disagree with each other: the socket table
     /// and the pipe table against the descriptor table, each pipe and the pipe
@@ -449,7 +470,6 @@ module UnixSystem =
             |> Map.toList
             |> List.choose (fun (id, description) ->
                 match description.Target with
-                | OpenFileTarget.StandardStream _
                 | OpenFileTarget.SocketEventPort _
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
@@ -499,7 +519,6 @@ module UnixSystem =
                     | Some (InodeContent.Directory _) -> None
                     | Some (InodeContent.RegularFile _)
                     | Some (InodeContent.Symlink _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
-                | OpenFileTarget.StandardStream _
                 | OpenFileTarget.SocketEventPort _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.Pipe _ -> None
@@ -595,7 +614,6 @@ module UnixSystem =
             |> Map.toList
             |> List.collect (fun (portId, description) ->
                 match description.Target with
-                | OpenFileTarget.StandardStream _
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
@@ -647,7 +665,6 @@ module UnixSystem =
                     | Some description ->
                         match description.Target with
                         | OpenFileTarget.SocketEventPort _ -> []
-                        | OpenFileTarget.StandardStream _
                         | OpenFileTarget.File _
                         | OpenFileTarget.Directory _
                         | OpenFileTarget.Socket _
@@ -668,7 +685,6 @@ module UnixSystem =
                                     match description.Target with
                                     | OpenFileTarget.SocketEventPort _ ->
                                         [ UnixSystemDefect.ParkedPollOnSocketEventPort (task, watched) ]
-                                    | OpenFileTarget.StandardStream _
                                     | OpenFileTarget.File _
                                     | OpenFileTarget.Directory _
                                     | OpenFileTarget.Socket _
@@ -695,7 +711,6 @@ module UnixSystem =
                                        } -> true
                                 | Some _
                                 | None -> false
-                            | OpenFileTarget.StandardStream _
                             | OpenFileTarget.File _
                             | OpenFileTarget.Directory _
                             | OpenFileTarget.Pipe _
@@ -907,7 +922,6 @@ module UnixSystem =
                 |> List.choose (fun (id, description) ->
                     match description.Target with
                     | OpenFileTarget.Pipe (pipeId, _) -> Some (id, pipeId)
-                    | OpenFileTarget.StandardStream _
                     | OpenFileTarget.SocketEventPort _
                     | OpenFileTarget.File _
                     | OpenFileTarget.Directory _
@@ -924,9 +938,24 @@ module UnixSystem =
             let unreferenced =
                 system.Machine.Pipes
                 |> Map.toList
-                |> List.map fst
-                |> List.filter (fun pipeId -> not (Set.contains pipeId namedIds))
-                |> List.map UnixSystemDefect.UnreferencedPipe
+                |> List.filter (fun (pipeId, pipe) ->
+                    not (Set.contains pipeId namedIds)
+                    && not (PipeState.heldByClient PipeEnd.Read pipe)
+                    && not (PipeState.heldByClient PipeEnd.Write pipe)
+                )
+                |> List.map (fst >> UnixSystemDefect.UnreferencedPipe)
+
+            let undrained =
+                system.Machine.Pipes
+                |> Map.toList
+                |> List.choose (fun (pipeId, pipe) ->
+                    let held = PipeBuffer.held pipe.Buffer
+
+                    match PipeState.drainedBy pipe with
+                    | Some _ when held > 0 -> Some (UnixSystemDefect.DrainedPipeHoldsBytes (pipeId, held))
+                    | Some _
+                    | None -> None
+                )
 
             let freshness =
                 system.Machine.Pipes
@@ -939,9 +968,12 @@ module UnixSystem =
                 system.Machine.Pipes
                 |> Map.toList
                 |> List.collect (fun (pipeId, pipe) ->
-                    match pipe.Inodes with
-                    | PipeInodes.Shared inode -> [ pipeId, inode ]
-                    | PipeInodes.PerEnd (readEnd, writeEnd) -> [ pipeId, readEnd ; pipeId, writeEnd ]
+                    match pipe.Origin with
+                    | PipeOrigin.Launched _ -> []
+                    | PipeOrigin.Made status ->
+                        match status.Inodes with
+                        | PipeInodes.Shared inode -> [ pipeId, inode ]
+                        | PipeInodes.PerEnd (readEnd, writeEnd) -> [ pipeId, readEnd ; pipeId, writeEnd ]
                 )
 
             let inodeFreshness =
@@ -962,11 +994,14 @@ module UnixSystem =
                 |> Map.toList
                 |> List.choose (fun (pipeId, pipe) ->
                     let inodesOfFlavour =
-                        match pipe.Inodes, flavour with
-                        | PipeInodes.Shared _, SimulatedUnixFlavour.Linux
-                        | PipeInodes.PerEnd _, SimulatedUnixFlavour.Darwin -> true
-                        | PipeInodes.Shared _, SimulatedUnixFlavour.Darwin
-                        | PipeInodes.PerEnd _, SimulatedUnixFlavour.Linux -> false
+                        match pipe.Origin with
+                        | PipeOrigin.Launched _ -> true
+                        | PipeOrigin.Made status ->
+                            match status.Inodes, flavour with
+                            | PipeInodes.Shared _, SimulatedUnixFlavour.Linux
+                            | PipeInodes.PerEnd _, SimulatedUnixFlavour.Darwin -> true
+                            | PipeInodes.Shared _, SimulatedUnixFlavour.Darwin
+                            | PipeInodes.PerEnd _, SimulatedUnixFlavour.Linux -> false
 
                     if inodesOfFlavour && PipeBuffer.isOf platform pipe.Buffer then
                         None
@@ -989,6 +1024,7 @@ module UnixSystem =
 
             dangling
             @ unreferenced
+            @ undrained
             @ freshness
             @ inodeFreshness
             @ inodeDuplicates
@@ -1182,9 +1218,32 @@ module UnixSystem =
         // the greatest value the sysctl accepts.
         ThreadIdAllocator.linuxPidMaxCeiling
 
+    /// The launch table of a process started with each of its standard streams
+    /// redirected to a pipe of its own, as a shell's `cmd < a | b 2> c` and
+    /// most test harnesses do: descriptor 0 reads a pipe whose writer supplied
+    /// nothing, and descriptors 1 and 2 write to pipes the client drains.
+    ///
+    /// Not the only shape a real process can inherit, and not the terminal one.
+    /// Under a tty, descriptors 0, 1 and 2 are `dup`s of a single `O_RDWR`
+    /// description: measured via `forkpty`, setting `O_NONBLOCK` through
+    /// descriptor 1 becomes visible on 0 and 2, and `write(0, _, _)` succeeds.
+    let pipedStandardStreams : Map<int, LaunchDescriptor> =
+        Map.ofList
+            [
+                0, LaunchDescriptor.SuppliedNothing
+                1, LaunchDescriptor.Drained
+                2, LaunchDescriptor.Drained
+            ]
+
     /// A simulated process on a machine of the given platform, before anything
     /// has happened to it: no sockets, no connections, an empty filesystem, and
-    /// only the three standard streams open.
+    /// only the descriptors `launch` gives it open.
+    ///
+    /// Each entry of `launch` is a descriptor the launcher set up before the
+    /// process started, at that number: a pipe end of its own, whose other end
+    /// the client holds as the entry says (see `LaunchDescriptor`). The pipes
+    /// are the first the machine makes, in descriptor order. A launch table
+    /// naming a negative descriptor is refused.
     ///
     /// It has one task, `leader`, on the logical processor `leaderCpu`. The
     /// leader's thread ID is the process ID, `defaultProcessId`: on Linux because
@@ -1209,6 +1268,7 @@ module UnixSystem =
     /// non-empty filesystem or a different address list.
     let initial<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (platform : SimulatedUnixPlatform)
+        (launch : Map<int, LaunchDescriptor>)
         (leader : 'Task)
         (leaderCpu : CpuId)
         : UnixSystem<'Task, 'Handler>
@@ -1234,12 +1294,39 @@ module UnixSystem =
             | SimulatedUnixFlavour.Darwin ->
                 ThreadIdAllocator.startDarwin "UnixSystem.initial" (uint64 (ProcessId.toInt32 defaultProcessId))
 
+        // One pipe per launch descriptor, numbered in descriptor order from the
+        // first pipe the machine makes.
+        let launched =
+            launch
+            |> Map.toList
+            |> List.mapi (fun index (fd, descriptor) ->
+                if fd < 0 then
+                    failwith
+                        $"UnixSystem.initial: the launch table names descriptor %d{fd}, which is negative; no process has a descriptor below 0."
+
+                let pipeId = PipeId (int64 index)
+
+                let pipeEnd =
+                    match descriptor with
+                    | LaunchDescriptor.SuppliedNothing -> PipeEnd.Read
+                    | LaunchDescriptor.Drained -> PipeEnd.Write
+
+                let pipe =
+                    {
+                        Buffer = PipeBuffer.empty platform
+                        Origin = PipeOrigin.Launched (ExternalEndpoint fd, descriptor)
+                    }
+
+                fd, pipeId, pipeEnd, pipe
+            )
+
         {
             Machine =
                 {
                     Sockets = Map.empty
-                    Pipes = Map.empty
-                    NextPipeId = PipeId 0L
+                    Pipes = launched |> List.map (fun (_, pipeId, _, pipe) -> pipeId, pipe) |> Map.ofList
+                    NextPipeId = PipeId (int64 (List.length launched))
+                    Delivered = ImmutableArray.Empty
                     // Any start would do; one, because no filesystem hands out
                     // inode 0.
                     NextPipeInode = InodeNumber 1L
@@ -1266,8 +1353,11 @@ module UnixSystem =
                 }
             Process =
                 {
-                    FileDescriptors = FileDescriptorRegistry.initial
-                    OutputLog = ImmutableArray<OutputLogEntry>.Empty
+                    FileDescriptors =
+                        launched
+                        |> List.map (fun (fd, pipeId, pipeEnd, _) -> fd, (pipeId, pipeEnd))
+                        |> Map.ofList
+                        |> FileDescriptorRegistry.ofLaunchedPipes
                     Environment = []
                     // The default current directory is the root, which every filesystem
                     // has and no operation can remove, so the pair starts consistent
@@ -1585,7 +1675,6 @@ module UnixSystem =
                 match description.Target with
                 | OpenFileTarget.File (inode, _)
                 | OpenFileTarget.Directory (inode, _) -> Some $"description %O{id} onto %O{inode}"
-                | OpenFileTarget.StandardStream _
                 | OpenFileTarget.SocketEventPort _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.Pipe _ -> None

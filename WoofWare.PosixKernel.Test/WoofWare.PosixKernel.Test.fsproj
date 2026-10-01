@@ -20,6 +20,7 @@
     <Compile Include="Answered.fs" />
     <Compile Include="DirectoryReading.fs" />
     <Compile Include="Owners.fs" />
+    <Compile Include="LaunchedStreams.fs" />
     <Compile Include="BindingProbes.fs" />
     <Compile Include="Tasks.fs" />
     <Compile Include="HandlerFrames.fs" />
@@ -31,6 +32,7 @@
     <Compile Include="TestGetGroups.fs" />
     <Compile Include="TestModeChange.fs" />
     <Compile Include="TestUmask.fs" />
+    <Compile Include="TestAccess.fs" />
     <Compile Include="TestWakeCondition.fs" />
     <Compile Include="TestUnixWait.fs" />
     <Compile Include="TestUnixTaskLifecycle.fs" />
@@ -118,6 +120,7 @@
     <Compile Include="TestPipeBufferCorpus.fs" />
     <Compile Include="TestPipeBufferAgainstHost.fs" />
     <Compile Include="TestPipe.fs" />
+    <Compile Include="TestLaunchedStreams.fs" />
     <Compile Include="TestPipeAgainstHost.fs" />
     <Compile Include="TestSockaddrField.fs" />
     <Compile Include="TestSockaddrLayoutAgainstHost.fs" />

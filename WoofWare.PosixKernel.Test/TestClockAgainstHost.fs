@@ -46,7 +46,8 @@ module TestClockAgainstHost =
         [ -4096 .. 4096 ] @ [ System.Int32.MinValue ; System.Int32.MaxValue ]
 
     let private machineOn (flavour : SimulatedUnixFlavour) : UnixMachineState =
-        (UnixSystem.initial<int, string> (HostPlatform.platformOf flavour) 0 (CpuId 0)).Machine
+        (UnixSystem.initial<int, string> (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0))
+            .Machine
 
     [<Test>]
     let ``an id is EINVAL here exactly when the host says so, unless it is refused`` () : unit =

@@ -51,7 +51,7 @@ module TestPollTimeout =
     /// empty accept queue, and the descriptor onto it.
     let private world : int * UnixSystem<int, string> =
         let system =
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let system = Tasks.spawn task system
 
@@ -529,7 +529,7 @@ module TestPollTimeout =
     [<Test>]
     let ``a Darwin-flavoured poll with a timeout is refused, as every Darwin poll is`` () : unit =
         let darwin =
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 0 (CpuId 0)
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let darwin = Tasks.spawn task darwin
 

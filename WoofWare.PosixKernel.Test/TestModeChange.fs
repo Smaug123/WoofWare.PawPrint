@@ -263,7 +263,8 @@ module TestModeChange =
         (vfs : VirtualFileSystem)
         : UnixSystem<int, string>
         =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
+        let system : UnixSystem<int, string> =
+            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         { system with
             Machine =
@@ -595,7 +596,8 @@ module TestModeChange =
     [<Test>]
     let ``fchmod of a descriptor that is not open is EBADF`` () : unit =
         for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
-            let system = UnixSystem.initial<int, string> platform 0 (CpuId 0)
+            let system =
+                UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             for fd in [ 1000 ; -1 ; 3 ] do
                 fchmodAnswer fd 0o644 system
@@ -604,10 +606,10 @@ module TestModeChange =
     [<Test>]
     let ``fchmod of a descriptor with no inode answers as each flavour measured`` () : unit =
         let linux =
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let darwin =
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 0 (CpuId 0)
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let port (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
             let fd, registry =
@@ -628,9 +630,10 @@ module TestModeChange =
         fchmodAnswer fd 0o600 withPort
         |> shouldEqual (SyscallAnswer.Failed UnixError.EINVAL, withPort)
 
-        // A socket and a standard stream (one end of a pipe) are EINVAL on
-        // Darwin. On Linux both have a mode fchmod changes, which this kernel
-        // does not hold, so it refuses.
+        // A socket and a standard stream (one end of a pipe the process was
+        // launched with) are EINVAL on Darwin. On Linux both have a mode fchmod
+        // changes if the caller may, and whether it may turns on an owner this
+        // kernel does not hold, so it refuses.
         for domain, kind, protocol in
             [
                 SocketDomain.Inet, SocketKind.Stream, SocketProtocol.Tcp
@@ -653,17 +656,14 @@ module TestModeChange =
             UnixPathResolution.fchmod fd 0o600 withSocket
             |> shouldEqual (Error (FChModRefusal.Socket socket))
 
-        for fd, role in
-            [
-                0, FileDescriptorRole.StandardInput
-                1, FileDescriptorRole.StandardOutput
-                2, FileDescriptorRole.StandardError
-            ] do
+        for fd in [ 0 ; 1 ; 2 ] do
             fchmodAnswer fd 0o600 darwin
             |> shouldEqual (SyscallAnswer.Failed UnixError.EINVAL, darwin)
 
+            // `UnixSystem.initial` makes the launch table's pipes first, in
+            // descriptor order.
             UnixPathResolution.fchmod fd 0o600 linux
-            |> shouldEqual (Error (FChModRefusal.StandardStream role))
+            |> shouldEqual (Error (FChModRefusal.LaunchedPipe (PipeId (int64 fd))))
 
     // ------------------------------------------------------------- pipes
 
@@ -686,7 +686,7 @@ module TestModeChange =
         : (int * int) * UnixSystem<int, string>
         =
         let system =
-            UnixSystem.initial<int, string> platform 0 (CpuId 0)
+            UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
             |> UnixSystem.withCredentials context creator
 
         let fds, system = pipeOrFail system

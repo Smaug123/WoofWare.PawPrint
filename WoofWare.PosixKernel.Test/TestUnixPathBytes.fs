@@ -21,10 +21,10 @@ module TestUnixPathBytes =
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
     let private linux : UnixSystem<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
+        UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private darwin : UnixSystem<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.macOsArm64 0 (CpuId 0)
+        UnixSystem.initial SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private byteString (bytes : byte seq) : UnixByteString =
         match UnixByteString.ofBytes (ImmutableArray.CreateRange bytes) with

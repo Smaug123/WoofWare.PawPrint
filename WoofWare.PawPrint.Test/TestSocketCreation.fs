@@ -142,7 +142,8 @@ module TestSocketCreation =
         match SocketArgumentsPal.socketArguments platform family kind protocol with
         | Error screen -> string<UnixError> (SocketArgumentScreen.error screen)
         | Ok (domain, socketType, protocol) ->
-            let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
+            let system : UnixSystem<int, string> =
+                UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             match UnixSocket.socket domain socketType protocol system with
             | Ok (Ok _) -> "Ok"
@@ -310,7 +311,9 @@ module TestSocketCreation =
         : unit
         =
         let platform = SimulatedUnixPlatform.linuxX64
-        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
+
+        let system : UnixSystem<int, string> =
+            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let domain, socketType, protocol =
             match SocketArgumentsPal.socketArguments platform family kind protocol with
@@ -489,7 +492,8 @@ module TestSocketCreation =
                                     domain
                                     socketType
                                     protocol
-                                    (UnixSystem.initial platform 0 (CpuId 0) : UnixSystem<int, string>)
+                                    (UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                                    : UnixSystem<int, string>)
                             with
                             | Ok (Error error) -> Some (UnixErrorPal.toPal error)
                             | Ok (Ok _)

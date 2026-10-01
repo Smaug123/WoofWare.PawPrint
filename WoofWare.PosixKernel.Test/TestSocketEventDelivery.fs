@@ -40,7 +40,7 @@ module TestSocketEventDelivery =
     let private emptyInterest : uint32 = EpollEvents.EdgeTriggered
 
     let private initialSystem : UnixSystem<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
+        UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     /// `close(2)`. A refusal crashes, as it does in the handlers that serve a
     /// guest; an errno comes back, because that is an answer.

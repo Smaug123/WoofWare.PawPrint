@@ -27,7 +27,8 @@ module TestNonBlocking =
     /// A simulated process on the flavour asked for, before anything has
     /// happened to it.
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
+        let system : UnixSystem<int, string> =
+            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         { system with
             Machine =
@@ -185,7 +186,7 @@ module TestNonBlocking =
 
     // Every row in this section was measured by
     // docs/plans/2026-08-23-posix-kernel-extraction/stdio-nonblock.c, under the
-    // launch shape `FileDescriptorRegistry.initial` models: three distinct
+    // launch shape `UnixSystem.pipedStandardStreams` describes: three distinct
     // pipes, standard input's writer closed before the process runs, and the
     // output streams read by the launcher as fast as it can. Linux 6.18.5
     // aarch64 and Darwin 27.0.0 arm64 answered every row identically.
@@ -370,7 +371,8 @@ module TestNonBlocking =
     /// of each of sixteen sizes from 1 to 1 MiB, each after the pipe had
     /// drained, on both flavours. That
     /// is what a write into an empty pipe takes. The whole writes are answered
-    /// exactly as a blocking write is; the short ones are refused.
+    /// exactly as a blocking write is; the short ones deliver the bytes they
+    /// took, and no more.
     [<Test>]
     let ``a non-blocking write to an output stream is whole up to what an empty pipe takes`` () : unit =
         let emptyPipeTakes = 65536
@@ -380,46 +382,46 @@ module TestNonBlocking =
             let flagged = set fd true clear
             let bytes = ImmutableArray.Create<byte> (Array.init count byte)
 
-            let role =
-                match fd with
-                | 1 -> FileDescriptorRole.StandardOutput
-                | _ -> FileDescriptorRole.StandardError
-
             let unflag (system : UnixSystem<int, string>) =
                 match UnixSocket.setNonBlocking fd false system with
                 | SetNonBlockingAnswer.Set, system -> system
                 | SetNonBlockingAnswer.Failed error, _ -> failwith $"could not clear the flag: %O{error}"
+
+            let deliveries (system : UnixSystem<int, string>) =
+                system.Machine.Delivered
+                |> Seq.map (fun delivery -> delivery.Endpoint, List.ofSeq delivery.Bytes)
+                |> List.ofSeq
 
             match UnixReadWrite.write fd bytes flagged, UnixReadWrite.write fd bytes clear with
             | Ok (answer, after), Ok (blockingAnswer, blockingAfter) when count <= emptyPipeTakes ->
                 answer |> shouldEqual (WriteAnswer.Completed (int64 count))
                 answer |> shouldEqual blockingAnswer
 
-                // The same bytes reach the same log, entry for entry, and the
-                // flag is the only other difference.
-                let entries (system : UnixSystem<int, string>) =
-                    system.Process.OutputLog
-                    |> Seq.map (fun entry -> entry.Role, List.ofSeq entry.Bytes)
-                    |> List.ofSeq
+                // The same bytes reach the same client, delivery for delivery,
+                // and the flag is the only other difference.
+                deliveries after |> shouldEqual (deliveries blockingAfter)
 
-                entries after |> shouldEqual (entries blockingAfter)
-
-                // Compared entry by entry above: an `ImmutableArray`'s own
-                // equality is its array's identity.
+                // Compared delivery by delivery above: an `ImmutableArray`'s
+                // own equality is its array's identity.
                 let withoutLog (system : UnixSystem<int, string>) =
                     { system with
-                        Process =
-                            { system.Process with
-                                OutputLog = ImmutableArray.Empty
+                        Machine =
+                            { system.Machine with
+                                Delivered = ImmutableArray.Empty
                             }
                     }
 
                 withoutLog (unflag after) |> shouldEqual (withoutLog blockingAfter)
-            | Error refusal, Ok (WriteAnswer.Completed written, _) when count > emptyPipeTakes ->
+            | Ok (answer, after), Ok (WriteAnswer.Completed written, blockingAfter) ->
                 written |> shouldEqual (int64 count)
 
-                refusal
-                |> shouldEqual (WriteRefusal.NonBlockingStandardStreamShortWrite (role, count, emptyPipeTakes))
+                deliveries blockingAfter
+                |> shouldEqual [ ExternalEndpoint fd, List.ofSeq bytes ]
+
+                answer |> shouldEqual (WriteAnswer.Completed (int64 emptyPipeTakes))
+
+                deliveries after
+                |> shouldEqual [ ExternalEndpoint fd, List.ofSeq bytes |> List.take emptyPipeTakes ]
             | flaggedResult, clearResult ->
                 failwith
                     $"%O{platform}: write(%d{fd}, %d{count} bytes) answered %A{Result.map fst flaggedResult} with the flag set and %A{Result.map fst clearResult} without it"
@@ -435,7 +437,7 @@ module TestNonBlocking =
 
     /// The boundary of the property above, as literals.
     [<Test>]
-    let ``a non-blocking write one byte longer than an empty pipe takes is refused`` () : unit =
+    let ``a non-blocking write one byte longer than an empty pipe takes is short`` () : unit =
         for platform in streamPlatforms do
             let flagged = set 1 true (systemOn platform)
 
@@ -443,13 +445,13 @@ module TestNonBlocking =
             | Ok (WriteAnswer.Completed 65536L, _) -> ()
             | other -> failwith $"%O{platform}: a 65536-byte write answered %A{Result.map fst other}"
 
-            UnixReadWrite.write 1 (ImmutableArray.Create<byte> (Array.zeroCreate 65537)) flagged
-            |> Result.map fst
-            |> shouldEqual (
-                Error (
-                    WriteRefusal.NonBlockingStandardStreamShortWrite (FileDescriptorRole.StandardOutput, 65537, 65536)
-                )
-            )
+            match UnixReadWrite.write 1 (ImmutableArray.Create<byte> (Array.zeroCreate 65537)) flagged with
+            | Ok (WriteAnswer.Completed 65536L, after) ->
+                after.Machine.Delivered
+                |> Seq.map (fun delivery -> delivery.Bytes.Length)
+                |> List.ofSeq
+                |> shouldEqual [ 65536 ]
+            | other -> failwith $"%O{platform}: a 65537-byte write answered %A{Result.map fst other}"
 
     // ------------------------------------------------------------------
     // The event port, where store and answer come apart
