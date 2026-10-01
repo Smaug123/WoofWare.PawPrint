@@ -525,6 +525,19 @@ type WaitHandleState =
 
 
 
+/// What a Linux System.Native's `SupportsCopyFileRange` has decided about
+/// whether `copy_file_range(2)` may be used: the shim's `s_isSupported`, a
+/// static it fills on the first `SystemNative_CopyFile` and reads thereafter.
+[<RequireQualifiedAccess>]
+type CopyFileRangeSupport =
+    /// No `SystemNative_CopyFile` has asked yet.
+    | Unprobed
+    /// The kernel's release is 5.3 or later, and a probe call did not answer
+    /// ENOSYS.
+    | Supported
+    /// The kernel's release is older than 5.3, or the probe answered ENOSYS.
+    | Unsupported
+
 /// Aggregates the slice of `IlMachineState` that models host-kernel /
 /// syscall-emulation state: the per-thread last-error registers, the native
 /// heap pool backing `Marshal.AllocHGlobal`, the CoreCLR PAL's synchronisation
@@ -609,6 +622,10 @@ type EmulatedKernel =
         /// state rather than kernel state, like `NonCryptoRandomState`: the
         /// shim keeps it in its own globals, and no syscall reports it.
         PosixSignalShim : PosixSignalShim
+        /// System.Native's cached answer to whether it may use
+        /// `copy_file_range(2)`: see `CopyFileRangeSupport`. Userspace state,
+        /// like `PosixSignalShim`.
+        CopyFileRangeSupport : CopyFileRangeSupport
         /// Every task the kernel knows about, by the thread that is it.
         ///
         /// Exactly the live threads: `checkTaskInvariants` reports a thread with
@@ -1051,6 +1068,7 @@ module EmulatedKernel =
             NativeMemoryPool = NativeMemoryPool.empty
             NonCryptoRandomState = NonCryptoRandom.initialState
             PosixSignalShim = PosixSignalShim.initial
+            CopyFileRangeSupport = CopyFileRangeSupport.Unprobed
             DirectoryStreamFds = Map.empty
             Tasks = system.Tasks
             Leader = system.Leader

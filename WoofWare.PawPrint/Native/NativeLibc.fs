@@ -51,10 +51,11 @@ module UnmodelledSelfSignal =
         | UnmodelledSelfSignal.ContinueWithoutHandler signal ->
             $"%O{signal} with no handler registered continues a stopped process, and a running one carries on regardless; PawPrint has no stopped state, and would leave the signal pending for a dispatcher that refuses it."
 
-/// Entry points of the C library itself, which a guest reaches only through a
+/// The C library's signal entry points, which a guest reaches only through a
 /// P/Invoke of its own naming the library `libc`: the BCL calls none of them
 /// directly. The runtime resolves that name to the platform's C library on
-/// Linux and Darwin alike (`pal_dynamicload.c`, `LIBC_SO`).
+/// Linux and Darwin alike (`pal_dynamicload.c`, `LIBC_SO`). The file entry
+/// points a CoreLib does call this way are `NativeLibcFile`'s.
 [<RequireQualifiedAccess>]
 module NativeLibc =
 
