@@ -278,7 +278,7 @@ naive reference implementation` in `TestLoadedAssemblies.fs`.
 **Where this lives in code**: `NativeRuntimeAssembly.tryExecuteQCall`, the
 `AssemblyNative_GetLoadedAssemblies` case, over `LoadedAssemblies.DefinitionNamesInLoadOrder`.
 
-## `AppDomain.AssemblyLoad` is raised later for an image than on CoreCLR
+## `AppDomain.AssemblyLoad` is raised later for an image than on CoreCLR, and not for a dynamic assembly
 
 **CoreCLR**: every assembly added to the AppDomain except corelib raises `AppDomain.AssemblyLoad`.
 `Assembly::DeliverAsyncEvents` calls `AppDomain::RaiseLoadingAssemblyEvent` on the loading thread
@@ -303,11 +303,12 @@ Two things are not modelled, and each ends the run rather than diverge silently:
 - an exception escaping the handler. The announcing frame is marked
   `ExceptionEscape.SwallowedByRuntime`, and exception dispatch refuses on reaching it rather than
   unwind the exception into the guest frame beneath, whose `catch` CoreCLR never offers it to;
-- a dynamic assembly, which `AppDomain_CreateDynamicAssembly` does not yet create. Discarding and
-  re-running the step is sound only because loading an image is idempotent and writes nothing but
-  the load context; creating a dynamic assembly is neither, so that QCall will have to announce the
-  assembly itself, from inside its own handler as CoreCLR does, rather than through the step it
-  runs in.
+- a dynamic assembly. CoreCLR announces it from inside `AppDomain_CreateDynamicAssembly`
+  (`Assembly::CreateDynamic`), so the handler has run once by the time `DefineDynamicAssembly`
+  returns. Discarding and re-running the step is sound only because loading an image is idempotent
+  and writes nothing but the load context; creating a dynamic assembly is neither, so that step is
+  never discarded, and with something subscribed it is refused until the QCall announces what it
+  creates itself.
 
 **Spec status**: the event is documented to fire on every load, with no promise about when. For an
 image the moment follows the loader, so it is no more a property of the program than
@@ -375,7 +376,9 @@ whose first use starts a type initialiser in it: the handler runs before that in
 handler reading the type's statics sees them initialised.
 It also has a handler for one assembly call into another that the same `newobj` loaded, which must
 by then have been announced. `sourcesPure/AssemblyLoadHandlerThrowIsSwallowed.cs` is parked on the
-swallowed exception, and `TestAssemblyLoadEvent` pins the refusal in its place.
+swallowed exception, and `TestAssemblyLoadEvent` pins the refusal in its place; it likewise runs
+`sourcesImpure/AssemblyLoadEventDynamic.cs`, asserting that real .NET announces a dynamic assembly
+once before `DefineDynamicAssembly` returns and that PawPrint refuses it.
 
 **Where this lives in code**: `AssemblyLoadEvent.announceBeforeStep`, called from
 `AbstractMachine.executeOneStep`; the refusal is in `ExceptionDispatching.firstPass`.

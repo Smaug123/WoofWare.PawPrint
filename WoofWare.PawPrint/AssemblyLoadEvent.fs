@@ -153,8 +153,8 @@ module AssemblyLoadEvent =
     /// would have done; any effect it asked the driver to perform is discarded with it and asked for
     /// again. That is sound only because loading an image is idempotent and writes nothing but the
     /// load context. A step that *creates* an assembly, as <c>AppDomain_CreateDynamicAssembly</c>
-    /// does, would create it afresh when run again, so such a step must announce what it created
-    /// itself rather than reach here.
+    /// does, would create it afresh when run again, so it is never discarded; with something
+    /// subscribed, that is refused until the QCall announces what it creates itself.
     /// </remarks>
     let announceBeforeStep
         (loggerFactory : ILoggerFactory)
@@ -179,6 +179,16 @@ module AssemblyLoadEvent =
         if loadOrder.Length < loadedBefore then
             failwith
                 $"logic error: the load context held %d{loadedBefore} assemblies before a step of thread %O{thread} and %d{loadOrder.Length} after it; assemblies are never unloaded"
+
+        // Running the step again would create the assembly again, so it cannot be discarded.
+        match
+            seq { loadedBefore .. loadOrder.Length - 1 }
+            |> Seq.tryFind (fun i -> after._LoadedAssemblies.IsDynamic loadOrder.[i])
+        with
+        | Some i when hasSubscriber baseClassTypes thread before ->
+            failwith
+                $"TODO: thread %O{thread} created the dynamic assembly %s{loadOrder.[i]} with AppDomain.AssemblyLoad subscribed. CoreCLR raises the event from inside AppDomain_CreateDynamicAssembly (Assembly::CreateDynamic); PawPrint does not yet, and cannot announce it by running the step again"
+        | _ ->
 
         // `RaiseLoadingAssemblyEvent` returns early for corelib.
         let firstToAnnounce =
