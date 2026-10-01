@@ -3,6 +3,44 @@ namespace WoofWare.PawPrint
 open System.Collections.Immutable
 open WoofWare.PosixKernel
 
+/// <summary>
+/// Which of the simulated process's inherited standard streams an open file
+/// description refers to.
+/// </summary>
+[<RequireQualifiedAccess>]
+type FileDescriptorRole =
+    | StandardInput
+    | StandardOutput
+    | StandardError
+
+/// One entry in `UnixProcessState.OutputLog`: the role the process targeted (a
+/// writable standard stream — stdout or stderr) and the byte payload of
+/// that single `write(2)` call. Chunks are not coalesced across
+/// calls because write boundaries matter for diagnostics (line
+/// boundaries, prompt boundaries) and are what a real reader of the stream
+/// could observe.
+type OutputLogEntry =
+    {
+        Role : FileDescriptorRole
+        Bytes : ImmutableArray<byte>
+    }
+
+[<RequireQualifiedAccess>]
+module OutputLogEntry =
+    /// Concatenate every entry in `log` whose `Role` matches `role`,
+    /// preserving the original write order. Used by tests that want to
+    /// assert on the cumulative bytes the guest sent to a specific
+    /// standard stream (the equivalent of capturing one of host
+    /// stdout/stderr in isolation).
+    let bytesFor (role : FileDescriptorRole) (log : ImmutableArray<OutputLogEntry>) : ImmutableArray<byte> =
+        let builder = ImmutableArray.CreateBuilder<byte> ()
+
+        for entry in log do
+            if entry.Role = role then
+                builder.AddRange (entry.Bytes : ImmutableArray<byte>)
+
+        builder.ToImmutable ()
+
 /// How PawPrint launches a guest, and how it reads back what the guest wrote.
 ///
 /// Every guest starts as the oracle `RealRuntime` starts one: each standard

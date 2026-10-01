@@ -1,17 +1,5 @@
 namespace WoofWare.PosixKernel
 
-open System.Collections.Immutable
-
-/// <summary>
-/// Which of the simulated process's inherited standard streams an open file
-/// description refers to.
-/// </summary>
-[<RequireQualifiedAccess>]
-type FileDescriptorRole =
-    | StandardInput
-    | StandardOutput
-    | StandardError
-
 /// Identity of an open file description. Never guest-visible: no modelled
 /// syscall reports one (Linux's `kcmp(2)`, which would, is not modelled), so
 /// this exists purely to let two file descriptors denote the *same* open file
@@ -2010,31 +1998,3 @@ module FileDescriptorRegistry =
             { registry with
                 Descriptions = Map.add id (f (Map.find id registry.Descriptions)) registry.Descriptions
             }
-
-/// One entry in `UnixProcessState.OutputLog`: the role the process targeted (a
-/// writable standard stream — stdout or stderr) and the byte payload of
-/// that single `write(2)` call. Chunks are not coalesced across
-/// calls because write boundaries matter for diagnostics (line
-/// boundaries, prompt boundaries) and are what a real reader of the stream
-/// could observe.
-type OutputLogEntry =
-    {
-        Role : FileDescriptorRole
-        Bytes : ImmutableArray<byte>
-    }
-
-[<RequireQualifiedAccess>]
-module OutputLogEntry =
-    /// Concatenate every entry in `log` whose `Role` matches `role`,
-    /// preserving the original write order. Used by tests that want to
-    /// assert on the cumulative bytes the guest sent to a specific
-    /// standard stream (the equivalent of capturing one of host
-    /// stdout/stderr in isolation).
-    let bytesFor (role : FileDescriptorRole) (log : ImmutableArray<OutputLogEntry>) : ImmutableArray<byte> =
-        let builder = ImmutableArray.CreateBuilder<byte> ()
-
-        for entry in log do
-            if entry.Role = role then
-                builder.AddRange (entry.Bytes : ImmutableArray<byte>)
-
-        builder.ToImmutable ()
