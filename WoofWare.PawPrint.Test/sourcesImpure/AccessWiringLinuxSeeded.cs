@@ -75,6 +75,9 @@ class Program
         if (Expect(AccessPath("nx", 8), PAL_EINVAL) != 0) return check;
         check++;
         if (Expect(Access(null, 8), PAL_EINVAL) != 0) return check;
+        // Nor is a pointer this interpreter could not read looked at.
+        check++;
+        if (Expect(Access((byte*)typeof(int).TypeHandle.Value, 8), PAL_EINVAL) != 0) return check;
         check++;
         if (Expect(Access(null, F_OK), PAL_EFAULT) != 0) return check;
         check++;

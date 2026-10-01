@@ -1196,3 +1196,46 @@ module TestAccess =
 
         UnixSystem.step 0 (Syscall.FAccessAt (darwinAtFdCwd, bytes "screen_f", 0, 0x800)) darwin
         |> shouldEqual (Error (SyscallRefusal.Access (AccessRefusal.UnmodelledFlags 0x800)))
+
+    [<Test>]
+    let ``the screen phase answers a bad word before the path is read, and otherwise asks for it`` () : unit =
+        let progress (result : Result<AccessProgress<int, string>, AccessRefusal>) : string =
+            match result with
+            | Ok (AccessProgress.Answered (SyscallAnswer.Failed error)) -> string<UnixError> error
+            | Ok (AccessProgress.Answered other) -> failwith $"answered %A{other} without a path"
+            | Ok (AccessProgress.NeedsPath _) -> "needs the path"
+            | Error refusal -> $"refused: %s{AccessRefusal.describe refusal}"
+
+        let linuxCredentials = UnixSystem.defaultCredentials SimulatedUnixFlavour.Linux
+
+        let linux =
+            systemOn
+                SimulatedUnixPlatform.linuxX64
+                linuxCredentials
+                "/b"
+                (screenTree (InodeOwner.ofProcess linuxCredentials))
+
+        let darwin =
+            systemOn SimulatedUnixPlatform.macOsArm64 u501 "/b" (screenTree (owner 501u 20u))
+
+        [
+            UnixPathResolution.accessScreenPhase 8 linux |> progress
+            UnixPathResolution.faccessatScreenPhase linuxAtFdCwd 0 0x40000000 linux
+            |> progress
+            UnixPathResolution.accessScreenPhase 4 linux |> progress
+            UnixPathResolution.accessScreenPhase 8 darwin |> progress
+            UnixPathResolution.faccessatScreenPhase darwinAtFdCwd 0 0x40000000 darwin
+            |> progress
+        ]
+        |> shouldEqual [ "EINVAL" ; "EINVAL" ; "needs the path" ; "needs the path" ; "EINVAL" ]
+
+        match UnixPathResolution.faccessatScreenPhase 12345 4 0 linux with
+        | Ok (AccessProgress.NeedsPath paused) ->
+            UnixPathResolution.accessWithPath (bytes "/b/screen_f") paused
+            |> answered
+            |> shouldEqual "ok"
+
+            UnixPathResolution.accessWithPath (bytes "screen_f") paused
+            |> answered
+            |> shouldEqual "EBADF"
+        | _ -> failwith "a good mode word did not ask for the path"

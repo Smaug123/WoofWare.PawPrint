@@ -2953,10 +2953,10 @@ module NativeSystemNative =
         // `int32_t SystemNative_Access(const char* path, int32_t mode)`
         // (pal_io.c): `access(2)` and nothing else. The shim's `AccessMode`
         // numbering is `<unistd.h>`'s, which it static-asserts, so the mode
-        // arrives raw and the kernel screens it per flavour. The path is
-        // handed over as bytes, because Linux rejects a bad mode before it
-        // copies the path in: a bad mode with an unreadable path is EINVAL
-        // there, and EFAULT on Darwin. CoreLib reaches it from
+        // arrives raw and the kernel screens it per flavour, before the path
+        // is read: Linux rejects a bad mode before it copies the path in, so
+        // a bad mode with an unreadable path is EINVAL there, and EFAULT on
+        // Darwin. CoreLib reaches it from
         // `Environment.GetFolderPath`, which asks R_OK of the folder it is
         // about to return unless told not to verify it, and from reading the
         // XDG `user-dirs.dirs` file. `access(2)` checks with the real IDs where
@@ -2972,9 +2972,19 @@ module NativeSystemNative =
             let operation = "SystemNative_Access"
             let mode = NativeCall.int32Argument operation instruction.Arguments.[1]
 
-            let path = pathArgumentBytes ctx operation "path" instruction.Arguments.[0] state
+            let answer =
+                match UnixPathResolution.accessScreenPhase mode (EmulatedKernel.unix state.Kernel) with
+                | Error refusal -> Error refusal
+                | Ok (AccessProgress.Answered answer) -> Ok answer
+                | Ok (AccessProgress.NeedsPath paused) ->
+                    // Read only now: a pointer this interpreter cannot
+                    // dereference would refuse at transfer, where Linux
+                    // answers a bad mode without looking at it.
+                    UnixPathResolution.accessWithPath
+                        (pathArgumentBytes ctx operation "path" instruction.Arguments.[0] state)
+                        paused
 
-            match UnixPathResolution.access path mode (EmulatedKernel.unix state.Kernel) with
+            match answer with
             | Error refusal ->
                 let advice =
                     match refusal with

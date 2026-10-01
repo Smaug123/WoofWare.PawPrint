@@ -240,6 +240,33 @@ module GetCwdRefusal =
         | GetCwdRefusal.FatalToTheProcess ->
             "the destination names no storage this caller can write, and this platform's `getcwd(3)` assembles the path with stores executed in the caller's own context rather than copying from the kernel. Measured against a `PROT_READ` page: Darwin dies on a signal (SIGSEGV unmapped, SIGBUS read-only) where Linux answers EFAULT. It can die that way on calls that would otherwise report ERANGE or ENOENT, because it stores before it decides -- so this is reported for any capacity of two or more, which over-refuses the cells where the real call answers without storing. A dead process is not an errno, and guessing which cell this is would answer one for a call that really dies."
 
+/// An `access(2)` or `faccessat(2)` whose mode and flag words this kernel has
+/// screened and accepted, paused at the point where it copies its path in.
+/// Obtain one from `UnixPathResolution.accessScreenPhase` or
+/// `UnixPathResolution.faccessatScreenPhase`, and finish it with
+/// `UnixPathResolution.accessWithPath`.
+type PausedAccess<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    private
+        {
+            System : UnixSystem<'Task, 'Handler>
+            Directory : AtDirectory
+            Arguments : AccessArguments
+        }
+
+/// What screening an `access(2)` or `faccessat(2)`'s mode and flag words found:
+/// either the call is over without its path having been read at all, or the
+/// kernel has reached the point where it copies the path in.
+[<RequireQualifiedAccess>]
+[<NoEquality ; NoComparison>]
+type AccessProgress<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    /// Finished, and changing nothing. The path was never read, and must not
+    /// be: Linux answers a bad mode or flag word EINVAL whatever the path
+    /// pointer is.
+    | Answered of answer : SyscallAnswer
+    /// The kernel is at the path's copy-in. Hand its bytes to
+    /// `UnixPathResolution.accessWithPath`.
+    | NeedsPath of paused : PausedAccess<'Task, 'Handler>
+
 [<RequireQualifiedAccess>]
 module UnixPathResolution =
 
@@ -959,30 +986,90 @@ module UnixPathResolution =
         // exactly here. Without this it would be stranded for the run.
         SyscallAnswer.Completed 0L, UnixDescriptor.forgetIfUnheld previous moved
 
-    /// `faccessat(2)` with `dirfd` already decoded, which `access(2)` is with
-    /// `AT_FDCWD` and no flags.
-    let private accessFrom<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    // The order of every step of `access` and `faccessat` is measured by
+    // `access-rules.c`, on Linux 6.18.5 and Darwin 27.0: the mode and flag
+    // words (`AccessRules.screen`), then the path's copy-in (an unreadable
+    // pointer is EFAULT, and an over-long one ENAMETOOLONG, ahead of any
+    // dirfd), then Linux's empty path, then the dirfd (EBADF for a number
+    // naming nothing, ENOTDIR for a regular file), then the walk, then the
+    // permission bits. An absolute path never looks at its dirfd, even one
+    // naming nothing.
+    let private screenFrom<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (directory : AtDirectory)
-        (path : PathArgumentBytes)
         (mode : int)
         (flags : int)
         (system : UnixSystem<'Task, 'Handler>)
+        : Result<AccessProgress<'Task, 'Handler>, AccessRefusal>
+        =
+        match AccessRules.screen (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform) mode flags with
+        | AccessScreen.Refused refusal -> Error refusal
+        | AccessScreen.Failed error -> Ok (AccessProgress.Answered (SyscallAnswer.Failed error))
+        | AccessScreen.Screened arguments ->
+            Ok (
+                AccessProgress.NeedsPath
+                    {
+                        System = system
+                        Directory = directory
+                        Arguments = arguments
+                    }
+            )
+
+    /// <summary>
+    /// The first half of <c>faccessat(2)</c>: screen its raw <c>mode</c> and <c>flags</c>,
+    /// and decode its raw <c>dirfd</c>, before the path is read.
+    /// </summary>
+    /// <remarks>
+    /// A client that reads the path out of a caller's memory calls this first, and
+    /// reads the path only on <c>AccessProgress.NeedsPath</c>: Linux answers a bad mode
+    /// or flag word EINVAL without reading the path, so the path may be a pointer the
+    /// client could not read at all. <c>faccessat</c> is this followed by
+    /// <c>accessWithPath</c>.
+    /// </remarks>
+    let faccessatScreenPhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (dirfd : int)
+        (mode : int)
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<AccessProgress<'Task, 'Handler>, AccessRefusal>
+        =
+        let directory =
+            AccessRules.atDirectory (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform) dirfd
+
+        screenFrom directory mode flags system
+
+    /// The first half of <c>access(2)</c>, as <c>faccessatScreenPhase</c> is of
+    /// <c>faccessat</c>: <c>access</c> is <c>faccessat</c> from the current directory with
+    /// no flags.
+    let accessScreenPhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (mode : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<AccessProgress<'Task, 'Handler>, AccessRefusal>
+        =
+        screenFrom AtDirectory.CurrentDirectory mode 0 system
+
+    /// <summary>
+    /// The second half of <c>access(2)</c> or <c>faccessat(2)</c>: copy in <c>path</c>, and
+    /// answer the call <c>paused</c> describes.
+    /// </summary>
+    /// <remarks>
+    /// See <c>faccessat</c> for what it answers and refuses.
+    /// </remarks>
+    let accessWithPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (paused : PausedAccess<'Task, 'Handler>)
         : Result<SyscallAnswer, AccessRefusal>
         =
-        // The order of every step below is measured by `access-rules.c`, on
-        // Linux 6.18.5 and Darwin 27.0: the mode and flag words (`AccessRules.screen`),
-        // then the path's copy-in (an unreadable pointer is EFAULT, and an
-        // over-long one ENAMETOOLONG, ahead of any dirfd), then Linux's empty
-        // path, then the dirfd (EBADF for a number naming nothing, ENOTDIR for
-        // a regular file), then the walk, then the permission bits. An absolute
-        // path never looks at its dirfd, even one naming nothing.
+        match box paused with
+        | null ->
+            failwith
+                "UnixPathResolution.accessWithPath: this paused access is null, which it can only be if it came from `Unchecked.defaultof` or C# `default`; obtain one from UnixPathResolution.accessScreenPhase or faccessatScreenPhase instead."
+        | _ -> ()
+
+        let system = paused.System
+        let directory = paused.Directory
+        let arguments = paused.Arguments
         let platform = system.Machine.UnixPlatform
         let vfs = system.Machine.FileSystem
-
-        match AccessRules.screen (SimulatedUnixPlatform.flavour platform) mode flags with
-        | AccessScreen.Refused refusal -> Error refusal
-        | AccessScreen.Failed error -> Ok (SyscallAnswer.Failed error)
-        | AccessScreen.Screened arguments ->
 
         let path =
             match path with
@@ -1097,7 +1184,8 @@ module UnixPathResolution =
     /// <c>dirfd</c>, <c>mode</c> and <c>flags</c> are raw, in this platform's own numbering;
     /// <c>AccessRules.screen</c> says which words each flavour rejects and what the rest
     /// mean. <c>path</c> is the argument's bytes, copied in after those screens, as both
-    /// kernels do.
+    /// kernels do; a client that has yet to read them should call
+    /// <c>faccessatScreenPhase</c> and <c>accessWithPath</c> instead.
     ///
     /// Without <c>AT_EACCESS</c> the path is walked, and the inode judged, with the process's
     /// <i>real</i> user and group (see <c>Credentials.realIdsAsEffective</c>); with it, with
@@ -1125,10 +1213,10 @@ module UnixPathResolution =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer, AccessRefusal>
         =
-        let directory =
-            AccessRules.atDirectory (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform) dirfd
-
-        accessFrom directory path mode flags system
+        match faccessatScreenPhase dirfd mode flags system with
+        | Error refusal -> Error refusal
+        | Ok (AccessProgress.Answered answer) -> Ok answer
+        | Ok (AccessProgress.NeedsPath paused) -> accessWithPath path paused
 
     /// <c>access(2)</c>: <c>faccessat</c> from the current directory with no flags, so
     /// checking with the process's real user and group. Measured on both, the two agree on
@@ -1139,4 +1227,7 @@ module UnixPathResolution =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer, AccessRefusal>
         =
-        accessFrom AtDirectory.CurrentDirectory path mode 0 system
+        match accessScreenPhase mode system with
+        | Error refusal -> Error refusal
+        | Ok (AccessProgress.Answered answer) -> Ok answer
+        | Ok (AccessProgress.NeedsPath paused) -> accessWithPath path paused
