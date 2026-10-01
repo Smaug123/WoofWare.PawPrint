@@ -17,10 +17,10 @@ open WoofWare.PosixKernel
 module TestThreadIds =
 
     let private linux : UnixSystem<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
+        UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private darwin : UnixSystem<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.macOsArm64 0 (CpuId 0)
+        UnixSystem.initial SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private pid (value : int32) : ProcessId = ProcessId.parseOrFail "test" value
 
@@ -58,7 +58,7 @@ module TestThreadIds =
     [<Test>]
     let ``the leader is on the processor it was given`` () : unit =
         let system : UnixSystem<string, string> =
-            UnixSystem.initial SimulatedUnixPlatform.linuxArm64 "main" (CpuId 3)
+            UnixSystem.initial SimulatedUnixPlatform.linuxArm64 UnixSystem.pipedStandardStreams "main" (CpuId 3)
 
         system.Leader |> shouldEqual "main"
         UnixTaskTable.cpuOf "main" system.Tasks |> shouldEqual (CpuId 3)

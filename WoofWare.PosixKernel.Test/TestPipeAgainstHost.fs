@@ -202,7 +202,9 @@ module TestPipeAgainstHost =
             let numbering = SimulatedUnixPlatform.rawErrnoNumbering platform
 
             let initial =
-                let system : UnixSystem<int, string> = UnixSystem.initial platform 0 (CpuId 0)
+                let system : UnixSystem<int, string> =
+                    UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
                 let uid = UserId.parseOrFail "TestPipeAgainstHost" (hostGetEUid ())
                 let gid = GroupId.parseOrFail "TestPipeAgainstHost" (hostGetEGid ())
 
@@ -466,7 +468,14 @@ module TestPipeAgainstHost =
                                     && List.exists (fun (_, _, e, _) -> e = PipeEnd.Write) slots
 
                                 if bothOpen then
-                                    let buffer = (Map.find (PipeId 0L) system.Machine.Pipes).Buffer
+                                    let pipeId =
+                                        match
+                                            FileDescriptorRegistry.tryFindTarget modelFd system.Process.FileDescriptors
+                                        with
+                                        | Some (OpenFileTarget.Pipe (pipeId, _)) -> pipeId
+                                        | other -> failwith $"%s{where}: fd %d{modelFd} is %A{other}"
+
+                                    let buffer = (UnixMachineState.pipe pipeId system.Machine).Buffer
 
                                     let modelReady =
                                         match pipeEnd with
@@ -586,7 +595,10 @@ module TestPipeAgainstHost =
                         Error (UnixError.ofRawErrnoUnder numbering errno)
 
                 let model : Result<Pipe2Answer * UnixSystem<int, string>, Pipe2Refusal> =
-                    UnixPipe.pipe2 flags UserBuffer.Mapped (UnixSystem.initial platform 0 (CpuId 0))
+                    UnixPipe.pipe2
+                        flags
+                        UserBuffer.Mapped
+                        (UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0))
 
                 match model, host with
                 | Ok (Pipe2Answer.Created _, _), Ok () -> ()

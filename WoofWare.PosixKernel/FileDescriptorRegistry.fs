@@ -1,17 +1,5 @@
 namespace WoofWare.PosixKernel
 
-open System.Collections.Immutable
-
-/// <summary>
-/// Which of the simulated process's inherited standard streams an open file
-/// description refers to.
-/// </summary>
-[<RequireQualifiedAccess>]
-type FileDescriptorRole =
-    | StandardInput
-    | StandardOutput
-    | StandardError
-
 /// Identity of an open file description. Never guest-visible: no modelled
 /// syscall reports one (Linux's `kcmp(2)`, which would, is not modelled), so
 /// this exists purely to let two file descriptors denote the *same* open file
@@ -263,7 +251,6 @@ type SocketDescription =
 /// of the descriptor.
 [<RequireQualifiedAccess>]
 type OpenFileObject =
-    | StandardStream of FileDescriptorRole
     /// A regular file, directory, or anything else `open(2)` returned a
     /// descriptor for, identified by the inode it resolved to at open time.
     /// Not by path: renaming or deleting the path leaves this description
@@ -479,14 +466,8 @@ type SocketEventPortState =
 /// conflict test compares objects for equality, and two descriptions at
 /// different offsets on one file must still contend.
 /// `OpenFileDescription.object` is the projection back to identity.
-///
-/// A standard stream has no offset: this library models the standard streams as
-/// pipes (see `FileDescriptorRegistry.initial`), which are not seekable —
-/// `lseek` on one is `ESPIPE`.
 [<RequireQualifiedAccess>]
 type OpenFileTarget =
-    /// One of the inherited standard streams. No offset: not seekable.
-    | StandardStream of role : FileDescriptorRole
     /// A regular file, and where in it this description is positioned.
     /// `read(2)` consumes from here and advances it; `lseek(2)` sets it;
     /// `pread(2)` leaves it alone.
@@ -540,7 +521,8 @@ type OpenFileTarget =
     /// kernel is where a socket's lifetime is decided. `UnixMachineState.socket`
     /// resolves the name.
     | Socket of socket : SocketId
-    /// One end of a pipe, handed out by `UnixPipe.pipe2`.
+    /// One end of a pipe, handed out by `UnixPipe.pipe2`, or by the launch
+    /// table `UnixSystem.initial` takes.
     ///
     /// No offset: measured, `lseek` on either end of a pipe is ESPIPE on both
     /// flavours.
@@ -640,7 +622,6 @@ module OpenFileDescription =
     ///
     let object (description : OpenFileDescription) : OpenFileObject =
         match description.Target with
-        | OpenFileTarget.StandardStream role -> OpenFileObject.StandardStream role
         | OpenFileTarget.File (inode, _)
         | OpenFileTarget.Directory (inode, _) -> OpenFileObject.File inode
         // Every socket event port collapses to one object, because on Linux
@@ -790,47 +771,54 @@ type FileDescriptorRegistryDefect =
 
 [<RequireQualifiedAccess>]
 module FileDescriptorRegistry =
-    let private stdinId : OpenFileDescriptionId = OpenFileDescriptionId 0L
-    let private stdoutId : OpenFileDescriptionId = OpenFileDescriptionId 1L
-    let private stderrId : OpenFileDescriptionId = OpenFileDescriptionId 2L
-
-    /// Descriptor table as the simulated process inherits it at `exec` time:
-    /// stdin (fd 0), stdout (fd 1), stderr (fd 2).
+    /// A descriptor table holding exactly the descriptors in `ends`, each naming
+    /// an open file description of its own onto the given end of the given
+    /// pipe: the read end opened `O_RDONLY` and the write end `O_WRONLY`, as
+    /// `pipe(2)` opens them, and neither `O_NONBLOCK`.
     ///
-    /// The three descriptors name three *distinct* descriptions, which models a
-    /// process launched with each standard stream separately redirected to its
-    /// own pipe.
-    ///
-    /// This is not the only shape a real process can inherit, and not the
-    /// terminal one. Under a tty, fds 0/1/2 are `dup`s of a *single*
-    /// `O_RDWR` description: measured via `forkpty`, setting `O_NONBLOCK`
-    /// through fd 1 becomes visible on fds 0 and 2, and `write(0, _, _)`
-    /// succeeds. Seeding one shared description here would contradict what
-    /// this library answers elsewhere: `UnixReadWrite.write` to fd 0 returns
-    /// `EBADF`, which is true only of a redirected `O_RDONLY` stdin.
-    let initial : FileDescriptorRegistry =
-        {
-            Fds = Map.empty |> Map.add 0 stdinId |> Map.add 1 stdoutId |> Map.add 2 stderrId
-            Descriptions =
-                let stream (role : FileDescriptorRole) (accessMode : FileAccessMode) : OpenFileDescription =
-                    {
-                        Target = OpenFileTarget.StandardStream role
-                        AccessMode = accessMode
-                        NonBlocking = false
-                        Flock = None
-                    }
+    /// This is the table a process inherits from a launcher that gave it each
+    /// of those descriptors onto a pipe of its own; `UnixSystem.initial` is the
+    /// caller, and mints the pipes. It is the only way to build a table with
+    /// descriptors at chosen numbers, which no syscall can do.
+    let ofLaunchedPipes (ends : Map<int, PipeId * PipeEnd>) : FileDescriptorRegistry =
+        let empty =
+            {
+                Fds = Map.empty
+                Descriptions = Map.empty
+                NextId = OpenFileDescriptionId 0L
+            }
 
-                // The access modes a *redirected* launch produces, which is the
-                // shape described above: the shell opens stdin `O_RDONLY` and
-                // each output stream `O_WRONLY`. Under a tty all three would be
-                // `O_RDWR`, which is the same fact as their sharing one
-                // description and is rejected here for the same reasons.
-                Map.empty
-                |> Map.add stdinId (stream FileDescriptorRole.StandardInput FileAccessMode.ReadOnly)
-                |> Map.add stdoutId (stream FileDescriptorRole.StandardOutput FileAccessMode.WriteOnly)
-                |> Map.add stderrId (stream FileDescriptorRole.StandardError FileAccessMode.WriteOnly)
-            NextId = OpenFileDescriptionId 3L
-        }
+        ends
+        |> Map.fold
+            (fun (registry : FileDescriptorRegistry) (fd : int) (pipeId : PipeId, pipeEnd : PipeEnd) ->
+                if fd < 0 then
+                    failwith
+                        $"FileDescriptorRegistry.ofLaunchedPipes: descriptor %d{fd} is negative, which no descriptor is (this is a bug in the caller, which should have refused it)."
+
+                let id = registry.NextId
+                let (OpenFileDescriptionId raw) = id
+
+                let accessMode =
+                    match pipeEnd with
+                    | PipeEnd.Read -> FileAccessMode.ReadOnly
+                    | PipeEnd.Write -> FileAccessMode.WriteOnly
+
+                { registry with
+                    Fds = Map.add fd id registry.Fds
+                    Descriptions =
+                        Map.add
+                            id
+                            {
+                                Target = OpenFileTarget.Pipe (pipeId, pipeEnd)
+                                AccessMode = accessMode
+                                NonBlocking = false
+                                Flock = None
+                            }
+                            registry.Descriptions
+                    NextId = OpenFileDescriptionId (raw + 1L)
+                }
+            )
+            empty
 
     /// Which description `fd` names, if `fd` is live. Callers that need to know
     /// whether two descriptors share a description — rather than merely name
@@ -984,7 +972,6 @@ module FileDescriptorRegistry =
                                         Ready = portState.Ready |> List.filter (fun (_, target) -> target <> id)
                                     }
                         }
-                    | OpenFileTarget.StandardStream _
                     | OpenFileTarget.File _
                     | OpenFileTarget.Directory _
                     | OpenFileTarget.Socket _
@@ -1316,10 +1303,10 @@ module FileDescriptorRegistry =
     /// single-threaded guest can observe it.
     ///
     /// Contention is between descriptions naming the same `OpenFileObject`. For
-    /// a standard stream that set is empty by construction — `initial` gives
-    /// each role exactly one description and `dup` shares rather than copies —
-    /// so `flock` on fd 0/1/2 succeeds and conflicts with nothing. That is what
-    /// Linux does (measured: `flock` on a pipe returns 0).
+    /// a pipe launched by `ofLaunchedPipes` that set is the one description,
+    /// whose pipe nothing else names, and `dup` shares rather than copies, so
+    /// `flock` on one succeeds and conflicts with nothing. That is what Linux
+    /// does (measured: `flock` on a pipe returns 0).
     ///
     /// This is Linux's mechanism. Darwin diverges in three measured ways — it
     /// answers `ENOTSUP` for a pipe, it validates the operation differently,
@@ -1388,9 +1375,6 @@ module FileDescriptorRegistry =
                     $"file descriptor %d{fd} names open file description %O{id}, which is not present in the table (this is a bug in this library: every descriptor names a description in the table)"
 
         match description.Target with
-        | OpenFileTarget.StandardStream role ->
-            failwith
-                $"setOffset: fd %d{fd} names standard stream %O{role}, which this library models as a pipe and so has no file offset (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have answered ESPIPE)."
         | OpenFileTarget.SocketEventPort _ ->
             failwith
                 $"setOffset: fd %d{fd} names a socket event port, which holds no file offset on either platform — Linux's lseek on one is noop_llseek and Darwin's is ESPIPE (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have answered without moving a position)."
@@ -1452,7 +1436,6 @@ module FileDescriptorRegistry =
                         }
                         registry.Descriptions
             }
-        | OpenFileTarget.StandardStream _
         | OpenFileTarget.File _
         | OpenFileTarget.SocketEventPort _
         | OpenFileTarget.Socket _
@@ -1514,7 +1497,6 @@ module FileDescriptorRegistry =
         | Some description ->
 
         match description.Target with
-        | OpenFileTarget.StandardStream _
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.Socket _
@@ -1643,7 +1625,6 @@ module FileDescriptorRegistry =
         | Some description ->
 
         match description.Target with
-        | OpenFileTarget.StandardStream _
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.Socket _
@@ -1693,7 +1674,6 @@ module FileDescriptorRegistry =
         | Some description ->
 
         match description.Target with
-        | OpenFileTarget.StandardStream _
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.Socket _
@@ -1756,7 +1736,6 @@ module FileDescriptorRegistry =
             registry.Descriptions
             |> Map.map (fun _ description ->
                 match description.Target with
-                | OpenFileTarget.StandardStream _
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
@@ -1794,8 +1773,8 @@ module FileDescriptorRegistry =
         }
 
     /// Every way in which `registry` fails to be a descriptor table a kernel
-    /// could produce. Empty for any registry built out of `initial`, `dup` and
-    /// `close`; the property tests assert exactly that.
+    /// could produce. Empty for any registry built out of `ofLaunchedPipes`,
+    /// `dup` and `close`; the property tests assert exactly that.
     let checkInvariants (registry : FileDescriptorRegistry) : FileDescriptorRegistryDefect list =
         let dangling =
             registry.Fds
@@ -1824,7 +1803,6 @@ module FileDescriptorRegistry =
             |> Map.toList
             |> List.choose (fun (id, description) ->
                 match description.Target with
-                | OpenFileTarget.StandardStream _
                 | OpenFileTarget.SocketEventPort _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.Pipe _ -> None
@@ -1849,7 +1827,6 @@ module FileDescriptorRegistry =
                 | OpenFileTarget.Directory _ when FileAccessMode.permitsWrite description.AccessMode ->
                     Some (FileDescriptorRegistryDefect.WritableDirectory id)
                 | OpenFileTarget.Directory _
-                | OpenFileTarget.StandardStream _
                 | OpenFileTarget.SocketEventPort _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.Pipe _
@@ -1887,7 +1864,6 @@ module FileDescriptorRegistry =
             |> Map.toList
             |> List.choose (fun (id, description) ->
                 match description.Target with
-                | OpenFileTarget.StandardStream _
                 | OpenFileTarget.SocketEventPort _
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
@@ -1915,7 +1891,6 @@ module FileDescriptorRegistry =
             |> Map.toList
             |> List.collect (fun (portId, description) ->
                 match description.Target with
-                | OpenFileTarget.StandardStream _
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
@@ -1936,7 +1911,6 @@ module FileDescriptorRegistry =
             |> Map.toList
             |> List.collect (fun (portId, description) ->
                 match description.Target with
-                | OpenFileTarget.StandardStream _
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
@@ -2024,31 +1998,3 @@ module FileDescriptorRegistry =
             { registry with
                 Descriptions = Map.add id (f (Map.find id registry.Descriptions)) registry.Descriptions
             }
-
-/// One entry in `UnixProcessState.OutputLog`: the role the process targeted (a
-/// writable standard stream — stdout or stderr) and the byte payload of
-/// that single `write(2)` call. Chunks are not coalesced across
-/// calls because write boundaries matter for diagnostics (line
-/// boundaries, prompt boundaries) and are what a real reader of the stream
-/// could observe.
-type OutputLogEntry =
-    {
-        Role : FileDescriptorRole
-        Bytes : ImmutableArray<byte>
-    }
-
-[<RequireQualifiedAccess>]
-module OutputLogEntry =
-    /// Concatenate every entry in `log` whose `Role` matches `role`,
-    /// preserving the original write order. Used by tests that want to
-    /// assert on the cumulative bytes the guest sent to a specific
-    /// standard stream (the equivalent of capturing one of host
-    /// stdout/stderr in isolation).
-    let bytesFor (role : FileDescriptorRole) (log : ImmutableArray<OutputLogEntry>) : ImmutableArray<byte> =
-        let builder = ImmutableArray.CreateBuilder<byte> ()
-
-        for entry in log do
-            if entry.Role = role then
-                builder.AddRange (entry.Bytes : ImmutableArray<byte>)
-
-        builder.ToImmutable ()

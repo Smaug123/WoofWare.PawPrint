@@ -26,7 +26,7 @@ module TestSocketBinding =
     /// does is flavour-dependent, so the flavour here is arbitrary; every row
     /// that *is* flavour-dependent names its platform.
     let private initialSystem : UnixSystem<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.linuxX64 0 (CpuId 0)
+        UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private endpoint (address : uint32) (port : uint16) : InternetEndpoint = InternetEndpoint.ofParts address port
 

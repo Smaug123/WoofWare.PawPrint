@@ -1,13 +1,11 @@
 namespace WoofWare.PosixKernel
 
-open System.Collections.Immutable
-
 /// <summary>
 /// The state one POSIX process owns.
 /// </summary>
 /// <remarks>
 /// Contains, for example: what it inherited at exec, where it is, who
-/// it is running as, and every kernel object its descriptors and streams name.
+/// it is running as, and every kernel object its descriptors name.
 ///
 /// Distinct from <c>UnixMachineState</c>, which describes the process-independent
 /// state of the kernel.
@@ -17,26 +15,11 @@ open System.Collections.Immutable
 type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
     {
         /// In-memory model of the simulated process's Unix file descriptor
-        /// table. Pre-seeded at startup with stdin (0), stdout (1), stderr
-        /// (2), matching the kernel's behaviour of populating these slots
-        /// at `exec` time. Every descriptor operation this library models
+        /// table. Seeded at startup from the launch table `UnixSystem.initial`
+        /// takes, as a real process inherits the descriptors its launcher set
+        /// up before `exec`. Every descriptor operation this library models
         /// routes through this table; the host's real fds are never used.
         FileDescriptors : FileDescriptorRegistry
-        /// Ordered, append-only log of every write the process has performed
-        /// against a writable standard stream via `UnixReadWrite.write`.
-        /// Each entry carries the destination `Role` and the exact byte
-        /// payload of that one call (chunks are not coalesced; ordering
-        /// across roles is preserved). It is the canonical record of what the
-        /// process wrote to its standard streams, for a client to drain to
-        /// wherever those streams really go. The log grows unboundedly: a
-        /// process that prints gigabytes will pay the memory cost.
-        ///
-        /// The single ordered log (rather than per-stream buffers)
-        /// preserves cross-stream ordering: a process that writes
-        /// `err1, out1, err2` is replayed in that order under `2>&1`,
-        /// as it would be on a real kernel. Per-stream views are derived in
-        /// `OutputLogEntry.bytesFor`.
-        OutputLog : ImmutableArray<OutputLogEntry>
         /// The environment the process was started with: the `envp` that
         /// `execve(2)` received, one entry per element, in order.
         ///
@@ -218,20 +201,40 @@ module UnixProcessState =
         )
         |> Set.ofSeq
 
-    /// Whether any open file description names `pipeEnd` of `pipeId`: whether
-    /// that end of the pipe is still open.
+    /// Every live open file description naming `pipeEnd` of `pipeId`.
+    let descriptionsNamingPipeEnd<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (pipeId : PipeId)
+        (pipeEnd : PipeEnd)
+        (proc : UnixProcessState<'Task, 'Handler>)
+        : Set<OpenFileDescriptionId>
+        =
+        FileDescriptorRegistry.descriptions proc.FileDescriptors
+        |> Map.toSeq
+        |> Seq.choose (fun (descriptionId, description) ->
+            if description.Target = OpenFileTarget.Pipe (pipeId, pipeEnd) then
+                Some descriptionId
+            else
+                None
+        )
+        |> Set.ofSeq
+
+    /// Whether `pipeEnd` of the pipe `pipeId`, which is `pipe`, is still open:
+    /// whether some open file description names it, or the client holds it
+    /// (`PipeState.heldByClient`).
     ///
     /// Derived rather than stored, so it cannot disagree with the table: closing
-    /// the last descriptor onto an end is what closes it, and `dup` keeps it
-    /// open.
+    /// the last descriptor onto an end the client does not hold is what closes
+    /// it, and `dup` keeps it open.
     let pipeEndOpen<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (pipeId : PipeId)
+        (pipe : PipeState)
         (pipeEnd : PipeEnd)
         (proc : UnixProcessState<'Task, 'Handler>)
         : bool
         =
-        FileDescriptorRegistry.descriptions proc.FileDescriptors
-        |> Map.exists (fun _ description -> description.Target = OpenFileTarget.Pipe (pipeId, pipeEnd))
+        PipeState.heldByClient pipeEnd pipe
+        || FileDescriptorRegistry.descriptions proc.FileDescriptors
+           |> Map.exists (fun _ description -> description.Target = OpenFileTarget.Pipe (pipeId, pipeEnd))
 
     /// A *state-change* wake on `socketId` — a connect resolving (completion
     /// or refusal), the refusal delivery's reset, a peer's FIN. Unkeyed:
@@ -277,7 +280,6 @@ module UnixProcessState =
             match description.Target with
             | OpenFileTarget.File (inode, _)
             | OpenFileTarget.Directory (inode, _) -> Some inode
-            | OpenFileTarget.StandardStream _
             | OpenFileTarget.Socket _
             | OpenFileTarget.SocketEventPort _
             | OpenFileTarget.Pipe _ -> None

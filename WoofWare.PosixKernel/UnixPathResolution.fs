@@ -91,9 +91,13 @@ module StatRefusal =
 [<RequireQualifiedAccess>]
 type FStatRefusal =
     /// <summary>
-    /// A standard stream, which this kernel models as one end of a pipe.
+    /// An end of a pipe that the process was launched with, rather than one it made.
     /// </summary>
-    | StandardStream of role : FileDescriptorRole
+    /// <remarks>
+    /// The pipe's owner and timestamps are those of whoever launched the process, which the launch table
+    /// <c>UnixSystem.initial</c> took does not state.
+    /// </remarks>
+    | LaunchedPipe of pipe : PipeId
     /// <summary>
     /// A socket event port: an anonymous kernel object.
     /// </summary>
@@ -116,8 +120,8 @@ module FStatRefusal =
     /// <summary>Human-readable description.</summary>
     let describe (refusal : FStatRefusal) : string =
         match refusal with
-        | FStatRefusal.StandardStream role ->
-            $"the descriptor is standard stream %O{role}, which this kernel models as one end of a pipe and holds no inode for. A real kernel answers here — S_IFIFO, a zero size, a device number — and every one of those fields would be invented, with nothing able to say the invention was wrong."
+        | FStatRefusal.LaunchedPipe pipe ->
+            $"the descriptor is an end of pipe %O{pipe}, which the process was launched with rather than one it made. A real kernel answers here -- S_IFIFO, the launcher's user and group, the time the launcher made the pipe -- and the launch table states none of the launcher's half, so it would be invented, with nothing able to say the invention was wrong."
         | FStatRefusal.SocketEventPort ->
             "the descriptor is a socket event port, an anonymous kernel object this kernel holds no inode for. Measured, the two flavours share not one field, and Linux's identity fields are facts about the machine that produced them rather than portable ones: Linux gives `st_mode` 0600 (permission bits and *no* file-type bits), `st_nlink` 1, `st_blksize` 4096, and a real anon-inode `st_dev`/`st_ino`; Darwin gives `st_mode` S_IFIFO (no permission bits), `st_nlink` 0, `st_blksize` 32, and zero for both identity fields."
         | FStatRefusal.Socket socket ->
@@ -146,10 +150,11 @@ type FChModRefusal =
     /// What the mode change would do to the inode at `inode` has not been
     /// measured for this caller.
     | UnmeasuredModeChange of inode : InodeNumber * refusal : ModeChangeRefusal
-    /// The descriptor is a standard stream, which this kernel models as one end
-    /// of a pipe, on a flavour whose pipes have a mode that `fchmod` changes.
-    /// This kernel holds no inode for a standard stream, and so no mode.
-    | StandardStream of role : FileDescriptorRole
+    /// The descriptor is an end of a pipe the process was launched with, on a
+    /// flavour where `fchmod` changes a pipe's mode if the caller may. Whether
+    /// it may depends on the pipe's owner, which is the launcher's, and the
+    /// launch table does not state it.
+    | LaunchedPipe of pipe : PipeId
     /// The descriptor is a socket, on a flavour whose sockets have a mode that
     /// `fchmod` changes. This kernel holds no such mode.
     | Socket of socket : SocketId
@@ -162,8 +167,8 @@ module FChModRefusal =
         match refusal with
         | FChModRefusal.UnmeasuredModeChange (inode, refusal) ->
             $"changing the mode of inode %O{inode}: %s{ModeChangeRefusal.describe refusal}"
-        | FChModRefusal.StandardStream role ->
-            $"the descriptor is standard stream %O{role}, which this kernel models as one end of a pipe. Measured on Linux, fchmod on a pipe end succeeds and changes the mode fstat then reports (0600 to 02750, say); unlike a pipe this kernel made, a standard stream has no inode here and so no mode to change, and answering success while changing nothing would be a lie the moment one is modelled."
+        | FChModRefusal.LaunchedPipe pipe ->
+            $"the descriptor is an end of pipe %O{pipe}, which the process was launched with rather than one it made. Measured on Linux, fchmod on a pipe end changes the mode fstat then reports (0600 to 02750, say) if the caller owns the pipe or is privileged, and answers EPERM otherwise; this pipe's owner is whoever launched the process, which the launch table does not state, so either answer would be a guess."
         | FChModRefusal.Socket socket ->
             $"the descriptor is socket %O{socket}. Measured on Linux, fchmod on a socket of every domain and kind succeeds and changes the mode fstat then reports (0777 to 0600, say); this kernel holds no inode for a socket and so no mode to change, and answering success while changing nothing would be a lie the moment one is modelled."
 
@@ -457,14 +462,15 @@ module UnixPathResolution =
     /// implementation: a real `fstat` records no access, and neither does this
     /// one, so there is nothing for a caller to write back.
     ///
-    /// An end of a pipe reports `S_IFIFO`, and each flavour's own permission
-    /// bits, size, timestamps and identity: see `PipeInodes`, `PipeTimes` and
-    /// `UnixMachineState.PipeDevice`.
+    /// An end of a pipe the process made reports `S_IFIFO`, and each flavour's
+    /// own permission bits, size, timestamps and identity: see `PipeInodes`,
+    /// `PipeTimes` and `UnixMachineState.PipeDevice`.
     ///
-    /// Refuses for a descriptor this kernel holds no inode for — the standard
-    /// streams, a socket event port, a socket. That is a limit of the model
-    /// rather than an absent kernel answer; see `FStatRefusal`. Also refuses
-    /// for a directory on an NFS mount, as `statOf` does.
+    /// Refuses for a descriptor this kernel holds no inode for — a socket event
+    /// port, a socket — and for an end of a pipe the process was launched with,
+    /// whose owner and timestamps are the launcher's. That is a limit of the
+    /// model rather than an absent kernel answer; see `FStatRefusal`. Also
+    /// refuses for a directory on an NFS mount, as `statOf` does.
     let fstat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (system : UnixSystem<'Task, 'Handler>)
@@ -472,11 +478,15 @@ module UnixPathResolution =
         =
         match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
         | None -> Ok (FileStatusAnswer.Failed UnixError.EBADF)
-        | Some (OpenFileTarget.StandardStream role) -> Error (FStatRefusal.StandardStream role)
         | Some (OpenFileTarget.SocketEventPort _) -> Error FStatRefusal.SocketEventPort
         | Some (OpenFileTarget.Socket socketId) -> Error (FStatRefusal.Socket socketId)
         | Some (OpenFileTarget.Pipe (pipeId, pipeEnd)) ->
             let pipe = UnixMachineState.pipe pipeId system.Machine
+
+            match pipe.Origin with
+            | PipeOrigin.Launched _ -> Error (FStatRefusal.LaunchedPipe pipeId)
+            | PipeOrigin.Made status ->
+
             let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
             let fifo = 0o010000
 
@@ -489,21 +499,21 @@ module UnixPathResolution =
                 | SimulatedUnixFlavour.Linux, _ -> 0L
                 | SimulatedUnixFlavour.Darwin, PipeEnd.Read -> int64 (PipeBuffer.held pipe.Buffer)
                 | SimulatedUnixFlavour.Darwin, PipeEnd.Write ->
-                    if UnixProcessState.pipeEndOpen pipeId PipeEnd.Read system.Process then
+                    if UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Read system.Process then
                         int64 (PipeBuffer.held pipe.Buffer)
                     else
                         0L
 
             let inode =
-                match pipe.Inodes, pipeEnd with
+                match status.Inodes, pipeEnd with
                 | PipeInodes.Shared inode, _ -> inode
                 | PipeInodes.PerEnd (readEnd, _), PipeEnd.Read -> readEnd
                 | PipeInodes.PerEnd (_, writeEnd), PipeEnd.Write -> writeEnd
 
             let access =
                 match pipeEnd with
-                | PipeEnd.Read -> pipe.Times.ReadEndAccess
-                | PipeEnd.Write -> pipe.Times.Created
+                | PipeEnd.Read -> status.Times.ReadEndAccess
+                | PipeEnd.Write -> status.Times.Created
 
             // Darwin reports a pipe's birth time as 0: the epoch, not its
             // creation.
@@ -514,13 +524,13 @@ module UnixPathResolution =
                     None
 
             {
-                Mode = fifo ||| PermissionBits.toInt pipe.Permissions
-                UserId = pipe.Owner.User
-                GroupId = pipe.Owner.Group
+                Mode = fifo ||| PermissionBits.toInt status.Permissions
+                UserId = status.Owner.User
+                GroupId = status.Owner.Group
                 Size = size
                 AccessTime = access
-                ModificationTime = pipe.Times.Modification
-                StatusChangeTime = pipe.Times.StatusChange
+                ModificationTime = status.Times.Modification
+                StatusChangeTime = status.Times.StatusChange
                 BirthTime = birthTime
                 DeviceId = system.Machine.PipeDevice
                 Inode = inode
@@ -642,19 +652,22 @@ module UnixPathResolution =
             match flavour with
             | SimulatedUnixFlavour.Linux -> Error (FChModRefusal.Socket socket)
             | SimulatedUnixFlavour.Darwin -> Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
-        | Some (OpenFileObject.StandardStream role) ->
-            match flavour with
-            | SimulatedUnixFlavour.Linux -> Error (FChModRefusal.StandardStream role)
-            | SimulatedUnixFlavour.Darwin -> Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
         | Some (OpenFileObject.Pipe pipeId) ->
             match flavour with
             | SimulatedUnixFlavour.Darwin -> Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
             | SimulatedUnixFlavour.Linux ->
 
             let pipe = UnixMachineState.pipe pipeId system.Machine
+
+            match pipe.Origin with
+            | PipeOrigin.Launched _ -> Error (FChModRefusal.LaunchedPipe pipeId)
+            | PipeOrigin.Made status ->
+
             let rule = SimulatedUnixPlatform.privilegedModeChange system.Machine.UnixPlatform
 
-            match PermissionBits.afterModeChange rule (Standing.toward system.Process.Credentials pipe.Owner) mode with
+            match
+                PermissionBits.afterModeChange rule (Standing.toward system.Process.Credentials status.Owner) mode
+            with
             | Error refusal ->
                 failwith
                     $"UnixPathResolution.fchmod: a Linux platform's mode-change rule refused a caller (%s{ModeChangeRefusal.describe refusal}), but Linux's rule answers every caller (this is a bug in this library)."
@@ -663,11 +676,15 @@ module UnixPathResolution =
 
             let changed =
                 { pipe with
-                    Permissions = bits
-                    Times =
-                        { pipe.Times with
-                            StatusChange = UnixMachineState.realtime system.Machine
-                        }
+                    Origin =
+                        PipeOrigin.Made
+                            { status with
+                                Permissions = bits
+                                Times =
+                                    { status.Times with
+                                        StatusChange = UnixMachineState.realtime system.Machine
+                                    }
+                            }
                 }
 
             Ok (

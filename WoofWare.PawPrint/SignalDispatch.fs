@@ -163,12 +163,16 @@ module SignalDispatch =
                 $"SignalDispatch.poll: System.Native's handler for %O{signal} writes to descriptor %d{pipe.WriteEnd}, the write end of its signal pipe, and %s{what}; the real handler abort()s the process, or blocks until the dispatcher reads, and PawPrint models neither."
 
         // The shim writes to the number it was given, whatever the guest has
-        // since put there. A byte written to a standard stream would reach the
-        // guest's output without the step effect that streams it, so anything
-        // but a pipe's write end is refused rather than half-answered.
+        // since put there. A byte written to a pipe PawPrint drains, one of the
+        // standard output streams, would reach the guest's output without the
+        // step effect that streams it, so anything but the write end of a pipe
+        // the process made is refused rather than half-answered.
         match FileDescriptorRegistry.tryFindTarget pipe.WriteEnd system.Process.FileDescriptors with
-        | None
-        | Some (OpenFileTarget.Pipe (_, PipeEnd.Write)) -> ()
+        | None -> ()
+        | Some (OpenFileTarget.Pipe (pipeId, PipeEnd.Write)) when
+            (PipeState.drainedBy (UnixMachineState.pipe pipeId system.Machine)).IsNone
+            ->
+            ()
         | Some other ->
             failwith
                 $"SignalDispatch.poll: System.Native's handler for %O{signal} writes to descriptor %d{pipe.WriteEnd}, which the guest has replaced with %O{other}; PawPrint models the handler writing only to a pipe."
@@ -419,7 +423,6 @@ module SignalDispatch =
             )
             ->
             SignalPoll.Continues state
-        | Some (OpenFileTarget.StandardStream _ as other)
         | Some (OpenFileTarget.File _ as other)
         | Some (OpenFileTarget.Directory _ as other)
         | Some (OpenFileTarget.SocketEventPort _ as other)

@@ -410,9 +410,6 @@ module FileSystemStatistics =
         match target with
         // Regular files and directories alike: one mount has one answer.
         | OpenFileObject.File _ -> FileSystemStatisticsAnswer.Reported (ofMount platform mount)
-        // This library models the standard streams as pipes (see
-        // `FileDescriptorRegistry.initial`).
-        | OpenFileObject.StandardStream _
         | OpenFileObject.Pipe _ -> pseudoFileSystem PseudoFileSystem.Pipe
         | OpenFileObject.Socket _ -> pseudoFileSystem PseudoFileSystem.Socket
         // An epoll port. `OpenFileObject` folding every anonymous object into

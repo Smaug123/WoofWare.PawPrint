@@ -68,8 +68,6 @@ module LSeekRefusal =
 type FLockRefusal =
     /// Not exactly one of LOCK_SH/LOCK_EX/LOCK_UN, optionally with LOCK_NB.
     | DarwinMalformedOperation of operation : int
-    /// A pipe, which is what this kernel models the standard streams as.
-    | DarwinStandardStream of role : FileDescriptorRole
     /// A pipe.
     | DarwinPipe of pipe : PipeId
     /// A socket event port: an epoll descriptor on Linux, a kqueue on Darwin.
@@ -90,10 +88,8 @@ module FLockRefusal =
         match refusal with
         | FLockRefusal.DarwinMalformedOperation operation ->
             $"operation %d{operation} is malformed (not exactly one of LOCK_SH/LOCK_EX/LOCK_UN, optionally with LOCK_NB), which Linux rejects with EINVAL unless LOCK_MAND (bit 32) is set, in which case it ignores the request and answers 0, and which Darwin does not treat uniformly -- measured, Darwin answers EBADF for 0, a bare LOCK_NB and unknown bits alone, but *succeeds* for LOCK_SH|LOCK_EX, LOCK_UN|LOCK_SH and LOCK_SH with an unknown bit."
-        | FLockRefusal.DarwinStandardStream role ->
-            $"the descriptor is the standard stream %O{role}, which this kernel models as a pipe. Linux permits `flock` on a pipe and returns 0; Darwin refuses it with ENOTSUP (raw 45, and note Darwin numbers ENOTSUP and EOPNOTSUPP differently, 45 against 102, while Linux gives both 95)."
         | FLockRefusal.DarwinPipe pipe ->
-            $"the descriptor is an end of pipe %O{pipe}. Linux permits `flock` on a pipe, with both ends contending as one object; Darwin refuses it with ENOTSUP (raw 45) on every pipe."
+            $"the descriptor is an end of pipe %O{pipe}. Linux permits `flock` on a pipe, with both ends contending as one object; Darwin refuses it with ENOTSUP (raw 45, and note Darwin numbers ENOTSUP and EOPNOTSUPP differently, 45 against 102, while Linux gives both 95) on every pipe."
         | FLockRefusal.DarwinSocketEventPort ->
             "the descriptor is a socket event port. Linux permits `flock` on an epoll descriptor and returns 0; Darwin refuses it on a kqueue with ENOTSUP (raw 45), for every operation including LOCK_UN."
         | FLockRefusal.DarwinSocket socket ->
@@ -291,8 +287,7 @@ type private DescriptorFault =
     /// No such descriptor in the process's table; `EBADF`. Precedes everything
     /// else on both platforms.
     | NotOpen
-    /// The descriptor names something with no file offset — a pipe, which is
-    /// what this kernel models the standard streams as; `ESPIPE`.
+    /// The descriptor names something with no file offset — a pipe; `ESPIPE`.
     | NotSeekable
 
 [<RequireQualifiedAccess>]
@@ -531,11 +526,9 @@ module UnixDescriptor =
         let descriptorFault : DescriptorFault option =
             match target with
             | None -> Some DescriptorFault.NotOpen
-            | Some (OpenFileTarget.StandardStream _)
             | Some (OpenFileTarget.Pipe _) ->
                 // Not seekable: `lseek` on a pipe is ESPIPE on both platforms
-                // whichever end it is, and this kernel models the standard
-                // streams as pipes.
+                // whichever end it is.
                 Some DescriptorFault.NotSeekable
             | Some (OpenFileTarget.SocketEventPort _) ->
                 // The one target whose *seekability* depends on the platform,
@@ -603,7 +596,6 @@ module UnixDescriptor =
         | Some (OpenFileTarget.SocketEventPort _) -> Ok (SyscallAnswer.Completed 0L, system)
         // Each of these answered EBADF or ESPIPE above.
         | None
-        | Some (OpenFileTarget.StandardStream _)
         | Some (OpenFileTarget.Pipe _)
         | Some (OpenFileTarget.Socket _) ->
             failwith
@@ -831,7 +823,6 @@ module UnixDescriptor =
         | Some description ->
 
         match description.Target with
-        | OpenFileTarget.StandardStream _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.SocketEventPort _
         | OpenFileTarget.Socket _ ->
@@ -902,10 +893,7 @@ module UnixDescriptor =
         | Some description ->
 
         match description.Target with
-        | OpenFileTarget.StandardStream _
         | OpenFileTarget.Pipe _ ->
-            // A pipe, which is also what this kernel models the standard streams
-            // as.
             // Measured on both ends of a real pipe, and ahead of the length and
             // advice screens below: the pipe test sits in the syscall entry,
             // where the range and advice checks belong to the generic path it
@@ -1016,7 +1004,6 @@ module UnixDescriptor =
             | _, None -> None
             | SimulatedUnixFlavour.Darwin, Some description ->
                 match OpenFileDescription.object description with
-                | OpenFileObject.StandardStream role -> Some (FLockRefusal.DarwinStandardStream role)
                 | OpenFileObject.Pipe pipeId -> Some (FLockRefusal.DarwinPipe pipeId)
                 | OpenFileObject.AnonymousInode -> Some FLockRefusal.DarwinSocketEventPort
                 | OpenFileObject.Socket socketId -> Some (FLockRefusal.DarwinSocket socketId)
@@ -1208,7 +1195,6 @@ module UnixDescriptor =
         // on Darwin.
         match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
         | None -> Ok (BytesAvailableAnswer.Failed UnixError.EBADF)
-        | Some (OpenFileTarget.StandardStream _)
         | Some (OpenFileTarget.File _)
         | Some (OpenFileTarget.Directory _)
         | Some (OpenFileTarget.SocketEventPort _)
@@ -1250,13 +1236,9 @@ module UnixDescriptor =
         //   TCP or UDP socket, IPv4 or IPv6     ENOTTY   ENXIO
         //   Unix-domain socket, either kind     ENOTTY   EOPNOTSUPP
         //   epoll port / kqueue                 EINVAL   ENOTTY
-        //
-        // The standard streams are pipes in the launch shape this kernel
-        // models.
         let error =
             match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
             | None -> UnixError.EBADF
-            | Some (OpenFileTarget.StandardStream _)
             | Some (OpenFileTarget.File _)
             | Some (OpenFileTarget.Directory _)
             | Some (OpenFileTarget.Pipe _) -> UnixError.ENOTTY
@@ -1323,7 +1305,6 @@ module UnixDescriptor =
             | Some (closingId, description) ->
 
             match description.Target with
-            | OpenFileTarget.StandardStream _
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
             | OpenFileTarget.Socket _
@@ -1466,7 +1447,6 @@ module UnixDescriptor =
             | Some description ->
 
             match description.Target with
-            | OpenFileTarget.StandardStream _
             | OpenFileTarget.SocketEventPort _
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
@@ -1627,9 +1607,14 @@ module UnixDescriptor =
                 // The pipe goes when neither end is open any more: it is the
                 // last description onto either end that frees it, not the last
                 // onto both.
+                // An end the client holds stays open whatever the process
+                // closes, so a launched pipe the client drains outlives the
+                // process's last descriptor onto it.
+                let pipe = UnixMachineState.pipe pipeId closed.Machine
+
                 if
-                    UnixProcessState.pipeEndOpen pipeId PipeEnd.Read closed.Process
-                    || UnixProcessState.pipeEndOpen pipeId PipeEnd.Write closed.Process
+                    UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Read closed.Process
+                    || UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Write closed.Process
                 then
                     closed
                 else
@@ -1639,7 +1624,6 @@ module UnixDescriptor =
                                 Pipes = Map.remove pipeId closed.Machine.Pipes
                             }
                     }
-            | OpenFileTarget.StandardStream _
             | OpenFileTarget.SocketEventPort _
             | OpenFileTarget.Socket _ -> closed
 
