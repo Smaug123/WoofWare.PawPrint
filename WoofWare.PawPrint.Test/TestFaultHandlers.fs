@@ -140,7 +140,7 @@ module TestFaultHandlers =
                 Constructing = ConstructionState.NotConstructing
                 CallSiteIlOpIndex = threadState.MethodState.IlOpIndex
                 ReturnValueDisposition = ReturnValueDisposition.PushToCaller
-                WrapExceptionInTargetInvocation = false
+                ExceptionEscape = ExceptionEscape.Propagate
             }
 
         let calleeFrame =

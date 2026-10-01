@@ -1848,7 +1848,7 @@ module IlMachineStateExecution =
         (threadState : ThreadState)
         (callSiteIlOpIndexOverride : int option)
         (constructedObjectDisposition : ReturnValueDisposition)
-        (wrapExceptionInTargetInvocation : bool)
+        (exceptionEscape : ExceptionEscape)
         (state : IlMachineState)
         : IlMachineState * CallCommitment
         =
@@ -1952,8 +1952,8 @@ module IlMachineStateExecution =
         //  - CoreCLR's `CreateInstanceOfT` wraps any exception thrown by the recursed ctor in a
         //    `TargetInvocationException`. We can't observe that in a separate Activator frame
         //    because we inline the intrinsic, so the recursive `callMethod` for the ctor sets
-        //    `WrapExceptionInTargetInvocation = true` on the ctor frame's `ReturnState`. Exception
-        //    dispatch treats that flag as a boundary its first pass cannot see past — the wrap
+        //    `ExceptionEscape.WrapInTargetInvocation` on the ctor frame's `ReturnState`. Exception
+        //    dispatch treats that as a boundary its first pass cannot see past — the wrap
         //    changes the exception's *type*, so outer frames must be searched against the wrapper
         //    — and its second pass, on reaching the ctor frame, pops it, synthesises a fresh
         //    `TargetInvocationException` with the original exception as `_innerException`, and
@@ -2098,7 +2098,7 @@ module IlMachineStateExecution =
                 // CoreCLR's `CreateInstanceOfT` catches *every* exception escaping the
                 // cache.CallRefConstructor path — including a `TypeInitializationException`
                 // raised by T's `.cctor` — and rethrows it wrapped in `TargetInvocationException`.
-                // Setting `wrapExceptionInTargetInvocation` on T's ctor frame below is the whole
+                // `ExceptionEscape.WrapInTargetInvocation` on T's ctor frame below is the whole
                 // of that: T's initialisation happens in that frame's prologue, so a `.cctor`
                 // failure — running for the first time or cached from an earlier one — unwinds
                 // through the ctor frame and meets the wrap on its way out, and so does anything
@@ -2138,7 +2138,7 @@ module IlMachineStateExecution =
                     threadState
                     None
                     ReturnValueDisposition.PushToCaller
-                    true // wrapExceptionInTargetInvocation: mirror CreateInstanceOfT
+                    ExceptionEscape.WrapInTargetInvocation // mirror CreateInstanceOfT
                     state
                 // T's ctor frame is pushed; the activator call itself is done.
                 |> fun state -> Some (state, CallCommitment.Committed)
@@ -2272,7 +2272,7 @@ module IlMachineStateExecution =
                                 state.ThreadState.[thread]
                                 None
                                 ReturnValueDisposition.PushToCaller
-                                false
+                                ExceptionEscape.Propagate
                                 state
                             |> fun state -> IntrinsicOutcome.Handled (state, CallCommitment.Committed)
                         | SelfCallExpansion.Primitive primitive -> performPrimitive primitive
@@ -2432,7 +2432,7 @@ module IlMachineStateExecution =
                         Constructing = wasConstructing
                         CallSiteIlOpIndex = callSiteIlOpIndexOverride |> Option.defaultValue afterPop.IlOpIndex
                         ReturnValueDisposition = constructedObjectDisposition
-                        WrapExceptionInTargetInvocation = wrapExceptionInTargetInvocation
+                        ExceptionEscape = exceptionEscape
                     }
 
             match
@@ -2596,7 +2596,7 @@ module IlMachineStateExecution =
         (threadState : ThreadState)
         (callSiteIlOpIndexOverride : int option)
         (constructedObjectDisposition : ReturnValueDisposition)
-        (wrapExceptionInTargetInvocation : bool)
+        (exceptionEscape : ExceptionEscape)
         (state : IlMachineState)
         : IlMachineState
         =
@@ -2621,7 +2621,7 @@ module IlMachineStateExecution =
             threadState
             callSiteIlOpIndexOverride
             constructedObjectDisposition
-            wrapExceptionInTargetInvocation
+            exceptionEscape
             state
         |> function
             | state, CallCommitment.Committed
@@ -2813,7 +2813,7 @@ module IlMachineStateExecution =
                     currentThreadState
                     None
                     ReturnValueDisposition.PushToCaller
-                    false // wrapExceptionInTargetInvocation
+                    ExceptionEscape.Propagate
                     state
                 |> FirstLoadThis
             | None ->
@@ -2947,7 +2947,7 @@ module IlMachineStateExecution =
                 threadState
                 None
                 (ReturnValueDisposition.DispatchAsException fields)
-                false // wrapExceptionInTargetInvocation
+                ExceptionEscape.Propagate
                 state
 
         // 5. Discharge the ctor frame's prologue without running it, holding step 1's bypass.

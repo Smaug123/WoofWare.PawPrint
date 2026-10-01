@@ -266,7 +266,7 @@ module MulticastDelegateStub =
                     threadState
                     None
                     ReturnValueDisposition.PushToCaller
-                    false // wrapExceptionInTargetInvocation
+                    ExceptionEscape.Propagate
                     state
 
             match commitment with
