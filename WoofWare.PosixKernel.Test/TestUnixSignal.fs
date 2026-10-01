@@ -46,15 +46,7 @@ module TestUnixSignal =
 
     [<Test>]
     let ``kill of the calling process with SIGKILL ends it`` () : unit =
-        let system =
-            linux
-            |> fun system ->
-                { system with
-                    Process =
-                        { system.Process with
-                            Signals = SignalState.block 0 Signal.SIGUSR1 system.Process.Signals
-                        }
-                }
+        let system = linux |> HandlerFrames.enterIn "h" 0 (Set.singleton Signal.SIGUSR1)
 
         match UnixSignal.kill self 9 system with
         | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
@@ -63,7 +55,7 @@ module TestUnixSignal =
 
             ended.Machine |> shouldEqual system.Machine
             // The process's end takes its tasks' per-task entries with them.
-            SignalState.blockedTasks ended.FinalProcess.Signals |> shouldBeEmpty
+            SignalState.tasksWithFrames ended.FinalProcess.Signals |> shouldBeEmpty
 
             { ended.FinalProcess with
                 Signals = system.Process.Signals
@@ -103,15 +95,9 @@ module TestUnixSignal =
 
     [<Test>]
     let ``a signal the calling process cannot yet receive is left pending`` () : unit =
-        // Its only task blocks SIGTERM, so SIGTERM waits in the process-wide
-        // pending set.
-        let blocking =
-            { linux with
-                Process =
-                    { linux.Process with
-                        Signals = SignalState.block 0 Signal.SIGTERM linux.Process.Signals
-                    }
-            }
+        // Its only task is in a handler that blocks SIGTERM, so SIGTERM waits
+        // in the process-wide pending set.
+        let blocking = linux |> HandlerFrames.enterIn "h" 0 (Set.singleton Signal.SIGTERM)
 
         match UnixSignal.kill self 15 blocking with
         | Ok (Ok (KillOutcome.ProcessContinues after)) ->

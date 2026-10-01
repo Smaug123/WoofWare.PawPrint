@@ -57,11 +57,22 @@ module TestUnixProcessState =
         // `SignalHandler` would not compile here at all.
         let proc =
             { empty with
-                Signals = empty.Signals |> SignalState.block 7 Signal.SIGTERM
+                Signals =
+                    empty.Signals
+                    |> HandlerFrames.enter "h" 7 (Set.ofList [ 7 ; 8 ]) 7 (Set.singleton Signal.SIGTERM)
             }
 
-        SignalState.isBlocked 7 Signal.SIGTERM proc.Signals |> shouldEqual true
-        SignalState.isBlocked 8 Signal.SIGTERM proc.Signals |> shouldEqual false
+        SignalState.maskOf 7 proc.Signals
+        |> Set.contains Signal.SIGTERM
+        |> shouldEqual true
+
+        SignalState.maskOf 8 proc.Signals
+        |> Set.contains Signal.SIGTERM
+        |> shouldEqual false
+
+        SignalState.framesOf 7 proc.Signals
+        |> List.map (fun frame -> frame.Action.Handler)
+        |> shouldEqual [ "h" ]
 
     /// An environment entry: arbitrary non-NUL bytes, drawn from a small pool
     /// often enough that duplicates turn up, and including the shapes a

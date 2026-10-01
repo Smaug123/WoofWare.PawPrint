@@ -169,22 +169,47 @@ module StartupSignalDispositions =
         | Some reason -> failwith $"StartupSignalDispositions.initial: cannot start a process with %s{reason}."
         | None ->
 
+        let signal (signo : int) : Signal =
+            match Signal.ofRawSignoUnder numbering signo with
+            | ValueSome signal -> signal
+            | ValueNone -> failwith $"StartupSignalDispositions: %d{signo} is not a signal under %O{numbering}"
+
+        // The PAL's `handle_signal` installs every handler with `SA_RESTART`
+        // and an empty `sa_mask`, except that on Linux SIGSEGV's runs on the
+        // alternate stack and so masks the activation signal (34) too
+        // (pal/src/exception/signal.cpp). glibc installs its SIGSETXID
+        // handler with `SA_RESTART` (measured with the flags read back,
+        // startup-signal-handler-owners.cs); its mask was not read. Neither is
+        // ever delivered: PawPrint refuses to send a signal these catch.
+        let palCatch (signo : int) : SignalCatch<NativeSignalHandler> =
+            {
+                Handler = NativeSignalHandler.CoreClrPal
+                Mask =
+                    match numbering, signo with
+                    | SignalNumbering.Linux, 11 -> Set.singleton (signal 34)
+                    | _ -> Set.empty
+                NoDefer = false
+                ResetHand = false
+                Restart = true
+            }
+
         let caught =
             [
                 for signo in runtimeCaught numbering do
-                    signo, SignalDisposition.Catch NativeSignalHandler.CoreClrPal
+                    signo, SignalDisposition.Catch (palCatch signo)
                 match numbering with
-                | SignalNumbering.Linux -> 33, SignalDisposition.Catch NativeSignalHandler.GlibcSetXid
+                | SignalNumbering.Linux ->
+                    33,
+                    SignalDisposition.Catch
+                        { SignalCatch.ofHandler NativeSignalHandler.GlibcSetXid with
+                            Restart = true
+                        }
                 | SignalNumbering.Darwin -> ()
                 13, SignalDisposition.Ignore
             ]
 
         (SignalState.initial numbering inheritedIgnores, caught)
-        ||> List.fold (fun state (signo, disposition) ->
-            match Signal.ofRawSignoUnder numbering signo with
-            | ValueSome signal -> SignalState.setDisposition signal disposition state
-            | ValueNone -> failwith $"StartupSignalDispositions: %d{signo} is not a signal under %O{numbering}"
-        )
+        ||> List.fold (fun state (signo, disposition) -> SignalState.setDisposition (signal signo) disposition state)
 
     /// Whether the runtime's handler for `signal`, as `initial` installs it,
     /// restores the default when the process is sent the signal (rather than

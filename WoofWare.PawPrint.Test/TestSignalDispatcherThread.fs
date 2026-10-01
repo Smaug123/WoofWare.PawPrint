@@ -61,6 +61,19 @@ module TestSignalDispatcherThread =
         |> shouldEqual (Some dispatcher)
 
     [<Test>]
+    let ``a handler frame left pushed between instructions is a defect`` () : unit =
+        // PawPrint runs every handler to its sigreturn within one poll.
+        let state = baseState ()
+        let leader = state.Kernel.Leader
+
+        state.Kernel |> EmulatedKernel.checkInvariants |> shouldEqual []
+
+        state.Kernel
+        |> SignalFrames.enter leader (Set.singleton Signal.SIGINT)
+        |> EmulatedKernel.checkInvariants
+        |> shouldEqual [ EmulatedKernelDefect.HandlerFramesBetweenInstructions leader ]
+
+    [<Test>]
     let ``a dispatcher that is not a task is a defect`` () : unit =
         let state, dispatcher =
             baseState () |> IlMachineState.allocateParkedThread (ThreadId 0)

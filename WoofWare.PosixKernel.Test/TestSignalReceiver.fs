@@ -30,7 +30,8 @@ module TestSignalReceiver =
         [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ]
 
     /// A system of four tasks, 0 its leader, under `flavour`, with SIGUSR1
-    /// caught and blocked by every task in `blocking`.
+    /// at `disposition`, and every task in `blocking` inside a handler that
+    /// blocks it.
     let private systemWith
         (flavour : SimulatedUnixFlavour)
         (disposition : SignalDisposition<string>)
@@ -43,16 +44,16 @@ module TestSignalReceiver =
             |> Tasks.spawn 2
             |> Tasks.spawn 3
 
-        let signals =
-            (SignalState.setDisposition Signal.SIGUSR1 disposition system.Process.Signals, blocking)
-            ||> Set.fold (fun signals task -> SignalState.block task Signal.SIGUSR1 signals)
+        let system =
+            { system with
+                Process =
+                    { system.Process with
+                        Signals = SignalState.setDisposition Signal.SIGUSR1 disposition system.Process.Signals
+                    }
+            }
 
-        { system with
-            Process =
-                { system.Process with
-                    Signals = signals
-                }
-        }
+        (system, blocking)
+        ||> Set.fold (fun system task -> HandlerFrames.enterIn "carrier" task (Set.singleton Signal.SIGUSR1) system)
 
     let private usr1 (flavour : SimulatedUnixFlavour) : int =
         Signal.toRawSignoUnder (SimulatedUnixPlatform.signalNumbering (HostPlatform.platformOf flavour)) Signal.SIGUSR1
@@ -64,14 +65,15 @@ module TestSignalReceiver =
     let private takenBy (system : UnixSystem<int, string>) : SignalDelivery<int, string> option list =
         [ 0..3 ]
         |> List.map (fun task ->
-            match UnixSignal.nextDelivery task system with
+            match UnixSignal.onReturnToUser task system with
             | Ok (delivery, _) -> delivery
             | Error refusal -> failwith $"task %d{task} was refused: %O{refusal}"
         )
 
     /// Send SIGUSR1 to the process, and say which tasks take it.
     let private receivers (flavour : SimulatedUnixFlavour) (blocking : Set<int>) : Result<int list, KillRefusal> =
-        let system = systemWith flavour (SignalDisposition.Catch "h") blocking
+        let system =
+            systemWith flavour (SignalDisposition.Catch (SignalCatch.ofHandler "h")) blocking
 
         match UnixSignal.kill (self system) (usr1 flavour) system with
         | Ok (Ok (KillOutcome.ProcessContinues system)) ->
@@ -79,7 +81,10 @@ module TestSignalReceiver =
             |> List.indexed
             |> List.choose (fun (task, delivery) ->
                 match delivery with
-                | Some (SignalDelivery.RunHandler (entry, "h")) when entry.Signal = Signal.SIGUSR1 -> Some task
+                | Some (SignalDelivery.RunHandlers [ frame ]) when
+                    frame.Entry.Signal = Signal.SIGUSR1 && frame.Action.Handler = "h"
+                    ->
+                    Some task
                 | None -> None
                 | Some other -> failwith $"task %d{task} took %A{other}"
             )
@@ -172,7 +177,8 @@ module TestSignalReceiver =
     [<Test>]
     let ``a signal every task blocks is left pending on the process`` () : unit =
         for flavour in flavours do
-            let system = systemWith flavour (SignalDisposition.Catch "h") (Set.ofList [ 0..3 ])
+            let system =
+                systemWith flavour (SignalDisposition.Catch (SignalCatch.ofHandler "h")) (Set.ofList [ 0..3 ])
 
             match UnixSignal.kill (self system) (usr1 flavour) system with
             | Ok (Ok (KillOutcome.ProcessContinues after)) ->
@@ -217,7 +223,8 @@ module TestSignalReceiver =
         // Pending while every task blocks it; then task 2 unblocks it, so a real
         // kernel gives it to task 2 at once.
         for flavour in flavours do
-            let system = systemWith flavour (SignalDisposition.Catch "h") (Set.ofList [ 0..3 ])
+            let system =
+                systemWith flavour (SignalDisposition.Catch (SignalCatch.ofHandler "h")) (Set.ofList [ 0..3 ])
 
             match UnixSignal.kill (self system) (usr1 flavour) system with
             | Ok (Ok (KillOutcome.ProcessContinues after)) ->
@@ -225,12 +232,12 @@ module TestSignalReceiver =
                     { after with
                         Process =
                             { after.Process with
-                                Signals = SignalState.unblock 2 Signal.SIGUSR1 after.Process.Signals
+                                Signals = HandlerFrames.leave 2 after.Process.Signals
                             }
                     }
 
                 for task in 0..3 do
-                    match UnixSignal.nextDelivery task after with
+                    match UnixSignal.onReturnToUser task after with
                     | Error refusal -> refusal |> shouldEqual (SignalReceiverRefusal.LeaderBlocks Signal.SIGUSR1)
                     | Ok answer -> failwith $"%O{flavour}: task %d{task} was answered %A{answer}"
             | other -> failwith $"%O{flavour}: %A{other}"
@@ -238,7 +245,8 @@ module TestSignalReceiver =
     [<Test>]
     let ``a signal pending on one task alone is taken by that task only`` () : unit =
         for flavour in flavours do
-            let system = systemWith flavour (SignalDisposition.Catch "h") Set.empty
+            let system =
+                systemWith flavour (SignalDisposition.Catch (SignalCatch.ofHandler "h")) Set.empty
 
             let signals =
                 SignalState.enqueue
@@ -256,28 +264,24 @@ module TestSignalReceiver =
                         }
                 }
 
-            takenBy system
-            |> shouldEqual
-                [
-                    None
-                    None
-                    Some (
-                        SignalDelivery.RunHandler (
-                            {
-                                Signal = Signal.SIGUSR1
-                                Target = ValueSome 2
-                            },
-                            "h"
-                        )
-                    )
-                    None
-                ]
+            match takenBy system with
+            | [ None ; None ; Some (SignalDelivery.RunHandlers [ frame ]) ; None ] ->
+                frame.Entry
+                |> shouldEqual
+                    {
+                        Signal = Signal.SIGUSR1
+                        Target = ValueSome 2
+                    }
+
+                frame.Action.Handler |> shouldEqual "h"
+            | other -> failwith $"%O{flavour}: expected task 2 alone to take it, got %A{other}"
 
     [<Test>]
     let ``asking for a task that does not exist fails loudly`` () : unit =
         let system =
-            systemWith SimulatedUnixFlavour.Linux (SignalDisposition.Catch "h") Set.empty
+            systemWith SimulatedUnixFlavour.Linux (SignalDisposition.Catch (SignalCatch.ofHandler "h")) Set.empty
 
-        let exn = Assert.Throws<exn> (fun () -> UnixSignal.nextDelivery 7 system |> ignore)
+        let exn =
+            Assert.Throws<exn> (fun () -> UnixSignal.onReturnToUser 7 system |> ignore)
 
         exn.Message |> shouldContainText "not one of the process's tasks"

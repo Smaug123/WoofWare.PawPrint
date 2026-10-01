@@ -17,6 +17,7 @@
     <Compile Include="TestFrameworkLocatorRatchet.fs" />
     <Compile Include="PatchedCoreLib.fs" />
     <Compile Include="Roslyn.fs" />
+    <Compile Include="SignalFrames.fs" />
     <Compile Include="TestAssemblyReadCache.fs" />
     <Compile Include="TestSequencePoints.fs" />
     <Compile Include="TestCustomAttributeBlob.fs" />

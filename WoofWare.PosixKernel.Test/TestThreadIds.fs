@@ -323,9 +323,12 @@ module TestThreadIds =
         fails (spawn 1 2 parked) "parked"
 
     [<Test>]
-    let ``a new thread starts with its creator's mask and nothing pending on it`` () : unit =
+    let ``a new thread starts with nothing pending on it, and is refused from inside a handler that blocks`` () : unit =
         // Measured on Linux 6.18.5 (aarch64 and x86-64) and Darwin 27.0.0 by
-        // `docs/plans/2026-08-23-posix-kernel-extraction/thread-spawn-mask.c`.
+        // `docs/plans/2026-08-23-posix-kernel-extraction/thread-spawn-mask.c`: a
+        // new thread's mask is its creator's, and nothing pending on the creator
+        // alone is pending on it. A mask is held only as handler frames, which a
+        // new thread cannot inherit, so a creator that blocks anything is refused.
         for system in [ linux ; darwin ] do
             let signals (f : SignalState<int, string> -> SignalState<int, string>) (system : UnixSystem<int, string>) =
                 { system with
@@ -335,11 +338,8 @@ module TestThreadIds =
                         }
                 }
 
-            let system =
+            let pendingOnLeader =
                 system
-                |> signals (SignalState.block 0 Signal.SIGUSR1)
-                |> signals (SignalState.block 0 Signal.SIGTERM)
-                |> signals (SignalState.block 0 Signal.SIGUSR2)
                 |> signals (
                     SignalState.enqueue
                         {
@@ -348,12 +348,11 @@ module TestThreadIds =
                         }
                 )
 
-            let _, system = spawnOrFail 1 system
+            let _, spawned = spawnOrFail 1 pendingOnLeader
 
-            SignalState.blockedFor 1 system.Process.Signals
-            |> shouldEqual (Set.ofList [ Signal.SIGUSR1 ; Signal.SIGTERM ; Signal.SIGUSR2 ])
+            SignalState.maskOf 1 spawned.Process.Signals |> shouldEqual Set.empty
 
-            SignalState.pending system.Process.Signals
+            SignalState.pending spawned.Process.Signals
             |> shouldEqual
                 [
                     {
@@ -362,12 +361,17 @@ module TestThreadIds =
                     }
                 ]
 
-            // And from an unmasked creator, an unmasked thread.
-            let _, system =
-                spawnOrFail 2 (exitOrFail 1 system |> signals (SignalState.forgetTask 0))
+            let masked =
+                system
+                |> HandlerFrames.enterIn "h" 0 (Set.ofList [ Signal.SIGUSR1 ; Signal.SIGTERM ])
 
-            SignalState.blockedFor 2 system.Process.Signals |> shouldEqual Set.empty
-            SignalState.blockedTasks system.Process.Signals |> shouldEqual Set.empty
+            Assert.Throws (fun () -> spawnOrFail 1 masked |> ignore<uint64 * UnixSystem<int, string>>)
+            |> ignore<exn>
+
+            // A handler that blocks nothing is no reason to refuse.
+            let unmasked = system |> HandlerFrames.enterIn "h" 0 Set.empty
+            let _, spawned = spawnOrFail 1 unmasked
+            SignalState.maskOf 1 spawned.Process.Signals |> shouldEqual Set.empty
 
     // ------------------------------------------------------------------
     // The reference model.
