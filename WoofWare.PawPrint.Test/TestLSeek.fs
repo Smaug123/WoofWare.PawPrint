@@ -116,6 +116,7 @@ class Program
                         Kernel = kernel
                     }
             }
+        |> ExpectRun.ended
 
     let private run (name : string) (source : string) : RunOutcome = runOn seed name source
 

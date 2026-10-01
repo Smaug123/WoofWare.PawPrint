@@ -105,7 +105,11 @@ public static class Program
         use peImage = new MemoryStream (image)
 
         try
-            match Program.run loggerFactory (Some sourceName) peImage (HostConfig.Default dotnetRuntimes) with
+            match
+                ExpectRun.ended (
+                    Program.run loggerFactory (Some sourceName) peImage (HostConfig.Default dotnetRuntimes)
+                )
+            with
             | RunOutcome.NormalExit (state, thread, _)
             | RunOutcome.ProcessExit (state, thread, _) -> state, thread, state.LatchedExitCode
             | other -> failwith $"guest did not exit normally: %O{other}"

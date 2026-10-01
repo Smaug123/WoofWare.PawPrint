@@ -101,6 +101,7 @@ public static class Program
                 (Some name)
                 peImage
                 (HostConfig.Default dotnetRuntimes)
+            |> ExpectRun.ended
 
         if shared then
             let exn = Assert.Catch (fun () -> run () |> ignore<RunOutcome>)

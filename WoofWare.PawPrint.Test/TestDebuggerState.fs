@@ -35,6 +35,7 @@ module TestDebuggerState =
 
         try
             Program.run loggerFactory (Some sourceFileName) peImage (HostConfig.Default dotnetRuntimes)
+            |> ExpectRun.ended
         with _ ->
             for message in messages () do
                 System.Console.Error.WriteLine $"{message}"

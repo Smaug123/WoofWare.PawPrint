@@ -170,7 +170,7 @@ module TestFrameworkUnderTest =
 
         FrameworkUnderTest.assertOutcomeServes outcome
 
-        match outcome with
+        match ExpectRun.ended outcome with
         | RunOutcome.NormalExit (state, _, _) ->
             state.LatchedExitCode |> shouldEqual 3
 

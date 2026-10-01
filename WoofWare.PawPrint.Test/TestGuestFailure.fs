@@ -73,7 +73,7 @@ class CallsMissingNative
                 (Some name)
                 peImage
                 (HostConfig.Default dotnetRuntimes)
-            |> ignore<RunOutcome>
+            |> ignore<RunEnd>
         )
 
     [<Test>]

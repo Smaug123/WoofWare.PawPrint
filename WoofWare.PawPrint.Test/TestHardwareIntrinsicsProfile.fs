@@ -57,6 +57,7 @@ module TestHardwareIntrinsicsProfile =
 
         try
             Program.run loggerFactory (Some sourceFileName) peImage (HostConfig.Default (runtimeDirs flavour))
+            |> ExpectRun.ended
             |> exitCodeOfRunOutcome
         with _ ->
             for message in messages () do

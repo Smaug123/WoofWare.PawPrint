@@ -51,7 +51,7 @@ module TestFloatWidthUntypedBlock =
         let exn =
             Assert.Catch (fun () ->
                 BoundedRun.run loggerFactory "FloatWidthUntypedBlock.cs" None peImage hostConfig
-                |> ignore<RunOutcome>
+                |> ignore<RunEnd>
             )
 
         exn.Message |> shouldContainText "UntypedJoin"

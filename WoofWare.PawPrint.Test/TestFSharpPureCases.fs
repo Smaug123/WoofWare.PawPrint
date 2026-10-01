@@ -196,7 +196,7 @@ module TestFSharpPureCases =
             // The publish is self-contained, so the guest runs on the publish's own CoreLib.
             FrameworkUnderTest.assertOutcomeServes pawPrintResult
 
-            match realResult, pawPrintResult with
+            match realResult, ExpectRun.ended pawPrintResult with
             | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, _, _) ->
                 exitCode |> shouldEqual expectedExitCode
                 terminalState.LatchedExitCode |> shouldEqual exitCode

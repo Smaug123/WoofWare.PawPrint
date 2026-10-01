@@ -160,6 +160,7 @@ public static class Driver
                 try
                     match
                         Program.run loggerFactory (Some driverPath) peImage (HostConfig.Default dotnetRuntimeDirs)
+                        |> ExpectRun.ended
                     with
                     | RunOutcome.NormalExit (state, _, _)
                     | RunOutcome.ProcessExit (state, _, _) -> state.LatchedExitCode

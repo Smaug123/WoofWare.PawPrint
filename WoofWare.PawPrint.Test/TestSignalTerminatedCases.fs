@@ -95,7 +95,7 @@ module TestSignalTerminatedCases =
                         (HostConfig.Default dotnetRuntimes)
                 )
 
-        match pawPrintResult with
+        match ExpectRun.ended pawPrintResult with
         | RunOutcome.SignalTerminated (state, signal, _) ->
             let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
             Signal.toRawSignoUnder numbering signal |> shouldEqual case.Signo

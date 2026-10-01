@@ -69,6 +69,7 @@ public class Program
                     (Some "ConstrainedGetTypeNullByref.cs")
                     peImage
                     (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
+                |> ExpectRun.ended
                 |> ignore<RunOutcome>
             )
 
