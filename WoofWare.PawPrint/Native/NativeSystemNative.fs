@@ -3324,15 +3324,20 @@ module NativeSystemNative =
 
             let answer =
                 match UnixPathResolution.accessScreenPhase mode state.Kernel.System with
-                | Error refusal -> Error refusal
-                | Ok (AccessProgress.Answered answer) -> Ok answer
+                | Error refusal -> Ok (Error refusal)
+                | Ok (AccessProgress.Answered answer) -> Ok (Ok answer)
                 | Ok (AccessProgress.NeedsPath paused) ->
                     // Read only now: a pointer this interpreter cannot
                     // dereference would refuse at transfer, where Linux
                     // answers a bad mode without looking at it.
-                    UnixPathResolution.accessWithPath
-                        (pathArgumentBytes ctx operation "path" instruction.Arguments.[0] state)
-                        paused
+                    pathArgumentBytes ctx operation "path" instruction.Arguments.[0] state
+                    |> Result.map (fun path -> UnixPathResolution.accessWithPath path paused)
+
+            match answer with
+            | Error u ->
+                NativeHandlerResult.undefinedRead instruction.ExecutingMethod "the path it checks" u
+                |> Some
+            | Ok answer ->
 
             match answer with
             | Error refusal ->

@@ -127,13 +127,17 @@ module AssemblyLoadEvent =
         | IlMachineStateExecution.CallCommitment.Aborted _ ->
             failwith
                 $"Entering AssemblyLoadContext.OnAssemblyLoad to announce %s{definitionFullName} did not push its frame (%O{commitment}); CoreCLR swallows anything raised there, which PawPrint does not yet model"
+        | IlMachineStateExecution.CallCommitment.UndefinedValueObserved observation ->
+            failwith
+                $"logic error: entering AssemblyLoadContext.OnAssemblyLoad to announce %s{definitionFullName} observed an undefined value (%O{observation}), but its one argument is the assembly object PawPrint allocated"
 
     /// <summary>
     /// A step of <paramref name="thread"/> began in <paramref name="before"/> and ended in
     /// <paramref name="result"/>. If the step loaded an assembly that is to be announced, discard
     /// the step and announce the first assembly it loaded instead, keeping that assembly loaded:
     /// once the announcement returns the step runs afresh from <paramref name="before"/>, finding
-    /// that assembly already there.
+    /// that assembly already there. A step that stopped at an undefined value is returned
+    /// unchanged, since the run stops at <paramref name="before"/>.
     /// </summary>
     /// <remarks>
     /// This is how an assembly is announced before anything in it runs, as on CoreCLR.
@@ -166,12 +170,20 @@ module AssemblyLoadEvent =
         =
         let after =
             match result with
+            | ExecutionResult.Stepped (_, WhatWeDid.UndefinedValueObserved _, _)
+            | ExecutionResult.UndefinedValueObserved _ -> None
             | ExecutionResult.Stepped (state, _, _)
             | ExecutionResult.Terminated (state, _)
             | ExecutionResult.ProcessExit (state, _)
             | ExecutionResult.Aborted (state, _, _)
             | ExecutionResult.SignalTerminated (state, _, _)
-            | ExecutionResult.UnhandledException (state, _, _) -> state
+            | ExecutionResult.UnhandledException (state, _, _) -> Some state
+
+        match after with
+        // A step that stopped at an undefined value did not happen: the run is reported stopped at
+        // the state the step began from, so it loaded nothing to announce.
+        | None -> result
+        | Some after ->
 
         let loadedBefore =
             before.TypeSystem._LoadedAssemblies.DefinitionNamesInLoadOrder.Length
