@@ -383,7 +383,7 @@ module TestUnixSystemStep =
                     }
                 SocketPhase.Established (ConnectionId 0L)
                 SocketPhase.EstablishedPendingReport (ConnectionId 0L)
-                SocketPhase.RefusedPendingDelivery
+                SocketPhase.Refused RefusalError.Pending
             ]
 
         for phase in phases do

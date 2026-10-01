@@ -1033,8 +1033,7 @@ module SimulatedUnixPlatform =
             | SocketPhase.EstablishedPendingReport _ -> true
             | SocketPhase.Idle
             | SocketPhase.Listening _
-            | SocketPhase.RefusedPendingDelivery
-            | SocketPhase.Dead
+            | SocketPhase.Refused _
             | SocketPhase.DatagramPeer _ -> false
 
         match flavour platform with

@@ -652,7 +652,7 @@ module UnixConnection =
                     let phase =
                         match flavour with
                         | SimulatedUnixFlavour.Linux -> SocketPhase.Idle
-                        | SimulatedUnixFlavour.Darwin -> SocketPhase.Dead
+                        | SimulatedUnixFlavour.Darwin -> SocketPhase.Refused RefusalError.Reported
 
                     let system =
                         { system with
@@ -691,7 +691,7 @@ module UnixConnection =
                                             socketId
                                             { sock with
                                                 Binding = Some binding
-                                                Phase = SocketPhase.RefusedPendingDelivery
+                                                Phase = SocketPhase.Refused RefusalError.Pending
                                             }
                                             system.Machine.Sockets
                                 }
@@ -742,7 +742,7 @@ module UnixConnection =
                     // The one completion-reporting SUCCESS (measured). The
                     // destination is ignored, as the state transition is.
                     completed (withPhase (SocketPhase.Established connectionId) system)
-                | SocketPhase.RefusedPendingDelivery ->
+                | SocketPhase.Refused RefusalError.Pending ->
                     // Deliver the latched refusal once, then reset: the next
                     // connect is a fresh attempt, and the source address the
                     // pending attempt resolved reverts to whatever bind(2)
@@ -772,9 +772,9 @@ module UnixConnection =
                     let system = mapProcess (UnixProcessState.signalSocketStateChange socketId) system
 
                     failed UnixError.ECONNREFUSED system
-                | SocketPhase.Dead ->
+                | SocketPhase.Refused RefusalError.Reported ->
                     failwith
-                        "UnixConnection.connectSocket: a stream socket is in SocketPhase.Dead under the Linux flavour, which only a Darwin blocking refusal produces. This is a bug in this library, or in a caller that assembled the state by hand."
+                        "UnixConnection.connectSocket: a stream socket is refused with its error already reported under the Linux flavour, which only a Darwin blocking refusal produces. This is a bug in this library, or in a caller that assembled the state by hand."
                 | SocketPhase.Established _ -> fail UnixError.EISCONN
                 | SocketPhase.Listening _ ->
                     // Measured: Linux answers a connect on the listening
@@ -809,8 +809,7 @@ module UnixConnection =
                 | SocketPhase.EstablishedPendingReport _ ->
                     failwith
                         "UnixConnection.connectSocket: a stream socket is in SocketPhase.EstablishedPendingReport under the Darwin flavour, which never constructs it (its retry answers EISCONN directly). This is a bug in this library, or in a caller that assembled the state by hand."
-                | SocketPhase.RefusedPendingDelivery
-                | SocketPhase.Dead ->
+                | SocketPhase.Refused _ ->
                     // Measured, whatever the destination, and whether or not
                     // the refusal is still pending: connect never delivers it.
                     fail UnixError.EISCONN
@@ -1337,8 +1336,7 @@ module UnixConnection =
         | SocketPhase.Idle
         | SocketPhase.EstablishedPendingReport _
         | SocketPhase.Established _
-        | SocketPhase.RefusedPendingDelivery
-        | SocketPhase.Dead ->
+        | SocketPhase.Refused _ ->
             // ...and the listening check beats blocking behaviour: measured on
             // both, a *blocking* non-listening socket answers EINVAL
             // immediately rather than parking. Measured for idle sockets, bound

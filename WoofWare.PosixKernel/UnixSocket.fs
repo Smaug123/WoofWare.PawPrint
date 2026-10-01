@@ -281,7 +281,7 @@ module SocketOptionRefusal =
         | SocketOptionRefusal.ListenerWithQueuedConnections socket ->
             $"socket %O{socket} is listening with completed connections in its accept queue, and the call would change its SO_REUSEADDR. Measured on both flavours, each queued connection keeps the value the listener had when that connection completed, so an accept after the change returns a socket carrying the old value. This kernel does not record that per-connection copy: it gives the accepted socket the listener's value at accept time. Record the value with each queued connection before allowing the change."
         | SocketOptionRefusal.UnmodelledOption (socket, level, optionName) ->
-            $"socket %O{socket} was asked about option %d{optionName} at level %d{level}, and SO_REUSEADDR at SOL_SOCKET is the only option this kernel models. A real kernel either knows this option, in which case its value is socket state nothing here holds, or answers an errno nobody has measured for it; ENOPROTOOPT would be a guess either way. SO_ERROR in particular is refused because reading it consumes a pending connect refusal, which changes what the next connect(2) answers and what poll(2) reports on Linux, and turns a Darwin RefusedPendingDelivery socket into a Dead one. Model the option before asking for it."
+            $"socket %O{socket} was asked about option %d{optionName} at level %d{level}, and SO_REUSEADDR at SOL_SOCKET is the only option this kernel models. A real kernel either knows this option, in which case its value is socket state nothing here holds, or answers an errno nobody has measured for it; ENOPROTOOPT would be a guess either way. SO_ERROR in particular is refused because reading it consumes a pending connect refusal, which changes what the next connect(2) answers and what poll(2) reports on Linux, and marks a Darwin refused socket's error as reported. Model the option before asking for it."
 
 /// Whether a `setsockopt(2)` reaches the point at which the kernel copies the
 /// option's value in, which is where a client that cannot always produce those
@@ -1481,8 +1481,7 @@ module UnixSocket =
         let darwinShutDown =
             flavour = SimulatedUnixFlavour.Darwin
             && match socket.Phase with
-               | SocketPhase.RefusedPendingDelivery
-               | SocketPhase.Dead -> true
+               | SocketPhase.Refused _ -> true
                | SocketPhase.Idle
                | SocketPhase.Listening _
                | SocketPhase.EstablishedPendingReport _
@@ -1562,8 +1561,7 @@ module UnixSocket =
             | SocketPhase.Idle
             | SocketPhase.EstablishedPendingReport _
             | SocketPhase.Established _
-            | SocketPhase.RefusedPendingDelivery
-            | SocketPhase.Dead
+            | SocketPhase.Refused _
             | SocketPhase.DatagramPeer _ -> false
 
         // Setting the value it already has changes nothing a queued connection

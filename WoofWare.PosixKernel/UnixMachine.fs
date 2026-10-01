@@ -525,8 +525,7 @@ module UnixMachineState =
                         | SocketPhase.EstablishedPendingReport c -> c = connectionId
                         | SocketPhase.Listening listenState -> List.contains connectionId listenState.Queue
                         | SocketPhase.Idle
-                        | SocketPhase.RefusedPendingDelivery
-                        | SocketPhase.Dead
+                        | SocketPhase.Refused _
                         | SocketPhase.DatagramPeer _ -> false
                     )
                 )
@@ -548,7 +547,7 @@ module UnixMachineState =
                     Err = false
                 }
 
-        | SocketPhase.RefusedPendingDelivery ->
+        | SocketPhase.Refused RefusalError.Pending ->
             {
                 In = true
                 Out = true
@@ -556,9 +555,9 @@ module UnixMachineState =
                 Hup = true
                 Err = true
             }
-        | SocketPhase.Dead ->
+        | SocketPhase.Refused RefusalError.Reported ->
             failwith
-                $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is in the Darwin-only Dead phase. Both of this library's waiters refuse the Darwin flavour before any level is computed — `UnixPoll.epollCtl` because kqueue is structurally different, and `UnixPoll.poll` because Darwin's poll is a kqueue filter per group of requested bits rather than a masked level — so reaching here means a caller asked for a Darwin socket's level directly, or is a bug in this library. Darwin polls this phase IN|PRI|HUP (docs/plans/2026-08-23-socket-poll/pollmulti.c) if that changes."
+                $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is refused with its error already reported, which only the Darwin flavour reaches. Both of this library's waiters refuse the Darwin flavour before any level is computed — `UnixPoll.epollCtl` because kqueue is structurally different, and `UnixPoll.poll` because Darwin's poll is a kqueue filter per group of requested bits rather than a masked level — so reaching here means a caller asked for a Darwin socket's level directly, or is a bug in this library. Darwin polls this phase IN|PRI|HUP (docs/plans/2026-08-23-socket-poll/pollmulti.c) if that changes."
 
     /// Whether any *other* socket's binding conflicts with `candidate`, taken
     /// on behalf of `socket`.
@@ -619,8 +618,7 @@ module UnixMachineState =
                     && (socket.Binding |> Option.exists (fun binding -> binding.Endpoint = held))
                 | SocketPhase.Listening listenState -> isServerEnd && List.contains connectionId listenState.Queue
                 | SocketPhase.Idle
-                | SocketPhase.RefusedPendingDelivery
-                | SocketPhase.Dead
+                | SocketPhase.Refused _
                 | SocketPhase.DatagramPeer _ -> false
             )
 

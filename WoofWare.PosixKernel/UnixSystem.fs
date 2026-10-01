@@ -547,8 +547,7 @@ module UnixSystem =
                 | SocketPhase.Listening listenState ->
                     listenState.Queue |> List.map (fun connection -> socketId, connection, true)
                 | SocketPhase.Idle
-                | SocketPhase.RefusedPendingDelivery
-                | SocketPhase.Dead
+                | SocketPhase.Refused _
                 | SocketPhase.DatagramPeer _ -> []
             )
 

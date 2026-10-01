@@ -412,8 +412,8 @@ module TestSockOpt =
                 SocketPhase.Established (ConnectionId 0L), false
                 SocketPhase.EstablishedPendingReport (ConnectionId 0L), false
                 SocketPhase.DatagramPeer (loopback 5000us), false
-                SocketPhase.RefusedPendingDelivery, true
-                SocketPhase.Dead, true
+                SocketPhase.Refused RefusalError.Pending, true
+                SocketPhase.Refused RefusalError.Reported, true
             ]
 
         for platform in platforms do
@@ -711,7 +711,11 @@ module TestSockOpt =
     [<Test>]
     let ``getsockopt reads the option in every phase`` () : unit =
         for platform in platforms do
-            for phase in [ SocketPhase.RefusedPendingDelivery ; SocketPhase.Dead ] do
+            for phase in
+                [
+                    SocketPhase.Refused RefusalError.Pending
+                    SocketPhase.Refused RefusalError.Reported
+                ] do
                 let socketFd, _, system = systemWith platform phase
                 let level, optionName = numbered platform Option.ReuseAddress
 
