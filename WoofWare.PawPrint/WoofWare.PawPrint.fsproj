@@ -230,6 +230,7 @@
     <Compile Include="UnsafeAccessorDispatch.fs" />
     <Compile Include="SignalDispatch.fs" />
     <Compile Include="StackShapeOfMethod.fs" />
+    <Compile Include="AssemblyLoadEvent.fs" />
     <Compile Include="AbstractMachine.fs" />
     <Compile Include="AppContextSeed.fs" />
     <Compile Include="CommandLineArgsInit.fs" />

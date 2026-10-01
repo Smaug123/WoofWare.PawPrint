@@ -664,9 +664,24 @@ module ExceptionDispatching =
         | None -> state, FirstPassResult.SearchConcluded (search, ExceptionSearchOutcome.NoHandler)
         | Some returnState ->
 
+        match returnState.ExceptionEscape with
+        | ExceptionEscape.SwallowedByRuntime runtimeCaller ->
+            let exceptionTypeName =
+                match AllConcreteTypes.lookup search.ExceptionType state.TypeSystem.ConcreteTypes with
+                | Some ct ->
+                    Assembly.fullName
+                        (state.TypeSystem._LoadedAssemblies.ByDefinitionName ct.Identity.AssemblyFullName)
+                        ct.Identity
+                | None -> $"<unknown type handle %O{search.ExceptionType}>"
+
+            failwith
+                $"An exception of type %s{exceptionTypeName} escaped %s{frame.ExecutingMethod.Name}, which the runtime called from %s{runtimeCaller}. CoreCLR catches and discards it there; PawPrint does not yet model that, so it refuses to continue rather than unwind the exception into a caller that would never have seen it."
+        | ExceptionEscape.Propagate
+        | ExceptionEscape.WrapInTargetInvocation ->
+
         if
             returnState.WasInitialisingType.IsSome
-            || returnState.WrapExceptionInTargetInvocation
+            || returnState.ExceptionEscape = ExceptionEscape.WrapInTargetInvocation
         then
             // Leaving this frame changes the exception's *type*, so every outer frame must be
             // searched against the wrapper instead. The walk cannot see past it; the second pass
@@ -840,7 +855,7 @@ module ExceptionDispatching =
                 state, wrapped, tieType
 
         // If this frame was the ctor target of `Activator.CreateInstance<T>()` (or any other
-        // CreateInstanceOfT-style invocation that opts in via `WrapExceptionInTargetInvocation`),
+        // CreateInstanceOfT-style invocation that opts in via `ExceptionEscape.WrapInTargetInvocation`),
         // wrap the in-flight exception in a fresh `TargetInvocationException` whose
         // `_innerException` field points at the original. This mirrors CoreCLR's
         // `try { ctor } catch (Exception e) { throw new TargetInvocationException(e); }` wrap
@@ -848,7 +863,7 @@ module ExceptionDispatching =
         // synthesising an extra trampoline frame: the wrap only fires on unwind across this
         // frame's boundary, so a try/catch *inside* the ctor that handles the exception is
         // unaffected.
-        if not returnState.WrapExceptionInTargetInvocation then
+        if returnState.ExceptionEscape <> ExceptionEscape.WrapInTargetInvocation then
             state, cliException, exceptionType
         else
 

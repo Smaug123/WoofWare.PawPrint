@@ -1232,5 +1232,5 @@ module internal DynamicScopeOperand =
             threadState
             None
             ReturnValueDisposition.Discard
-            false // wrapExceptionInTargetInvocation
+            ExceptionEscape.Propagate
             state

@@ -153,6 +153,7 @@ module IlMachineRuntimeMetadata =
             | other -> failwith $"expected object reference, got {other}"
         | other -> failwith $"expected object reference, got {other}"
 
+    /// `TypeSystemState.lookupTypeDefn` against the machine's type system.
     let lookupTypeDefn
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -160,21 +161,12 @@ module IlMachineRuntimeMetadata =
         (typeDef : TypeDefinitionHandle)
         : IlMachineState * TypeDefn
         =
-        let defn = activeAssy.TypeDefs.[typeDef]
-        state, LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state.TypeSystem._LoadedAssemblies defn
+        let typeSystem, result =
+            TypeSystemState.lookupTypeDefn baseClassTypes state.TypeSystem activeAssy typeDef
 
-    /// Resolve a `TypeReference` token to the type it names.
-    ///
-    /// No generic context is taken, and none may be: a `TypeReference` row names a type and carries
-    /// no type arguments, so there is nothing for a caller to instantiate it with. `resolveTypeRef`
-    /// substitutes whatever it is handed into the *referenced type's own* formal parameters,
-    /// positionally (`Assembly.applyGenericArgs`), so passing the executing frame's generics binds
-    /// them into an unrelated type's slots whenever the arities happen to line up: `ldtoken List`1`
-    /// from a frame on `Holder<string>` came back as `List<string>`.
-    ///
-    /// A caller that does have arguments for the type is looking at a `TypeSpecification`, whose
-    /// signature spells them out and which resolves by a different route. Callers that need the
-    /// frame's context apply it downstream, when concretizing the `TypeDefn` this returns.
+        state.WithTypeSystem typeSystem, result
+
+    /// `TypeSystemState.lookupTypeRef` against the machine's type system.
     let lookupTypeRef
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -183,14 +175,18 @@ module IlMachineRuntimeMetadata =
         (ref : TypeReferenceHandle)
         : IlMachineState * TypeDefn * DumpedAssembly
         =
-        let ref = activeAssy.TypeRefs.[ref]
+        let typeSystem, typeDefn, assembly =
+            TypeSystemState.lookupTypeRef
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                state.TypeSystem
+                activeAssy
+                ref
 
-        let state, assy, resolved =
-            IlMachineTypeResolution.resolveTypeFromRef loggerFactory activeAssy ref ImmutableArray.Empty state
+        state.WithTypeSystem typeSystem, typeDefn, assembly
 
-        state, LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes state.TypeSystem._LoadedAssemblies resolved, assy
-
-    /// Resolve a BaseTypeInfo to the assembly and TypeDefn of the base type.
+    /// `TypeSystemState.resolveBaseTypeInfo` against the machine's type system.
     let resolveBaseTypeInfo
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -199,33 +195,18 @@ module IlMachineRuntimeMetadata =
         (baseTypeInfo : BaseTypeInfo)
         : IlMachineState * DumpedAssembly * TypeDefn
         =
-        match baseTypeInfo with
-        | BaseTypeInfo.TypeDef handle ->
-            let typeInfo = currentAssembly.TypeDefs.[handle]
+        let typeSystem, assembly, typeDefn =
+            TypeSystemState.resolveBaseTypeInfo
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                state.TypeSystem
+                currentAssembly
+                baseTypeInfo
 
-            let typeDefn =
-                LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo
+        state.WithTypeSystem typeSystem, assembly, typeDefn
 
-            state, currentAssembly, typeDefn
-        | BaseTypeInfo.TypeRef handle ->
-            let state, assy, resolved =
-                IlMachineTypeResolution.resolveTypeFromRef
-                    loggerFactory
-                    currentAssembly
-                    (currentAssembly.TypeRefs.[handle])
-                    ImmutableArray.Empty
-                    state
-
-            let typeDefn =
-                LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes state.TypeSystem._LoadedAssemblies resolved
-
-            state, assy, typeDefn
-        | BaseTypeInfo.TypeSpec handle ->
-            let signature = currentAssembly.TypeSpecs.[handle].Signature
-            state, currentAssembly, signature
-
-    /// Given a ConcreteTypeHandle, resolve and return its base type as a ConcreteTypeHandle.
-    /// Returns None for types without a base type (System.Object).
+    /// `TypeSystemState.resolveBaseConcreteType` against the machine's type system.
     let resolveBaseConcreteType
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -233,56 +214,15 @@ module IlMachineRuntimeMetadata =
         (concreteType : ConcreteTypeHandle)
         : IlMachineState * ConcreteTypeHandle option
         =
-        match concreteType with
-        | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _ ->
-            // Structural array handles keep their own runtime identity; their base type is System.Array.
-            let state, arrayHandle =
-                LoadedTypeInfo.typeInfoToTypeDefn'
-                    baseClassTypes
-                    state.TypeSystem._LoadedAssemblies
-                    baseClassTypes.Array
-                |> IlMachineTypeResolution.concretizeType
-                    loggerFactory
-                    baseClassTypes
-                    state
-                    baseClassTypes.Corelib.DefinitionFullName
-                    ImmutableArray.Empty
-                    ImmutableArray.Empty
+        let typeSystem, result =
+            TypeSystemState.resolveBaseConcreteType
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                state.TypeSystem
+                concreteType
 
-            state, Some arrayHandle
-        | ConcreteTypeHandle.FunctionPointer _ ->
-            failwith
-                $"TODO: resolveBaseConcreteType: function pointer types (%O{concreteType}) not yet supported; the runtime base type is System.ValueType but the lookup path needs adjusting"
-        | ConcreteTypeHandle.Concrete _
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ ->
-
-            match AllConcreteTypes.lookup concreteType state.TypeSystem.ConcreteTypes with
-            | None -> failwith $"ConcreteTypeHandle {concreteType} not found in AllConcreteTypes"
-            | Some ct ->
-                let assy =
-                    state.TypeSystem._LoadedAssemblies.ByDefinitionName ct.Identity.AssemblyFullName
-
-                let typeInfo = assy.TypeDefs.[ct.Identity.TypeDefinition.Get]
-
-                match typeInfo.BaseType with
-                | None -> state, None
-                | Some baseTypeInfo ->
-                    let state, baseAssy, baseTypeDefn =
-                        resolveBaseTypeInfo loggerFactory baseClassTypes state assy baseTypeInfo
-
-                    let state, baseHandle =
-                        IlMachineTypeResolution.concretizeType
-                            loggerFactory
-                            baseClassTypes
-                            state
-                            baseAssy.DefinitionFullName
-                            ct.Generics
-                            ImmutableArray.Empty
-                            baseTypeDefn
-
-                    state, Some baseHandle
+        state.WithTypeSystem typeSystem, result
 
     /// True iff `ty` references any `GenericTypeParameter` / `GenericMethodParameter`. The
     /// open-generic source cast walk uses this to decide whether a base/interface edge can be
@@ -1509,12 +1449,7 @@ module IlMachineRuntimeMetadata =
 
         addr, tieHandle, state
 
-    /// Resolve a MetadataToken (TypeDefinition, TypeReference, or TypeSpecification) to a TypeDefn,
-    /// together with the assembly the type was resolved in.
-    ///
-    /// Takes no generic context, for the reason `lookupTypeRef` gives: none of the three token
-    /// kinds carries one. A `TypeSpecification`'s signature is returned verbatim, `!0` and all,
-    /// for the caller to concretize against whatever context it means.
+    /// `TypeSystemState.resolveTypeMetadataToken` against the machine's type system.
     let resolveTypeMetadataToken
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1523,43 +1458,26 @@ module IlMachineRuntimeMetadata =
         (token : MetadataToken)
         : IlMachineState * TypeDefn * DumpedAssembly
         =
-        match token with
-        | MetadataToken.TypeDefinition h ->
-            let state, ty = lookupTypeDefn baseClassTypes state activeAssy h
-            state, ty, activeAssy
-        | MetadataToken.TypeReference ref -> lookupTypeRef loggerFactory baseClassTypes state activeAssy ref
-        | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
-        | m -> failwith $"unexpected type metadata token {m}"
+        let typeSystem, typeDefn, assembly =
+            TypeSystemState.resolveTypeMetadataToken
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                state.TypeSystem
+                activeAssy
+                token
 
-    /// Get the metadata row directly represented by this concrete handle.
-    /// Structural arrays, byrefs, and pointers have no direct TypeDef row; callers that are walking
-    /// inheritance should ask for their base type explicitly.
+        state.WithTypeSystem typeSystem, typeDefn, assembly
+
+    /// `TypeSystemState.tryGetConcreteTypeInfo` against the machine's type system.
     let tryGetConcreteTypeInfo
         (state : IlMachineState)
         (concreteType : ConcreteTypeHandle)
         : (ConcreteType<ConcreteTypeHandle> * TypeInfo<GenericParamFromMetadata, TypeDefn>) option
         =
-        // Deliberately not just `AllConcreteTypes.tryTypeInfo`: this distinguishes the two
-        // reasons that returns `None`. A structural handle is an ordinary answer of "no nominal
-        // type here", but a `Concrete` handle with no row is a broken invariant and is raised.
-        match concreteType with
-        | ConcreteTypeHandle.Concrete _ ->
-            match
-                AllConcreteTypes.tryTypeInfo
-                    state.TypeSystem._LoadedAssemblies
-                    state.TypeSystem.ConcreteTypes
-                    concreteType
-            with
-            | None -> failwith $"ConcreteTypeHandle {concreteType} not found in AllConcreteTypes"
-            | resolved -> resolved
-        | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _
-        | ConcreteTypeHandle.FunctionPointer _ -> None
+        TypeSystemState.tryGetConcreteTypeInfo state.TypeSystem concreteType
 
-    /// Returns true if `handle` is a CLR enum value type — a nominal type whose immediate runtime
-    /// base is `System.Enum`.
+    /// `TypeSystemState.isEnumValueType` against the machine's type system.
     let isEnumValueType
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1567,29 +1485,12 @@ module IlMachineRuntimeMetadata =
         (handle : ConcreteTypeHandle)
         : IlMachineState * bool
         =
-        match handle with
-        | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _
-        | ConcreteTypeHandle.FunctionPointer _ -> state, false
-        | ConcreteTypeHandle.Concrete _ ->
-            let state, baseHandle =
-                resolveBaseConcreteType loggerFactory baseClassTypes state handle
+        let typeSystem, result =
+            TypeSystemState.isEnumValueType loggerFactory state.DotnetRuntimeDirs baseClassTypes state.TypeSystem handle
 
-            match baseHandle with
-            | None -> state, false
-            | Some bh ->
-                match AllConcreteTypes.lookup bh state.TypeSystem.ConcreteTypes with
-                | Some baseTy -> state, baseTy.Identity = baseClassTypes.Enum.Identity
-                | None -> state, false
+        state.WithTypeSystem typeSystem, result
 
-    /// For an enum `ConcreteTypeHandle`, return the `ConcreteTypeHandle` of its underlying integer
-    /// type by concretising the signature of its sole instance field (`value__`, the CLR-reserved
-    /// name for the integer slot of an enum; ECMA-335 §II.14.3). Returns `None` if `handle` is not
-    /// an enum, has no TypeDef row, or — defensively — has a malformed Fields list. The caller is
-    /// expected to have first verified enum-ness via `isEnumValueType`; this helper does the
-    /// metadata read.
+    /// `TypeSystemState.enumUnderlyingHandle` against the machine's type system.
     let enumUnderlyingHandle
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1597,30 +1498,13 @@ module IlMachineRuntimeMetadata =
         (handle : ConcreteTypeHandle)
         : (IlMachineState * ConcreteTypeHandle) option
         =
-        match tryGetConcreteTypeInfo state handle with
-        | None -> None
-        | Some (ct, typeInfo) ->
-            let instanceFields =
-                typeInfo.Fields
-                |> List.filter (fun f -> not (f.Attributes.HasFlag FieldAttributes.Static))
-
-            match instanceFields with
-            | [ valueField ] when valueField.Name = "value__" ->
-                let assy =
-                    state.TypeSystem._LoadedAssemblies.ByDefinitionName ct.Identity.AssemblyFullName
-
-                let state, underlying =
-                    IlMachineTypeResolution.concretizeType
-                        loggerFactory
-                        baseClassTypes
-                        state
-                        assy.DefinitionFullName
-                        ct.Generics
-                        ImmutableArray.Empty
-                        valueField.Signature
-
-                Some (state, underlying)
-            | _ -> None
+        TypeSystemState.enumUnderlyingHandle
+            loggerFactory
+            state.DotnetRuntimeDirs
+            baseClassTypes
+            state.TypeSystem
+            handle
+        |> Option.map (fun (typeSystem, result) -> state.WithTypeSystem typeSystem, result)
 
     /// CoreCLR `MethodTable::GetPrimitiveCorElementType`, restricted to the question `unbox` asks
     /// of it: which primitive `CorElementType` does this handle report, if it is in the
@@ -1837,16 +1721,7 @@ module IlMachineRuntimeMetadata =
                         failwith
                             $"unbox of %O{boxedType} to %O{targetType}: CoreCLR permits this (both report the same primitive element type), but PawPrint does not store %O{offender} in flattened form — see CliValueType.EnumUnderlyingIsFlattenable, which covers only enums over the fixed-width integers, not over bool/char/native int"
 
-    /// Does this handle denote a reference type (as opposed to a value type)?
-    ///
-    /// The structural handles answer without any metadata: arrays of every rank are reference
-    /// types, while byrefs, pointers and function pointers are not (they are neither, strictly,
-    /// but every caller asks this question to decide whether reference-type rules — covariance,
-    /// array-store checks, atomic reference exchange — apply, and for those the answer is "no").
-    /// Nominal handles defer to the TypeDef row.
-    ///
-    /// `context` names the caller in the diagnostic raised when a nominal handle has no TypeDef
-    /// row, which would be a bug in whatever produced the handle.
+    /// `TypeSystemState.isReferenceTypeHandle` against the machine's type system.
     let isReferenceTypeHandle
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (context : string)
@@ -1854,17 +1729,7 @@ module IlMachineRuntimeMetadata =
         (handle : ConcreteTypeHandle)
         : bool
         =
-        match handle with
-        | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _ -> true
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _
-        | ConcreteTypeHandle.FunctionPointer _ -> false
-        | ConcreteTypeHandle.Concrete _ ->
-            match tryGetConcreteTypeInfo state handle with
-            | Some (_, typeInfo) ->
-                LoadedTypeInfo.isReferenceType baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo
-            | None -> failwith $"%s{context}: concrete type handle %O{handle} has no TypeDef row"
+        TypeSystemState.isReferenceTypeHandle baseClassTypes context state.TypeSystem handle
 
     let requiredOwnInstanceFieldId
         (state : IlMachineState)
@@ -1938,12 +1803,8 @@ module IlMachineRuntimeMetadata =
                 candidate.Generics.[0] = boxed
             | _ -> false
 
-    /// `isConcreteTypeAssignableTo`, as asked from inside a variance comparison that is already
-    /// comparing the pairs in `visited` further up the same path: CoreCLR's `TypeHandlePairList`.
-    /// A variance comparison that comes back to one of those pairs answers false, exactly as
-    /// `CanCastByVarianceToInterfaceOrDelegate` does, which is what makes an expansive hierarchy
-    /// such as `class C : IIn<IIn<C>>` terminate.
-    let rec isConcreteTypeAssignableToVisiting
+    /// `TypeAssignability.isConcreteTypeAssignableToVisiting` against the machine's type system.
+    let isConcreteTypeAssignableToVisiting
         (visited : Set<ConcreteTypeHandle * ConcreteTypeHandle>)
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1952,385 +1813,19 @@ module IlMachineRuntimeMetadata =
         (targetType : ConcreteTypeHandle)
         : IlMachineState * bool
         =
-        if objType = targetType then
-            state, true
-        else
+        let typeSystem, result =
+            TypeAssignability.isConcreteTypeAssignableToVisiting
+                visited
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                state.TypeSystem
+                objType
+                targetType
 
-        let isReferenceTypeHandle =
-            isReferenceTypeHandle baseClassTypes "isConcreteTypeAssignableTo"
+        state.WithTypeSystem typeSystem, result
 
-        let arrayShape (handle : ConcreteTypeHandle) : (ConcreteTypeHandle * int option) option =
-            match handle with
-            | ConcreteTypeHandle.OneDimArrayZero element -> Some (element, None)
-            | ConcreteTypeHandle.Array (element, rank) -> Some (element, Some rank)
-            | ConcreteTypeHandle.Concrete _
-            | ConcreteTypeHandle.Byref _
-            | ConcreteTypeHandle.Pointer _
-            | ConcreteTypeHandle.FunctionPointer _ -> None
-
-        let rec checkInterfaces (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
-            match tryGetConcreteTypeInfo state current with
-            | None ->
-                // This node has no metadata-declared interfaces. The caller decides whether to walk its base.
-                state, false
-            | Some (ct, typeInfo) ->
-                let assy =
-                    state.TypeSystem._LoadedAssemblies.ByDefinitionName ct.Identity.AssemblyFullName
-
-                ((state, false), typeInfo.ImplementedInterfaces)
-                ||> Seq.fold (fun (state, found) impl ->
-                    if found then
-                        state, true
-                    else
-                        let implAssy =
-                            match state.LoadedAssembly impl.RelativeToAssembly.FullName with
-                            | Some a -> a
-                            | None ->
-                                // Assembly not yet loaded; use the assembly we already have since
-                                // RelativeToAssembly is set to the assembly containing the type definition.
-                                assy
-
-                        let state, implTypeDefn, implResolvedAssy =
-                            resolveTypeMetadataToken loggerFactory baseClassTypes state implAssy impl.InterfaceHandle
-
-                        let state, implHandle =
-                            IlMachineTypeResolution.concretizeType
-                                loggerFactory
-                                baseClassTypes
-                                state
-                                implResolvedAssy.DefinitionFullName
-                                ct.Generics
-                                ImmutableArray.Empty
-                                implTypeDefn
-
-                        // Check exact match, then recurse into the interface's own parent interfaces.
-                        walk state implHandle
-                )
-
-        and walkBase (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
-            match current with
-            | ConcreteTypeHandle.Byref _
-            | ConcreteTypeHandle.Pointer _
-            | ConcreteTypeHandle.FunctionPointer _ -> state, false
-            | ConcreteTypeHandle.Concrete _
-            | ConcreteTypeHandle.OneDimArrayZero _
-            | ConcreteTypeHandle.Array _ ->
-                let state, baseType =
-                    resolveBaseConcreteType loggerFactory baseClassTypes state current
-
-                match baseType with
-                | None ->
-                    // Every reference type (including interfaces) is assignable to System.Object.
-                    match targetType with
-                    | ConcreteActivePatterns.ConcreteObj state.TypeSystem.ConcreteTypes -> state, true
-                    | _ -> state, false
-                | Some parent -> walk state parent
-
-        and walk (state : IlMachineState) (current : ConcreteTypeHandle) : IlMachineState * bool =
-            if current = targetType then
-                state, true
-            else
-
-            match tryGetConcreteTypeInfo state current with
-            | None -> walkBase state current
-            | Some (currentCt, _) ->
-                // Same TypeDef but different instantiations is the variance hook
-                // (ECMA-335 §I.8.7.2 / CoreCLR
-                // `CanCastByVarianceToInterfaceOrDelegate`). Classes are invariant
-                // by spec, so when none of the parameters declare variance the
-                // answer is definitively false. Interfaces and delegates can
-                // declare `+`/`-` on each parameter; per-parameter assignability
-                // resolves the cast.
-                let sameDefnDifferentGenerics =
-                    match AllConcreteTypes.lookup targetType state.TypeSystem.ConcreteTypes with
-                    | Some targetCt when
-                        currentCt.Identity = targetCt.Identity
-                        && currentCt.Generics <> targetCt.Generics
-                        ->
-                        Some targetCt
-                    | _ -> None
-
-                match sameDefnDifferentGenerics with
-                | Some targetCt ->
-                    let targetAssy =
-                        state.TypeSystem._LoadedAssemblies.ByDefinitionName targetCt.Identity.AssemblyFullName
-
-                    let targetTypeInfo = targetAssy.TypeDefs.[targetCt.Identity.TypeDefinition.Get]
-
-                    let hasVariantGenericParams =
-                        targetTypeInfo.Generics
-                        |> Seq.exists (fun (_, metadata) -> metadata.Variance.IsSome)
-
-                    if not hasVariantGenericParams then
-                        // All generic parameters are invariant; same definition + different generics = not assignable.
-                        state, false
-                    elif Set.contains (current, targetType) visited then
-                        state, false
-                    else
-                        checkVariantGenericArgs
-                            (Set.add (current, targetType) visited)
-                            state
-                            currentCt
-                            targetCt
-                            targetTypeInfo
-                | None ->
-                    let state, interfaceMatch = checkInterfaces state current
-
-                    if interfaceMatch then
-                        state, true
-                    else
-                        walkBase state current
-
-        // ECMA-335 §I.8.7 / CoreCLR `MethodTable::CanCastByVarianceToInterfaceOrDelegate`:
-        // when two generic instantiations share the same TypeDef and the
-        // definition declares variance on at least one parameter, the cast
-        // reduces to a per-parameter check.
-        //   - Identical arguments are always accepted.
-        //   - Covariant (`out`) parameter: `fromArg` must be a reference type
-        //     and reference-assignable to `toArg`. (CoreCLR's `IsBoxedAndCanCastTo`
-        //     rejects value-typed `fromArg` regardless of the declared variance —
-        //     boxing changes identity, and the variance walk assumes the
-        //     argument is in its boxed form.)
-        //   - Contravariant (`in`) parameter: `toArg` must be a reference type
-        //     and reference-assignable to `fromArg`.
-        //   - Invariant parameter: arguments must be identical, so a difference
-        //     here short-circuits to `false`.
-        // Recursion into `isConcreteTypeAssignableTo` for the per-argument check
-        // is necessary because variance composes (e.g. `Func<Func<Derived>>` ⊑
-        // `Func<Func<Base>>` for the nested covariant `out` parameter).
-        and checkVariantGenericArgs
-            (visited : Set<ConcreteTypeHandle * ConcreteTypeHandle>)
-            (state : IlMachineState)
-            (currentCt : ConcreteType<ConcreteTypeHandle>)
-            (targetCt : ConcreteType<ConcreteTypeHandle>)
-            (targetTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-            : IlMachineState * bool
-            =
-            let rec loop (state : IlMachineState) (i : int) : IlMachineState * bool =
-                if i >= currentCt.Generics.Length then
-                    state, true
-                else
-                    let fromArg = currentCt.Generics.[i]
-                    let toArg = targetCt.Generics.[i]
-
-                    if fromArg = toArg then
-                        loop state (i + 1)
-                    else
-                        let _, paramMetadata = targetTypeInfo.Generics.[i]
-
-                        let state, argOk =
-                            match paramMetadata.Variance with
-                            | None ->
-                                // Invariant parameter with non-identical arguments.
-                                state, false
-                            | Some GenericVariance.Covariant ->
-                                if not (isReferenceTypeHandle state fromArg) then
-                                    state, false
-                                else
-                                    isConcreteTypeAssignableToVisiting
-                                        visited
-                                        loggerFactory
-                                        baseClassTypes
-                                        state
-                                        fromArg
-                                        toArg
-                            | Some GenericVariance.Contravariant ->
-                                if not (isReferenceTypeHandle state toArg) then
-                                    state, false
-                                else
-                                    isConcreteTypeAssignableToVisiting
-                                        visited
-                                        loggerFactory
-                                        baseClassTypes
-                                        state
-                                        toArg
-                                        fromArg
-
-                        if argOk then loop state (i + 1) else state, false
-
-            loop state 0
-
-        // ECMA-335 III.8.7 / CoreCLR `GetNormalizedIntegralArrayElementType`:
-        // signed and unsigned primitive integers of equal width are interchangeable
-        // as array element types (`int[]` ↔ `uint[]`, `short[]` ↔ `ushort[]`, etc.).
-        // Returns `Some normalizedIdentity` when `handle` is one of those primitive
-        // integers; otherwise `None`. Floating-point, Boolean, and Char have no
-        // normalization partners.
-        let normalizedPrimitiveIntegerIdentity (handle : ConcreteTypeHandle) : ResolvedTypeIdentity option =
-            match tryGetConcreteTypeInfo state handle with
-            | Some (ct, _) when ct.Generics.IsEmpty ->
-                let id = ct.Identity
-
-                if id = baseClassTypes.SByte.Identity || id = baseClassTypes.Byte.Identity then
-                    Some baseClassTypes.SByte.Identity
-                elif id = baseClassTypes.Int16.Identity || id = baseClassTypes.UInt16.Identity then
-                    Some baseClassTypes.Int16.Identity
-                elif id = baseClassTypes.Int32.Identity || id = baseClassTypes.UInt32.Identity then
-                    Some baseClassTypes.Int32.Identity
-                elif id = baseClassTypes.Int64.Identity || id = baseClassTypes.UInt64.Identity then
-                    Some baseClassTypes.Int64.Identity
-                elif id = baseClassTypes.IntPtr.Identity || id = baseClassTypes.UIntPtr.Identity then
-                    Some baseClassTypes.IntPtr.Identity
-                else
-                    None
-            | _ -> None
-
-        // ECMA-335 III.4.3 / CoreCLR `CanCastParam`: for value-typed array elements the
-        // assignment-compatibility relation reduces to "the normalised integer identity
-        // of each element matches". The normalised identity of a primitive integer is
-        // the signed canonical (see `normalizedPrimitiveIntegerIdentity`); the normalised
-        // identity of an enum is the normalised identity of its underlying integer.
-        // Anything else (`float`, `double`, `bool`, `char`, non-integer struct) has no
-        // normalised identity. Returns `None` when the input has no equivalence partner;
-        // returns `Some id` otherwise.
-        let valueElementNormalisedIdentity
-            (state : IlMachineState)
-            (handle : ConcreteTypeHandle)
-            : IlMachineState * ResolvedTypeIdentity option
-            =
-            let state, isEnum = isEnumValueType loggerFactory baseClassTypes state handle
-
-            if isEnum then
-                match enumUnderlyingHandle loggerFactory baseClassTypes state handle with
-                | None -> state, None
-                | Some (state, underlying) -> state, normalizedPrimitiveIntegerIdentity underlying
-            else
-                state, normalizedPrimitiveIntegerIdentity handle
-
-        // ECMA-335 III.4.3 / CoreCLR `TypeDesc::CanCastParam`: element-compatibility
-        // for parameterised array slots (whether array-to-array or SZ-array-to-
-        // implicit-generic-interface) reduces to one of three cases.
-        //   1. Identical elements — always compatible.
-        //   2. Both reference-typed — recursive assignability (covariance).
-        //   3. Both value-typed — same normalised integer identity, applying both
-        //      ECMA-335 III.8.7 primitive-width equivalence and enum-underlying-
-        //      type equivalence (see `valueElementNormalisedIdentity`).
-        // Anything else (ref/value mismatch, non-integer value types, generic
-        // type variables) answers definitively false.
-        let elementCovariantlyCompatible
-            (state : IlMachineState)
-            (objElement : ConcreteTypeHandle)
-            (targetElement : ConcreteTypeHandle)
-            : IlMachineState * bool
-            =
-            if objElement = targetElement then
-                state, true
-            else
-                let objIsRef = isReferenceTypeHandle state objElement
-                let targetIsRef = isReferenceTypeHandle state targetElement
-
-                if objIsRef && targetIsRef then
-                    isConcreteTypeAssignableToVisiting
-                        visited
-                        loggerFactory
-                        baseClassTypes
-                        state
-                        objElement
-                        targetElement
-                elif objIsRef <> targetIsRef then
-                    state, false
-                else
-                    let state, objNormalised = valueElementNormalisedIdentity state objElement
-                    let state, targetNormalised = valueElementNormalisedIdentity state targetElement
-
-                    match objNormalised, targetNormalised with
-                    | Some a, Some b when a = b -> state, true
-                    | _, _ -> state, false
-
-        let checkArraySpecificRules
-            (state : IlMachineState)
-            (objType : ConcreteTypeHandle)
-            (targetType : ConcreteTypeHandle)
-            : IlMachineState * bool option
-            =
-            match arrayShape objType, arrayShape targetType with
-            | Some (objElement, objShape), Some (targetElement, targetShape) ->
-                // CoreCLR `MethodTable::ArrayIsInstanceOf` (`methodtable.cpp`): an SZ-array
-                // target admits only an SZ-array source, and any other array target compares
-                // ranks, where an SZ array's rank is 1. So `int[]` is an `int[*]` (the rank-1
-                // ELEMENT_TYPE_ARRAY), but `int[*]` is not an `int[]`.
-                let ranksAgree =
-                    match objShape, targetShape with
-                    | None, None -> true
-                    | None, Some targetRank -> targetRank = 1
-                    | Some _, None -> false
-                    | Some objRank, Some targetRank -> objRank = targetRank
-
-                if not ranksAgree then
-                    state, Some false
-                else
-                    let state, compatible = elementCovariantlyCompatible state objElement targetElement
-                    state, Some compatible
-            | Some _, None -> state, None
-            | None, _ -> failwith $"checkArraySpecificRules called with non-array source %O{objType}"
-
-        // CoreCLR `MethodTable::ArraySupportsBizarreInterface` /
-        // `IsImplicitInterfaceOfSZArray` (`src/coreclr/vm/array.cpp`): an
-        // SZ-array `T[]` implicitly implements the five generic interfaces
-        // `IList<U>`, `ICollection<U>`, `IEnumerable<U>`, `IReadOnlyList<U>`,
-        // and `IReadOnlyCollection<U>` whenever `T` is element-compatible
-        // with `U` under the CoreCLR `CanCastParam` rule (recursive
-        // reference covariance for ref elements; normalised-integer
-        // equivalence for value elements). The carve-out applies even for
-        // the invariant interfaces (`IList<U>`, `ICollection<U>`).
-        //
-        // Multi-dim arrays do NOT participate in this carve-out, and other
-        // generic interfaces (anything that isn't one of the five) are
-        // never implicitly implemented by arrays. Returns `None` when the
-        // pair does not fit the carve-out, leaving the caller to default
-        // to `false`.
-        let tryCheckSzArrayImplicitInterface
-            (state : IlMachineState)
-            (objType : ConcreteTypeHandle)
-            (targetType : ConcreteTypeHandle)
-            : (IlMachineState * bool) option
-            =
-            match objType with
-            | ConcreteTypeHandle.OneDimArrayZero objElement ->
-                match tryGetConcreteTypeInfo state targetType with
-                | Some (targetCt, _) when targetCt.Generics.Length = 1 ->
-                    if baseClassTypes.IsImplicitInterfaceOfSzArray targetCt.Identity then
-                        let targetElement = targetCt.Generics.[0]
-                        let state, compatible = elementCovariantlyCompatible state objElement targetElement
-                        Some (state, compatible)
-                    else
-                        None
-                | _ -> None
-            | ConcreteTypeHandle.Array _
-            | ConcreteTypeHandle.Concrete _
-            | ConcreteTypeHandle.Byref _
-            | ConcreteTypeHandle.Pointer _
-            | ConcreteTypeHandle.FunctionPointer _ -> None
-
-        match objType with
-        | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _ ->
-            let state, assignable = walk state objType
-
-            if assignable then
-                state, assignable
-            else
-                match checkArraySpecificRules state objType targetType with
-                | state, Some assignable -> state, assignable
-                | state, None ->
-                    match tryCheckSzArrayImplicitInterface state objType targetType with
-                    | Some result -> result
-                    | None ->
-                        // The remaining structural shapes — multi-dim arrays
-                        // against any generic interface, or SZ-arrays against
-                        // a generic interface that isn't one of the five
-                        // implicit ones — are definitively not assignable.
-                        // CoreCLR's `ArraySupportsBizarreInterface` agrees.
-                        state, false
-        | ConcreteTypeHandle.Concrete _
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _
-        | ConcreteTypeHandle.FunctionPointer _ -> walk state objType
-
-    /// Check whether the concrete type `objType` is assignable to `targetType`.
-    /// Walks the base type chain and checks implemented interfaces at each level.
-    /// Returns true if objType = targetType, or targetType is a base class of objType,
-    /// or targetType is an interface implemented by objType or any of its base classes.
+    /// `TypeAssignability.isConcreteTypeAssignableTo` against the machine's type system.
     let isConcreteTypeAssignableTo
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -2339,7 +1834,16 @@ module IlMachineRuntimeMetadata =
         (targetType : ConcreteTypeHandle)
         : IlMachineState * bool
         =
-        isConcreteTypeAssignableToVisiting Set.empty loggerFactory baseClassTypes state objType targetType
+        let typeSystem, result =
+            TypeAssignability.isConcreteTypeAssignableTo
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                state.TypeSystem
+                objType
+                targetType
+
+        state.WithTypeSystem typeSystem, result
 
     /// The definition a MethodTable-backed nominal target instantiates, and its instantiation as
     /// targets: a closed type's own arguments, a definition's own variables (the typical

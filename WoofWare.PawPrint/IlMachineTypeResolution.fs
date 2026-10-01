@@ -46,6 +46,7 @@ module IlMachineTypeResolution =
     let internal loader (loggerFactory : ILoggerFactory) (state : IlMachineState) : IAssemblyLoad =
         TypeResolution.directoryLoader loggerFactory state.DotnetRuntimeDirs
 
+    /// `TypeSystemState.concretizeType` against the machine's type system.
     let concretizeType
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -56,41 +57,20 @@ module IlMachineTypeResolution =
         (ty : TypeDefn)
         : IlMachineState * ConcreteTypeHandle
         =
-        let ctx =
-            {
-                TypeConcretization.ConcretizationContext.ConcreteTypes = state.TypeSystem.ConcreteTypes
-                TypeConcretization.ConcretizationContext.LoadedAssemblies = state.TypeSystem._LoadedAssemblies
-                TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
-            }
-
-        let handle, ctx =
-            TypeConcretization.concretizeType
-                ctx
-                (loader loggerFactory state)
+        let typeSystem, result =
+            TypeSystemState.concretizeType
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                state.TypeSystem
                 declaringAssemblyFullName
                 typeGenerics
                 methodGenerics
                 ty
 
-        let state =
-            { state with
-                TypeSystem =
-                    { state.TypeSystem with
-                        _LoadedAssemblies = ctx.LoadedAssemblies
-                        ConcreteTypes = ctx.ConcreteTypes
-                    }
-            }
+        state.WithTypeSystem typeSystem, result
 
-        state, handle
-
-    /// Concretise a decoded method signature: its parameter types, and its return column.
-    ///
-    /// This is the only way to turn a `TypeMethodSignature&lt;TypeDefn&gt;` into a
-    /// `TypeMethodSignature&lt;ConcreteTypeHandle&gt;`, and going through it is what makes two such
-    /// signatures comparable — several callers concretise one signature here and compare it against
-    /// another that arrived via `Concretization.concretizeMethod`, so a caller that mapped the types
-    /// itself could disagree with them about the return shape of a method whose return carries a
-    /// custom modifier.
+    /// `TypeSystemState.concretizeMethodSignature` against the machine's type system.
     let concretizeMethodSignature
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -101,36 +81,20 @@ module IlMachineTypeResolution =
         (signature : TypeMethodSignature<TypeDefn>)
         : IlMachineState * TypeMethodSignature<ConcreteTypeHandle>
         =
-        let ctx =
-            {
-                TypeConcretization.ConcretizationContext.ConcreteTypes = state.TypeSystem.ConcreteTypes
-                TypeConcretization.ConcretizationContext.LoadedAssemblies = state.TypeSystem._LoadedAssemblies
-                TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
-            }
-
-        let signature, ctx =
-            TypeConcretization.concretizeMethodSignature
-                ctx
-                (loader loggerFactory state)
+        let typeSystem, result =
+            TypeSystemState.concretizeMethodSignature
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                state.TypeSystem
                 declaringAssemblyFullName
                 typeGenerics
                 methodGenerics
                 signature
 
-        let state =
-            { state with
-                TypeSystem =
-                    { state.TypeSystem with
-                        _LoadedAssemblies = ctx.LoadedAssemblies
-                        ConcreteTypes = ctx.ConcreteTypes
-                    }
-            }
+        state.WithTypeSystem typeSystem, result
 
-        state, signature
-
-    /// Concretise a method's return column alone. Use this rather than folding a
-    /// `MethodReturnType&lt;TypeDefn&gt;` by hand: a `void` under custom modifiers returns no value, and
-    /// two consumers that decide that separately can disagree.
+    /// `TypeSystemState.concretizeReturnColumn` against the machine's type system.
     let concretizeReturnColumn
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -141,36 +105,20 @@ module IlMachineTypeResolution =
         (returnType : MethodReturnType<TypeDefn>)
         : IlMachineState * MethodReturnType<ConcreteTypeHandle>
         =
-        let ctx =
-            {
-                TypeConcretization.ConcretizationContext.ConcreteTypes = state.TypeSystem.ConcreteTypes
-                TypeConcretization.ConcretizationContext.LoadedAssemblies = state.TypeSystem._LoadedAssemblies
-                TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
-            }
-
-        let ctx, returnType =
-            TypeConcretization.concretizeReturnColumn
-                ctx
-                (loader loggerFactory state)
+        let typeSystem, result =
+            TypeSystemState.concretizeReturnColumn
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                state.TypeSystem
                 declaringAssemblyFullName
                 typeGenerics
                 methodGenerics
                 returnType
 
-        let state =
-            { state with
-                TypeSystem =
-                    { state.TypeSystem with
-                        _LoadedAssemblies = ctx.LoadedAssemblies
-                        ConcreteTypes = ctx.ConcreteTypes
-                    }
-            }
+        state.WithTypeSystem typeSystem, result
 
-        state, returnType
-
-    /// Do the constraints on a generic method's type parameters permit `impl` to override `decl`?
-    /// CoreCLR asks this only once the signatures already match, and a mismatch means the type does
-    /// not load at all rather than that the method gets a slot of its own.
+    /// `TypeSystemState.methodConstraintsMatch` against the machine's type system.
     let methodConstraintsMatch
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -179,39 +127,18 @@ module IlMachineTypeResolution =
         (decl : TypeConcretization.ConstraintComparand)
         : IlMachineState * bool
         =
-        let ctx =
-            {
-                TypeConcretization.ConcretizationContext.ConcreteTypes = state.TypeSystem.ConcreteTypes
-                TypeConcretization.ConcretizationContext.LoadedAssemblies = state.TypeSystem._LoadedAssemblies
-                TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
-            }
+        let typeSystem, result =
+            TypeSystemState.methodConstraintsMatch
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                state.TypeSystem
+                impl
+                decl
 
-        let matches, ctx =
-            TypeConcretization.methodConstraintsMatch ctx (loader loggerFactory state) impl decl
+        state.WithTypeSystem typeSystem, result
 
-        let state =
-            { state with
-                TypeSystem =
-                    { state.TypeSystem with
-                        _LoadedAssemblies = ctx.LoadedAssemblies
-                        ConcreteTypes = ctx.ConcreteTypes
-                    }
-            }
-
-        state, matches
-
-    /// Do these two method signatures name the same signature, in the sense of CoreCLR's
-    /// `MetaSig::CompareMethodSigs`? Use this, and not equality of two concretised signatures, for
-    /// any question CoreCLR answers off the signature blob — which virtual slot a method fills, and
-    /// which MethodDef a MemberRef names. Concretisation deliberately looks through custom modifiers
-    /// and normalises away the choice of encoding, both of which are part of the signature to those
-    /// questions.
-    ///
-    /// `skipReturnType` omits the return column, which is how CoreCLR expresses "a covariant return
-    /// is acceptable"; the caller then applies its own rule to the return types.
-    ///
-    /// `caller` is the side whose vararg sentinel bounds the comparison, where the two differ in
-    /// parameter count.
+    /// `TypeSystemState.signaturesEquivalent` against the machine's type system.
     let signaturesEquivalent
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -221,29 +148,19 @@ module IlMachineTypeResolution =
         (callee : TypeConcretization.SignatureComparand)
         : IlMachineState * bool
         =
-        let ctx =
-            {
-                TypeConcretization.ConcretizationContext.ConcreteTypes = state.TypeSystem.ConcreteTypes
-                TypeConcretization.ConcretizationContext.LoadedAssemblies = state.TypeSystem._LoadedAssemblies
-                TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
-            }
+        let typeSystem, result =
+            TypeSystemState.signaturesEquivalent
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                state.TypeSystem
+                skipReturnType
+                caller
+                callee
 
-        let equivalent, ctx =
-            TypeConcretization.signaturesEquivalent ctx (loader loggerFactory state) skipReturnType caller callee
+        state.WithTypeSystem typeSystem, result
 
-        let state =
-            { state with
-                TypeSystem =
-                    { state.TypeSystem with
-                        _LoadedAssemblies = ctx.LoadedAssemblies
-                        ConcreteTypes = ctx.ConcreteTypes
-                    }
-            }
-
-        state, equivalent
-
-    /// `TypeConcretization.signaturesEquivalentWithoutSubstitution`: the comparison `[UnsafeAccessor]`
-    /// matching makes, in which a type variable on either side is compared by its index alone.
+    /// `TypeSystemState.signaturesEquivalentWithoutSubstitution` against the machine's type system.
     let signaturesEquivalentWithoutSubstitution
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -253,35 +170,19 @@ module IlMachineTypeResolution =
         (callee : TypeConcretization.UnsubstitutedComparand)
         : IlMachineState * bool
         =
-        let ctx =
-            {
-                TypeConcretization.ConcretizationContext.ConcreteTypes = state.TypeSystem.ConcreteTypes
-                TypeConcretization.ConcretizationContext.LoadedAssemblies = state.TypeSystem._LoadedAssemblies
-                TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
-            }
-
-        let equivalent, ctx =
-            TypeConcretization.signaturesEquivalentWithoutSubstitution
-                ctx
-                (loader loggerFactory state)
+        let typeSystem, result =
+            TypeSystemState.signaturesEquivalentWithoutSubstitution
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                state.TypeSystem
                 skipReturnType
                 caller
                 callee
 
-        let state =
-            { state with
-                TypeSystem =
-                    { state.TypeSystem with
-                        _LoadedAssemblies = ctx.LoadedAssemblies
-                        ConcreteTypes = ctx.ConcreteTypes
-                    }
-            }
+        state.WithTypeSystem typeSystem, result
 
-        state, equivalent
-
-    /// Do these two instantiations of one generic definition name the same type, in the sense of
-    /// CoreCLR's `MetaSig::CompareTypeDefsUnderSubstitutions`? See
-    /// `TypeConcretization.substitutionsEquivalent`.
+    /// `TypeSystemState.substitutionsEquivalent` against the machine's type system.
     let substitutionsEquivalent
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -290,26 +191,16 @@ module IlMachineTypeResolution =
         (right : TypeConcretization.SubstitutionContext)
         : IlMachineState * bool
         =
-        let ctx =
-            {
-                TypeConcretization.ConcretizationContext.ConcreteTypes = state.TypeSystem.ConcreteTypes
-                TypeConcretization.ConcretizationContext.LoadedAssemblies = state.TypeSystem._LoadedAssemblies
-                TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
-            }
+        let typeSystem, result =
+            TypeSystemState.substitutionsEquivalent
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                state.TypeSystem
+                left
+                right
 
-        let equivalent, ctx =
-            TypeConcretization.substitutionsEquivalent ctx (loader loggerFactory state) left right
-
-        let state =
-            { state with
-                TypeSystem =
-                    { state.TypeSystem with
-                        _LoadedAssemblies = ctx.LoadedAssemblies
-                        ConcreteTypes = ctx.ConcreteTypes
-                    }
-            }
-
-        state, equivalent
+        state.WithTypeSystem typeSystem, result
 
     let internal resolveTopLevelTypeFromName
         (loggerFactory : ILoggerFactory)
@@ -459,6 +350,7 @@ module IlMachineTypeResolution =
         resolvedAssy,
         typeInfo
 
+    /// `TypeSystemState.resolveTypeFromRef` against the machine's type system.
     let resolveTypeFromRef
         (loggerFactory : ILoggerFactory)
         (referencedInAssembly : DumpedAssembly)
@@ -467,23 +359,16 @@ module IlMachineTypeResolution =
         (state : IlMachineState)
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
-        let assemblies, resolvedAssy, typeInfo =
-            TypeResolution.resolveTypeFromRef
+        let typeSystem, assembly, typeInfo =
+            TypeSystemState.resolveTypeFromRef
                 loggerFactory
                 state.DotnetRuntimeDirs
                 referencedInAssembly
                 target
                 typeGenericArgs
-                state.TypeSystem._LoadedAssemblies
+                state.TypeSystem
 
-        { state with
-            TypeSystem =
-                { state.TypeSystem with
-                    _LoadedAssemblies = assemblies
-                }
-        },
-        resolvedAssy,
-        typeInfo
+        state.WithTypeSystem typeSystem, assembly, typeInfo
 
     let resolveType
         (loggerFactory : ILoggerFactory)

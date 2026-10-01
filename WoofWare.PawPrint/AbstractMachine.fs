@@ -464,7 +464,7 @@ module AbstractMachine =
                     currentThreadState
                     originalCallSitePC
                     ReturnValueDisposition.PushToCaller
-                    false // wrapExceptionInTargetInvocation
+                    ExceptionEscape.Propagate
                     state
 
             // A suspension here would be unrecoverable — the delegate's synthetic frame is
@@ -625,7 +625,9 @@ module AbstractMachine =
         | _ -> result
 
     /// Execute one step of the given thread: its active frame's prologue if it still has one, and
-    /// otherwise one IL instruction.
+    /// otherwise one IL instruction. A step that loads an assembly something must be told about is
+    /// discarded in favour of the announcement, and runs again afterwards (see
+    /// `AssemblyLoadEvent.announceBeforeStep`).
     ///
     /// A prologue that finishes does not consume the step. The check is bookkeeping the CLR emits
     /// into the callee's entry rather than an instruction the guest wrote, so charging virtual
@@ -639,14 +641,14 @@ module AbstractMachine =
         =
         let logger = logger loggerFactory
 
-        match state.ThreadState.[thread].MethodState.PendingTypeInit with
-        | None ->
-            executeOneStepInitialised loggerFactory baseClassTypes state thread logger
-            |> surfaceTerminatingStep thread
-        | Some ty ->
+        let ran =
+            match state.ThreadState.[thread].MethodState.PendingTypeInit with
+            | None -> executeOneStepInitialised loggerFactory baseClassTypes state thread logger
+            | Some ty ->
+                match runPendingTypeInit loggerFactory baseClassTypes state thread ty with
+                | Choice1Of2 result -> result
+                | Choice2Of2 state -> executeOneStepInitialised loggerFactory baseClassTypes state thread logger
 
-        match runPendingTypeInit loggerFactory baseClassTypes state thread ty with
-        | Choice1Of2 result -> result |> surfaceTerminatingStep thread
-        | Choice2Of2 state ->
-            executeOneStepInitialised loggerFactory baseClassTypes state thread logger
-            |> surfaceTerminatingStep thread
+        ran
+        |> AssemblyLoadEvent.announceBeforeStep loggerFactory baseClassTypes thread state
+        |> surfaceTerminatingStep thread
