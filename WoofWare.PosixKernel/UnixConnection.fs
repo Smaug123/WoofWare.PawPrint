@@ -31,6 +31,13 @@ type AcceptOutcome =
     /// `UnixWait.wakes` wakes it; then `UnixConnection.finishAccept` finishes
     /// the call.
     | WouldBlock of WakeCondition
+    /// The call was asleep, a signal with a handler interrupted it, and the call
+    /// restarts (`SyscallInterruption.Restart`): it never returns. The task is
+    /// no longer parked. Once the handlers have run, the client issues the
+    /// `accept` again with the arguments it was first made with.
+    ///
+    /// Only `finishAccept` answers this.
+    | Restarts
 
 /// Why this kernel will not answer an `accept`.
 ///
@@ -66,6 +73,9 @@ type AcceptRefusal =
     /// leaves it queued is unmeasured. Neither answer is available, so there is
     /// none to give.
     | UnmeasuredCopyOutFault of listener : SocketId
+    /// The accept was asleep and a signal is pending for the task, and this
+    /// library will not say how the signal ends it.
+    | Interruption of SyscallInterruptionRefusal
 
 [<RequireQualifiedAccess>]
 module AcceptRefusal =
@@ -81,6 +91,7 @@ module AcceptRefusal =
         | AcceptRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | AcceptRefusal.UnmeasuredCopyOutFault listener ->
             $"socket %O{listener} has a connection to hand over, so this call succeeds and copies the peer address out -- but the destination is unmapped, so that copy faults. Whether a real kernel loses the connection when it faults, having already taken it off the queue, is unmeasured, so EFAULT is not available here as it is for `getsockname`."
+        | AcceptRefusal.Interruption refusal -> SyscallInterruptionRefusal.describe refusal
 
 /// Why this kernel will not answer a `connect(2)` at all: the call reached an
 /// input whose real answer is unmeasured, or a state this library does not
@@ -1384,9 +1395,14 @@ module UnixConnection =
     ///
     /// On the flavours whose accepted socket inherits `O_NONBLOCK`, it inherits
     /// the listening description's flag as it stands when the call finishes.
-    /// An answer clears the park.
     ///
-    /// Never answers `Failed`. `task` must be parked in an accept.
+    /// With the queue empty, a signal with a handler pending for the task ends
+    /// the call: `Restarts` if every handler that runs was installed with
+    /// `SA_RESTART`, and `Failed EINTR` if none was. Either way the task leaves
+    /// the listener's queue of accepters, and issuing the call again puts it at
+    /// the back. An answer, `Restarts` included, clears the park.
+    ///
+    /// `task` must be parked in an accept.
     let finishAccept<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
@@ -1422,22 +1438,35 @@ module UnixConnection =
                 failwith
                     $"UnixConnection.finishAccept: task %O{task}'s accept waits on open file description %O{parked.Listener}, which names %A{description.Target} rather than a socket. `accept` parks only on a listening socket (this is a bug in the caller that recorded the park)."
 
+        let finished =
+            { system with
+                Tasks = UnixTaskTable.unpark task system.Tasks
+            }
+
         match (UnixMachineState.socket socketId system.Machine).Phase with
         | SocketPhase.Listening {
                                     Queue = _ :: _
                                 } ->
-            handOver socketId description.NonBlocking parked.Destination parked.DeclaredLength system
-            |> Result.map (fun (outcome, system) ->
-                outcome,
-                { system with
-                    Tasks = UnixTaskTable.unpark task system.Tasks
-                }
-            )
+            // Measured on Linux 6.18.5 (`signal-interrupt-requeue.c`, section
+            // D): a queued connection beats a pending signal. Darwin answers
+            // whichever came first, which `beforeCompleting` refuses.
+            match SyscallInterruption.beforeCompleting task system with
+            | Error refusal -> Error (AcceptRefusal.Interruption refusal)
+            | Ok () -> handOver socketId description.NonBlocking parked.Destination parked.DeclaredLength finished
         | SocketPhase.Listening {
                                     Queue = []
                                 } ->
-            let parkedAgain = ParkedSyscall.Accept parked
-            Ok (AcceptOutcome.WouldBlock (WakeCondition.ofPark parkedAgain), UnixWait.park task parkedAgain system)
+            // Measured on Linux 6.18.5 and Darwin 27.0.0
+            // (`signal-interrupt-requeue.c`, section B): an accepter that a
+            // signal ends, restarted or calling again on EINTR, returns after
+            // every accepter that parked before it, so it has left the queue.
+            match SyscallInterruption.ofPark task system with
+            | Error refusal -> Error (AcceptRefusal.Interruption refusal)
+            | Ok (Some SyscallInterruption.Eintr) -> Ok (AcceptOutcome.Failed UnixError.EINTR, finished)
+            | Ok (Some SyscallInterruption.Restart) -> Ok (AcceptOutcome.Restarts, finished)
+            | Ok None ->
+                let parkedAgain = ParkedSyscall.Accept parked
+                Ok (AcceptOutcome.WouldBlock (WakeCondition.ofPark parkedAgain), UnixWait.park task parkedAgain system)
         | phase ->
             failwith
                 $"UnixConnection.finishAccept: task %O{task}'s accept waits on socket %O{socketId}, which is in %A{phase} rather than listening. Nothing takes a live listener out of listening, so the park was recorded on a socket that was never one (this is a bug in the caller that recorded it)."

@@ -79,6 +79,7 @@ module PollEventsPal =
         // applies it.
         | PollOutcome.Answered (reported, triggered) -> PollOutcome.Answered (List.map ofPlatform reported, triggered)
         | PollOutcome.WouldBlock condition -> PollOutcome.WouldBlock condition
+        | PollOutcome.Failed error -> PollOutcome.Failed error
 
     /// `Common_Poll` between its argument screens and its copy-out: convert each
     /// entry's PAL `Events` and ask the kernel's `poll(2)`, made by `task`.

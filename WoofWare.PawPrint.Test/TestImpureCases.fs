@@ -1685,6 +1685,22 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // A signal interrupts the main thread's socket event wait, and
+                // the shim's EINTR loop leaves errno at EINTR when the wait then
+                // succeeds. Compared on every host: epoll_wait and kevent both
+                // fail with EINTR under SA_RESTART, and EINTR is 4 on both
+                // kernels, so the real runtime reports the same errno whichever
+                // kernel the host runs. The guest's comment says how it makes
+                // sure the wait is interrupted on the real runtime.
+                FileName = "SignalInterruptsSocketEventWait.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Always
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // A blocked epoll_wait holds its port by file reference:
                 // closing the fd the wait went through, with a dup keeping
                 // the description alive, still delivers when the edge

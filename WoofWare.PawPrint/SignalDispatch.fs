@@ -261,10 +261,13 @@ module SignalDispatch =
     /// restores the default or aborts the process (see `runPalFaultHandler`);
     /// every other handler is refused.
     ///
-    /// The leader is asked whatever it is doing. A real kernel interrupts a
-    /// system call the leader is blocked in to run the handler, and restarts
-    /// it afterwards or fails it with `EINTR`; PawPrint lets the call carry on
-    /// as though restarted.
+    /// A leader asleep in a syscall is not in user mode, and is not asked. A
+    /// signal it would take wakes it instead (`WakePrimitive.SignalDeliverable`),
+    /// the syscall's finishing call answers `EINTR` or a restart, and the shim
+    /// function that made it calls it again (see `NativeSystemNative`), leaving
+    /// the leader in user mode for the next poll. A leader in one of PawPrint's
+    /// own waits (a monitor, `Sleep`, a wait handle) is asked: CoreCLR's PAL
+    /// carries those waits on across a signal handler.
     let private deliverToLeader (state : IlMachineState) : SignalPoll =
         let leader = state.Kernel.Leader
 
@@ -278,6 +281,8 @@ module SignalDispatch =
         // two instructions, so it answers without assembling the kernel's view.
         // No frame outlives a poll, so none is waiting for a sigreturn either.
         if List.isEmpty (SignalState.pending state.Kernel.Signals) then
+            SignalPoll.Continues state
+        elif (UnixTaskTable.parkedFor leader state.Kernel.Tasks).IsSome then
             SignalPoll.Continues state
         else
 

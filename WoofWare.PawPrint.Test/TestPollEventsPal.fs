@@ -429,6 +429,7 @@ module TestPollEventsPal =
                     | Error refusal -> yield $"PAL events 0x%04x{raw}: refused: %s{PollRefusal.describe refusal}"
                     | Ok (PollOutcome.WouldBlock condition, _) ->
                         yield $"PAL events 0x%04x{raw}: parked at timeout 0 on %A{condition}"
+                    | Ok (PollOutcome.Failed error, _) -> yield $"PAL events 0x%04x{raw}: failed with %O{error}"
                     | Ok (PollOutcome.Answered (reported, count), _) ->
                         for fd, expected, reported in List.zip3 fds expected reported do
                             if expected <> reported then

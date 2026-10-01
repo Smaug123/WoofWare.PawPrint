@@ -24,6 +24,7 @@
     <Compile Include="BindingProbes.fs" />
     <Compile Include="Tasks.fs" />
     <Compile Include="HandlerFrames.fs" />
+    <Compile Include="Interruptible.fs" />
     <Compile Include="TestUnixTaskTable.fs" />
     <Compile Include="CredentialsGen.fs" />
     <Compile Include="TestCredentials.fs" />
@@ -36,6 +37,7 @@
     <Compile Include="TestOwnerChange.fs" />
     <Compile Include="TestWakeCondition.fs" />
     <Compile Include="TestUnixWait.fs" />
+    <Compile Include="TestSyscallInterruption.fs" />
     <Compile Include="TestUnixTaskLifecycle.fs" />
     <Compile Include="TestThreadIds.fs" />
     <Compile Include="TestProcessTermination.fs" />

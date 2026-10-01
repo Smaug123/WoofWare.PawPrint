@@ -605,6 +605,15 @@ type NativeHandlerResult =
     /// written through the caller's arguments, as
     /// `SystemNative_WaitForSocketEvents`' event buffer does.
     | BlockedRetainingFrame of IlMachineState * StepEffect
+    /// Native handler's call is unfinished, and its thread is not blocked: it stays
+    /// Runnable, and its next step runs the handler again from the top. Dispatcher leaves
+    /// the native frame on the stack and does not advance the caller's program counter, as
+    /// for `BlockedRetainingFrame`, and reports `WhatWeDid.Executed`.
+    ///
+    /// What a C wrapper's retry loop does once a signal has interrupted the syscall it
+    /// loops on: the thread returns to user mode, where the signal's handlers run between
+    /// two steps, and then the wrapper issues the call again.
+    | ReenterRetainingFrame of IlMachineState * StepEffect
     /// A sub-call's exception (typically a `TypeInitializationException` raised by a
     /// previously-failed `.cctor`) has already been dispatched into the guest and unwound
     /// past this native frame to a matching handler. The state already reflects the
@@ -796,6 +805,11 @@ module NativeHandlerResult =
     /// the relevant `Scheduler` helper; this only tells the dispatcher to keep the frame.
     let blockedRetainingFrame (state : IlMachineState) : NativeHandlerResult =
         NativeHandlerResult.BlockedRetainingFrame (state, StepEffect.NoEffect)
+
+    /// Native handler's call is to be issued again, from the top, on its thread's next step;
+    /// the thread stays Runnable. See `ReenterRetainingFrame`.
+    let reenterRetainingFrame (state : IlMachineState) : NativeHandlerResult =
+        NativeHandlerResult.ReenterRetainingFrame (state, StepEffect.NoEffect)
 
     /// Native handler is raising the given exception type. The dispatcher allocates
     /// the exception, calls its parameterless ctor, arms dispatch-on-return, and

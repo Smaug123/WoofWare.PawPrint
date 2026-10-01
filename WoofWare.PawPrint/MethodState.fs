@@ -194,6 +194,14 @@ and MethodState =
         /// parks the thread on another thread's initialisation, this frame is re-entered with the
         /// field still set and asks again.
         PendingTypeInit : ConcreteTypeHandle option
+        /// For a P/Invoke frame, whether the forward stub has zeroed the thread's system
+        /// error before the call, as it does for an import declaring `SetLastError`
+        /// (`NativeDispatch.clearLastError`). The stub does that once per call, so a
+        /// re-entry of the same frame finds whatever the call has written since: a C
+        /// wrapper that calls again after `EINTR` has left errno at `EINTR`.
+        ///
+        /// Meaningless for any other frame.
+        LastErrorCleared : bool
     }
 
     member this.IlOpIndex = this._IlOpIndex
@@ -301,6 +309,13 @@ and MethodState =
     static member clearPendingTypeInit (state : MethodState) : MethodState =
         { state with
             PendingTypeInit = None
+        }
+
+    /// The forward P/Invoke stub has zeroed the thread's system error for this call. See
+    /// `LastErrorCleared`.
+    static member markLastErrorCleared (state : MethodState) : MethodState =
+        { state with
+            LastErrorCleared = true
         }
 
     /// Clear any pending prefix opcodes. Must be called whenever the PC is set to a
@@ -443,5 +458,6 @@ and MethodState =
             CatchExceptions = Map.empty
             PendingPrefix = PrefixState.empty
             PendingTypeInit = None
+            LastErrorCleared = false
         }
         |> Ok
