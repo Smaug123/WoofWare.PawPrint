@@ -53,7 +53,7 @@ let contextMethodGenerics = currentMethod.Generics
 
 ## Key Files
 
-- **WoofWare.PawPrint.Loader/TypeConcretisation.fs**: Core type concretization logic
+- **WoofWare.PawPrint.TypeSystem/TypeConcretisation.fs**: Core type concretization logic
   - `concretizeType`: Main entry point
   - `concretizeGenericInstantiation`: Handles generic instantiations like `List<T>`
   - `ConcretizationContext`: Tracks state during concretization

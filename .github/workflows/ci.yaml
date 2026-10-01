@@ -220,6 +220,11 @@ jobs:
       with:
         name: nuget-package-loader
         path: WoofWare.PawPrint.Loader/bin/Release/WoofWare.PawPrint.Loader.*.nupkg
+    - name: Upload NuGet artifact (TypeSystem)
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: nuget-package-typesystem
+        path: WoofWare.PawPrint.TypeSystem/bin/Release/WoofWare.PawPrint.TypeSystem.*.nupkg
     - name: Upload NuGet artifact (Analysis)
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
@@ -273,6 +278,17 @@ jobs:
       - name: Check NuGet contents
         # Verify that there is exactly one nupkg in the artifact that would be NuGet published
         run: if [[ $(find packed-loader -maxdepth 1 -name 'WoofWare.PawPrint.Loader.*.nupkg' -printf c | wc -c) -ne "1" ]]; then exit 1; fi
+      - name: Download NuGet artifact (TypeSystem)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: nuget-package-typesystem
+          path: packed-typesystem
+      # As for PosixKernel below: WoofWare.PawPrint's nuspec depends on this package because a
+      # ProjectReference always becomes one, so a nupkg that stopped being produced would leave
+      # that dependency pointing at nothing with every other check still green.
+      - name: Check NuGet contents
+        # Verify that there is exactly one nupkg in the artifact that would be NuGet published
+        run: if [[ $(find packed-typesystem -maxdepth 1 -name 'WoofWare.PawPrint.TypeSystem.*.nupkg' -printf c | wc -c) -ne "1" ]]; then exit 1; fi
       - name: Download NuGet artifact (Analysis)
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -304,6 +320,7 @@ jobs:
         - nuget-package-domain
         - nuget-package-semantics
         - nuget-package-loader
+        - nuget-package-typesystem
         - nuget-package-analysis
         - nuget-package-posixkernel
     runs-on: ubuntu-latest

@@ -131,7 +131,7 @@ module TestAssemblyDictionaryKeying =
     let ``ensureTypeDefinitionBaseAssembliesLoaded succeeds for a type reached through a forwarding facade`` () : unit =
         let loaded, _, _, targetAssembly, identity = loadForwardedAccessControlType ()
 
-        Concretization.ensureTypeDefinitionBaseAssembliesLoaded
+        BaseChainLoading.ensureTypeDefinitionBaseAssembliesLoaded
             (loader ())
             loaded
             loaded.[targetAssembly.Name]

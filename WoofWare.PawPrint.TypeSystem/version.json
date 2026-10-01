@@ -1,5 +1,5 @@
 {
-  "version": "0.10",
+  "version": "0.1",
   "publicReleaseRefSpec": [
     "^refs/heads/main$"
   ],
@@ -7,11 +7,7 @@
     "./",
     ":/WoofWare.PawPrint.Domain",
     ":/WoofWare.PawPrint.Loader",
-    ":/WoofWare.PawPrint.Semantics",
-    ":/WoofWare.PawPrint.TypeSystem",
-    ":/WoofWare.PosixKernel",
     ":/Directory.Build.props",
-    ":/README.md",
     ":/logos/light.png"
   ]
 }

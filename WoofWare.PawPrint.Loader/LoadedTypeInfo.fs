@@ -19,7 +19,7 @@ open Microsoft.FSharp.Core
 /// </summary>
 /// <remarks>
 /// Every assembly on the base chain must already be loaded; these functions fail rather than load
-/// one. <c>Concretization.tryEnsureTypeDefinitionBaseAssembliesLoaded</c> is how a caller arranges that.
+/// one. <c>BaseChainLoading.tryEnsureTypeDefinitionBaseAssembliesLoaded</c> is how a caller arranges that.
 /// </remarks>
 [<RequireQualifiedAccess>]
 module LoadedTypeInfo =

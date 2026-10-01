@@ -6,6 +6,7 @@
   <Project Path="WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj" />
   <Project Path="WoofWare.PawPrint.Loader/WoofWare.PawPrint.Loader.fsproj" />
   <Project Path="WoofWare.PawPrint.Semantics/WoofWare.PawPrint.Semantics.fsproj" />
+  <Project Path="WoofWare.PawPrint.TypeSystem/WoofWare.PawPrint.TypeSystem.fsproj" />
   <Project Path="WoofWare.PawPrint.IlDump/WoofWare.PawPrint.IlDump.fsproj" />
   <Project Path="WoofWare.PawPrint.Logging/WoofWare.PawPrint.Logging.fsproj" />
   <Project Path="WoofWare.PawPrint.Performance/WoofWare.PawPrint.Performance.fsproj" />

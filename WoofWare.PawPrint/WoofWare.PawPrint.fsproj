@@ -248,6 +248,7 @@
     <ProjectReference Include="..\WoofWare.PawPrint.Domain\WoofWare.PawPrint.Domain.fsproj" />
     <ProjectReference Include="..\WoofWare.PawPrint.Loader\WoofWare.PawPrint.Loader.fsproj" />
     <ProjectReference Include="..\WoofWare.PawPrint.Semantics\WoofWare.PawPrint.Semantics.fsproj" />
+    <ProjectReference Include="..\WoofWare.PawPrint.TypeSystem\WoofWare.PawPrint.TypeSystem.fsproj" />
     <ProjectReference Include="..\WoofWare.PosixKernel\WoofWare.PosixKernel.fsproj" />
   </ItemGroup>
 
