@@ -128,7 +128,12 @@ class Program
 
                 let overridden = SignalState.disposition signal startup <> SignalDisposition.Default
 
-                let restored = StartupSignalDispositions.restoresDefaultWhenSent numbering signal
+                let restored =
+                    match SignalState.disposition signal startup with
+                    | SignalDisposition.Catch {
+                                                  Handler = NativeSignalHandler.CoreClrPalFault _
+                                              } -> true
+                    | _ -> false
 
                 let terminatesByDefault =
                     Signal.defaultDispositionUnder numbering signal = DefaultDisposition.Terminate
@@ -137,10 +142,11 @@ class Program
                 // unless the runtime's own disposition decides it anyway.
                 if hostIgnores signo && terminatesByDefault && not overridden then
                     Claim.Inherited
-                // Over an inherited ignore, the handler that would restore the
-                // default aborts the process at the first signal instead (see
-                // `restoresDefaultWhenSent`), so only the claim every overridden
-                // row makes is checked: that the default is not what happens.
+                // Over an inherited ignore, the fault handler aborts the process
+                // at the first signal instead of restoring the default (see
+                // `NativeSignalHandler.CoreClrPalFault`), so only the claim every
+                // overridden row makes is checked: that the default is not what
+                // happens.
                 elif overridden && restored && not (hostIgnores signo) then
                     Claim.OverriddenOnce
                 elif overridden then

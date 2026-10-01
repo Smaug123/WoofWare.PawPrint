@@ -83,6 +83,29 @@ class Program
 }
 """
 
+    /// Sends itself SIGILL once, and returns 0 if it survives.
+    let private faultSignalGuest : string =
+        """
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+class Program
+{
+    [DllImport("libc", EntryPoint = "kill", SetLastError = true)]
+    static extern int Kill(int pid, int sig);
+
+    static int Main(string[] args)
+    {
+        if (Kill(Environment.ProcessId, 4) != 0) return 1;
+
+        // Long enough for a death to arrive, had the signal caused one.
+        Thread.Sleep(TimeSpan.FromSeconds(1));
+        return 0;
+    }
+}
+"""
+
     let private runUnderPawPrint
         (platform : SimulatedUnixPlatform)
         (ignored : Set<Signal>)
@@ -172,4 +195,30 @@ class Program
 
             RealRuntime.executeWithRealRuntime [||] image
             |> shouldEqual (RealRuntimeResult.NormalExit (128 + 2))
+        )
+
+    [<Test>]
+    let ``an inherited-ignored SIGILL aborts the process at the first on both runtimes`` () : unit =
+        // SIGILL is 4 on both flavours. The runtime's handler replaces the
+        // ignore, and, sent the signal, aborts the process because what it
+        // replaced was an ignore. Without the ignore, both survive the first.
+        // (SIGILL rather than SIGSEGV, which PawPrint answers over an ignore
+        // but refuses at its default on Linux; see `NativeLibc.screenSelfSignal`.)
+        HostPlatform.onUnixHost (fun flavour ->
+            let platform = HostPlatform.platformOf flavour
+            let image = Roslyn.compile [ faultSignalGuest ]
+
+            match runUnderPawPrint platform (Set.singleton (Signal.Other 4)) 0 image with
+            | RunOutcome.SignalTerminated (_, signal, _) -> signal |> shouldEqual Signal.SIGABRT
+            | other -> failwith $"PawPrint: expected death by SIGABRT, got %O{other}"
+
+            RealRuntime.executeWithInheritedIgnores [ 4 ] [||] image
+            |> shouldEqual (RealRuntimeResult.NormalExit (128 + 6))
+
+            match runUnderPawPrint platform Set.empty 0 image with
+            | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 0
+            | other -> failwith $"PawPrint: expected a clean exit, got %O{other}"
+
+            RealRuntime.executeWithRealRuntime [||] image
+            |> shouldEqual (RealRuntimeResult.NormalExit 0)
         )

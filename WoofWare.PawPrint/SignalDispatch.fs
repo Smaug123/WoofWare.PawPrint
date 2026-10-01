@@ -8,8 +8,9 @@ open WoofWare.PosixKernel
 type SignalPoll =
     /// The process carries on, in this state.
     | Continues of IlMachineState
-    /// System.Native re-raised a signal at its default, which killed the
-    /// process; the state is the machine as it stood then.
+    /// A signal killed the process: one System.Native re-raised at its
+    /// default, or the SIGABRT of an abort a native handler called. The state
+    /// is the machine as it stood then.
     | ProcessKilled of IlMachineState * signal : Signal * coreDumped : bool
 
 /// System.Native's signal handling, between two guest instructions: its native
@@ -26,7 +27,10 @@ type SignalPoll =
 ///     delivers to it now (see `UnixSignal.onReturnToUser`), with a handler
 ///     frame for each caught one; for each one System.Native catches, its
 ///     handler writes the signal's number into the pipe and returns through
-///     `sigreturn`. No guest code runs, and the dispatcher need not be idle.
+///     `sigreturn`. For one CoreCLR's hardware-fault handler catches, that
+///     handler restores the default, or aborts the process (see
+///     `runPalFaultHandler`). No guest code runs, and the dispatcher need not
+///     be idle.
 ///     Several signals delivered at one return are written in the reverse of
 ///     the order the kernel took them in, as a real kernel's handler frames
 ///     run them.
@@ -121,29 +125,90 @@ module SignalDispatch =
     let private signalByte (numbering : SignalNumbering) (signal : Signal) : byte =
         byte (Signal.toRawSignoUnder numbering signal)
 
-    /// System.Native's native handler for `frame`'s signal, run on the leader:
-    /// write the signal's number into the shim's pipe.
+    /// CoreCLR's PAL's handler for a hardware-fault signal, run on the leader
+    /// for `frame`'s signal, which a process sent rather than a fault raised;
+    /// `replaced` is the disposition the PAL saved when it installed the
+    /// handler. `frame` is the handler's own, or System.Native's, whose
+    /// handler calls it first.
     ///
-    /// Fails where the real handler would do more than that: where it would
-    /// first run the handler it replaced (see
-    /// `PosixSignalShim.chainsToNativeHandler`), and where its `write` would
-    /// not take the byte. The handler retries only `EINTR` and calls `abort()`
-    /// on any other failure, and a write into a full pipe blocks the leader
-    /// until the dispatcher makes room.
+    /// Finding no fault in managed code to handle (SIGABRT's handler does not
+    /// look), the handler calls `invoke_previous_action`
+    /// (pal/src/exception/signal.cpp). Over
+    /// the default, that restores it and returns, expecting a faulting
+    /// instruction to raise the signal again; a sent signal is not raised
+    /// again, so the process carries on with the default installed, which
+    /// replaces whichever handler `frame` belongs to. Over an ignore, it calls
+    /// `PROCAbort`, and the process dies of SIGABRT.
+    let private runPalFaultHandler
+        (replaced : PalReplacedDisposition)
+        (frame : HandlerFrame<ThreadId, NativeSignalHandler>)
+        (state : IlMachineState)
+        : SignalPoll
+        =
+        let signal = frame.Entry.Signal
+
+        match replaced with
+        | PalReplacedDisposition.Default ->
+            // Before the restore, `invoke_previous_action` runs the runtime's
+            // one-shot shutdown notification, which cleans up the debugger
+            // transport, and writes a crash dump if one is configured; PawPrint
+            // models neither, and the guest sees neither.
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    Process =
+                        { kernel.Process with
+                            Signals = SignalState.setDisposition signal SignalDisposition.Default kernel.Signals
+                        }
+                }
+            )
+            |> SignalPoll.Continues
+        | PalReplacedDisposition.Ignore ->
+            // `abort` unblocks SIGABRT before raising it, which `frame`'s mask
+            // holds if `frame` is SIGABRT's own; returning through the frame
+            // first unblocks it the same way, and nothing else runs before the
+            // process dies.
+            let state =
+                state.MapKernel (fun kernel ->
+                    EmulatedKernel.withUnix
+                        (UnixSignal.sigreturn kernel.Leader frame.Id (EmulatedKernel.unix kernel))
+                        kernel
+                )
+
+            match EmulatedKernel.abort state.Kernel.Leader state.Kernel with
+            | ProcessTermination.Signaled (killedBy, coreDumped) ->
+                SignalPoll.ProcessKilled (state, killedBy, coreDumped)
+            | ProcessTermination.Exited _ as other ->
+                failwith $"SignalDispatch.poll: the PAL's abort for %O{signal} ended the process by %O{other}"
+
+    /// System.Native's native handler for `frame`'s signal, run on the leader:
+    /// write the signal's number into the shim's pipe, having first run the
+    /// handler it replaced (see `PosixSignalShim.chainsToNativeHandler`).
+    ///
+    /// Fails where the real handler would do more than that: where the
+    /// handler it replaced is not the PAL's hardware-fault handler, and where
+    /// its `write` would not take the byte. The handler retries only `EINTR`
+    /// and calls `abort()` on any other failure, and a write into a full pipe
+    /// blocks the leader until the dispatcher makes room.
     let private runNativeHandler
         (frame : HandlerFrame<ThreadId, NativeSignalHandler>)
         (state : IlMachineState)
-        : IlMachineState
+        : SignalPoll
         =
         let signal = frame.Entry.Signal
         let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
         let shim = state.Kernel.PosixSignalShim
 
-        match PosixSignalShim.chainsToNativeHandler numbering signal shim with
-        | Some chained ->
-            failwith
-                $"SignalDispatch.poll: System.Native's handler for %O{signal} would first run the handler it replaced (%O{chained}), which PawPrint does not model."
-        | None ->
+        let chained =
+            match PosixSignalShim.chainsToNativeHandler numbering signal shim with
+            | None -> SignalPoll.Continues state
+            | Some (NativeSignalHandler.CoreClrPalFault replaced) -> runPalFaultHandler replaced frame state
+            | Some chained ->
+                failwith
+                    $"SignalDispatch.poll: System.Native's handler for %O{signal} would first run the handler it replaced (%O{chained}), which PawPrint does not model."
+
+        match chained with
+        | SignalPoll.ProcessKilled _ -> chained
+        | SignalPoll.Continues state ->
 
         let pipe =
             match PosixSignalShim.signalPipe shim with
@@ -184,20 +249,23 @@ module SignalDispatch =
 
         match UnixReadWrite.write pipe.WriteEnd bytes system with
         | Error refusal -> refuse (WriteRefusal.describe refusal)
-        | Ok (WriteAnswer.Completed 1L, system) -> state.MapKernel (EmulatedKernel.withUnix system)
+        | Ok (WriteAnswer.Completed 1L, system) ->
+            state.MapKernel (EmulatedKernel.withUnix system) |> SignalPoll.Continues
         | Ok (answer, _) -> refuse $"the kernel answers %O{answer}"
 
     /// The leader's return to user mode: whatever the kernel delivers to it now,
     /// each through its disposition. A handler frame's handler runs, innermost
     /// first, and each returns through `sigreturn`, after which the leader
     /// returns to user mode again and may take more. System.Native's handler
-    /// writes its signal into the pipe; every other disposition is refused.
+    /// writes its signal into the pipe, and the PAL's hardware-fault handler
+    /// restores the default or aborts the process (see `runPalFaultHandler`);
+    /// every other handler is refused.
     ///
     /// The leader is asked whatever it is doing. A real kernel interrupts a
     /// system call the leader is blocked in to run the handler, and restarts
     /// it afterwards or fails it with `EINTR`; PawPrint lets the call carry on
     /// as though restarted.
-    let private deliverToLeader (state : IlMachineState) : IlMachineState =
+    let private deliverToLeader (state : IlMachineState) : SignalPoll =
         let leader = state.Kernel.Leader
 
         match PosixSignalShim.signalThread state.Kernel.PosixSignalShim with
@@ -210,7 +278,7 @@ module SignalDispatch =
         // two instructions, so it answers without assembling the kernel's view.
         // No frame outlives a poll, so none is waiting for a sigreturn either.
         if List.isEmpty (SignalState.pending state.Kernel.Signals) then
-            state
+            SignalPoll.Continues state
         else
 
         let returnToUser
@@ -236,20 +304,30 @@ module SignalDispatch =
 
         // Run `frames`, innermost first, each followed by its `sigreturn` and a
         // return to user mode, which may push frames that run before the rest.
-        let rec runFrames (frames : HandlerFrame<ThreadId, NativeSignalHandler> list) (state : IlMachineState) =
+        let rec runFrames
+            (frames : HandlerFrame<ThreadId, NativeSignalHandler> list)
+            (state : IlMachineState)
+            : SignalPoll
+            =
             match frames with
-            | [] -> state
+            | [] -> SignalPoll.Continues state
             | frame :: outer ->
 
-            let state =
+            let handled =
                 match frame.Action.Handler with
                 | NativeSignalHandler.SystemNative -> runNativeHandler frame state
-                | NativeSignalHandler.CoreClrPal
+                | NativeSignalHandler.CoreClrPalFault replaced -> runPalFaultHandler replaced frame state
+                | NativeSignalHandler.CoreClrPalTrap
+                | NativeSignalHandler.CoreClrPalActivation
                 | NativeSignalHandler.GlibcSetXid ->
                     // `NativeLibc.kill` refuses to generate these, so this is a
                     // test driving the queue by hand.
                     failwith
                         $"SignalDispatch.poll: %O{frame.Entry.Signal} is caught by a native handler the runtime or libc installed before Main (%O{frame.Action.Handler}), which PawPrint does not model."
+
+            match handled with
+            | SignalPoll.ProcessKilled _ -> handled
+            | SignalPoll.Continues state ->
 
             let state =
                 state.MapKernel (fun kernel ->
@@ -258,14 +336,13 @@ module SignalDispatch =
 
             state |> returnToUserThen (runFrames outer)
 
-        and returnToUserThen
-            (continuation : IlMachineState -> IlMachineState)
-            (state : IlMachineState)
-            : IlMachineState
-            =
+        and returnToUserThen (continuation : IlMachineState -> SignalPoll) (state : IlMachineState) : SignalPoll =
             match returnToUser state with
             | None, state -> continuation state
-            | Some (SignalDelivery.RunHandlers frames), state -> state |> runFrames frames |> continuation
+            | Some (SignalDelivery.RunHandlers frames), state ->
+                match runFrames frames state with
+                | SignalPoll.Continues state -> continuation state
+                | killed -> killed
             | Some (SignalDelivery.DefaultTerminate (signal, _)), _
             | Some (SignalDelivery.DefaultStop signal), _
             | Some (SignalDelivery.DefaultContinue signal), _ ->
@@ -280,7 +357,7 @@ module SignalDispatch =
                 failwith
                     $"SignalDispatch.poll: pending %O{signal} is at its default disposition, and its kernel default is not Ignore; applying a default disposition at delivery rather than at generation is not modelled."
 
-        returnToUserThen id state
+        returnToUserThen SignalPoll.Continues state
 
     /// Start the managed callback for `signal` on the parked dispatcher: the
     /// shim's `g_posixSignalHandler(signo, posixSignal)`.
@@ -479,7 +556,9 @@ module SignalDispatch =
     /// scheduler picks its next thread, so a dispatcher it wakes can be picked
     /// on the same tick.
     let poll (baseClassTypes : BaseClassTypes<DumpedAssembly>) (state : IlMachineState) : SignalPoll =
-        deliverToLeader state |> wakeDispatcher baseClassTypes
+        match deliverToLeader state with
+        | SignalPoll.Continues state -> wakeDispatcher baseClassTypes state
+        | killed -> killed
 
     /// Called from `Program.stepPrepared` when `ExecutionResult.Terminated`
     /// fires for the dispatcher's bottom frame (the callback `ret`urned past

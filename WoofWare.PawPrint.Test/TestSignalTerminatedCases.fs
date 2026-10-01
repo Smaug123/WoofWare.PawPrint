@@ -49,6 +49,24 @@ module TestSignalTerminatedCases =
                 FileName = "PosixSignalKillNotCancelled.cs"
                 Signo = 15
             }
+            {
+                // libc's kill(2) of SIGILL and SIGABRT to itself, both
+                // survived, and then a second SIGILL, which is not.
+                FileName = "LibcKillFaultSignalSecondTime.cs"
+                Signo = 4
+            }
+            {
+                // The same with a PosixSignalRegistration handler for SIGILL,
+                // which runs for the first.
+                FileName = "PosixSignalRegisteredFaultSignal.cs"
+                Signo = 4
+            }
+            {
+                // The same, with System.Native's enabling of SIGILL called
+                // again between the two: it does not reinstall the handler.
+                FileName = "PosixSignalReenabledAfterFaultRestore.cs"
+                Signo = 4
+            }
         ]
 
     [<TestCaseSource(nameof cases)>]
