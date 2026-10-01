@@ -146,7 +146,7 @@ module TestPrologueExceptionScope =
                 Constructing = ConstructionState.NotConstructing
                 CallSiteIlOpIndex = 0
                 ReturnValueDisposition = ReturnValueDisposition.PushToCaller
-                WrapExceptionInTargetInvocation = false
+                ExceptionEscape = ExceptionEscape.Propagate
             }
 
         let calleeFrame =

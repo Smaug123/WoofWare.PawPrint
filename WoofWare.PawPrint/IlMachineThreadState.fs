@@ -39,7 +39,7 @@ module IlMachineThreadState =
             ThreadState = state.ThreadState |> Map.add thread threadState
         }
 
-    /// Set `WrapExceptionInTargetInvocation = true` on the active frame's `ReturnState`, which
+    /// Set `ExceptionEscape.WrapInTargetInvocation` on the active frame's `ReturnState`, which
     /// must be the initialiser of `initialising` that `ensureTypeInitialised` has just pushed.
     /// An exception escaping that initialiser then surfaces to the frame beneath as a
     /// `TypeInitializationException` wrapped in a fresh `TargetInvocationException`, which is
@@ -64,7 +64,7 @@ module IlMachineThreadState =
                     ReturnState =
                         Some
                             { returnState with
-                                WrapExceptionInTargetInvocation = true
+                                ExceptionEscape = ExceptionEscape.WrapInTargetInvocation
                             }
                 }
             | Some returnState ->

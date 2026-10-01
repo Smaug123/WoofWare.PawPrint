@@ -107,6 +107,23 @@ type ReturnValueDisposition =
     /// a return value, and no caller wants that discarded.
     | Discard
 
+/// What happens to an exception that escapes a frame, decided by whatever pushed the frame rather
+/// than by the frame's own method: the runtime code that calls a method can catch what it throws.
+[<RequireQualifiedAccess>]
+type ExceptionEscape =
+    /// The exception unwinds into the caller frame, as from any call the guest made itself.
+    | Propagate
+    /// The exception is wrapped in a fresh `System.Reflection.TargetInvocationException` whose
+    /// `_innerException` points at the original exception object. Used by the
+    /// `Activator.CreateInstance<T>()` intrinsic to reproduce CoreCLR's
+    /// `RuntimeType.CreateInstanceOfT` `try { ctor } catch (Exception e) { throw new
+    /// TargetInvocationException(e); }` wrap without synthesising a trampoline frame, and by the
+    /// `RuntimeFieldHandle_GetValue`/`_SetValue` QCalls on the `.cctor` frame they push, for
+    /// CoreCLR's `EX_TRY` around the initialiser in `InvokeUtil::GetFieldValue`/`SetValidField`.
+    /// The wrap fires only on unwind across this frame's boundary, so a `try`/`catch` *inside*
+    /// the frame that handles the exception is unaffected.
+    | WrapInTargetInvocation
+
 type MethodReturnState =
     {
         /// Handle to the caller's frame
@@ -127,17 +144,8 @@ type MethodReturnState =
         /// exception ctors via the dispatch loop, and `Discard` by
         /// `DynamicScopeOperand.mintDynamicMethod`.
         ReturnValueDisposition : ReturnValueDisposition
-        /// When true, an exception escaping this frame is wrapped in a fresh
-        /// `System.Reflection.TargetInvocationException` whose `_innerException` points at the
-        /// original exception object. Used by the `Activator.CreateInstance<T>()` intrinsic to
-        /// reproduce CoreCLR's `RuntimeType.CreateInstanceOfT` `try { ctor } catch (Exception e)
-        /// { throw new TargetInvocationException(e); }` wrap without synthesising a trampoline
-        /// frame, and by the `RuntimeFieldHandle_GetValue`/`_SetValue` QCalls on the `.cctor`
-        /// frame they push, for CoreCLR's `EX_TRY` around the initialiser in
-        /// `InvokeUtil::GetFieldValue`/`SetValidField`. The wrap fires only on unwind across this
-        /// frame's boundary, so a `try`/`catch` *inside* the frame that handles the exception is
-        /// unaffected.
-        WrapExceptionInTargetInvocation : bool
+        /// What happens to an exception that escapes this frame.
+        ExceptionEscape : ExceptionEscape
     }
 
 and MethodState =

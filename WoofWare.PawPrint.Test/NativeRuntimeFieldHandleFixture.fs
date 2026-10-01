@@ -520,7 +520,7 @@ public sealed class GenericHolder<T>
                 failwith
                     $"expected the active frame to be initialising %O{initialising}, but it is initialising %O{returnState.WasInitialisingType}"
 
-            if not returnState.WrapExceptionInTargetInvocation then
+            if returnState.ExceptionEscape <> ExceptionEscape.WrapInTargetInvocation then
                 failwith "expected the initialiser frame to wrap an escaping exception in TargetInvocationException"
 
     /// Record `ty`'s initialiser as having already failed on `thread`, caching a freshly

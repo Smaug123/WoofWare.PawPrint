@@ -337,7 +337,7 @@ module internal UnaryMetadataObjectOps =
                 threadState
                 None
                 ReturnValueDisposition.PushToCaller
-                false // wrapExceptionInTargetInvocation
+                ExceptionEscape.Propagate
                 state
         else
 
@@ -383,7 +383,7 @@ module internal UnaryMetadataObjectOps =
             threadState
             None
             ReturnValueDisposition.PushToCaller
-            false // wrapExceptionInTargetInvocation
+            ExceptionEscape.Propagate
             state
 
     let executeNewobj (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =

@@ -459,7 +459,7 @@ module AbstractMachine =
                     currentThreadState
                     originalCallSitePC
                     ReturnValueDisposition.PushToCaller
-                    false // wrapExceptionInTargetInvocation
+                    ExceptionEscape.Propagate
                     state
 
             // A suspension here would be unrecoverable — the delegate's synthetic frame is
