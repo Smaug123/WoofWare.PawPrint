@@ -1968,7 +1968,7 @@ type KernelConfig =
         /// symbolic link, or opening another user's file with `O_CREAT`, in a
         /// sticky world-writable (or, for `protected_regular=2`, group-writable)
         /// directory. Defaults to `ProtectedFiles.off`, the kernel's own default;
-        /// many distributions set them non-zero (Ubuntu's are 1, 2 and 1). Only
+        /// many distributions set them non-zero through `sysctl.d`. Only
         /// `ProtectedFiles.off` is admitted on Darwin, which has none of them.
         ///
         /// They decide anything only where a seed gives some inode an owner

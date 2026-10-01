@@ -100,7 +100,7 @@ module TestKernelConfig =
                 .Machine.ProtectedFiles
             |> shouldEqual ProtectedFiles.off
 
-        let ubuntu : ProtectedFiles =
+        let configured : ProtectedFiles =
             {
                 Symlinks = SymlinkProtection.InWorldWritableStickyDirectories
                 RegularFiles = CreationProtection.InGroupOrWorldWritableStickyDirectories
@@ -109,16 +109,16 @@ module TestKernelConfig =
 
         (KernelConfig.toKernel
             { KernelConfig.Default with
-                ProtectedFiles = ubuntu
+                ProtectedFiles = configured
             })
             .Machine.ProtectedFiles
-        |> shouldEqual ubuntu
+        |> shouldEqual configured
 
         let darwin () =
             KernelConfig.toKernel
                 { KernelConfig.Default with
                     UnixPlatform = SimulatedUnixPlatform.macOsArm64
-                    ProtectedFiles = ubuntu
+                    ProtectedFiles = configured
                 }
             |> ignore<EmulatedKernel>
 
