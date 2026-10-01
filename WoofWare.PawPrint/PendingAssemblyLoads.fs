@@ -18,9 +18,9 @@ type private AssemblyLoadBatch =
 /// </summary>
 /// <remarks>
 /// CoreCLR raises the event on the loading thread once each load completes, after releasing the
-/// load lock (<c>Assembly::DeliverAsyncEvents</c>). PawPrint records what a thread's step loaded and
-/// announces it at the start of that thread's next step, which is an interleaving CoreCLR also
-/// permits: the loading thread can be preempted between finishing a load and raising its event.
+/// load lock (<c>Assembly::DeliverAsyncEvents</c>), and before anything in the assembly runs.
+/// PawPrint records what a thread's step loaded, discards the step, and announces the assemblies
+/// one by one before the step runs again (<c>AssemblyLoadEvent.announceBeforeStep</c>).
 ///
 /// A load made while an announcement is running belongs to a step executing inside it, so it is
 /// announced inside it too, before the rest of the outer batch, as CoreCLR's nested delivery does.

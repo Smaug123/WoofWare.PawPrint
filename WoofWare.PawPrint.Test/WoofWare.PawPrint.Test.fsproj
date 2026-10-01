@@ -141,6 +141,7 @@
     <Compile Include="TestSzArrayInterfaceDispatch.fs" />
     <Compile Include="TestArrayInterfaceMap.fs" />
     <Compile Include="TestCrossAssemblyTypeInitialisation.fs" />
+    <Compile Include="TestCrossAssemblyAssemblyLoadEvent.fs" />
     <Compile Include="TestCrossAssemblyCastclass.fs" />
     <Compile Include="TestCrossAssemblyExecutingAssembly.fs" />
     <Compile Include="TestCrossAssemblyDispatch.fs" />

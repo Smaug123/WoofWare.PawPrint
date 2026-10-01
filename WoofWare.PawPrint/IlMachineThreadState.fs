@@ -623,10 +623,9 @@ module IlMachineThreadState =
                 // happens at a handler frame's bottom `ret`.
                 IsRaisingForeignException = existing.IsRaisingForeignException
                 // Frame ids restart from zero, so a pending announcement waiting on one of the old
-                // frames could not be carried across. None can be pending (checked above): a load
-                // is announced, or forgotten for want of a subscriber, at the start of the step
-                // after it, and the final `ret` step records nothing — `AssemblyLoadEvent.recordLoads`
-                // refuses a load in that step if anything is subscribed.
+                // frames could not be carried across. None can be pending (checked above): a step
+                // that loads an assembly to announce is discarded until the announcements have
+                // returned, so the final `ret` runs only once nothing is left to announce.
                 PendingAssemblyLoads = PendingAssemblyLoads.empty
             }
 

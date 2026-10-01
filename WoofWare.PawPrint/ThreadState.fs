@@ -528,8 +528,8 @@ type ThreadState =
         /// indirectly.
         IsRaisingForeignException : bool
         /// The assemblies this thread has loaded that `AppDomain.AssemblyLoad` has not yet been
-        /// raised for. Recorded after each of the thread's steps and announced at the start of its
-        /// next, by `AssemblyLoadEvent`.
+        /// raised for, which it announces before running the step that loaded them again. Empty
+        /// except while those announcements are running. See `AssemblyLoadEvent`.
         PendingAssemblyLoads : PendingAssemblyLoads
     }
 

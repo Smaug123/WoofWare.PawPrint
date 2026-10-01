@@ -289,24 +289,25 @@ image is usually loaded while the JIT compiles the first method that names it, s
 run before that method's first instruction. A dynamic assembly is announced inside
 `DefineDynamicAssembly`.
 
-**PawPrint**: an image is announced on the thread whose step loaded it, at the start of that
-thread's next step: after the instruction that first needed the assembly, and before anything else
-runs on that thread, including a callee or static constructor that instruction pushed. A step that
-loaded several assemblies announces them one after another, each handler running to completion
-first, and a load made inside a handler is announced inside it, as on CoreCLR. Corelib is never
-announced, and with nothing subscribed no managed code runs and no step is spent.
+**PawPrint**: an image is announced on the thread that loaded it, before the instruction that first
+needed it runs, and so before anything in the assembly runs, its type initialisers included. The
+interpreter loads an assembly partway through a step, so a step that loads one while something is
+subscribed is discarded, keeping only the assemblies it loaded; the announcements run; and then the
+step runs again from where it began, finding its assemblies already loaded. A step that loaded
+several assemblies announces them one after another, each handler running to completion first, and
+a load made inside a handler is announced inside it, as on CoreCLR. Corelib is never announced, and
+with nothing subscribed no managed code runs and no step is spent or repeated.
 
-Three things are not modelled, and each ends the run rather than diverge silently:
+Two things are not modelled, and each ends the run rather than diverge silently:
 
 - an exception escaping the handler. The announcing frame is marked
   `ExceptionEscape.SwallowedByRuntime`, and exception dispatch refuses on reaching it rather than
   unwind the exception into the guest frame beneath, whose `catch` CoreCLR never offers it to;
-- a load in the step that ends its thread, while something is subscribed, since that thread has no
-  later step to announce it in;
-- a dynamic assembly, which `AppDomain_CreateDynamicAssembly` does not yet create. Once it registers
-  in the load context's load order it is announced by the same mechanism, after the QCall returns
-  but still inside `RuntimeAssemblyBuilder`'s constructor, so before `DefineDynamicAssembly` returns
-  as on CoreCLR.
+- a dynamic assembly, which `AppDomain_CreateDynamicAssembly` does not yet create. Discarding and
+  re-running the step is sound only because loading an image is idempotent and writes nothing but
+  the load context; creating a dynamic assembly is neither, so that QCall will have to announce the
+  assembly itself, from inside its own handler as CoreCLR does, rather than through the step it
+  runs in.
 
 **Spec status**: the event is documented to fire on every load, with no promise about when. For an
 image the moment follows the loader, so it is no more a property of the program than
@@ -314,27 +315,35 @@ image the moment follows the loader, so it is no more a property of the program 
 load is announced exactly once, on the thread that made it, before code after the assembly's first
 use runs.
 
-**Why we chose this**: three designs were weighed. Announcing at the load site and re-executing the
-instruction afterwards, as a static constructor is run, needs every place that loads an assembly to
-be safe to re-execute from that point; most are not, because they have already consumed operands or
-changed other state by the time type resolution loads anything. And it would buy "before this
-instruction" where CoreCLR's guarantee is "before this method, usually", so it would be no closer
-to CoreCLR. Modelling the JIT, by loading and announcing every assembly a method body references on
-its first entry, depends on what the JIT inlines and at which tier, which PawPrint refuses to model
-(see #1445), and loads assemblies a run would never need.
+**Why we chose this**: modelling the JIT, by loading and announcing every assembly a method body
+references on its first entry, would bring the timing closer, but it depends on what the JIT inlines
+and at which tier, which PawPrint refuses to model (see #1445), and loads assemblies a run would
+never need. So an assembly is announced where the interpreter first needs it.
 
-So a load is announced from the loading thread's own step sequence. It is the start of the *next*
-step rather than the end of the loading one because the scheduler writes a return value onto the
-active frame's evaluation stack when a thread yields or a timed wait ends
-(`Scheduler.onStepOutcome`, `fireJoinTimeout`), and a frame pushed over a thread that had just
-parked would receive it. Announcing at the start of the next step is also an interleaving CoreCLR
-permits: the loading thread can be preempted between finishing a load and raising its event.
+Announcing at that point means interrupting the instruction that needs it, and few of the places
+that load an assembly could be resumed afterwards: by the time type resolution loads anything, an
+instruction has typically consumed operands or changed other state. Discarding the whole step
+needs none of them to be resumable, because the interpreter's state is immutable and a step is a
+function of the state it began in; loading is idempotent and writes nothing but the load context,
+so that is all that is carried over.
+
+Announcing *after* the loading step instead, at the start of the thread's next one, is not enough.
+The step that needs an assembly can already have started a type initialiser in it: an
+`ldsfld` of a type with an explicit static constructor claims the type's initialisation and pushes
+the constructor in that step, and a handler running over it then reads the type's statics as a
+recursive access by the initialising thread, before the constructor has run. No CoreCLR schedule
+allows that, because an assembly is announced before anything in it runs.
+
+The announcement is pushed only at the start of a step, never over a step that has run: the
+scheduler writes a return value onto the active frame's evaluation stack when a thread yields or a
+timed wait ends (`Scheduler.onStepOutcome`, `fireJoinTimeout`), and a frame pushed over a thread
+that had just parked would receive it.
 
 **Observable example** (measured on .NET 10, with tiered compilation on, off, and without quick JIT):
 
 ```csharp
 // dotnet app.dll:  11 (announced while the JIT compiled Touch)
-// PawPrint:        1  (announced after the `newobj` that first needs System.Collections)
+// PawPrint:        1  (announced just before the `newobj` that first needs System.Collections)
 static int seen;
 
 [MethodImpl(MethodImplOptions.NoInlining)]
@@ -356,15 +365,18 @@ Console.WriteLine(Touch());
 on both: that an assembly first used after subscribing has been announced exactly once by the line
 after its first use, on the thread that used it, with `AppDomain.CurrentDomain` as sender and the
 assembly's cached `RuntimeAssembly`; that corelib is never announced; and that nothing is announced
-once the only handler is removed. `sourcesPure/AssemblyLoadHandlerThrowIsSwallowed.cs` is parked on
-the swallowed exception, and `TestAssemblyLoadEvent` pins the refusal in its place.
+once the only handler is removed. `TestCrossAssemblyAssemblyLoadEvent` does the same for an assembly
+whose first use starts a type initialiser in it: the handler runs before that initialiser, and a
+handler reading the type's statics sees them initialised.
+`sourcesPure/AssemblyLoadHandlerThrowIsSwallowed.cs` is parked on the swallowed exception, and
+`TestAssemblyLoadEvent` pins the refusal in its place.
 `TestPendingAssemblyLoads` checks the order of announcements against CoreCLR's, over generated
 programs whose handlers themselves load assemblies.
 
-**Where this lives in code**: `AssemblyLoadEvent` (announcing at the start of a step, recording what
-a step loaded), over `PendingAssemblyLoads` (what each thread has still to announce, and when it is
-due), both called from `AbstractMachine.executeOneStep`; the refusal is in
-`ExceptionDispatching.firstPass`.
+**Where this lives in code**: `AssemblyLoadEvent` (`announceBeforeStep` discards a step that loaded
+something to announce; `tryAnnounce` pushes the next announcement at the start of a step), over
+`PendingAssemblyLoads` (what each thread has still to announce, and when each is due), both called
+from `AbstractMachine.executeOneStep`; the refusal is in `ExceptionDispatching.firstPass`.
 
 ## `Environment.ProcessPath` reports no executable, and is never resolved against the filesystem
 
