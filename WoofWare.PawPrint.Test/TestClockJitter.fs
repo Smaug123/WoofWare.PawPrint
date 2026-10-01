@@ -707,7 +707,11 @@ public static class Entry
                     }
             }
 
-        match BoundedRun.run loggerFactory "ClockJitterJoin" (Some "ClockJitterJoin.cs") peImage hostConfig with
+        match
+            ExpectRun.ended (
+                BoundedRun.run loggerFactory "ClockJitterJoin" (Some "ClockJitterJoin.cs") peImage hostConfig
+            )
+        with
         | RunOutcome.NormalExit (state, _, _)
         | RunOutcome.ProcessExit (state, _, _) -> state.LatchedExitCode, state
         | other -> failwith $"guest did not exit normally: %O{other}"

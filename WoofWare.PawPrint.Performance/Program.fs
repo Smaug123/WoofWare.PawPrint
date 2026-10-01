@@ -283,14 +283,14 @@ module private Harness =
                 peImage
                 (HostConfig.Default dotnetRuntimeDirs)
         with
-        | RunOutcome.NormalExit (terminalState, _, _)
-        | RunOutcome.ProcessExit (terminalState, _, _) -> terminalState.LatchedExitCode
-        | RunOutcome.Aborted (_, _, fatal, _) ->
+        | RunEnd.Ended (RunOutcome.NormalExit (terminalState, _, _))
+        | RunEnd.Ended (RunOutcome.ProcessExit (terminalState, _, _)) -> terminalState.LatchedExitCode
+        | RunEnd.Ended (RunOutcome.Aborted (_, _, fatal, _)) ->
             let m = fatal.Message |> Option.defaultValue "<no message>"
             failwith $"PawPrint guest aborted (%O{fatal.Code}): %s{m}"
-        | RunOutcome.SignalTerminated (_, signal, _) ->
+        | RunEnd.Ended (RunOutcome.SignalTerminated (_, signal, _)) ->
             failwith $"PawPrint guest was terminated by POSIX signal %O{signal} during benchmark"
-        | RunOutcome.GuestUnhandledException (finalState, _, exn, _) ->
+        | RunEnd.Ended (RunOutcome.GuestUnhandledException (finalState, _, exn, _)) ->
             failwith
                 $"PawPrint threw an unhandled guest exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
 

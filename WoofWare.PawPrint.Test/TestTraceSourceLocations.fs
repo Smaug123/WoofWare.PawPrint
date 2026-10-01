@@ -125,7 +125,7 @@ module TestTraceSourceLocations =
              let outcome =
                  Program.run loggerFactory (Some "TraceSourceLocations.cs") peImage (HostConfig.Default dotnetRuntimes)
 
-             match outcome with
+             match ExpectRun.ended outcome with
              | RunOutcome.NormalExit _ -> ()
              | other -> failwith $"expected the guest to exit normally, got %O{other}"
 

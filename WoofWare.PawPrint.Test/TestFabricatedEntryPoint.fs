@@ -128,7 +128,9 @@ module TestFabricatedEntryPoint =
         let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
+
         BoundedRun.run loggerFactory name (Some name) peImage (HostConfig.Default dotnetRuntimes)
+        |> ExpectRun.ended
 
     /// Both runtimes run the image to a clean exit with `expected`.
     let private expectExit (name : string) (image : byte[]) (expected : int) : unit =

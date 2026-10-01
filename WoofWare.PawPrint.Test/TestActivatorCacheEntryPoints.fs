@@ -59,7 +59,11 @@ public static class Program
         use peImage = new MemoryStream (image)
 
         try
-            match Program.run loggerFactory (Some sourceName) peImage (HostConfig.Default dotnetRuntimes) with
+            match
+                ExpectRun.ended (
+                    Program.run loggerFactory (Some sourceName) peImage (HostConfig.Default dotnetRuntimes)
+                )
+            with
             | RunOutcome.NormalExit (state, _, _)
             | RunOutcome.ProcessExit (state, _, _) ->
                 state.LatchedExitCode |> shouldEqual 0

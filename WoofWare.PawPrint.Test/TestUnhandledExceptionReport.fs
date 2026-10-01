@@ -39,6 +39,7 @@ module TestUnhandledExceptionReport =
         use peImage = new MemoryStream (image)
 
         BoundedRun.run loggerFactory name None peImage (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
+        |> ExpectRun.ended
         |> reportOf
 
     let private indexOfLineContaining (needle : string) (lines : string list) : int =
@@ -264,6 +265,7 @@ class Program
                     (Some driverPath)
                     peImage
                     (HostConfig.Default dotnetRuntimeDirs)
+                |> ExpectRun.ended
                 |> reportOf
 
             lines.Length |> shouldEqual 3

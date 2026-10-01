@@ -265,9 +265,7 @@ module Standing =
         {
             Privilege = Credentials.privilege credentials
             Owns = owner.User = credentials.EffectiveUser
-            InGroup =
-                owner.Group = credentials.EffectiveGroup
-                || List.contains owner.Group credentials.SupplementaryGroups
+            InGroup = Credentials.isInGroup credentials owner.Group
         }
 
 /// <summary>

@@ -32,7 +32,8 @@ type ResolvedMemberReference =
                 WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>,
                 WoofWare.PawPrint.FieldInfo<TypeDefn, TypeDefn>
              >
-        /// The generic arguments of the type the row's parent named, as the row spells them.
+        /// The generic arguments of the type that declares the member: the parent the row names, or
+        /// the ancestor of it that declares the method, instantiated as the row spells the parent.
         TargetTypeGenerics : ImmutableArray<TypeDefn>
     }
 

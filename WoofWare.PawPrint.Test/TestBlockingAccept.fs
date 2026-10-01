@@ -104,6 +104,7 @@ static class Sys
             (Some fileName)
             peImage
             (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
+        |> ExpectRun.ended
 
     let private exitCodeOf (outcome : RunOutcome) : int =
         match outcome with

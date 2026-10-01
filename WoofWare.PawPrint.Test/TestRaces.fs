@@ -118,6 +118,7 @@ module TestRaces =
 
             Program.resumeFork loggerFactory (Some seed) snapshot
             |> Program.pumpPrepared loggerFactory logger
+            |> ExpectRun.ended
             |> exitCodeOfOutcome sourceName (Some seed)
         )
         |> Set.ofList

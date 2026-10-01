@@ -115,6 +115,7 @@ class Program
                 use stream = new MemoryStream (image)
 
                 Program.run normalLoggerFactory (Some "DebuggerProperty.cs") stream (HostConfig.Default dotnetRuntimes)
+                |> ExpectRun.ended
 
             let _, debuggerLoggerFactory = LoggerFactory.makeTest ()
             use _debuggerLoggerFactoryResource = debuggerLoggerFactory
@@ -131,7 +132,7 @@ class Program
                         (HostConfig.Default dotnetRuntimes)
                 with
                 | Program.ProgramStartResult.Ready prepared -> stepToCompletion debuggerLoggerFactory logger prepared
-                | Program.ProgramStartResult.CompletedBeforeMain outcome -> outcome
+                | Program.ProgramStartResult.CompletedBeforeMain runEnd -> ExpectRun.ended runEnd
 
             outcomeSignature debuggerOutcome |> shouldEqual (outcomeSignature normalOutcome)
 

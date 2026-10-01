@@ -46,6 +46,7 @@ public class Program
                 (Some name)
                 peImage
                 (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
+            |> ExpectRun.ended
             |> ignore<RunOutcome>
         )
 

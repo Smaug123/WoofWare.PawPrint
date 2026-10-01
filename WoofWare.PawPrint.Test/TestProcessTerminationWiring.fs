@@ -64,6 +64,7 @@ class Program
                         Argv = argv
                     }
             }
+        |> ExpectRun.ended
 
     /// The App's Unix exit code for `outcome`, which must read to a shell as the
     /// kernel's termination does.

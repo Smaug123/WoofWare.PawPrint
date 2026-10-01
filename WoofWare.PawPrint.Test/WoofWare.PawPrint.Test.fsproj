@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <Compile Include="LoggerFactory.fs" />
+    <Compile Include="ExpectRun.fs" />
     <Compile Include="SynthesisedLayoutKind.fs" />
     <Compile Include="TestGcHeapHardLimit.fs" />
     <Compile Include="TestNoMissedInterpolation.fs" />
@@ -326,6 +327,7 @@
     <Compile Include="TestFabricatedNullByrefDereference.fs" />
     <Compile Include="TestFabricatedLongFormArgLocal.fs" />
     <Compile Include="TestFabricatedArrayConstructorNewobj.fs" />
+    <Compile Include="TestFabricatedInheritedMemberReference.fs" />
     <Compile Include="TestFabricatedNullByrefArgument.fs" />
     <Compile Include="TestConstrainedGetTypeNullByref.fs" />
     <Compile Include="TestAssemblyLoadContextRefusals.fs" />

@@ -26,7 +26,9 @@ module TestBoundedRun =
         let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
+
         BoundedRun.runWith loggerFactory maxSteps name (Some name) peImage (HostConfig.Default dotnetRuntimes)
+        |> ExpectRun.ended
 
     /// The guard fires, and says enough to diagnose the guest rather than merely that it gave
     /// up: the budget it was given, and what each live thread was executing.

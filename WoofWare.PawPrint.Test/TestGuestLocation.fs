@@ -145,7 +145,7 @@ module TestGuestLocation =
         let exn =
             Assert.Throws (fun () ->
                 BoundedRun.runWith loggerFactory maxSteps name (Some name) peImage (HostConfig.Default dotnetRuntimes)
-                |> ignore<RunOutcome>
+                |> ignore<RunEnd>
             )
 
         exn.Message
