@@ -192,7 +192,7 @@ module TestMethodReferenceResolution =
                     ours
                 with
                 | Oracle.NoAnswer _, _ -> noAnswer <- noAnswer + 1
-                | Oracle.Method mb, MethodReferenceTarget.Defined (declaringAssembly, method) ->
+                | Oracle.Method mb, MethodReferenceTarget.Defined (declaringAssembly, method, _) ->
                     let theirs = mb.Module.Assembly.FullName, mb.MetadataToken
 
                     let ours =

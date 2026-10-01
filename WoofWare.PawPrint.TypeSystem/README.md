@@ -16,8 +16,9 @@ What lives here:
   `MethodTableBuilder` lays it out: which slot each declaration owns, what each vtable slot holds
   once MethodImpls are applied, and the slots beyond the vtable.
 * `MethodReferenceResolution` — which method a `MemberRef` names, as CoreCLR binds it: the
-  `MethodDef` of a generic definition, a method the runtime supplies on an array type, or nothing
-  (a `MissingMethodException`, or a `TypeLoadException` if the parent names no type). It lives here
+  `MethodDef` of a generic definition, with the instantiation of the type that declares it (the
+  parent or one of its ancestors), a method the runtime supplies on an array type, or nothing (a
+  `MissingMethodException`, or a `TypeLoadException` if the parent names no type). It lives here
   rather than beside the Loader's field resolver because CoreCLR binds a method reference by
   searching each type's method table, as `MethodTableLayout` lays it out, in the order CoreCLR does;
   it is checked against the real runtime's own answer.

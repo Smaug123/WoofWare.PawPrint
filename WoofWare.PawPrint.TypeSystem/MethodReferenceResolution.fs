@@ -25,7 +25,17 @@ type ArrayAccessor =
 type MethodReferenceTarget =
     /// A method with a definition in metadata: the assembly that declares it, and its row there.
     /// For a reference whose parent is an instantiation, this is the generic definition's method.
-    | Defined of declaringAssembly : DumpedAssembly * method : MethodDefinitionHandle
+    ///
+    /// `declaringTypeArguments` instantiates the type that declares the method, which is the
+    /// parent or one of its ancestors, in the parent definition's own vocabulary: the parent's
+    /// `i`th type variable stands as `Formal (parent, i)`. For a closed parent,
+    /// `TypeConcretization.SubstitutionContext.rebase` onto the parent's arguments and then
+    /// `TypeConcretization.concretizeSubstitution` give the declaring type's arguments. It is
+    /// empty when the declaring type is not generic.
+    | Defined of
+        declaringAssembly : DumpedAssembly *
+        method : MethodDefinitionHandle *
+        declaringTypeArguments : TypeConcretization.SubstitutionContext
 
     /// One of the methods the runtime itself supplies on an array type. There is no definition to
     /// point at.
@@ -234,6 +244,7 @@ module MethodReferenceResolution =
 
         let definedBy
             (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
+            (searched : SearchedType)
             (entry : VtableSlot)
             : MethodReferenceTarget
             =
@@ -241,7 +252,11 @@ module MethodReferenceResolution =
             | Some facts ->
                 MethodReferenceTarget.Defined (
                     ctx.LoadedAssemblies.ByDefinitionName entry.DeclaredBy.AssemblyFullName,
-                    facts.Handle
+                    facts.Handle,
+                    TypeConcretization.SubstitutionContext.rebase
+                        searched.Identity
+                        searched.Context.Arguments
+                        entry.DeclaredBy.Substitution
                 )
             | None ->
                 failwith
@@ -271,7 +286,7 @@ module MethodReferenceResolution =
                 if inherited && isInstanceInitializer entry then
                     ctx, MethodReferenceTarget.Missing
                 else
-                    ctx, definedBy ctx entry
+                    ctx, definedBy ctx searched entry
             | ctx, None ->
                 let assembly, typeInfo =
                     MethodTableLayout.definitionMetadata operation ctx.LoadedAssemblies searched.Identity
@@ -424,7 +439,14 @@ module MethodReferenceResolution =
             // Varargs methods may not be generic, so a generic one is not what such a reference
             // names.
             if equivalent && method.Generics.IsEmpty && method.DeclaringTypeGenerics.IsEmpty then
-                ctx, MethodReferenceTarget.Defined (referencingAssembly, handle)
+                ctx,
+                MethodReferenceTarget.Defined (
+                    referencingAssembly,
+                    handle,
+                    {
+                        TypeConcretization.SubstitutionContext.Arguments = ImmutableArray.Empty
+                    }
+                )
             else
                 ctx, MethodReferenceTarget.Missing
         | assemblies, MemberReferenceParent.Nominal identity -> searchFrom (withAssemblies ctx assemblies) identity

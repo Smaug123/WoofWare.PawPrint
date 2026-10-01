@@ -516,7 +516,7 @@ module EscapeAnalysis =
                 }
 
             match target with
-            | MethodReferenceTarget.Defined (declaring, method) ->
+            | MethodReferenceTarget.Defined (declaring, method, _) ->
                 state, CallTarget.Method (MethodKey.make declaring method)
             | MethodReferenceTarget.ArrayMethod (arrayType, accessor) ->
                 state, CallTarget.ArrayAccessor (arrayType, accessor)
