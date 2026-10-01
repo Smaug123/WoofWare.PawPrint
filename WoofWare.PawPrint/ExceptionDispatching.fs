@@ -667,10 +667,10 @@ module ExceptionDispatching =
         match returnState.ExceptionEscape with
         | ExceptionEscape.SwallowedByRuntime runtimeCaller ->
             let exceptionTypeName =
-                match AllConcreteTypes.lookup search.ExceptionType state.ConcreteTypes with
+                match AllConcreteTypes.lookup search.ExceptionType state.TypeSystem.ConcreteTypes with
                 | Some ct ->
                     Assembly.fullName
-                        (state._LoadedAssemblies.ByDefinitionName ct.Identity.AssemblyFullName)
+                        (state.TypeSystem._LoadedAssemblies.ByDefinitionName ct.Identity.AssemblyFullName)
                         ct.Identity
                 | None -> $"<unknown type handle %O{search.ExceptionType}>"
 

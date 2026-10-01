@@ -32,7 +32,7 @@ module AssemblyLoadEvent =
         // Subscribing runs the event's `add` accessor, which concretises the type, so a type never
         // concretised has nothing subscribed. Checking first, rather than concretising here, keeps
         // a run that never subscribes from acquiring a concrete type it would not otherwise have.
-        match AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes alc.Identity with
+        match AllConcreteTypes.findExistingNonGenericConcreteType state.TypeSystem.ConcreteTypes alc.Identity with
         | None -> false
         | Some handle ->
 
@@ -173,8 +173,10 @@ module AssemblyLoadEvent =
             | ExecutionResult.SignalTerminated (state, _, _)
             | ExecutionResult.UnhandledException (state, _, _) -> state
 
-        let loadedBefore = before._LoadedAssemblies.DefinitionNamesInLoadOrder.Length
-        let loadOrder = after._LoadedAssemblies.DefinitionNamesInLoadOrder
+        let loadedBefore =
+            before.TypeSystem._LoadedAssemblies.DefinitionNamesInLoadOrder.Length
+
+        let loadOrder = after.TypeSystem._LoadedAssemblies.DefinitionNamesInLoadOrder
 
         if loadOrder.Length < loadedBefore then
             failwith
@@ -183,7 +185,7 @@ module AssemblyLoadEvent =
         // Running the step again would create the assembly again, so it cannot be discarded.
         match
             seq { loadedBefore .. loadOrder.Length - 1 }
-            |> Seq.tryFind (fun i -> after._LoadedAssemblies.IsDynamic loadOrder.[i])
+            |> Seq.tryFind (fun i -> after.TypeSystem._LoadedAssemblies.IsDynamic loadOrder.[i])
         with
         | Some i when hasSubscriber baseClassTypes thread before ->
             failwith
@@ -219,7 +221,10 @@ module AssemblyLoadEvent =
 
         // Nothing would announce what pushing the announcement loaded, so it must load nothing.
         // Everything it touches is in corelib.
-        if state._LoadedAssemblies.DefinitionNamesInLoadOrder.Length <> index + 1 then
+        if
+            state.TypeSystem._LoadedAssemblies.DefinitionNamesInLoadOrder.Length
+            <> index + 1
+        then
             failwith $"logic error: pushing the announcement of %s{announced} on thread %O{thread} loaded an assembly"
 
         ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall)
