@@ -958,3 +958,185 @@ module UnixPathResolution =
         // directory a guest `rmdir`d before stepping out of it becomes free
         // exactly here. Without this it would be stranded for the run.
         SyscallAnswer.Completed 0L, UnixDescriptor.forgetIfUnheld previous moved
+
+    /// `faccessat(2)` with `dirfd` already decoded, which `access(2)` is with
+    /// `AT_FDCWD` and no flags.
+    let private accessFrom<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (directory : AtDirectory)
+        (path : PathArgumentBytes)
+        (mode : int)
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer, AccessRefusal>
+        =
+        // The order of every step below is measured by `access-rules.c`, on
+        // Linux 6.18.5 and Darwin 27.0: the mode and flag words (`AccessRules.screen`),
+        // then the path's copy-in (an unreadable pointer is EFAULT, and an
+        // over-long one ENAMETOOLONG, ahead of any dirfd), then Linux's empty
+        // path, then the dirfd (EBADF for a number naming nothing, ENOTDIR for
+        // a regular file), then the walk, then the permission bits. An absolute
+        // path never looks at its dirfd, even one naming nothing.
+        let platform = system.Machine.UnixPlatform
+        let vfs = system.Machine.FileSystem
+
+        match AccessRules.screen (SimulatedUnixPlatform.flavour platform) mode flags with
+        | AccessScreen.Refused refusal -> Error refusal
+        | AccessScreen.Failed error -> Ok (SyscallAnswer.Failed error)
+        | AccessScreen.Screened arguments ->
+
+        let path =
+            match path with
+            | PathArgumentBytes.Unreadable -> Ok (PathArgument.Failed UnixError.EFAULT)
+            | PathArgumentBytes.Bytes bytes ->
+                PathArgument.parse (SimulatedUnixPlatform.pathLimits platform) bytes
+                |> Result.mapError AccessRefusal.PathArgument
+
+        match path with
+        | Error refusal -> Error refusal
+        | Ok (PathArgument.Failed error) -> Ok (SyscallAnswer.Failed error)
+        | Ok (PathArgument.Parsed path) ->
+
+        let credentials =
+            match arguments.Ids with
+            | AccessIds.Real -> Credentials.realIdsAsEffective system.Process.Credentials
+            | AccessIds.Effective -> system.Process.Credentials
+
+        let empty = UnixPath.isEmpty path
+
+        // The inode a relative or empty path starts from, and whether it is a
+        // directory; `None` when the call does not need one.
+        let start : Result<Result<(InodeNumber * bool) option, UnixError>, AccessRefusal> =
+            if UnixPath.isRooted path then
+                Ok (Ok None)
+            elif empty && arguments.EmptyPath = AccessEmptyPath.NoSuchEntryBeforeDescriptor then
+                Ok (Error UnixError.ENOENT)
+            else
+
+            match directory with
+            | AtDirectory.CurrentDirectory -> Ok (Ok (Some (system.Process.CurrentDirectoryInode, true)))
+            | AtDirectory.Descriptor fd ->
+
+            match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+            | None -> Ok (Error UnixError.EBADF)
+            | Some description ->
+
+            match description.Target with
+            | OpenFileTarget.Directory (inode, _) -> Ok (Ok (Some (inode, true)))
+            | OpenFileTarget.File (inode, _) -> Ok (Ok (Some (inode, false)))
+            | OpenFileTarget.SocketEventPort _
+            | OpenFileTarget.Socket _
+            | OpenFileTarget.Pipe _ -> Error (AccessRefusal.UnmodelledDescriptor fd)
+
+        let target : Result<Result<InodeNumber, UnixError>, AccessRefusal> =
+            match start with
+            | Error refusal -> Error refusal
+            | Ok (Error error) -> Ok (Error error)
+            | Ok (Ok start) ->
+
+            match start with
+            | Some (inode, _) when empty && arguments.EmptyPath = AccessEmptyPath.NamesStartingPoint -> Ok (Ok inode)
+            | Some (_, false) -> Ok (Error UnixError.ENOTDIR)
+            | _ ->
+
+            // A rooted path ignores the starting directory, and an empty one is
+            // ENOENT from the walk, as `NoSuchEntryAfterDescriptor` wants.
+            let startDirectory =
+                match start with
+                | Some (inode, _) -> inode
+                | None -> system.Process.CurrentDirectoryInode
+
+            PathWalk.resolveFull
+                (SimulatedUnixPlatform.pathLimits platform)
+                credentials
+                startDirectory
+                arguments.FinalSymlink
+                TrailingSeparatorPolicy.Demand
+                path
+                vfs
+            |> Result.bind (fun resolution -> PathWalk.existingOf resolution.Target)
+            |> Ok
+
+        match target with
+        | Error refusal -> Error refusal
+        | Ok (Error error) -> Ok (SyscallAnswer.Failed error)
+        | Ok (Ok inode) ->
+
+        if arguments.ExtendedRights <> 0 then
+            Error (AccessRefusal.ExtendedRights (inode, arguments.ExtendedRights))
+        else
+
+        let entry =
+            match VirtualFileSystem.tryGet inode vfs with
+            | Some entry -> entry
+            | None ->
+                failwith
+                    $"UnixPathResolution.faccessat: inode %O{inode} is not in the filesystem, but a path or a descriptor resolved to it. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
+
+        let bits =
+            match Inode.permissions entry with
+            | InodePermissions.Stored bits -> bits
+            | InodePermissions.PlatformSymlinkDefault -> SimulatedUnixPlatform.symlinkPermissions platform
+
+        match
+            AccessRules.denied
+                (SimulatedUnixPlatform.privilegedExecution platform)
+                (Standing.toward credentials entry.Owner)
+                entry.Content
+                bits
+                arguments.Question
+        with
+        | Error refusal -> Error (AccessRefusal.UnmeasuredExecution (inode, refusal))
+        | Ok true -> Ok (SyscallAnswer.Failed UnixError.EACCES)
+        | Ok false -> Ok (SyscallAnswer.Completed 0L)
+
+    /// <summary>
+    /// <c>faccessat(2)</c>: whether the calling process may do what <c>mode</c> asks of
+    /// the inode <c>path</c> names, starting from <c>dirfd</c> if the path is relative.
+    /// </summary>
+    /// <remarks>
+    /// <c>dirfd</c>, <c>mode</c> and <c>flags</c> are raw, in this platform's own numbering;
+    /// <c>AccessRules.screen</c> says which words each flavour rejects and what the rest
+    /// mean. <c>path</c> is the argument's bytes, copied in after those screens, as both
+    /// kernels do.
+    ///
+    /// Without <c>AT_EACCESS</c> the path is walked, and the inode judged, with the process's
+    /// <i>real</i> user and group (see <c>Credentials.realIdsAsEffective</c>); with it, with
+    /// the effective ones, as every other syscall is. On Darwin the two are always the
+    /// same, since <c>UnixSystem.withCredentials</c> admits no Darwin process whose real
+    /// and effective IDs differ.
+    ///
+    /// Answers 0 or the errno, and changes nothing: measured on both, it moves no
+    /// timestamp. EACCES is <c>AccessRules.denied</c>'s; every other failure is the
+    /// screens', the copy-in's, the dirfd's or the walk's. This library models one
+    /// filesystem, writable and not mounted <c>noexec</c>, so the EROFS a read-only mount
+    /// gives <c>W_OK</c> and the EACCES a <c>noexec</c> one gives <c>X_OK</c> on a regular
+    /// file are never answered.
+    ///
+    /// Refuses Darwin's extended rights and the flags Darwin accepts without this library
+    /// modelling them, a privileged caller's execute question under a flavour where that is
+    /// unmeasured, and a <c>dirfd</c> naming neither a directory nor a regular file when the
+    /// call would start from it; see <c>AccessRefusal</c>.
+    /// </remarks>
+    let faccessat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (dirfd : int)
+        (path : PathArgumentBytes)
+        (mode : int)
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer, AccessRefusal>
+        =
+        let directory =
+            AccessRules.atDirectory (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform) dirfd
+
+        accessFrom directory path mode flags system
+
+    /// <c>access(2)</c>: <c>faccessat</c> from the current directory with no flags, so
+    /// checking with the process's real user and group. Measured on both, the two agree on
+    /// every mode word and every path the probe asked.
+    let access<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (mode : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer, AccessRefusal>
+        =
+        accessFrom AtDirectory.CurrentDirectory path mode 0 system

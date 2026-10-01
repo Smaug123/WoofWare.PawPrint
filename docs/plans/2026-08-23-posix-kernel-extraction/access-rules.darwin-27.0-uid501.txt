@@ -1,0 +1,125 @@
+# access-rules: Darwin 27.0.0 arm64	uid=501 euid=501 gid=20 egid=20	base=/private/tmp/accessp.XI1STC
+CONST	AT_FDCWD=-2	AT_EACCESS=0x10	AT_SYMLINK_NOFOLLOW=0x20
+MODE-BIT	bit=0	amode=0x00000001	access(0777)=ok	access(0000)=EACCES	faccessat(0777)=ok	faccessat(0000)=EACCES
+MODE-BIT	bit=1	amode=0x00000002	access(0777)=ok	access(0000)=EACCES	faccessat(0777)=ok	faccessat(0000)=EACCES
+MODE-BIT	bit=2	amode=0x00000004	access(0777)=ok	access(0000)=EACCES	faccessat(0777)=ok	faccessat(0000)=EACCES
+MODE-BIT	bit=3	amode=0x00000008	access(0777)=ok	access(0000)=ok	faccessat(0777)=ok	faccessat(0000)=ok
+MODE-BIT	bit=4	amode=0x00000010	access(0777)=ok	access(0000)=ok	faccessat(0777)=ok	faccessat(0000)=ok
+MODE-BIT	bit=5	amode=0x00000020	access(0777)=ok	access(0000)=ok	faccessat(0777)=ok	faccessat(0000)=ok
+MODE-BIT	bit=6	amode=0x00000040	access(0777)=ok	access(0000)=ok	faccessat(0777)=ok	faccessat(0000)=ok
+MODE-BIT	bit=7	amode=0x00000080	access(0777)=ok	access(0000)=ok	faccessat(0777)=ok	faccessat(0000)=ok
+MODE-BIT	bit=8	amode=0x00000100	access(0777)=ok	access(0000)=ok	faccessat(0777)=ok	faccessat(0000)=ok
+MODE-BIT	bit=9	amode=0x00000200	access(0777)=ok	access(0000)=EACCES	faccessat(0777)=ok	faccessat(0000)=EACCES
+MODE-BIT	bit=10	amode=0x00000400	access(0777)=ok	access(0000)=EACCES	faccessat(0777)=ok	faccessat(0000)=EACCES
+MODE-BIT	bit=11	amode=0x00000800	access(0777)=ok	access(0000)=EACCES	faccessat(0777)=ok	faccessat(0000)=EACCES
+MODE-BIT	bit=12	amode=0x00001000	access(0777)=ok	access(0000)=ok	faccessat(0777)=ok	faccessat(0000)=ok
+MODE-BIT	bit=13	amode=0x00002000	access(0777)=ok	access(0000)=EACCES	faccessat(0777)=ok	faccessat(0000)=EACCES
+MODE-BIT	bit=14	amode=0x00004000	access(0777)=ok	access(0000)=EACCES	faccessat(0777)=ok	faccessat(0000)=EACCES
+MODE-BIT	bit=15	amode=0x00008000	access(0777)=ok	access(0000)=ok	faccessat(0777)=ok	faccessat(0000)=ok
+MODE-BIT	bit=16	amode=0x00010000	access(0777)=ok	access(0000)=ok	faccessat(0777)=ok	faccessat(0000)=ok
+MODE-BIT	bit=17	amode=0x00020000	access(0777)=ok	access(0000)=EACCES	faccessat(0777)=ok	faccessat(0000)=EACCES
+MODE-BIT	bit=18	amode=0x00040000	access(0777)=ok	access(0000)=EACCES	faccessat(0777)=ok	faccessat(0000)=EACCES
+MODE-BIT	bit=19	amode=0x00080000	access(0777)=ok	access(0000)=ok	faccessat(0777)=ok	faccessat(0000)=ok
+MODE-BIT	bit=20	amode=0x00100000	access(0777)=ok	access(0000)=ok	faccessat(0777)=ok	faccessat(0000)=ok
+MODE-BIT	bit=21	amode=0x00200000	access(0777)=EACCES	access(0000)=EACCES	faccessat(0777)=EACCES	faccessat(0000)=EACCES
+MODE-BIT	bit=22	amode=0x00400000	access(0777)=ok	access(0000)=ok	faccessat(0777)=ok	faccessat(0000)=ok
+MODE-BIT	bit=23	amode=0x00800000	access(0777)=ok	access(0000)=ok	faccessat(0777)=ok	faccessat(0000)=ok
+MODE-BIT	bit=24	amode=0x01000000	access(0777)=ok	access(0000)=ok	faccessat(0777)=ok	faccessat(0000)=ok
+MODE-BIT	bit=25	amode=0x02000000	access(0777)=ok	access(0000)=ok	faccessat(0777)=ok	faccessat(0000)=ok
+MODE-BIT	bit=26	amode=0x04000000	access(0777)=ok	access(0000)=ok	faccessat(0777)=ok	faccessat(0000)=ok
+MODE-BIT	bit=27	amode=0x08000000	access(0777)=ok	access(0000)=ok	faccessat(0777)=ok	faccessat(0000)=ok
+MODE-BIT	bit=28	amode=0x10000000	access(0777)=ok	access(0000)=ok	faccessat(0777)=ok	faccessat(0000)=ok
+MODE-BIT	bit=29	amode=0x20000000	access(0777)=ok	access(0000)=ok	faccessat(0777)=ok	faccessat(0000)=ok
+MODE-BIT	bit=30	amode=0x40000000	access(0777)=ok	access(0000)=ok	faccessat(0777)=ok	faccessat(0000)=ok
+MODE-BIT	bit=31	amode=0x80000000	access(0777)=ok	access(0000)=ok	faccessat(0777)=ok	faccessat(0000)=ok
+MODE-WORD	amode=0xffffffff	access(0777)=EACCES	access(0000)=EACCES
+MODE-WORD	amode=0x00000007	access(0777)=ok	access(0000)=EACCES
+MODE-WORD	amode=0x0000000f	access(0777)=ok	access(0000)=EACCES
+MODE-WORD	amode=0x00000008	access(0777)=ok	access(0000)=ok
+MODE-WORD	amode=0x7fffffff	access(0777)=EACCES	access(0000)=EACCES
+MODE-WORD	amode=0x80000000	access(0777)=ok	access(0000)=ok
+FLAG-BIT	bit=0	flags=0x00000001	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=1	flags=0x00000002	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=2	flags=0x00000004	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=3	flags=0x00000008	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=4	flags=0x00000010	faccessat(F_OK)=ok	faccessat(R_OK on 0000)=EACCES
+FLAG-BIT	bit=5	flags=0x00000020	faccessat(F_OK)=ok	faccessat(R_OK on 0000)=EACCES
+FLAG-BIT	bit=6	flags=0x00000040	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=7	flags=0x00000080	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=8	flags=0x00000100	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=9	flags=0x00000200	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=10	flags=0x00000400	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=11	flags=0x00000800	faccessat(F_OK)=ok	faccessat(R_OK on 0000)=EACCES
+FLAG-BIT	bit=12	flags=0x00001000	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=13	flags=0x00002000	faccessat(F_OK)=Capabilities insufficient	faccessat(R_OK on 0000)=Capabilities insufficient
+FLAG-BIT	bit=14	flags=0x00004000	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=15	flags=0x00008000	faccessat(F_OK)=ok	faccessat(R_OK on 0000)=EACCES
+FLAG-BIT	bit=16	flags=0x00010000	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=17	flags=0x00020000	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=18	flags=0x00040000	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=19	flags=0x00080000	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=20	flags=0x00100000	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=21	flags=0x00200000	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=22	flags=0x00400000	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=23	flags=0x00800000	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=24	flags=0x01000000	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=25	flags=0x02000000	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=26	flags=0x04000000	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=27	flags=0x08000000	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=28	flags=0x10000000	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=29	flags=0x20000000	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=30	flags=0x40000000	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+FLAG-BIT	bit=31	flags=0x80000000	faccessat(F_OK)=EINVAL	faccessat(R_OK on 0000)=EINVAL
+ORDER	bad mode, absent path	access=ENOENT	faccessat=ENOENT
+ORDER	bad flags, absent path	EINVAL
+ORDER	bad mode, bad flags	EINVAL
+ORDER	bad mode, bad dirfd, relative	EBADF
+ORDER	bad flags, bad dirfd, relative	EINVAL
+ORDER	bad dirfd, relative, absent	EBADF
+ORDER	bad mode, empty path	access=ENOENT
+ORDER	bit 9, absent path	access=ENOENT	bit 21, absent path	access=ENOENT	bit 21, screen_f/x	access=ENOTDIR
+ORDER	bad mode, NULL path	access=EFAULT
+ORDER	good mode, NULL path	access=EFAULT	faccessat=EFAULT
+COPYIN	NULL	bad mode=EFAULT	bad flags=EINVAL	bad dirfd=EFAULT	file dirfd=EFAULT
+COPYIN	PATH_MAX bytes	good=ENAMETOOLONG	bad mode=ENAMETOOLONG	bad flags=EINVAL	bad dirfd=ENAMETOOLONG
+COPYIN	empty	bad mode=ENOENT	bad flags=EINVAL	bad dirfd=EBADF
+DIRFD	AT_FDCWD	absolute=ok	relative(screen_f)=ok	relative(absent)=ENOENT	empty=ENOENT
+DIRFD	-1	absolute=ok	relative(screen_f)=EBADF	relative(absent)=EBADF	empty=EBADF
+DIRFD	12345 (closed)	absolute=ok	relative(screen_f)=EBADF	relative(absent)=EBADF	empty=EBADF
+DIRFD	-100	absolute=ok	relative(screen_f)=EBADF	relative(absent)=EBADF	empty=EBADF
+DIRFD	-2	absolute=ok	relative(screen_f)=ok	relative(absent)=ENOENT	empty=ENOENT
+DIRFD	a directory	absolute=ok	relative(screen_f)=ok	relative(absent)=ENOENT	empty=ENOENT
+DIRFD	a file	absolute=ok	relative(screen_f)=ENOTDIR	relative(absent)=ENOTDIR	empty=ENOTDIR
+PATH	f	access(F_OK)=ok	access(W_OK)=ok	nofollow(F_OK)=ok	nofollow(W_OK)=ok
+PATH	f/	access(F_OK)=ENOTDIR	access(W_OK)=ENOTDIR	nofollow(F_OK)=ENOTDIR	nofollow(W_OK)=ENOTDIR
+PATH	f/.	access(F_OK)=ENOTDIR	access(W_OK)=ENOTDIR	nofollow(F_OK)=ENOTDIR	nofollow(W_OK)=ENOTDIR
+PATH	f/x	access(F_OK)=ENOTDIR	access(W_OK)=ENOTDIR	nofollow(F_OK)=ENOTDIR	nofollow(W_OK)=ENOTDIR
+PATH	sub	access(F_OK)=ok	access(W_OK)=ok	nofollow(F_OK)=ok	nofollow(W_OK)=ok
+PATH	sub/	access(F_OK)=ok	access(W_OK)=ok	nofollow(F_OK)=ok	nofollow(W_OK)=ok
+PATH	sub/.	access(F_OK)=ok	access(W_OK)=ok	nofollow(F_OK)=ok	nofollow(W_OK)=ok
+PATH	sub/..	access(F_OK)=ok	access(W_OK)=ok	nofollow(F_OK)=ok	nofollow(W_OK)=ok
+PATH	lf	access(F_OK)=ok	access(W_OK)=ok	nofollow(F_OK)=ok	nofollow(W_OK)=ok
+PATH	lf/	access(F_OK)=ENOTDIR	access(W_OK)=ENOTDIR	nofollow(F_OK)=ENOTDIR	nofollow(W_OK)=ENOTDIR
+PATH	ld	access(F_OK)=ok	access(W_OK)=ok	nofollow(F_OK)=ok	nofollow(W_OK)=ok
+PATH	ld/	access(F_OK)=ok	access(W_OK)=ok	nofollow(F_OK)=ok	nofollow(W_OK)=ok
+PATH	dang	access(F_OK)=ENOENT	access(W_OK)=ENOENT	nofollow(F_OK)=ok	nofollow(W_OK)=ok
+PATH	dang/	access(F_OK)=ENOENT	access(W_OK)=ENOENT	nofollow(F_OK)=ENOENT	nofollow(W_OK)=ENOENT
+PATH	cyc	access(F_OK)=ELOOP	access(W_OK)=ELOOP	nofollow(F_OK)=ok	nofollow(W_OK)=ok
+PATH	cyc/	access(F_OK)=ELOOP	access(W_OK)=ELOOP	nofollow(F_OK)=ELOOP	nofollow(W_OK)=ELOOP
+PATH	nx	access(F_OK)=ENOENT	access(W_OK)=ENOENT	nofollow(F_OK)=ENOENT	nofollow(W_OK)=ENOENT
+PATH	nx/	access(F_OK)=ENOENT	access(W_OK)=ENOENT	nofollow(F_OK)=ENOENT	nofollow(W_OK)=ENOENT
+PATH	.	access(F_OK)=ok	access(W_OK)=ok	nofollow(F_OK)=ok	nofollow(W_OK)=ok
+PATH	..	access(F_OK)=ok	access(W_OK)=ok	nofollow(F_OK)=ok	nofollow(W_OK)=ok
+PATH	/	access(F_OK)=ok	access(W_OK)=EROFS	nofollow(F_OK)=ok	nofollow(W_OK)=EROFS
+PATH	<299 a>	access(F_OK)=ENAMETOOLONG	access(W_OK)=ENAMETOOLONG	nofollow(F_OK)=ENAMETOOLONG	nofollow(W_OK)=ENAMETOOLONG
+TIMES	access(f, 0..7)	atime=kept	ctime=kept
+SYMLINK-MODE	lx	0755
+SYMLINK-SWEEP	owner	rows=4096	mismatches=0	lchmod-failed=0
+OWN-SWEEP	file	uid=501	rows=32768	mismatches=0	modes-not-settable=0
+OWN-SWEEP	dir	uid=501	rows=32768	mismatches=0	modes-not-settable=0
+IGNORED-SWEEP	file	bits=3..8,22..31	rows=65536	differ=0
+IGNORED-SWEEP	dir	bits=3..8,22..31	rows=65536	differ=0
+FOREIGN-MISMATCH	/private/var/OOPJit	dir	uid=0 gid=80	mode=0777	amode=4	got=EPERM	want=ok
+FOREIGN-MISMATCH	/private/var/OOPJit	dir	uid=0 gid=80	mode=0777	amode=5	got=EPERM	want=ok
+FOREIGN-SCAN	entries=1475	group-member=1	other=1474	rows=11800	writes-refused-EPERM-or-EROFS=4660	other-mismatches=2
+# done

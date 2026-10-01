@@ -553,6 +553,17 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> PrivilegedModeChange.SetsRequestedBits
         | SimulatedUnixFlavour.Darwin -> PrivilegedModeChange.Unmeasured
 
+    /// What a privileged caller is granted when it asks to execute something
+    /// that is not a directory. See `PermissionBits.executionDenied`.
+    let privilegedExecution (platform : SimulatedUnixPlatform) : PrivilegedExecution =
+        // Measured by `docs/plans/2026-08-23-posix-kernel-extraction/access-rules.c`:
+        // on Linux 6.18.5 root's `access(X_OK)` on a regular file is granted
+        // exactly when some execute bit is set, over all 4096 modes, owning it
+        // or not, in its group or not. Darwin 27.0 was measured at uid 501 only.
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> PrivilegedExecution.NeedsAnExecuteBit
+        | SimulatedUnixFlavour.Darwin -> PrivilegedExecution.Unmeasured
+
     /// Whether this platform's content-changing `write(2)` clears `S_ISGID` on a
     /// file that is not group-executable.
     ///

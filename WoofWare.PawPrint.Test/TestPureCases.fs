@@ -378,6 +378,13 @@ module TestPureCases =
                     name "ld", SeedEntry.Symlink (target "d", None)
                     name "dang", SeedEntry.Symlink (target "nx", None)
                 ]
+            // The folder the guest's HOME names, `s/h`, inside a directory
+            // whose mode it changes; see `seededCaseEnvironments`.
+            "AccessSeeded.cs",
+            Map.ofList
+                [
+                    name "s", SeedEntry.directory (Map.ofList [ name "h", SeedEntry.directory Map.empty ])
+                ]
             "FlockContentionSeeded.cs",
             Map.ofList
                 [
@@ -393,6 +400,14 @@ module TestPureCases =
         |> Map.ofList
 
     let seededCaseNames : string list = seededCases |> Map.toList |> List.map fst
+
+    /// The environment a seeded guest wants, where it wants one, which both
+    /// runtimes are given as `environmentCases` gives theirs. A relative HOME
+    /// names the same place in PawPrint's seeded tree and in the oracle's
+    /// scratch directory, which no absolute path could.
+    let seededCaseEnvironments : Map<string, string list> =
+        [ "AccessSeeded.cs", [ EnvironmentPal.nameValueEntry "HOME" "s/h" ] ]
+        |> Map.ofList
 
     /// Guests that need a particular environment variable, with the environment
     /// entries each one wants.
@@ -1352,6 +1367,10 @@ class Program
             KernelConfig =
                 { KernelConfig.Default with
                     FileSystem = seededCases.[fileName]
+                    Environment =
+                        seededCaseEnvironments
+                        |> Map.tryFind fileName
+                        |> Option.defaultValue KernelConfig.Default.Environment
                 }
             AppContext = AppContextProperties.empty
             Oracle = OraclePolicy.Always

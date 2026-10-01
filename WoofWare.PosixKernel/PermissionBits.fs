@@ -24,12 +24,12 @@ type CallerPrivilege =
 /// <c>PermissionBits.deniedTo</c> is asked it.
 /// </summary>
 /// <remarks>
-/// There is not yet a case for executing a regular file: WoofWare.PosixKernel
-/// does not yet model <c>exec</c> or <c>access(2)</c>, so no caller can yet
-/// ask for that permission. Linux grants root <c>X_OK</c> only when at least
-/// one of the three execute bits is set; Darwin's answer for root has not been
-/// measured.
-/// (By contrast, root bypasses read, write and directory search outright.)
+/// There is deliberately no case for executing anything but a directory, because
+/// root is not exempt from that question as it is from these three: Linux grants
+/// root <c>X_OK</c> on a non-directory only when at least one of the three execute
+/// bits is set, and Darwin's answer for root has not been measured. Ask
+/// <c>PermissionBits.executionDenied</c> instead, which takes the platform's
+/// rule.
 /// </remarks>
 [<RequireQualifiedAccess>]
 type AccessRequest =
@@ -220,6 +220,44 @@ module SetIdChangeRefusal =
         | SetIdChangeRefusal.UnmeasuredDarwinTruncation (standing, bits) ->
             $"what Darwin does to the set-ID bits of a %O{bits} file truncated by a caller standing %A{standing} towards it has not been measured. %s{measured}"
 
+/// What a privileged caller is granted when it asks to execute something that
+/// is not a directory: `X_OK` on a regular file or a symbolic link.
+///
+/// An unprivileged caller's rule is the same on every modelled Unix, and is the
+/// one `PermissionBits.deniedTo` applies to the other questions: see
+/// `PermissionBits.executionDenied`.
+[<RequireQualifiedAccess>]
+type PrivilegedExecution =
+    /// Granted exactly when at least one of the three execute bits is set,
+    /// whichever triple it is in, and whether or not the caller owns the inode
+    /// or is in its group.
+    ///
+    /// This is Linux.
+    | NeedsAnExecuteBit
+    /// What a privileged caller is granted has not been measured, so
+    /// `PermissionBits.executionDenied` answers
+    /// `ExecutionRefusal.UnmeasuredPrivilegedCaller` rather than guess.
+    ///
+    /// This is Darwin, where measuring it needs root.
+    | Unmeasured
+
+/// Why this library will not say whether a caller may execute something: the
+/// kernel's answer for that caller has not been measured.
+[<RequireQualifiedAccess>]
+type ExecutionRefusal =
+    /// A privileged caller, under `PrivilegedExecution.Unmeasured`, standing
+    /// as `standing` towards an inode carrying `bits`.
+    | UnmeasuredPrivilegedCaller of standing : Standing * bits : PermissionBits
+
+[<RequireQualifiedAccess>]
+module ExecutionRefusal =
+    /// What this library knows about why it will not answer. A client adds
+    /// which call it was answering and which inode it was.
+    let describe (refusal : ExecutionRefusal) : string =
+        match refusal with
+        | ExecutionRefusal.UnmeasuredPrivilegedCaller (standing, bits) ->
+            $"whether Darwin lets a privileged caller, standing %A{standing} towards it, execute a non-directory carrying %O{bits} has not been measured. What has been measured: every unprivileged caller's answer, which is the owner, group or other triple's execute bit. Linux grants root execution exactly when some execute bit is set; measuring Darwin's root needs root."
+
 /// What a privileged caller's `chmod(2)` or `fchmod(2)` does to the mode it
 /// asks for.
 ///
@@ -281,6 +319,28 @@ module PermissionBits =
         match bits with
         | PermissionBits bits -> bits
 
+    // Whether the one triple `standing` selects lacks the bit `ownerBit` names
+    // in the owner's triple: the owner's if the caller owns the object, else the
+    // group's if it is in the object's group, else the other triple.
+    //
+    // Measured on Linux 6.18.5 (`permission-standing.c`, ext4 and tmpfs):
+    // open for reading and for writing, a directory's search and read bits,
+    // and creating an entry, over all 4096 modes for the owner, a member of
+    // the group by its effective gid and by a supplementary group, anyone
+    // else, and root, with no mismatch; and `access(2)` for every
+    // combination of R_OK, W_OK and X_OK over the same modes and callers, on
+    // a file and a directory (`access-rules.c`). Darwin 27.0 at uid 501: the
+    // owner over all 4096 modes through `access(2)`, and spot rows for the
+    // group and other triples (`ownership-probe.c`, and `access-rules.c`'s
+    // scan of other users' inodes).
+    let private selectedTripleLacks (standing : Standing) (ownerBit : int) (bits : PermissionBits) : bool =
+        let bit =
+            if standing.Owns then ownerBit
+            elif standing.InGroup then ownerBit >>> 3
+            else ownerBit >>> 6
+
+        toInt bits &&& bit <> bit
+
     /// <summary>
     /// Whether a caller standing as <c>standing</c> towards an object carrying
     /// <c>bits</c> is refused <c>needed</c> on it.
@@ -296,17 +356,10 @@ module PermissionBits =
     /// <c>AccessRequest</c> can express, whatever the mode says.
     /// </example>
     let deniedTo (standing : Standing) (needed : AccessRequest) (bits : PermissionBits) : bool =
-        // Measured on Linux 6.18.5 (`permission-standing.c`, ext4 and tmpfs):
-        // open for reading and for writing, a directory's search and read bits,
-        // and creating an entry, over all 4096 modes for the owner, a member of
-        // the group by its effective gid and by a supplementary group, anyone
-        // else, and root, with no mismatch. Darwin 27.0 at uid 501: the owner
-        // over 512 modes, and spot rows for the group and other triples
-        // (`ownership-probe.c`).
         match standing.Privilege, needed with
-        // Root bypasses each of these three, but would *not* bypass
-        // executing a regular file. When we add execution to WoofWare.PosixKernel,
-        // we'll need to decide how to treat perms appropriately.
+        // Root bypasses each of these three. It does not bypass executing a
+        // non-directory, which is why `AccessRequest` cannot ask that; see
+        // `executionDenied`.
         | CallerPrivilege.Privileged, AccessRequest.Read
         | CallerPrivilege.Privileged, AccessRequest.Write
         | CallerPrivilege.Privileged, AccessRequest.SearchDirectory -> false
@@ -318,12 +371,38 @@ module PermissionBits =
             | AccessRequest.Write -> 0o200
             | AccessRequest.SearchDirectory -> 0o100
 
-        let bit =
-            if standing.Owns then ownerBit
-            elif standing.InGroup then ownerBit >>> 3
-            else ownerBit >>> 6
+        selectedTripleLacks standing ownerBit bits
 
-        toInt bits &&& bit <> bit
+    /// <summary>
+    /// Whether a caller standing as <c>standing</c> towards something that is not a
+    /// directory, carrying <c>bits</c>, is refused executing it: <c>X_OK</c> on a regular
+    /// file or a symbolic link.
+    /// </summary>
+    /// <remarks>
+    /// An unprivileged caller is refused unless the triple its standing selects has the
+    /// execute bit, exactly as <c>deniedTo</c> selects a triple. A privileged caller is
+    /// <c>rule</c>'s to answer: see <c>PrivilegedExecution</c>.
+    ///
+    /// <c>X_OK</c> on a directory is search, which root is never refused; ask
+    /// <c>deniedTo</c> with <c>AccessRequest.SearchDirectory</c> for that.
+    /// </remarks>
+    let executionDenied
+        (rule : PrivilegedExecution)
+        (standing : Standing)
+        (bits : PermissionBits)
+        : Result<bool, ExecutionRefusal>
+        =
+        // Measured by `access-rules.c` on Linux 6.18.5 (ext4): root, owning
+        // the inode or not, over all 4096 modes, is granted X_OK on a regular
+        // file exactly when `bits &&& 0o111` is nonzero, and on a symbolic
+        // link asked about itself (0777) always. A real root with an effective
+        // non-root uid is granted the same through `access(2)`.
+        match standing.Privilege with
+        | CallerPrivilege.Privileged ->
+            match rule with
+            | PrivilegedExecution.NeedsAnExecuteBit -> Ok (toInt bits &&& 0o111 = 0)
+            | PrivilegedExecution.Unmeasured -> Error (ExecutionRefusal.UnmeasuredPrivilegedCaller (standing, bits))
+        | CallerPrivilege.Unprivileged -> Ok (selectedTripleLacks standing 0o100 bits)
 
     /// What the sticky bit of a directory carrying <c>directoryBits</c> says about
     /// removing, renaming or replacing one of its entries, for a caller standing as

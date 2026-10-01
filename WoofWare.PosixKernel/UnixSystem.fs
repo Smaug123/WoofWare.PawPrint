@@ -36,6 +36,14 @@ type Syscall =
     /// keeps is behaviour this kernel models, and models per flavour. Answers
     /// the previous mask.
     | UMask of mask : int
+    /// `path` is the argument's bytes, which this kernel copies in at the
+    /// point it measured; `mode` is raw, as `access(2)` takes it, because
+    /// which of its bits are rejected is behaviour this kernel models per
+    /// flavour.
+    | Access of path : PathArgumentBytes * mode : int
+    /// `dirfd`, `mode` and `flags` are raw, as `faccessat(2)` takes them: each
+    /// flavour numbers `AT_FDCWD` and the flags its own way.
+    | FAccessAt of dirfd : int * path : PathArgumentBytes * mode : int * flags : int
 
 /// Why this kernel will not answer a syscall at all. The client decides what a
 /// refusal means for it; nothing here is recoverable by retrying.
@@ -48,6 +56,7 @@ type SyscallRefusal<'Task> =
     | RmDir of StickyRefusal
     | ChMod of ChModRefusal
     | FChMod of FChModRefusal
+    | Access of AccessRefusal
     | Close of CloseRefusal<'Task>
 
 /// A way this system's tables disagree with each other — a state no kernel
@@ -425,6 +434,14 @@ module UnixSystem =
             let previous, system = umask mask system
 
             Ok (SyscallOutcome.Answered (SyscallAnswer.Completed (int64 (PermissionBits.toInt previous))), system)
+        | Syscall.Access (path, mode) ->
+            UnixPathResolution.access path mode system
+            |> Result.map (fun answer -> SyscallOutcome.Answered answer, system)
+            |> Result.mapError SyscallRefusal.Access
+        | Syscall.FAccessAt (dirfd, path, mode, flags) ->
+            UnixPathResolution.faccessat dirfd path mode flags system
+            |> Result.map (fun answer -> SyscallOutcome.Answered answer, system)
+            |> Result.mapError SyscallRefusal.Access
 
     /// Every way this system's tables disagree with each other: the socket table
     /// and the pipe table against the descriptor table, each pipe and the pipe
