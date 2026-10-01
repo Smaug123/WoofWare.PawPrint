@@ -124,6 +124,7 @@
     <Compile Include="TestPipeBufferAgainstHost.fs" />
     <Compile Include="TestPipe.fs" />
     <Compile Include="TestLaunchedStreams.fs" />
+    <Compile Include="TestSuppliedPipe.fs" />
     <Compile Include="TestPipeAgainstHost.fs" />
     <Compile Include="TestSockaddrField.fs" />
     <Compile Include="TestSockaddrLayoutAgainstHost.fs" />
@@ -165,6 +166,9 @@
     <!-- What a real pipe answered to random non-blocking reads and writes,
          measured per flavour; `TestPipeBufferCorpus` holds `PipeBuffer` to it. -->
     <EmbeddedResource Include="pipeBuffer\*.txt" />
+    <!-- What a real pipe held as a reader drained it while one blocking write was
+         still filling it, measured per flavour; `TestSuppliedPipe` replays it. -->
+    <EmbeddedResource Include="suppliedPipe\*.txt" />
   </ItemGroup>
 
   <ItemGroup>

@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint.Test
 
+open System.Collections.Immutable
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -15,7 +16,7 @@ module TestEmulatedKernelAbort =
 
     /// A process as the runtime starts it, with one task: `thread`, its leader.
     let private kernelOn (platform : SimulatedUnixPlatform) (coreDumps : CoreDumps) : EmulatedKernel =
-        EmulatedKernel.create platform
+        EmulatedKernel.create platform ImmutableArray.Empty
         |> EmulatedKernel.mapProcess (UnixProcessState.withCoreDumps coreDumps)
 
     let private platforms : SimulatedUnixPlatform list =

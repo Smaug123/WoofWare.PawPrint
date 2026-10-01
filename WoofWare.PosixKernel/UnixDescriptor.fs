@@ -1605,11 +1605,16 @@ module UnixDescriptor =
                 // onto both.
                 // An end the client holds stays open whatever the process
                 // closes, so a launched pipe the client drains outlives the
-                // process's last descriptor onto it.
+                // process's last descriptor onto it. A client asleep in a write
+                // does not: once no reader is left its write fails, and it
+                // closes its end.
                 let pipe = UnixMachineState.pipe pipeId closed.Machine
+                let readable = UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Read closed.Process
+
+                let pipe = if readable then pipe else PipeState.readEndClosed pipe
 
                 if
-                    UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Read closed.Process
+                    readable
                     || UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Write closed.Process
                 then
                     closed

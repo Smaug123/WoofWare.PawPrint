@@ -3696,16 +3696,17 @@ module TestImpureCases =
             // that is not compared starts no second run at all.
             let realResult, pawPrintResult =
                 if comparesHere then
-                    // The case's own seed and environment overlay drive the oracle too,
-                    // exactly as they do for a `sourcesPure` case, so both runtimes see
-                    // one description of a filesystem and of the variables the case
-                    // names.
+                    // The case's own seed, environment overlay and standard input drive
+                    // the oracle too, exactly as they do for a `sourcesPure` case, so
+                    // both runtimes see one description of a filesystem, of the
+                    // variables the case names, and of the bytes on standard input.
                     let realResult, pawPrintResult =
                         DifferentialOracle.alongsideInterpreted
                             (fun () ->
                                 RealRuntime.executeWithSeed
                                     case.KernelConfig.FileSystem
                                     case.KernelConfig.Environment
+                                    case.KernelConfig.StandardInput
                                     [||]
                                     image
                             )

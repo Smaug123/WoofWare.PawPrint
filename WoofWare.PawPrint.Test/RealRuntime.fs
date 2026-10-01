@@ -1,12 +1,14 @@
 namespace WoofWare.PawPrint.Test
 
 open System
+open System.Collections.Immutable
 open System.Diagnostics
 open System.IO
 open System.Reflection.Metadata
 open System.Reflection.PortableExecutable
 open System.Runtime.InteropServices
 open System.Text
+open System.Threading
 open WoofWare.PosixKernel
 
 /// What the real runtime's stderr reveals about *which* fatal error killed the guest.
@@ -206,12 +208,16 @@ module RealRuntime =
     /// `environment` is overlaid on the test host's own environment, which the
     /// child otherwise inherits whole: a name here replaces the host's value of
     /// it, and every other host variable comes through untouched.
+    ///
+    /// `standardInput` is written into the child's standard input, a pipe, and
+    /// the pipe then closed, as PawPrint's `KernelConfig.StandardInput` is.
     let private runToCompletion
         (timeout : TimeSpan)
         (exePath : string)
         (arguments : string list)
         (workingDirectory : string)
         (environment : Map<string, string>)
+        (standardInput : ImmutableArray<byte>)
         (description : string)
         : RealRuntimeResult
         =
@@ -261,9 +267,32 @@ module RealRuntime =
         proc.Start () |> ignore
         proc.BeginOutputReadLine ()
         proc.BeginErrorReadLine ()
-        // No guest reads stdin; closing it turns a guest that tries into a prompt EOF rather
-        // than a hang.
-        proc.StandardInput.Close ()
+
+        // The bytes go in as one write and then the pipe closes, so a guest that reads past them
+        // sees a prompt EOF rather than a hang. The write is on another thread because it blocks
+        // while the pipe is full: a guest that never reads, or stops before the end, would
+        // otherwise hold this thread until the timeout. When such a guest exits, its end of the
+        // pipe closes and the write fails with EPIPE (an IOException; .NET ignores SIGPIPE),
+        // which is the guest's doing and no fault of the oracle's.
+        let standardInputWriter : Tasks.Task =
+            if standardInput.IsEmpty then
+                proc.StandardInput.Close ()
+                Tasks.Task.CompletedTask
+            else
+                Tasks.Task.Run (fun () ->
+                    try
+                        try
+                            let stream = proc.StandardInput.BaseStream
+                            stream.Write (standardInput.AsSpan ())
+                            stream.Flush ()
+                        with :? IOException ->
+                            ()
+                    finally
+                        try
+                            proc.StandardInput.Close ()
+                        with :? IOException ->
+                            ()
+                )
 
         if not (proc.WaitForExit (int timeout.TotalMilliseconds)) then
             try
@@ -281,6 +310,12 @@ module RealRuntime =
         // The parameterless overload additionally waits for the async readers to finish, so the
         // buffers are complete before we read them.
         proc.WaitForExit ()
+
+        // The guest has exited, so its end of the pipe is closed and the write cannot still be
+        // blocked on it; this bound only turns a defect here into a failure rather than a hang.
+        if not (standardInputWriter.Wait (TimeSpan.FromSeconds 30.0)) then
+            failwith
+                $"Guest %s{description} exited under the real runtime, but writing its standard input had not finished 30s later."
 
         let exitCode = proc.ExitCode
         let outputText = snapshot stdout
@@ -656,6 +691,7 @@ module RealRuntime =
         (timeout : TimeSpan)
         (seed : Map<DirectoryEntryName, SeedEntry>)
         (environment : string list)
+        (standardInput : ImmutableArray<byte>)
         (inheritedIgnores : int list)
         (args : string[])
         (assemblyBytes : byte array)
@@ -705,7 +741,7 @@ module RealRuntime =
                     [ "-c" ; $"trap '' %s{trap}; exec \"$0\" \"$@\"" ; muxerPath ; dllPath ]
                     @ List.ofArray args
 
-            runToCompletion timeout exePath arguments tempDir (oracleEnvironment environment) assemblyName
+            runToCompletion timeout exePath arguments tempDir (oracleEnvironment environment) standardInput assemblyName
         finally
             try
                 // A seed may deliberately have left a directory unreadable or
@@ -747,15 +783,20 @@ module RealRuntime =
     /// not assert anything about a variable the entries do not name, nor about
     /// the order of the environment. Entries the overlay cannot express are
     /// refused; see `oracleEnvironment`.
+    ///
+    /// `standardInput` is `KernelConfig.StandardInput`: the guest's standard
+    /// input is a pipe into which the oracle writes these bytes before closing
+    /// it.
     let executeWithTimeoutAndSeed
         (timeout : TimeSpan)
         (seed : Map<DirectoryEntryName, SeedEntry>)
         (environment : string list)
+        (standardInput : ImmutableArray<byte>)
         (args : string[])
         (assemblyBytes : byte array)
         : RealRuntimeResult
         =
-        executeInScratch timeout seed environment [] args assemblyBytes
+        executeInScratch timeout seed environment standardInput [] args assemblyBytes
 
     /// As `executeWithTimeoutAndSeed` with an empty seed and no environment
     /// entries, the standard time limit, and the guest started with the
@@ -772,22 +813,23 @@ module RealRuntime =
         if List.isEmpty ignoredSignos then
             failwith "RealRuntime.executeWithInheritedIgnores: no signals to ignore; use executeWithRealRuntime."
 
-        executeInScratch guestTimeout FileSystemSeed.empty [] ignoredSignos args assemblyBytes
+        executeInScratch guestTimeout FileSystemSeed.empty [] ImmutableArray.Empty ignoredSignos args assemblyBytes
 
-    /// As `executeWithTimeoutAndSeed`, with an empty filesystem seed and no
-    /// environment entries.
+    /// As `executeWithTimeoutAndSeed`, with an empty filesystem seed, no
+    /// environment entries, and nothing on standard input.
     let executeWithTimeout (timeout : TimeSpan) (args : string[]) (assemblyBytes : byte array) : RealRuntimeResult =
-        executeWithTimeoutAndSeed timeout FileSystemSeed.empty [] args assemblyBytes
+        executeWithTimeoutAndSeed timeout FileSystemSeed.empty [] ImmutableArray.Empty args assemblyBytes
 
     /// As `executeWithTimeoutAndSeed`, with the standard guest time limit.
     let executeWithSeed
         (seed : Map<DirectoryEntryName, SeedEntry>)
         (environment : string list)
+        (standardInput : ImmutableArray<byte>)
         (args : string[])
         (assemblyBytes : byte array)
         : RealRuntimeResult
         =
-        executeWithTimeoutAndSeed guestTimeout seed environment args assemblyBytes
+        executeWithTimeoutAndSeed guestTimeout seed environment standardInput args assemblyBytes
 
     /// As `executeWithTimeout`, with the standard guest time limit.
     let executeWithRealRuntime (args : string[]) (assemblyBytes : byte array) : RealRuntimeResult =
@@ -813,7 +855,14 @@ module RealRuntime =
         let name = Path.GetFileNameWithoutExtension dllPath
         File.WriteAllText (Path.Combine (directory, name + ".runtimeconfig.json"), runtimeConfig)
 
-        runToCompletion guestTimeout muxerPath (dllPath :: List.ofArray args) directory Map.empty name
+        runToCompletion
+            guestTimeout
+            muxerPath
+            (dllPath :: List.ofArray args)
+            directory
+            Map.empty
+            ImmutableArray.Empty
+            name
 
     /// Run an already-published application in place, by executing its apphost.
     ///
@@ -833,4 +882,5 @@ module RealRuntime =
             (List.ofArray args)
             (Path.GetDirectoryName executablePath)
             Map.empty
+            ImmutableArray.Empty
             (Path.GetFileName executablePath)
