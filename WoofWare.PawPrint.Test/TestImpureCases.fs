@@ -450,6 +450,39 @@ module TestImpureCases =
                 name "d", SeedEntry.directory Map.empty
             ]
 
+    /// What the two `access` wiring guests ask about: regular files with no
+    /// execute bit, the owner's, and the other triple's, a file and a directory
+    /// with no bits at all, and a link to the first file. Every entry is the
+    /// configured user's.
+    let private accessWiringSeed : Map<DirectoryEntryName, SeedEntry> =
+        let name (s : string) =
+            DirectoryEntryName.parseOrFail "test seed" s
+
+        let file (bits : int) =
+            SeedEntry.File (
+                Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange,
+                PermissionBits.parseOrFail "test seed" bits,
+                None
+            )
+
+        Map.ofList
+            [
+                name "f", file 0o644
+                name "x", file 0o100
+                name "o", file 0o001
+                name "z", file 0o000
+                name "d", SeedEntry.Directory (Map.empty, PermissionBits.parseOrFail "test seed" 0o000, None)
+                name "lf", SeedEntry.Symlink (SymlinkTarget.parseOrFail "test seed" "f", None)
+            ]
+
+    /// The kernel the Darwin `access` wiring guest runs under, as `user`.
+    let private accessWiringDarwinConfig (user : uint32) : KernelConfig =
+        { KernelConfig.Default with
+            UnixPlatform = SimulatedUnixPlatform.macOsArm64
+            UserId = Some user
+            FileSystem = accessWiringSeed
+        }
+
     /// What `ChModWiringSeeded.cs` changes: two files, a directory, a dangling
     /// link, a file root owns, and a file of uid 1000's own in a group it is not
     /// in.
@@ -1909,6 +1942,34 @@ module TestImpureCases =
                         UserId = Some 1000u
                         FileSystem = mkDirWiringSeed
                     }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // `access` called directly, with what the BCL never passes: a
+                // mode word with high bits, X_OK, and an unreadable path. Linux
+                // as root, so that the execute rule root is not exempt from is
+                // the one asked, and the mode word's EINVAL comes before the
+                // path; Darwin as uid 1000, which ignores the high bits.
+                FileName = "AccessWiringLinuxSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.linuxX64
+                        UserId = Some 0u
+                        FileSystem = accessWiringSeed
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                FileName = "AccessWiringDarwinSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = accessWiringDarwinConfig 1000u
                 AppContext = AppContextProperties.empty
                 Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
@@ -3670,6 +3731,41 @@ module TestImpureCases =
 
         exn.Message |> shouldContainText "SystemNative_GetGroups"
         exn.Message |> shouldContainText "GetGroupsRefusal.UnmeasuredGroupList"
+
+    [<Test>]
+    let ``a Darwin guest that asks root's X_OK of a regular file stops, naming the unmeasured rule`` () : unit =
+        // The Darwin wiring guest's first row, run as root: whether Darwin
+        // grants a privileged caller execution of a regular file has not been
+        // measured, and the run must stop saying so rather than answer.
+        let source = Assembly.getEmbeddedResourceAsString "AccessWiringDarwinSeeded.cs" assy
+        let image = Roslyn.compile [ source ]
+
+        let _messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", "AccessWiringDarwinSeeded.cs" ]
+
+        use _loggerFactoryResource = loggerFactory
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
+        use peImage = new MemoryStream (image)
+
+        let exn =
+            Assert.Catch (fun () ->
+                BoundedRun.run
+                    loggerFactory
+                    "AccessWiringDarwinSeeded.cs"
+                    (Some "AccessWiringDarwinSeeded.cs")
+                    peImage
+                    { HostConfig.Default dotnetRuntimes with
+                        Guest =
+                            { GuestConfig.Default dotnetRuntimes with
+                                Kernel = accessWiringDarwinConfig 0u
+                            }
+                    }
+                |> ignore<RunOutcome>
+            )
+
+        exn.Message |> shouldContainText "SystemNative_Access"
+        exn.Message |> shouldContainText "AccessRefusal"
+        exn.Message |> shouldContainText "privileged caller"
 
     [<TestCaseSource(nameof unimplemented)>]
     [<Explicit>]

@@ -2950,6 +2950,65 @@ module NativeSystemNative =
                     )
                 )
                 state
+        // `int32_t SystemNative_Access(const char* path, int32_t mode)`
+        // (pal_io.c): `access(2)` and nothing else. The shim's `AccessMode`
+        // numbering is `<unistd.h>`'s, which it static-asserts, so the mode
+        // arrives raw and the kernel screens it per flavour, before the path
+        // is read: Linux rejects a bad mode before it copies the path in, so
+        // a bad mode with an unreadable path is EINVAL there, and EFAULT on
+        // Darwin. CoreLib reaches it from
+        // `Environment.GetFolderPath`, which asks R_OK of the folder it is
+        // about to return unless told not to verify it, and from reading the
+        // XDG `user-dirs.dirs` file. `access(2)` checks with the real IDs where
+        // every other call uses the effective ones; this process has one ID of
+        // each kind (`KernelConfig.UserId` and `GroupId` become real, effective
+        // and saved alike), so here the two never differ.
+        // CoreLib declares the mode as its `Interop.Sys.AccessMode` enum, whose
+        // underlying type is `int`, and a guest calling the shim by hand as an
+        // `int`; either is read as the `int32_t` it is.
+        | Some "SystemNative_Access",
+          [ ConcretePointer _ ; _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "SystemNative_Access"
+            let mode = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            let answer =
+                match UnixPathResolution.accessScreenPhase mode (EmulatedKernel.unix state.Kernel) with
+                | Error refusal -> Error refusal
+                | Ok (AccessProgress.Answered answer) -> Ok answer
+                | Ok (AccessProgress.NeedsPath paused) ->
+                    // Read only now: a pointer this interpreter cannot
+                    // dereference would refuse at transfer, where Linux
+                    // answers a bad mode without looking at it.
+                    UnixPathResolution.accessWithPath
+                        (pathArgumentBytes ctx operation "path" instruction.Arguments.[0] state)
+                        paused
+
+            match answer with
+            | Error refusal ->
+                let advice =
+                    match refusal with
+                    | AccessRefusal.UnmeasuredExecution _ ->
+                        "Configure a user other than root (KernelConfig.UserId), or the Linux platform, to run this guest."
+                    | AccessRefusal.ExtendedRights _ ->
+                        "Only a guest calling the shim by hand can ask for Darwin's extended rights; model them before answering."
+                    | AccessRefusal.PathArgument _ ->
+                        "The bytes were read up to the guest's NUL, so this is an interpreter bug."
+                    | AccessRefusal.UnmodelledFlags _
+                    | AccessRefusal.UnmodelledDescriptor _ ->
+                        "access(2) takes no flags and no dirfd, so this is a bug in the kernel library."
+
+                failwith $"%s{operation}: AccessRefusal: %s{AccessRefusal.describe refusal} %s{advice}"
+            | Ok (SyscallAnswer.Failed error) ->
+                withErrnoOnly ctx error state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | Ok (SyscallAnswer.Completed _) ->
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
         // `int32_t SystemNative_Rename(const char* oldPath, const char* newPath)`
         // (pal_io.c): `rename(2)` and nothing else -- not even an EINTR retry,
         // which `rename` cannot return. CoreLib declares both a UTF-8 `string`
