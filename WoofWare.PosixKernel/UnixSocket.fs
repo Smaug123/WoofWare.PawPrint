@@ -1751,6 +1751,10 @@ module UnixSocket =
                             }
 
                         refusal, system
+                    // A connection reset by its peer would read ECONNRESET once
+                    // (measured on both), but nothing here resets one: no data
+                    // path exists for a peer to close over unread bytes, and a
+                    // listener close that would reset a queued client is refused.
                     | SocketPhase.Idle
                     | SocketPhase.Listening _
                     | SocketPhase.EstablishedPendingReport _

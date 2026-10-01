@@ -76,11 +76,13 @@
     SO_ERROR unmapped length cell     rc=-1 errno=14
     SO_ERROR then                     rc=0 errno=0 value=111 len=4
 == G. established, peer closed with unread data (RST) ==
-    poll before read                  rv=1 0x0004 OUT
-    SO_ERROR first                    rc=0 errno=0 value=0 len=4
+    (paired: client port 60718)
+    poll before read                  rv=1 0x001d IN OUT ERR HUP
+    SO_ERROR first                    rc=0 errno=0 value=104 len=4
     SO_ERROR second                   rc=0 errno=0 value=0 len=4
-    poll after read                   rv=1 0x0004 OUT
+    poll after read                   rv=1 0x0015 IN OUT HUP
 == H. established, peer closed cleanly (FIN) ==
+    (paired: client port 36522)
     SO_ERROR                          rc=0 errno=0 value=0 len=4
 == I. setsockopt(SO_ERROR) ==
     rc=-1 errno=92

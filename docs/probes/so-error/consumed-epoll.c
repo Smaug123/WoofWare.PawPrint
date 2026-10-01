@@ -4,8 +4,7 @@
 // Linux only (epoll); output beside this file.
 //
 //     cc -Wall -o p consumed-epoll.c && ./p
-//     container run --rm -v "$PWD:/probe" debian:trixie sh -c \
-//       'apt-get update -qq && apt-get install -y -qq gcc libc6-dev >/dev/null && gcc -Wall -o /tmp/p /probe/consumed-epoll.c && uname -r && /tmp/p'
+//     container run --rm -v "$PWD:/probe" debian:trixie sh -c 'apt-get update -qq && apt-get install -y -qq gcc libc6-dev >/dev/null && gcc -Wall -o /tmp/p /probe/consumed-epoll.c && uname -r && /tmp/p'
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <string.h>
