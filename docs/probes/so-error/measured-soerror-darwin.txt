@@ -1,0 +1,86 @@
+27.0.0 (Darwin)
+== A. phases that hold nothing ==
+  fresh TCP
+    SO_ERROR                          rc=0 errno=0 value=0 len=4
+  bound TCP
+    SO_ERROR                          rc=0 errno=0 value=0 len=4
+  listening, queue empty
+    SO_ERROR                          rc=0 errno=0 value=0 len=4
+  listening, queue holds one
+    SO_ERROR                          rc=0 errno=0 value=0 len=4
+  blocking-connected client
+    SO_ERROR                          rc=0 errno=0 value=0 len=4
+  accepted server end
+    SO_ERROR                          rc=0 errno=0 value=0 len=4
+  fresh UDP
+    SO_ERROR                          rc=0 errno=0 value=0 len=4
+  UDP with a peer
+    SO_ERROR                          rc=0 errno=0 value=0 len=4
+  UDP with a peer, after a send to a closed port
+    SO_ERROR first                    rc=0 errno=0 value=61 len=4
+    SO_ERROR second                   rc=0 errno=0 value=0 len=4
+== B. nonblocking connect that completed ==
+    connect first                     rc=-1 errno=36
+    poll before read                  rv=1 0x0004 OUT
+    SO_ERROR first                    rc=0 errno=0 value=0 len=4
+    SO_ERROR second                   rc=0 errno=0 value=0 len=4
+    poll after read                   rv=1 0x0004 OUT
+    connect after read                rc=-1 errno=56
+    connect again                     rc=-1 errno=56
+== C. nonblocking connect refused, never read ==
+    poll pending                      rv=1 0x0013 IN PRI HUP
+    setsockopt REUSEADDR             rc=-1 errno=22
+    listen                           rc=-1 errno=22
+    connect delivers                  rc=-1 errno=56
+    poll after delivery               rv=1 0x0013 IN PRI HUP
+    SO_ERROR after delivery           rc=0 errno=0 value=61 len=4
+    connect after delivery            rc=-1 errno=56
+== D. nonblocking connect refused, then SO_ERROR read ==
+    SO_ERROR first                    rc=0 errno=0 value=61 len=4
+    SO_ERROR second                   rc=0 errno=0 value=0 len=4
+    poll after read                   rv=1 0x0013 IN PRI HUP
+    setsockopt REUSEADDR             rc=-1 errno=22
+    listen                           rc=-1 errno=22
+    connect 1st after read            rc=-1 errno=56
+    poll after 1st connect            rv=1 0x0013 IN PRI HUP
+    SO_ERROR after 1st connect        rc=0 errno=0 value=0 len=4
+    connect 2nd after read            rc=-1 errno=56
+    poll after 2nd connect            rv=1 0x0013 IN PRI HUP
+    SO_ERROR after 2nd connect        rc=0 errno=0 value=0 len=4
+    connect 3rd after read            rc=-1 errno=56
+  D2: read, then connect to the live listener
+    SO_ERROR first                    rc=0 errno=0 value=61 len=4
+    connect to listener               rc=-1 errno=56
+    connect again                     rc=-1 errno=56
+== E. blocking connect refused ==
+    connect refused inline            rc=-1 errno=61
+    SO_ERROR first                    rc=0 errno=0 value=0 len=4
+    poll after                        rv=1 0x0013 IN PRI HUP
+    setsockopt REUSEADDR             rc=-1 errno=22
+    listen                           rc=-1 errno=22
+    connect next                      rc=-1 errno=56
+    connect to listener               rc=-1 errno=56
+== F. does a read consume, by length and buffer? ==
+    SO_ERROR declared 0               rc=0 errno=0 value=-7 len=0
+    SO_ERROR then                     rc=0 errno=0 value=0 len=4
+    SO_ERROR declared 2               rc=0 errno=0 value=-65475 len=2
+    SO_ERROR then                     rc=0 errno=0 value=0 len=4
+    SO_ERROR declared 8               rc=0 errno=0 value=61 len=4
+    SO_ERROR then                     rc=0 errno=0 value=0 len=4
+    SO_ERROR declared -1              rc=0 errno=0 value=61 len=4
+    SO_ERROR then                     rc=0 errno=0 value=0 len=4
+    SO_ERROR null value, declared 4   rc=0 errno=0 value=-7 len=0
+    SO_ERROR then                     rc=0 errno=0 value=0 len=4
+    SO_ERROR unmapped value, declared 4 rc=-1 errno=14 value=-7 len=4
+    SO_ERROR then                     rc=0 errno=0 value=0 len=4
+    SO_ERROR unmapped length cell     rc=-1 errno=14
+    SO_ERROR then                     rc=0 errno=0 value=61 len=4
+== G. established, peer closed with unread data (RST) ==
+    poll before read                  rv=1 0x0004 OUT
+    SO_ERROR first                    rc=0 errno=0 value=0 len=4
+    SO_ERROR second                   rc=0 errno=0 value=0 len=4
+    poll after read                   rv=1 0x0004 OUT
+== H. established, peer closed cleanly (FIN) ==
+    SO_ERROR                          rc=0 errno=0 value=0 len=4
+== I. setsockopt(SO_ERROR) ==
+    rc=-1 errno=42

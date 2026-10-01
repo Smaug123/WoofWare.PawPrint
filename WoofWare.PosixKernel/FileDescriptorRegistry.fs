@@ -161,9 +161,10 @@ type ListenState =
 /// `sk_err`, Darwin's `so_error`), and so does `SocketPhase.Refused`.
 [<RequireQualifiedAccess>]
 type RefusalError =
-    /// ECONNREFUSED is pending.
+    /// ECONNREFUSED is pending, and an `SO_ERROR` read will report it.
     | Pending
-    /// The ECONNREFUSED has been reported, and nothing is pending.
+    /// The ECONNREFUSED has been reported, by a blocking connect or by an
+    /// `SO_ERROR` read, and nothing is pending.
     | Reported
 
 /// Where a socket is in its connection lifecycle. One value, rather than an
@@ -194,15 +195,16 @@ type SocketPhase =
     | Established of connection : ConnectionId
     /// A connect was refused.
     ///
-    /// A non-blocking refusal leaves its ECONNREFUSED `Pending`. On Linux the
-    /// next `connect(2)` delivers it and transitions to `Idle`. Darwin's
-    /// `connect(2)` never delivers it: every one answers EISCONN, whatever the
-    /// destination, and the socket stays here.
+    /// A non-blocking refusal leaves its ECONNREFUSED `Pending`, and an
+    /// `SO_ERROR` read reports it and leaves it `Reported`. A blocking refusal
+    /// reports it inline: Darwin's socket is then here with the error
+    /// `Reported`, and Linux's goes to `Idle` instead.
     ///
-    /// A blocking refusal reports its error inline. Darwin's socket is then
-    /// here with the error `Reported`, and every later `connect(2)` answers
-    /// EISCONN, whatever the destination. Linux's goes to `Idle` instead, so
-    /// under that flavour the error here is always `Pending`.
+    /// On Linux the next `connect(2)` resets the socket to `Idle`, wherever it
+    /// is aimed, and answers ECONNREFUSED if the error is `Pending` and
+    /// ECONNABORTED if it is `Reported`. Darwin's `connect(2)` never resets
+    /// it: every one answers EISCONN, whatever the destination, and the socket
+    /// stays here.
     | Refused of error : RefusalError
     /// A datagram socket's default peer, set by `connect(2)` on it. Filters
     /// nothing yet — no receive path exists — but re-connect re-targets it

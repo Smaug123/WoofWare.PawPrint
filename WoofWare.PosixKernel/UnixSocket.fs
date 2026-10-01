@@ -281,7 +281,7 @@ module SocketOptionRefusal =
         | SocketOptionRefusal.ListenerWithQueuedConnections socket ->
             $"socket %O{socket} is listening with completed connections in its accept queue, and the call would change its SO_REUSEADDR. Measured on both flavours, each queued connection keeps the value the listener had when that connection completed, so an accept after the change returns a socket carrying the old value. This kernel does not record that per-connection copy: it gives the accepted socket the listener's value at accept time. Record the value with each queued connection before allowing the change."
         | SocketOptionRefusal.UnmodelledOption (socket, level, optionName) ->
-            $"socket %O{socket} was asked about option %d{optionName} at level %d{level}, and SO_REUSEADDR at SOL_SOCKET is the only option this kernel models. A real kernel either knows this option, in which case its value is socket state nothing here holds, or answers an errno nobody has measured for it; ENOPROTOOPT would be a guess either way. SO_ERROR in particular is refused because reading it consumes a pending connect refusal, which changes what the next connect(2) answers and what poll(2) reports on Linux, and marks a Darwin refused socket's error as reported. Model the option before asking for it."
+            $"socket %O{socket} was asked about option %d{optionName} at level %d{level}. This kernel models SO_REUSEADDR at SOL_SOCKET for setsockopt(2) and getsockopt(2), and SO_ERROR at SOL_SOCKET for getsockopt(2) alone. A real kernel either knows this option, in which case its value is socket state nothing here holds, or answers an errno nobody has measured for it; ENOPROTOOPT would be a guess either way. Model the option before asking for it."
 
 /// Whether a `setsockopt(2)` reaches the point at which the kernel copies the
 /// option's value in, which is where a client that cannot always produce those
@@ -314,6 +314,10 @@ type GetSockOptAdmission =
     /// The kernel reads the caller's length cell: a `socklen_t`, four bytes in
     /// the simulated machine's byte order. Pass what it holds.
     | ReadLength
+    /// The kernel reads the option without ever reading the caller's length
+    /// cell, then writes a length of 0 back to it. Pass no length. Darwin's
+    /// answer for a null value buffer.
+    | SkipLength
 
 /// What a `getsockopt(2)` answered.
 [<RequireQualifiedAccess>]
@@ -325,7 +329,9 @@ type GetSockOptAnswer =
     /// `length` may be zero, and the value buffer is then untouched.
     | Reported of value : int * length : uint32
     /// The call failed with this errno, and neither the value buffer nor the
-    /// length cell was written.
+    /// length cell was written. A call that fails while copying out has still
+    /// read the option, which for `SO_ERROR` takes a pending refusal: see
+    /// `UnixSocket.getsockopt`.
     | Failed of error : UnixError
 
 /// Why this library will not answer a `socket(2)`.
@@ -1371,13 +1377,16 @@ module UnixSocket =
         | UserBuffer.Mapped -> Ok (GetSockNameAnswer.Reported (endpoint, reportedLength))
 
     /// `sizeof(int)`: what both kernels copy in for `SO_REUSEADDR` whatever
-    /// length the caller declares, and the most they copy out.
+    /// length the caller declares, and the most they copy out of either option.
     let private optionIntSize : int = 4
 
     /// The options this kernel models, each named once its number has been
     /// decoded under the simulated platform.
     [<RequireQualifiedAccess>]
-    type private ModelledOption = | ReuseAddress
+    type private ModelledOption =
+        | ReuseAddress
+        /// `SO_ERROR`, which `getsockopt(2)` reads and nothing sets.
+        | Error
 
     let private decodeOption
         (platform : SimulatedUnixPlatform)
@@ -1385,11 +1394,12 @@ module UnixSocket =
         (optionName : int)
         : ModelledOption option
         =
-        if
-            level = SimulatedUnixPlatform.socketOptionLevel platform
-            && optionName = SimulatedUnixPlatform.reuseAddressOption platform
-        then
+        if level <> SimulatedUnixPlatform.socketOptionLevel platform then
+            None
+        elif optionName = SimulatedUnixPlatform.reuseAddressOption platform then
             Some ModelledOption.ReuseAddress
+        elif optionName = SimulatedUnixPlatform.socketErrorOption platform then
+            Some ModelledOption.Error
         else
             None
 
@@ -1415,6 +1425,8 @@ module UnixSocket =
     /// `level` and `optionName` are in the simulated platform's own numbering;
     /// `SimulatedUnixPlatform.socketOptionLevel` and
     /// `SimulatedUnixPlatform.reuseAddressOption` name the one pair modelled.
+    /// Setting `SO_ERROR` is refused as an unmodelled option: both kernels
+    /// answer ENOPROTOOPT, but where among the other screens is unmeasured.
     /// `optionLength` is the caller's `socklen_t` exactly as passed: the
     /// platforms disagree about whether one at or above 2^31 is negative.
     ///
@@ -1469,7 +1481,8 @@ module UnixSocket =
         else
 
         match decodeOption platform level optionName with
-        | None -> Error (SocketOptionRefusal.UnmodelledOption (socketId, level, optionName))
+        | None
+        | Some ModelledOption.Error -> Error (SocketOptionRefusal.UnmodelledOption (socketId, level, optionName))
         | Some ModelledOption.ReuseAddress ->
 
         let socket = UnixMachineState.socket socketId system.Machine
@@ -1596,6 +1609,7 @@ module UnixSocket =
         (fd : int)
         (level : int)
         (optionName : int)
+        (value : UserBuffer)
         (length : UserBuffer)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<GetSockOptAdmission, SocketOptionRefusal>
@@ -1608,10 +1622,21 @@ module UnixSocket =
 
         match decodeOption system.Machine.UnixPlatform level optionName with
         | None -> Error (SocketOptionRefusal.UnmodelledOption (socketId, level, optionName))
-        | Some ModelledOption.ReuseAddress ->
+        | Some ModelledOption.ReuseAddress
+        | Some ModelledOption.Error ->
+
+        // Darwin reads the length cell only for a non-null value buffer:
+        // measured, a null one with a null or an unmapped cell answers EFAULT
+        // having taken a pending `SO_ERROR`, which a non-null one does not.
+        match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform, value with
+        | SimulatedUnixFlavour.Darwin, UserBuffer.Unmapped 0UL -> Ok GetSockOptAdmission.SkipLength
+        | SimulatedUnixFlavour.Darwin, UserBuffer.Addressless ->
+            Error (SocketOptionRefusal.Buffer BufferRefusal.AddresslessAtScreen)
+        | _ ->
 
         // Measured EFAULT on both for a null and for an unmapped cell, with
-        // neither buffer written.
+        // neither buffer written, and for `SO_ERROR` with a pending refusal
+        // left pending.
         match length with
         | UserBuffer.Unmapped _ -> Ok (GetSockOptAdmission.Answered UnixError.EFAULT)
         | UserBuffer.Opaque -> Error (SocketOptionRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
@@ -1626,8 +1651,15 @@ module UnixSocket =
     ///
     /// For `SO_REUSEADDR` the value is 0 when the option is clear; when it is
     /// set, Linux reports 1 and Darwin reports the option's own number, 4.
+    /// Reading it changes nothing.
     ///
-    /// Changes nothing and returns no system: this `getsockopt` reads.
+    /// For `SO_ERROR` the value is the raw ECONNREFUSED of a refusal still
+    /// pending (`SocketPhase.Refused RefusalError.Pending`), and 0 in every
+    /// other phase. Reading a pending refusal takes it: the socket is left
+    /// `Refused RefusalError.Reported`, whether the copy-out then succeeds or
+    /// not. Only a call that fails before reading the option leaves the
+    /// refusal pending: one answered at the admission, or a Linux one
+    /// declaring a negative length.
     let getsockopt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (level : int)
@@ -1636,76 +1668,136 @@ module UnixSocket =
         (length : UserBuffer)
         (declaredLength : uint32 option)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<GetSockOptAnswer, SocketOptionRefusal>
+        : Result<GetSockOptAnswer * UnixSystem<'Task, 'Handler>, SocketOptionRefusal>
         =
-        match admitGetSockOpt fd level optionName length system with
-        | Error refusal ->
+        let lengthNeverRead (reason : string) =
             if declaredLength.IsSome then
                 failwith
-                    "UnixSocket.getsockopt: the caller supplied a length that the kernel never reads, because the call is refused before it would (this is a bug in the caller)."
+                    $"UnixSocket.getsockopt: the caller supplied a length that the kernel never reads, because %s{reason} (this is a bug in the caller)."
 
+        // Everything after the admission, given the length the caller read
+        // out of its cell, or `None` where the kernel never reads the cell.
+        let proceed
+            (declaredLength : uint32 option)
+            : Result<GetSockOptAnswer * UnixSystem<'Task, 'Handler>, SocketOptionRefusal>
+            =
+            let platform = system.Machine.UnixPlatform
+            let flavour = SimulatedUnixPlatform.flavour platform
+
+            let socketId =
+                match socketOf fd system with
+                | Ok socketId -> socketId
+                | Error error ->
+                    failwith
+                        $"UnixSocket.getsockopt: fd %d{fd} answers %O{error}, yet the admission let the call proceed (this is a bug in this library)."
+
+            let socket = UnixMachineState.socket socketId system.Machine
+
+            let option =
+                match decodeOption platform level optionName with
+                | Some option -> option
+                | None ->
+                    failwith
+                        $"UnixSocket.getsockopt: option %d{optionName} at level %d{level} is not modelled, yet the admission let the call proceed (this is a bug in this library)."
+
+            // As for `setsockopt`, Linux reads the length as an `int`: measured
+            // EINVAL at -1 and at 2^31, with neither buffer written. Darwin reads
+            // the `socklen_t` and copies `sizeof(int)`.
+            match flavour, declaredLength with
+            | SimulatedUnixFlavour.Linux, Some declaredLength when int declaredLength < 0 ->
+                Ok (GetSockOptAnswer.Failed UnixError.EINVAL, system)
+            | _ ->
+
+            let reported, system =
+                match option with
+                | ModelledOption.ReuseAddress ->
+                    // Darwin's `so_options & SO_REUSEADDR`, which is the option's
+                    // bit; Linux's `sk_reuse`, which a set stores as 1 whatever
+                    // non-zero value it was given. Both measured.
+                    let reported =
+                        if not socket.ReuseAddress then
+                            0
+                        else
+                            match flavour with
+                            | SimulatedUnixFlavour.Linux -> 1
+                            | SimulatedUnixFlavour.Darwin -> SimulatedUnixPlatform.reuseAddressOption platform
+
+                    reported, system
+                | ModelledOption.Error ->
+                    match socket.Phase with
+                    | SocketPhase.Refused RefusalError.Pending ->
+                        // Both kernels take the error before the copy-out, so a
+                        // read that then faults has still taken it: measured
+                        // through a null and an unmapped value buffer, through a
+                        // null value buffer and a faulting length cell on Darwin,
+                        // and at lengths 0 and 2.
+                        let refusal =
+                            UnixError.toRawErrnoUnder
+                                (SimulatedUnixPlatform.rawErrnoNumbering platform)
+                                UnixError.ECONNREFUSED
+
+                        let system =
+                            { system with
+                                Machine =
+                                    { system.Machine with
+                                        Sockets =
+                                            Map.add
+                                                socketId
+                                                { socket with
+                                                    Phase = SocketPhase.Refused RefusalError.Reported
+                                                }
+                                                system.Machine.Sockets
+                                    }
+                            }
+
+                        refusal, system
+                    | SocketPhase.Idle
+                    | SocketPhase.Listening _
+                    | SocketPhase.EstablishedPendingReport _
+                    | SocketPhase.Established _
+                    | SocketPhase.Refused RefusalError.Reported
+                    | SocketPhase.DatagramPeer _ -> 0, system
+
+            match declaredLength with
+            | None ->
+                // Darwin, through a null value buffer: nothing is copied, and the
+                // length written back is 0, whatever the cell held (measured at
+                // 2, 4 and -1) -- unless the cell faults.
+                match length with
+                | UserBuffer.Mapped -> Ok (GetSockOptAnswer.Reported (reported, 0u), system)
+                | UserBuffer.Unmapped _ -> Ok (GetSockOptAnswer.Failed UnixError.EFAULT, system)
+                | UserBuffer.Opaque -> Error (SocketOptionRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+                | UserBuffer.Addressless -> Error (SocketOptionRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
+            | Some declaredLength ->
+
+            let count = min declaredLength (uint32 optionIntSize)
+
+            if count = 0u then
+                Ok (GetSockOptAnswer.Reported (reported, 0u), system)
+            else
+
+            match value with
+            // Measured on both: EFAULT, and the length cell keeps what the caller
+            // put there. Linux copies through a null value buffer like any other
+            // address; Darwin never reaches here with one.
+            | UserBuffer.Unmapped _ -> Ok (GetSockOptAnswer.Failed UnixError.EFAULT, system)
+            | UserBuffer.Opaque -> Error (SocketOptionRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+            | UserBuffer.Addressless -> Error (SocketOptionRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
+            | UserBuffer.Mapped -> Ok (GetSockOptAnswer.Reported (reported, count), system)
+
+        match admitGetSockOpt fd level optionName value length system with
+        | Error refusal ->
+            lengthNeverRead "the call is refused before it would"
             Error refusal
         | Ok (GetSockOptAdmission.Answered error) ->
-            if declaredLength.IsSome then
-                failwith
-                    $"UnixSocket.getsockopt: the caller supplied a length that the kernel never reads, because the call answers %O{error} first (this is a bug in the caller)."
-
-            Ok (GetSockOptAnswer.Failed error)
+            lengthNeverRead $"the call answers %O{error} first"
+            Ok (GetSockOptAnswer.Failed error, system)
+        | Ok GetSockOptAdmission.SkipLength ->
+            lengthNeverRead "this flavour does not read it through a null value buffer"
+            proceed None
         | Ok GetSockOptAdmission.ReadLength ->
-
-        let declaredLength =
             match declaredLength with
-            | Some declaredLength -> declaredLength
+            | Some _ -> proceed declaredLength
             | None ->
                 failwith
                     "UnixSocket.getsockopt: the kernel reads the caller's length cell, but the caller supplied no length (this is a bug in the caller)."
-
-        let platform = system.Machine.UnixPlatform
-        let flavour = SimulatedUnixPlatform.flavour platform
-
-        let socketId =
-            match socketOf fd system with
-            | Ok socketId -> socketId
-            | Error error ->
-                failwith
-                    $"UnixSocket.getsockopt: fd %d{fd} answers %O{error}, yet the admission read the length cell (this is a bug in this library)."
-
-        let socket = UnixMachineState.socket socketId system.Machine
-
-        // Darwin's `so_options & SO_REUSEADDR`, which is the option's bit;
-        // Linux's `sk_reuse`, which a set stores as 1 whatever non-zero value
-        // it was given. Both measured.
-        let reported =
-            if not socket.ReuseAddress then
-                0
-            else
-                match flavour with
-                | SimulatedUnixFlavour.Linux -> 1
-                | SimulatedUnixFlavour.Darwin -> SimulatedUnixPlatform.reuseAddressOption platform
-
-        // As for `setsockopt`, Linux reads the length as an `int`: measured
-        // EINVAL at -1 and at 2^31, with neither buffer written. Darwin reads
-        // the `socklen_t` and copies `sizeof(int)`.
-        if flavour = SimulatedUnixFlavour.Linux && int declaredLength < 0 then
-            Ok (GetSockOptAnswer.Failed UnixError.EINVAL)
-        else
-
-        let count = min declaredLength (uint32 optionIntSize)
-
-        if count = 0u then
-            Ok (GetSockOptAnswer.Reported (reported, 0u))
-        else
-
-        match flavour, value with
-        // Darwin skips the copy for a null value buffer and reports a length of
-        // 0, whatever was declared: measured at 2, 4 and -1. Linux copies
-        // through it like any other address.
-        | SimulatedUnixFlavour.Darwin, UserBuffer.Unmapped 0UL -> Ok (GetSockOptAnswer.Reported (reported, 0u))
-        | SimulatedUnixFlavour.Darwin, UserBuffer.Addressless ->
-            Error (SocketOptionRefusal.Buffer BufferRefusal.AddresslessAtScreen)
-        // Measured on both: EFAULT, and the length cell keeps what the caller
-        // put there.
-        | _, UserBuffer.Unmapped _ -> Ok (GetSockOptAnswer.Failed UnixError.EFAULT)
-        | _, UserBuffer.Opaque -> Error (SocketOptionRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
-        | _, UserBuffer.Addressless -> Error (SocketOptionRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
-        | _, UserBuffer.Mapped -> Ok (GetSockOptAnswer.Reported (reported, count))

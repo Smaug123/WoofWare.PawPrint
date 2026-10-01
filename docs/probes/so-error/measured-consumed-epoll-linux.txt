@@ -1,0 +1,35 @@
+6.18.5
+R1. level-triggered
+  pending                                          -> 1: events=0x201d
+  (SO_ERROR 111)
+  consumed                                         -> 1: events=0x2015
+  (connect -> -1 errno=103)
+  after ECONNABORTED                               -> 1: events=0x14
+R2. edge-triggered
+  registered idle: consume the edge                -> 1: events=0x14
+  refusal arrived                                  -> 1: events=0x201d
+  consumed                                         -> 0:
+  (SO_ERROR 111)
+  after SO_ERROR: new edge?                        -> 0:
+  (connect -> -1 errno=103)
+  after ECONNABORTED: new edge?                    -> 1: events=0x14
+R3. edge-triggered, SO_ERROR read before the edge is collected
+  registered idle: consume the edge                -> 1: events=0x14
+  (SO_ERROR 111)
+  pending edge, collected after the read           -> 1: events=0x2015
+R4. what the binding is after ECONNABORTED, by provenance
+ implicit
+  getsockname pending                              127.0.0.1:40074
+  getsockname consumed                             127.0.0.1:40074
+  (errno=103)
+  getsockname after ECONNABORTED                   0.0.0.0:40074
+ bound 127.0.0.1
+  getsockname pending                              127.0.0.1:54547
+  getsockname consumed                             127.0.0.1:54547
+  (errno=103)
+  getsockname after ECONNABORTED                   127.0.0.1:54547
+ bound 0.0.0.0
+  getsockname pending                              127.0.0.1:53093
+  getsockname consumed                             127.0.0.1:53093
+  (errno=103)
+  getsockname after ECONNABORTED                   0.0.0.0:53093

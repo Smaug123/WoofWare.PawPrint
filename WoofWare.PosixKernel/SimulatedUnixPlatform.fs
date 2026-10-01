@@ -1153,6 +1153,13 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> 2
         | SimulatedUnixFlavour.Darwin -> 4
 
+    /// `SO_ERROR`, at `socketOptionLevel`, in the platform's own numbering:
+    /// 4 on Linux, `0x1007` on Darwin. Measured.
+    let socketErrorOption (platform : SimulatedUnixPlatform) : int =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> 4
+        | SimulatedUnixFlavour.Darwin -> 0x1007
+
     /// `struct sockaddr_in` for `endpoint`, as this platform's kernel copies one
     /// out: the family, the port and the address, and on the flavours that have
     /// the field, the `sa_len` byte in front of them.

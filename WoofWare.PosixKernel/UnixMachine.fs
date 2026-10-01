@@ -478,7 +478,8 @@ module UnixMachineState =
     /// (docs/plans/2026-08-21-socket-readiness-wake) through level-triggered
     /// `epoll_wait` with timeout 0, and `pollmask.c`
     /// (docs/plans/2026-08-23-socket-poll) through `poll(2)` with timeout 0,
-    /// which agree on every phase.
+    /// which agree on every phase, and `consumed-epoll.c` and `soerror.c`
+    /// (docs/probes/so-error) for a refusal an `SO_ERROR` read has taken.
     ///
     /// Darwin has no measured rows and needs none: both waiters refuse that
     /// flavour before reaching here — epoll at registration
@@ -556,8 +557,15 @@ module UnixMachineState =
                 Err = true
             }
         | SocketPhase.Refused RefusalError.Reported ->
-            failwith
-                $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is refused with its error already reported, which only the Darwin flavour reaches. Both of this library's waiters refuse the Darwin flavour before any level is computed — `UnixPoll.epollCtl` because kqueue is structurally different, and `UnixPoll.poll` because Darwin's poll is a kqueue filter per group of requested bits rather than a masked level — so reaching here means a caller asked for a Darwin socket's level directly, or is a bug in this library. Darwin polls this phase IN|PRI|HUP (docs/plans/2026-08-23-socket-poll/pollmulti.c) if that changes."
+            // An `SO_ERROR` read took the refusal: everything the pending
+            // level holds but ERR (`consumed-epoll.c` R1).
+            {
+                In = true
+                Out = true
+                RdHup = true
+                Hup = true
+                Err = false
+            }
 
     /// Whether any *other* socket's binding conflicts with `candidate`, taken
     /// on behalf of `socket`.
