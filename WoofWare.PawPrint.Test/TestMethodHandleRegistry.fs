@@ -2014,6 +2014,56 @@ public sealed class Plain
         exn.Message
         |> shouldContainText "RuntimeMethodHandle.GetMethodFromCanonical: asked for Plain"
 
+    [<Test>]
+    let ``GetMethodFromCanonical refuses an array, which instantiates no generic definition`` () : unit =
+        // An array has a method table but no generic definition to compare with the method's, so
+        // it is as unrelated to `Box<T>` as `Object` is. A guest can name one by invoking the FCall
+        // through private reflection.
+        let loggerFactory, baseClassTypes, assembly, _ctors, openTarget, _closedTarget, state =
+            boxTargets ()
+
+        let plain =
+            assembly.Methods.Values
+            |> Seq.find (fun method -> method.RequiredDeclaringType.Name = "Box`1" && method.Name = "Plain")
+
+        let handle, reg =
+            MethodHandleRegistry.getOrAllocateInternalHandle
+                baseClassTypes
+                state.ConcreteTypes
+                assembly.Name.FullName
+                openTarget
+                plain
+                state.MethodHandles
+
+        let state =
+            { state with
+                MethodHandles = reg
+            }
+
+        let objectArray =
+            RuntimeTypeHandleTarget.Closed (
+                ConcreteTypeHandle.OneDimArrayZero (
+                    AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Object
+                )
+            )
+
+        let runtimeType, state =
+            runtimeTypeArgument loggerFactory baseClassTypes objectArray state
+
+        let exn =
+            Assert.Throws<exn> (fun () ->
+                invokeRuntimeMethodHandleFCallWith
+                    "GetMethodFromCanonical"
+                    loggerFactory
+                    baseClassTypes
+                    [ CliType.ValueType handle ; runtimeType ]
+                    state
+                |> ignore
+            )
+
+        exn.Message
+        |> shouldContainText "RuntimeMethodHandle.GetMethodFromCanonical: asked for Plain"
+
     // ---------------------------------------------------------------------------------------
     // `RuntimeMethodHandle.IsTypicalMethodDefinition` through the machine.
     //
