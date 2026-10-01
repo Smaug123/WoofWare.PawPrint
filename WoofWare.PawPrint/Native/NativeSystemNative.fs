@@ -2959,7 +2959,10 @@ module NativeSystemNative =
         // there, and EFAULT on Darwin. CoreLib reaches it from
         // `Environment.GetFolderPath`, which asks R_OK of the folder it is
         // about to return unless told not to verify it, and from reading the
-        // XDG `user-dirs.dirs` file.
+        // XDG `user-dirs.dirs` file. `access(2)` checks with the real IDs where
+        // every other call uses the effective ones; this process has one ID of
+        // each kind (`KernelConfig.UserId` and `GroupId` become real, effective
+        // and saved alike), so here the two never differ.
         // CoreLib declares the mode as its `Interop.Sys.AccessMode` enum, whose
         // underlying type is `int`, and a guest calling the shim by hand as an
         // `int`; either is read as the `int32_t` it is.
