@@ -2490,3 +2490,349 @@ public static class Uses
                         || (exact && analysisEscapes <> runtime.[name])
                     then
                         failwith $"%s{describe ()}; the runtime lets it escape: %b{runtime.[name]}"
+
+    /// What the analysis must say of a call that dispatches on a receiver of this kind.
+    [<RequireQualifiedAccess>]
+    type private DispatchClaim =
+        /// The `constrained.` type decides the method, whose body the analysis sees: exactly its
+        /// arithmetic exceptions escape, and nothing unknown.
+        | Precise
+        /// The receiver may be of a derived class that overrides the method, so what runs is
+        /// unknown.
+        | Unknown
+        /// The method that runs is one the analysis cannot see into, so only soundness is claimed.
+        | SoundOnly
+
+    /// A receiver in the dispatch fixture, and which of `DivideByZeroException` and
+    /// `OverflowException` the method it supplies raises.
+    type private DispatchReceiver =
+        {
+            Name : string
+            Claim : DispatchClaim
+            Raises : string list
+        }
+
+    /// A way for a non-generic runner to reach a `constrained.` call on its receiver, as a C#
+    /// expression over the receiver type `R`, the receiver `x` and the operands `a` and `b`, with
+    /// the exceptions its own handlers stop.
+    type private DispatchShape =
+        {
+            Name : string
+            Call : string -> string
+            Absorbs : string list
+        }
+
+    let private dividesByZero = "System.DivideByZeroException"
+    let private overflows = "System.OverflowException"
+
+    let private probeReceivers : DispatchReceiver list =
+        [
+            {
+                Name = "Quiet"
+                Claim = DispatchClaim.Precise
+                Raises = []
+            }
+            {
+                Name = "Adds"
+                Claim = DispatchClaim.Precise
+                Raises = [ overflows ]
+            }
+            {
+                Name = "Divides"
+                Claim = DispatchClaim.Precise
+                Raises = [ dividesByZero ; overflows ]
+            }
+            {
+                Name = "ExplicitAdds"
+                Claim = DispatchClaim.Precise
+                Raises = [ overflows ]
+            }
+            {
+                Name = "UsesDefault"
+                Claim = DispatchClaim.Precise
+                Raises = [ dividesByZero ; overflows ]
+            }
+            {
+                Name = "SealedDivides"
+                Claim = DispatchClaim.Precise
+                Raises = [ dividesByZero ; overflows ]
+            }
+            {
+                Name = "OpenDivides"
+                Claim = DispatchClaim.Unknown
+                Raises = [ dividesByZero ; overflows ]
+            }
+        ]
+
+    let private probeShapes : DispatchShape list =
+        [
+            {
+                Name = "Direct"
+                Call = fun _ -> "Shapes.Direct(x, a, b)"
+                Absorbs = []
+            }
+            {
+                Name = "OnType"
+                Call = fun r -> $"Holder<%s{r}>.Call(x, a, b)"
+                Absorbs = []
+            }
+            {
+                Name = "Relayed"
+                Call = fun _ -> "Shapes.Relayed(x, a, b)"
+                Absorbs = []
+            }
+            {
+                Name = "TypeToMethod"
+                Call = fun r -> $"Holder<%s{r}>.Relay(x, a, b)"
+                Absorbs = []
+            }
+            {
+                Name = "Caught"
+                Call = fun _ -> "Shapes.Caught(x, a, b)"
+                Absorbs = [ dividesByZero ]
+            }
+            {
+                Name = "Wrapped"
+                Call = fun r -> $"Shapes.Direct(new Wrapper<%s{r}>(x), a, b)"
+                Absorbs = []
+            }
+            {
+                Name = "Rethrown"
+                Call = fun _ -> "Shapes.Rethrown(x, a, b)"
+                Absorbs = []
+            }
+        ]
+
+    /// The receivers, the generic methods that call `Probe` on a type variable, and the
+    /// non-generic runners, one per shape and receiver, that close each instantiation.
+    let private dispatchSource : string =
+        let declarations =
+            """
+using System;
+
+namespace Dispatch;
+
+public interface IProbe
+{
+    int Probe(int a, int b) => a / b;
+}
+
+public struct Quiet : IProbe { public int Probe(int a, int b) => unchecked(a + b); }
+public struct Adds : IProbe { public int Probe(int a, int b) => checked(a + b); }
+public struct Divides : IProbe { public int Probe(int a, int b) => a / b; }
+public struct ExplicitAdds : IProbe { int IProbe.Probe(int a, int b) => checked(a + b); }
+public struct UsesDefault : IProbe { }
+public sealed class SealedDivides : IProbe { public int Probe(int a, int b) => a / b; }
+public class OpenDivides : IProbe { public virtual int Probe(int a, int b) => a / b; }
+
+public struct Wrapper<T> : IProbe where T : IProbe
+{
+    private T inner;
+    public Wrapper(T inner) { this.inner = inner; }
+    public int Probe(int a, int b) => inner.Probe(a, b);
+}
+
+public struct HashDivides
+{
+    public int Zero;
+    public override int GetHashCode() => 1 / Zero;
+}
+
+public struct NoHash { public int Zero; }
+
+public static class Shapes
+{
+    public static int Direct<T>(T x, int a, int b) where T : IProbe => x.Probe(a, b);
+    public static int Relayed<T>(T x, int a, int b) where T : IProbe => Direct(x, a, b);
+
+    public static int Caught<T>(T x, int a, int b) where T : IProbe
+    {
+        try { return x.Probe(a, b); }
+        catch (DivideByZeroException) { return 0; }
+    }
+
+    // Catches everything, so what escapes is what the `throw;` re-raises.
+    public static int Rethrown<T>(T x, int a, int b) where T : IProbe
+    {
+        try { return x.Probe(a, b); }
+        catch (Exception) { throw; }
+    }
+
+    public static int Hash<T>(T x) => x.GetHashCode();
+
+    // Generic methods whose calls do not mention their own type variables: one instantiating a
+    // generic method, and one whose `constrained.` prefix names a closed type.
+    public static int ClosedInside<T>(T ignored, int a, int b) => Direct(new Divides(), a, b);
+    public static int HashInside<T>(T ignored, int z) { var h = new HashDivides { Zero = z }; return h.GetHashCode(); }
+
+    // Each step instantiates itself at a deeper type, so no bound on nesting holds them all.
+    public static int Grow<T>(T x, int n) where T : IProbe =>
+        n == 0 ? x.Probe(1, 0) : Grow(new Wrapper<T>(x), n - 1);
+}
+
+public static class Holder<T> where T : IProbe
+{
+    public static int Call(T x, int a, int b) => x.Probe(a, b);
+    public static int Relay(T x, int a, int b) => Shapes.Direct(x, a, b);
+}
+"""
+
+        let runners =
+            [
+                for shape in probeShapes do
+                    for receiver in probeReceivers do
+                        yield
+                            $"    public static int %s{shape.Name}_%s{receiver.Name}(int a, int b) {{ var x = new %s{receiver.Name}(); return %s{shape.Call receiver.Name}; }}"
+                yield
+                    "    public static int Hash_HashDivides(int a, int b) { var x = new HashDivides { Zero = b }; return Shapes.Hash(x); }"
+                yield
+                    "    public static int Hash_NoHash(int a, int b) { var x = new NoHash { Zero = b }; return Shapes.Hash(x); }"
+                yield "    public static int Grow_Divides(int a, int b) => Shapes.Grow(new Divides(), 3);"
+            ]
+            |> String.concat "\n"
+
+        declarations + "\npublic static class Runners\n{\n" + runners + "\n}\n"
+
+    /// Operands that make each receiver's `Probe` raise each exception it can.
+    let private dispatchInputs : (int * int) list =
+        [ 1, 0 ; Int32.MaxValue, 1 ; Int32.MinValue, -1 ; 1, 1 ]
+
+    /// The full names of the exceptions each of `runners` of `Dispatch.Runners` in `image` lets
+    /// escape on the real runtime, over `dispatchInputs`.
+    let private dispatchOnRealRuntime (image : byte[]) (runners : string list) : Map<string, Set<string>> =
+        let context =
+            System.Runtime.Loader.AssemblyLoadContext ("Dispatch", isCollectible = true)
+
+        try
+            let ty = context.LoadFromStream(new MemoryStream (image)).GetType "Dispatch.Runners"
+
+            runners
+            |> List.map (fun name ->
+                let thrown =
+                    dispatchInputs
+                    |> List.choose (fun (a, b) ->
+                        try
+                            ty.GetMethod(name).Invoke ((null : obj), [| box a ; box b |]) |> ignore<obj>
+                            None
+                        with :? TargetInvocationException as e ->
+                            Some (e.InnerException.GetType().FullName)
+                    )
+                    |> Set.ofList
+
+                name, thrown
+            )
+            |> Map.ofList
+        finally
+            context.Unload ()
+
+    [<Test>]
+    let ``a constrained call on a type variable runs what each closed instantiation supplies`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            Roslyn.compileAssembly "Dispatch" OutputKind.DynamicallyLinkedLibrary [] [ dispatchSource ]
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Dispatch.dll") (new MemoryStream (image))
+
+        // Each runner, what the analysis must report of `DivideByZeroException` and
+        // `OverflowException`, and what it must claim.
+        let cases =
+            [
+                for shape in probeShapes do
+                    for receiver in probeReceivers do
+                        let reported =
+                            receiver.Raises
+                            |> List.filter (fun raised -> not (List.contains raised shape.Absorbs))
+
+                        yield $"%s{shape.Name}_%s{receiver.Name}", Set.ofList reported, receiver.Claim
+                yield "Hash_HashDivides", Set.ofList [ dividesByZero ; overflows ], DispatchClaim.Precise
+                yield "Hash_NoHash", Set.empty, DispatchClaim.SoundOnly
+                yield "Grow_Divides", Set.ofList [ dividesByZero ; overflows ], DispatchClaim.SoundOnly
+            ]
+
+        let runtime =
+            cases |> List.map (fun (name, _, _) -> name) |> dispatchOnRealRuntime image
+
+        let arithmetic = Set.ofList [ dividesByZero ; overflows ]
+        let mutable analysis = analysisOver [ fixture ] id
+
+        let failures =
+            [
+                for name, reported, claim in cases do
+                    let next, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed fixture "Dispatch.Runners" name)
+
+                    analysis <- next
+
+                    let shown = render analysis escapes
+
+                    let shownArithmetic = arithmetic |> Set.filter (fun ty -> shown.Contains ("=" + ty))
+
+                    let describe () =
+                        $"%s{name}: %A{Set.toList shown}, unknown %b{escapes.Unknown}; the runtime raised %A{Set.toList runtime.[name]}"
+
+                    // The fixture exercises what it claims to: every exception the receiver's
+                    // method can raise is raised by one of the inputs, unless the analysis cannot
+                    // tell it from one it can.
+                    if not (Set.isSubset runtime.[name] reported) then
+                        yield $"%s{describe ()}, more than the case expects"
+
+                    if claim <> DispatchClaim.SoundOnly && runtime.[name].IsEmpty <> reported.IsEmpty then
+                        yield $"%s{describe ()}, but the case expects %A{Set.toList reported}"
+
+                    // Everything that escapes on the real runtime is reported.
+                    if not escapes.Unknown then
+                        for thrown in runtime.[name] do
+                            if not (shown.Contains ("=" + thrown)) then
+                                yield $"%s{describe ()} lacks %s{thrown}"
+
+                    match claim with
+                    | DispatchClaim.Precise ->
+                        if escapes.Unknown || shownArithmetic <> reported then
+                            yield
+                                $"%s{describe ()}; expected exactly %A{Set.toList reported} of the arithmetic exceptions, and nothing unknown"
+                    | DispatchClaim.Unknown ->
+                        if not escapes.Unknown then
+                            yield $"%s{describe ()}; expected unknown"
+                    | DispatchClaim.SoundOnly -> ()
+            ]
+
+        // A generic definition asked about by itself has no instantiation to resolve a call on its
+        // type variable against, but a call it spells without one is resolved all the same.
+        let analysis, direct =
+            EscapeAnalysis.escapes analysis (methodNamed fixture "Dispatch.Shapes" "Direct")
+
+        let failures =
+            if direct.Unknown then
+                failures
+            else
+                failures
+                @ [
+                    $"Shapes.Direct, uninstantiated: %A{Set.toList (render analysis direct)}, expected unknown"
+                ]
+
+        let _, failures =
+            ((analysis, failures), [ "ClosedInside" ; "HashInside" ])
+            ||> List.fold (fun (analysis, failures) name ->
+                let analysis, escapes =
+                    EscapeAnalysis.escapes analysis (methodNamed fixture "Dispatch.Shapes" name)
+
+                let shown = render analysis escapes
+
+                if
+                    escapes.Unknown
+                    || arithmetic |> Set.filter (fun ty -> shown.Contains ("=" + ty)) <> arithmetic
+                then
+                    analysis,
+                    failures
+                    @ [
+                        $"Shapes.%s{name}, uninstantiated: %A{Set.toList shown}, unknown %b{escapes.Unknown}; expected both arithmetic exceptions, and nothing unknown"
+                    ]
+                else
+                    analysis, failures
+            )
+
+        match failures with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
