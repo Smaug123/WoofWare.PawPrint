@@ -574,8 +574,7 @@ module TestSignalDispatch =
             Signal.SIGHUP
             Signal.SIGINT
             Signal.SIGQUIT
-            // SIGALRM, which has no case of its own.
-            Signal.Other 14
+            Signal.SIGALRM
             Signal.SIGTERM
             Signal.SIGWINCH
         ]
@@ -665,7 +664,7 @@ module TestSignalDispatch =
         // and is taken at the return to user mode that follows it, within the
         // same poll.
         let state, dispatcher, _ = preparedState ()
-        let rt = Signal.Other 40
+        let rt = Signal.RealTime 8
 
         let state =
             state
@@ -1321,7 +1320,7 @@ module TestSignalDispatch =
         // saves; sent the signal, the handler puts that default back and
         // returns.
         let state, _dispatcher, _ = preparedState ()
-        let sigill = Signal.Other 4
+        let sigill = Signal.SIGILL
 
         let state' = state |> sendToProcess sigill |> poll
 
@@ -1341,7 +1340,7 @@ module TestSignalDispatch =
         // default installed over System.Native's own, and System.Native still
         // hands the signal to the callback. SIGILL has no PosixSignal member.
         let state, dispatcher, _ = preparedState ()
-        let sigill = Signal.Other 4
+        let sigill = Signal.SIGILL
 
         let state' = state |> register sigill |> sendToProcess sigill |> poll
 
@@ -1355,7 +1354,7 @@ module TestSignalDispatch =
         // A launcher that left SIGILL ignored: the PAL saved the ignore, and
         // its handler, sent the signal, calls `PROCAbort`.
         let state, _dispatcher, _ = preparedState ()
-        let sigill = Signal.Other 4
+        let sigill = Signal.SIGILL
 
         let state =
             state
@@ -1372,9 +1371,9 @@ module TestSignalDispatch =
 
     [<Test>]
     let ``poll refuses a signal caught by any other handler installed before Main`` () : unit =
-        // The PAL's thread-activation handler: SIGRTMIN, 34, on Linux.
+        // The PAL's thread-activation handler: glibc's SIGRTMIN, 34, on Linux.
         let state, _dispatcher, _ = preparedState ()
-        let state = state |> sendToProcess (Signal.Other 34)
+        let state = state |> sendToProcess (Signal.RealTime 2)
 
         let exn = Assert.Throws (fun () -> poll state |> ignore<IlMachineState>)
         exn.Message |> shouldContainText "installed before Main"

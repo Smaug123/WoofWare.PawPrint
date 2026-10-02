@@ -137,15 +137,11 @@ type SignalDelivery<'Task, 'Handler> =
 /// mode; the data shape is exercised by property tests against a
 /// structurally-different reference oracle.
 ///
-/// Every `Signal` stored here is canonical under `Numbering`, and every
-/// operation canonicalises the signal it is handed before touching the state:
-/// `Signal.Other` is a second spelling for a named signal's number, and a
-/// state that kept both spellings would let `setDisposition (Other 17)` and
-/// `disposition SIGCHLD` disagree about one Linux signal. The operations are
-/// the only route in (the representation is private), so the tables and
-/// queue never hold an `Other` that names a case, SIGKILL or SIGSTOP in a
-/// mask, a disposition for SIGKILL or SIGSTOP, a stored `Default`, or a
-/// number that is not a signal under the numbering at all.
+/// Every `Signal` stored here is one `Numbering` has, and every operation
+/// checks the signal it is handed before touching the state. The operations
+/// are the only route in (the representation is private), so the tables and
+/// queue never hold SIGKILL or SIGSTOP in a mask, a disposition for SIGKILL
+/// or SIGSTOP, a stored `Default`, or a signal the numbering does not have.
 type SignalState<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
     private
         {
@@ -220,23 +216,19 @@ type SignalReceiverRefusal =
 
 [<RequireQualifiedAccess>]
 module SignalState =
-    /// Validate and canonicalise a signal at the operation boundary: the named
-    /// spelling if `signal` is an `Other` carrying a named signal's number,
-    /// and a loud failure if it is not a signal under this numbering at all.
-    /// `Signal.Other` is public and enforces nothing, so a client can hand
-    /// this state a number no kernel mask or disposition table could hold;
-    /// the callers that produced a raw signo honestly went through
-    /// `Signal.ofRawSignoUnder`, which refuses those, so reaching this
-    /// failure means a client built an `Other` some other way.
+    /// Validate a signal at the operation boundary: a loud failure if it is
+    /// not a signal under this numbering at all. A client can build a signal
+    /// one numbering lacks (`SIGPWR` for a Darwin process, or a `RealTime`
+    /// out of range), which no kernel mask or disposition table could hold;
+    /// the callers that produced a signal from a raw signo honestly went
+    /// through `Signal.ofRawSignoUnder`, which refuses those, so reaching this
+    /// failure means a client built one some other way.
     let private parseUnder (operation : string) (numbering : SignalNumbering) (signal : Signal) : Signal =
-        match signal with
-        | Signal.Other rawSignal ->
-            match Signal.ofRawSignoUnder numbering rawSignal with
-            | ValueSome canonical -> canonical
-            | ValueNone ->
-                failwith
-                    $"SignalState.%s{operation}: %d{rawSignal} is not a signal under the %O{numbering} numbering (signos run 1..%d{Signal.highestSignoUnder numbering}); a raw signo should have been refused at the caller's own boundary, via Signal.ofRawSignoUnder."
-        | named -> named
+        if Signal.existsUnder numbering signal then
+            signal
+        else
+            failwith
+                $"SignalState.%s{operation}: %O{signal} is not a signal under the %O{numbering} numbering; a raw signo should have been refused at the caller's own boundary, via Signal.ofRawSignoUnder."
 
     let private parse (operation : string) (state : SignalState<'Task, 'Handler>) (signal : Signal) : Signal =
         parseUnder operation state.Numbering signal
@@ -244,12 +236,11 @@ module SignalState =
     /// SIGKILL and SIGSTOP, for which the kernel holds no disposition but the
     /// default. Narrower than `Signal.isUncatchableUnder`, which adds the two
     /// numbers glibc's `sigaction` refuses on top of the kernel's refusal.
-    let internal kernelHoldsOnlyDefault (numbering : SignalNumbering) (signal : Signal) : bool =
-        match Signal.toRawSignoUnder numbering signal, numbering with
-        | 9, _
-        | 19, SignalNumbering.Linux
-        | 17, SignalNumbering.Darwin -> true
-        | _, _ -> false
+    let internal kernelHoldsOnlyDefault (signal : Signal) : bool =
+        match signal with
+        | Signal.SIGKILL
+        | Signal.SIGSTOP -> true
+        | _ -> false
 
     /// Whether a signal generated under `disposition` is ignored at
     /// generation: `SIG_IGN`, or `SIG_DFL` for a signal whose default is to
@@ -284,7 +275,7 @@ module SignalState =
             | DefaultDisposition.Terminate
             | DefaultDisposition.Stop -> false
 
-    /// `signals` as a kernel holds them in a mask: canonical, and without
+    /// `signals` as a kernel holds them in a mask: each one the numbering has, and without
     /// SIGKILL and SIGSTOP, which it drops silently. Measured by the signal
     /// fuzzer's harness (`WoofWare.PosixKernel.Test/signalFuzz/harness.c`) on
     /// Linux 6.18.5 and Darwin 27.0.0: a handler whose `sa_mask` named both
@@ -292,7 +283,7 @@ module SignalState =
     let private maskable (operation : string) (numbering : SignalNumbering) (signals : Set<Signal>) : Set<Signal> =
         signals
         |> Set.map (parseUnder operation numbering)
-        |> Set.filter (fun signal -> not (kernelHoldsOnlyDefault numbering signal))
+        |> Set.filter (fun signal -> not (kernelHoldsOnlyDefault signal))
 
     let private withDisposition
         (signal : Signal)
@@ -316,15 +307,15 @@ module SignalState =
     /// life; `UnixSystem.checkInvariants` refuses a system whose process reads
     /// signals under a numbering other than its machine's.
     ///
-    /// Fails loud on a number that is not a signal under the numbering, and
-    /// on SIGKILL or SIGSTOP, which no process can have ignored.
+    /// Fails loud on a signal the numbering does not have, and on SIGKILL or
+    /// SIGSTOP, which no process can have ignored.
     let initial (numbering : SignalNumbering) (inheritedIgnores : Set<Signal>) : SignalState<'Task, 'Handler> =
         let dispositions =
             (Map.empty, inheritedIgnores)
             ||> Set.fold (fun dispositions signal ->
                 let signal = parseUnder "initial" numbering signal
 
-                if kernelHoldsOnlyDefault numbering signal then
+                if kernelHoldsOnlyDefault signal then
                     failwith
                         $"SignalState.initial: %O{signal} under the %O{numbering} numbering cannot have been left ignored; the kernel holds no disposition for it but the default."
 
@@ -350,8 +341,7 @@ module SignalState =
         | Some disposition -> disposition
         | None -> SignalDisposition.Default
 
-    /// Every signal whose disposition is not the default, keyed by its
-    /// canonical spelling.
+    /// Every signal whose disposition is not the default.
     let internal dispositions (state : SignalState<'Task, 'Handler>) : Map<Signal, SignalDisposition<'Handler>> =
         state.Dispositions
 
@@ -376,7 +366,7 @@ module SignalState =
         =
         let signal = parse "setDisposition" state signal
 
-        if kernelHoldsOnlyDefault state.Numbering signal then
+        if kernelHoldsOnlyDefault signal then
             failwith
                 $"SignalState.setDisposition: no kernel disposition but the default can exist for %O{signal} under the %O{state.Numbering} numbering; UnixSignal.sigaction refuses it with EINVAL before it reaches here."
 
@@ -420,8 +410,7 @@ module SignalState =
     /// Every task with a handler frame.
     let tasksWithFrames (state : SignalState<'Task, 'Handler>) : Set<'Task> = state.Frames |> Map.keys |> Set.ofSeq
 
-    /// `task`'s signal mask, every member in its canonical spelling: its
-    /// innermost frame's, or empty.
+    /// `task`'s signal mask: its innermost frame's, or empty.
     let maskOf (task : 'Task) (state : SignalState<'Task, 'Handler>) : Set<Signal> =
         match framesOf task state with
         | innermost :: _ -> innermost.Mask
@@ -443,7 +432,7 @@ module SignalState =
             Pending = state.Pending |> List.filter (fun entry -> entry.Target <> ValueSome thread)
         }
 
-    /// The first half of generating `signal` (canonical), common to `enqueue`
+    /// The first half of generating `signal` (checked), common to `enqueue`
     /// and `generate`: `None` if the kernel discards it before it has any
     /// effect at all, and otherwise the state once its generation has
     /// discarded any pending instance of the opposite kind of signal.
@@ -523,13 +512,13 @@ module SignalState =
 
         match numbering with
         | SignalNumbering.Linux ->
-            match signo with
-            | 4
-            | 5
-            | 7
-            | 8
-            | 11
-            | 31 -> 0, signo
+            match signal with
+            | Signal.SIGILL
+            | Signal.SIGTRAP
+            | Signal.SIGBUS
+            | Signal.SIGFPE
+            | Signal.SIGSEGV
+            | Signal.SIGSYS -> 0, signo
             | _ -> 1, signo
         | SignalNumbering.Darwin -> 0, signo
 
@@ -563,8 +552,8 @@ module SignalState =
                     @ (entry :: List.skipWhile precedes state.Pending)
             }
 
-    /// Add a generated signal to its pending set, canonicalising its spelling
-    /// first, without deciding whether it takes effect at once (see `generate`,
+    /// Add a generated signal to its pending set, checking it first, without
+    /// deciding whether it takes effect at once (see `generate`,
     /// which does).
     ///
     /// A signal whose disposition at generation is "ignore" — `SIG_IGN`, or
@@ -768,8 +757,7 @@ module SignalState =
             | DefaultDisposition.Ignore -> Ok (SignalGeneration.ProcessContinues state)
             | DefaultDisposition.Continue -> leftPending ()
 
-    /// Every pending entry, every signal in its canonical spelling: the
-    /// process's own set first, then each task's, each set in the order a task
+    /// Every pending entry: the process's own set first, then each task's, each set in the order a task
     /// takes its signals (see `pendingFor`).
     let pending (state : SignalState<'Task, 'Handler>) : PendingSignal<'Task> list = state.Pending
 
@@ -825,8 +813,7 @@ module SignalState =
             else
                 Set.union mask action.Mask |> Set.add signal
 
-        blocked
-        |> Set.filter (fun signal -> not (kernelHoldsOnlyDefault numbering signal))
+        blocked |> Set.filter (fun signal -> not (kernelHoldsOnlyDefault signal))
 
     /// Whether delivering `signal` under `SA_RESETHAND` resets its disposition.
     let private resetsHand (numbering : SignalNumbering) (signal : Signal) : bool =
@@ -838,9 +825,9 @@ module SignalState =
         match numbering with
         | SignalNumbering.Linux -> true
         | SignalNumbering.Darwin ->
-            match Signal.toRawSignoUnder numbering signal with
-            | 4
-            | 5 -> false
+            match signal with
+            | Signal.SIGILL
+            | Signal.SIGTRAP -> false
             | _ -> true
 
     /// What `task` takes as it returns to user mode: `tasks` and `leader` are as

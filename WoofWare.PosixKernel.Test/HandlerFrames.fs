@@ -8,10 +8,9 @@ open WoofWare.PosixKernel
 [<RequireQualifiedAccess>]
 module HandlerFrames =
 
-    /// The signal these helpers deliver to put a task in a handler: SIGPROF,
-    /// 27 under both numberings. A test that uses them does not use it
-    /// otherwise.
-    let carrier : Signal = Signal.Other 27
+    /// The signal these helpers deliver to put a task in a handler: SIGPROF.
+    /// A test that uses them does not use it otherwise.
+    let carrier : Signal = Signal.SIGPROF
 
     /// `state` with `task` inside a handler for `carrier`, whose `sa_mask` is
     /// `mask` and which has `SA_NODEFER`: `task`'s mask becomes its old mask

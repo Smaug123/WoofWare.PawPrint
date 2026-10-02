@@ -41,80 +41,100 @@ module TestSignalAgainstHost =
         proc.WaitForExit ()
         if proc.ExitCode = 0 then Some output else None
 
-    /// What `kill -l` calls each modelled signal.
-    let private abbreviation (signal : Signal) : string =
+    /// What `kill -l` calls each named signal, or `None` for a real-time
+    /// signal, which the shells name relative to the C library's `SIGRTMIN`
+    /// (`RTMIN+1`, `RTMAX-2`) or not at all.
+    let private abbreviation (signal : Signal) : string option =
         match signal with
-        | Signal.SIGHUP -> "HUP"
-        | Signal.SIGINT -> "INT"
-        | Signal.SIGQUIT -> "QUIT"
-        | Signal.SIGTERM -> "TERM"
-        | Signal.SIGCHLD -> "CHLD"
-        | Signal.SIGCONT -> "CONT"
-        | Signal.SIGWINCH -> "WINCH"
-        | Signal.SIGTSTP -> "TSTP"
-        | Signal.SIGTTIN -> "TTIN"
-        | Signal.SIGTTOU -> "TTOU"
-        | Signal.SIGPIPE -> "PIPE"
-        | Signal.SIGUSR1 -> "USR1"
-        | Signal.SIGUSR2 -> "USR2"
-        | Signal.SIGABRT -> "ABRT"
-        | Signal.SIGURG -> "URG"
-        | Signal.Other raw -> failwith $"Signal.Other %d{raw} has no name to look up"
+        | Signal.SIGHUP -> Some "HUP"
+        | Signal.SIGINT -> Some "INT"
+        | Signal.SIGQUIT -> Some "QUIT"
+        | Signal.SIGILL -> Some "ILL"
+        | Signal.SIGTRAP -> Some "TRAP"
+        | Signal.SIGABRT -> Some "ABRT"
+        | Signal.SIGBUS -> Some "BUS"
+        | Signal.SIGFPE -> Some "FPE"
+        | Signal.SIGKILL -> Some "KILL"
+        | Signal.SIGUSR1 -> Some "USR1"
+        | Signal.SIGSEGV -> Some "SEGV"
+        | Signal.SIGUSR2 -> Some "USR2"
+        | Signal.SIGPIPE -> Some "PIPE"
+        | Signal.SIGALRM -> Some "ALRM"
+        | Signal.SIGTERM -> Some "TERM"
+        | Signal.SIGSTKFLT -> Some "STKFLT"
+        | Signal.SIGCHLD -> Some "CHLD"
+        | Signal.SIGCONT -> Some "CONT"
+        | Signal.SIGSTOP -> Some "STOP"
+        | Signal.SIGTSTP -> Some "TSTP"
+        | Signal.SIGTTIN -> Some "TTIN"
+        | Signal.SIGTTOU -> Some "TTOU"
+        | Signal.SIGURG -> Some "URG"
+        | Signal.SIGXCPU -> Some "XCPU"
+        | Signal.SIGXFSZ -> Some "XFSZ"
+        | Signal.SIGVTALRM -> Some "VTALRM"
+        | Signal.SIGPROF -> Some "PROF"
+        | Signal.SIGWINCH -> Some "WINCH"
+        | Signal.SIGIO -> Some "IO"
+        | Signal.SIGPWR -> Some "PWR"
+        | Signal.SIGSYS -> Some "SYS"
+        | Signal.SIGEMT -> Some "EMT"
+        | Signal.SIGINFO -> Some "INFO"
+        | Signal.RealTime _ -> None
 
-    let private named : Signal list =
-        [
-            Signal.SIGHUP
-            Signal.SIGINT
-            Signal.SIGQUIT
-            Signal.SIGTERM
-            Signal.SIGCHLD
-            Signal.SIGCONT
-            Signal.SIGWINCH
-            Signal.SIGTSTP
-            Signal.SIGTTIN
-            Signal.SIGTTOU
-            Signal.SIGPIPE
-            Signal.SIGUSR1
-            Signal.SIGUSR2
-            Signal.SIGABRT
-            Signal.SIGURG
-        ]
+    /// What a shell prints for a number it knows as a signal but has no name
+    /// for: dash prints the number itself (its table lacks `STKFLT`, and
+    /// glibc's reserved 32 and 33), and bash prints nothing for those two.
+    let private unnamedByShell (printed : string) : bool =
+        printed = "" || printed |> Seq.forall System.Char.IsDigit
 
     /// Well past either platform's ceiling, so the sweep sees the shell refuse.
     [<Literal>]
     let private sweepLimit : int = 80
 
     [<Test>]
-    let ``toRawSignoUnder agrees with this host's kill -l about every named signal`` () : unit =
+    let ``toRawSignoUnder agrees with this host's kill -l about every signal`` () : unit =
         HostPlatform.onUnixHost (fun flavour ->
             let numbering =
                 SimulatedUnixPlatform.signalNumbering (HostPlatform.platformOf flavour)
 
-            // Both directions: the number this library gives a name must be
-            // what the host calls that name, and the host's name for that
-            // number must be the one this library expects. The first catches
-            // a wrong row; the second catches two rows swapped.
+            // Both directions: the host's name for each number must be the one
+            // this library gives the signal it parses that number as, and the
+            // number the host gives each name must be the one this library
+            // renders it as. The first catches a wrong or missing row; the
+            // second catches a name the host puts somewhere else.
             let hostTable : Map<string, int> =
                 [ 1..sweepLimit ]
                 |> List.choose (fun signo -> hostSignalName signo |> Option.map (fun name -> name, signo))
+                |> List.filter (fun (name, _) -> not (unnamedByShell name))
                 |> Map.ofList
 
-            for signal in named do
-                let modelled = Signal.toRawSignoUnder numbering signal
-                let name = abbreviation signal
+            for signo in 1 .. Signal.highestSignoUnder numbering do
+                let signal =
+                    match Signal.ofRawSignoUnder numbering signo with
+                    | ValueSome signal -> signal
+                    | ValueNone -> failwith $"%O{numbering}: signo %d{signo} is within range"
 
-                match Map.tryFind name hostTable with
-                | None -> failwith $"this host's kill -l never printed %s{name} for any signo in 1..%d{sweepLimit}"
-                | Some host ->
-                    if host <> modelled then
+                match hostSignalName signo, abbreviation signal with
+                | None, _ ->
+                    failwith
+                        $"%O{numbering}: this host's kill -l refuses signo %d{signo}, which this library calls %O{signal}"
+                | Some printed, _ when unnamedByShell printed -> ()
+                | Some printed, Some name ->
+                    if printed <> name then
                         failwith
-                            $"%O{numbering}: this library says %O{signal} is signo %d{modelled}, but this host's kill -l says SIG%s{name} is %d{host}"
+                            $"%O{numbering}: this library says signo %d{signo} is %O{signal}, but this host's kill -l calls it %s{printed}"
+                | Some printed, None ->
+                    if not (printed.StartsWith "RTMIN" || printed.StartsWith "RTMAX") then
+                        failwith
+                            $"%O{numbering}: this library says signo %d{signo} is %O{signal}, but this host's kill -l calls it %s{printed}"
 
-                match hostSignalName modelled with
-                | Some hostName when hostName = name -> ()
+            for KeyValue (name, host) in hostTable do
+                match Signal.ofRawSignoUnder numbering host with
+                | ValueSome signal when abbreviation signal = Some name -> ()
+                | ValueSome signal when name.StartsWith "RTM" && abbreviation signal = None -> ()
                 | other ->
                     failwith
-                        $"%O{numbering}: this library says signo %d{modelled} is %O{signal}, but this host's kill -l calls it %A{other}"
+                        $"%O{numbering}: this host's kill -l says SIG%s{name} is %d{host}, which this library parses as %A{other}"
         )
 
     [<Test>]

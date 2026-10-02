@@ -17,9 +17,8 @@ open WoofWare.PosixKernel
 /// surfaces as a divergence the property catches.
 ///
 /// Everything runs under both numberings, because the state's contract is
-/// stated *under a numbering*: `Other 17` is `SIGCHLD` to a Linux process
-/// and `SIGSTOP` to a Darwin one, and several tests below assert exactly
-/// that divergence.
+/// stated *under a numbering*: a signal one platform lacks, such as `SIGPWR`
+/// in a Darwin process, is refused by every operation.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestSignalState =
@@ -89,41 +88,29 @@ module TestSignalState =
             Signal.SIGURG
         ]
 
-    /// SIGKILL's number and SIGSTOP's under this numbering, plus (on Linux)
-    /// the two glibc reserves for itself: what glibc's mask calls refuse.
-    let private unblockableSpellings (numbering : SignalNumbering) : Signal list =
+    /// SIGKILL and SIGSTOP, plus (on Linux) the two real-time signals glibc
+    /// reserves for itself: what glibc's mask calls refuse.
+    let private unblockableSignals (numbering : SignalNumbering) : Signal list =
         match numbering with
-        | SignalNumbering.Linux -> [ Signal.Other 9 ; Signal.Other 19 ; Signal.Other 32 ; Signal.Other 33 ]
-        | SignalNumbering.Darwin -> [ Signal.Other 9 ; Signal.Other 17 ]
+        | SignalNumbering.Linux -> [ Signal.SIGKILL ; Signal.SIGSTOP ; Signal.RealTime 0 ; Signal.RealTime 1 ]
+        | SignalNumbering.Darwin -> [ Signal.SIGKILL ; Signal.SIGSTOP ]
 
-    /// SIGKILL's number and SIGSTOP's under this numbering: what a kernel drops
-    /// from any mask.
-    let private kernelUncatchableSpellings (numbering : SignalNumbering) : Signal list =
+    /// SIGKILL and SIGSTOP: what a kernel drops from any mask, and for which
+    /// it holds no disposition but the default.
+    let private kernelUncatchable : Signal list = [ Signal.SIGKILL ; Signal.SIGSTOP ]
+
+    /// Further signals, blockable and catchable, which flow through every
+    /// operation like those above.
+    let private furtherSignals (numbering : SignalNumbering) : Signal list =
         match numbering with
-        | SignalNumbering.Linux -> [ Signal.Other 9 ; Signal.Other 19 ]
-        | SignalNumbering.Darwin -> [ Signal.Other 9 ; Signal.Other 17 ]
+        // A real-time signal, which Darwin does not have.
+        | SignalNumbering.Linux -> [ Signal.SIGTRAP ; Signal.RealTime 8 ]
+        | SignalNumbering.Darwin -> [ Signal.SIGTRAP ]
 
-    /// Signals that exist under the numbering but name no case: blockable and
-    /// catchable, so they flow through every operation like a named one.
-    let private unnamedSignals (numbering : SignalNumbering) : Signal list =
-        match numbering with
-        // 5 is SIGTRAP on both; 40 is a real-time signal, which Darwin does
-        // not have.
-        | SignalNumbering.Linux -> [ Signal.Other 5 ; Signal.Other 40 ]
-        | SignalNumbering.Darwin -> [ Signal.Other 5 ]
-
-    /// Every spelling the state can legally be handed under this numbering:
-    /// the named cases, each named case respelt as `Other` carrying its
-    /// number, the unnamed signals, and the unblockable ones.
+    /// Every signal the property test hands the state under this numbering:
+    /// the named ones above, the further ones, and the unblockable ones.
     let private allSignals (numbering : SignalNumbering) : Signal list =
-        let otherSpellings =
-            namedSignals
-            |> List.map (fun signal -> Signal.Other (Signal.toRawSignoUnder numbering signal))
-
-        namedSignals
-        @ otherSpellings
-        @ unnamedSignals numbering
-        @ unblockableSpellings numbering
+        namedSignals @ furtherSignals numbering @ unblockableSignals numbering
 
     /// The subset of `allSignals` that `enable` accepts: everything
     /// `sigaction` would install a handler for.
@@ -177,9 +164,9 @@ module TestSignalState =
         =
         HandlerFrames.enter (TestHandler "carrier") t0 (Set.ofList allThreads) task (Set.singleton signal) s
 
-    /// Whether `task`'s mask holds `signal`, in any spelling.
+    /// Whether `task`'s mask holds `signal`.
     let private isBlocked (task : TestTask) (signal : Signal) (s : SignalState<TestTask, TestHandler>) : bool =
-        Set.contains (Signal.canonicalUnder (SignalState.numbering s) signal) (SignalState.maskOf task s)
+        Set.contains signal (SignalState.maskOf task s)
 
     /// Install `handler` for `signal`, as `sigaction` with a handler does.
     let private enable (signal : Signal) (s : SignalState<TestTask, TestHandler>) : SignalState<TestTask, TestHandler> =
@@ -208,12 +195,10 @@ module TestSignalState =
             SignalState.dispositions s |> shouldEqual Map.empty
 
     [<Test>]
-    let ``initial ignores exactly the inherited ignores, in their canonical spelling`` () : unit =
+    let ``initial ignores exactly the inherited ignores`` () : unit =
         for numbering in everyNumbering do
-            let spelt = Signal.Other (Signal.toRawSignoUnder numbering Signal.SIGHUP)
-
             let s : SignalState<TestTask, TestHandler> =
-                SignalState.initial numbering (Set.ofList [ spelt ; Signal.SIGUSR2 ])
+                SignalState.initial numbering (Set.ofList [ Signal.SIGHUP ; Signal.SIGUSR2 ])
 
             SignalState.dispositions s
             |> shouldEqual (
@@ -230,14 +215,9 @@ module TestSignalState =
     [<Test>]
     let ``initial refuses an inherited ignore of SIGKILL or SIGSTOP`` () : unit =
         for numbering in everyNumbering do
-            let stop =
-                match numbering with
-                | SignalNumbering.Linux -> 19
-                | SignalNumbering.Darwin -> 17
-
-            for raw in [ 9 ; stop ] do
+            for signal in kernelUncatchable do
                 Assert.Throws (fun () ->
-                    SignalState.initial numbering (Set.singleton (Signal.Other raw))
+                    SignalState.initial numbering (Set.singleton signal)
                     |> ignore<SignalState<TestTask, TestHandler>>
                 )
                 |> ignore<exn>
@@ -376,89 +356,27 @@ module TestSignalState =
         (SignalState.framesOf t0 s |> List.head).Id
         |> shouldNotEqual (SignalState.framesOf t0 before |> List.head).Id
 
-    // ------------------- Canonical identity ------------------- //
-
-    [<Test>]
-    let ``a named signal and its Other spelling are one signal to every operation`` () : unit =
-        for numbering in everyNumbering do
-            for signal in namedSignals do
-                let spelt = Signal.Other (Signal.toRawSignoUnder numbering signal)
-
-                // Mask via the raw spelling, observe via the name — and the
-                // state is structurally identical to one built via the name.
-                // (SIGKILL and SIGSTOP are no named case, so every one here
-                // stays in the mask.)
-                let blocked = initial numbering |> block t0 spelt
-                SignalState.maskOf t0 blocked |> shouldEqual (Set.singleton signal)
-                blocked |> shouldEqual (initial numbering |> block t0 signal)
-
-                if not (Signal.isUncatchableUnder numbering spelt) then
-                    let caught = initial numbering |> enable spelt
-                    SignalState.disposition signal caught |> shouldEqual catch
-                    SignalState.dispositions caught |> shouldEqual (Map.ofList [ signal, catch ])
-                    caught |> restoreDefault signal |> shouldEqual (initial numbering)
-
-    [<Test>]
-    let ``enqueue stores the canonical spelling`` () : unit =
-        for numbering in everyNumbering do
-            for signal in namedSignals do
-                let spelt = Signal.Other (Signal.toRawSignoUnder numbering signal)
-
-                // Caught first (every named case is catchable), so the
-                // ignore-default rows are not discarded at generation and
-                // every row exercises the storage path.
-                let start = initial numbering |> enable signal
-
-                let viaSpelling =
-                    start
-                    |> SignalState.enqueue
-                        {
-                            Signal = spelt
-                            Target = ValueSome t1
-                        }
-
-                let viaName =
-                    start
-                    |> SignalState.enqueue
-                        {
-                            Signal = signal
-                            Target = ValueSome t1
-                        }
-
-                viaSpelling |> shouldEqual viaName
-
-                SignalState.pending viaSpelling
-                |> List.map (fun entry -> entry.Signal)
-                |> shouldEqual [ signal ]
-
-    [<Test>]
-    let ``the same Other payload is a different signal under each numbering`` () : unit =
-        // 17 is SIGCHLD to a Linux process: maskable, catchable, and one
-        // signal with the named case.
-        initial SignalNumbering.Linux
-        |> block t0 (Signal.Other 17)
-        |> SignalState.maskOf t0
-        |> shouldEqual (Set.singleton Signal.SIGCHLD)
-
-        // The same number is SIGSTOP to a Darwin process: the kernel drops it
-        // from the mask silently.
-        initial SignalNumbering.Darwin
-        |> block t0 (Signal.Other 17)
-        |> SignalState.maskOf t0
-        |> shouldEqual Set.empty
-
-        // And 19 the other way round: SIGSTOP to Linux, SIGCONT to Darwin.
-        initial SignalNumbering.Linux
-        |> block t0 (Signal.Other 19)
-        |> SignalState.maskOf t0
-        |> shouldEqual Set.empty
-
-        initial SignalNumbering.Darwin
-        |> block t0 (Signal.Other 19)
-        |> SignalState.maskOf t0
-        |> shouldEqual (Set.singleton Signal.SIGCONT)
-
     // ------------------- Unblockable and uncatchable signals ------------------- //
+
+    [<Test>]
+    let ``SIGSTOP is dropped from a mask under each numbering, and the signals sharing its numbers are not`` () : unit =
+        // 17 is SIGSTOP on Darwin and SIGCHLD on Linux; 19 is SIGSTOP on
+        // Linux and SIGCONT on Darwin.
+        for numbering in everyNumbering do
+            initial numbering
+            |> block t0 Signal.SIGSTOP
+            |> SignalState.maskOf t0
+            |> shouldEqual Set.empty
+
+            initial numbering
+            |> block t0 Signal.SIGCHLD
+            |> SignalState.maskOf t0
+            |> shouldEqual (Set.singleton Signal.SIGCHLD)
+
+            initial numbering
+            |> block t0 Signal.SIGCONT
+            |> SignalState.maskOf t0
+            |> shouldEqual (Set.singleton Signal.SIGCONT)
 
     [<Test>]
     let ``a handler's sa_mask holds every signal but SIGKILL and SIGSTOP`` () : unit =
@@ -478,8 +396,7 @@ module TestSignalState =
 
             let expected =
                 allSignals numbering
-                |> List.filter (fun signal -> not (List.contains signal (kernelUncatchableSpellings numbering)))
-                |> List.map (Signal.canonicalUnder numbering)
+                |> List.filter (fun signal -> not (List.contains signal kernelUncatchable))
                 |> Set.ofList
 
             match SignalState.disposition Signal.SIGHUP caught with
@@ -499,17 +416,10 @@ module TestSignalState =
 
             SignalState.maskOf t0 delivered |> shouldEqual (Set.add Signal.SIGHUP expected)
 
-    /// SIGKILL's number and SIGSTOP's under this numbering: the signals for
-    /// which the kernel refuses any disposition but the default.
-    let private kernelUncatchable (numbering : SignalNumbering) : Signal list =
-        match numbering with
-        | SignalNumbering.Linux -> [ Signal.Other 9 ; Signal.Other 19 ]
-        | SignalNumbering.Darwin -> [ Signal.Other 9 ; Signal.Other 17 ]
-
     [<Test>]
     let ``setDisposition refuses every disposition for SIGKILL and SIGSTOP`` () : unit =
         for numbering in everyNumbering do
-            for signal in kernelUncatchable numbering do
+            for signal in kernelUncatchable do
                 for disposition in [ SignalDisposition.Default ; SignalDisposition.Ignore ; catch ] do
                     Assert.Throws (fun () ->
                         initial numbering
@@ -524,24 +434,22 @@ module TestSignalState =
         // setxid machinery has run in; it is glibc's own sigaction wrapper
         // that refuses the pair, and a client modelling that wrapper screens
         // with Signal.isUncatchableUnder first.
-        for raw in [ 32 ; 33 ] do
-            Signal.isUncatchableUnder SignalNumbering.Linux (Signal.Other raw)
-            |> shouldEqual true
+        for signal in [ Signal.RealTime 0 ; Signal.RealTime 1 ] do
+            Signal.isUncatchableUnder SignalNumbering.Linux signal |> shouldEqual true
 
-            let s = initial SignalNumbering.Linux |> enable (Signal.Other raw)
-            SignalState.disposition (Signal.Other raw) s |> shouldEqual catch
+            let s = initial SignalNumbering.Linux |> enable signal
+            SignalState.disposition signal s |> shouldEqual catch
 
     [<Test>]
-    let ``every operation refuses a number that is not a signal under the numbering`` () : unit =
-        let notASignal (numbering : SignalNumbering) : int list =
+    let ``every operation refuses a signal the numbering does not have`` () : unit =
+        let notASignal (numbering : SignalNumbering) : Signal list =
             match numbering with
-            | SignalNumbering.Linux -> [ 0 ; -1 ; 65 ; 99 ]
-            // 40 is a real-time signal on Linux and nothing at all on Darwin.
-            | SignalNumbering.Darwin -> [ 0 ; -1 ; 32 ; 40 ; 99 ]
+            | SignalNumbering.Linux -> [ Signal.SIGEMT ; Signal.SIGINFO ; Signal.RealTime -1 ; Signal.RealTime 33 ]
+            // A real-time signal on Linux, and nothing at all on Darwin.
+            | SignalNumbering.Darwin -> [ Signal.SIGSTKFLT ; Signal.SIGPWR ; Signal.RealTime 0 ; Signal.RealTime 8 ]
 
         for numbering in everyNumbering do
-            for raw in notASignal numbering do
-                let signal = Signal.Other raw
+            for signal in notASignal numbering do
                 let s = initial numbering
 
                 Assert.Throws (fun () -> enable signal s |> ignore<SignalState<_, _>>)
@@ -625,38 +533,6 @@ module TestSignalState =
             SignalState.pending twice |> shouldEqual [ e ]
 
     [<Test>]
-    let ``enqueue coalesces across spellings of one signal`` () : unit =
-        // The coalescing key is the canonical signal: SIGUSR1 pending and a
-        // second generation spelt as its raw number are one signal. (SIGUSR1
-        // rather than an ignore-default signal, so the entries survive
-        // generation under both numberings; its number also diverges, which
-        // keeps the spelling non-trivial.)
-        for numbering in everyNumbering do
-            let spelt = Signal.Other (Signal.toRawSignoUnder numbering Signal.SIGUSR1)
-
-            let s =
-                initial numbering
-                |> SignalState.enqueue
-                    {
-                        Signal = Signal.SIGUSR1
-                        Target = ValueNone
-                    }
-                |> SignalState.enqueue
-                    {
-                        Signal = spelt
-                        Target = ValueNone
-                    }
-
-            SignalState.pending s
-            |> shouldEqual
-                [
-                    {
-                        Signal = Signal.SIGUSR1
-                        Target = ValueNone
-                    }
-                ]
-
-    [<Test>]
     let ``enqueue keeps separate pending sets separate`` () : unit =
         // Measured: a process-directed plus a thread-directed instance of one
         // standard signal deliver twice (Linux, and a two-thread Darwin
@@ -697,7 +573,7 @@ module TestSignalState =
         // blocked deliver three times, via sigqueue and via kill alike.
         let rt =
             {
-                Signal = Signal.Other 36
+                Signal = Signal.RealTime 4
                 Target = ValueNone
             }
 
@@ -710,7 +586,7 @@ module TestSignalState =
         SignalState.pending s |> shouldEqual [ rt ; rt ; rt ]
 
         // And each queued instance delivers separately.
-        let s = s |> enable (Signal.Other 36)
+        let s = s |> enable (Signal.RealTime 4)
 
         // The first instance's handler blocks the signal while it runs, so the
         // other two wait for its sigreturn.
@@ -848,17 +724,17 @@ module TestSignalState =
         |> shouldEqual (SignalGeneration.ProcessTerminated (Signal.SIGTERM, false))
 
         // SIGKILL cannot be blocked, so a mask naming it changes nothing.
-        let masked = empty |> block t0 (Signal.Other 9)
+        let masked = empty |> block t0 Signal.SIGKILL
 
         generateAmong
             CoreDumps.Suppressed
             [ t0 ]
             {
-                Signal = (Signal.Other 9)
+                Signal = Signal.SIGKILL
                 Target = ValueNone
             }
             masked
-        |> shouldEqual (SignalGeneration.ProcessTerminated (Signal.Other 9, false))
+        |> shouldEqual (SignalGeneration.ProcessTerminated (Signal.SIGKILL, false))
 
     [<Test>]
     let ``generating an unclaimed stop signal stops the process at once`` () : unit =
@@ -866,11 +742,11 @@ module TestSignalState =
             CoreDumps.Suppressed
             [ t0 ]
             {
-                Signal = (Signal.Other 19)
+                Signal = Signal.SIGSTOP
                 Target = ValueNone
             }
             empty
-        |> shouldEqual (SignalGeneration.ProcessStopped (Signal.Other 19, empty))
+        |> shouldEqual (SignalGeneration.ProcessStopped (Signal.SIGSTOP, empty))
 
     [<Test>]
     let ``a fatal signal nobody can receive yet is queued, not fatal`` () : unit =
@@ -1354,12 +1230,12 @@ module TestSignalState =
         // Measured by `signal-sigaction-flags.c`: re-raised inside its handler, a
         // signal waits for the return without SA_NODEFER and nests with it.
         // Three queued instances of a real-time signal all get frames at once.
-        let rt = processSignal (Signal.Other 36)
+        let rt = processSignal (Signal.RealTime 4)
 
         let s =
             initial SignalNumbering.Linux
             |> catchWith
-                (Signal.Other 36)
+                (Signal.RealTime 4)
                 (fun c ->
                     { c with
                         NoDefer = true
@@ -1386,7 +1262,10 @@ module TestSignalState =
         // on Darwin) and the signal fuzzer. It does not imply SA_NODEFER.
         for numbering in everyNumbering do
             for signo in [ 1 ; 2 ; 4 ; 5 ; 15 ] do
-                let signal = Signal.Other signo |> Signal.canonicalUnder numbering
+                let signal =
+                    match Signal.ofRawSignoUnder numbering signo with
+                    | ValueSome signal -> signal
+                    | ValueNone -> failwith $"%O{numbering}: %d{signo} is a signal"
 
                 let s =
                     initial numbering
@@ -1415,12 +1294,12 @@ module TestSignalState =
         // Two real-time instances, the handler with SA_NODEFER and
         // SA_RESETHAND: the first gets a frame, which resets the disposition,
         // and the second then terminates the process.
-        let rt = processSignal (Signal.Other 36)
+        let rt = processSignal (Signal.RealTime 4)
 
         let s =
             initial SignalNumbering.Linux
             |> catchWith
-                (Signal.Other 36)
+                (Signal.RealTime 4)
                 (fun c ->
                     { c with
                         NoDefer = true
@@ -1432,7 +1311,7 @@ module TestSignalState =
 
         leaderDelivery [ t0 ] s
         |> fst
-        |> shouldEqual (Some (SignalDelivery.DefaultTerminate (Signal.Other 36, false)))
+        |> shouldEqual (Some (SignalDelivery.DefaultTerminate (Signal.RealTime 4, false)))
 
     [<Test>]
     let ``a fatal default behind a caught signal kills the process, and no handler runs`` () : unit =
@@ -1485,10 +1364,7 @@ module TestSignalState =
     let private taskPool : TestTask list = [ t0 ; t1 ; t2 ; TestTask 3 ]
 
     /// Reference implementation: simple lists / sets / maps, completely
-    /// independent of the production module's internal representation. Every
-    /// signal is stored canonically, via `Signal.canonicalUnder` — whose two
-    /// columns `TestSignal` pins independently — so a production module that
-    /// forgot to canonicalise diverges from it on the first `Other` spelling.
+    /// independent of the production module's internal representation.
     ///
     /// It stores every disposition it is given, `Default` included: the
     /// production module must store none, and `assertEquivalent` checks that
@@ -1538,8 +1414,8 @@ module TestSignalState =
         | SignalNumbering.Darwin, 17 -> true
         | _, _ -> false
 
-    /// A disposition as the kernel stores it: its mask canonical and without
-    /// SIGKILL and SIGSTOP.
+    /// A disposition as the kernel stores it: its mask without SIGKILL and
+    /// SIGSTOP.
     let private referenceStored
         (numbering : SignalNumbering)
         (disposition : SignalDisposition<TestHandler>)
@@ -1549,10 +1425,7 @@ module TestSignalState =
         | SignalDisposition.Catch action ->
             SignalDisposition.Catch
                 { action with
-                    Mask =
-                        action.Mask
-                        |> Set.map (Signal.canonicalUnder numbering)
-                        |> Set.filter (referenceUnmaskable numbering >> not)
+                    Mask = action.Mask |> Set.filter (referenceUnmaskable numbering >> not)
                 }
         | other -> other
 
@@ -1680,7 +1553,7 @@ module TestSignalState =
         | head :: tail when head = e -> tail
         | head :: tail -> head :: referenceRemoveFirst e tail
 
-    /// The first step of generating `signal` (canonical): `None` if Darwin
+    /// The first step of generating `signal`: `None` if Darwin
     /// drops it as ignored before anything else (SIGCONT excepted), and
     /// otherwise the state after the opposite kind's pending instances are
     /// flushed.
@@ -1753,7 +1626,7 @@ module TestSignalState =
         /// instance in the set Darwin holds as the same one.
         | RefusedAsMerged of Signal
 
-    /// What generating `entry` (canonical) does at once, and the state after.
+    /// What generating `entry` does at once, and the state after.
     /// A default-disposition signal some task could receive takes its default
     /// here: terminate, stop, or be discarded if the default ignores it; an
     /// ignored one some task could receive is discarded. A caught one for the
@@ -1923,19 +1796,15 @@ module TestSignalState =
         (r : ReferenceState)
         : SignalState<TestTask, TestHandler> * ReferenceState * Set<TestTask>
         =
-        let canonical (signal : Signal) : Signal = Signal.canonicalUnder numbering signal
-
         match op with
-        | Op.SetDisposition (sig0, disposition) ->
-            let signal = canonical sig0
-
+        | Op.SetDisposition (signal, disposition) ->
             let pending =
                 if referenceDiscardsWhenSet numbering disposition signal then
                     r.Pending |> List.filter (fun p -> p.Signal <> signal)
                 else
                     r.Pending
 
-            SignalState.setDisposition sig0 disposition s,
+            SignalState.setDisposition signal disposition s,
             { r with
                 Dispositions = Map.add signal (referenceStored numbering disposition) r.Dispositions
                 Pending = pending
@@ -1950,25 +1819,11 @@ module TestSignalState =
                 },
                 tasks
             | [] -> failwith $"generated a sigreturn for %O{task}, which has no frame"
-        | Op.Enqueue e ->
-            let entry =
-                { e with
-                    Signal = canonical e.Signal
-                }
-
-            SignalState.enqueue e s, referenceEnqueue numbering entry r, tasks
+        | Op.Enqueue e -> SignalState.enqueue e s, referenceEnqueue numbering e r, tasks
         | Op.Generate (coreDumps, e) ->
             let actual = SignalState.generate coreDumps referenceLeader tasks e s
 
-            let expected =
-                referenceGenerate
-                    numbering
-                    coreDumps
-                    tasks
-                    { e with
-                        Signal = canonical e.Signal
-                    }
-                    r
+            let expected = referenceGenerate numbering coreDumps tasks e r
 
             // A terminated process has no state to carry on with, and a refused
             // generation did not happen, so in both the run goes on from the
@@ -2009,8 +1864,6 @@ module TestSignalState =
             Set.remove task tasks
 
     /// Compare every observable accessor; the accessors are the contract.
-    /// Queries run over every legal spelling, so a production module that
-    /// canonicalised its stores but not its reads diverges here.
     let private assertEquivalent
         (numbering : SignalNumbering)
         (tasks : Set<TestTask>)
@@ -2032,8 +1885,7 @@ module TestSignalState =
             |> shouldEqual (referenceCandidates numbering task r)
 
         for sig0 in allSignals numbering do
-            SignalState.disposition sig0 s
-            |> shouldEqual (referenceDisposition r (Signal.canonicalUnder numbering sig0))
+            SignalState.disposition sig0 s |> shouldEqual (referenceDisposition r sig0)
 
         for tid in taskPool do
             SignalState.framesOf tid s |> shouldEqual (referenceFrames r tid)
@@ -2051,18 +1903,12 @@ module TestSignalState =
     /// SIGSTOP, glibc's reserved pair included.
     let private settableSignals (numbering : SignalNumbering) : Signal list =
         allSignals numbering
-        |> List.filter (fun signal -> not (List.contains signal (kernelUncatchable numbering)))
+        |> List.filter (fun signal -> not (List.contains signal (kernelUncatchable)))
 
     /// The signals the stop/continue flush acts between, over-weighted in the
     /// walk: a flush needs one pending and the other generated after it.
     let private jobControl (numbering : SignalNumbering) : Signal list =
-        [
-            Signal.SIGTSTP
-            Signal.SIGTTIN
-            Signal.SIGTTOU
-            Signal.SIGCONT
-            Signal.Other (Signal.toRawSignoUnder numbering Signal.SIGCONT)
-        ]
+        [ Signal.SIGTSTP ; Signal.SIGTTIN ; Signal.SIGTTOU ; Signal.SIGCONT ]
 
     let private randomOp
         (numbering : SignalNumbering)
@@ -2120,10 +1966,10 @@ module TestSignalState =
             let anyMask = current |> List.map (referenceMask r) |> Set.unionMany |> Set.toList
 
             match rng.Next 12 with
-            | 0 when numbering = SignalNumbering.Linux -> Signal.Other 40
+            | 0 when numbering = SignalNumbering.Linux -> Signal.RealTime 8
             | 1
             | 2 -> pick (jobControl numbering)
-            | 3 -> pick [ Signal.Other 4 ; Signal.Other 11 ; Signal.SIGHUP ; Signal.SIGTERM ]
+            | 3 -> pick [ Signal.SIGILL ; Signal.SIGSEGV ; Signal.SIGHUP ; Signal.SIGTERM ]
             | 4
             | 5
             | 6 when not leaderMask.IsEmpty -> pick leaderMask
@@ -2185,7 +2031,6 @@ module TestSignalState =
         let mutable observedActionAfterSkip = 0
         let mutable observedDrainOfEmpty = 0
         let mutable observedDrainNoneNonEmpty = 0
-        let mutable observedNonCanonicalSpellings = 0
         let mutable observedUnmaskableInMasks = 0
         let mutable observedNestedFrames = 0
         let mutable observedSigreturns = 0
@@ -2300,12 +2145,7 @@ module TestSignalState =
                     then
                         observedHeldByFrame <- observedHeldByFrame + 1
                 | Op.Generate (coreDumps, e) ->
-                    let entry =
-                        { e with
-                            Signal = Signal.canonicalUnder numbering e.Signal
-                        }
-
-                    match referenceGenerate numbering coreDumps tasks entry r with
+                    match referenceGenerate numbering coreDumps tasks e r with
                     | ReferenceGeneration.Terminated (_, cored) ->
                         observedGeneratedTerminations <- observedGeneratedTerminations + 1
 
@@ -2317,14 +2157,9 @@ module TestSignalState =
                     | ReferenceGeneration.Continues r' ->
                         observedGeneratedQueued <- observedGeneratedQueued + 1
 
-                        if r' = r && referenceIgnoredAtGeneration numbering r entry.Signal then
+                        if r' = r && referenceIgnoredAtGeneration numbering r e.Signal then
                             observedGeneratedIgnoredDiscards <- observedGeneratedIgnoredDiscards + 1
                 | Op.SetDisposition (signal, disposition) ->
-                    if Signal.canonicalUnder numbering signal <> signal then
-                        observedNonCanonicalSpellings <- observedNonCanonicalSpellings + 1
-
-                    let canonicalSignal = Signal.canonicalUnder numbering signal
-
                     if disposition = SignalDisposition.Default then
                         observedDefaultsStored <- observedDefaultsStored + 1
 
@@ -2334,15 +2169,11 @@ module TestSignalState =
                     | _ -> ()
 
                     if
-                        referenceDiscardsWhenSet numbering disposition canonicalSignal
-                        && r.Pending |> List.exists (fun p -> p.Signal = canonicalSignal)
+                        referenceDiscardsWhenSet numbering disposition signal
+                        && r.Pending |> List.exists (fun p -> p.Signal = signal)
                     then
                         observedDiscardsWhenSet <- observedDiscardsWhenSet + 1
-                | Op.Enqueue {
-                                 Signal = signal
-                             } ->
-                    if Signal.canonicalUnder numbering signal <> signal then
-                        observedNonCanonicalSpellings <- observedNonCanonicalSpellings + 1
+                | Op.Enqueue _ -> ()
                 | Op.Exit _ -> observedExits <- observedExits + 1
                 | Op.Sigreturn _ -> observedSigreturns <- observedSigreturns + 1
                 | Op.Spawn _ -> ()
@@ -2350,9 +2181,8 @@ module TestSignalState =
                 match op with
                 | Op.Enqueue e
                 | Op.Generate (_, e) ->
-                    let canonicalSignal = Signal.canonicalUnder numbering e.Signal
 
-                    match referenceBeginGeneration numbering canonicalSignal r with
+                    match referenceBeginGeneration numbering e.Signal r with
                     | None -> observedGenerationDrops <- observedGenerationDrops + 1
                     | Some flushed ->
                         if List.length flushed.Pending < List.length r.Pending then
@@ -2362,7 +2192,7 @@ module TestSignalState =
                         | Op.Enqueue _ ->
                             let alreadyPendingInSet =
                                 flushed.Pending
-                                |> List.exists (fun p -> p.Signal = canonicalSignal && p.Target = e.Target)
+                                |> List.exists (fun p -> p.Signal = e.Signal && p.Target = e.Target)
 
                             if alreadyPendingInSet then
                                 if Signal.isRealTimeUnder numbering e.Signal then
@@ -2396,7 +2226,6 @@ module TestSignalState =
         observedActionAfterSkip |> shouldBeGreaterThan 0
         observedDrainOfEmpty |> shouldBeGreaterThan 20
         observedDrainNoneNonEmpty |> shouldBeGreaterThan 20
-        observedNonCanonicalSpellings |> shouldBeGreaterThan 100
         observedUnmaskableInMasks |> shouldBeGreaterThan 20
         observedNestedFrames |> shouldBeGreaterThan 15
         observedSigreturns |> shouldBeGreaterThan 50
@@ -2435,7 +2264,7 @@ module TestSignalState =
         | SignalNumbering.Linux -> observedMergeRefusals |> shouldEqual 0
         | SignalNumbering.Darwin -> observedMergeRefusals |> shouldBeGreaterThan 0
 
-        // Only Linux numbering has real-time signals in the pool (`Other 40`),
+        // Only Linux numbering has real-time signals in the pool (`RealTime 8`),
         // so only there can the walk exercise the queue-not-coalesce arm.
         match numbering with
         | SignalNumbering.Linux -> observedQueuedRealTimeDuplicates |> shouldBeGreaterThan 0

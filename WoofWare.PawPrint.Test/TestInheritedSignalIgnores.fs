@@ -209,7 +209,7 @@ class Program
             let platform = HostPlatform.platformOf flavour
             let image = Roslyn.compile [ faultSignalGuest ]
 
-            match runUnderPawPrint platform (Set.singleton (Signal.Other 4)) 0 image with
+            match runUnderPawPrint platform (Set.singleton Signal.SIGILL) 0 image with
             | RunOutcome.SignalTerminated (_, signal, _) -> signal |> shouldEqual Signal.SIGABRT
             | other -> failwith $"PawPrint: expected death by SIGABRT, got %O{other}"
 

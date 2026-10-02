@@ -168,7 +168,12 @@ module TestPthreadKill =
                                 leader
                                 (Set.ofList [ leader ; worker ])
                                 {
-                                    Signal = Signal.Other signo
+                                    Signal =
+                                        match
+                                            Signal.ofRawSignoUnder (SignalState.numbering system.Process.Signals) signo
+                                        with
+                                        | ValueSome signal -> signal
+                                        | ValueNone -> failwith $"%d{signo} was sent, so it is a signal"
                                     Target = ValueSome target
                                 }
                                 system.Process.Signals
