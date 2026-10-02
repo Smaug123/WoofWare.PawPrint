@@ -21,7 +21,7 @@ module BindableEntryNames =
     ///
     /// `symlink(2)` binds its link name too, and on Darwin refuses one that is
     /// not UTF-8 with EILSEQ (measured; see §1.2 of
-    /// `docs/plans/2026-09-20-unix-path-bytes.md`). There is no guest-reachable
+    /// `docs/plans/2026-09-20-unix-path-bytes.md`). This library has no
     /// `symlink` to apply this to yet; one should.
     let admits (rule : BindableEntryNames) (name : DirectoryEntryName) : bool =
         match rule with

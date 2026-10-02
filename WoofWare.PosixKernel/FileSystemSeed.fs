@@ -13,7 +13,7 @@ open System.Collections.Immutable
 ///
 /// A file's or directory's permission bits are part of the seed, and are
 /// required rather than optional: the differential oracle chmods the host tree
-/// to the same bits, which makes the mode a cross-runtime fact.
+/// to the same bits, so the mode is a fact the model and the host kernel share.
 ///
 /// `SeedEntry.file` and `SeedEntry.directory` supply the modes a `umask 022`
 /// process would have created, for the many seeds that only care about shape.

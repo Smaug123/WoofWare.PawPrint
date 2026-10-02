@@ -439,5 +439,5 @@ module TestSocketBinding =
 
             exn.Message |> shouldContainText substring
 
-        shouldFail 0us 100us "port 0 is how a guest"
+        shouldFail 0us 100us "port 0 is how a process"
         shouldFail 100us 99us "is empty"

@@ -1,6 +1,6 @@
 namespace WoofWare.PosixKernel
 
-/// Identity of an open file description. Never guest-visible: no modelled
+/// Identity of an open file description. Never visible to a process: no modelled
 /// syscall reports one (Linux's `kcmp(2)`, which would, is not modelled), so
 /// this exists purely to let two file descriptors denote the *same* open file
 /// description rather than two equal copies of one.
@@ -32,7 +32,7 @@ type SocketId =
         | SocketId value -> string<int64> value
 
 /// Identity of one TCP connection — the kernel object a completed loopback
-/// handshake creates. Never guest-visible.
+/// handshake creates. Never visible to a process.
 ///
 /// Distinct from either endpoint's `SocketId` because a connection outlives
 /// the sockets that made it: measured, a client closed while its connection
@@ -122,14 +122,14 @@ type SocketBinding =
         /// connect performed already applied: a wildcard-bound or unbound
         /// socket that connects over loopback reads back 127.0.0.1 here.
         Endpoint : InternetEndpoint
-        /// The address the guest's own `bind(2)` gave the socket, or `None`
+        /// The address the process's own `bind(2)` gave the socket, or `None`
         /// when the binding arose implicitly (a connect or listen minted it).
         /// The kernel state Linux calls SOCK_BINDADDR_LOCK: a Linux refusal
         /// delivery reverts `Endpoint`'s address to this (the wildcard when
         /// `None`) while keeping the port — measured for all three
         /// provenances — where Darwin keeps the resolved address.
         LockedAddress : uint32 option
-        /// Whether the guest's own `bind(2)` chose the port: true only when it
+        /// Whether the process's own `bind(2)` chose the port: true only when it
         /// asked for a non-zero one. The kernel state Linux calls
         /// SOCK_BINDPORT_LOCK: a datagram `connect(AF_UNSPEC)` there keeps a
         /// locked port and drops an unlocked one, measured
@@ -209,7 +209,7 @@ type SocketPhase =
     /// A datagram socket's default peer, set by `connect(2)` on it. Filters
     /// nothing yet — no receive path exists — but re-connect re-targets it
     /// and a Linux `AF_UNSPEC` connect dissolves it back to `Idle`, both
-    /// guest-visible through the return codes.
+    /// visible to the process through the return codes.
     | DatagramPeer of peer : InternetEndpoint
 
 [<RequireQualifiedAccess>]
@@ -724,10 +724,10 @@ type FileDescriptorRegistry =
             /// The identity the next `open` will allocate. Stored and
             /// monotonic rather than derived as one past the highest live id,
             /// which would reuse the identity of a closed description. Nothing
-            /// guest-visible could tell the difference — the id is never
+            /// a process sees could tell the difference — the id is never
             /// reported by any syscall — but a replay trace could.
             /// `VirtualFileSystem.NextInode` is stored for the stronger version
-            /// of this reason, inode reuse being guest-visible.
+            /// of this reason, inode reuse being visible to a process.
             NextId : OpenFileDescriptionId
         }
 
@@ -1361,7 +1361,7 @@ module FileDescriptorRegistry =
     /// soon as they are free, so the number a waiter parked on can name an
     /// entirely different object by the time the lock becomes available.
     ///
-    /// Loudly partial in `id`, which is not a guest-reachable failure: a
+    /// Loudly partial in `id`, which no process can reach: a
     /// description a client still holds an identity for is one it must not have
     /// let `close` destroy.
     let internal flockOn
@@ -1408,7 +1408,7 @@ module FileDescriptorRegistry =
     /// either releases it), while two separate `open(2)` calls on one path hold
     /// two and therefore contend. That contention is the mechanism behind
     /// `FileShare` on Unix, and it works *within* one process, so a
-    /// single-threaded guest can observe it.
+    /// single-threaded process can observe it.
     ///
     /// Contention is between descriptions naming the same `OpenFileObject`. For
     /// a pipe launched by `ofLaunchedPipes` that set is the one description,

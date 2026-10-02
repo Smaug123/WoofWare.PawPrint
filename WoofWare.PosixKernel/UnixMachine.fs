@@ -292,7 +292,7 @@ module UnixMachineState =
     let withEphemeralPortRange ((low, high) : uint16 * uint16) (machine : UnixMachineState) : UnixMachineState =
         if low = 0us then
             failwith
-                "UnixMachineState.EphemeralPortRange: port 0 is how a guest *asks* for an ephemeral port, so it cannot also be one that gets handed out. Start the range at 1 or above."
+                "UnixMachineState.EphemeralPortRange: port 0 is how a process *asks* for an ephemeral port, so it cannot also be one that gets handed out. Start the range at 1 or above."
 
         if low > high then
             failwith
