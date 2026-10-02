@@ -163,9 +163,6 @@ module OwnerChangeRequest =
 
 [<RequireQualifiedAccess>]
 module OwnerChangeRules =
-    let private setUserId : int = 0o4000
-    let private setGroupId : int = 0o2000
-    let private groupExecute : int = 0o0010
 
     let private nothingAsked : OwnerChangeRequest =
         {
@@ -216,9 +213,12 @@ module OwnerChangeRules =
             match target with
             | OwnerChangeTarget.Directory -> 0
             | OwnerChangeTarget.NonDirectory ->
-                let clearsGroup = raw &&& groupExecute <> 0 || not (standing.InGroup || privileged)
+                let clearsGroup =
+                    raw &&& PermissionBits.groupExecute <> 0 || not (standing.InGroup || privileged)
 
-                raw &&& (setUserId ||| (if clearsGroup then setGroupId else 0))
+                raw
+                &&& (PermissionBits.setUserId
+                     ||| (if clearsGroup then PermissionBits.setGroupId else 0))
 
         // Clearing a bit is a mode change, which the owner and a privileged
         // caller may make and nobody else may: measured, a non-owner's
@@ -238,9 +238,11 @@ module OwnerChangeRules =
     let private darwinMeasured (standing : Standing) (request : OwnerChangeRequest) (bits : PermissionBits) : bool =
         let raw = PermissionBits.toInt bits
 
-        raw &&& (setUserId ||| setGroupId) = 0
-        || standing.Owns && (standing.InGroup || raw &&& setGroupId = 0)
-        || not standing.Owns && request = nothingAsked && raw &&& setGroupId = 0
+        raw &&& (PermissionBits.setUserId ||| PermissionBits.setGroupId) = 0
+        || standing.Owns && (standing.InGroup || raw &&& PermissionBits.setGroupId = 0)
+        || not standing.Owns
+           && request = nothingAsked
+           && raw &&& PermissionBits.setGroupId = 0
 
     let private darwin
         (standing : Standing)
@@ -283,7 +285,8 @@ module OwnerChangeRules =
             | RequestedGroup.Other -> false
 
         if userAllowed && groupAllowed then
-            PermissionBits.toInt bits &&& ~~~(setUserId ||| setGroupId)
+            PermissionBits.toInt bits
+            &&& ~~~(PermissionBits.setUserId ||| PermissionBits.setGroupId)
             |> PermissionBits.parseOrFail "OwnerChangeRules.verdict"
             |> OwnerChange.Changed
             |> Ok

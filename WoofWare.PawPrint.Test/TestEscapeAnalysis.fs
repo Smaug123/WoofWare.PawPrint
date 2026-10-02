@@ -1178,6 +1178,58 @@ public static class Uses
         }
         catch (System.TypeLoadException) { return false; }
     }
+    public interface IRuns { int Run(); }
+    public struct UsesGone : IRuns
+    {
+        public int Run()
+        {
+            Provider.GoneType x = null;
+            return x == null ? 0 : 1;
+        }
+    }
+    // The JIT binds no function pointer's signature, so this runs without `GoneType`.
+    public unsafe struct UsesGonePointer : IRuns
+    {
+        public int Run()
+        {
+            delegate*<Provider.GoneType> f = null;
+            return f == null ? 0 : 1;
+        }
+    }
+    // Only a method nothing calls names `GoneType`, so the JIT never reads it.
+    public struct HelperUsesGone : IRuns
+    {
+        public int Run() => 0;
+        static bool Helper()
+        {
+            Provider.GoneType x = null;
+            return x == null;
+        }
+    }
+    // The method the call names has a default body using `GoneType`, but the receiver implements
+    // the method itself, so that body never runs.
+    public interface INamesGone
+    {
+        int Go()
+        {
+            Provider.GoneType x = null;
+            return x == null ? 0 : 1;
+        }
+    }
+    public struct OverridesGone : INamesGone { public int Go() => 0; }
+    static int ThroughNamesGone<T>(T x) where T : INamesGone => x.Go();
+    static void Generic<T>() { }
+    public static void InstantiateWithGone() { Generic<Provider.GoneType>(); }
+    static int Through<T>(T x) where T : IRuns => x.Run();
+    public static int ConstrainedReachesGoneLocal() => Through(new UsesGone());
+    public static int ConstrainedReachesGonePointer() => Through(new UsesGonePointer());
+    public static int ConstrainedBesideGoneHelper() => Through(new HelperUsesGone());
+    public static int ConstrainedPastGoneOverridden() => ThroughNamesGone(new OverridesGone());
+    public static int ConstrainedOnGone()
+    {
+        var x = new Provider.GoneStruct();
+        return x.GetHashCode();
+    }
 }
 """
 
@@ -1195,7 +1247,7 @@ public static class Uses
         let providerImage1 = compile "Provider" [] version1
         let clientAssembly = read "Client" (compile "Client" [ providerImage1 ] client)
 
-        let answers (provider : DumpedAssembly) : string -> Set<string> =
+        let answers (provider : DumpedAssembly) : string -> Set<string> * bool =
             let providerReference =
                 clientAssembly.AssemblyReferences.Values
                 |> Seq.find (fun r -> r.Name.Name = "Provider")
@@ -1210,7 +1262,7 @@ public static class Uses
                     EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Uses" methodName)
 
                 analysis <- next
-                render analysis escapes
+                render analysis escapes, escapes.Unknown
 
         let against1 = answers (read "Provider" providerImage1)
         let against2 = answers (read "Provider" (compile "Provider" [] version2))
@@ -1236,15 +1288,97 @@ public static class Uses
                 "PassGoneAsVararg", "=System.TypeLoadException"
                 // Named only by an indirect call's signature.
                 "CallGoneIndirectly", "=System.TypeLoadException"
+                // A type argument of a generic method called.
+                "InstantiateWithGone", "=System.TypeLoadException"
+                // The type a `constrained.` prefix names.
+                "ConstrainedOnGone", "=System.TypeLoadException"
             ] do
-            let bound = against1 methodName
-            let unbound = against2 methodName
+            let bound, _ = against1 methodName
+            let unbound, _ = against2 methodName
 
             if bound.Contains failure then
                 failwith $"%s{methodName} against the provider it was compiled against: %A{Set.toList bound}"
 
             if not (unbound.Contains failure) then
                 failwith $"%s{methodName} against the provider lacking what it uses: %A{Set.toList unbound}"
+
+        // A `constrained.` call reaching a method whose local's type is gone: the JIT throws
+        // compiling that method, out of the call, where the caller's handlers see it.
+        match against2 "ConstrainedReachesGoneLocal" with
+        | shown, false when shown.Contains "=System.TypeLoadException" -> ()
+        | shown, unknown ->
+            failwith
+                $"ConstrainedReachesGoneLocal against the provider lacking its local's type: %A{Set.toList shown}, unknown %b{unknown}"
+
+        // A method the call does not reach names the type, so nothing fails.
+        match against2 "ConstrainedBesideGoneHelper" with
+        | shown, false when not (shown.Contains "=System.TypeLoadException") -> ()
+        | shown, unknown ->
+            failwith
+                $"ConstrainedBesideGoneHelper against the provider lacking its helper's local's type: %A{Set.toList shown}, unknown %b{unknown}"
+
+        // The method the call names is not the one that runs, so nothing fails; the analysis may
+        // not decide the call, but must not say it fails.
+        match against2 "ConstrainedPastGoneOverridden" with
+        | shown, _ when not (shown.Contains "=System.TypeLoadException") -> ()
+        | shown, unknown ->
+            failwith
+                $"ConstrainedPastGoneOverridden against the provider lacking the named method's local's type: %A{Set.toList shown}, unknown %b{unknown}"
+
+        // Answering at all is the claim: it is a summary rather than a crash.
+        against2 "ConstrainedReachesGonePointer" |> ignore<Set<string> * bool>
+
+    /// A client whose struct has a method, called by nothing, using a type from an assembly that is
+    /// not present at all. The JIT never reads that method, so a call on the struct runs.
+    [<Test>]
+    let ``a constrained call is resolved beside a method using an assembly that is missing`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let optional = "namespace Optional; public class X { }"
+
+        let client =
+            """
+namespace Client;
+
+public interface IRuns { int Run(int n); }
+
+public struct UsesOptional : IRuns
+{
+    public int Run(int n) => 1 / n;
+    static bool Helper()
+    {
+        Optional.X x = null;
+        return x == null;
+    }
+}
+
+public static class Uses
+{
+    static int Through<T>(T x, int n) where T : IRuns => x.Run(n);
+    public static int Go(int n) => Through(new UsesOptional(), n);
+}
+"""
+
+        let optionalImage =
+            Roslyn.compileAssembly "Optional" OutputKind.DynamicallyLinkedLibrary [] [ optional ]
+
+        let clientAssembly =
+            Roslyn.compileAssembly
+                "Client"
+                OutputKind.DynamicallyLinkedLibrary
+                [ MetadataReference.CreateFromImage (ImmutableArray.CreateRange optionalImage) ]
+                [ client ]
+            |> fun image -> Assembly.read loggerFactory (Some "Client.dll") (new MemoryStream (image))
+
+        let analysis = analysisOver [ clientAssembly ] id
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Uses" "Go")
+
+        let shown = render analysis escapes
+
+        if escapes.Unknown || not (shown.Contains "=System.DivideByZeroException") then
+            failwith $"Go: %A{Set.toList shown}, unknown %b{escapes.Unknown}"
 
     [<Test>]
     let ``a catch absorbs an exception however deep its base chain`` () : unit =
@@ -2490,3 +2624,540 @@ public static class Uses
                         || (exact && analysisEscapes <> runtime.[name])
                     then
                         failwith $"%s{describe ()}; the runtime lets it escape: %b{runtime.[name]}"
+
+    /// What the analysis must say of a call that dispatches on a receiver of this kind.
+    [<RequireQualifiedAccess>]
+    type private DispatchClaim =
+        /// The `constrained.` type decides the method, whose body the analysis sees: exactly its
+        /// arithmetic exceptions escape, and nothing unknown.
+        | Precise
+        /// The receiver may be of a derived class that overrides the method, so what runs is
+        /// unknown.
+        | Unknown
+        /// The method that runs is one the analysis cannot see into, so only soundness is claimed.
+        | SoundOnly
+
+    /// A receiver in the dispatch fixture, and which of `DivideByZeroException` and
+    /// `OverflowException` the method it supplies raises.
+    type private DispatchReceiver =
+        {
+            Name : string
+            Claim : DispatchClaim
+            Raises : string list
+        }
+
+    /// A way for a non-generic runner to reach a `constrained.` call on its receiver, as a C#
+    /// expression over the receiver type `R`, the receiver `x` and the operands `a` and `b`, with
+    /// the exceptions its own handlers stop.
+    type private DispatchShape =
+        {
+            Name : string
+            Call : string -> string
+            Absorbs : string list
+        }
+
+    let private dividesByZero = "System.DivideByZeroException"
+    let private overflows = "System.OverflowException"
+
+    let private probeReceivers : DispatchReceiver list =
+        [
+            {
+                Name = "Quiet"
+                Claim = DispatchClaim.Precise
+                Raises = []
+            }
+            {
+                Name = "Adds"
+                Claim = DispatchClaim.Precise
+                Raises = [ overflows ]
+            }
+            {
+                Name = "Divides"
+                Claim = DispatchClaim.Precise
+                Raises = [ dividesByZero ; overflows ]
+            }
+            {
+                Name = "ExplicitAdds"
+                Claim = DispatchClaim.Precise
+                Raises = [ overflows ]
+            }
+            {
+                Name = "UsesDefault"
+                Claim = DispatchClaim.Precise
+                Raises = [ dividesByZero ; overflows ]
+            }
+            {
+                Name = "SealedDivides"
+                Claim = DispatchClaim.Precise
+                Raises = [ dividesByZero ; overflows ]
+            }
+            {
+                Name = "OpenDivides"
+                Claim = DispatchClaim.Unknown
+                Raises = [ dividesByZero ; overflows ]
+            }
+        ]
+
+    let private probeShapes : DispatchShape list =
+        [
+            {
+                Name = "Direct"
+                Call = fun _ -> "Shapes.Direct(x, a, b)"
+                Absorbs = []
+            }
+            {
+                Name = "OnType"
+                Call = fun r -> $"Holder<%s{r}>.Call(x, a, b)"
+                Absorbs = []
+            }
+            {
+                Name = "Relayed"
+                Call = fun _ -> "Shapes.Relayed(x, a, b)"
+                Absorbs = []
+            }
+            {
+                Name = "TypeToMethod"
+                Call = fun r -> $"Holder<%s{r}>.Relay(x, a, b)"
+                Absorbs = []
+            }
+            {
+                Name = "Caught"
+                Call = fun _ -> "Shapes.Caught(x, a, b)"
+                Absorbs = [ dividesByZero ]
+            }
+            {
+                Name = "Wrapped"
+                Call = fun r -> $"Shapes.Direct(new Wrapper<%s{r}>(x), a, b)"
+                Absorbs = []
+            }
+            {
+                Name = "Rethrown"
+                Call = fun _ -> "Shapes.Rethrown(x, a, b)"
+                Absorbs = []
+            }
+        ]
+
+    /// The receivers, the generic methods that call `Probe` on a type variable, and the
+    /// non-generic runners, one per shape and receiver, that close each instantiation.
+    let private dispatchSource : string =
+        let declarations =
+            """
+using System;
+
+namespace Dispatch;
+
+public interface IProbe
+{
+    int Probe(int a, int b) => a / b;
+}
+
+public struct Quiet : IProbe { public int Probe(int a, int b) => unchecked(a + b); }
+public struct Adds : IProbe { public int Probe(int a, int b) => checked(a + b); }
+public struct Divides : IProbe { public int Probe(int a, int b) => a / b; }
+public struct ExplicitAdds : IProbe { int IProbe.Probe(int a, int b) => checked(a + b); }
+public struct UsesDefault : IProbe { }
+public sealed class SealedDivides : IProbe { public int Probe(int a, int b) => a / b; }
+public class OpenDivides : IProbe { public virtual int Probe(int a, int b) => a / b; }
+
+public struct Wrapper<T> : IProbe where T : IProbe
+{
+    private T inner;
+    public Wrapper(T inner) { this.inner = inner; }
+    public int Probe(int a, int b) => inner.Probe(a, b);
+}
+
+public struct HashDivides
+{
+    public int Zero;
+    public override int GetHashCode() => 1 / Zero;
+}
+
+public struct NoHash { public int Zero; }
+
+public static class Shapes
+{
+    public static int Direct<T>(T x, int a, int b) where T : IProbe => x.Probe(a, b);
+    public static int Relayed<T>(T x, int a, int b) where T : IProbe => Direct(x, a, b);
+
+    public static int Caught<T>(T x, int a, int b) where T : IProbe
+    {
+        try { return x.Probe(a, b); }
+        catch (DivideByZeroException) { return 0; }
+    }
+
+    // Catches everything, so what escapes is what the `throw;` re-raises.
+    public static int Rethrown<T>(T x, int a, int b) where T : IProbe
+    {
+        try { return x.Probe(a, b); }
+        catch (Exception) { throw; }
+    }
+
+    public static int Hash<T>(T x) => x.GetHashCode();
+
+    // Generic methods whose calls do not mention their own type variables: one instantiating a
+    // generic method, and one whose `constrained.` prefix names a closed type.
+    public static int ClosedInside<T>(T ignored, int a, int b) => Direct(new Divides(), a, b);
+    public static int HashInside<T>(T ignored, int z) { var h = new HashDivides { Zero = z }; return h.GetHashCode(); }
+
+    // Each step instantiates itself at a deeper type, so no bound on nesting holds them all.
+    public static int Grow<T>(T x, int n) where T : IProbe =>
+        n == 0 ? x.Probe(1, 0) : Grow(new Wrapper<T>(x), n - 1);
+}
+
+public static class Holder<T> where T : IProbe
+{
+    public static int Call(T x, int a, int b) => x.Probe(a, b);
+    public static int Relay(T x, int a, int b) => Shapes.Direct(x, a, b);
+}
+"""
+
+        let runners =
+            [
+                for shape in probeShapes do
+                    for receiver in probeReceivers do
+                        yield
+                            $"    public static int %s{shape.Name}_%s{receiver.Name}(int a, int b) {{ var x = new %s{receiver.Name}(); return %s{shape.Call receiver.Name}; }}"
+                yield
+                    "    public static int Hash_HashDivides(int a, int b) { var x = new HashDivides { Zero = b }; return Shapes.Hash(x); }"
+                yield
+                    "    public static int Hash_NoHash(int a, int b) { var x = new NoHash { Zero = b }; return Shapes.Hash(x); }"
+                yield "    public static int Grow_Divides(int a, int b) => Shapes.Grow(new Divides(), 3);"
+            ]
+            |> String.concat "\n"
+
+        declarations + "\npublic static class Runners\n{\n" + runners + "\n}\n"
+
+    /// Operands that make each receiver's `Probe` raise each exception it can.
+    let private dispatchInputs : (int * int) list =
+        [ 1, 0 ; Int32.MaxValue, 1 ; Int32.MinValue, -1 ; 1, 1 ]
+
+    /// The full names of the exceptions each of `runners` of `Dispatch.Runners` in `image` lets
+    /// escape on the real runtime, over `dispatchInputs`.
+    let private dispatchOnRealRuntime (image : byte[]) (runners : string list) : Map<string, Set<string>> =
+        let context =
+            System.Runtime.Loader.AssemblyLoadContext ("Dispatch", isCollectible = true)
+
+        try
+            let ty = context.LoadFromStream(new MemoryStream (image)).GetType "Dispatch.Runners"
+
+            runners
+            |> List.map (fun name ->
+                let thrown =
+                    dispatchInputs
+                    |> List.choose (fun (a, b) ->
+                        try
+                            ty.GetMethod(name).Invoke ((null : obj), [| box a ; box b |]) |> ignore<obj>
+                            None
+                        with :? TargetInvocationException as e ->
+                            Some (e.InnerException.GetType().FullName)
+                    )
+                    |> Set.ofList
+
+                name, thrown
+            )
+            |> Map.ofList
+        finally
+            context.Unload ()
+
+    [<Test>]
+    let ``a constrained call on a type variable runs what each closed instantiation supplies`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            Roslyn.compileAssembly "Dispatch" OutputKind.DynamicallyLinkedLibrary [] [ dispatchSource ]
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Dispatch.dll") (new MemoryStream (image))
+
+        // Each runner, what the analysis must report of `DivideByZeroException` and
+        // `OverflowException`, and what it must claim.
+        let cases =
+            [
+                for shape in probeShapes do
+                    for receiver in probeReceivers do
+                        let reported =
+                            receiver.Raises
+                            |> List.filter (fun raised -> not (List.contains raised shape.Absorbs))
+
+                        yield $"%s{shape.Name}_%s{receiver.Name}", Set.ofList reported, receiver.Claim
+                yield "Hash_HashDivides", Set.ofList [ dividesByZero ; overflows ], DispatchClaim.Precise
+                yield "Hash_NoHash", Set.empty, DispatchClaim.SoundOnly
+                yield "Grow_Divides", Set.ofList [ dividesByZero ; overflows ], DispatchClaim.SoundOnly
+            ]
+
+        let runtime =
+            cases |> List.map (fun (name, _, _) -> name) |> dispatchOnRealRuntime image
+
+        let arithmetic = Set.ofList [ dividesByZero ; overflows ]
+        let mutable analysis = analysisOver [ fixture ] id
+
+        let failures =
+            [
+                for name, reported, claim in cases do
+                    let next, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed fixture "Dispatch.Runners" name)
+
+                    analysis <- next
+
+                    let shown = render analysis escapes
+
+                    let shownArithmetic = arithmetic |> Set.filter (fun ty -> shown.Contains ("=" + ty))
+
+                    let describe () =
+                        $"%s{name}: %A{Set.toList shown}, unknown %b{escapes.Unknown}; the runtime raised %A{Set.toList runtime.[name]}"
+
+                    // The fixture exercises what it claims to: every exception the receiver's
+                    // method can raise is raised by one of the inputs, unless the analysis cannot
+                    // tell it from one it can.
+                    if not (Set.isSubset runtime.[name] reported) then
+                        yield $"%s{describe ()}, more than the case expects"
+
+                    if claim <> DispatchClaim.SoundOnly && runtime.[name].IsEmpty <> reported.IsEmpty then
+                        yield $"%s{describe ()}, but the case expects %A{Set.toList reported}"
+
+                    // Everything that escapes on the real runtime is reported.
+                    if not escapes.Unknown then
+                        for thrown in runtime.[name] do
+                            if not (shown.Contains ("=" + thrown)) then
+                                yield $"%s{describe ()} lacks %s{thrown}"
+
+                    match claim with
+                    | DispatchClaim.Precise ->
+                        if escapes.Unknown || shownArithmetic <> reported then
+                            yield
+                                $"%s{describe ()}; expected exactly %A{Set.toList reported} of the arithmetic exceptions, and nothing unknown"
+                    | DispatchClaim.Unknown ->
+                        if not escapes.Unknown then
+                            yield $"%s{describe ()}; expected unknown"
+                    | DispatchClaim.SoundOnly -> ()
+            ]
+
+        // A generic definition asked about by itself has no instantiation to resolve a call on its
+        // type variable against, but a call it spells without one is resolved all the same.
+        let analysis, direct =
+            EscapeAnalysis.escapes analysis (methodNamed fixture "Dispatch.Shapes" "Direct")
+
+        let failures =
+            if direct.Unknown then
+                failures
+            else
+                failures
+                @ [
+                    $"Shapes.Direct, uninstantiated: %A{Set.toList (render analysis direct)}, expected unknown"
+                ]
+
+        let _, failures =
+            ((analysis, failures), [ "ClosedInside" ; "HashInside" ])
+            ||> List.fold (fun (analysis, failures) name ->
+                let analysis, escapes =
+                    EscapeAnalysis.escapes analysis (methodNamed fixture "Dispatch.Shapes" name)
+
+                let shown = render analysis escapes
+
+                if
+                    escapes.Unknown
+                    || arithmetic |> Set.filter (fun ty -> shown.Contains ("=" + ty)) <> arithmetic
+                then
+                    analysis,
+                    failures
+                    @ [
+                        $"Shapes.%s{name}, uninstantiated: %A{Set.toList shown}, unknown %b{escapes.Unknown}; expected both arithmetic exceptions, and nothing unknown"
+                    ]
+                else
+                    analysis, failures
+            )
+
+        match failures with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    /// `Run.Call(int, int)`, a non-generic method whose `constrained. Dyn callvirt IProbe::Probe`
+    /// names a sealed class that does not implement `IProbe`, though `IProbe` gives `Probe` a
+    /// default body. `Dyn` implements `IDynamicInterfaceCastable`, whose `GetInterfaceImplementation`
+    /// divides by zero. C# writes a `constrained.` call only on a type that implements the method,
+    /// so the IL is emitted directly.
+    let private emitDynamicReceiver () : byte[] =
+        let builder =
+            System.Reflection.Emit.PersistedAssemblyBuilder (AssemblyName "Dynamic", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "Dynamic"
+
+        let probeInterface =
+            modul.DefineType ("IProbe", TypeAttributes.Public ||| TypeAttributes.Interface ||| TypeAttributes.Abstract)
+
+        let probe =
+            probeInterface.DefineMethod (
+                "Probe",
+                MethodAttributes.Public
+                ||| MethodAttributes.Virtual
+                ||| MethodAttributes.HideBySig
+                ||| MethodAttributes.NewSlot,
+                typeof<int>,
+                [| typeof<int> ; typeof<int> |]
+            )
+
+        do
+            // The default body: `a + b`, which raises nothing.
+            let il = probe.GetILGenerator ()
+            il.Emit System.Reflection.Emit.OpCodes.Ldarg_1
+            il.Emit System.Reflection.Emit.OpCodes.Ldarg_2
+            il.Emit System.Reflection.Emit.OpCodes.Add
+            il.Emit System.Reflection.Emit.OpCodes.Ret
+
+        probeInterface.CreateType () |> ignore<Type>
+
+        let dyn =
+            modul.DefineType (
+                "Dyn",
+                TypeAttributes.Public ||| TypeAttributes.Sealed ||| TypeAttributes.Class,
+                typeof<obj>,
+                [| typeof<System.Runtime.InteropServices.IDynamicInterfaceCastable> |]
+            )
+
+        let constructor = dyn.DefineDefaultConstructor MethodAttributes.Public
+
+        let implementing =
+            MethodAttributes.Public
+            ||| MethodAttributes.Virtual
+            ||| MethodAttributes.Final
+            ||| MethodAttributes.HideBySig
+            ||| MethodAttributes.NewSlot
+
+        do
+            let isImplemented =
+                dyn.DefineMethod (
+                    "IsInterfaceImplemented",
+                    implementing,
+                    typeof<bool>,
+                    [| typeof<RuntimeTypeHandle> ; typeof<bool> |]
+                )
+
+            let il = isImplemented.GetILGenerator ()
+            il.Emit System.Reflection.Emit.OpCodes.Ldc_I4_1
+            il.Emit System.Reflection.Emit.OpCodes.Ret
+
+            let getImplementation =
+                dyn.DefineMethod (
+                    "GetInterfaceImplementation",
+                    implementing,
+                    typeof<RuntimeTypeHandle>,
+                    [| typeof<RuntimeTypeHandle> |]
+                )
+
+            // `1 / 0`, then a value of the right type for the verifier's sake.
+            let il = getImplementation.GetILGenerator ()
+            il.Emit System.Reflection.Emit.OpCodes.Ldc_I4_1
+            il.Emit System.Reflection.Emit.OpCodes.Ldc_I4_0
+            il.Emit System.Reflection.Emit.OpCodes.Div
+            il.Emit System.Reflection.Emit.OpCodes.Pop
+            il.Emit (System.Reflection.Emit.OpCodes.Ldarg_1)
+            il.Emit System.Reflection.Emit.OpCodes.Ret
+
+        dyn.CreateType () |> ignore<Type>
+
+        let run =
+            modul.DefineType ("Run", TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed)
+
+        do
+            let call =
+                run.DefineMethod (
+                    "Call",
+                    MethodAttributes.Public ||| MethodAttributes.Static,
+                    typeof<int>,
+                    [| typeof<int> ; typeof<int> |]
+                )
+
+            let il = call.GetILGenerator ()
+            let receiver = il.DeclareLocal dyn
+            il.Emit (System.Reflection.Emit.OpCodes.Newobj, constructor)
+            il.Emit (System.Reflection.Emit.OpCodes.Stloc, receiver)
+            il.Emit (System.Reflection.Emit.OpCodes.Ldloca, receiver)
+            il.Emit System.Reflection.Emit.OpCodes.Ldarg_0
+            il.Emit System.Reflection.Emit.OpCodes.Ldarg_1
+            il.Emit (System.Reflection.Emit.OpCodes.Constrained, dyn)
+            il.Emit (System.Reflection.Emit.OpCodes.Callvirt, probe)
+            il.Emit System.Reflection.Emit.OpCodes.Ret
+
+        run.CreateType () |> ignore<Type>
+
+        use stream = new MemoryStream ()
+        builder.Save stream
+        stream.ToArray ()
+
+    [<Test>]
+    let ``a constrained call on a class that does not implement the method is not resolved`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let image = emitDynamicReceiver ()
+
+        let assembly =
+            Assembly.read loggerFactory (Some "Dynamic.dll") (new MemoryStream (image))
+
+        // The real runtime asks `Dyn` for an implementation, rather than running the default body.
+        let thrown =
+            let context =
+                System.Runtime.Loader.AssemblyLoadContext ("Dynamic", isCollectible = true)
+
+            try
+                let run = context.LoadFromStream(new MemoryStream (image)).GetType "Run"
+
+                try
+                    run.GetMethod("Call").Invoke ((null : obj), [| box 1 ; box 2 |]) |> ignore<obj>
+                    None
+                with :? TargetInvocationException as e ->
+                    Some (e.InnerException.GetType().FullName)
+            finally
+                context.Unload ()
+
+        thrown |> shouldEqual (Some "System.DivideByZeroException")
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes (analysisOver [ assembly ] id) (methodNamed assembly "Run" "Call")
+
+        if not escapes.Unknown then
+            failwith
+                $"Run.Call: %A{Set.toList (render analysis escapes)}, expected unknown: the receiver's class decides what runs"
+
+    [<Test>]
+    let ``a constrained call with two equally specific default bodies raises the ambiguity`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let assembly =
+            Assembly.read
+                loggerFactory
+                (Some "Diamond.dll")
+                (new MemoryStream (TestAmbiguousDefaultInterfaceDispatch.fabricate ()))
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes (analysisOver [ assembly ] id) (methodNamed assembly "Run" "Call")
+
+        let shown = render analysis escapes
+
+        if
+            escapes.Unknown
+            || not (shown.Contains "=System.Runtime.AmbiguousImplementationException")
+        then
+            failwith
+                $"Run.Call: %A{Set.toList shown}, unknown %b{escapes.Unknown}; expected AmbiguousImplementationException, and nothing unknown"
+
+    [<Test>]
+    let ``a constrained call whose default bodies conflict only through variance is not called ambiguous`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            Roslyn.compileAssembly
+                "Variant"
+                OutputKind.DynamicallyLinkedLibrary
+                []
+                [ TestAmbiguousDefaultInterfaceDispatch.variantSource ]
+
+        let assembly =
+            Assembly.read loggerFactory (Some "Variant.dll") (new MemoryStream (image))
+
+        // On the real runtime, one of the bodies runs and divides by zero.
+        let analysis, escapes =
+            EscapeAnalysis.escapes (analysisOver [ assembly ] id) (methodNamed assembly "Run" "Go")
+
+        let shown = render analysis escapes
+
+        if not escapes.Unknown && not (shown.Contains "=System.DivideByZeroException") then
+            failwith $"Run.Go: %A{Set.toList shown}, unknown false; lacks DivideByZeroException"

@@ -163,17 +163,16 @@ module MkDirRules =
         (mode : int)
         : PermissionBits
         =
-        let setGroupId = 0o2000
         let masked = PermissionBits.fromCreationMode rules.ModeMask umask mode
 
         let inherited =
             rules.InheritsSetGroupIdFromParent
-            && PermissionBits.toInt parentPermissions &&& setGroupId <> 0
+            && PermissionBits.toInt parentPermissions &&& PermissionBits.setGroupId <> 0
 
         if inherited then
             // Linux's `mkdir(sg, 0o7777)` in a 0o2777 parent is measured to give 0o3755,
             // so the S_ISGID bit survives.
-            PermissionBits.toInt masked ||| setGroupId
+            PermissionBits.toInt masked ||| PermissionBits.setGroupId
             |> PermissionBits.parseOrFail "MkDirRules.createdPermissions"
         else
             masked

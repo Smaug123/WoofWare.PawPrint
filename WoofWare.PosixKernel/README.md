@@ -12,16 +12,14 @@ This library models what a Unix kernel tells a process about the world.
 It includes:
 
 * the filesystem, including permissions, with every name a string of bytes exactly as the kernel stores it, never decoded as text
-* the file-descriptor table
-* sockets and connections
-* signals
+* the file-descriptor table, and pipes
+* sockets and connections, `poll`, and Linux's epoll
+* signals: sending them, their dispositions, delivery to a handler, and a process ended by one
+* the process's tasks (its threads), and the syscalls they block in
 * clock
 * entropy
 
-There are two tested flavours of Unix kernel: Darwin (tested on aarch64), and Linux (tested primarily on x64 but also sometimes on aarch64 when I remember).
-
-The model of interaction is that the simulated kernel is a state machine, with transitions being pure functions from state to state.
-
+The simulated kernel is a state machine, and each syscall is a pure function from one state to an answer and the next state.
 WoofWare.PosixKernel performs no I/O and makes no host reads: all state is simulated.
 Two runs from the same starting state see the same world, on any machine, in any order.
 
@@ -32,47 +30,120 @@ which (being a deterministic simulation of a .NET runtime) must manufacture the 
 I expect it may be of independent interest, so it is now extracted as a standalone component which knows nothing about the CLR.
 (Clients translate their own foreign-function layer into requests against the state machine, and WoofWare.PosixKernel doesn't call back into the client.)
 
-## Status
-
-Nothing here converts to or from the encodings designed for WoofWare.PawPrint's CoreCLR platform abstraction any more.
-All four clusters have gone the other side of the boundary: errno numbering, the socket-event bits, the address-family and
-socket-type numbering, and the managed `PosixSignal` enum. This library states a raw `<errno.h>` number, epoll's own
-readiness conditions, the set of sockets it will create, and a signo, and each client encodes those as it pleases.
-A flake check (`scripts/check-pal-residue.py`) keeps it that way.
-
-The simulation is incomplete and expected to change wildly during development.
-The syscall request/response layer has started: `UnixSystem` exposes ten syscalls
-(`geteuid`, `dup`, `lseek`, `flock`, `ftruncate`, `close`, `mkdir`, `unlink`, `rmdir`, `chdir`)
-both individually and through a `step` dispatcher.
-Everything else is still reached through the state modules directly.
-`UnixSystem.initial` builds a fresh system on a given platform; the other fields are set by record update.
-
-A syscall that would block does not block: `step`, which takes the calling task, answers
-`SyscallOutcome.WouldBlock` carrying a `WakeCondition`, and the state that comes back records the task
-as parked on it (`UnixTaskTable.parkedFor`). That record is what `close` reads to refuse destroying a
-description a task is waiting on, and what `UnixDescriptor.flockAcquire` finishes the call from.
-`WakeCondition.satisfied` answers which parts of the condition hold yet, and `UnixWait.wakes` which of the
-tasks a client holds asleep should wake, so a client's scheduler can poll them; `UnixWait.deadlines` is how far
-it may advance the clock while nothing is runnable. The state that comes back with a `WouldBlock` is the state after whatever the call did before sleeping,
-which is why it is returned rather than discarded.
-This library has no scheduler and does not want one.
+It speaks POSIX alone, in each flavour's own numbering wherever a number is involved: an `<errno.h>` error, a signal, an `open(2)` flag word.
+Converting those to and from a client's own encoding is the client's business.
 
 ### Slop status
 
 100% vibe-coded, by the hand of Claude Opus 4.6 through 5, Claude Fable 5, and GPT-5.5 through 5.6 Sol.
 
-## Conformance to POSIX, and divergence from host platforms
+## Using it
 
-WoofWare.PosixKernel's behaviour does not depend on the host platform - indeed, it probably works on Windows.
+The whole kernel is one value, a `UnixSystem<'Task, 'Handler>`:
+
+* `Machine` (`UnixMachineState`): the filesystem, sockets, connections and pipes, the clock, the entropy pool, and the platform being simulated;
+* `Process` (`UnixProcessState`): the descriptor table, credentials, umask, current directory, environment and signal state;
+* `Tasks`: the process's tasks, and what each is blocked in, if anything.
+
+`'Task` is whatever the client calls a thread, and `'Handler` whatever it calls a signal handler.
+The library never looks inside either; it only compares them.
+
+`UnixSystem.initial` builds a process that has not done anything yet.
+Configure it before its first syscall with the setters, such as `UnixSystem.withCredentials`, `UnixSystem.withFileSystemAndCurrentDirectory`, `UnixMachineState.withBootTime` and `UnixProcessState.withEnvironment`.
+
+```fsharp
+open WoofWare.PosixKernel
+
+let path (text : string) : PathArgumentBytes =
+    match UnixByteString.ofString text with
+    | Ok bytes -> PathArgumentBytes.Bytes bytes
+    | Error defect -> failwith $"not a path: %O{defect}"
+
+// A process on a Linux x86-64 machine, before anything has happened to it:
+// an empty filesystem, and descriptors 0, 1 and 2 as pipes. It has one task,
+// which this client names 0, on logical processor 0.
+let system : UnixSystem<int, unit> =
+    UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
+let mkdir (system : UnixSystem<int, unit>) : UnixSystem<int, unit> =
+    match UnixSystem.step 0 (Syscall.MkDir (path "/tmp", 0o755)) system with
+    | Error refusal -> failwith $"this kernel will not say what happens: %O{refusal}"
+    | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed result), system) ->
+        printfn "mkdir returned %d" result
+        system
+    | Ok (SyscallOutcome.Answered (SyscallAnswer.Failed error), system) ->
+        let numbering = SimulatedUnixPlatform.rawErrnoNumbering system.Machine.UnixPlatform
+        printfn "mkdir failed with errno %d" (UnixError.toRawErrnoUnder numbering error)
+        system
+    | Ok (SyscallOutcome.WouldBlock _, _)
+    | Ok (SyscallOutcome.Restarts, _) -> failwith "mkdir never sleeps"
+
+// Prints "mkdir returned 0", then "mkdir failed with errno 17" (EEXIST).
+system |> mkdir |> mkdir |> ignore
+```
+
+### The syscalls
+
+Each syscall is a function in the module for its family.
+It takes its arguments as the kernel does, raw where the kernel validates them, and gives back its answer with the system as the call left it (or the answer alone, for a call that cannot change anything).
+
+| Module | Syscalls |
+| --- | --- |
+| `UnixDescriptor` | `dup`, `lseek`, `flock`, `ftruncate`, `posix_fadvise`, `close`, `ioctl` (`FICLONE` and `FIONREAD`), `tcgetattr`, `geteuid`, `getegid`, `getgroups` |
+| `UnixPathResolution` | `stat`, `fstat`, `chmod`, `fchmod`, `chown`, `lchown`, `fchown`, `futimens`, `statfs`, `fstatfs`, `getcwd`, `chdir`, `access`, `faccessat` |
+| `UnixNamespace` | `open`, `readlink`, reading a directory, `mkdir`, `unlink`, `rmdir`, `rename`, `clonefile` |
+| `UnixReadWrite` | `read`, `pread`, `write`, `pwrite`, `copy_file_range` |
+| `UnixPipe` | `pipe2` |
+| `UnixSocket` | `socket`, `bind`, `listen`, `getsockname`, `setsockopt`, `getsockopt`, and the `O_NONBLOCK` half of `fcntl` |
+| `UnixConnection` | `connect`, `accept` |
+| `UnixPoll` | `poll`, `epoll_create1`, `epoll_ctl`, `epoll_wait` |
+| `UnixSignal` | `kill`, `pthread_kill`, `sigaction`, `sigreturn`, and the signals a task takes as it returns to user mode |
+| `UnixClock` | `clock_gettime` |
+| `UnixEntropy` | `getrandom`, `getentropy` |
+| `UnixTaskLifecycle` | starting a thread, a thread exiting, `exit_group` |
+| `UnixSystem` | `getpid`, `umask` |
+
+`UnixSystem.step` puts the syscalls whose answer is a single integer behind one entry point, as cases of the `Syscall` type, for a client that wants to log, replay or generate them.
+A syscall whose answer carries more than that, such as the bytes `read` returns, has no `Syscall` case, and is reached only through its own function.
+
+`UnixSystem.checkInvariants` lists every way a system's tables disagree with each other.
+No sequence of syscalls should ever produce one.
+
+### Answers and refusals
+
+A syscall's result has two levels.
+
+* `Ok` is what the kernel does: it answers, perhaps with an errno (a `UnixError`), or the calling task sleeps (see below). Either way it comes with the system after the call; a failing call can still change the system, just as a real one can.
+* `Error` is a refusal: this library will not say what the kernel does, usually because nobody has measured it on the platform being simulated, or because it is not modelled. A refusal says why, and carries no system. A client decides what a refusal means for it; retrying will not help.
+
+A call that a real kernel would not let happen at all, such as a task making a syscall while it is blocked in another, is a bug in the client, and throws.
+
+### Blocking
+
+A call that would block does not block.
+It answers `WouldBlock` with a `WakeCondition`, and the system that comes with it records the calling task as parked in that call.
+That is the state the kernel sleeps in, which can differ from the one the call arrived with: `flock` gives up the caller's old lock before it waits for the new one.
+
+The library has no scheduler, and does not want one.
+Waking is pulled rather than pushed: after each step, the client asks `UnixWait.wakes` which of the tasks it holds asleep may wake now, and with nothing runnable, `UnixWait.deadlines` says how far it may advance the clock.
+A woken task finishes its call through the family's finishing function (`UnixDescriptor.flockAcquire`, `UnixPoll.finishPoll`, `UnixReadWrite.finishRead`, and so on), which may answer, park again, or say the call restarts because a signal handler interrupted it.
+
+## Flavours and divergence from host platforms
+
+WoofWare.PosixKernel's behaviour does not depend on the host platform; indeed, it probably works on Windows.
 However, POSIX is extremely underspecified (and implementations frequently diverge from their documentation!),
 and I only have easy access to a few flavours.
 
-WoofWare.PosixKernel is intended to be fully POSIX-compliant eventually.
-A design goal of WoofWare.PosixKernel is that the library throws rather than providing an answer which has not been measured on the platform it's been told to simulate.
-It is fully deterministic, so e.g. it chooses a traversal order for directory listing even though that is POSIX-unspecified.
+A `SimulatedUnixPlatform` names the kernel being simulated: its flavour (Linux or Darwin), its architecture, its page size and its release.
+Only the combinations that have been measured can be built: Linux on x86-64 and on aarch64 with 4 KiB pages, and Darwin on arm64 with 16 KiB pages.
+`SimulatedUnixPlatform.linuxX64`, `linuxArm64` and `macOsArm64` are the presets.
+Where the flavours disagree, the platform says which answer applies, down to whose numbering an errno or a signal is reported in.
+The filesystem type is chosen separately (currently tmpfs, APFS or NFS), from those its flavour has been seen to report.
 
-We supply different flavours of kernel (currently Linux and Darwin) and filesystem (currently at least tmpfs, APFS, and NFS);
-we try very hard to return only values that we have observed from a real system using that platform, rather than just copying semantics from the docs.
+WoofWare.PosixKernel is intended to be fully POSIX-compliant eventually.
+A design goal of WoofWare.PosixKernel is that the library refuses rather than providing an answer which has not been measured on the platform it's been told to simulate.
+It is fully deterministic, so e.g. it chooses a traversal order for directory listing even though that is POSIX-unspecified.
+We try very hard to return only values that we have observed from a real system using that platform, rather than just copying semantics from the docs.
 
 Where real platforms of a given flavour have been observed to disagree, we choose a permitted answer (generally an *inconvenient* one, since I want to help you avoid accidentally relying on unspecified behaviour).
 For example, directory enumeration order has been observed to be extremely odd on Linux: we've even seen `..` and `.` appear at the *end* of the enumeration, in the GitHub Actions ext4 runner!

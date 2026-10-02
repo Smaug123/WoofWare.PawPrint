@@ -452,18 +452,20 @@ module internal OpenFlagWord =
     let private linuxBits (architecture : SimulatedUnixArchitecture) : (int * Meaning) list =
         // aarch64's <asm/fcntl.h> moves four bits; x86-64 keeps the generic
         // numbering.
-        let directory, noFollow, direct, largeFile =
+        let directory, noFollow, largeFile =
             match architecture with
-            | SimulatedUnixArchitecture.X64 -> 0x10000, 0x20000, 0x4000, 0x8000
-            | SimulatedUnixArchitecture.Arm64 -> 0x4000, 0x8000, 0x10000, 0x20000
+            | SimulatedUnixArchitecture.X64 -> 0x10000, 0x20000, 0x8000
+            | SimulatedUnixArchitecture.Arm64 -> 0x4000, 0x8000, 0x20000
+
+        let direct = OpenFlagNumbering.linuxDirect architecture
 
         [
             0x40, Meaning.Create
-            0x80, Meaning.Exclusive
+            OpenFlagNumbering.LinuxExclusive, Meaning.Exclusive
             0x100, Meaning.Unmodelled UnmodelledOpenFlag.NoControllingTerminal
             0x200, Meaning.Truncate
             0x400, Meaning.Unmodelled UnmodelledOpenFlag.Append
-            0x800, Meaning.Unmodelled UnmodelledOpenFlag.NonBlocking
+            OpenFlagNumbering.LinuxNonBlock, Meaning.Unmodelled UnmodelledOpenFlag.NonBlocking
             0x1000, Meaning.DataSynchronous
             0x2000, Meaning.Unmodelled UnmodelledOpenFlag.Asynchronous
             direct, Meaning.Unmodelled UnmodelledOpenFlag.Direct
@@ -471,7 +473,7 @@ module internal OpenFlagWord =
             directory, Meaning.Directory
             noFollow, Meaning.NoFollow
             0x40000, Meaning.Unmodelled UnmodelledOpenFlag.NoAccessTime
-            0x80000, Meaning.CloseOnExec
+            OpenFlagNumbering.LinuxCloseOnExec, Meaning.CloseOnExec
             0x100000, Meaning.Synchronous
             0x200000, Meaning.Unmodelled UnmodelledOpenFlag.PathOnly
             0x400000, Meaning.Unmodelled UnmodelledOpenFlag.TemporaryFile
@@ -480,7 +482,7 @@ module internal OpenFlagWord =
 
     let private darwinBits : (int * Meaning) list =
         [
-            0x4, Meaning.Unmodelled UnmodelledOpenFlag.NonBlocking
+            OpenFlagNumbering.DarwinNonBlock, Meaning.Unmodelled UnmodelledOpenFlag.NonBlocking
             0x8, Meaning.Unmodelled UnmodelledOpenFlag.Append
             0x10, Meaning.Unmodelled UnmodelledOpenFlag.SharedLock
             0x20, Meaning.Unmodelled UnmodelledOpenFlag.ExclusiveLock
@@ -497,9 +499,8 @@ module internal OpenFlagWord =
             0x100000, Meaning.Directory
             0x200000, Meaning.Unmodelled UnmodelledOpenFlag.Symlink
             0x400000, Meaning.DataSynchronous
-            0x1000000, Meaning.CloseOnExec
-            // Not in the SDK's headers, but the kernel sets FD_CLOFORK for it.
-            0x8000000, Meaning.Unmodelled UnmodelledOpenFlag.CloseOnFork
+            OpenFlagNumbering.DarwinCloseOnExec, Meaning.CloseOnExec
+            OpenFlagNumbering.DarwinCloseOnFork, Meaning.Unmodelled UnmodelledOpenFlag.CloseOnFork
             0x20000000, Meaning.Unmodelled UnmodelledOpenFlag.NoFollowAny
             0x40000000, Meaning.Unmodelled UnmodelledOpenFlag.Execute
             0x80000000, Meaning.Unmodelled UnmodelledOpenFlag.Popup
@@ -1776,22 +1777,22 @@ module UnixNamespace =
             failed UnixError.EILSEQ
         else
 
-        let setUserId = 0o4000
-        let setGroupId = 0o2000
-        let sticky = 0o1000
         let raw = PermissionBits.toInt sourceBits
 
         let measured =
-            raw &&& (setUserId ||| setGroupId ||| sticky) = 0
+            raw
+            &&& (PermissionBits.setUserId ||| PermissionBits.setGroupId ||| PermissionBits.sticky) = 0
             || (sourceStanding.Owns && sourceStanding.InGroup)
-            || (sourceStanding.Owns && raw &&& setGroupId = 0)
+            || (sourceStanding.Owns && raw &&& PermissionBits.setGroupId = 0)
 
         if not measured then
             Error (CloneFileRefusal.UnmeasuredSpecialBits (paused.Source, sourceStanding, sourceBits))
         else
 
         let permissions =
-            PermissionBits.parseOrFail "UnixNamespace.cloneFileWithDestination" (raw &&& ~~~(setUserId ||| setGroupId))
+            PermissionBits.parseOrFail
+                "UnixNamespace.cloneFileWithDestination"
+                (raw &&& ~~~(PermissionBits.setUserId ||| PermissionBits.setGroupId))
 
         let now = UnixMachineState.realtime system.Machine
 

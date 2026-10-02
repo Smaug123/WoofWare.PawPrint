@@ -34,6 +34,18 @@ method) may add more:
   only if something in its protected block does. Tokens in code left out are still bound, below,
   which reports more than the JIT does: it folds such a branch, even under MinOpts, and never binds
   what only the other way reaches;
+* a `constrained.` call on a value type or a sealed class runs that type's own implementation,
+  which the analysis finds with `WoofWare.PawPrint.TypeSystem`'s `ConcreteVirtualDispatch`, the
+  dispatch the interpreter runs, or raises `AmbiguousImplementationException` where two default
+  interface bodies are equally specific. A generic method's IL is read once, and its summary computed for
+  each closed instantiation a call reaches, which decides what a `constrained.` call on one of its
+  type variables runs. Asked about by itself, a generic definition stands for every instantiation,
+  so such a call is opaque in it, as is one on a class that may be derived from, whose instance may
+  be of a class that overrides the method, one whose default bodies conflict through a variant
+  interface, one on a type whose base types or interfaces, or the signature of a method of any of
+  them, name a type that is not there, and one naming a method whose own body has a local of such a
+  type. An instantiation nested more than eight deep is analysed as its definition, so that a
+  method calling itself at ever deeper instantiations reaches finitely many;
 * a `catch` absorbs what derives from its type, decided on the real base chains of types in any
   assembly, which `WoofWare.PawPrint.Loader` resolves exactly as the interpreter does;
 * an object thrown that is not an exception is named as itself; a `catch` sees it as a
@@ -64,8 +76,10 @@ interface, or storing it in an array (whose element type may be an interface), c
 `IDynamicInterfaceCastable.IsInterfaceImplemented` if the object's class implements that interface.
 The analysis assumes that throws nothing but the `InvalidCastException` its documentation asks for;
 an implementation that throws anything else can let that escape unreported. The interface's other
-callback, `GetInterfaceImplementation`, is reached only by an interface call or an interface
-`ldvirtftn`, both of which the analysis already counts as opaque.
+callback, `GetInterfaceImplementation`, is reached only by an interface call or an interface `ldvirtftn` on
+an object whose class does not implement the interface. The analysis counts an interface
+`ldvirtftn` as opaque, and resolves an interface call only through a `constrained.` type that
+implements the interface itself.
 
 That holds for a set of assemblies that agree with each other. When one has changed since another
 was compiled against it, a missing member or type is reported as above, and says that the set
@@ -73,7 +87,9 @@ needs rebuilding (or, for a package, a different version). Other ways such a cha
 caller are not checked, and are not reported: a member made inaccessible to it
 (`FieldAccessException`, `MethodAccessException`), a generic instantiation it spells that a
 constraint added since now rejects, and a type it names whose own base type, interfaces or fields
-are no longer there (`TypeLoadException`).
+are no longer there (`TypeLoadException`). A reference to an assembly that is not there at all, as
+opposed to a type missing from one that is, stops the analysis wherever it reads that reference,
+rather than being reported as the `FileNotFoundException` the call would raise.
 
 This package sees `WoofWare.PawPrint.Domain`, `WoofWare.PawPrint.Loader`,
 `WoofWare.PawPrint.TypeSystem` and `WoofWare.PawPrint.Semantics`, and never the interpreter.
