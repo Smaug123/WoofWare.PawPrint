@@ -31,10 +31,27 @@ type VirtualImplementation =
     /// `AmbiguousImplementationException` (`MethodTable::FindDefaultInterfaceImplementation`,
     /// methodtable.cpp, through `ThrowAmbiguousResolutionException`). These are the candidates.
     | Ambiguous of WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list
+    /// The most specific default interface body is this abstract MethodImpl: an interface more
+    /// specific than the one declaring the method *reabstracts* it, as `IBar : IFoo` declaring
+    /// `abstract int IFoo.Frob();` over `IFoo`'s default body does. The call throws
+    /// `EntryPointNotFoundException` (`MethodTable::FindDispatchImpl`, methodtable.cpp, through
+    /// `ThrowEntryPointNotFoundException`).
+    | Reabstracted of WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
     /// The receiver's default interface bodies conflict in a way this does not model, for the
     /// reason given: through a variant interface, CoreCLR's variance pass takes the first candidate
     /// in an order this does not reproduce, rather than throwing.
     | Unmodelled of reason : string
+
+/// The implementation of a static virtual interface member that a `constrained.` type supplies.
+[<RequireQualifiedAccess>]
+type ConstrainedStaticImplementation =
+    /// This implementation, instantiated, and the handle of the type declaring it.
+    | Runs of
+        WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+        declaringType : ConcreteTypeHandle
+    /// The most specific default body is this reabstraction, as for
+    /// `VirtualImplementation.Reabstracted`: a call throws `EntryPointNotFoundException`.
+    | Reabstracted of WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
 
 /// Which method a virtual or interface call runs on a receiver of a known concrete type, as
 /// CoreCLR's `MethodTable::FindDispatchImpl` decides it: the receiver's dispatch table and
@@ -1001,6 +1018,22 @@ module ConcreteVirtualDispatch =
             | MethodBody.RuntimeProvided _
             | MethodBody.Abstract -> false
 
+        // An abstract MethodImpl body is a reabstraction, and it is a candidate like any other: it
+        // competes for most specific, and only once it has won does the call throw. An abstract
+        // method matched by name is a declaration with no body, which is no candidate at all
+        // (`TryGetCandidateImplementation` takes the interface's own method only `if
+        // (!interfaceMD->IsAbstract())`).
+        let isMethodImplCandidate
+            (meth : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+            : bool
+            =
+            match meth.Body with
+            | MethodBody.Il _
+            | MethodBody.Abstract -> true
+            | MethodBody.InternalCall
+            | MethodBody.PInvoke
+            | MethodBody.RuntimeProvided _ -> false
+
         let findInterfaceImplementationOnType
             (currentTypeHandle : ConcreteTypeHandle)
             (currentTy : ConcreteType<ConcreteTypeHandle>)
@@ -1013,7 +1046,7 @@ module ConcreteVirtualDispatch =
                 findMatchingMethodImplBodies currentTy currentTypeInfo state
 
             let matchingMethodImplBodies =
-                matchingMethodImplBodies |> List.filter hasCallableBody
+                matchingMethodImplBodies |> List.filter isMethodImplCandidate
 
             match matchingMethodImplBodies with
             | [ impl ] -> state, Some impl
@@ -1211,15 +1244,29 @@ module ConcreteVirtualDispatch =
             logger.LogDebug "No interface implementation found either"
             state, VirtualImplementation.NotOverridden
         | [ implementationTypeHandle, meth ] ->
-            logger.LogDebug (
-                "Exactly one interface implementation found {DeclaringTypeNamespace}.{DeclaringTypeName}.{MethodName} ({MethodGenerics})",
-                meth.RequiredDeclaringType.Namespace,
-                meth.RequiredDeclaringType.Name,
-                meth.Name,
-                meth.Generics
-            )
+            match meth.Body with
+            | MethodBody.Abstract ->
+                logger.LogDebug (
+                    "The most specific interface implementation is the reabstraction {DeclaringTypeNamespace}.{DeclaringTypeName}.{MethodName}",
+                    meth.RequiredDeclaringType.Namespace,
+                    meth.RequiredDeclaringType.Name,
+                    meth.Name
+                )
 
-            state, VirtualImplementation.Found (dispatchedOn implementationTypeHandle meth state)
+                state, VirtualImplementation.Reabstracted meth
+            | MethodBody.Il _
+            | MethodBody.InternalCall
+            | MethodBody.PInvoke
+            | MethodBody.RuntimeProvided _ ->
+                logger.LogDebug (
+                    "Exactly one interface implementation found {DeclaringTypeNamespace}.{DeclaringTypeName}.{MethodName} ({MethodGenerics})",
+                    meth.RequiredDeclaringType.Namespace,
+                    meth.RequiredDeclaringType.Name,
+                    meth.Name,
+                    meth.Generics
+                )
+
+                state, VirtualImplementation.Found (dispatchedOn implementationTypeHandle meth state)
         | _ ->
             // Candidates are matched allowing variance, so through a variant interface they may
             // all be variance-compatible ones, among which CoreCLR's variance pass picks rather
@@ -1585,6 +1632,9 @@ module ConcreteVirtualDispatch =
     ///
     /// `Unmodelled` where default bodies conflict through variance, among which CoreCLR's variance
     /// pass takes the first candidate in an order that is not modelled.
+    ///
+    /// `Reabstracted`, and never `NotOverridden`, where the most specific default body is a
+    /// reabstraction, so a caller must not fall back to the method the call names.
     let tryResolveVirtualImplementation
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -1607,9 +1657,12 @@ module ConcreteVirtualDispatch =
                 walkBaseTypes
                 state
 
+        // A reabstraction ends the search just as a body does: `FindDispatchImpl` allows variance
+        // only when the exact pass found no candidate at all, abstract or not.
         match primary with
         | VirtualImplementation.Found _
         | VirtualImplementation.Ambiguous _
+        | VirtualImplementation.Reabstracted _
         | VirtualImplementation.Unmodelled _ -> state, primary
         | VirtualImplementation.NotOverridden ->
 
@@ -1662,6 +1715,9 @@ module ConcreteVirtualDispatch =
                     VirtualImplementation.Unmodelled
                         $"variant interface dispatch of %s{methodToCall.Name}: retargeting onto %O{retargeted.DeclaringTypeGenerics} found more than one most-specific default body, of which CoreCLR's variance pass takes the first in an order that is not modelled: %s{described}"
                 | VirtualImplementation.Unmodelled _ as unmodelled -> state, unmodelled
+                // The variance pass takes the first candidate it meets, and a reabstraction is a
+                // candidate, so it wins here exactly as a default body would.
+                | VirtualImplementation.Reabstracted _ as reabstracted -> state, reabstracted
                 | VirtualImplementation.Found resolved when isDefaultInterfaceBody state resolved ->
                     let logger = loggerFactory.CreateLogger "CallMethod"
 
@@ -1682,8 +1738,8 @@ module ConcreteVirtualDispatch =
         firstResolved state retargets
 
     /// Resolve a `constrained.`-prefixed reference to a static abstract interface member down to
-    /// the implementation the constrained type supplies, returning it alongside its declaring
-    /// type's handle.
+    /// the implementation the constrained type supplies, or to the reabstraction that stands in
+    /// its place.
     ///
     /// Shared by `constrained. call` and `constrained. ldftn`, which pick their target the same
     /// way: CoreCLR routes both through `getCallInfo` with the constrained token, and the switch
@@ -1709,9 +1765,7 @@ module ConcreteVirtualDispatch =
         (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>)
         (concretizedMethod : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (state : TypeSystemState)
-        : TypeSystemState *
-          WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
-          ConcreteTypeHandle
+        : TypeSystemState * ConstrainedStaticImplementation
         =
         let methodDeclAssy =
             state._LoadedAssemblies.ByDefinitionName methodToCall.DeclaringAssemblyFullName
@@ -1765,15 +1819,23 @@ module ConcreteVirtualDispatch =
                 opName
                 methodToCall.Name
         | VirtualImplementation.Unmodelled reason -> failwith $"%s{opName}: %s{reason}"
+        | VirtualImplementation.Reabstracted reabstraction when not reabstraction.IsStatic ->
+            failwith
+                $"%s{opName}: resolved non-static reabstraction %s{MethodOwner.describe reabstraction.Owner}::%s{reabstraction.Name}"
+        | VirtualImplementation.Reabstracted reabstraction ->
+            state, ConstrainedStaticImplementation.Reabstracted reabstraction
         | VirtualImplementation.Found implementation when not implementation.Definition.IsStatic ->
             failwith
                 $"%s{opName}: resolved non-static implementation %s{MethodOwner.describe implementation.Definition.Owner}::%s{implementation.Definition.Name}"
         | VirtualImplementation.Found implementation ->
-            MethodConcretisation.concretizeMethodWithAllGenerics
-                loggerFactory
-                dotnetRuntimeDirs
-                baseClassTypes
-                implementation.TypeGenerics
-                implementation.Definition
-                implementation.MethodGenerics
-                state
+            let state, implementation, declaringType =
+                MethodConcretisation.concretizeMethodWithAllGenerics
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    baseClassTypes
+                    implementation.TypeGenerics
+                    implementation.Definition
+                    implementation.MethodGenerics
+                    state
+
+            state, ConstrainedStaticImplementation.Runs (implementation, declaringType)

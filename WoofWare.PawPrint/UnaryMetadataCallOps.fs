@@ -438,11 +438,9 @@ module internal UnaryMetadataCallOps =
         (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>)
         (concretizedMethod : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (state : IlMachineState)
-        : IlMachineState *
-          WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
-          ConcreteTypeHandle
+        : IlMachineState * ConstrainedStaticImplementation
         =
-        let typeSystem, implementation, declaringTypeHandle =
+        let typeSystem, implementation =
             ConcreteVirtualDispatch.resolveConstrainedStaticInterfaceMethod
                 ctx.LoggerFactory
                 state.DotnetRuntimeDirs
@@ -453,7 +451,7 @@ module internal UnaryMetadataCallOps =
                 concretizedMethod
                 state.TypeSystem
 
-        state.WithTypeSystem typeSystem, implementation, declaringTypeHandle
+        state.WithTypeSystem typeSystem, implementation
 
     /// Refuse a `call`/`callvirt` whose arguments violate ECMA-335 III.3.19: each argument must be
     /// assignable to its declared parameter type. Returns `state` unchanged when every argument
@@ -893,7 +891,7 @@ module internal UnaryMetadataCallOps =
 
         match pendingConstrained with
         | Some constrainedTypeHandle ->
-            let state, implementation, _declaringTypeHandle =
+            match
                 resolveConstrainedStaticInterfaceMethod
                     "constrained.call"
                     ctx
@@ -901,8 +899,18 @@ module internal UnaryMetadataCallOps =
                     methodToCall
                     concretizedMethod
                     state
-
-            enterCallee ctx implementation state
+            with
+            | state, ConstrainedStaticImplementation.Runs (implementation, _declaringTypeHandle) ->
+                enterCallee ctx implementation state
+            | state, ConstrainedStaticImplementation.Reabstracted _ ->
+                // With the parameterless constructor's message, as at a virtual call's dispatch in
+                // `callMethodWithCommitment`.
+                IlMachineStateExecution.raiseRuntimeException
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    ctx.BaseClassTypes.EntryPointNotFoundException
+                    ctx.Thread
+                    state
         | None -> enterNamedCallee ctx concretizedMethod state
 
     /// The generic arguments the receiver's runtime type supplies for `declaring`, read off the
@@ -1435,7 +1443,10 @@ module internal UnaryMetadataCallOps =
                             state
 
                     match directImplementation with
-                    | Some directImplementation ->
+                    | IlMachineStateExecution.ResolvedVirtualCall.Reabstracted reabstraction ->
+                        failwith
+                            $"BUG: constrained.callvirt: the exact-type probe of %s{tConcrete.Namespace}.%s{tConcrete.Name} for %s{methodToCall.Name} found the reabstraction %s{MethodOwner.describe reabstraction.Owner}::%s{reabstraction.Name}, but an exact-type probe never searches default interface bodies"
+                    | IlMachineStateExecution.ResolvedVirtualCall.Runs directImplementation ->
                         // The byref stays the callee's `this` without being dereferenced here, so
                         // a null one is the callee's business: it faults if and when it reads it.
                         match state.ThreadState.[thread].MethodState.EvaluationStack |> EvalStack.Peek with
@@ -1445,7 +1456,7 @@ module internal UnaryMetadataCallOps =
                             failwith
                                 $"constrained.callvirt case 2: expected ManagedPointer receiver on the eval stack, got %O{other}"
                         | None -> failwith "constrained.callvirt case 2: expected a receiver on the eval stack"
-                    | None ->
+                    | IlMachineStateExecution.ResolvedVirtualCall.NotOverridden ->
                         // The box runs whatever ordinary dispatch finds on T, so if that were T's
                         // own method, the exact-type probe above missed it, and the body would
                         // run on a copy where it should run on `*ptr`.
@@ -1460,11 +1471,17 @@ module internal UnaryMetadataCallOps =
                                 true
                                 state
 
-                        match dispatched |> Option.map (fun m -> m.Owner) with
-                        | Some (MethodOwner.DeclaredOn owner) when owner.Identity = tConcrete.Identity ->
-                            failwith
-                                $"constrained.callvirt: %s{methodToCall.Name} dispatches to value type %s{tConcrete.Namespace}.%s{tConcrete.Name}'s own method, but the exact-type probe found no implementation on it"
-                        | _ -> ()
+                        // A reabstraction is no method of T's, and the box's dispatch raises it.
+                        match dispatched with
+                        | IlMachineStateExecution.ResolvedVirtualCall.Runs dispatched ->
+                            match dispatched.Owner with
+                            | MethodOwner.DeclaredOn owner when owner.Identity = tConcrete.Identity ->
+                                failwith
+                                    $"constrained.callvirt: %s{methodToCall.Name} dispatches to value type %s{tConcrete.Namespace}.%s{tConcrete.Name}'s own method, but the exact-type probe found no implementation on it"
+                            | MethodOwner.DeclaredOn _
+                            | MethodOwner.DynamicMethodsClass _ -> ()
+                        | IlMachineStateExecution.ResolvedVirtualCall.NotOverridden
+                        | IlMachineStateExecution.ResolvedVirtualCall.Reabstracted _ -> ()
 
                         let ptr, state = IlMachineState.popEvalStack thread state
 
