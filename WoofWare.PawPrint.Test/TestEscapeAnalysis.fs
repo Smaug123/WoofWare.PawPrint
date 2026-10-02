@@ -3079,6 +3079,12 @@ public static class Holder<T> where T : IProbe
                 Claim = DispatchClaim.Precise
                 Raises = []
             }
+            // Hides `OpenAdds.Probe` without re-listing the interface, so the base class's runs.
+            {
+                Name = "ShadowsQuiet"
+                Claim = DispatchClaim.Precise
+                Raises = [ overflows ]
+            }
             {
                 Name = "AbstractAdds"
                 Claim = DispatchClaim.Precise
@@ -3152,6 +3158,7 @@ public struct UsesDefault : IStatic { }
 public class OpenAdds : IStatic { public static int Probe(int a, int b) => checked(a + b); }
 public class InheritsAdds : OpenAdds { }
 public class ReimplementsQuiet : OpenAdds, IStatic { static int IStatic.Probe(int a, int b) => unchecked(a + b); }
+public class ShadowsQuiet : OpenAdds { public static new int Probe(int a, int b) => unchecked(a + b); }
 public abstract class AbstractAdds : IStatic { public static int Probe(int a, int b) => checked(a + b); }
 public class OpenUsesDefault : IStatic { }
 
