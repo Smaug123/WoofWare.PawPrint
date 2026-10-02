@@ -51,6 +51,7 @@ module TestKernelConfig =
                 (SimulatedUnixPlatform.pathLimits kernel.UnixPlatform)
                 // Root, whom no directory's search bit refuses.
                 (Credentials.ofIds UserId.root (GroupId.parseOrFail "test" 0u) [])
+                SymlinkProtection.Off
                 (VirtualFileSystem.root vfs)
                 SymlinkPolicy.Follow
                 (UnixPath.parseOrFail "test" path)
@@ -86,6 +87,43 @@ module TestKernelConfig =
 
         exn.Message.StartsWith ("KernelConfig.ProcessId: ", StringComparison.Ordinal)
         |> shouldEqual true
+
+    [<Test>]
+    let ``the fs.protected sysctls default to Off, apply on Linux, and are refused on Darwin`` () : unit =
+        KernelConfig.Default.ProtectedFiles |> shouldEqual ProtectedFiles.off
+
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            (KernelConfig.toKernel
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                })
+                .Machine.ProtectedFiles
+            |> shouldEqual ProtectedFiles.off
+
+        let configured : ProtectedFiles =
+            {
+                Symlinks = SymlinkProtection.InWorldWritableStickyDirectories
+                RegularFiles = CreationProtection.InGroupOrWorldWritableStickyDirectories
+                Fifos = CreationProtection.InWorldWritableStickyDirectories
+            }
+
+        (KernelConfig.toKernel
+            { KernelConfig.Default with
+                ProtectedFiles = configured
+            })
+            .Machine.ProtectedFiles
+        |> shouldEqual configured
+
+        let darwin () =
+            KernelConfig.toKernel
+                { KernelConfig.Default with
+                    UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    ProtectedFiles = configured
+                }
+            |> ignore<EmulatedKernel>
+
+        (Assert.Throws<Exception> (TestDelegate darwin)).Message
+        |> shouldContainText "KernelConfig.ProtectedFiles: "
 
     [<Test>]
     let ``the instruction cost is configurable and validated`` () : unit =
@@ -251,6 +289,7 @@ module TestKernelConfig =
             PathWalk.resolveExisting
                 (SimulatedUnixPlatform.pathLimits kernel.UnixPlatform)
                 (Credentials.ofIds UserId.root (GroupId.parseOrFail "test" 0u) [])
+                SymlinkProtection.Off
                 (VirtualFileSystem.root vfs)
                 SymlinkPolicy.NoFollowFinal
                 (UnixPath.parseOrFail "test" path)
