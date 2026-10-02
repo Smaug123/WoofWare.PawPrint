@@ -76,7 +76,9 @@ class Program
         check = 1;
         if (CreateSocketEventPort(&port) != PAL_SUCCESS) return check;
 
-        using var listener = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        // Never disposed: a check that fails returns while the listener may still hold
+        // a connection, and the exit code should say which check that was.
+        var listener = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
         listener.Bind(new IPEndPoint(IPAddress.Loopback, 0));
         listener.Listen(4);
         var endpoint = (IPEndPoint)listener.LocalEndPoint!;
