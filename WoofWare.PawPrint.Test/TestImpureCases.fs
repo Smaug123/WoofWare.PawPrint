@@ -392,14 +392,13 @@ module TestImpureCases =
             currentDirectoryCase "/héllo/中文/🐶"
             {
                 // Managed async connect, accept, send and receive over loopback on a
-                // Darwin kernel. Parked: the registrations and the accept's READ
-                // report work, but ConnectAsync completes through
-                // SocketPal.TryCompleteConnect, which polls the socket for POLLOUT
-                // before reading SO_ERROR, and stops at "SystemNative_Poll: this
-                // kernel is Darwin-flavoured, and `poll(2)` is modelled here for
-                // Linux only" (measured). Un-park when Darwin's poll is modelled;
-                // the send and receive behind it then need data transfer on a
-                // connection, which this kernel does not model either.
+                // Darwin kernel. Parked: the connect and the accept work
+                // (`SocketAsyncConnectDarwin.cs` carries them), but the send and
+                // receive need data transfer on a connection -- SystemNative_Send
+                // and SystemNative_Receive, and a receive path in the kernel --
+                // which this kernel does not model: it stops at "Unimplemented
+                // native method ... SystemNative_Receive" (measured). Un-park when
+                // it does.
                 FileName = "SocketAsyncSendReceiveDarwin.cs"
                 ExpectedReturnCode = 0
                 KernelConfig =
@@ -2404,6 +2403,42 @@ module TestImpureCases =
                 AppContext = AppContextProperties.empty
                 // Compared: it asserts no port number, only that the two ends of
                 // each connection agree.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // Managed ConnectAsync and AcceptAsync over loopback on a Darwin
+                // kernel, one connect completing and one refused, with no data
+                // carried. Each completes through SocketPal.TryCompleteConnect,
+                // which polls the socket for POLLOUT before reading SO_ERROR.
+                FileName = "SocketAsyncConnectDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                // Compared: it asserts no port number, only that the ends agree and
+                // which SocketError the refusal raises.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // `SystemNative_Poll`'s Darwin-flavour rows: Darwin's poll is built
+                // over kqueue, so nothing is reported unasked, a descriptor named
+                // twice reports into the later entry, and a reported HUP suppresses
+                // OUT. Every row measured on Darwin 27.0.0 by poll-darwin.c.
+                FileName = "SocketPollDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                // Compared: it asserts revents and counts, and no descriptor number
+                // or port.
                 Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
