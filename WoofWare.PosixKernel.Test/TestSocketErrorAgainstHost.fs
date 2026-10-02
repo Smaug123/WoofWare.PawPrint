@@ -219,7 +219,7 @@ module TestSocketErrorAgainstHost =
             UnixConnection.connect
                 fd
                 UserBuffer.Mapped
-                16
+                16u
                 (Some SimulatedUnixPlatform.internetAddressFamily)
                 (Some (loopback port))
                 system
@@ -247,7 +247,7 @@ module TestSocketErrorAgainstHost =
                 UnixSocket.bind
                     listener
                     UserBuffer.Mapped
-                    16
+                    16u
                     (Some SimulatedUnixPlatform.internetAddressFamily)
                     (Some (loopback listenerPort))
                     system

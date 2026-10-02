@@ -48,7 +48,7 @@ module TestBlockingAccept =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
         let system =
-            match UnixSocket.bind fd UserBuffer.Mapped 16 inetFamily (Some (loopback port)) system with
+            match UnixSocket.bind fd UserBuffer.Mapped 16u inetFamily (Some (loopback port)) system with
             | Ok (BindAnswer.Bound _, system) -> system
             | other -> failwith $"binding the listener at port %d{port}: %A{other}"
 
@@ -70,7 +70,7 @@ module TestBlockingAccept =
         let fd, system =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
-        match UnixConnection.connect fd UserBuffer.Mapped 16 inetFamily (Some (loopback port)) system with
+        match UnixConnection.connect fd UserBuffer.Mapped 16u inetFamily (Some (loopback port)) system with
         | Ok (ConnectOutcome.Completed, system) -> system
         | other -> failwith $"connecting to port %d{port}: %A{other}"
 
@@ -92,7 +92,7 @@ module TestBlockingAccept =
 
     /// `task` parks in an accept through `fd`, whose queue must be empty.
     let private parkIn (task : int) (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        match UnixConnection.accept task fd UserBuffer.Mapped 16 system with
+        match UnixConnection.accept task fd UserBuffer.Mapped 16u system with
         | Ok (AcceptOutcome.WouldBlock _, system) -> system
         | other -> failwith $"expected task %d{task} to park, got %A{other}"
 
@@ -130,7 +130,7 @@ module TestBlockingAccept =
             gen {
                 let! platform = platformGen
                 let! destination = userBuffers
-                let! declaredLength = Gen.choose (0, 64)
+                let! declaredLength = Gen.choose (0, 64) |> Gen.map uint32
                 let! throughDup = ArbMap.defaults |> ArbMap.generate<bool>
                 let! task = Gen.choose (1, 6)
                 return platform, destination, declaredLength, throughDup, task
@@ -140,7 +140,7 @@ module TestBlockingAccept =
             (
                 platform : SimulatedUnixPlatform,
                 destination : UserBuffer,
-                declaredLength : int,
+                declaredLength : uint32,
                 throughDup : bool,
                 task : int
             )
@@ -218,7 +218,7 @@ module TestBlockingAccept =
         let fd, system = world platform
         let parked = parkIn 1 fd system
 
-        Assert.Throws<exn> (fun () -> UnixConnection.accept 1 fd UserBuffer.Mapped 16 parked |> ignore<_>)
+        Assert.Throws<exn> (fun () -> UnixConnection.accept 1 fd UserBuffer.Mapped 16u parked |> ignore<_>)
         |> ignore<exn>
 
         Assert.Throws<exn> (fun () -> UnixConnection.finishAccept 2 parked |> ignore<_>)
@@ -258,13 +258,13 @@ module TestBlockingAccept =
             gen {
                 let! platform = platformGen
                 let! destination = userBuffers
-                let! declaredLength = Gen.choose (0, 64)
+                let! declaredLength = Gen.choose (0, 64) |> Gen.map uint32
                 let! actions = Gen.listOf midWait |> Gen.map (List.truncate 6)
                 return platform, destination, declaredLength, actions
             }
 
         let property
-            (platform : SimulatedUnixPlatform, destination : UserBuffer, declaredLength : int, actions : MidWait list)
+            (platform : SimulatedUnixPlatform, destination : UserBuffer, declaredLength : uint32, actions : MidWait list)
             : unit
             =
             let fd, system = world platform
@@ -287,7 +287,7 @@ module TestBlockingAccept =
                         if List.isEmpty (queueOf fd system) then
                             system
                         else
-                            match UnixConnection.accept 2 fd UserBuffer.Mapped 16 system with
+                            match UnixConnection.accept 2 fd UserBuffer.Mapped 16u system with
                             | Ok (AcceptOutcome.Accepted _, system) -> system
                             | other -> failwith $"expected the steal to succeed, got %A{other}"
                 )
@@ -414,7 +414,7 @@ module TestBlockingAccept =
         let system = setNonBlocking fd true system
 
         let system =
-            match UnixConnection.accept 3 fd UserBuffer.Mapped 16 system with
+            match UnixConnection.accept 3 fd UserBuffer.Mapped 16u system with
             | Ok (AcceptOutcome.Accepted _, system) -> system
             | other -> failwith $"expected task 3 to take the connection, got %A{other}"
 
@@ -520,7 +520,7 @@ module TestBlockingAccept =
                             {
                                 Listener = listeners.[park.Listener]
                                 Destination = UserBuffer.Mapped
-                                DeclaredLength = 16
+                                DeclaredLength = 16u
                             })
                         system
                 )
@@ -655,7 +655,7 @@ module TestBlockingAccept =
                     {
                         Listener = listener
                         Destination = UserBuffer.Mapped
-                        DeclaredLength = 16
+                        DeclaredLength = 16u
                     })
                 system
 

@@ -12,6 +12,63 @@ open Microsoft.Extensions.Logging
 /// `dotnetRuntimeDirs` is where the loader looks for an assembly not yet loaded.
 [<RequireQualifiedAccess>]
 module MemberReferenceInstantiation =
+    /// The name `MethodTable::_GetFullyQualifiedNameForClass` gives a type definition: its
+    /// namespace and name, and for a nested type (whose metadata namespace is empty) its bare name.
+    let private definitionName (state : TypeSystemState) (identity : ResolvedTypeIdentity) : string =
+        let declaring = state._LoadedAssemblies.ByDefinitionName identity.AssemblyFullName
+        let definition = declaring.TypeDefs.[identity.TypeDefinition.Get]
+
+        if System.String.IsNullOrEmpty definition.Namespace then
+            definition.Name
+        else
+            $"%s{definition.Namespace}.%s{definition.Name}"
+
+    /// The name `MemberLoader::ThrowMissingFieldException` gives an array parent:
+    /// `TypeDesc::ConstructName` over the element's `TypeHandle::GetName`.
+    let rec private arrayParentName
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (spellingAssembly : DumpedAssembly)
+        (spelling : TypeDefn)
+        (state : TypeSystemState)
+        : TypeSystemState * string
+        =
+        let recurse =
+            arrayParentName loggerFactory dotnetRuntimeDirs baseClassTypes spellingAssembly
+
+        match spelling with
+        | TypeDefn.Modified modified -> recurse modified.Unmodified state
+        | TypeDefn.PrimitiveType primitive ->
+            state, definitionName state (BaseClassTypes.ofPrimitive baseClassTypes primitive).Identity
+        | TypeDefn.FromDefinition (identity, _) -> state, definitionName state identity
+        | TypeDefn.FromReference (typeRef, _) ->
+            let state, _, resolved =
+                TypeSystemState.resolveTypeFromRef
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    spellingAssembly
+                    typeRef
+                    ImmutableArray.Empty
+                    state
+
+            state, definitionName state resolved.Identity
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element ->
+            let state, element = recurse element state
+            state, $"%s{element}[]"
+        | TypeDefn.Array (element, rank) ->
+            let state, element = recurse element state
+            let dimensions = if rank = 1 then "*" else System.String (',', rank - 1)
+            state, $"%s{element}[%s{dimensions}]"
+        | TypeDefn.Pointer element ->
+            let state, element = recurse element state
+            state, $"%s{element}*"
+        | other ->
+            // `TypeHandle::GetName` appends an instantiation with `TypeString::AppendInst`, and a
+            // function pointer or a type variable has a rendering of its own; none is measured.
+            failwith
+                $"TODO: name the array element %O{other} as MissingFieldException's message would; the rendering has not been measured"
+
     /// <summary>
     /// The member a MemberRef row of <paramref name="assy" /> names, as CoreCLR binds it
     /// (<c>MethodReferenceResolution</c>, <c>FieldReferenceResolution</c>), with the generic
@@ -20,8 +77,10 @@ module MemberReferenceInstantiation =
     /// instantiates it, or the ancestor of the parent that declares the method.
     /// </summary>
     /// <remarks>
-    /// Refuses a reference CoreCLR would fail to bind (it throws while compiling the method that
-    /// uses it, which is not modelled), one whose target depends on how a type variable of the
+    /// A field reference CoreCLR fails to bind is <c>FieldReferenceBinding.Fails</c>, saying why:
+    /// CoreCLR throws while compiling the method that uses it, and the caller throws the same
+    /// exception where the reference is used. Refuses a method reference CoreCLR would fail to
+    /// bind, one whose target depends on how a type variable of the
     /// referencing context is instantiated, and one naming a method the runtime supplies on an array
     /// type, which callers handle before resolving.
     /// </remarks>
@@ -36,10 +95,7 @@ module MemberReferenceInstantiation =
         (state : TypeSystemState)
         : TypeSystemState *
           AssemblyName *
-          Choice<
-              WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>,
-              WoofWare.PawPrint.FieldInfo<TypeDefn, TypeDefn>
-           > *
+          Choice<WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>, FieldReferenceBinding> *
           TypeDefn ImmutableArray
         =
         let mem = assy.Members.[m]
@@ -122,6 +178,16 @@ module MemberReferenceInstantiation =
 
             let state = withAssemblies assemblies state
 
+            // Which exception binding throws is the first failure of the parent's load, and a missing
+            // field is not a failure until the parent has loaded; so either answer needs every type
+            // that load reaches to be one that cannot fail some other way.
+            let refuseUnvouched () : unit =
+                match ParentLoadVouching.vouch baseClassTypes state._LoadedAssemblies assy m with
+                | ParentLoadVouch.Vouched -> ()
+                | ParentLoadVouch.Unvouched reason ->
+                    refuse
+                        $"binds to no field, and PawPrint cannot vouch for every type CoreCLR's load of its parent reaches (%O{reason}), so cannot tell which exception binding throws; TODO: that is not modelled"
+
             match target with
             | FieldReferenceTarget.Defined (declaringAssembly, field) ->
                 // Fields are not inherited, so the parent is the declaring type.
@@ -131,12 +197,48 @@ module MemberReferenceInstantiation =
                     declaringAssembly.Fields.[field]
                     |> FieldInfo.mapTypeGenerics (fun _ (par, _) -> targetType.Generics.[par.SequenceNumber])
 
-                state, declaringAssembly.Name, Choice2Of2 field, spelledArguments
+                state, declaringAssembly.Name, Choice2Of2 (FieldReferenceBinding.Bound field), spelledArguments
             | FieldReferenceTarget.Missing ->
-                refuse "binds to no field, so CoreCLR throws MissingFieldException; that is not modelled"
+                refuseUnvouched ()
+
+                let assemblies, parent =
+                    MemberReferenceParent.resolve
+                        loggerFactory
+                        dotnetRuntimeDirs
+                        baseClassTypes
+                        state._LoadedAssemblies
+                        assy
+                        m
+
+                let state = withAssemblies assemblies state
+
+                let state, parentName =
+                    match parent with
+                    | MemberReferenceParent.Nominal identity -> state, definitionName state identity
+                    | MemberReferenceParent.Array arrayType ->
+                        arrayParentName loggerFactory dotnetRuntimeDirs baseClassTypes assy arrayType state
+                    | other ->
+                        refuse
+                            $"binds to no field, but its parent %O{other} is not one FieldReferenceResolution searches"
+
+                let failure = FieldReferenceFailure.MissingField (parentName, memberName)
+                state, assy.Name, Choice2Of2 (FieldReferenceBinding.Fails failure), ImmutableArray.Empty
             | FieldReferenceTarget.ParentTypeMissing miss ->
-                refuse
-                    $"has a parent that names no type (%O{miss}), so CoreCLR throws TypeLoadException; that is not modelled"
+                refuseUnvouched ()
+
+                // `ClassLoader::ThrowTypeLoadException` names the missing TypeRef row by its own
+                // namespace and name: a nested row is named alone, without the type it is nested in.
+                let typeName, searchedIn =
+                    match miss with
+                    | TypeResolutionMiss.TopLevelTypeAbsent (searchedIn, ns, name) ->
+                        match ns with
+                        | None
+                        | Some "" -> name, searchedIn
+                        | Some ns -> $"%s{ns}.%s{name}", searchedIn
+                    | TypeResolutionMiss.NestedTypeAbsent (searchedIn, _declaringType, name) -> name, searchedIn
+
+                let failure = FieldReferenceFailure.ParentTypeMissing (typeName, searchedIn)
+                state, assy.Name, Choice2Of2 (FieldReferenceBinding.Fails failure), ImmutableArray.Empty
             | FieldReferenceTarget.DependsOnInstantiation ->
                 refuse
                     "has a type variable for its parent, whose instantiation resolution does not yet take into account"
@@ -308,10 +410,7 @@ module MemberReferenceInstantiation =
         (state : TypeSystemState)
         : TypeSystemState *
           AssemblyName *
-          Choice<
-              WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>,
-              WoofWare.PawPrint.FieldInfo<TypeDefn, TypeDefn>
-           > *
+          Choice<WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>, FieldReferenceBinding> *
           TypeDefn ImmutableArray
         =
         let key : MemberResolutionKey =

@@ -5009,9 +5009,10 @@ module NativeSystemNative =
             // wrapper itself dereferences and `requireStorage` refuses for.
             match
                 UnixSocket.admitSockaddrCopy
+                    SockaddrCopySyscall.Bind
                     fd
                     (BufferPointer.toUserBuffer addressArgument)
-                    declaredLength
+                    (uint32 declaredLength)
                     (EmulatedKernel.unix state.Kernel)
             with
             | Error refusal -> refuse (BindRefusal.Copy refusal)
@@ -5082,7 +5083,7 @@ module NativeSystemNative =
                 UnixSocket.bind
                     fd
                     (BufferPointer.toUserBuffer addressArgument)
-                    declaredLength
+                    (uint32 declaredLength)
                     family
                     endpoint
                     (EmulatedKernel.unix state.Kernel)
@@ -5201,6 +5202,7 @@ module NativeSystemNative =
                 | Ok (AcceptOutcome.Restarts, _)
                 | Ok (AcceptOutcome.Failed UnixError.EINTR, _) -> ()
                 | Ok (AcceptOutcome.Failed _, _)
+                | Ok (AcceptOutcome.DroppedConnection _, _)
                 | Ok (AcceptOutcome.Accepted _, _)
                 | Error _ -> acceptedCell.Force () |> ignore<ManagedPointerSource>
 
@@ -5267,6 +5269,13 @@ module NativeSystemNative =
                     // accept changes nothing, so writing one would be a no-op that
                     // hid a future change to that contract.
                     failFromSyscall error state
+                | Ok (AcceptOutcome.DroppedConnection error, system) ->
+                    // Only a negative length drops a connection, and the shim
+                    // answers that itself before calling `accept4`, so no
+                    // guest reaches this. Answered as the kernel answers all
+                    // the same: the connection has gone, which the system
+                    // records.
+                    state.MapKernel (EmulatedKernel.withUnix system) |> failFromSyscall error
                 | Ok (AcceptOutcome.WouldBlock _, system) ->
                     // Park re-entrantly, as `SystemNative_Poll` does: the native
                     // frame stays and the caller's program counter still names the
@@ -5350,7 +5359,7 @@ module NativeSystemNative =
 
                 settle
                     fd
-                    parked.DeclaredLength
+                    (int parked.DeclaredLength)
                     (UnixConnection.finishAccept ctx.Thread (EmulatedKernel.unix state.Kernel))
             | Some (ParkedSyscall.SocketWait _)
             | Some (ParkedSyscall.Flock _)
@@ -5391,9 +5400,10 @@ module NativeSystemNative =
                         (readBytesThrough ctx operation lengthCell 4 state).AsSpan ()
                     )
 
-            // The shim's own screen, before the cast to `socklen_t` that would
-            // otherwise make the bound SIZE_MAX. No kernel is ever asked, which
-            // is why the library refuses one instead.
+            // The shim's own screen, which answers a negative length before it
+            // calls `accept4`. The kernel never sees one from here: Linux would
+            // have taken the connection and answered EINVAL, and Darwin read
+            // the word as a length of more than two gigabytes.
             if declaredLength < 0 then
                 complete (UnixErrorPal.toPal UnixError.EFAULT) state
             else
@@ -5404,7 +5414,7 @@ module NativeSystemNative =
                 ctx.Thread
                 fd
                 (BufferPointer.toUserBuffer addressArgument)
-                declaredLength
+                (uint32 declaredLength)
                 (EmulatedKernel.unix state.Kernel)
             |> settle fd declaredLength
         // `int32_t SystemNative_Connect(intptr_t socket, uint8_t* socketAddress,
@@ -5485,9 +5495,10 @@ module NativeSystemNative =
             // dereference is only a problem when bytes actually move.
             match
                 UnixSocket.admitSockaddrCopy
+                    SockaddrCopySyscall.Connect
                     fd
                     (BufferPointer.toUserBuffer addressArgument)
-                    declaredLength
+                    (uint32 declaredLength)
                     (EmulatedKernel.unix state.Kernel)
             with
             | Error refusal -> refuse refusal
@@ -5553,7 +5564,7 @@ module NativeSystemNative =
                 UnixConnection.connect
                     fd
                     (BufferPointer.toUserBuffer addressArgument)
-                    declaredLength
+                    (uint32 declaredLength)
                     family
                     destination
                     (EmulatedKernel.unix state.Kernel)
@@ -5604,9 +5615,10 @@ module NativeSystemNative =
             let declaredLength =
                 BinaryPrimitives.ReadInt32LittleEndian ((readBytesThrough ctx operation lengthCell 4 state).AsSpan ())
 
-            // The shim's own screen (`pal_networking.c:1873`), before the cast to
-            // `socklen_t` that would otherwise make the bound SIZE_MAX. No kernel
-            // is ever asked, which is why the library refuses one instead.
+            // The shim's own screen (`pal_networking.c:1873`), which answers a
+            // negative length before it calls `getsockname(2)`. The kernel never
+            // sees one from here: Linux would answer EINVAL, and Darwin read the
+            // word as a length of more than two gigabytes.
             if declaredLength < 0 then
                 complete (UnixErrorPal.toPal UnixError.EFAULT) state
             else
@@ -5627,7 +5639,7 @@ module NativeSystemNative =
                 UnixSocket.getsockname
                     fd
                     (BufferPointer.toUserBuffer addressArgument)
-                    declaredLength
+                    (uint32 declaredLength)
                     (EmulatedKernel.unix state.Kernel)
             with
             | Error (GetSockNameRefusal.Buffer refusal) ->

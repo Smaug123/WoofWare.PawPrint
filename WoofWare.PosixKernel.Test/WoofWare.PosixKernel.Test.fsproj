@@ -121,6 +121,7 @@
     <Compile Include="TestListen.fs" />
     <Compile Include="TestNonBlocking.fs" />
     <Compile Include="TestConnect.fs" />
+    <Compile Include="TestSocketAddressLength.fs" />
     <Compile Include="TestPoll.fs" />
     <Compile Include="TestPollTimeout.fs" />
     <Compile Include="TestSocketWait.fs" />
