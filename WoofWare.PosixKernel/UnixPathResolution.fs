@@ -742,7 +742,8 @@ module UnixPathResolution =
             |> FileStatusAnswer.Reported
             |> Ok
         | Some (OpenFileTarget.File (inode, _))
-        | Some (OpenFileTarget.Directory (inode, _)) ->
+        | Some (OpenFileTarget.Directory (inode, _))
+        | Some (OpenFileTarget.CharacterDevice (inode, _)) ->
 
         match statOf inode system with
         | Some (Ok status) -> Ok (FileStatusAnswer.Reported status)
@@ -1669,7 +1670,8 @@ module UnixPathResolution =
 
             match description.Target with
             | OpenFileTarget.Directory (inode, _) -> Ok (Ok (Some (inode, true)))
-            | OpenFileTarget.File (inode, _) -> Ok (Ok (Some (inode, false)))
+            | OpenFileTarget.File (inode, _)
+            | OpenFileTarget.CharacterDevice (inode, _) -> Ok (Ok (Some (inode, false)))
             | OpenFileTarget.Kqueue _
             | OpenFileTarget.Epoll _
             | OpenFileTarget.Socket _

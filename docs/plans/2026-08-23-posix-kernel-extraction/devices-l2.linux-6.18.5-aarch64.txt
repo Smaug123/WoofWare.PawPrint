@@ -1,0 +1,86 @@
+### root
+== /dev/null
+LSEEK whence=-2 off=0 -1 EINVAL off=-5 -1 EINVAL
+LSEEK whence=-1 off=0 -1 EINVAL off=-5 -1 EINVAL
+LSEEK whence=0 off=0 0 off=-5 0
+LSEEK whence=1 off=0 0 off=-5 0
+LSEEK whence=2 off=0 0 off=-5 0
+LSEEK whence=3 off=0 0 off=-5 0
+LSEEK whence=4 off=0 0 off=-5 0
+LSEEK whence=5 off=0 -1 EINVAL off=-5 -1 EINVAL
+LSEEK whence=6 off=0 -1 EINVAL off=-5 -1 EINVAL
+LSEEK whence=7 off=0 -1 EINVAL off=-5 -1 EINVAL
+LSEEK whence=8 off=0 -1 EINVAL off=-5 -1 EINVAL
+TCGETATTR -1 ENOTTY isatty=0 errno=ENOTTY
+GETDENTS64 -1 ENOTDIR
+FIONREAD rdonly -1 ENOTTY wronly -1 ENOTTY
+READ NULL,0 0
+COPY_FILE_RANGE file->dev -1 EINVAL dev->file -1 EINVAL dev->dev -1 EINVAL
+FICLONE dev<-file -1 EXDEV file<-dev -1 EXDEV dev<-dev -1 EINVAL
+FADVISE -1:22 0:0 1:0 2:0 3:0 4:0 5:0 6:22 7:22 off-1:0 len-1:22
+FLOCK SH 0 UN 0
+FTRUNCATE wronly 0 -1 EINVAL
+== /dev/urandom
+LSEEK whence=-2 off=0 -1 EINVAL off=-5 -1 EINVAL
+LSEEK whence=-1 off=0 -1 EINVAL off=-5 -1 EINVAL
+LSEEK whence=0 off=0 0 off=-5 0
+LSEEK whence=1 off=0 0 off=-5 0
+LSEEK whence=2 off=0 0 off=-5 0
+LSEEK whence=3 off=0 0 off=-5 0
+LSEEK whence=4 off=0 0 off=-5 0
+LSEEK whence=5 off=0 -1 EINVAL off=-5 -1 EINVAL
+LSEEK whence=6 off=0 -1 EINVAL off=-5 -1 EINVAL
+LSEEK whence=7 off=0 -1 EINVAL off=-5 -1 EINVAL
+LSEEK whence=8 off=0 -1 EINVAL off=-5 -1 EINVAL
+TCGETATTR -1 EINVAL isatty=0 errno=EINVAL
+GETDENTS64 -1 ENOTDIR
+FIONREAD rdonly -1 EINVAL wronly -1 EINVAL
+READ NULL,0 0
+COPY_FILE_RANGE file->dev -1 EINVAL dev->file -1 EINVAL dev->dev -1 EINVAL
+FICLONE dev<-file -1 EXDEV file<-dev -1 EXDEV dev<-dev -1 EINVAL
+FADVISE -1:22 0:0 1:0 2:0 3:0 4:0 5:0 6:22 7:22 off-1:0 len-1:22
+FLOCK SH 0 UN 0
+FTRUNCATE wronly 0 -1 EINVAL
+### uid 1000
+== /dev/null
+LSEEK whence=-2 off=0 -1 EINVAL off=-5 -1 EINVAL
+LSEEK whence=-1 off=0 -1 EINVAL off=-5 -1 EINVAL
+LSEEK whence=0 off=0 0 off=-5 0
+LSEEK whence=1 off=0 0 off=-5 0
+LSEEK whence=2 off=0 0 off=-5 0
+LSEEK whence=3 off=0 0 off=-5 0
+LSEEK whence=4 off=0 0 off=-5 0
+LSEEK whence=5 off=0 -1 EINVAL off=-5 -1 EINVAL
+LSEEK whence=6 off=0 -1 EINVAL off=-5 -1 EINVAL
+LSEEK whence=7 off=0 -1 EINVAL off=-5 -1 EINVAL
+LSEEK whence=8 off=0 -1 EINVAL off=-5 -1 EINVAL
+TCGETATTR -1 ENOTTY isatty=0 errno=ENOTTY
+GETDENTS64 -1 ENOTDIR
+FIONREAD rdonly -1 ENOTTY wronly -1 ENOTTY
+READ NULL,0 0
+COPY_FILE_RANGE file->dev -1 EINVAL dev->file -1 EINVAL dev->dev -1 EINVAL
+FICLONE dev<-file -1 EXDEV file<-dev -1 EXDEV dev<-dev -1 EINVAL
+FADVISE -1:22 0:0 1:0 2:0 3:0 4:0 5:0 6:22 7:22 off-1:0 len-1:22
+FLOCK SH 0 UN 0
+FTRUNCATE wronly 0 -1 EINVAL
+== /dev/urandom
+LSEEK whence=-2 off=0 -1 EINVAL off=-5 -1 EINVAL
+LSEEK whence=-1 off=0 -1 EINVAL off=-5 -1 EINVAL
+LSEEK whence=0 off=0 0 off=-5 0
+LSEEK whence=1 off=0 0 off=-5 0
+LSEEK whence=2 off=0 0 off=-5 0
+LSEEK whence=3 off=0 0 off=-5 0
+LSEEK whence=4 off=0 0 off=-5 0
+LSEEK whence=5 off=0 -1 EINVAL off=-5 -1 EINVAL
+LSEEK whence=6 off=0 -1 EINVAL off=-5 -1 EINVAL
+LSEEK whence=7 off=0 -1 EINVAL off=-5 -1 EINVAL
+LSEEK whence=8 off=0 -1 EINVAL off=-5 -1 EINVAL
+TCGETATTR -1 EINVAL isatty=0 errno=EINVAL
+GETDENTS64 -1 ENOTDIR
+FIONREAD rdonly -1 EINVAL wronly -1 EINVAL
+READ NULL,0 0
+COPY_FILE_RANGE file->dev -1 EINVAL dev->file -1 EINVAL dev->dev -1 EINVAL
+FICLONE dev<-file -1 EXDEV file<-dev -1 EXDEV dev<-dev -1 EINVAL
+FADVISE -1:22 0:0 1:0 2:0 3:0 4:0 5:0 6:22 7:22 off-1:0 len-1:22
+FLOCK SH 0 UN 0
+FTRUNCATE wronly 0 -1 EINVAL

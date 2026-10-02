@@ -130,10 +130,12 @@ type UnixSystemDefect<'Task> =
     /// and one that fires too early is caught here.
     | DanglingOpenInode of description : OpenFileDescriptionId * inode : InodeNumber
     /// A description names an inode as the wrong kind of object: a
-    /// `OpenFileTarget.File` onto a directory, or an `OpenFileTarget.Directory`
-    /// onto anything else. `open` chooses the target by what it opened, so a
-    /// directory's position is always a place in its entries and never a byte
-    /// offset.
+    /// `OpenFileTarget.File` onto a directory or a device, an
+    /// `OpenFileTarget.Directory` onto anything but a directory, or an
+    /// `OpenFileTarget.CharacterDevice` onto anything but the node of the device
+    /// it names. `open` chooses the target by what it opened, so a directory's
+    /// position is always a place in its entries and never a byte offset, and a
+    /// device's operations are the driver's own.
     | DescriptionKindMismatch of description : OpenFileDescriptionId * inode : InodeNumber
     /// A socket's phase references a connection the connection table does not
     /// hold.
@@ -198,7 +200,8 @@ type UnixSystemDefect<'Task> =
     /// positive: such a call returns at once.
     | ParkedKeventCountNotPositive of task : 'Task * maxEvents : int
     /// An open file description names an object this flavour's kernel does
-    /// not have: an epoll instance under Darwin, or a kqueue under Linux.
+    /// not have: an epoll instance or a device under Darwin, or a kqueue under
+    /// Linux.
     | DescriptionNotOfFlavour of
         description : OpenFileDescriptionId *
         target : OpenFileTarget *
@@ -623,6 +626,7 @@ module UnixSystem =
                 | OpenFileTarget.Epoll _
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
+                | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Pipe _ -> None
                 | OpenFileTarget.Socket socketId -> Some (id, socketId)
             )
@@ -659,10 +663,13 @@ module UnixSystem =
             |> List.choose (fun (id, description) ->
                 match description.Target, flavour with
                 | OpenFileTarget.Epoll _, SimulatedUnixFlavour.Darwin
-                | OpenFileTarget.Kqueue _, SimulatedUnixFlavour.Linux ->
+                | OpenFileTarget.Kqueue _, SimulatedUnixFlavour.Linux
+                // Only Linux's devtmpfs holds a device's node.
+                | OpenFileTarget.CharacterDevice _, SimulatedUnixFlavour.Darwin ->
                     Some (UnixSystemDefect.DescriptionNotOfFlavour (id, description.Target, flavour))
                 | OpenFileTarget.Epoll _, SimulatedUnixFlavour.Linux
                 | OpenFileTarget.Kqueue _, SimulatedUnixFlavour.Darwin
+                | OpenFileTarget.CharacterDevice _, SimulatedUnixFlavour.Linux
                 | OpenFileTarget.File _, _
                 | OpenFileTarget.Directory _, _
                 | OpenFileTarget.Socket _, _
@@ -689,6 +696,14 @@ module UnixSystem =
                     | Some (InodeContent.Directory _) -> None
                     | Some (InodeContent.RegularFile _)
                     | Some (InodeContent.CharacterDevice _)
+                    | Some (InodeContent.Symlink _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
+                | OpenFileTarget.CharacterDevice (inode, device) ->
+                    match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
+                    | None -> Some (UnixSystemDefect.DanglingOpenInode (id, inode))
+                    | Some (InodeContent.CharacterDevice (node, _)) when node = device -> None
+                    | Some (InodeContent.CharacterDevice _)
+                    | Some (InodeContent.Directory _)
+                    | Some (InodeContent.RegularFile _)
                     | Some (InodeContent.Symlink _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
                 | OpenFileTarget.Kqueue _
                 | OpenFileTarget.Epoll _
@@ -789,6 +804,7 @@ module UnixSystem =
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
+                | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Pipe _
                 | OpenFileTarget.Kqueue _ -> []
                 | OpenFileTarget.Epoll portState ->
@@ -842,6 +858,7 @@ module UnixSystem =
                         | OpenFileTarget.File _
                         | OpenFileTarget.Directory _
                         | OpenFileTarget.Socket _
+                        | OpenFileTarget.CharacterDevice _
                         | OpenFileTarget.Pipe _ ->
                             [
                                 UnixSystemDefect.ParkedSocketWaitOnNonPort (task, wait.Port, description.Target)
@@ -874,6 +891,7 @@ module UnixSystem =
                             | OpenFileTarget.Epoll _
                             | OpenFileTarget.File _
                             | OpenFileTarget.Directory _
+                            | OpenFileTarget.CharacterDevice _
                             | OpenFileTarget.Socket _
                             | OpenFileTarget.Pipe _ ->
                                 [
@@ -898,6 +916,7 @@ module UnixSystem =
                                     | OpenFileTarget.File _
                                     | OpenFileTarget.Directory _
                                     | OpenFileTarget.Socket _
+                                    | OpenFileTarget.CharacterDevice _
                                     | OpenFileTarget.Pipe _ -> []
 
                                 let rebound =
@@ -923,6 +942,7 @@ module UnixSystem =
                                 | None -> false
                             | OpenFileTarget.File _
                             | OpenFileTarget.Directory _
+                            | OpenFileTarget.CharacterDevice _
                             | OpenFileTarget.Pipe _
                             | OpenFileTarget.Kqueue _
                             | OpenFileTarget.Epoll _ -> false
@@ -1202,6 +1222,7 @@ module UnixSystem =
                     | OpenFileTarget.Epoll _
                     | OpenFileTarget.File _
                     | OpenFileTarget.Directory _
+                    | OpenFileTarget.CharacterDevice _
                     | OpenFileTarget.Socket _ -> None
                 )
 
@@ -1965,7 +1986,8 @@ module UnixSystem =
             |> List.choose (fun (id, description) ->
                 match description.Target with
                 | OpenFileTarget.File (inode, _)
-                | OpenFileTarget.Directory (inode, _) -> Some $"description %O{id} onto %O{inode}"
+                | OpenFileTarget.Directory (inode, _)
+                | OpenFileTarget.CharacterDevice (inode, _) -> Some $"description %O{id} onto %O{inode}"
                 | OpenFileTarget.Kqueue _
                 | OpenFileTarget.Epoll _
                 | OpenFileTarget.Socket _

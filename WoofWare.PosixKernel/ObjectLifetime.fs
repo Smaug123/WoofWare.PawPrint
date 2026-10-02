@@ -163,7 +163,8 @@ module ObjectLifetime =
         | OpenFileTarget.Epoll _
         | OpenFileTarget.Kqueue _ -> Ok system
         | OpenFileTarget.File (inode, _)
-        | OpenFileTarget.Directory (inode, _) ->
+        | OpenFileTarget.Directory (inode, _)
+        | OpenFileTarget.CharacterDevice (inode, _) ->
             // The description may have been the last reference to an inode whose
             // last name went away earlier, which is what keeps `read` on an
             // unlinked descriptor working right up until the descriptor goes.
