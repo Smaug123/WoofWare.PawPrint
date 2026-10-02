@@ -2499,6 +2499,74 @@ module NativeSystemNative =
 
             let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
             pushInt32 (UnixErrorPal.toRawErrnoUnder numbering pal) ctx |> Some
+        | Some "SystemNative_StrErrorR",
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer _
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePointer _) ->
+            // `const char* SystemNative_StrErrorR(int32_t platformErrno,
+            // char* buffer, int32_t bufferSize)` (pal_errno.c): the message
+            // text for a raw errno, through the C library's `strerror_r`.
+            // CoreLib's `Interop.Sys.StrError` calls it with a 1024-byte
+            // `stackalloc` for every errno-built exception message and for
+            // `Marshal.GetPInvokeErrorMessage`, and reads the string at the
+            // returned pointer, or at the buffer for NULL. `StrErrorR.answer`
+            // is the whole of what it does; this places the answer in guest
+            // memory. errno is never touched (measured on both flavours).
+            let operation = "SystemNative_StrErrorR"
+            let platformErrno = NativeCall.int32Argument operation instruction.Arguments.[0]
+            let bufferArgument = instruction.Arguments.[1]
+            let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
+
+            let library = CLibrary.ofPlatform state.Kernel.UnixPlatform
+
+            // Only an answer that writes resolves the buffer, as only that one
+            // dereferences it in C: a GNU answer of the library's own string
+            // succeeds whatever pointer it was handed.
+            let write (written : ImmutableArray<byte>) : IlMachineState =
+                if written.IsEmpty then
+                    state
+                else
+
+                let bufferPointer = bufferPointerArgument operation "buffer" bufferArgument
+
+                match BufferPointer.dereferenceable bufferPointer with
+                | Some destination -> writeBytesThrough ctx operation destination written state
+                | None ->
+                    failwith
+                        $"%s{operation}: the C library would write %d{written.Length} bytes of errno %d{platformErrno}'s text through %O{bufferPointer}, which names no storage; strerror_r would fault there. Pass a buffer that names guest storage."
+
+            let pushNull (state : IlMachineState) : IlMachineState =
+                IlMachineState.pushToEvalStack'
+                    (EvalStackValue.ManagedPointer ManagedPointerSource.Null)
+                    ctx.Thread
+                    state
+
+            match StrErrorR.answer library platformErrno bufferSize with
+            | StrErrorRAnswer.RefusedSize -> pushNull state |> NativeHandlerResult.completed |> Some
+            | StrErrorRAnswer.LibraryText text ->
+                // A copy per call, where glibc hands out one read-only string
+                // per error: the bytes and the untouched buffer are what a
+                // caller sees, and only comparing two returned pointers, or
+                // writing through one (a fault on real glibc), tells them
+                // apart. A managed array rather than native heap, so that
+                // `SystemNative_Free` refuses it, where `free` of a string
+                // glibc owns would abort.
+                let text, state =
+                    NativeCall.allocateNullTerminatedUtf8 ctx.BaseClassTypes text state
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer text) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | StrErrorRAnswer.Buffer written ->
+                // The caller's own pointer back, exactly as it was passed.
+                write written
+                |> IlMachineState.pushToEvalStack bufferArgument ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | StrErrorRAnswer.NullAfterWriting written ->
+                write written |> pushNull |> NativeHandlerResult.completed |> Some
         | Some "SystemNative_GetCpuUtilization",
           [ ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Double) ->

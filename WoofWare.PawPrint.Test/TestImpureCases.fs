@@ -1847,6 +1847,33 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // `SystemNative_StrErrorR` under glibc: the C library's text,
+                // which the flavours do not share, and GNU `strerror_r`'s
+                // returned pointers.
+                FileName = "StrErrorLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                // Compared: real .NET on a Linux host runs glibc's shim.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The same under Darwin's libc and XSI `strerror_r`.
+                FileName = "StrErrorDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                // Compared, as its Linux sibling is.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The same rows under Darwin's numbering.
                 FileName = "SocketAcceptDarwin.cs"
                 ExpectedReturnCode = 0

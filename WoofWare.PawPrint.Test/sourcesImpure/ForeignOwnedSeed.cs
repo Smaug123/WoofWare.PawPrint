@@ -10,10 +10,9 @@ using System.Runtime.InteropServices;
 // cannot give it another owner, and the answers here depend on the configured
 // user and groups (see TestImpureCases).
 //
-// Errnos come from the raw shim rather than from a caught exception: CoreLib's
-// UnauthorizedAccessException for EACCES carries an inner IOException whose
-// message needs SystemNative_StrErrorR, which does not exist, so a managed row
-// that throws would abort the run rather than fail it.
+// Errnos come from the raw shim rather than from a caught exception: CoreLib
+// reports EACCES and EPERM alike as UnauthorizedAccessException, and the raw
+// errno tells them apart.
 //
 // The effective group and the reported groups are written to stdout, as
 // little-endian uint32s (the effective group, the count, then each group), so
