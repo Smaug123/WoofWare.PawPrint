@@ -134,6 +134,26 @@ module SyscallInterruption =
         | Ok (_ :: _)
         | Error _ -> true
 
+    /// Whether a transfer of `count` bytes from or to the entropy pool by `task`
+    /// would stop short at a page boundary for a signal: a read or write of
+    /// `/dev/urandom`, or `getrandom(2)`. Linux's `get_random_bytes_user` and
+    /// `write_pool_user` (drivers/char/random.c, 6.18) move a 64-byte block at
+    /// a time and, each time the bytes moved reach a multiple of a page with
+    /// more still to move, stop if a signal is pending: so a transfer of more
+    /// than a page by a task with one pending moves a page, short, and never
+    /// answers EINTR. They count bytes moved, so where the buffer starts does
+    /// not matter, and a transfer of a page or less never reaches a check.
+    let internal stopsAtPageBoundary<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (count : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : bool
+        =
+        let pageSize =
+            SimulatedPageSize.bytes (SimulatedUnixPlatform.pageSize system.Machine.UnixPlatform)
+
+        count > pageSize && wakes task system
+
     /// Whether a signal with a handler ends the sleep of `task` now, whatever
     /// the handlers' flags: for a syscall that, interrupted, returns what it
     /// has done so far rather than failing or restarting, as a write that has

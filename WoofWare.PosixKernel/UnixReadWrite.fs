@@ -1145,25 +1145,6 @@ module UnixReadWrite =
         // gigabytes.
         Ok (Ok (ImmutableArray.Create (contents, int offset, transfer)))
 
-    /// Whether a transfer of `count` bytes with `/dev/urandom` by `task` would
-    /// stop short at a page boundary for a signal. Linux's
-    /// `get_random_bytes_user` and `write_pool_user` (drivers/char/random.c,
-    /// 6.18) move a 64-byte block at a time and, each time the bytes moved reach
-    /// a multiple of a page with more still to move, stop if a signal is
-    /// pending: so a transfer of more than a page by a task with one pending
-    /// moves a page, short. They count bytes moved, so where the buffer starts
-    /// does not matter, and a transfer of a page or less never reaches a check.
-    let private stopsAtPageBoundary<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (task : 'Task)
-        (count : int)
-        (system : UnixSystem<'Task, 'Handler>)
-        : bool
-        =
-        let pageSize =
-            SimulatedPageSize.bytes (SimulatedUnixPlatform.pageSize system.Machine.UnixPlatform)
-
-        count > pageSize && SyscallInterruption.wakes task system
-
     /// What a device's own write of `count` bytes by `task`, at most one call's
     /// worth, answers without the bytes, once everything ahead of the driver
     /// has passed; `None` where it copies them, which it then takes all of.
@@ -1198,7 +1179,7 @@ module UnixReadWrite =
         | UserBuffer.Opaque -> Error (DeviceRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
         | UserBuffer.Addressless -> Error (DeviceRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
         | UserBuffer.Mapped ->
-            if stopsAtPageBoundary task count system then
+            if SyscallInterruption.stopsAtPageBoundary task count system then
                 Error (DeviceRefusal.SignalAtPageBoundary count)
             else
                 Ok None
@@ -1240,7 +1221,7 @@ module UnixReadWrite =
 
         // Measured (`bigread.c`): a read of 4097 bytes interrupted by a signal
         // answered 4096, and no read was ever EINTR.
-        if stopsAtPageBoundary task count system then
+        if SyscallInterruption.stopsAtPageBoundary task count system then
             Error (DeviceRefusal.SignalAtPageBoundary count)
         else
 
@@ -2173,7 +2154,9 @@ module UnixReadWrite =
             // first.
             socketWrite id task socketId (uint64 bytes.Length) system
         // Both devices take every byte they are given and keep none of it.
-        | Ok (WriteTarget.CharacterDevice CharacterDevice.URandom) when stopsAtPageBoundary task bytes.Length system ->
+        | Ok (WriteTarget.CharacterDevice CharacterDevice.URandom) when
+            SyscallInterruption.stopsAtPageBoundary task bytes.Length system
+            ->
             Error (WriteRefusal.SignalAtPageBoundary bytes.Length)
         | Ok (WriteTarget.CharacterDevice _) -> returns (WriteAnswer.Completed (int64 bytes.Length)) system
         | Ok (WriteTarget.Pipe (pipeId, descriptionId, nonBlocking)) ->
@@ -2904,7 +2887,9 @@ module UnixReadWrite =
 
         match target with
         // Both devices take every byte they are given and keep none of it.
-        | PWriteTarget.CharacterDevice CharacterDevice.URandom when stopsAtPageBoundary task bytes.Length system ->
+        | PWriteTarget.CharacterDevice CharacterDevice.URandom when
+            SyscallInterruption.stopsAtPageBoundary task bytes.Length system
+            ->
             Error (PWriteRefusal.SignalAtPageBoundary bytes.Length)
         | PWriteTarget.CharacterDevice _ -> Ok (WriteAnswer.Completed (int64 bytes.Length), system)
         | PWriteTarget.File inode ->

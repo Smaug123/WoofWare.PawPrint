@@ -166,7 +166,9 @@ module TestNonCryptoRandom =
                         }
                 }
 
-            let pool, _ = MinipalRandom.coreClrSecureRandomBytes "test" (int count) kernel
+            let pool, _ =
+                MinipalRandom.coreClrSecureRandomBytes "test" (ThreadId 0) (int count) kernel
+
             let libc, _ = NonCryptoRandom.drawBytes (int count) seed
             Seq.toArray pool = libc
 
