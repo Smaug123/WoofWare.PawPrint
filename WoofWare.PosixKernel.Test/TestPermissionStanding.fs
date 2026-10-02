@@ -479,6 +479,7 @@ module TestPermissionStanding =
             PathWalk.resolveExisting
                 (SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.linuxX64)
                 Owners.root
+                SymlinkProtection.Off
                 (VirtualFileSystem.root vfs)
                 SymlinkPolicy.NoFollowFinal
                 (UnixPath.parseOrFail context p)

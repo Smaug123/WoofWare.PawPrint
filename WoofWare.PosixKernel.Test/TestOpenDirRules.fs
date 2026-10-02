@@ -118,6 +118,7 @@ module TestOpenDirRules =
             PathWalk.resolveFull
                 (SimulatedUnixPlatform.pathLimits platform)
                 (Owners.caller privilege)
+                SymlinkProtection.Off
                 (VirtualFileSystem.root tree)
                 SymlinkPolicy.Follow
                 TrailingSeparatorPolicy.Demand

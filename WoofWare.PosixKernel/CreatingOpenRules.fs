@@ -37,6 +37,15 @@ type CreatingOpenRules =
         /// create a setuid, setgid or sticky file at all — measured, 0o4644,
         /// 0o2644 and 0o1644 all land as 0o644. Linux keeps all twelve bits.
         ModeMask : PermissionBits
+        /// Whether a creating open that lands on an existing inode in a sticky
+        /// directory is screened by who owns the two, as
+        /// `ProtectedFiles.refusesCreatingOpen` describes. Linux screens; its
+        /// `fs.protected_*` sysctls decide only how far, and a symbolic link
+        /// left unfollowed by `O_NOFOLLOW` is screened even with every one of
+        /// them 0, so `open(l, O_CREAT|O_NOFOLLOW)` on another user's link in
+        /// a world-writable sticky directory is EACCES rather than ELOOP.
+        /// Darwin does not screen, and answers ELOOP there.
+        ScreensStickyDirectoryEntries : bool
     }
 
 /// What `open(2)` should do next, once the path has been resolved and the
@@ -73,6 +82,11 @@ module CreatingOpenRules =
     ///  * A path that consumed no component at all — "/" — is whatever
     ///    `RootNavigation` says, which is Darwin's EEXIST.
     ///  * A creating open landing on an existing directory is EISDIR on Linux.
+    ///  * A creating open landing on any other existing inode, in a sticky
+    ///    directory, is EACCES where `ScreensStickyDirectoryEntries` and
+    ///    `ProtectedFiles.refusesCreatingOpen` under `protection` say so.
+    ///    Measured on Linux after EEXIST and EISDIR, and before the `O_NOFOLLOW`
+    ///    ELOOP, the permission check and any truncation.
     ///  * Binding a name needs the *write* bit on the directory that will hold
     ///    it, in the triple the caller's standing towards that directory
     ///    selects: measured as its owner at uid 1000, 0o333 and 0o300 succeed
@@ -95,6 +109,7 @@ module CreatingOpenRules =
     /// rather than a step before it.
     let verdict
         (rules : CreatingOpenRules)
+        (protection : ProtectedFiles)
         (bindable : BindableEntryNames)
         (credentials : Credentials)
         (creating : bool)
@@ -130,9 +145,29 @@ module CreatingOpenRules =
                 CreatingOpenVerdict.Refuse UnixError.EISDIR
             else
                 CreatingOpenVerdict.OpenExisting inode
-        | ResolvedTarget.Entry (_, _, Some inode) ->
+        | ResolvedTarget.Entry (directory, _, Some inode) ->
             if rules.RefusesExistingDirectory && isDirectory inode then
                 CreatingOpenVerdict.Refuse UnixError.EISDIR
+            elif
+                rules.ScreensStickyDirectoryEntries
+                && (
+                    match VirtualFileSystem.tryGet directory vfs, VirtualFileSystem.tryGet inode vfs with
+                    | Some ({
+                                Content = InodeContent.Directory parent
+                            } as parentInode),
+                      Some existing ->
+                        ProtectedFiles.refusesCreatingOpen
+                            protection
+                            credentials
+                            parentInode.Owner
+                            parent.Permissions
+                            existing
+                    | _ ->
+                        failwith
+                            $"CreatingOpenRules.verdict: resolution named inode %O{inode} in directory inode %O{directory}, but the filesystem does not hold both, the second as a directory. Run VirtualFileSystem.checkInvariants."
+                )
+            then
+                CreatingOpenVerdict.Refuse UnixError.EACCES
             else
                 CreatingOpenVerdict.OpenExisting inode
         | ResolvedTarget.Entry (directory, name, None) ->

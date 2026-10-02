@@ -275,6 +275,7 @@ module TestUnixSystemInvariants =
             PathWalk.resolveExisting
                 (SimulatedUnixPlatform.pathLimits standing.Machine.UnixPlatform)
                 Owners.root
+                SymlinkProtection.Off
                 (VirtualFileSystem.root standing.Machine.FileSystem)
                 SymlinkPolicy.Follow
                 (UnixPath.parseOrFail context path)

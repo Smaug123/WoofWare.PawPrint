@@ -613,6 +613,7 @@ module SimulatedUnixPlatform =
                 RefusesExistingDirectory = true
                 RootNavigation = None
                 ModeMask = PermissionBits.parseOrFail "SimulatedUnixPlatform.creatingOpenRules" 0o7777
+                ScreensStickyDirectoryEntries = true
             }
         | SimulatedUnixFlavour.Darwin ->
             {
@@ -620,6 +621,7 @@ module SimulatedUnixPlatform =
                 RefusesExistingDirectory = false
                 RootNavigation = Some UnixError.EEXIST
                 ModeMask = PermissionBits.parseOrFail "SimulatedUnixPlatform.creatingOpenRules" 0o0777
+                ScreensStickyDirectoryEntries = false
             }
 
     /// Where the group of an inode this platform's `open(O_CREAT)` or `mkdir(2)`

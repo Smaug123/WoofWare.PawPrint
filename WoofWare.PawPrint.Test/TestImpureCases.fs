@@ -128,6 +128,106 @@ module TestImpureCases =
                     }
         }
 
+    /// The seed `ProtectedFilesSeeded.cs` reads: root's `/etc/passwd`, and a
+    /// root-owned sticky world-writable `/tmp` holding a regular file and a
+    /// symbolic link to `/etc/passwd`, both of user 2000's.
+    let private protectedFilesSeed : Map<DirectoryEntryName, SeedEntry> =
+        let owner (user : uint32) : InodeOwner option =
+            Some
+                {
+                    User = UserId.parseOrFail "test seed" user
+                    Group = GroupId.parseOrFail "test seed" user
+                }
+
+        let bits (mode : int) : PermissionBits =
+            PermissionBits.parseOrFail "test seed" mode
+
+        let named (name : string) : DirectoryEntryName =
+            DirectoryEntryName.parseOrFail "test seed" name
+
+        Map.ofList
+            [
+                named "etc",
+                SeedEntry.Directory (
+                    Map.ofList
+                        [
+                            named "passwd",
+                            SeedEntry.File (
+                                ImmutableArray.CreateRange "root:x:0:0::/root:/bin/sh\n"B,
+                                bits 0o644,
+                                owner 0u
+                            )
+                        ],
+                    bits 0o755,
+                    owner 0u
+                )
+                named "tmp",
+                SeedEntry.Directory (
+                    Map.ofList
+                        [
+                            named "theirs", SeedEntry.File (ImmutableArray.CreateRange "t"B, bits 0o666, owner 2000u)
+                            named "link",
+                            SeedEntry.Symlink (SymlinkTarget.parseOrFail "test seed" "/etc/passwd", owner 2000u)
+                        ],
+                    bits 0o1777,
+                    owner 0u
+                )
+            ]
+
+    /// Build one registration of `ProtectedFilesSeeded.cs` on `platform` under
+    /// the sysctls `protection`, as uid 1000 on a root-owned `/`, whose guest
+    /// reports how each of its five opens ended: `None` for success, or the
+    /// error.
+    let private protectedFilesCase
+        (platform : SimulatedUnixPlatform)
+        (protection : ProtectedFiles)
+        (expected : UnixError option list)
+        : EndToEndTestCase
+        =
+        {
+            FileName = "ProtectedFilesSeeded.cs"
+            ExpectedReturnCode = 0
+            KernelConfig =
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                    UserId = Some 1000u
+                    GroupId = Some 1000u
+                    FileSystem = protectedFilesSeed
+                    FileSystemRootOwner =
+                        Some
+                            {
+                                User = UserId.root
+                                Group = GroupId.parseOrFail "test seed" 0u
+                            }
+                    ProtectedFiles = protection
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.Never
+            ExpectsUnhandledException = false
+            AssertTerminalState =
+                Some (fun state ->
+                    OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
+                    |> Seq.toArray
+                    |> shouldEqual (
+                        expected
+                        |> List.toArray
+                        |> Array.collect (fun error ->
+                            let value =
+                                match error with
+                                | None -> 0u
+                                | Some error -> uint32 (UnixErrorPal.toPal error)
+
+                            [|
+                                byte (value &&& 0xFFu)
+                                byte ((value >>> 8) &&& 0xFFu)
+                                byte ((value >>> 16) &&& 0xFFu)
+                                byte ((value >>> 24) &&& 0xFFu)
+                            |]
+                        )
+                    )
+                )
+        }
+
     /// Build one registration of `ProcessIdConfigured.cs`, whose guest echoes the
     /// process ID it observed to stdout as four little-endian bytes. `None` runs
     /// it under `KernelConfig.Default`, pinning `UnixSystem.defaultProcessId` as
@@ -1111,6 +1211,35 @@ module TestImpureCases =
                         )
                     )
             }
+            // The `fs.protected_*` sysctls reach the kernel's walk and its
+            // creating open: following user 2000's link in root's sticky /tmp,
+            // and `O_CREAT` on user 2000's file there, are refused only under
+            // the sysctls that forbid them. `O_CREAT|O_NOFOLLOW` on the link is
+            // EACCES on Linux whatever the sysctls (Linux screens a sticky
+            // directory's entries for a creating open), and ELOOP on Darwin,
+            // which does not.
+            protectedFilesCase
+                SimulatedUnixPlatform.linuxX64
+                {
+                    Symlinks = SymlinkProtection.InWorldWritableStickyDirectories
+                    RegularFiles = CreationProtection.InWorldWritableStickyDirectories
+                    Fifos = CreationProtection.Off
+                }
+                [
+                    Some UnixError.EACCES
+                    None
+                    None
+                    Some UnixError.EACCES
+                    Some UnixError.EACCES
+                ]
+            protectedFilesCase
+                SimulatedUnixPlatform.linuxX64
+                ProtectedFiles.off
+                [ None ; None ; None ; None ; Some UnixError.EACCES ]
+            protectedFilesCase
+                SimulatedUnixPlatform.macOsArm64
+                ProtectedFiles.off
+                [ None ; None ; None ; None ; Some UnixError.ELOOP ]
             // Both flavours: they answered every row alike, so a handler that
             // branched on the flavour for a standard stream would show here.
             stdioNonBlockingCase SimulatedUnixPlatform.linuxX64

@@ -205,6 +205,7 @@ type PausedResolution =
         {
             Limits : PathLimits
             Credentials : Credentials
+            SymlinkProtection : SymlinkProtection
             Policy : SymlinkPolicy
             TrailingSeparator : TrailingSeparatorPolicy
             FileSystem : VirtualFileSystem
@@ -302,6 +303,7 @@ module PathWalk =
     let rec private walkFrom
         (limits : PathLimits)
         (credentials : Credentials)
+        (symlinkProtection : SymlinkProtection)
         (policy : SymlinkPolicy)
         (trailingSeparatorPolicy : TrailingSeparatorPolicy)
         (vfs : VirtualFileSystem)
@@ -317,6 +319,7 @@ module PathWalk =
             {
                 Limits = limits
                 Credentials = credentials
+                SymlinkProtection = symlinkProtection
                 Policy = policy
                 TrailingSeparator = trailingSeparatorPolicy
                 FileSystem = vfs
@@ -386,6 +389,7 @@ module PathWalk =
             walkFrom
                 limits
                 credentials
+                symlinkProtection
                 policy
                 trailingSeparatorPolicy
                 vfs
@@ -399,6 +403,7 @@ module PathWalk =
             walkFrom
                 limits
                 credentials
+                symlinkProtection
                 policy
                 trailingSeparatorPolicy
                 vfs
@@ -450,6 +455,7 @@ module PathWalk =
             walkFrom
                 limits
                 credentials
+                symlinkProtection
                 policy
                 trailingSeparatorPolicy
                 vfs
@@ -468,6 +474,7 @@ module PathWalk =
             walkFrom
                 limits
                 credentials
+                symlinkProtection
                 policy
                 trailingSeparatorPolicy
                 vfs
@@ -501,6 +508,66 @@ module PathWalk =
         match paused.Final with
         | None -> false
         | Some _ -> VirtualFileSystem.isOrphanedDirectory paused.Directory paused.FileSystem
+
+    /// What `paused.SymlinkProtection` says about following the link `link`
+    /// found in `directory`: `None` to follow it.
+    let private linkProtectionRefusal
+        (paused : PausedResolution)
+        (directory : InodeNumber)
+        (link : InodeNumber)
+        : UnixError option
+        =
+        let vfs = paused.FileSystem
+
+        let directoryInode, directoryPermissions =
+            match VirtualFileSystem.tryGet directory vfs with
+            | Some ({
+                        Content = InodeContent.Directory content
+                    } as inode) -> inode, content.Permissions
+            | Some _
+            | None ->
+                failwith
+                    $"VirtualFileSystem: the walk found a link in inode %O{directory}, which it had established was a directory, but it is now absent or not a directory. The inode graph is inconsistent; run VirtualFileSystem.checkInvariants."
+
+        let linkOwner =
+            match VirtualFileSystem.tryGet link vfs with
+            | Some inode -> inode.Owner
+            | None ->
+                failwith
+                    $"VirtualFileSystem: directory inode %O{directory} binds a link to inode %O{link}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
+
+        if
+            not (
+                ProtectedFiles.refusesToFollow
+                    paused.SymlinkProtection
+                    paused.Credentials
+                    directoryInode.Owner
+                    directoryPermissions
+                    linkOwner
+            )
+        then
+            None
+        else
+
+        // Which errno a refused link gets depends on the kernel's cache once
+        // the link is far enough down a chain, and this model has no cache.
+        // Linux first walks holding no references (RCU), and the refusal
+        // there restarts the walk holding them, still carrying the count of
+        // links it traversed, so the protected link's budget check sees each
+        // earlier link twice: ELOOP once 2k - 1 reaches the limit, for the
+        // k-th traversal. A walk that had already taken references (a cold
+        // dentry cache makes one) refuses at once, with EACCES. Measured
+        // (`protected-sysctls.c`, ORDER rows): within the limit, EACCES for
+        // k <= 20 whatever the cache, and EACCES or ELOOP by the cache for
+        // 21 <= k <= 40.
+        let traversal = paused.SymlinksTraversed + 1
+        let limit = PathLimits.maxSymlinkTraversals paused.Limits
+
+        if 2 * traversal - 1 >= limit then
+            failwith
+                $"PathWalk: the walk was refused a symbolic link (inode %O{link}, in the sticky world-writable directory %O{directory}) by fs.protected_symlinks at its traversal %d{traversal} of %d{limit}. That far down a chain, Linux answers EACCES or ELOOP according to whether its dentry cache let the walk start without taking references, which this model does not represent; refused rather than guessed."
+        else
+            Some UnixError.EACCES
 
     /// Look the final name up, finishing the resolution `resolveParent` paused.
     ///
@@ -607,6 +674,19 @@ module PathWalk =
             | Error error -> Error error
             | Ok (next, spliced) ->
 
+            // Only a link in the final position is screened, since only there
+            // does Linux ask (`may_follow_link`, for a trailing link): measured,
+            // "s/ld/x" and "s/ld/." follow a link "s/ld/" may not. A link that
+            // a final link names is final in its turn, so each link of a chain
+            // ending in the path's last component is screened against its own
+            // directory.
+            //
+            // After the traversal budget, which Linux spends on the link first:
+            // a protected link that is the 41st traversal is ELOOP to everyone.
+            match linkProtectionRefusal paused directory target with
+            | Some error -> Error error
+            | None ->
+
             // The link's own trailing separator only takes effect when
             // nothing follows it: when the walk has more to resolve, the
             // separator joining the target to the remainder absorbs it.
@@ -640,6 +720,7 @@ module PathWalk =
             walkFrom
                 limits
                 paused.Credentials
+                paused.SymlinkProtection
                 paused.Policy
                 paused.TrailingSeparator
                 vfs
@@ -688,9 +769,17 @@ module PathWalk =
     /// agrees — except where `trailingSeparatorPolicy` says the walk must refuse
     /// it outright, which is a fact about the kernel rather than about the
     /// caller; see `TrailingSeparatorPolicy`.
+    ///
+    /// A symbolic link in the final position that `symlinkProtection` forbids
+    /// `credentials` to follow (see `ProtectedFiles.refusesToFollow`) is EACCES,
+    /// once the traversal budget has admitted it. Interior links are never
+    /// screened. Throws rather than answer when that refusal falls on a
+    /// traversal past half the budget: Linux's answer there depends on its
+    /// dentry cache.
     let resolveParent
         (limits : PathLimits)
         (credentials : Credentials)
+        (symlinkProtection : SymlinkProtection)
         (startDirectory : InodeNumber)
         (policy : SymlinkPolicy)
         (trailingSeparatorPolicy : TrailingSeparatorPolicy)
@@ -728,6 +817,7 @@ module PathWalk =
         walkFrom
             limits
             credentials
+            symlinkProtection
             policy
             trailingSeparatorPolicy
             vfs
@@ -744,6 +834,7 @@ module PathWalk =
     let resolveFull
         (limits : PathLimits)
         (credentials : Credentials)
+        (symlinkProtection : SymlinkProtection)
         (startDirectory : InodeNumber)
         (policy : SymlinkPolicy)
         (trailingSeparatorPolicy : TrailingSeparatorPolicy)
@@ -751,7 +842,7 @@ module PathWalk =
         (vfs : VirtualFileSystem)
         : Result<Resolution, UnixError>
         =
-        resolveParent limits credentials startDirectory policy trailingSeparatorPolicy path vfs
+        resolveParent limits credentials symlinkProtection startDirectory policy trailingSeparatorPolicy path vfs
         |> Result.bind completeResolution
 
     /// `resolveFull`, discarding the how-it-finished facts. For the lookup
@@ -760,13 +851,14 @@ module PathWalk =
     let resolve
         (limits : PathLimits)
         (credentials : Credentials)
+        (symlinkProtection : SymlinkProtection)
         (startDirectory : InodeNumber)
         (policy : SymlinkPolicy)
         (path : UnixPath)
         (vfs : VirtualFileSystem)
         : Result<ResolvedTarget, UnixError>
         =
-        resolveFull limits credentials startDirectory policy TrailingSeparatorPolicy.Demand path vfs
+        resolveFull limits credentials symlinkProtection startDirectory policy TrailingSeparatorPolicy.Demand path vfs
         |> Result.map (fun resolution -> resolution.Target)
 
     /// The inode a resolved target names. Turns a free final name into ENOENT,
@@ -784,13 +876,14 @@ module PathWalk =
     let resolveExisting
         (limits : PathLimits)
         (credentials : Credentials)
+        (symlinkProtection : SymlinkProtection)
         (startDirectory : InodeNumber)
         (policy : SymlinkPolicy)
         (path : UnixPath)
         (vfs : VirtualFileSystem)
         : Result<InodeNumber, UnixError>
         =
-        resolve limits credentials startDirectory policy path vfs
+        resolve limits credentials symlinkProtection startDirectory policy path vfs
         |> Result.bind existingOf
 
 // ------------------------------------------------------------ inspection
