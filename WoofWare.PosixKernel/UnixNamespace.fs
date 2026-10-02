@@ -129,6 +129,23 @@ type internal OpenFlags =
         Directory : bool
     }
 
+/// Why this kernel will not answer a `readlink(2)`.
+[<RequireQualifiedAccess>]
+type ReadLinkRefusal =
+    /// The destination buffer has no answer at the step the call reached.
+    | Buffer of BufferRefusal
+    /// This kernel will not resolve the path.
+    | Path of PathRefusal
+
+[<RequireQualifiedAccess>]
+module ReadLinkRefusal =
+    /// What this kernel knows about why it cannot answer. A client adds which
+    /// entry point asked, and with which path.
+    let describe (refusal : ReadLinkRefusal) : string =
+        match refusal with
+        | ReadLinkRefusal.Buffer refusal -> BufferRefusal.describe refusal
+        | ReadLinkRefusal.Path refusal -> PathRefusal.describe refusal
+
 /// What `readlink(2)` puts in the caller's buffer and what it returns.
 [<RequireQualifiedAccess>]
 type ReadLinkAnswer =
@@ -159,6 +176,7 @@ type DirectoryEntryKind =
     | RegularFile
     | Directory
     | Symlink
+    | CharacterDevice
 
 [<RequireQualifiedAccess>]
 module DirectoryEntryKind =
@@ -168,6 +186,7 @@ module DirectoryEntryKind =
         | InodeContent.RegularFile _ -> DirectoryEntryKind.RegularFile
         | InodeContent.Directory _ -> DirectoryEntryKind.Directory
         | InodeContent.Symlink _ -> DirectoryEntryKind.Symlink
+        | InodeContent.CharacterDevice _ -> DirectoryEntryKind.CharacterDevice
 
 /// One entry of a directory, as `getdents(2)` reports it: the facts in a
 /// `struct linux_dirent64` or a Darwin `struct direntry`, without either's
@@ -201,6 +220,11 @@ type ReadDirectoryRefusal =
     /// `DirectoryPosition.Unenumerable`), and what each filesystem yields from
     /// an offset it did not hand out is its own.
     | UnenumerablePosition of inode : InodeNumber * offset : int64
+    /// The description is onto `inode`, a directory of the device filesystem.
+    /// A real one lists a node for every device the machine has and this
+    /// kernel's holds only the nodes of the devices it has drivers for, so a
+    /// listing would leave out names a real one reports.
+    | DeviceFileSystem of inode : InodeNumber
 
 [<RequireQualifiedAccess>]
 module ReadDirectoryRefusal =
@@ -210,6 +234,8 @@ module ReadDirectoryRefusal =
         match refusal with
         | ReadDirectoryRefusal.UnenumerablePosition (inode, offset) ->
             $"the description onto directory %O{inode} is at offset %d{offset}, where lseek put it. Both kernels accept that offset, but what the next read yields from it is each filesystem's own (tmpfs resumes from the entry with the greatest offset at or below it; APFS skips that many entries, or answers EAGAIN, depending on the high word), and this kernel's position is a name rather than an offset. Only offset 0, which rewinds, is readable from."
+        | ReadDirectoryRefusal.DeviceFileSystem inode ->
+            $"the description is onto directory %O{inode}, on the device filesystem. A real one lists a node for every device the machine has, and this kernel's holds only the nodes of the devices it has drivers for, so its listing would leave out names a real one reports."
 
 /// How far `rename(2)` had got with its source when it stopped to copy its
 /// *destination* pathname in — which is not the same point on the two flavours.
@@ -262,6 +288,14 @@ type RenameRefusal =
     /// A sticky directory whose rule Darwin has not been measured to apply to
     /// this caller.
     | Sticky of refusal : StickyRefusal
+    /// This kernel will not resolve one of the paths.
+    | Path of refusal : PathRefusal
+    /// One of the paths names `mountRoot`, the root of a mounted filesystem,
+    /// in a combination whose answer has not been measured.
+    | MountPoint of mountRoot : InodeNumber
+    /// The call would move `name` out of `directory`, on the device
+    /// filesystem, which no name can be removed from here.
+    | DeviceFileSystem of directory : InodeNumber * name : DirectoryEntryName
 
 [<RequireQualifiedAccess>]
 module RenameRefusal =
@@ -270,6 +304,11 @@ module RenameRefusal =
     let describe (refusal : RenameRefusal) : string =
         match refusal with
         | RenameRefusal.Sticky refusal -> StickyRefusal.describe refusal
+        | RenameRefusal.Path refusal -> PathRefusal.describe refusal
+        | RenameRefusal.MountPoint mountRoot ->
+            $"one of the paths names inode %O{mountRoot}, the root of a mounted filesystem. Measured on Linux, moving it to a free name is EBUSY once the permission checks pass; what any other rename involving it answers, and where among the other checks, has not been measured."
+        | RenameRefusal.DeviceFileSystem (directory, name) ->
+            $"the call would move \"%s{DirectoryEntryName.toEscaped name}\" out of inode %O{directory}, on the device filesystem, which holds only the nodes of the devices this kernel has drivers for; it removes none of them, because it could not then say what a real one answers for the name."
 
 /// Why this kernel will not answer a `clonefile(2)`.
 [<RequireQualifiedAccess>]
@@ -294,6 +333,8 @@ type CloneFileRefusal =
     /// been measured only for an owner in the source's group, and for an
     /// owner outside it without `S_ISGID`.
     | UnmeasuredSpecialBits of inode : InodeNumber * standing : Standing * permissions : PermissionBits
+    /// This kernel will not resolve one of the paths.
+    | Path of PathRefusal
 
 [<RequireQualifiedAccess>]
 module CloneFileRefusal =
@@ -313,6 +354,7 @@ module CloneFileRefusal =
             $"the source is directory %O{inode}. clonefile clones a directory's whole tree, which this kernel does not model."
         | CloneFileRefusal.UnmeasuredSpecialBits (inode, standing, permissions) ->
             $"the source, inode %O{inode}, has mode 0o%o{PermissionBits.toInt permissions}, and the caller stands towards it as %O{standing}. A clone drops both set-ID bits and keeps the sticky bit when an unprivileged owner in the source's group clones it, but which of these bits survive any other caller's clone has not been measured."
+        | CloneFileRefusal.Path refusal -> PathRefusal.describe refusal
 
 /// A `clonefile(2)` whose flags have been screened, stopped at the point
 /// where the kernel copies its source pathname in.
@@ -390,6 +432,11 @@ type OpenRefusal =
     /// `opendir(3)` uses it, alone with `O_RDONLY`. Nothing was read or
     /// changed.
     | UnmodelledDirectoryOpen of flags : int
+    /// The path names the node of `device`, at `inode`. This kernel opens no
+    /// description of a device yet. Nothing was read or changed.
+    | CharacterDevice of inode : InodeNumber * device : CharacterDevice
+    /// This kernel will not resolve the path. Nothing was read or changed.
+    | Path of PathRefusal
 
 [<RequireQualifiedAccess>]
 module OpenRefusal =
@@ -407,6 +454,9 @@ module OpenRefusal =
             $"flags 0x%x{flags} ask for access mode 3, which Linux opens (demanding the read and write permission bits) as a descriptor that can neither read nor write: read, write and flock answer EBADF, ftruncate EINVAL, and only ioctl and the calls that need no access mode succeed. This kernel's descriptions permit reading, writing or both; model the fourth before answering."
         | OpenRefusal.UnmodelledDirectoryOpen flags ->
             $"flags 0x%x{flags} ask for O_DIRECTORY with a write access mode, O_TRUNC or O_NOFOLLOW. Only O_DIRECTORY|O_RDONLY (what opendir(3) opens with) is modelled; where ENOTDIR falls among EISDIR, EACCES and ELOOP for any other combination is not."
+        | OpenRefusal.CharacterDevice (inode, device) ->
+            $"the path names inode %O{inode}, the node of %O{device}, and this kernel opens no description of a device."
+        | OpenRefusal.Path refusal -> PathRefusal.describe refusal
 
 /// `open(2)`'s flag word, in the simulated flavour's own `<fcntl.h>`
 /// numbering, read as the kernel reads it.
@@ -636,6 +686,9 @@ module UnixNamespace =
                 match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
                 | Some (InodeContent.Directory _) ->
                     FileDescriptorRegistry.openDirectory inode system.Process.FileDescriptors
+                | Some (InodeContent.CharacterDevice _) ->
+                    failwith
+                        $"UnixNamespace.openPath: inode %O{inode} is a character device, which this kernel opens no description for; the open should have been refused before it allocated a descriptor (this is a bug in this library)."
                 | Some (InodeContent.RegularFile _)
                 | Some (InodeContent.Symlink _)
                 | None -> FileDescriptorRegistry.openFile inode flags.Access system.Process.FileDescriptors
@@ -669,7 +722,8 @@ module UnixNamespace =
             match
                 UnixPathResolution.resolvePathFull SymlinkPolicy.Follow TrailingSeparatorPolicy.Demand path system
             with
-            | Error error -> Ok (SyscallAnswer.Failed error, system)
+            | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
+            | Error (PathFailure.Refused refusal) -> Error (OpenRefusal.Path refusal)
             | Ok resolution ->
 
             match OpenDirRules.verdict credentials resolution system.Machine.FileSystem with
@@ -695,7 +749,8 @@ module UnixNamespace =
                 TrailingSeparatorPolicy.Demand
 
         match UnixPathResolution.resolvePathFull policy trailingSeparatorPolicy path system with
-        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
+        | Error (PathFailure.Refused refusal) -> Error (OpenRefusal.Path refusal)
         | Ok resolution ->
 
         match
@@ -766,6 +821,7 @@ module UnixNamespace =
                     $"UnixNamespace.openPath: resolution returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
 
         match entry.Content with
+        | InodeContent.CharacterDevice (device, _) -> Error (OpenRefusal.CharacterDevice (inode, device))
         | InodeContent.Symlink _ ->
             // Only reachable under `O_NOFOLLOW`, which is what `NoFollowFinal`
             // above selects: without it the resolver would have followed the link
@@ -862,6 +918,7 @@ module UnixNamespace =
                         $"UnixNamespace.openPath: truncating inode %O{inode} to zero was refused -- %s{TruncationRefusal.describe refusal} (this is a bug in this library)."
             | InodeContent.RegularFile _
             | InodeContent.Directory _
+            | InodeContent.CharacterDevice _
             | InodeContent.Symlink _ -> Ok system
 
         truncated |> Result.bind (opened inode)
@@ -922,7 +979,7 @@ module UnixNamespace =
         (destination : UserBuffer)
         (capacity : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<ReadLinkAnswer, BufferRefusal>
+        : Result<ReadLinkAnswer, ReadLinkRefusal>
         =
         let verdict =
             SimulatedUnixPlatform.readlinkCapacity system.Machine.UnixPlatform capacity
@@ -938,7 +995,8 @@ module UnixNamespace =
         // overrides that -- "lf/" demands that `lf` be a directory -- and the
         // resolver owns that rule, answering ENOTDIR.
         match UnixPathResolution.resolvePath SymlinkPolicy.NoFollowFinal path system with
-        | Error error -> Ok (ReadLinkAnswer.Failed error)
+        | Error (PathFailure.Errno error) -> Ok (ReadLinkAnswer.Failed error)
+        | Error (PathFailure.Refused refusal) -> Error (ReadLinkRefusal.Path refusal)
         | Ok inode ->
 
         match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
@@ -946,7 +1004,8 @@ module UnixNamespace =
             failwith
                 $"UnixNamespace.readlink: resolution returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
         | Some (InodeContent.Directory _)
-        | Some (InodeContent.RegularFile _) ->
+        | Some (InodeContent.RegularFile _)
+        | Some (InodeContent.CharacterDevice _) ->
             // Not a link: EINVAL, which is what distinguishes "not a link" from
             // a failure to read one.
             // Decided before the destination is looked at, which is what a real
@@ -974,8 +1033,8 @@ module UnixNamespace =
         // user-space store on one of them.
         match destination with
         | UserBuffer.Unmapped _ -> Ok (ReadLinkAnswer.Failed UnixError.EFAULT)
-        | UserBuffer.Opaque -> Error BufferRefusal.OpaqueAtTransfer
-        | UserBuffer.Addressless -> Error BufferRefusal.AddresslessAtTransfer
+        | UserBuffer.Opaque -> Error (ReadLinkRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+        | UserBuffer.Addressless -> Error (ReadLinkRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
         | UserBuffer.Mapped ->
 
         let all = UnixByteString.toBytes (SymlinkTarget.toByteString target)
@@ -1015,7 +1074,7 @@ module UnixNamespace =
         (destination : UserBuffer)
         (capacity : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<ReadLinkAnswer, BufferRefusal>
+        : Result<ReadLinkAnswer, ReadLinkRefusal>
         =
         // The size is screened before the path is copied in, on both flavours:
         // measured (`path-copyin-order.c`), a size Linux refuses is EINVAL with a
@@ -1080,6 +1139,10 @@ module UnixNamespace =
         | OpenFileTarget.Epoll _ -> Ok (ReadDirectoryAnswer.Failed (notADirectory true false), system)
         | OpenFileTarget.Directory (inode, position) ->
 
+        match VirtualFileSystem.mountedRootOf inode system.Machine.FileSystem with
+        | Some _ -> Error (ReadDirectoryRefusal.DeviceFileSystem inode)
+        | None ->
+
         let withPosition (position : DirectoryPosition) (system : UnixSystem<'Task, 'Handler>) =
             { system with
                 Process =
@@ -1120,9 +1183,18 @@ module UnixNamespace =
                 failwith
                     $"UnixNamespace.readDirectoryEntry: the entry \"%O{name}\" names inode %O{target}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
 
+        // A name a filesystem is mounted over reports the inode number of the
+        // directory the mount covers, not the mounted root's: measured on both
+        // flavours, `readdir("/")` reports `dev` as 14 and `stat("/dev")` as 1
+        // on Linux (`mountpoint.c`).
+        let reported =
+            match name, VirtualFileSystem.mountOf target system.Machine.FileSystem with
+            | DirectoryStreamName.Entry _, Some mount -> mount.Covered
+            | _, _ -> target
+
         let record : DirectoryRecord =
             {
-                Inode = target
+                Inode = reported
                 Name = name
                 Kind = kind
             }
@@ -1134,7 +1206,7 @@ module UnixNamespace =
         (path : UnixPath)
         (mode : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, PathRefusal>
         =
         let rules = SimulatedUnixPlatform.mkDirRules system.Machine.UnixPlatform
 
@@ -1144,7 +1216,8 @@ module UnixNamespace =
         // only thing that can reach past it, and only on Darwin — see
         // `MkDirRules.TrailingSeparator`.
         match UnixPathResolution.resolvePathFull SymlinkPolicy.NoFollowFinal rules.TrailingSeparator path system with
-        | Error error -> SyscallAnswer.Failed error, system
+        | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
+        | Error (PathFailure.Refused refusal) -> Error refusal
         | Ok resolution ->
 
         match
@@ -1154,7 +1227,7 @@ module UnixNamespace =
                 resolution
                 system.Machine.FileSystem
         with
-        | MkDirVerdict.Refuse error -> SyscallAnswer.Failed error, system
+        | MkDirVerdict.Refuse error -> Ok (SyscallAnswer.Failed error, system)
         | MkDirVerdict.Create (directory, name, parentPermissions) ->
 
         let permissions =
@@ -1174,13 +1247,15 @@ module UnixNamespace =
                 $"UnixNamespace.mkdir: creating \"%s{DirectoryEntryName.toEscaped name}\" in inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and does not hold that name (this is a bug in this library)."
         | Ok (_, filesystem) ->
 
-        SyscallAnswer.Completed 0L,
-        { system with
-            Machine =
-                { system.Machine with
-                    FileSystem = filesystem
-                }
-        }
+        Ok (
+            SyscallAnswer.Completed 0L,
+            { system with
+                Machine =
+                    { system.Machine with
+                        FileSystem = filesystem
+                    }
+            }
+        )
 
     /// `mkdir(2)`: bind a new directory at `path`.
     ///
@@ -1188,8 +1263,9 @@ module UnixNamespace =
     /// directory's permissions actually are depends on the umask and, on one
     /// flavour, on the parent's set-group-ID bit. `MkDirRules` holds that.
     ///
-    /// Never refused: every outcome is a success or an errno, the rules having
-    /// been measured on both flavours.
+    /// Refuses only a path this kernel will not resolve (see `PathRefusal`):
+    /// every other outcome is a success or an errno, the rules having been
+    /// measured on both flavours.
     ///
     /// `path` is the argument's bytes, copied in before anything else: EFAULT
     /// if they were unreadable, ENAMETOOLONG if they run past `PATH_MAX`.
@@ -1197,17 +1273,17 @@ module UnixNamespace =
         (path : PathArgumentBytes)
         (mode : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, PathRefusal>
         =
         match UnixPathResolution.copyIn path system with
-        | Error error -> SyscallAnswer.Failed error, system
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
         | Ok path -> mkdirParsed path mode system
 
     /// `unlink`, of a path this kernel has already copied in.
     let internal unlinkParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, StickyRefusal>
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, RemovalRefusal>
         =
         let rules = SimulatedUnixPlatform.unlinkRules system.Machine.UnixPlatform
 
@@ -1216,7 +1292,8 @@ module UnixNamespace =
         // only thing that can reach past a final symlink, and only on Darwin;
         // see `UnlinkRules.TrailingSeparator`.
         match UnixPathResolution.resolvePathFull SymlinkPolicy.NoFollowFinal rules.TrailingSeparator path system with
-        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
+        | Error (PathFailure.Refused refusal) -> Error (RemovalRefusal.Path refusal)
         | Ok resolution ->
 
         match
@@ -1226,8 +1303,12 @@ module UnixNamespace =
                 resolution
                 system.Machine.FileSystem
         with
-        | Error refusal -> Error refusal
+        | Error refusal -> Error (RemovalRefusal.Sticky refusal)
         | Ok (UnlinkVerdict.Refuse error) -> Ok (SyscallAnswer.Failed error, system)
+        | Ok (UnlinkVerdict.Remove (directory, name)) when
+            (VirtualFileSystem.mountedRootOf directory system.Machine.FileSystem).IsSome
+            ->
+            Error (RemovalRefusal.DeviceFileSystem (directory, name))
         | Ok (UnlinkVerdict.Remove (directory, name)) ->
 
         let now = UnixMachineState.realtime system.Machine
@@ -1261,15 +1342,16 @@ module UnixNamespace =
     /// else holds it.
     ///
     /// Every outcome is a success or an errno, except where Darwin's sticky
-    /// rule has not been measured for this caller (`StickyRefusal`), which
-    /// changes nothing.
+    /// rule has not been measured for this caller, where this kernel will not
+    /// resolve the path, and where the name is on the device filesystem; see
+    /// `RemovalRefusal`. A refusal changes nothing.
     ///
     /// `path` is the argument's bytes, copied in before anything else: EFAULT
     /// if they were unreadable, ENAMETOOLONG if they run past `PATH_MAX`.
     let unlink<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : PathArgumentBytes)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, StickyRefusal>
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, RemovalRefusal>
         =
         match UnixPathResolution.copyIn path system with
         | Error error -> Ok (SyscallAnswer.Failed error, system)
@@ -1279,7 +1361,7 @@ module UnixNamespace =
     let internal rmdirParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, StickyRefusal>
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, RemovalRefusal>
         =
         let rules = SimulatedUnixPlatform.rmDirRules system.Machine.UnixPlatform
 
@@ -1288,7 +1370,8 @@ module UnixNamespace =
         // `rmdir("ld/")` removes the *link's target* there and is ENOTDIR on
         // Linux. See `RmDirRules.TrailingSeparator`.
         match UnixPathResolution.resolvePathFull SymlinkPolicy.NoFollowFinal rules.TrailingSeparator path system with
-        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
+        | Error (PathFailure.Refused refusal) -> Error (RemovalRefusal.Path refusal)
         | Ok resolution ->
 
         match
@@ -1298,8 +1381,12 @@ module UnixNamespace =
                 resolution
                 system.Machine.FileSystem
         with
-        | Error refusal -> Error refusal
+        | Error refusal -> Error (RemovalRefusal.Sticky refusal)
         | Ok (RmDirVerdict.Refuse error) -> Ok (SyscallAnswer.Failed error, system)
+        | Ok (RmDirVerdict.Remove (directory, name)) when
+            (VirtualFileSystem.mountedRootOf directory system.Machine.FileSystem).IsSome
+            ->
+            Error (RemovalRefusal.DeviceFileSystem (directory, name))
         | Ok (RmDirVerdict.Remove (directory, name)) ->
 
         let now = UnixMachineState.realtime system.Machine
@@ -1330,15 +1417,16 @@ module UnixNamespace =
     /// `rmdir(2)`: remove the empty directory `path` names.
     ///
     /// Every outcome is a success or an errno, except where Darwin's sticky
-    /// rule has not been measured for this caller (`StickyRefusal`), which
-    /// changes nothing.
+    /// rule has not been measured for this caller, where this kernel will not
+    /// resolve the path, and where the name is on the device filesystem; see
+    /// `RemovalRefusal`. A refusal changes nothing.
     ///
     /// `path` is the argument's bytes, copied in before anything else: EFAULT
     /// if they were unreadable, ENAMETOOLONG if they run past `PATH_MAX`.
     let rmdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : PathArgumentBytes)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, StickyRefusal>
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, RemovalRefusal>
         =
         match UnixPathResolution.copyIn path system with
         | Error error -> Ok (SyscallAnswer.Failed error, system)
@@ -1361,7 +1449,7 @@ module UnixNamespace =
     let renameSourcePhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (source : PathArgumentBytes)
         (system : UnixSystem<'Task, 'Handler>)
-        : RenameProgress<'Task, 'Handler>
+        : Result<RenameProgress<'Task, 'Handler>, RenameRefusal>
         =
         let rules = SimulatedUnixPlatform.renameRules system.Machine.UnixPlatform
 
@@ -1372,9 +1460,12 @@ module UnixNamespace =
                     Rules = rules
                     SourceProgress = progress
                 }
+            |> Ok
+
+        let stopped (error : UnixError) = renameStopped system error |> Ok
 
         match UnixPathResolution.copyIn source system with
-        | Error error -> renameStopped system error
+        | Error error -> stopped error
         | Ok sourcePath ->
 
         // `NoFollowFinal` for both paths on both flavours — `rename` moves the
@@ -1390,29 +1481,33 @@ module UnixNamespace =
                     sourcePath
                     system
             with
-            | Error error -> renameStopped system error
+            | Error (PathFailure.Errno error) -> stopped error
+            | Error (PathFailure.Refused refusal) -> Error (RenameRefusal.Path refusal)
             | Ok parent -> paused (RenameSourceProgress.ParentWalked parent)
         | RenameWalkOrder.SourceThenDestination ->
 
         match
             UnixPathResolution.resolvePathFull SymlinkPolicy.NoFollowFinal rules.TrailingSeparator sourcePath system
         with
-        | Error error -> renameStopped system error
+        | Error (PathFailure.Errno error) -> stopped error
+        | Error (PathFailure.Refused refusal) -> Error (RenameRefusal.Path refusal)
         | Ok sourceResolution ->
 
         // Darwin's source-side `namei` runs under rename semantics, so two of
         // the refusals the verdict would otherwise make are settled here —
         // before the destination's pathname has been read at all.
         match RenameRules.sourceScreen rules.WalkOrder sourceResolution with
-        | Some error -> renameStopped system error
+        | Some error -> stopped error
         | None -> paused (RenameSourceProgress.Resolved sourceResolution)
 
     /// The rest of `rename(2)`, given the destination pathname the kernel has
     /// just reached the point of copying in.
     ///
     /// Every outcome is a success or an errno, except where Darwin's sticky
-    /// rule has not been measured for this caller (`StickyRefusal`), which
-    /// changes nothing.
+    /// rule has not been measured for this caller, where this kernel will not
+    /// resolve a path, where a path names a mount point in an unmeasured way,
+    /// and where the source is on the device filesystem; see `RenameRefusal`.
+    /// A refusal changes nothing.
     let renameWithDestination<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (destination : PathArgumentBytes)
         (paused : PausedRename<'Task, 'Handler>)
@@ -1427,9 +1522,9 @@ module UnixNamespace =
         let system = paused.System
         let rules = paused.Rules
 
-        let resolved : Result<Resolution * Resolution, UnixError> =
+        let resolved : Result<Resolution * Resolution, PathFailure> =
             match UnixPathResolution.copyIn destination system with
-            | Error error -> Error error
+            | Error error -> Error (PathFailure.Errno error)
             | Ok destinationPath ->
 
             match paused.SourceProgress with
@@ -1452,15 +1547,26 @@ module UnixNamespace =
                     destinationPath
                     system
             with
-            | Error error -> Error error
+            | Error failure -> Error failure
             | Ok destinationParent ->
+
+            // Linux compares the two parents' mounts before it looks either
+            // final name up: measured (`devices.c`, NS rows), a rename between
+            // `/tmp` and `/dev` is EXDEV whether or not the source exists and
+            // whether or not the caller may write either directory.
+            if
+                PathWalk.pausedMountedRoot sourceParent
+                <> PathWalk.pausedMountedRoot destinationParent
+            then
+                Error (PathFailure.Errno UnixError.EXDEV)
+            else
 
             // Source before destination, and here the order *is* pinned: the
             // orphan check below sits between the two, so a 300-byte source name
             // is ENAMETOOLONG while a 300-byte destination name under the same
             // orphaned parent is ENOENT. Measured both ways.
             match PathWalk.completeResolution sourceParent with
-            | Error error -> Error error
+            | Error failure -> Error failure
             | Ok sourceResolution ->
 
             // Linux's source screen runs here: after both parents and the
@@ -1470,7 +1576,7 @@ module UnixNamespace =
             // ENOENT — and it beats the destination's NAME_MAX, which is what
             // makes `rename("nope", <300-byte name>)` ENOENT.
             match RenameRules.sourceScreen rules.WalkOrder sourceResolution with
-            | Some error -> Error error
+            | Some error -> Error (PathFailure.Errno error)
             | None ->
 
             // A destination parent that has lost its own last name — reachable
@@ -1481,33 +1587,65 @@ module UnixNamespace =
             // ENAMETOOLONG there. So this is the Linux position of a check both
             // flavours make, not a check only Linux makes.
             if PathWalk.pausedParentIsOrphaned destinationParent then
-                Error UnixError.ENOENT
+                Error (PathFailure.Errno UnixError.ENOENT)
             else
 
             PathWalk.completeResolution destinationParent
             |> Result.map (fun destinationResolution -> sourceResolution, destinationResolution)
 
         match resolved with
-        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
+        | Error (PathFailure.Refused refusal) -> Error (RenameRefusal.Path refusal)
         | Ok (sourceResolution, destinationResolution) ->
 
-        match
+        let vfs = system.Machine.FileSystem
+
+        let mountRootNamed (resolution : Resolution) : InodeNumber option =
+            match resolution.Target with
+            | ResolvedTarget.Entry (_, _, Some target) when (VirtualFileSystem.mountOf target vfs).IsSome -> Some target
+            | ResolvedTarget.Entry _
+            | ResolvedTarget.Directory _ -> None
+
+        let verdict =
             RenameRules.verdict
                 (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform)
                 (SimulatedUnixPlatform.bindableEntryNames system.Machine.UnixPlatform)
                 system.Process.Credentials
                 sourceResolution
                 destinationResolution
-                system.Machine.FileSystem
-        with
-        | Error refusal -> Error (RenameRefusal.Sticky refusal)
-        | Ok (RenameVerdict.Refuse error) -> Ok (SyscallAnswer.Failed error, system)
+                vfs
+
+        // A mount point's own rows. Linux checks the permissions first and the
+        // mount after (`rename("/dev", "/devx")` is EACCES at uid 1000 and EBUSY
+        // at uid 0), and that pair is all that has been measured.
+        let verdict =
+            match mountRootNamed sourceResolution, mountRootNamed destinationResolution, verdict with
+            | None, None, verdict -> Ok verdict
+            | _, _, Ok (RenameVerdict.Refuse UnixError.EACCES as refused)
+            | _, _, Ok (RenameVerdict.Refuse UnixError.EPERM as refused) -> Ok (Ok refused)
+            | Some _, None, Ok (RenameVerdict.Move (_, _, destinationDirectory, destinationName)) when
+                (match VirtualFileSystem.tryGetDirectory destinationDirectory vfs with
+                 | Some content -> not (Map.containsKey destinationName content.Entries)
+                 | None -> false)
+                ->
+                Ok (Ok (RenameVerdict.Refuse UnixError.EBUSY))
+            | Some mountRoot, _, _
+            | None, Some mountRoot, _ -> Error (RenameRefusal.MountPoint mountRoot)
+
+        match verdict with
+        | Error refusal -> Error refusal
+        | Ok (Error refusal) -> Error (RenameRefusal.Sticky refusal)
+        | Ok (Ok (RenameVerdict.Move (sourceDirectory, sourceName, _, _))) when
+            (VirtualFileSystem.mountedRootOf sourceDirectory vfs).IsSome
+            ->
+            Error (RenameRefusal.DeviceFileSystem (sourceDirectory, sourceName))
+        | Ok (Ok (RenameVerdict.Refuse error)) -> Ok (SyscallAnswer.Failed error, system)
         // Both paths name one inode: a success that changes nothing at all, not
         // a binding and not a timestamp. Deliberately not routed through
         // `VirtualFileSystem.rename`, which refuses it — the graph primitive
         // would have to invent a no-op stamp to express it.
-        | Ok RenameVerdict.NoOp -> Ok (SyscallAnswer.Completed 0L, system)
-        | Ok (RenameVerdict.Move (sourceDirectory, sourceName, destinationDirectory, destinationName)) ->
+        | Ok (Ok RenameVerdict.NoOp) -> Ok (SyscallAnswer.Completed 0L, system)
+        | Ok (Ok (RenameVerdict.Move (sourceDirectory, sourceName, destinationDirectory, destinationName))) ->
 
         let now = UnixMachineState.realtime system.Machine
 
@@ -1570,8 +1708,9 @@ module UnixNamespace =
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, RenameRefusal>
         =
         match renameSourcePhase source system with
-        | RenameProgress.Answered (answer, system) -> Ok (answer, system)
-        | RenameProgress.NeedsDestination paused -> renameWithDestination destination paused
+        | Error refusal -> Error refusal
+        | Ok (RenameProgress.Answered (answer, system)) -> Ok (answer, system)
+        | Ok (RenameProgress.NeedsDestination paused) -> renameWithDestination destination paused
 
 
     /// `clonefile(source, destination, flags)`, up to the point where the
@@ -1647,7 +1786,8 @@ module UnixNamespace =
         | Ok sourcePath ->
 
         match UnixPathResolution.resolvePath SymlinkPolicy.Follow sourcePath system with
-        | Error error -> Ok (CloneFileProgress.Answered (SyscallAnswer.Failed error, system))
+        | Error (PathFailure.Errno error) -> Ok (CloneFileProgress.Answered (SyscallAnswer.Failed error, system))
+        | Error (PathFailure.Refused refusal) -> Error (CloneFileRefusal.Path refusal)
         | Ok inode ->
 
         match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
@@ -1660,6 +1800,9 @@ module UnixNamespace =
                         Source = inode
                     }
             )
+        | Some (InodeContent.CharacterDevice _) ->
+            failwith
+                $"UnixNamespace.cloneFileSourcePhase: the source resolved to inode %O{inode}, a character device; clonefile(2) is Darwin's, and this kernel holds no device on Darwin (this is a bug in this library)."
         | Some (InodeContent.Symlink _)
         | None ->
             failwith
@@ -1721,7 +1864,8 @@ module UnixNamespace =
         match
             UnixPathResolution.resolvePathFull SymlinkPolicy.Follow rules.TrailingSeparator destinationPath system
         with
-        | Error error -> failed error
+        | Error (PathFailure.Errno error) -> failed error
+        | Error (PathFailure.Refused refusal) -> Error (CloneFileRefusal.Path refusal)
         | Ok resolution ->
 
         match resolution.Target with
@@ -1745,6 +1889,7 @@ module UnixNamespace =
             match source.Content with
             | InodeContent.RegularFile (_, bits) -> bits
             | InodeContent.Directory _
+            | InodeContent.CharacterDevice _
             | InodeContent.Symlink _ ->
                 failwith
                     $"UnixNamespace.cloneFileWithDestination: the source, inode %O{paused.Source}, is not a regular file, but the source phase admitted only a regular file (this is a bug in this library)."

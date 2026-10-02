@@ -189,8 +189,8 @@ type UnixMachineState =
         /// a filesystem read from the host would make a replay depend on the
         /// machine that produced it, and programs branch on what they find.
         FileSystem : VirtualFileSystem
-        /// The mount `FileSystem` claims to be: its type and what `statfs(2)`
-        /// reports about it (see `FileSystemStatistics.ofMount`). Its type also
+        /// The mount `FileSystem`'s root filesystem claims to be: its type and
+        /// what `statfs(2)` reports about it (see `FileSystemStatistics.ofMount`). Its type also
         /// decides a directory's `st_size`, and where `lseek(2)` with
         /// `SEEK_END` lands on a directory.
         ///
@@ -199,6 +199,13 @@ type UnixMachineState =
         /// `UnixSystem.initial` and set only by `withMount`, which refuses a
         /// type this machine's flavour cannot report.
         Mount : EmulatedMount
+        /// The filesystem mounted at `/dev`, which the kernel mounts at boot
+        /// over the root's entry `dev`. What `stat(2)` and `statfs(2)` report
+        /// about it and the device nodes on it comes from here.
+        ///
+        /// Fixed for the run, and derived from the flavour by
+        /// `UnixSystem.initial`.
+        DeviceMount : DeviceFileSystemMount
         /// Linux's `fs.protected_symlinks`, `fs.protected_regular` and
         /// `fs.protected_fifos` sysctls.
         ///
@@ -411,6 +418,18 @@ module UnixMachineState =
         { machine with
             Mount = resolved
         }
+
+    /// The type of filesystem `inode` is on: the root filesystem's mount, or,
+    /// for an inode on the device filesystem, tmpfs, which a Linux devtmpfs
+    /// is underneath (measured: its `f_type`, and its directories' sizes,
+    /// follow tmpfs's rules).
+    let fileSystemTypeOf (inode : InodeNumber) (machine : UnixMachineState) : EmulatedFileSystemType =
+        match VirtualFileSystem.mountedRootOf inode machine.FileSystem, machine.DeviceMount with
+        | None, _ -> EmulatedMount.fileSystemType machine.Mount
+        | Some _, DeviceFileSystemMount.Devtmpfs _ -> EmulatedFileSystemType.Tmpfs
+        | Some root, DeviceFileSystemMount.Devfs ->
+            failwith
+                $"UnixMachineState.fileSystemTypeOf: inode %O{inode} is on the filesystem mounted at inode %O{root}, which is Darwin's devfs; no path or descriptor can reach it (this is a bug in this library)."
 
     /// Whether `protection` is something a machine of `flavour` can be
     /// configured with: anything on Linux, and on Darwin, which has none of

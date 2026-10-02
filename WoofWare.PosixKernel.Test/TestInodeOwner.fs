@@ -208,7 +208,7 @@ module TestInodeOwner =
             | other -> failwith $"expected the file to be created, got %O{other}"
 
         let system =
-            match UnixNamespace.mkdir (PathArg.ofPath (UnixPath.parseOrFail context "/p/dir")) 0o755 system with
+            match Answered.mkdir (PathArg.ofPath (UnixPath.parseOrFail context "/p/dir")) 0o755 system with
             | SyscallAnswer.Completed 0L, system -> system
             | other -> failwith $"expected the directory to be created, got %O{other}"
 
@@ -313,8 +313,21 @@ module TestInodeOwner =
         for path, expectedOwner in expected do
             ownerAt path system |> shouldEqual expectedOwner
 
-        // The system realised the seed exactly as the filesystem function does.
-        system.Machine.FileSystem |> shouldEqual vfs
+        // The system realised the seed exactly as the filesystem function does,
+        // and then mounted its device filesystem over `dev`, as it does at boot.
+        let withDevices =
+            VirtualFileSystem.mountAtRoot
+                MountedFileSystem.Devtmpfs
+                (name "dev")
+                (mode 0o755)
+                (owner 0u 0u)
+                (CharacterDevice.all
+                 |> List.map (fun device -> CharacterDevice.name device, device, CharacterDevice.permissions device))
+                epoch
+                vfs
+            |> ok
+
+        system.Machine.FileSystem |> shouldEqual withDevices
 
     [<Test>]
     let ``every inode of a seed without owners belongs to the default owner`` () : unit =

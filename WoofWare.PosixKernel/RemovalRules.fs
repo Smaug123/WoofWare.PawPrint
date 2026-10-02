@@ -18,6 +18,19 @@ type StickyRefusal =
     /// bit at all has not been measured.
     | DarwinDirectoryDisplacingDirectory of directory : InodeNumber * entry : InodeNumber * standing : Standing
 
+/// Why this kernel will not answer an `unlink(2)` or an `rmdir(2)`.
+[<RequireQualifiedAccess>]
+type RemovalRefusal =
+    /// Darwin's sticky rule has not been measured for this caller.
+    | Sticky of StickyRefusal
+    /// This kernel will not resolve the path.
+    | Path of PathRefusal
+    /// The call would remove `name` from `directory`, on the device
+    /// filesystem, which no name can be removed from here: a real one would
+    /// then answer for that name as it answers for any it does not hold, and
+    /// this one refuses every name it does not hold.
+    | DeviceFileSystem of directory : InodeNumber * name : DirectoryEntryName
+
 [<RequireQualifiedAccess>]
 module StickyRefusal =
     /// What this kernel knows about why it will not answer. A client adds which
@@ -28,6 +41,17 @@ module StickyRefusal =
             $"inode %O{directory} is a sticky directory, and the caller, standing %A{standing} towards its entry %O{entry}, owns neither of them but is privileged. Whether Darwin's sticky rule exempts a privileged caller has not been measured (it needs root and a second user)."
         | StickyRefusal.DarwinDirectoryDisplacingDirectory (directory, entry, standing) ->
             $"a directory would displace the directory %O{entry} in the sticky directory %O{directory}, and the caller, standing %A{standing} towards %O{entry}, owns neither of them. Darwin consults the displaced directory's own write bit there rather than its parent's, and whether it consults the sticky bit at all has not been measured."
+
+[<RequireQualifiedAccess>]
+module RemovalRefusal =
+    /// What this kernel knows about why it will not answer. A client adds which
+    /// entry point asked, and with which path.
+    let describe (refusal : RemovalRefusal) : string =
+        match refusal with
+        | RemovalRefusal.Sticky refusal -> StickyRefusal.describe refusal
+        | RemovalRefusal.Path refusal -> PathRefusal.describe refusal
+        | RemovalRefusal.DeviceFileSystem (directory, name) ->
+            $"the call would remove \"%s{DirectoryEntryName.toEscaped name}\" from inode %O{directory}, on the device filesystem, which holds only the nodes of the devices this kernel has drivers for; it removes none of them, because it could not then say what a real one answers for the name."
 
 /// <summary>
 /// Parametrises the behaviour of different kernels when <c>unlink(2)</c> removes a name.
@@ -193,6 +217,7 @@ module private RemovalChecks =
         match VirtualFileSystem.tryGetContent inode vfs with
         | Some (InodeContent.Directory _) -> true
         | Some (InodeContent.RegularFile _)
+        | Some (InodeContent.CharacterDevice _)
         | Some (InodeContent.Symlink _) -> false
         | None ->
             failwith
@@ -213,6 +238,7 @@ module private RemovalChecks =
         match VirtualFileSystem.tryGetContent inode vfs with
         | Some (InodeContent.Directory directory) -> Map.isEmpty directory.Entries
         | Some (InodeContent.RegularFile _)
+        | Some (InodeContent.CharacterDevice _)
         | Some (InodeContent.Symlink _) ->
             failwith
                 $"RemovalChecks.isEmptyDirectory: inode %O{inode} is not a directory, so it has no entries to count. Ask isDirectory first (this is a bug in the caller of RemovalChecks.isEmptyDirectory)."
@@ -288,9 +314,9 @@ module UnlinkRules =
     ///  * A path that consumed no component at all — "/", or a symlink whose
     ///    target was "/" — is EISDIR.
     ///  * The root reached by "." or ".." is EBUSY, which is XNU's `unlink1`
-    ///    refusing a mount's root vnode (`vp->v_flag & VROOT`). This library mounts
-    ///    one filesystem, so "the root of a mount" and "the root" are the same
-    ///    inode. Measured: `unlink("/.")`, `unlink("/..")` and — through
+    ///    refusing a mount's root vnode (`vp->v_flag & VROOT`). This library
+    ///    mounts no filesystem a Darwin path can reach (its devfs is refused),
+    ///    so "the root of a mount" and "the root" are the same inode. Measured: `unlink("/.")`, `unlink("/..")` and — through
     ///    `lroot -> "/"` — `unlink("lroot/.")` are EBUSY, where `unlink("d/.")`
     ///    on an ordinary directory is EPERM.
     ///  * Any other directory reached with no final name is EPERM.
@@ -461,6 +487,9 @@ module OpenDirRules =
                    Content = InodeContent.RegularFile _
                }
         | Some {
+                   Content = InodeContent.CharacterDevice _
+               }
+        | Some {
                    Content = InodeContent.Symlink _
                } ->
             // The symlink arm is unreachable through the resolver, which
@@ -518,6 +547,8 @@ module RmDirRules =
     ///  * The target not being a directory is ENOTDIR — *below* the write check,
     ///    and measured to be: `rmdir("nowrite/kid")` is EACCES at uid 1000 and
     ///    ENOTDIR at uid 0. This is the arm Darwin orders the other way round.
+    ///  * A directory a filesystem is mounted on is EBUSY, below the write
+    ///    check: `rmdir("/dev")` is EACCES at uid 1000 and EBUSY at uid 0.
     ///  * A directory that still holds an entry is ENOTEMPTY.
     ///
     /// `Resolution.TrailingSeparatorDemanded` is never read, and does not need
@@ -552,6 +583,8 @@ module RmDirRules =
             RmDirVerdict.Refuse UnixError.EPERM
         elif not (RemovalChecks.isDirectory target vfs) then
             RmDirVerdict.Refuse UnixError.ENOTDIR
+        elif (VirtualFileSystem.mountOf target vfs).IsSome then
+            RmDirVerdict.Refuse UnixError.EBUSY
         elif not (RemovalChecks.isEmptyDirectory target vfs) then
             RmDirVerdict.Refuse UnixError.ENOTEMPTY
         else
@@ -563,8 +596,9 @@ module RmDirRules =
     ///  * A path that consumed no component at all — "/", or a symlink whose
     ///    target was "/" — is EISDIR. Where Linux gives that path EBUSY.
     ///  * The root reached by "." or ".." is EBUSY, which is XNU refusing a
-    ///    mount's root vnode; this library mounts one filesystem, so "the root of a
-    ///    mount" and "the root" are the same inode. Measured: `rmdir("/.")`,
+    ///    mount's root vnode; this library mounts no filesystem a Darwin path can
+    ///    reach (its devfs is refused), so "the root of a mount" and "the root"
+    ///    are the same inode. Measured: `rmdir("/.")`,
     ///    `rmdir("/..")` and — through `lroot -> "/"` — `rmdir("lroot/.")` are
     ///    EBUSY, where Linux answers those EINVAL and ENOTEMPTY. So Darwin
     ///    specialises the *inode* where Linux specialises the path.

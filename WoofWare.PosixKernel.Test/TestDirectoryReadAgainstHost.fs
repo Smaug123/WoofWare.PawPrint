@@ -309,7 +309,7 @@ module TestDirectoryReadAgainstHost =
                         UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
                     let system =
-                        UnixNamespace.mkdir (PathArg.ofPath (rooted "d")) 0o755 system
+                        Answered.mkdir (PathArg.ofPath (rooted "d")) 0o755 system
                         |> completed "mkdir d"
                         |> snd
 
@@ -320,7 +320,7 @@ module TestDirectoryReadAgainstHost =
                                 hostMkdir (Path.Combine (hostD, name), 0o755u)
                                 |> hostSucceeded $"mkdir %s{name}"
 
-                                UnixNamespace.mkdir (PathArg.ofPath (rooted $"d/%s{name}")) 0o755 system
+                                Answered.mkdir (PathArg.ofPath (rooted $"d/%s{name}")) 0o755 system
                                 |> completed $"mkdir %s{name}"
                                 |> snd
                             else

@@ -89,7 +89,7 @@ module TestDirectoryDescription =
         closeFd (int fd) system
 
     let private makeDirectory (path : string) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        UnixNamespace.mkdir (PathArg.ofPath (rooted path)) 0o755 system
+        Answered.mkdir (PathArg.ofPath (rooted path)) 0o755 system
         |> completed $"mkdir %s{path}"
         |> snd
 

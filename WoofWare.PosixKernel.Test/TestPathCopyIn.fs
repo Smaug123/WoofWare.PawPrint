@@ -179,12 +179,12 @@ module TestPathCopyIn =
                 match UnixNamespace.readlink path destination capacity system with
                 | Ok (ReadLinkAnswer.Failed error) -> Some error
                 | Ok (ReadLinkAnswer.Reported _) -> None
-                | Error refusal -> failwith $"readlink refused: %s{BufferRefusal.describe refusal}"
+                | Error refusal -> failwith $"readlink refused: %s{ReadLinkRefusal.describe refusal}"
             )
 
         let statfs (nullBuffer : bool) =
             Some (fun path system ->
-                match UnixPathResolution.statfs path system with
+                match Answered.statfs path system with
                 | FileSystemStatisticsAnswer.Failed error -> Some error
                 | FileSystemStatisticsAnswer.Reported _ -> if nullBuffer then Some UnixError.EFAULT else None
             )
@@ -220,11 +220,11 @@ module TestPathCopyIn =
                     Create = true
                     Exclusive = true
                 }
-        | "mkdir", "mode 0777" -> Some (fun path system -> ofAnswer (fst (UnixNamespace.mkdir path 0o777 system)))
-        | "mkdir", "mode all bits" -> Some (fun path system -> ofAnswer (fst (UnixNamespace.mkdir path 0xffff system)))
+        | "mkdir", "mode 0777" -> Some (fun path system -> ofAnswer (fst (Answered.mkdir path 0o777 system)))
+        | "mkdir", "mode all bits" -> Some (fun path system -> ofAnswer (fst (Answered.mkdir path 0xffff system)))
         | "unlink", "-" -> answered UnixNamespace.unlink
         | "rmdir", "-" -> answered UnixNamespace.rmdir
-        | "chdir", "-" -> Some (fun path system -> ofAnswer (fst (UnixPathResolution.chdir path system)))
+        | "chdir", "-" -> Some (fun path system -> ofAnswer (fst (Answered.chdir path system)))
         | "chmod", "mode 0644" -> answered (fun path -> UnixPathResolution.chmod path 0o644)
         | "chmod", "mode all bits" -> answered (fun path -> UnixPathResolution.chmod path 0xffff)
         | "chown", "uid -1" -> answered (fun path -> UnixPathResolution.chown path None None)
@@ -475,20 +475,14 @@ module TestPathCopyIn =
             FailedWithoutChange = fun error system answer -> answer = Ok (SyscallAnswer.Failed error, system)
         }
 
-    let private alwaysAnswered
-        (f : 'p -> UnixSystem<int, string> -> SyscallAnswer * UnixSystem<int, string>)
-        : 'p -> UnixSystem<int, string> -> Result<SyscallAnswer * UnixSystem<int, string>, unit>
-        =
-        fun path system -> Ok (f path system)
-
     [<Test>]
     let ``creating calls copy their path in and then answer as before`` () : unit =
         for mode in [ 0o777 ; 0o7755 ] do
             holds (
                 changing
                     $"mkdir 0o%o{mode}"
-                    (alwaysAnswered (fun path -> UnixNamespace.mkdir path mode))
-                    (alwaysAnswered (fun path -> UnixNamespace.mkdirParsed path mode))
+                    (fun path -> UnixNamespace.mkdir path mode)
+                    (fun path -> UnixNamespace.mkdirParsed path mode)
             )
 
         let flagsGen =
@@ -551,9 +545,7 @@ module TestPathCopyIn =
                     (fun path -> UnixPathResolution.lchownParsed path user group)
             )
 
-        holds (
-            changing "chdir" (alwaysAnswered UnixPathResolution.chdir) (alwaysAnswered UnixPathResolution.chdirParsed)
-        )
+        holds (changing "chdir" UnixPathResolution.chdir UnixPathResolution.chdirParsed)
 
     [<Test>]
     let ``querying calls copy their path in and then answer as before`` () : unit =
@@ -571,7 +563,7 @@ module TestPathCopyIn =
                 Name = "statfs"
                 Bytes = UnixPathResolution.statfs
                 Parsed = UnixPathResolution.statfsParsed
-                FailedWithoutChange = fun error _ answer -> answer = FileSystemStatisticsAnswer.Failed error
+                FailedWithoutChange = fun error _ answer -> answer = Ok (FileSystemStatisticsAnswer.Failed error)
             }
 
     [<Test>]

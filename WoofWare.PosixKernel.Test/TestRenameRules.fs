@@ -212,6 +212,7 @@ module TestRenameRules =
                 rules.TrailingSeparator
                 (path candidate)
                 vfs
+            |> Answered.errno
 
         match resolve source with
         | Error error -> RenameVerdict.Refuse error

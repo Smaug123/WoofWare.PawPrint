@@ -953,6 +953,7 @@ module NativeSystemNative =
     let private directoryEntryTypeDirectory : int = 4
     let private directoryEntryTypeRegular : int = 8
     let private directoryEntryTypeSymlink : int = 10
+    let private directoryEntryTypeCharacterDevice : int = 2
 
     /// The native block a guest's `DIR*` names.
     ///
@@ -1171,6 +1172,7 @@ module NativeSystemNative =
             | FStatRefusal.Socket _ ->
                 "Decide what an inode-free descriptor's struct stat is -- for streams, ports and sockets together (issue #956) -- rather than guessing."
             | FStatRefusal.NfsDirectorySize _ -> nfsDirectoryReachability
+            | FStatRefusal.DeviceFileSystemRoot _ -> ""
 
         $"%s{operation}: fd %d{fd}: %s{FStatRefusal.describe refusal} %s{reachability}"
 
@@ -1273,6 +1275,7 @@ module NativeSystemNative =
             | Error (RenameRefusal.Sticky refusal) ->
                 failwith
                     $"%s{operation}: RenameRefusal.Sticky: %s{StickyRefusal.describe refusal} %s{unmeasuredDarwinRow}"
+            | Error refusal -> failwith $"%s{operation}: %s{RenameRefusal.describe refusal}"
             | Ok (SyscallAnswer.Failed error, system) ->
                 withErrno ctx error system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
@@ -1288,8 +1291,9 @@ module NativeSystemNative =
             pathArgumentBytes ctx operation "oldPath" ctx.Instruction.Arguments.[0] state
 
         match UnixNamespace.renameSourcePhase source (EmulatedKernel.unix state.Kernel) with
-        | RenameProgress.Answered (syscallAnswer, system) -> answer (Ok (syscallAnswer, system))
-        | RenameProgress.NeedsDestination paused ->
+        | Error refusal -> answer (Error refusal)
+        | Ok (RenameProgress.Answered (syscallAnswer, system)) -> answer (Ok (syscallAnswer, system))
+        | Ok (RenameProgress.NeedsDestination paused) ->
             pathArgumentBytes ctx operation "newPath" ctx.Instruction.Arguments.[1] state
             |> fun destination -> UnixNamespace.renameWithDestination destination paused
             |> answer
@@ -3121,7 +3125,11 @@ module NativeSystemNative =
             // pre-empt the EFAULT a bad path earns.
             let mode = NativeCall.int32Argument operation instruction.Arguments.[1]
 
-            pathSyscall ctx operation (fun path system -> Ok (UnixNamespace.mkdir path mode system)) state
+            pathSyscall
+                ctx
+                operation
+                (fun path system -> UnixNamespace.mkdir path mode system |> Result.mapError PathRefusal.describe)
+                state
         // `int32_t SystemNative_Unlink(const char* path)` (pal_io.c:368), an
         // EINTR-retrying `unlink(2)` and nothing else. CoreLib declares it as
         // `int Unlink(string)` under UTF-8 marshalling, so the argument that
@@ -3136,7 +3144,11 @@ module NativeSystemNative =
                 (fun path system ->
                     UnixNamespace.unlink path system
                     |> Result.mapError (fun refusal ->
-                        $"StickyRefusal: %s{StickyRefusal.describe refusal} %s{unmeasuredDarwinRow}"
+                        match refusal with
+                        | RemovalRefusal.Sticky refusal ->
+                            $"StickyRefusal: %s{StickyRefusal.describe refusal} %s{unmeasuredDarwinRow}"
+                        | RemovalRefusal.Path _
+                        | RemovalRefusal.DeviceFileSystem _ -> RemovalRefusal.describe refusal
                     )
                 )
                 state
@@ -3147,7 +3159,11 @@ module NativeSystemNative =
         | Some "SystemNative_ChDir",
           [ ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
-            pathSyscall ctx "SystemNative_ChDir" (fun path system -> Ok (UnixPathResolution.chdir path system)) state
+            pathSyscall
+                ctx
+                "SystemNative_ChDir"
+                (fun path system -> UnixPathResolution.chdir path system |> Result.mapError PathRefusal.describe)
+                state
         // `int32_t SystemNative_RmDir(const char* path)` (pal_io.c): an
         // EINTR-retrying `rmdir(2)` and nothing else, taking a UTF-8 path
         // exactly as `SystemNative_Unlink` does.
@@ -3160,7 +3176,11 @@ module NativeSystemNative =
                 (fun path system ->
                     UnixNamespace.rmdir path system
                     |> Result.mapError (fun refusal ->
-                        $"StickyRefusal: %s{StickyRefusal.describe refusal} %s{unmeasuredDarwinRow}"
+                        match refusal with
+                        | RemovalRefusal.Sticky refusal ->
+                            $"StickyRefusal: %s{StickyRefusal.describe refusal} %s{unmeasuredDarwinRow}"
+                        | RemovalRefusal.Path _
+                        | RemovalRefusal.DeviceFileSystem _ -> RemovalRefusal.describe refusal
                     )
                 )
                 state
@@ -3232,6 +3252,7 @@ module NativeSystemNative =
                     | AccessRefusal.UnmodelledFlags _
                     | AccessRefusal.UnmodelledDescriptor _ ->
                         "access(2) takes no flags and no dirfd, so this is a bug in the kernel library."
+                    | AccessRefusal.Path _ -> ""
 
                 failwith $"%s{operation}: AccessRefusal: %s{AccessRefusal.describe refusal} %s{advice}"
             | Ok (SyscallAnswer.Failed error) ->
@@ -3446,6 +3467,7 @@ module NativeSystemNative =
                 | DirectoryEntryKind.RegularFile -> directoryEntryTypeRegular
                 | DirectoryEntryKind.Directory -> directoryEntryTypeDirectory
                 | DirectoryEntryKind.Symlink -> directoryEntryTypeSymlink
+                | DirectoryEntryKind.CharacterDevice -> directoryEntryTypeCharacterDevice
 
             // The name, then its terminator. The block was zero-filled at
             // allocation, so the terminator is already there for a first entry —
@@ -4297,7 +4319,8 @@ module NativeSystemNative =
                     bufferSize
                     (EmulatedKernel.unix state.Kernel)
             with
-            | Error refusal -> failwith (BufferPointer.refusalMessage destination refusal)
+            | Error (ReadLinkRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage destination refusal)
+            | Error (ReadLinkRefusal.Path refusal) -> failwith $"%s{operation}: %s{PathRefusal.describe refusal}"
             | Ok (ReadLinkAnswer.Failed error) -> fail error
             | Ok (ReadLinkAnswer.Reported written) ->
 

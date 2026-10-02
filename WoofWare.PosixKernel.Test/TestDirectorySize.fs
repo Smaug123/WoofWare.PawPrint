@@ -310,7 +310,7 @@ module TestDirectorySize =
 
             closeFd (int fd) system
         | DirectorySizeOp.MakeDirectory path ->
-            UnixNamespace.mkdir (PathArg.ofPath (rooted path)) 0o755 system
+            Answered.mkdir (PathArg.ofPath (rooted path)) 0o755 system
             |> completed $"mkdir %s{path}"
             |> snd
         | DirectorySizeOp.Unlink path -> Answered.unlink (rooted path) system |> completed $"unlink %s{path}" |> snd

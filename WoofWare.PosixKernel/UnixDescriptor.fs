@@ -295,8 +295,9 @@ module FileCloneRefusal =
 /// across two.
 [<RequireQualifiedAccess>]
 type private ObjectFileSystem =
-    /// The machine's one mount, which holds every file and directory.
-    | Mounted
+    /// A file or directory, on the root filesystem (`None`) or on the
+    /// filesystem mounted at `mountedRoot`.
+    | Mounted of mountedRoot : InodeNumber option
     | Pseudo of PseudoFileSystem
 
 /// Why a file descriptor cannot be seeked, as a *fault* rather than as the errno
@@ -586,6 +587,9 @@ module UnixDescriptor =
             | SeekWhence.End ->
                 match entry.Content with
                 | InodeContent.RegularFile (contents, _) -> Ok (SeekEndBasis.Size (int64 contents.Length))
+                | InodeContent.CharacterDevice _ ->
+                    failwith
+                        $"UnixDescriptor.lseek: fd %d{fd} names inode %O{inode}, which is a character device. This kernel opens no description of a device as a file (this is a bug in this library)."
                 | InodeContent.Symlink _ ->
                     // Not reachable: `open` resolves symlinks, so no descriptor
                     // names one. Stated rather than folded in so that an
@@ -598,7 +602,7 @@ module UnixDescriptor =
                     // 1, 5 and 37 entries for offsets INT64_MIN, -10000,
                     // -size-1, -size, -size+1, -1, 0, 1, 7, 2^40 and
                     // INT64_MAX-size-1 .. INT64_MAX.
-                    match EmulatedMount.fileSystemType system.Machine.Mount with
+                    match UnixMachineState.fileSystemTypeOf inode system.Machine with
                     // Linux 6.18.5: EINVAL for every offset, leaving the
                     // position where it was. A tmpfs directory's `llseek`
                     // takes `SEEK_SET` and `SEEK_CUR` only.
@@ -1212,8 +1216,9 @@ module UnixDescriptor =
 
         let fileSystemOf (description : OpenFileDescription) : ObjectFileSystem =
             match description.Target with
-            | OpenFileTarget.File _
-            | OpenFileTarget.Directory _ -> ObjectFileSystem.Mounted
+            | OpenFileTarget.File (inode, _)
+            | OpenFileTarget.Directory (inode, _) ->
+                ObjectFileSystem.Mounted (VirtualFileSystem.mountedRootOf inode system.Machine.FileSystem)
             | OpenFileTarget.Pipe _ -> ObjectFileSystem.Pseudo PseudoFileSystem.Pipe
             | OpenFileTarget.Socket _ -> ObjectFileSystem.Pseudo PseudoFileSystem.Socket
             | OpenFileTarget.Epoll _ -> ObjectFileSystem.Pseudo PseudoFileSystem.AnonymousInode

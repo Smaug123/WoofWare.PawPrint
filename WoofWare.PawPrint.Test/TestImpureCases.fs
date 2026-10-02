@@ -963,6 +963,8 @@ module TestImpureCases =
             |> Map.toList
             |> List.map fst
             |> List.filter (fun inode -> inode <> root)
+            // The device filesystem the kernel mounts at boot is not the guest's.
+            |> List.filter (fun inode -> (VirtualFileSystem.mountedRootOf inode filesystem).IsNone)
 
         let orphaned =
             survivors
@@ -1033,6 +1035,8 @@ module TestImpureCases =
             |> Map.toList
             |> List.map fst
             |> List.filter (fun inode -> inode <> VirtualFileSystem.root filesystem)
+            // The device filesystem the kernel mounts at boot is not the guest's.
+            |> List.filter (fun inode -> (VirtualFileSystem.mountedRootOf inode filesystem).IsNone)
 
         match survivors with
         | [ kept ] ->

@@ -87,6 +87,28 @@ module internal SortedEntryNames =
         else
             None
 
+/// A filesystem mounted over a directory of the root filesystem.
+[<RequireQualifiedAccess>]
+type MountedFileSystem =
+    /// Linux's devtmpfs, which holds a node for each device the kernel has a
+    /// driver for. This kernel's holds a node for each `CharacterDevice`, and
+    /// nothing else: no name can be created in it, and none removed.
+    | Devtmpfs
+    /// Darwin's devfs, which this kernel does not model. A path that reaches it
+    /// is refused.
+    | Devfs
+
+/// One mounted filesystem.
+type Mount =
+    {
+        /// The inode number of the directory the mount covers. A listing of
+        /// that directory's parent reports this number for its name, while
+        /// `stat(2)` of the name reports the mounted filesystem's root.
+        Covered : InodeNumber
+        /// What is mounted.
+        FileSystem : MountedFileSystem
+    }
+
 /// <summary>
 /// A whole emulated filesystem: an inode graph rooted at a single directory.
 /// </summary>
@@ -130,6 +152,15 @@ type VirtualFileSystem =
             /// entries alone, so that two filesystems with the same graph
             /// compare equal.
             SubdirectoryCounts : Map<InodeNumber, int>
+            /// Each mounted filesystem, by the inode of its root. The mounted
+            /// root is bound in its parent in place of the directory it covers,
+            /// whose inode number `Mount.Covered` keeps: that number has no
+            /// inode in this graph, and is never handed out again.
+            Mounts : Map<InodeNumber, Mount>
+            /// The root of the mounted filesystem each inode is on, for every
+            /// inode that is not on the root filesystem, mounted roots
+            /// included.
+            MountMembers : Map<InodeNumber, InodeNumber>
         }
 
 /// A way in which a `VirtualFileSystem` fails to describe a filesystem any
@@ -198,6 +229,21 @@ type VirtualFileSystemDefect =
     /// reads as zero. A stored `Some 0` is reported even though it agrees in
     /// value, because only non-zero counts are stored.
     | SubdirectoryCountMismatch of directory : InodeNumber * stored : int option * counted : int
+    /// A mounted filesystem's root is absent, or is not a directory.
+    | MountRootNotDirectory of root : InodeNumber
+    /// The inodes recorded as being on the filesystem mounted at `root` are not
+    /// that root and the entries it binds.
+    | MountMembershipMismatch of root : InodeNumber * recorded : Set<InodeNumber> * actual : Set<InodeNumber>
+    /// The inode number a mount keeps for the directory it covers is also the
+    /// number of an inode in the graph.
+    | CoveredInodeInUse of root : InodeNumber * covered : InodeNumber
+
+/// Why `VirtualFileSystem.mountAtRoot` will not mount a filesystem.
+[<RequireQualifiedAccess>]
+type MountFault =
+    /// The root already binds `name` to something other than an empty
+    /// directory, which a mount over it would hide.
+    | CoveredEntryNotAnEmptyDirectory of name : DirectoryEntryName
 
 /// What losing a name does to the inode that had it, which is not the same for
 /// every caller of `unbind`.
@@ -409,9 +455,9 @@ module VirtualFileSystem =
     /// allocated first.
     let private firstInode : InodeNumber = InodeNumber 1L
 
-    /// The `st_dev` every inode in this filesystem reports.
-    ///
-    /// One device for the whole tree, since this kernel models no mounts. A
+    /// The `st_dev` every inode on the root filesystem reports. An inode on a
+    /// mounted filesystem reports that filesystem's own, which its mount's
+    /// configuration states. A
     /// runtime reads `(st_dev, st_ino)` pairs to decide whether two paths name
     /// the same file, and Darwin's `statfs(2)` reports the same number as the
     /// first word of `f_fsid`. It is *non-zero*: no mounted filesystem reports
@@ -447,9 +493,39 @@ module VirtualFileSystem =
             BindingCounts = Map.empty
             SortedNames = Map.empty
             SubdirectoryCounts = Map.empty
+            Mounts = Map.empty
+            MountMembers = Map.empty
         }
 
     let root (vfs : VirtualFileSystem) : InodeNumber = vfs.Root
+
+    /// The mount whose root is `inode`, or `None` if `inode` is not the root of
+    /// a mounted filesystem.
+    let mountOf (inode : InodeNumber) (vfs : VirtualFileSystem) : Mount option = Map.tryFind inode vfs.Mounts
+
+    /// The root of the mounted filesystem `inode` is on, or `None` if it is on
+    /// the root filesystem (or is not in the graph at all).
+    let mountedRootOf (inode : InodeNumber) (vfs : VirtualFileSystem) : InodeNumber option =
+        Map.tryFind inode vfs.MountMembers
+
+    /// Fail unless `inode` is on the root filesystem. Every mounted filesystem
+    /// this module holds is closed — nothing can be created in it or removed
+    /// from it — so a caller that reached a mutation of one has skipped the
+    /// refusal its syscall owes.
+    let private assertOnRootFileSystem (context : string) (inode : InodeNumber) (vfs : VirtualFileSystem) : unit =
+        match Map.tryFind inode vfs.MountMembers with
+        | None -> ()
+        | Some root ->
+            failwith
+                $"VirtualFileSystem.%s{context}: inode %O{inode} is on the filesystem mounted at inode %O{root}, which nothing can change the names of (this is a bug in the caller of VirtualFileSystem.%s{context})."
+
+    /// Fail if `inode` is the root of a mounted filesystem, which no name can
+    /// be removed from or moved over while it is mounted.
+    let private assertNotMountRoot (context : string) (inode : InodeNumber) (vfs : VirtualFileSystem) : unit =
+        if Map.containsKey inode vfs.Mounts then
+            failwith
+                $"VirtualFileSystem.%s{context}: inode %O{inode} is the root of a mounted filesystem, whose name cannot be removed or replaced while it is mounted (this is a bug in the caller of VirtualFileSystem.%s{context})."
+
 
     let nextInode (vfs : VirtualFileSystem) : InodeNumber = vfs.NextInode
 
@@ -840,9 +916,12 @@ module VirtualFileSystem =
         (vfs : VirtualFileSystem)
         : Result<unit, UnixError>
         =
+        assertOnRootFileSystem "ensureBindable" directory vfs
+
         match tryGetContent directory vfs with
         | None -> Error UnixError.ENOENT
         | Some (InodeContent.RegularFile _)
+        | Some (InodeContent.CharacterDevice _)
         | Some (InodeContent.Symlink _) -> Error UnixError.ENOTDIR
         | Some (InodeContent.Directory content) ->
             if
@@ -874,6 +953,9 @@ module VirtualFileSystem =
         | None -> Error UnixError.ENOENT
         | Some ({
                     Content = InodeContent.RegularFile _
+                })
+        | Some ({
+                    Content = InodeContent.CharacterDevice _
                 })
         | Some ({
                     Content = InodeContent.Symlink _
@@ -1070,6 +1152,9 @@ module VirtualFileSystem =
         (vfs : VirtualFileSystem)
         : Result<VirtualFileSystem, UnixError>
         =
+        assertOnRootFileSystem "hardLink" directory vfs
+        assertOnRootFileSystem "hardLink" target vfs
+
         match Map.tryFind target vfs.Inodes with
         | None -> Error UnixError.ENOENT
         | Some {
@@ -1077,6 +1162,9 @@ module VirtualFileSystem =
                } -> Error UnixError.EPERM
         | Some ({
                     Content = InodeContent.RegularFile _
+                } as existing)
+        | Some ({
+                    Content = InodeContent.CharacterDevice _
                 } as existing)
         | Some ({
                     Content = InodeContent.Symlink _
@@ -1142,6 +1230,9 @@ module VirtualFileSystem =
                    Content = InodeContent.RegularFile _
                }
         | Some {
+                   Content = InodeContent.CharacterDevice _
+               }
+        | Some {
                    Content = InodeContent.Symlink _
                } -> Error UnixError.ENOTDIR
         | Some ({
@@ -1151,6 +1242,9 @@ module VirtualFileSystem =
         match Map.tryFind name content.Entries with
         | None -> Error UnixError.ENOENT
         | Some target ->
+
+        assertOnRootFileSystem "unbind" directory vfs
+        assertNotMountRoot "unbind" target vfs
 
         // Losing an entry changes what the directory holds, so its `mtime`
         // moves and with it the `ctime` of the inode describing it -- the exact
@@ -1263,6 +1357,9 @@ module VirtualFileSystem =
                } -> bindingCount inode vfs = 0
         | Some {
                    Content = InodeContent.RegularFile _
+               }
+        | Some {
+                   Content = InodeContent.CharacterDevice _
                }
         | Some {
                    Content = InodeContent.Symlink _
@@ -1382,11 +1479,18 @@ module VirtualFileSystem =
         | None -> Error UnixError.ENOENT
         | Some moved ->
 
+        assertOnRootFileSystem "rename" sourceDirectory vfs
+        assertOnRootFileSystem "rename" destinationDirectory vfs
+        assertNotMountRoot "rename" moved vfs
+
         if isOrphanedDirectory destinationDirectory vfs then
             failwith
                 $"VirtualFileSystem.rename: the destination directory %O{destinationDirectory} has lost its last name, so binding \"%s{DirectoryEntryName.toEscaped destinationName}\" into it would make inode %O{moved} unreachable from the root while it still has a name -- which nothing could then reap. The verdict owes ENOENT, exactly as it does for the creating operations."
 
         let displaced = Map.tryFind destinationName destinationContent.Entries
+
+        displaced
+        |> Option.iter (fun displaced -> assertNotMountRoot "rename" displaced vfs)
 
         if displaced = Some moved then
             failwith
@@ -1698,6 +1802,108 @@ module VirtualFileSystem =
             failwith
                 $"VirtualFileSystem.forget: inode %O{inode} is still named by %d{count} directory entry/entries, so forgetting it would leave the graph with a dangling entry (this is a bug in the caller of VirtualFileSystem.forget)."
 
+    /// Mount `fileSystem` over the root's entry `name`, as a directory with
+    /// `permissions` owned by `owner`, holding one node for each of `devices`
+    /// owned by `owner` too, all created at `now`.
+    ///
+    /// The root may already bind `name` to an empty directory, which the mount
+    /// then covers; otherwise the mount covers a directory that held nothing,
+    /// whose inode number is taken from the counter. Anything else at `name` is
+    /// refused: a mount over a populated directory would hide what it holds.
+    let mountAtRoot
+        (fileSystem : MountedFileSystem)
+        (name : DirectoryEntryName)
+        (permissions : PermissionBits)
+        (owner : InodeOwner)
+        (devices : (DirectoryEntryName * CharacterDevice * PermissionBits) list)
+        (now : UnixTimestamp)
+        (vfs : VirtualFileSystem)
+        : Result<VirtualFileSystem, MountFault>
+        =
+        let name = DirectoryEntryName.assertValid "VirtualFileSystem.mountAtRoot" name
+
+        let rootContent =
+            match tryGetDirectory vfs.Root vfs with
+            | Some content -> content
+            | None ->
+                failwith
+                    $"VirtualFileSystem.mountAtRoot: the root, inode %O{vfs.Root}, is not a directory this filesystem holds. Run VirtualFileSystem.checkInvariants."
+
+        let covered =
+            match Map.tryFind name rootContent.Entries with
+            | None ->
+                let (InodeNumber raw) = vfs.NextInode
+
+                Ok (
+                    vfs.NextInode,
+                    { vfs with
+                        NextInode = InodeNumber (raw + 1L)
+                    }
+                )
+            | Some existing ->
+                match tryGetDirectory existing vfs with
+                | Some content when Map.isEmpty content.Entries && not (Map.containsKey existing vfs.Mounts) ->
+                    match unbind UnbindTargetEffect.LostALink vfs.Root name now vfs with
+                    | Ok (_, unbound) -> Ok (existing, forget existing unbound)
+                    | Error error ->
+                        failwith
+                            $"VirtualFileSystem.mountAtRoot: unbinding \"%s{DirectoryEntryName.toEscaped name}\" from the root was refused with %O{error}, though the root binds it (this is a bug in this library)."
+                | Some _
+                | None -> Error (MountFault.CoveredEntryNotAnEmptyDirectory name)
+
+        match covered with
+        | Error fault -> Error fault
+        | Ok (covered, vfs) ->
+
+        let bound (context : string) (result : Result<VirtualFileSystem, UnixError>) : VirtualFileSystem =
+            match result with
+            | Ok vfs -> vfs
+            | Error error ->
+                failwith
+                    $"VirtualFileSystem.mountAtRoot: binding %s{context} was refused with %O{error} (this is a bug in the caller of VirtualFileSystem.mountAtRoot, or in this library)."
+
+        let mountRoot, vfs =
+            allocate
+                (InodeContent.Directory
+                    {
+                        Entries = Map.empty
+                        Parent = vfs.Root
+                        Permissions = permissions
+                    })
+                owner
+                now
+                vfs
+
+        let vfs = bind vfs.Root name mountRoot now vfs |> bound "the mounted root"
+
+        let vfs, members =
+            devices
+            |> List.fold
+                (fun (vfs, members) (deviceName, device, devicePermissions) ->
+                    let node, vfs =
+                        allocate (InodeContent.CharacterDevice (device, devicePermissions)) owner now vfs
+
+                    let vfs =
+                        bind mountRoot deviceName node now vfs
+                        |> bound $"the node \"%s{DirectoryEntryName.toEscaped deviceName}\""
+
+                    vfs, Map.add node mountRoot members
+                )
+                (vfs, Map.add mountRoot mountRoot vfs.MountMembers)
+
+        Ok
+            { vfs with
+                Mounts =
+                    Map.add
+                        mountRoot
+                        {
+                            Covered = covered
+                            FileSystem = fileSystem
+                        }
+                        vfs.Mounts
+                MountMembers = members
+            }
+
     /// Write `bytes` at `offset` into the regular file at `inode`, moving its
     /// `mtime` and `ctime` and stripping whichever of its set-user-ID and
     /// set-group-ID bits `rule` says a writer with `credentials` strips. Refused,
@@ -1749,6 +1955,11 @@ module VirtualFileSystem =
                } ->
             failwith
                 $"VirtualFileSystem.writeFile: inode %O{inode} is a symbolic link. `open` resolves symlinks, so no descriptor should name one (this is a bug in the caller)."
+        | Some {
+                   Content = InodeContent.CharacterDevice _
+               } ->
+            failwith
+                $"VirtualFileSystem.writeFile: inode %O{inode} is a character device, which holds no contents of its own; what a transfer does is its driver's business, not this filesystem's (this is a bug in the caller)."
         | Some ({
                     Content = InodeContent.RegularFile (contents, permissions)
                 } as entry) ->
@@ -1832,6 +2043,11 @@ module VirtualFileSystem =
                } ->
             failwith
                 $"VirtualFileSystem.truncateFile: inode %O{inode} is a symbolic link. `open` resolves symlinks, so no descriptor should name one (this is a bug in the caller)."
+        | Some {
+                   Content = InodeContent.CharacterDevice _
+               } ->
+            failwith
+                $"VirtualFileSystem.truncateFile: inode %O{inode} is a character device, which holds no contents of its own; what a transfer does is its driver's business, not this filesystem's (this is a bug in the caller)."
         | Some ({
                     Content = InodeContent.RegularFile (contents, permissions)
                 } as entry) ->
@@ -1889,6 +2105,7 @@ module VirtualFileSystem =
         let content =
             match entry.Content with
             | InodeContent.RegularFile (contents, _) -> InodeContent.RegularFile (contents, bits)
+            | InodeContent.CharacterDevice (device, _) -> InodeContent.CharacterDevice (device, bits)
             | InodeContent.Directory directory ->
                 InodeContent.Directory
                     { directory with
@@ -1992,6 +2209,7 @@ module VirtualFileSystem =
                 |> Map.toList
                 |> List.map (fun (name, target) -> inode, name, target)
             | InodeContent.RegularFile _
+            | InodeContent.CharacterDevice _
             | InodeContent.Symlink _ -> []
         )
 
@@ -2007,6 +2225,7 @@ module VirtualFileSystem =
                 Some (inode, directory.Entries |> Map.keys |> List.ofSeq)
             | InodeContent.Directory _
             | InodeContent.RegularFile _
+            | InodeContent.CharacterDevice _
             | InodeContent.Symlink _ -> None
         )
         |> Map.ofSeq
@@ -2144,6 +2363,7 @@ module VirtualFileSystem =
             match tryGetContent vfs.Root vfs with
             | None -> [ VirtualFileSystemDefect.RootMissing vfs.Root ]
             | Some (InodeContent.RegularFile _)
+            | Some (InodeContent.CharacterDevice _)
             | Some (InodeContent.Symlink _) -> [ VirtualFileSystemDefect.RootIsNotDirectory vfs.Root ]
             | Some (InodeContent.Directory content) ->
                 if content.Parent = vfs.Root then
@@ -2179,6 +2399,7 @@ module VirtualFileSystem =
             |> List.collect (fun (inode, entry) ->
                 match entry.Content with
                 | InodeContent.RegularFile _
+                | InodeContent.CharacterDevice _
                 | InodeContent.Symlink _ -> []
                 | InodeContent.Directory directory ->
 
@@ -2194,6 +2415,7 @@ module VirtualFileSystem =
                     match tryGetContent recorded vfs with
                     | None -> [ VirtualFileSystemDefect.DanglingParent (inode, recorded) ]
                     | Some (InodeContent.RegularFile _)
+                    | Some (InodeContent.CharacterDevice _)
                     | Some (InodeContent.Symlink _) ->
                         [ VirtualFileSystemDefect.ParentIsNotDirectory (inode, recorded) ]
                     | Some (InodeContent.Directory _) -> []
@@ -2299,6 +2521,47 @@ module VirtualFileSystem =
                     Some (VirtualFileSystemDefect.SubdirectoryCountMismatch (directory, stored, counted))
             )
 
+        // A mounted filesystem holds its root and what that root binds, and
+        // nothing deeper: every mount this module makes is flat.
+        let mountDefects =
+            let recordedByRoot =
+                vfs.MountMembers
+                |> Map.toList
+                |> List.groupBy snd
+                |> List.map (fun (root, members) -> root, members |> List.map fst |> Set.ofList)
+                |> Map.ofList
+
+            Set.union (Map.keys vfs.Mounts |> Set.ofSeq) (Map.keys recordedByRoot |> Set.ofSeq)
+            |> Set.toList
+            |> List.collect (fun root ->
+                let mount = Map.tryFind root vfs.Mounts
+
+                let rootDefect, actual =
+                    match mount, tryGetDirectory root vfs with
+                    | None, _ -> [], Set.empty
+                    | Some _, None -> [ VirtualFileSystemDefect.MountRootNotDirectory root ], Set.empty
+                    | Some _, Some content -> [], content.Entries |> Map.values |> Set.ofSeq |> Set.add root
+
+                let recorded = Map.tryFind root recordedByRoot |> Option.defaultValue Set.empty
+
+                let membership =
+                    if recorded = actual then
+                        []
+                    else
+                        [ VirtualFileSystemDefect.MountMembershipMismatch (root, recorded, actual) ]
+
+                let covered =
+                    match mount with
+                    | Some mount when Map.containsKey mount.Covered vfs.Inodes ->
+                        [ VirtualFileSystemDefect.CoveredInodeInUse (root, mount.Covered) ]
+                    | Some mount when mount.Covered >= vfs.NextInode ->
+                        [ VirtualFileSystemDefect.NextInodeNotFresh (vfs.NextInode, mount.Covered) ]
+                    | Some _
+                    | None -> []
+
+                rootDefect @ membership @ covered
+            )
+
         rootDefects
         @ rootLinks
         @ danglingEntries
@@ -2308,6 +2571,7 @@ module VirtualFileSystem =
         @ bindingCounts
         @ sortedNames
         @ subdirectoryCounts
+        @ mountDefects
 
     /// Fail loudly if `vfs` is not sound, naming `context`. For the operations
     /// that build a filesystem from host configuration, where a defect is a
@@ -2415,6 +2679,8 @@ module VirtualFileSystem =
                     BindingCounts = Map.empty
                     SortedNames = boundNames inodes |> Map.map (fun _ names -> SortedEntryNames.ofSeq names)
                     SubdirectoryCounts = Map.empty
+                    Mounts = Map.empty
+                    MountMembers = Map.empty
                 }
 
             let bindings = allBindings vfs
@@ -2448,6 +2714,32 @@ module VirtualFileSystem =
                     match count with
                     | None -> Map.remove directory vfs.SubdirectoryCounts
                     | Some count -> Map.add directory count vfs.SubdirectoryCounts
+            }
+
+        /// `vfs` with the mount whose root is `root` replaced by `mount`, `None`
+        /// recording no mount there, and the graph untouched.
+        let setMount (root : InodeNumber) (mount : Mount option) (vfs : VirtualFileSystem) : VirtualFileSystem =
+            { vfs with
+                Mounts =
+                    match mount with
+                    | None -> Map.remove root vfs.Mounts
+                    | Some mount -> Map.add root mount vfs.Mounts
+            }
+
+        /// `vfs` with the mounted filesystem `inode` is recorded as on replaced
+        /// by the one whose root is `root`, `None` recording it as on the root
+        /// filesystem, and the graph untouched.
+        let setMountMember
+            (inode : InodeNumber)
+            (root : InodeNumber option)
+            (vfs : VirtualFileSystem)
+            : VirtualFileSystem
+            =
+            { vfs with
+                MountMembers =
+                    match root with
+                    | None -> Map.remove inode vfs.MountMembers
+                    | Some root -> Map.add inode root vfs.MountMembers
             }
 
         /// `vfs` with the names `nextDirectoryEntry` seeks in for `directory`

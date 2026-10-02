@@ -1,0 +1,22 @@
+MP euid=1000 stat(/dev) dev=6 ino=1; stat(/) dev=65040 ino=2; stat(/dev/..) dev=65040 ino=2
+MP readdir(/) dev: d_ino=14 d_type=4
+MP readdir(/dev) .: d_ino=1
+MP readdir(/dev) ..: d_ino=1
+MP rmdir(/dev) -1 Permission denied
+MP rename(/dev, /devx) -1 Permission denied
+MP unlink(/dev) -1 Permission denied
+MP chmod(/dev, mode unchanged) -1 Operation not permitted
+MP mkdir(/dev) -1 File exists
+MP rmdir(/dev/.) -1 Invalid argument
+MP chdir(/dev) 0 getcwd=/dev chdir(..) 0 getcwd=/
+MP euid=0 stat(/dev) dev=6 ino=1; stat(/) dev=65040 ino=2; stat(/dev/..) dev=65040 ino=2
+MP readdir(/) dev: d_ino=14 d_type=4
+MP readdir(/dev) .: d_ino=1
+MP readdir(/dev) ..: d_ino=1
+MP rmdir(/dev) -1 Device or resource busy
+MP rename(/dev, /devx) -1 Device or resource busy
+MP unlink(/dev) -1 Is a directory
+MP chmod(/dev, mode unchanged) 0
+MP mkdir(/dev) -1 File exists
+MP rmdir(/dev/.) -1 Invalid argument
+MP chdir(/dev) 0 getcwd=/dev chdir(..) 0 getcwd=/

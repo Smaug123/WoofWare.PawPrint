@@ -1,0 +1,1005 @@
+[0/6] [0s]
+[1/6] Fetching image [0s]
+[2/6] Unpacking image [0s]
+[3/6] Fetching kernel [0s]
+[4/6] Fetching init image [0s]
+[5/6] Unpacking init image [0s]
+[6/6] Starting container [0s]
+[6/6] Starting container [0s]
+# kernel: Linux 6.18.5 aarch64 glibc: ldd (Debian GLIBC 2.41-12+deb13u4) 2.41
+/probe/devices.c: In function 'dev_ops':
+/probe/devices.c:277:45: warning: argument 2 is null but the corresponding size argument 3 value is 1 [-Wnonnull]
+  277 |     printf("READ %s NULL,1 %s\n", path, res(read(fdr, NULL, 1)));
+      |                                             ^~~~~~~~~~~~~~~~~~
+In file included from /usr/include/aarch64-linux-gnu/bits/sigstksz.h:24,
+                 from /usr/include/signal.h:328,
+                 from /probe/devices.c:16:
+/usr/include/unistd.h:371:16: note: in a call to function 'read' declared with attribute 'access (write_only, 2, 3)'
+  371 | extern ssize_t read (int __fd, void *__buf, size_t __nbytes) __wur
+      |                ^~~~
+/probe/devices.c:278:47: warning: argument 2 is null but the corresponding size argument 3 value is 100 [-Wnonnull]
+  278 |     printf("READ %s NULL,100 %s\n", path, res(read(fdr, NULL, 100)));
+      |                                               ^~~~~~~~~~~~~~~~~~~~
+/usr/include/unistd.h:371:16: note: in a call to function 'read' declared with attribute 'access (write_only, 2, 3)'
+  371 | extern ssize_t read (int __fd, void *__buf, size_t __nbytes) __wur
+      |                ^~~~
+/probe/devices.c:291:46: warning: argument 2 is null but the corresponding size argument 3 value is 1 [-Wnonnull]
+  291 |     printf("WRITE %s NULL,1 %s\n", path, res(write(fd, NULL, 1)));
+      |                                              ^~~~~~~~~~~~~~~~~~
+/usr/include/unistd.h:378:16: note: in a call to function 'write' declared with attribute 'access (read_only, 2, 3)'
+  378 | extern ssize_t write (int __fd, const void *__buf, size_t __n) __wur
+      |                ^~~~~
+### root
+NOW 1790953756.837220250
+STAT lstat / dev=254,16(raw 65040) ino=2 mode=040755 nlink=19 uid=0 gid=0 rdev=0,0(raw 0) size=4096 blksize=4096 blocks=8 atime=1790423289.941226005 mtime=1790953756.744000000 ctime=1790953756.744000000
+STAT fstat / dev=254,16(raw 65040) ino=2 mode=040755 nlink=19 uid=0 gid=0 rdev=0,0(raw 0) size=4096 blksize=4096 blocks=8 atime=1790423289.941226005 mtime=1790953756.744000000 ctime=1790953756.744000000
+STAT lstat /tmp dev=254,16(raw 65040) ino=188 mode=041777 nlink=2 uid=0 gid=0 rdev=0,0(raw 0) size=4096 blksize=4096 blocks=8 atime=1790423294.158493041 mtime=1790953756.836554708 ctime=1790953756.836554708
+STAT fstat /tmp dev=254,16(raw 65040) ino=188 mode=041777 nlink=2 uid=0 gid=0 rdev=0,0(raw 0) size=4096 blksize=4096 blocks=8 atime=1790423294.158493041 mtime=1790953756.836554708 ctime=1790953756.836554708
+STAT lstat /dev dev=0,6(raw 6) ino=1 mode=040755 nlink=7 uid=0 gid=0 rdev=0,0(raw 0) size=2740 blksize=4096 blocks=0 atime=0.000000000 mtime=1790953756.744000000 ctime=1790953756.744000000
+STAT fstat /dev dev=0,6(raw 6) ino=1 mode=040755 nlink=7 uid=0 gid=0 rdev=0,0(raw 0) size=2740 blksize=4096 blocks=0 atime=0.000000000 mtime=1790953756.744000000 ctime=1790953756.744000000
+STAT lstat /dev/null dev=0,6(raw 6) ino=2 mode=020666 nlink=1 uid=0 gid=0 rdev=1,3(raw 259) size=0 blksize=4096 blocks=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+STAT fstat /dev/null dev=0,6(raw 6) ino=2 mode=020666 nlink=1 uid=0 gid=0 rdev=1,3(raw 259) size=0 blksize=4096 blocks=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+STAT lstat /dev/zero dev=0,6(raw 6) ino=3 mode=020666 nlink=1 uid=0 gid=0 rdev=1,5(raw 261) size=0 blksize=4096 blocks=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+STAT fstat /dev/zero dev=0,6(raw 6) ino=3 mode=020666 nlink=1 uid=0 gid=0 rdev=1,5(raw 261) size=0 blksize=4096 blocks=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+STAT lstat /dev/random dev=0,6(raw 6) ino=5 mode=020666 nlink=1 uid=0 gid=0 rdev=1,8(raw 264) size=0 blksize=4096 blocks=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+STAT fstat /dev/random dev=0,6(raw 6) ino=5 mode=020666 nlink=1 uid=0 gid=0 rdev=1,8(raw 264) size=0 blksize=4096 blocks=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+STAT lstat /dev/urandom dev=0,6(raw 6) ino=6 mode=020666 nlink=1 uid=0 gid=0 rdev=1,9(raw 265) size=0 blksize=4096 blocks=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+STAT fstat /dev/urandom dev=0,6(raw 6) ino=6 mode=020666 nlink=1 uid=0 gid=0 rdev=1,9(raw 265) size=0 blksize=4096 blocks=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+STATFS / type=0xef53 bsize=4096 blocks=132108238 bfree=131727306 bavail=131723210 files=33619968 ffree=33587087 fsid=672ce4c2:ff267d95 namelen=255 frsize=4096 flags=0x1020
+STATFS /tmp type=0xef53 bsize=4096 blocks=132108238 bfree=131727306 bavail=131723210 files=33619968 ffree=33587087 fsid=672ce4c2:ff267d95 namelen=255 frsize=4096 flags=0x1020
+STATFS /dev type=0x1021994 bsize=4096 blocks=142112 bfree=142112 bavail=142112 files=142112 ffree=141974 fsid=544366de:ad9235de namelen=255 frsize=4096 flags=0x1022
+STATFS /dev/null type=0x1021994 bsize=4096 blocks=142112 bfree=142112 bavail=142112 files=142112 ffree=141974 fsid=544366de:ad9235de namelen=255 frsize=4096 flags=0x1022
+STATFS /dev/urandom type=0x1021994 bsize=4096 blocks=142112 bfree=142112 bavail=142112 files=142112 ffree=141974 fsid=544366de:ad9235de namelen=255 frsize=4096 flags=0x1022
+NS euid=0
+NS rename(tmpfile, /dev/pawprobe) -1 EXDEV
+NS rename(tmpdir, /dev/pawprobedir) -1 EXDEV
+NS link(tmpfile, /dev/pawprobe) -1 EXDEV
+NS rename(/dev/null, tmp/new) -1 EXDEV
+NS rename(/dev/null, tmpfile-existing) -1 EXDEV
+NS link(/dev/null, tmp/new) -1 EXDEV
+NS rename(/dev/nonexistent, tmp/new) -1 EXDEV
+NS rename(tmp/nonexistent, /dev/new) -1 EXDEV
+NS rename(tmpfile, /dev/null) -1 EXDEV
+NS symlink(x, /dev/pawprobe) 0
+NS open(/dev/pawprobe, O_CREAT|O_EXCL) 3
+STAT fstat /dev/pawprobe dev=0,6(raw 6) ino=141 mode=0100644 nlink=1 uid=0 gid=0 rdev=0,0(raw 0) size=0 blksize=4096 blocks=0 atime=1790953756.837541625 mtime=1790953756.837541625 ctime=1790953756.837541625
+NS write(new /dev file) 5
+NS unlink(/dev/pawprobe) 0
+NS mkdir(/dev/pawprobedir) 0
+NS mknod(/dev/pawprobenod, S_IFCHR 1,3) 0
+NS mknod(tmp/nod, S_IFCHR 1,3) 0
+NS unlink(/dev/pawnonexistent) -1 ENOENT
+NS open(/dev/null, O_CREAT|O_EXCL) -1 EEXIST
+NS open(/dev/null, O_DIRECTORY) -1 ENOTDIR
+NS open(/dev/null/x) -1 ENOTDIR
+NS access(/dev/urandom, R_OK|W_OK) 0
+NS access(/dev/urandom, X_OK) -1 EACCES
+NS chmod(/dev/null, 0666) 0
+LIST order: 0:.(t4,i1) 1:..(t4,i1) 2:rtc(t10,i139) 3:stderr(t10,i138) 4:stdout(t10,i137) 5:stdin(t10,i136) 6:fd(t10,i135) 7:ptmx(t10,i134) 8:shm(t4,i133) 9:mqueue(t4,i132) 10:pts(t4,i131) 11:cpu_dma_latency(t2,i130) 132:urandom(t2,i6) 133:random(t2,i5) 135:zero(t2,i3) 136:null(t2,i2)
+LIST total=137
+== /dev/null
+OPEN /dev/null O_RDONLY 3 getfl=0x20000 getfd=1
+OPEN /dev/null O_WRONLY 3 getfl=0x20001 getfd=1
+OPEN /dev/null O_RDWR 3 getfl=0x20002 getfd=1
+OPEN /dev/null O_WRONLY|O_TRUNC 3
+OPEN /dev/null O_RDONLY|O_TRUNC 3
+OPEN /dev/null O_WRONLY|O_APPEND 3
+WRITE-APPEND /dev/null 3 3
+OPEN /dev/null O_RDONLY|O_CREAT 3
+OPEN /dev/null O_RDONLY|O_NOFOLLOW 3
+READ /dev/null 0 0 allzero=-1 untouched_after=1
+READ /dev/null 1 0 allzero=-1 untouched_after=1
+READ /dev/null 7 0 allzero=-1 untouched_after=1
+READ /dev/null 8 0 allzero=-1 untouched_after=1
+READ /dev/null 9 0 allzero=-1 untouched_after=1
+READ /dev/null 31 0 allzero=-1 untouched_after=1
+READ /dev/null 32 0 allzero=-1 untouched_after=1
+READ /dev/null 33 0 allzero=-1 untouched_after=1
+READ /dev/null 64 0 allzero=-1 untouched_after=1
+READ /dev/null 255 0 allzero=-1 untouched_after=1
+READ /dev/null 256 0 allzero=-1 untouched_after=1
+READ /dev/null 257 0 allzero=-1 untouched_after=1
+READ /dev/null 512 0 allzero=-1 untouched_after=1
+READ /dev/null 513 0 allzero=-1 untouched_after=1
+READ /dev/null 4095 0 allzero=-1 untouched_after=1
+READ /dev/null 4096 0 allzero=-1 untouched_after=1
+READ /dev/null 4097 0 allzero=-1 untouched_after=1
+READ /dev/null 65536 0 allzero=-1 untouched_after=1
+READ /dev/null 1048576 0 allzero=-1 untouched_after=1
+READ /dev/null NULL,0 0
+READ /dev/null NULL,1 0
+READ /dev/null NULL,100 0
+READ /dev/null partial(pg=4096, ask 2pg) 0
+READ /dev/null partial(ask 2pg from pg-100) 0
+READ /dev/null unmapped(ask 16) 0
+WRITE /dev/null 0 0
+WRITE /dev/null 1 1
+WRITE /dev/null 255 255
+WRITE /dev/null 256 256
+WRITE /dev/null 257 257
+WRITE /dev/null 4096 4096
+WRITE /dev/null 65536 65536
+WRITE /dev/null 1048576 1048576
+WRITE /dev/null NULL,0 0
+WRITE /dev/null NULL,1 1
+WRITE /dev/null partial(ask 2pg) 8192
+WRITE /dev/null unmapped(ask 16) 16
+WRITE /dev/null via O_RDONLY fd -1 EBADF
+READ /dev/null via O_WRONLY fd -1 EBADF
+LSEEK /dev/null whence=0 off=0 0
+LSEEK /dev/null whence=0 off=1 0
+LSEEK /dev/null whence=0 off=-1 0
+LSEEK /dev/null whence=0 off=100 0
+LSEEK /dev/null whence=0 off=9223372036854775807 0
+LSEEK /dev/null whence=1 off=0 0
+LSEEK /dev/null whence=1 off=1 0
+LSEEK /dev/null whence=1 off=-1 0
+LSEEK /dev/null whence=1 off=100 0
+LSEEK /dev/null whence=1 off=9223372036854775807 0
+LSEEK /dev/null whence=2 off=0 0
+LSEEK /dev/null whence=2 off=1 0
+LSEEK /dev/null whence=2 off=-1 0
+LSEEK /dev/null whence=2 off=100 0
+LSEEK /dev/null whence=2 off=9223372036854775807 0
+LSEEK /dev/null whence=3 off=0 0
+LSEEK /dev/null whence=3 off=1 0
+LSEEK /dev/null whence=3 off=-1 0
+LSEEK /dev/null whence=3 off=100 0
+LSEEK /dev/null whence=3 off=9223372036854775807 0
+LSEEK /dev/null whence=4 off=0 0
+LSEEK /dev/null whence=4 off=1 0
+LSEEK /dev/null whence=4 off=-1 0
+LSEEK /dev/null whence=4 off=100 0
+LSEEK /dev/null whence=4 off=9223372036854775807 0
+LSEEK /dev/null SEEK_CUR after read 100 0
+LSEEK /dev/null SEEK_CUR after SEEK_SET 1000 0
+LSEEK /dev/null SEEK_CUR after SEEK_SET 1000 + read 100 0
+LSEEK /dev/null SEEK_CUR on O_WRONLY fd after write 50 0
+PREAD /dev/null 16@0 0
+PREAD /dev/null 16@2^40 0
+PREAD /dev/null 16@-1 -1 EINVAL
+PREAD /dev/null 16@INT64_MAX -1 EINVAL
+PWRITE /dev/null 16@0 16
+PWRITE /dev/null 16@-1 -1 EINVAL
+PWRITE /dev/null 16@INT64_MAX -1 EINVAL
+FTRUNCATE /dev/null rdwr 0 -1 EINVAL
+FTRUNCATE /dev/null rdwr 10 -1 EINVAL
+FTRUNCATE /dev/null rdwr -1 -1 EINVAL
+FTRUNCATE /dev/null rdonly 0 -1 EINVAL
+TRUNCATE /dev/null path 0 -1 EINVAL
+FCNTL /dev/null F_SETFL O_NONBLOCK 0 then read 64 0
+OPEN /dev/null O_RDONLY|O_NONBLOCK 6 read 64 0
+POLL /dev/null O_RDONLY 1 revents=0x145
+POLL /dev/null O_RDONLY events=0 0 revents=0x0
+POLL /dev/null O_WRONLY 1 revents=0x145
+POLL /dev/null O_WRONLY events=0 0 revents=0x0
+POLL /dev/null O_RDWR 1 revents=0x145
+POLL /dev/null O_RDWR events=0 0 revents=0x0
+EPOLL /dev/null O_RDONLY ADD -1 EPERM wait 0 events=0x0
+EPOLL /dev/null O_RDONLY MOD ET -1 EPERM
+EPOLL /dev/null O_WRONLY ADD -1 EPERM wait 0 events=0x0
+EPOLL /dev/null O_WRONLY MOD ET -1 EPERM
+FADVISE /dev/null SEQUENTIAL 0
+FADVISE /dev/null 99 22
+FLOCK /dev/null first EX 0 second EX -1 EAGAIN second SH -1 EAGAIN
+FSYNC /dev/null -1 EINVAL fdatasync -1 EINVAL
+FIONREAD /dev/null -1 ENOTTY value=-12345
+ISATTY /dev/null 0
+STAT fstat-after-ops /dev/null dev=0,6(raw 6) ino=2 mode=020666 nlink=1 uid=0 gid=0 rdev=1,3(raw 259) size=0 blksize=4096 blocks=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+CLOSE /dev/null 0 0
+FDNUM /dev/null 3 then 4
+== /dev/zero
+OPEN /dev/zero O_RDONLY 3 getfl=0x20000 getfd=1
+OPEN /dev/zero O_WRONLY 3 getfl=0x20001 getfd=1
+OPEN /dev/zero O_RDWR 3 getfl=0x20002 getfd=1
+OPEN /dev/zero O_WRONLY|O_TRUNC 3
+OPEN /dev/zero O_RDONLY|O_TRUNC 3
+OPEN /dev/zero O_WRONLY|O_APPEND 3
+WRITE-APPEND /dev/zero 3 3
+OPEN /dev/zero O_RDONLY|O_CREAT 3
+OPEN /dev/zero O_RDONLY|O_NOFOLLOW 3
+READ /dev/zero 0 0 allzero=-1 untouched_after=1
+READ /dev/zero 1 1 allzero=1 untouched_after=1
+READ /dev/zero 7 7 allzero=1 untouched_after=1
+READ /dev/zero 8 8 allzero=1 untouched_after=1
+READ /dev/zero 9 9 allzero=1 untouched_after=1
+READ /dev/zero 31 31 allzero=1 untouched_after=1
+READ /dev/zero 32 32 allzero=1 untouched_after=1
+READ /dev/zero 33 33 allzero=1 untouched_after=1
+READ /dev/zero 64 64 allzero=1 untouched_after=1
+READ /dev/zero 255 255 allzero=1 untouched_after=1
+READ /dev/zero 256 256 allzero=1 untouched_after=1
+READ /dev/zero 257 257 allzero=1 untouched_after=1
+READ /dev/zero 512 512 allzero=1 untouched_after=1
+READ /dev/zero 513 513 allzero=1 untouched_after=1
+READ /dev/zero 4095 4095 allzero=1 untouched_after=1
+READ /dev/zero 4096 4096 allzero=1 untouched_after=1
+READ /dev/zero 4097 4097 allzero=1 untouched_after=1
+READ /dev/zero 65536 65536 allzero=1 untouched_after=1
+READ /dev/zero 1048576 1048576 allzero=1 untouched_after=1
+READ /dev/zero NULL,0 0
+READ /dev/zero NULL,1 -1 EFAULT
+READ /dev/zero NULL,100 -1 EFAULT
+READ /dev/zero partial(pg=4096, ask 2pg) 4096
+READ /dev/zero partial(ask 2pg from pg-100) 96
+READ /dev/zero unmapped(ask 16) -1 EFAULT
+WRITE /dev/zero 0 0
+WRITE /dev/zero 1 1
+WRITE /dev/zero 255 255
+WRITE /dev/zero 256 256
+WRITE /dev/zero 257 257
+WRITE /dev/zero 4096 4096
+WRITE /dev/zero 65536 65536
+WRITE /dev/zero 1048576 1048576
+WRITE /dev/zero NULL,0 0
+WRITE /dev/zero NULL,1 1
+WRITE /dev/zero partial(ask 2pg) 8192
+WRITE /dev/zero unmapped(ask 16) 16
+WRITE /dev/zero via O_RDONLY fd -1 EBADF
+READ /dev/zero via O_WRONLY fd -1 EBADF
+LSEEK /dev/zero whence=0 off=0 0
+LSEEK /dev/zero whence=0 off=1 0
+LSEEK /dev/zero whence=0 off=-1 0
+LSEEK /dev/zero whence=0 off=100 0
+LSEEK /dev/zero whence=0 off=9223372036854775807 0
+LSEEK /dev/zero whence=1 off=0 0
+LSEEK /dev/zero whence=1 off=1 0
+LSEEK /dev/zero whence=1 off=-1 0
+LSEEK /dev/zero whence=1 off=100 0
+LSEEK /dev/zero whence=1 off=9223372036854775807 0
+LSEEK /dev/zero whence=2 off=0 0
+LSEEK /dev/zero whence=2 off=1 0
+LSEEK /dev/zero whence=2 off=-1 0
+LSEEK /dev/zero whence=2 off=100 0
+LSEEK /dev/zero whence=2 off=9223372036854775807 0
+LSEEK /dev/zero whence=3 off=0 0
+LSEEK /dev/zero whence=3 off=1 0
+LSEEK /dev/zero whence=3 off=-1 0
+LSEEK /dev/zero whence=3 off=100 0
+LSEEK /dev/zero whence=3 off=9223372036854775807 0
+LSEEK /dev/zero whence=4 off=0 0
+LSEEK /dev/zero whence=4 off=1 0
+LSEEK /dev/zero whence=4 off=-1 0
+LSEEK /dev/zero whence=4 off=100 0
+LSEEK /dev/zero whence=4 off=9223372036854775807 0
+LSEEK /dev/zero SEEK_CUR after read 100 0
+LSEEK /dev/zero SEEK_CUR after SEEK_SET 1000 0
+LSEEK /dev/zero SEEK_CUR after SEEK_SET 1000 + read 100 0
+LSEEK /dev/zero SEEK_CUR on O_WRONLY fd after write 50 0
+PREAD /dev/zero 16@0 16
+PREAD /dev/zero 16@2^40 16
+PREAD /dev/zero 16@-1 -1 EINVAL
+PREAD /dev/zero 16@INT64_MAX -1 EINVAL
+PWRITE /dev/zero 16@0 16
+PWRITE /dev/zero 16@-1 -1 EINVAL
+PWRITE /dev/zero 16@INT64_MAX -1 EINVAL
+FTRUNCATE /dev/zero rdwr 0 -1 EINVAL
+FTRUNCATE /dev/zero rdwr 10 -1 EINVAL
+FTRUNCATE /dev/zero rdwr -1 -1 EINVAL
+FTRUNCATE /dev/zero rdonly 0 -1 EINVAL
+TRUNCATE /dev/zero path 0 -1 EINVAL
+FCNTL /dev/zero F_SETFL O_NONBLOCK 0 then read 64 64
+OPEN /dev/zero O_RDONLY|O_NONBLOCK 6 read 64 64
+POLL /dev/zero O_RDONLY 1 revents=0x145
+POLL /dev/zero O_RDONLY events=0 0 revents=0x0
+POLL /dev/zero O_WRONLY 1 revents=0x145
+POLL /dev/zero O_WRONLY events=0 0 revents=0x0
+POLL /dev/zero O_RDWR 1 revents=0x145
+POLL /dev/zero O_RDWR events=0 0 revents=0x0
+EPOLL /dev/zero O_RDONLY ADD -1 EPERM wait 0 events=0x0
+EPOLL /dev/zero O_RDONLY MOD ET -1 EPERM
+EPOLL /dev/zero O_WRONLY ADD -1 EPERM wait 0 events=0x0
+EPOLL /dev/zero O_WRONLY MOD ET -1 EPERM
+FADVISE /dev/zero SEQUENTIAL 0
+FADVISE /dev/zero 99 22
+FLOCK /dev/zero first EX 0 second EX -1 EAGAIN second SH -1 EAGAIN
+FSYNC /dev/zero -1 EINVAL fdatasync -1 EINVAL
+FIONREAD /dev/zero -1 ENOTTY value=-12345
+ISATTY /dev/zero 0
+STAT fstat-after-ops /dev/zero dev=0,6(raw 6) ino=3 mode=020666 nlink=1 uid=0 gid=0 rdev=1,5(raw 261) size=0 blksize=4096 blocks=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+CLOSE /dev/zero 0 0
+FDNUM /dev/zero 3 then 4
+== /dev/random
+OPEN /dev/random O_RDONLY 3 getfl=0x20000 getfd=1
+OPEN /dev/random O_WRONLY 3 getfl=0x20001 getfd=1
+OPEN /dev/random O_RDWR 3 getfl=0x20002 getfd=1
+OPEN /dev/random O_WRONLY|O_TRUNC 3
+OPEN /dev/random O_RDONLY|O_TRUNC 3
+OPEN /dev/random O_WRONLY|O_APPEND 3
+WRITE-APPEND /dev/random 3 3
+OPEN /dev/random O_RDONLY|O_CREAT 3
+OPEN /dev/random O_RDONLY|O_NOFOLLOW 3
+READ /dev/random 0 0 allzero=-1 untouched_after=1
+READ /dev/random 1 1 allzero=0 untouched_after=1
+READ /dev/random 7 7 allzero=0 untouched_after=1
+READ /dev/random 8 8 allzero=0 untouched_after=1
+READ /dev/random 9 9 allzero=0 untouched_after=1
+READ /dev/random 31 31 allzero=0 untouched_after=1
+READ /dev/random 32 32 allzero=0 untouched_after=1
+READ /dev/random 33 33 allzero=0 untouched_after=1
+READ /dev/random 64 64 allzero=0 untouched_after=1
+READ /dev/random 255 255 allzero=0 untouched_after=1
+READ /dev/random 256 256 allzero=0 untouched_after=1
+READ /dev/random 257 257 allzero=0 untouched_after=1
+READ /dev/random 512 512 allzero=0 untouched_after=1
+READ /dev/random 513 513 allzero=0 untouched_after=1
+READ /dev/random 4095 4095 allzero=0 untouched_after=1
+READ /dev/random 4096 4096 allzero=0 untouched_after=1
+READ /dev/random 4097 4097 allzero=0 untouched_after=1
+READ /dev/random 65536 65536 allzero=0 untouched_after=1
+READ /dev/random 1048576 1048576 allzero=0 untouched_after=1
+READ /dev/random NULL,0 0
+READ /dev/random NULL,1 -1 EFAULT
+READ /dev/random NULL,100 -1 EFAULT
+READ /dev/random partial(pg=4096, ask 2pg) 4096
+READ /dev/random partial(ask 2pg from pg-100) 88
+READ /dev/random unmapped(ask 16) -1 EFAULT
+WRITE /dev/random 0 0
+WRITE /dev/random 1 1
+WRITE /dev/random 255 255
+WRITE /dev/random 256 256
+WRITE /dev/random 257 257
+WRITE /dev/random 4096 4096
+WRITE /dev/random 65536 65536
+WRITE /dev/random 1048576 1048576
+WRITE /dev/random NULL,0 0
+WRITE /dev/random NULL,1 -1 EFAULT
+WRITE /dev/random partial(ask 2pg) 4096
+WRITE /dev/random unmapped(ask 16) -1 EFAULT
+WRITE /dev/random via O_RDONLY fd -1 EBADF
+READ /dev/random via O_WRONLY fd -1 EBADF
+LSEEK /dev/random whence=0 off=0 0
+LSEEK /dev/random whence=0 off=1 0
+LSEEK /dev/random whence=0 off=-1 0
+LSEEK /dev/random whence=0 off=100 0
+LSEEK /dev/random whence=0 off=9223372036854775807 0
+LSEEK /dev/random whence=1 off=0 0
+LSEEK /dev/random whence=1 off=1 0
+LSEEK /dev/random whence=1 off=-1 0
+LSEEK /dev/random whence=1 off=100 0
+LSEEK /dev/random whence=1 off=9223372036854775807 0
+LSEEK /dev/random whence=2 off=0 0
+LSEEK /dev/random whence=2 off=1 0
+LSEEK /dev/random whence=2 off=-1 0
+LSEEK /dev/random whence=2 off=100 0
+LSEEK /dev/random whence=2 off=9223372036854775807 0
+LSEEK /dev/random whence=3 off=0 0
+LSEEK /dev/random whence=3 off=1 0
+LSEEK /dev/random whence=3 off=-1 0
+LSEEK /dev/random whence=3 off=100 0
+LSEEK /dev/random whence=3 off=9223372036854775807 0
+LSEEK /dev/random whence=4 off=0 0
+LSEEK /dev/random whence=4 off=1 0
+LSEEK /dev/random whence=4 off=-1 0
+LSEEK /dev/random whence=4 off=100 0
+LSEEK /dev/random whence=4 off=9223372036854775807 0
+LSEEK /dev/random SEEK_CUR after read 100 0
+LSEEK /dev/random SEEK_CUR after SEEK_SET 1000 0
+LSEEK /dev/random SEEK_CUR after SEEK_SET 1000 + read 100 0
+LSEEK /dev/random SEEK_CUR on O_WRONLY fd after write 50 0
+PREAD /dev/random 16@0 16
+PREAD /dev/random 16@2^40 16
+PREAD /dev/random 16@-1 -1 EINVAL
+PREAD /dev/random 16@INT64_MAX -1 EINVAL
+PWRITE /dev/random 16@0 16
+PWRITE /dev/random 16@-1 -1 EINVAL
+PWRITE /dev/random 16@INT64_MAX -1 EINVAL
+FTRUNCATE /dev/random rdwr 0 -1 EINVAL
+FTRUNCATE /dev/random rdwr 10 -1 EINVAL
+FTRUNCATE /dev/random rdwr -1 -1 EINVAL
+FTRUNCATE /dev/random rdonly 0 -1 EINVAL
+TRUNCATE /dev/random path 0 -1 EINVAL
+FCNTL /dev/random F_SETFL O_NONBLOCK 0 then read 64 64
+OPEN /dev/random O_RDONLY|O_NONBLOCK 6 read 64 64
+POLL /dev/random O_RDONLY 1 revents=0x41
+POLL /dev/random O_RDONLY events=0 0 revents=0x0
+POLL /dev/random O_WRONLY 1 revents=0x41
+POLL /dev/random O_WRONLY events=0 0 revents=0x0
+POLL /dev/random O_RDWR 1 revents=0x41
+POLL /dev/random O_RDWR events=0 0 revents=0x0
+EPOLL /dev/random O_RDONLY ADD 0 wait 1 events=0x1
+EPOLL /dev/random O_RDONLY MOD ET 0
+EPOLL /dev/random O_WRONLY ADD 0 wait 1 events=0x1
+EPOLL /dev/random O_WRONLY MOD ET 0
+FADVISE /dev/random SEQUENTIAL 0
+FADVISE /dev/random 99 22
+FLOCK /dev/random first EX 0 second EX -1 EAGAIN second SH -1 EAGAIN
+FSYNC /dev/random -1 EINVAL fdatasync -1 EINVAL
+FIONREAD /dev/random -1 EINVAL value=-12345
+ISATTY /dev/random 0
+STAT fstat-after-ops /dev/random dev=0,6(raw 6) ino=5 mode=020666 nlink=1 uid=0 gid=0 rdev=1,8(raw 264) size=0 blksize=4096 blocks=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+CLOSE /dev/random 0 0
+FDNUM /dev/random 3 then 4
+== /dev/urandom
+OPEN /dev/urandom O_RDONLY 3 getfl=0x20000 getfd=1
+OPEN /dev/urandom O_WRONLY 3 getfl=0x20001 getfd=1
+OPEN /dev/urandom O_RDWR 3 getfl=0x20002 getfd=1
+OPEN /dev/urandom O_WRONLY|O_TRUNC 3
+OPEN /dev/urandom O_RDONLY|O_TRUNC 3
+OPEN /dev/urandom O_WRONLY|O_APPEND 3
+WRITE-APPEND /dev/urandom 3 3
+OPEN /dev/urandom O_RDONLY|O_CREAT 3
+OPEN /dev/urandom O_RDONLY|O_NOFOLLOW 3
+READ /dev/urandom 0 0 allzero=-1 untouched_after=1
+READ /dev/urandom 1 1 allzero=0 untouched_after=1
+READ /dev/urandom 7 7 allzero=0 untouched_after=1
+READ /dev/urandom 8 8 allzero=0 untouched_after=1
+READ /dev/urandom 9 9 allzero=0 untouched_after=1
+READ /dev/urandom 31 31 allzero=0 untouched_after=1
+READ /dev/urandom 32 32 allzero=0 untouched_after=1
+READ /dev/urandom 33 33 allzero=0 untouched_after=1
+READ /dev/urandom 64 64 allzero=0 untouched_after=1
+READ /dev/urandom 255 255 allzero=0 untouched_after=1
+READ /dev/urandom 256 256 allzero=0 untouched_after=1
+READ /dev/urandom 257 257 allzero=0 untouched_after=1
+READ /dev/urandom 512 512 allzero=0 untouched_after=1
+READ /dev/urandom 513 513 allzero=0 untouched_after=1
+READ /dev/urandom 4095 4095 allzero=0 untouched_after=1
+READ /dev/urandom 4096 4096 allzero=0 untouched_after=1
+READ /dev/urandom 4097 4097 allzero=0 untouched_after=1
+READ /dev/urandom 65536 65536 allzero=0 untouched_after=1
+READ /dev/urandom 1048576 1048576 allzero=0 untouched_after=1
+READ /dev/urandom NULL,0 0
+READ /dev/urandom NULL,1 -1 EFAULT
+READ /dev/urandom NULL,100 -1 EFAULT
+READ /dev/urandom partial(pg=4096, ask 2pg) 4096
+READ /dev/urandom partial(ask 2pg from pg-100) 88
+READ /dev/urandom unmapped(ask 16) -1 EFAULT
+WRITE /dev/urandom 0 0
+WRITE /dev/urandom 1 1
+WRITE /dev/urandom 255 255
+WRITE /dev/urandom 256 256
+WRITE /dev/urandom 257 257
+WRITE /dev/urandom 4096 4096
+WRITE /dev/urandom 65536 65536
+WRITE /dev/urandom 1048576 1048576
+WRITE /dev/urandom NULL,0 0
+WRITE /dev/urandom NULL,1 -1 EFAULT
+WRITE /dev/urandom partial(ask 2pg) 4096
+WRITE /dev/urandom unmapped(ask 16) -1 EFAULT
+WRITE /dev/urandom via O_RDONLY fd -1 EBADF
+READ /dev/urandom via O_WRONLY fd -1 EBADF
+LSEEK /dev/urandom whence=0 off=0 0
+LSEEK /dev/urandom whence=0 off=1 0
+LSEEK /dev/urandom whence=0 off=-1 0
+LSEEK /dev/urandom whence=0 off=100 0
+LSEEK /dev/urandom whence=0 off=9223372036854775807 0
+LSEEK /dev/urandom whence=1 off=0 0
+LSEEK /dev/urandom whence=1 off=1 0
+LSEEK /dev/urandom whence=1 off=-1 0
+LSEEK /dev/urandom whence=1 off=100 0
+LSEEK /dev/urandom whence=1 off=9223372036854775807 0
+LSEEK /dev/urandom whence=2 off=0 0
+LSEEK /dev/urandom whence=2 off=1 0
+LSEEK /dev/urandom whence=2 off=-1 0
+LSEEK /dev/urandom whence=2 off=100 0
+LSEEK /dev/urandom whence=2 off=9223372036854775807 0
+LSEEK /dev/urandom whence=3 off=0 0
+LSEEK /dev/urandom whence=3 off=1 0
+LSEEK /dev/urandom whence=3 off=-1 0
+LSEEK /dev/urandom whence=3 off=100 0
+LSEEK /dev/urandom whence=3 off=9223372036854775807 0
+LSEEK /dev/urandom whence=4 off=0 0
+LSEEK /dev/urandom whence=4 off=1 0
+LSEEK /dev/urandom whence=4 off=-1 0
+LSEEK /dev/urandom whence=4 off=100 0
+LSEEK /dev/urandom whence=4 off=9223372036854775807 0
+LSEEK /dev/urandom SEEK_CUR after read 100 0
+LSEEK /dev/urandom SEEK_CUR after SEEK_SET 1000 0
+LSEEK /dev/urandom SEEK_CUR after SEEK_SET 1000 + read 100 0
+LSEEK /dev/urandom SEEK_CUR on O_WRONLY fd after write 50 0
+PREAD /dev/urandom 16@0 16
+PREAD /dev/urandom 16@2^40 16
+PREAD /dev/urandom 16@-1 -1 EINVAL
+PREAD /dev/urandom 16@INT64_MAX -1 EINVAL
+PWRITE /dev/urandom 16@0 16
+PWRITE /dev/urandom 16@-1 -1 EINVAL
+PWRITE /dev/urandom 16@INT64_MAX -1 EINVAL
+FTRUNCATE /dev/urandom rdwr 0 -1 EINVAL
+FTRUNCATE /dev/urandom rdwr 10 -1 EINVAL
+FTRUNCATE /dev/urandom rdwr -1 -1 EINVAL
+FTRUNCATE /dev/urandom rdonly 0 -1 EINVAL
+TRUNCATE /dev/urandom path 0 -1 EINVAL
+FCNTL /dev/urandom F_SETFL O_NONBLOCK 0 then read 64 64
+OPEN /dev/urandom O_RDONLY|O_NONBLOCK 6 read 64 64
+POLL /dev/urandom O_RDONLY 1 revents=0x145
+POLL /dev/urandom O_RDONLY events=0 0 revents=0x0
+POLL /dev/urandom O_WRONLY 1 revents=0x145
+POLL /dev/urandom O_WRONLY events=0 0 revents=0x0
+POLL /dev/urandom O_RDWR 1 revents=0x145
+POLL /dev/urandom O_RDWR events=0 0 revents=0x0
+EPOLL /dev/urandom O_RDONLY ADD -1 EPERM wait 0 events=0x0
+EPOLL /dev/urandom O_RDONLY MOD ET -1 EPERM
+EPOLL /dev/urandom O_WRONLY ADD -1 EPERM wait 0 events=0x0
+EPOLL /dev/urandom O_WRONLY MOD ET -1 EPERM
+FADVISE /dev/urandom SEQUENTIAL 0
+FADVISE /dev/urandom 99 22
+FLOCK /dev/urandom first EX 0 second EX -1 EAGAIN second SH -1 EAGAIN
+FSYNC /dev/urandom -1 EINVAL fdatasync -1 EINVAL
+FIONREAD /dev/urandom -1 EINVAL value=-12345
+ISATTY /dev/urandom 0
+STAT fstat-after-ops /dev/urandom dev=0,6(raw 6) ino=6 mode=020666 nlink=1 uid=0 gid=0 rdev=1,9(raw 265) size=0 blksize=4096 blocks=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+CLOSE /dev/urandom 0 0
+FDNUM /dev/urandom 3 then 4
+### uid 1000
+NOW 1790953756.846550625
+STAT lstat / dev=254,16(raw 65040) ino=2 mode=040755 nlink=19 uid=0 gid=0 rdev=0,0(raw 0) size=4096 blksize=4096 blocks=8 atime=1790423289.941226005 mtime=1790953756.744000000 ctime=1790953756.744000000
+STAT fstat / dev=254,16(raw 65040) ino=2 mode=040755 nlink=19 uid=0 gid=0 rdev=0,0(raw 0) size=4096 blksize=4096 blocks=8 atime=1790423289.941226005 mtime=1790953756.744000000 ctime=1790953756.744000000
+STAT lstat /tmp dev=254,16(raw 65040) ino=188 mode=041777 nlink=2 uid=0 gid=0 rdev=0,0(raw 0) size=4096 blksize=4096 blocks=8 atime=1790423294.158493041 mtime=1790953756.837541625 ctime=1790953756.837541625
+STAT fstat /tmp dev=254,16(raw 65040) ino=188 mode=041777 nlink=2 uid=0 gid=0 rdev=0,0(raw 0) size=4096 blksize=4096 blocks=8 atime=1790423294.158493041 mtime=1790953756.837541625 ctime=1790953756.837541625
+STAT lstat /dev dev=0,6(raw 6) ino=1 mode=040755 nlink=7 uid=0 gid=0 rdev=0,0(raw 0) size=2740 blksize=4096 blocks=0 atime=1790953756.837541625 mtime=1790953756.837541625 ctime=1790953756.837541625
+STAT fstat /dev dev=0,6(raw 6) ino=1 mode=040755 nlink=7 uid=0 gid=0 rdev=0,0(raw 0) size=2740 blksize=4096 blocks=0 atime=1790953756.837541625 mtime=1790953756.837541625 ctime=1790953756.837541625
+STAT lstat /dev/null dev=0,6(raw 6) ino=2 mode=020666 nlink=1 uid=0 gid=0 rdev=1,3(raw 259) size=0 blksize=4096 blocks=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+STAT fstat /dev/null dev=0,6(raw 6) ino=2 mode=020666 nlink=1 uid=0 gid=0 rdev=1,3(raw 259) size=0 blksize=4096 blocks=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+STAT lstat /dev/zero dev=0,6(raw 6) ino=3 mode=020666 nlink=1 uid=0 gid=0 rdev=1,5(raw 261) size=0 blksize=4096 blocks=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+STAT fstat /dev/zero dev=0,6(raw 6) ino=3 mode=020666 nlink=1 uid=0 gid=0 rdev=1,5(raw 261) size=0 blksize=4096 blocks=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+STAT lstat /dev/random dev=0,6(raw 6) ino=5 mode=020666 nlink=1 uid=0 gid=0 rdev=1,8(raw 264) size=0 blksize=4096 blocks=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+STAT fstat /dev/random dev=0,6(raw 6) ino=5 mode=020666 nlink=1 uid=0 gid=0 rdev=1,8(raw 264) size=0 blksize=4096 blocks=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+STAT lstat /dev/urandom dev=0,6(raw 6) ino=6 mode=020666 nlink=1 uid=0 gid=0 rdev=1,9(raw 265) size=0 blksize=4096 blocks=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+STAT fstat /dev/urandom dev=0,6(raw 6) ino=6 mode=020666 nlink=1 uid=0 gid=0 rdev=1,9(raw 265) size=0 blksize=4096 blocks=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+NS euid=1000
+NS rename(tmpfile, /dev/pawprobe) -1 EXDEV
+NS rename(tmpdir, /dev/pawprobedir) -1 EXDEV
+NS link(tmpfile, /dev/pawprobe) -1 EXDEV
+NS rename(/dev/null, tmp/new) -1 EXDEV
+NS rename(/dev/null, tmpfile-existing) -1 EXDEV
+NS link(/dev/null, tmp/new) -1 EXDEV
+NS rename(/dev/nonexistent, tmp/new) -1 EXDEV
+NS rename(tmp/nonexistent, /dev/new) -1 EXDEV
+NS rename(tmpfile, /dev/null) -1 EXDEV
+NS symlink(x, /dev/pawprobe) -1 EACCES
+NS open(/dev/pawprobe, O_CREAT|O_EXCL) -1 EACCES
+NS mkdir(/dev/pawprobedir) -1 EACCES
+NS mknod(/dev/pawprobenod, S_IFCHR 1,3) -1 EACCES
+NS mknod(tmp/nod, S_IFCHR 1,3) -1 EPERM
+NS unlink(/dev/pawnonexistent) -1 ENOENT
+NS open(/dev/null, O_CREAT|O_EXCL) -1 EEXIST
+NS open(/dev/null, O_DIRECTORY) -1 ENOTDIR
+NS open(/dev/null/x) -1 ENOTDIR
+NS access(/dev/urandom, R_OK|W_OK) 0
+NS access(/dev/urandom, X_OK) -1 EACCES
+NS chmod(/dev/null, 0666) -1 EPERM
+== /dev/null
+OPEN /dev/null O_RDONLY 3 getfl=0x20000 getfd=1
+OPEN /dev/null O_WRONLY 3 getfl=0x20001 getfd=1
+OPEN /dev/null O_RDWR 3 getfl=0x20002 getfd=1
+OPEN /dev/null O_WRONLY|O_TRUNC 3
+OPEN /dev/null O_RDONLY|O_TRUNC 3
+OPEN /dev/null O_WRONLY|O_APPEND 3
+WRITE-APPEND /dev/null 3 3
+OPEN /dev/null O_RDONLY|O_CREAT 3
+OPEN /dev/null O_RDONLY|O_NOFOLLOW 3
+READ /dev/null 0 0 allzero=-1 untouched_after=1
+READ /dev/null 1 0 allzero=-1 untouched_after=1
+READ /dev/null 7 0 allzero=-1 untouched_after=1
+READ /dev/null 8 0 allzero=-1 untouched_after=1
+READ /dev/null 9 0 allzero=-1 untouched_after=1
+READ /dev/null 31 0 allzero=-1 untouched_after=1
+READ /dev/null 32 0 allzero=-1 untouched_after=1
+READ /dev/null 33 0 allzero=-1 untouched_after=1
+READ /dev/null 64 0 allzero=-1 untouched_after=1
+READ /dev/null 255 0 allzero=-1 untouched_after=1
+READ /dev/null 256 0 allzero=-1 untouched_after=1
+READ /dev/null 257 0 allzero=-1 untouched_after=1
+READ /dev/null 512 0 allzero=-1 untouched_after=1
+READ /dev/null 513 0 allzero=-1 untouched_after=1
+READ /dev/null 4095 0 allzero=-1 untouched_after=1
+READ /dev/null 4096 0 allzero=-1 untouched_after=1
+READ /dev/null 4097 0 allzero=-1 untouched_after=1
+READ /dev/null 65536 0 allzero=-1 untouched_after=1
+READ /dev/null 1048576 0 allzero=-1 untouched_after=1
+READ /dev/null NULL,0 0
+READ /dev/null NULL,1 0
+READ /dev/null NULL,100 0
+READ /dev/null partial(pg=4096, ask 2pg) 0
+READ /dev/null partial(ask 2pg from pg-100) 0
+READ /dev/null unmapped(ask 16) 0
+WRITE /dev/null 0 0
+WRITE /dev/null 1 1
+WRITE /dev/null 255 255
+WRITE /dev/null 256 256
+WRITE /dev/null 257 257
+WRITE /dev/null 4096 4096
+WRITE /dev/null 65536 65536
+WRITE /dev/null 1048576 1048576
+WRITE /dev/null NULL,0 0
+WRITE /dev/null NULL,1 1
+WRITE /dev/null partial(ask 2pg) 8192
+WRITE /dev/null unmapped(ask 16) 16
+WRITE /dev/null via O_RDONLY fd -1 EBADF
+READ /dev/null via O_WRONLY fd -1 EBADF
+LSEEK /dev/null whence=0 off=0 0
+LSEEK /dev/null whence=0 off=1 0
+LSEEK /dev/null whence=0 off=-1 0
+LSEEK /dev/null whence=0 off=100 0
+LSEEK /dev/null whence=0 off=9223372036854775807 0
+LSEEK /dev/null whence=1 off=0 0
+LSEEK /dev/null whence=1 off=1 0
+LSEEK /dev/null whence=1 off=-1 0
+LSEEK /dev/null whence=1 off=100 0
+LSEEK /dev/null whence=1 off=9223372036854775807 0
+LSEEK /dev/null whence=2 off=0 0
+LSEEK /dev/null whence=2 off=1 0
+LSEEK /dev/null whence=2 off=-1 0
+LSEEK /dev/null whence=2 off=100 0
+LSEEK /dev/null whence=2 off=9223372036854775807 0
+LSEEK /dev/null whence=3 off=0 0
+LSEEK /dev/null whence=3 off=1 0
+LSEEK /dev/null whence=3 off=-1 0
+LSEEK /dev/null whence=3 off=100 0
+LSEEK /dev/null whence=3 off=9223372036854775807 0
+LSEEK /dev/null whence=4 off=0 0
+LSEEK /dev/null whence=4 off=1 0
+LSEEK /dev/null whence=4 off=-1 0
+LSEEK /dev/null whence=4 off=100 0
+LSEEK /dev/null whence=4 off=9223372036854775807 0
+LSEEK /dev/null SEEK_CUR after read 100 0
+LSEEK /dev/null SEEK_CUR after SEEK_SET 1000 0
+LSEEK /dev/null SEEK_CUR after SEEK_SET 1000 + read 100 0
+LSEEK /dev/null SEEK_CUR on O_WRONLY fd after write 50 0
+PREAD /dev/null 16@0 0
+PREAD /dev/null 16@2^40 0
+PREAD /dev/null 16@-1 -1 EINVAL
+PREAD /dev/null 16@INT64_MAX -1 EINVAL
+PWRITE /dev/null 16@0 16
+PWRITE /dev/null 16@-1 -1 EINVAL
+PWRITE /dev/null 16@INT64_MAX -1 EINVAL
+FTRUNCATE /dev/null rdwr 0 -1 EINVAL
+FTRUNCATE /dev/null rdwr 10 -1 EINVAL
+FTRUNCATE /dev/null rdwr -1 -1 EINVAL
+FTRUNCATE /dev/null rdonly 0 -1 EINVAL
+TRUNCATE /dev/null path 0 -1 EINVAL
+FCNTL /dev/null F_SETFL O_NONBLOCK 0 then read 64 0
+OPEN /dev/null O_RDONLY|O_NONBLOCK 6 read 64 0
+POLL /dev/null O_RDONLY 1 revents=0x145
+POLL /dev/null O_RDONLY events=0 0 revents=0x0
+POLL /dev/null O_WRONLY 1 revents=0x145
+POLL /dev/null O_WRONLY events=0 0 revents=0x0
+POLL /dev/null O_RDWR 1 revents=0x145
+POLL /dev/null O_RDWR events=0 0 revents=0x0
+EPOLL /dev/null O_RDONLY ADD -1 EPERM wait 0 events=0x0
+EPOLL /dev/null O_RDONLY MOD ET -1 EPERM
+EPOLL /dev/null O_WRONLY ADD -1 EPERM wait 0 events=0x0
+EPOLL /dev/null O_WRONLY MOD ET -1 EPERM
+FADVISE /dev/null SEQUENTIAL 0
+FADVISE /dev/null 99 22
+FLOCK /dev/null first EX 0 second EX -1 EAGAIN second SH -1 EAGAIN
+FSYNC /dev/null -1 EINVAL fdatasync -1 EINVAL
+FIONREAD /dev/null -1 ENOTTY value=-12345
+ISATTY /dev/null 0
+STAT fstat-after-ops /dev/null dev=0,6(raw 6) ino=2 mode=020666 nlink=1 uid=0 gid=0 rdev=1,3(raw 259) size=0 blksize=4096 blocks=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+CLOSE /dev/null 0 0
+FDNUM /dev/null 3 then 4
+== /dev/zero
+OPEN /dev/zero O_RDONLY 3 getfl=0x20000 getfd=1
+OPEN /dev/zero O_WRONLY 3 getfl=0x20001 getfd=1
+OPEN /dev/zero O_RDWR 3 getfl=0x20002 getfd=1
+OPEN /dev/zero O_WRONLY|O_TRUNC 3
+OPEN /dev/zero O_RDONLY|O_TRUNC 3
+OPEN /dev/zero O_WRONLY|O_APPEND 3
+WRITE-APPEND /dev/zero 3 3
+OPEN /dev/zero O_RDONLY|O_CREAT 3
+OPEN /dev/zero O_RDONLY|O_NOFOLLOW 3
+READ /dev/zero 0 0 allzero=-1 untouched_after=1
+READ /dev/zero 1 1 allzero=1 untouched_after=1
+READ /dev/zero 7 7 allzero=1 untouched_after=1
+READ /dev/zero 8 8 allzero=1 untouched_after=1
+READ /dev/zero 9 9 allzero=1 untouched_after=1
+READ /dev/zero 31 31 allzero=1 untouched_after=1
+READ /dev/zero 32 32 allzero=1 untouched_after=1
+READ /dev/zero 33 33 allzero=1 untouched_after=1
+READ /dev/zero 64 64 allzero=1 untouched_after=1
+READ /dev/zero 255 255 allzero=1 untouched_after=1
+READ /dev/zero 256 256 allzero=1 untouched_after=1
+READ /dev/zero 257 257 allzero=1 untouched_after=1
+READ /dev/zero 512 512 allzero=1 untouched_after=1
+READ /dev/zero 513 513 allzero=1 untouched_after=1
+READ /dev/zero 4095 4095 allzero=1 untouched_after=1
+READ /dev/zero 4096 4096 allzero=1 untouched_after=1
+READ /dev/zero 4097 4097 allzero=1 untouched_after=1
+READ /dev/zero 65536 65536 allzero=1 untouched_after=1
+READ /dev/zero 1048576 1048576 allzero=1 untouched_after=1
+READ /dev/zero NULL,0 0
+READ /dev/zero NULL,1 -1 EFAULT
+READ /dev/zero NULL,100 -1 EFAULT
+READ /dev/zero partial(pg=4096, ask 2pg) 4096
+READ /dev/zero partial(ask 2pg from pg-100) 96
+READ /dev/zero unmapped(ask 16) -1 EFAULT
+WRITE /dev/zero 0 0
+WRITE /dev/zero 1 1
+WRITE /dev/zero 255 255
+WRITE /dev/zero 256 256
+WRITE /dev/zero 257 257
+WRITE /dev/zero 4096 4096
+WRITE /dev/zero 65536 65536
+WRITE /dev/zero 1048576 1048576
+WRITE /dev/zero NULL,0 0
+WRITE /dev/zero NULL,1 1
+WRITE /dev/zero partial(ask 2pg) 8192
+WRITE /dev/zero unmapped(ask 16) 16
+WRITE /dev/zero via O_RDONLY fd -1 EBADF
+READ /dev/zero via O_WRONLY fd -1 EBADF
+LSEEK /dev/zero whence=0 off=0 0
+LSEEK /dev/zero whence=0 off=1 0
+LSEEK /dev/zero whence=0 off=-1 0
+LSEEK /dev/zero whence=0 off=100 0
+LSEEK /dev/zero whence=0 off=9223372036854775807 0
+LSEEK /dev/zero whence=1 off=0 0
+LSEEK /dev/zero whence=1 off=1 0
+LSEEK /dev/zero whence=1 off=-1 0
+LSEEK /dev/zero whence=1 off=100 0
+LSEEK /dev/zero whence=1 off=9223372036854775807 0
+LSEEK /dev/zero whence=2 off=0 0
+LSEEK /dev/zero whence=2 off=1 0
+LSEEK /dev/zero whence=2 off=-1 0
+LSEEK /dev/zero whence=2 off=100 0
+LSEEK /dev/zero whence=2 off=9223372036854775807 0
+LSEEK /dev/zero whence=3 off=0 0
+LSEEK /dev/zero whence=3 off=1 0
+LSEEK /dev/zero whence=3 off=-1 0
+LSEEK /dev/zero whence=3 off=100 0
+LSEEK /dev/zero whence=3 off=9223372036854775807 0
+LSEEK /dev/zero whence=4 off=0 0
+LSEEK /dev/zero whence=4 off=1 0
+LSEEK /dev/zero whence=4 off=-1 0
+LSEEK /dev/zero whence=4 off=100 0
+LSEEK /dev/zero whence=4 off=9223372036854775807 0
+LSEEK /dev/zero SEEK_CUR after read 100 0
+LSEEK /dev/zero SEEK_CUR after SEEK_SET 1000 0
+LSEEK /dev/zero SEEK_CUR after SEEK_SET 1000 + read 100 0
+LSEEK /dev/zero SEEK_CUR on O_WRONLY fd after write 50 0
+PREAD /dev/zero 16@0 16
+PREAD /dev/zero 16@2^40 16
+PREAD /dev/zero 16@-1 -1 EINVAL
+PREAD /dev/zero 16@INT64_MAX -1 EINVAL
+PWRITE /dev/zero 16@0 16
+PWRITE /dev/zero 16@-1 -1 EINVAL
+PWRITE /dev/zero 16@INT64_MAX -1 EINVAL
+FTRUNCATE /dev/zero rdwr 0 -1 EINVAL
+FTRUNCATE /dev/zero rdwr 10 -1 EINVAL
+FTRUNCATE /dev/zero rdwr -1 -1 EINVAL
+FTRUNCATE /dev/zero rdonly 0 -1 EINVAL
+TRUNCATE /dev/zero path 0 -1 EINVAL
+FCNTL /dev/zero F_SETFL O_NONBLOCK 0 then read 64 64
+OPEN /dev/zero O_RDONLY|O_NONBLOCK 6 read 64 64
+POLL /dev/zero O_RDONLY 1 revents=0x145
+POLL /dev/zero O_RDONLY events=0 0 revents=0x0
+POLL /dev/zero O_WRONLY 1 revents=0x145
+POLL /dev/zero O_WRONLY events=0 0 revents=0x0
+POLL /dev/zero O_RDWR 1 revents=0x145
+POLL /dev/zero O_RDWR events=0 0 revents=0x0
+EPOLL /dev/zero O_RDONLY ADD -1 EPERM wait 0 events=0x0
+EPOLL /dev/zero O_RDONLY MOD ET -1 EPERM
+EPOLL /dev/zero O_WRONLY ADD -1 EPERM wait 0 events=0x0
+EPOLL /dev/zero O_WRONLY MOD ET -1 EPERM
+FADVISE /dev/zero SEQUENTIAL 0
+FADVISE /dev/zero 99 22
+FLOCK /dev/zero first EX 0 second EX -1 EAGAIN second SH -1 EAGAIN
+FSYNC /dev/zero -1 EINVAL fdatasync -1 EINVAL
+FIONREAD /dev/zero -1 ENOTTY value=-12345
+ISATTY /dev/zero 0
+STAT fstat-after-ops /dev/zero dev=0,6(raw 6) ino=3 mode=020666 nlink=1 uid=0 gid=0 rdev=1,5(raw 261) size=0 blksize=4096 blocks=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+CLOSE /dev/zero 0 0
+FDNUM /dev/zero 3 then 4
+== /dev/random
+OPEN /dev/random O_RDONLY 3 getfl=0x20000 getfd=1
+OPEN /dev/random O_WRONLY 3 getfl=0x20001 getfd=1
+OPEN /dev/random O_RDWR 3 getfl=0x20002 getfd=1
+OPEN /dev/random O_WRONLY|O_TRUNC 3
+OPEN /dev/random O_RDONLY|O_TRUNC 3
+OPEN /dev/random O_WRONLY|O_APPEND 3
+WRITE-APPEND /dev/random 3 3
+OPEN /dev/random O_RDONLY|O_CREAT 3
+OPEN /dev/random O_RDONLY|O_NOFOLLOW 3
+READ /dev/random 0 0 allzero=-1 untouched_after=1
+READ /dev/random 1 1 allzero=0 untouched_after=1
+READ /dev/random 7 7 allzero=0 untouched_after=1
+READ /dev/random 8 8 allzero=0 untouched_after=1
+READ /dev/random 9 9 allzero=0 untouched_after=1
+READ /dev/random 31 31 allzero=0 untouched_after=1
+READ /dev/random 32 32 allzero=0 untouched_after=1
+READ /dev/random 33 33 allzero=0 untouched_after=1
+READ /dev/random 64 64 allzero=0 untouched_after=1
+READ /dev/random 255 255 allzero=0 untouched_after=1
+READ /dev/random 256 256 allzero=0 untouched_after=1
+READ /dev/random 257 257 allzero=0 untouched_after=1
+READ /dev/random 512 512 allzero=0 untouched_after=1
+READ /dev/random 513 513 allzero=0 untouched_after=1
+READ /dev/random 4095 4095 allzero=0 untouched_after=1
+READ /dev/random 4096 4096 allzero=0 untouched_after=1
+READ /dev/random 4097 4097 allzero=0 untouched_after=1
+READ /dev/random 65536 65536 allzero=0 untouched_after=1
+READ /dev/random 1048576 1048576 allzero=0 untouched_after=1
+READ /dev/random NULL,0 0
+READ /dev/random NULL,1 -1 EFAULT
+READ /dev/random NULL,100 -1 EFAULT
+READ /dev/random partial(pg=4096, ask 2pg) 4096
+READ /dev/random partial(ask 2pg from pg-100) 88
+READ /dev/random unmapped(ask 16) -1 EFAULT
+WRITE /dev/random 0 0
+WRITE /dev/random 1 1
+WRITE /dev/random 255 255
+WRITE /dev/random 256 256
+WRITE /dev/random 257 257
+WRITE /dev/random 4096 4096
+WRITE /dev/random 65536 65536
+WRITE /dev/random 1048576 1048576
+WRITE /dev/random NULL,0 0
+WRITE /dev/random NULL,1 -1 EFAULT
+WRITE /dev/random partial(ask 2pg) 4096
+WRITE /dev/random unmapped(ask 16) -1 EFAULT
+WRITE /dev/random via O_RDONLY fd -1 EBADF
+READ /dev/random via O_WRONLY fd -1 EBADF
+LSEEK /dev/random whence=0 off=0 0
+LSEEK /dev/random whence=0 off=1 0
+LSEEK /dev/random whence=0 off=-1 0
+LSEEK /dev/random whence=0 off=100 0
+LSEEK /dev/random whence=0 off=9223372036854775807 0
+LSEEK /dev/random whence=1 off=0 0
+LSEEK /dev/random whence=1 off=1 0
+LSEEK /dev/random whence=1 off=-1 0
+LSEEK /dev/random whence=1 off=100 0
+LSEEK /dev/random whence=1 off=9223372036854775807 0
+LSEEK /dev/random whence=2 off=0 0
+LSEEK /dev/random whence=2 off=1 0
+LSEEK /dev/random whence=2 off=-1 0
+LSEEK /dev/random whence=2 off=100 0
+LSEEK /dev/random whence=2 off=9223372036854775807 0
+LSEEK /dev/random whence=3 off=0 0
+LSEEK /dev/random whence=3 off=1 0
+LSEEK /dev/random whence=3 off=-1 0
+LSEEK /dev/random whence=3 off=100 0
+LSEEK /dev/random whence=3 off=9223372036854775807 0
+LSEEK /dev/random whence=4 off=0 0
+LSEEK /dev/random whence=4 off=1 0
+LSEEK /dev/random whence=4 off=-1 0
+LSEEK /dev/random whence=4 off=100 0
+LSEEK /dev/random whence=4 off=9223372036854775807 0
+LSEEK /dev/random SEEK_CUR after read 100 0
+LSEEK /dev/random SEEK_CUR after SEEK_SET 1000 0
+LSEEK /dev/random SEEK_CUR after SEEK_SET 1000 + read 100 0
+LSEEK /dev/random SEEK_CUR on O_WRONLY fd after write 50 0
+PREAD /dev/random 16@0 16
+PREAD /dev/random 16@2^40 16
+PREAD /dev/random 16@-1 -1 EINVAL
+PREAD /dev/random 16@INT64_MAX -1 EINVAL
+PWRITE /dev/random 16@0 16
+PWRITE /dev/random 16@-1 -1 EINVAL
+PWRITE /dev/random 16@INT64_MAX -1 EINVAL
+FTRUNCATE /dev/random rdwr 0 -1 EINVAL
+FTRUNCATE /dev/random rdwr 10 -1 EINVAL
+FTRUNCATE /dev/random rdwr -1 -1 EINVAL
+FTRUNCATE /dev/random rdonly 0 -1 EINVAL
+TRUNCATE /dev/random path 0 -1 EINVAL
+FCNTL /dev/random F_SETFL O_NONBLOCK 0 then read 64 64
+OPEN /dev/random O_RDONLY|O_NONBLOCK 6 read 64 64
+POLL /dev/random O_RDONLY 1 revents=0x41
+POLL /dev/random O_RDONLY events=0 0 revents=0x0
+POLL /dev/random O_WRONLY 1 revents=0x41
+POLL /dev/random O_WRONLY events=0 0 revents=0x0
+POLL /dev/random O_RDWR 1 revents=0x41
+POLL /dev/random O_RDWR events=0 0 revents=0x0
+EPOLL /dev/random O_RDONLY ADD 0 wait 1 events=0x1
+EPOLL /dev/random O_RDONLY MOD ET 0
+EPOLL /dev/random O_WRONLY ADD 0 wait 1 events=0x1
+EPOLL /dev/random O_WRONLY MOD ET 0
+FADVISE /dev/random SEQUENTIAL 0
+FADVISE /dev/random 99 22
+FLOCK /dev/random first EX 0 second EX -1 EAGAIN second SH -1 EAGAIN
+FSYNC /dev/random -1 EINVAL fdatasync -1 EINVAL
+FIONREAD /dev/random -1 EINVAL value=-12345
+ISATTY /dev/random 0
+STAT fstat-after-ops /dev/random dev=0,6(raw 6) ino=5 mode=020666 nlink=1 uid=0 gid=0 rdev=1,8(raw 264) size=0 blksize=4096 blocks=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+CLOSE /dev/random 0 0
+FDNUM /dev/random 3 then 4
+== /dev/urandom
+OPEN /dev/urandom O_RDONLY 3 getfl=0x20000 getfd=1
+OPEN /dev/urandom O_WRONLY 3 getfl=0x20001 getfd=1
+OPEN /dev/urandom O_RDWR 3 getfl=0x20002 getfd=1
+OPEN /dev/urandom O_WRONLY|O_TRUNC 3
+OPEN /dev/urandom O_RDONLY|O_TRUNC 3
+OPEN /dev/urandom O_WRONLY|O_APPEND 3
+WRITE-APPEND /dev/urandom 3 3
+OPEN /dev/urandom O_RDONLY|O_CREAT 3
+OPEN /dev/urandom O_RDONLY|O_NOFOLLOW 3
+READ /dev/urandom 0 0 allzero=-1 untouched_after=1
+READ /dev/urandom 1 1 allzero=0 untouched_after=1
+READ /dev/urandom 7 7 allzero=0 untouched_after=1
+READ /dev/urandom 8 8 allzero=0 untouched_after=1
+READ /dev/urandom 9 9 allzero=0 untouched_after=1
+READ /dev/urandom 31 31 allzero=0 untouched_after=1
+READ /dev/urandom 32 32 allzero=0 untouched_after=1
+READ /dev/urandom 33 33 allzero=0 untouched_after=1
+READ /dev/urandom 64 64 allzero=0 untouched_after=1
+READ /dev/urandom 255 255 allzero=0 untouched_after=1
+READ /dev/urandom 256 256 allzero=0 untouched_after=1
+READ /dev/urandom 257 257 allzero=0 untouched_after=1
+READ /dev/urandom 512 512 allzero=0 untouched_after=1
+READ /dev/urandom 513 513 allzero=0 untouched_after=1
+READ /dev/urandom 4095 4095 allzero=0 untouched_after=1
+READ /dev/urandom 4096 4096 allzero=0 untouched_after=1
+READ /dev/urandom 4097 4097 allzero=0 untouched_after=1
+READ /dev/urandom 65536 65536 allzero=0 untouched_after=1
+READ /dev/urandom 1048576 1048576 allzero=0 untouched_after=1
+READ /dev/urandom NULL,0 0
+READ /dev/urandom NULL,1 -1 EFAULT
+READ /dev/urandom NULL,100 -1 EFAULT
+READ /dev/urandom partial(pg=4096, ask 2pg) 4096
+READ /dev/urandom partial(ask 2pg from pg-100) 88
+READ /dev/urandom unmapped(ask 16) -1 EFAULT
+WRITE /dev/urandom 0 0
+WRITE /dev/urandom 1 1
+WRITE /dev/urandom 255 255
+WRITE /dev/urandom 256 256
+WRITE /dev/urandom 257 257
+WRITE /dev/urandom 4096 4096
+WRITE /dev/urandom 65536 65536
+WRITE /dev/urandom 1048576 1048576
+WRITE /dev/urandom NULL,0 0
+WRITE /dev/urandom NULL,1 -1 EFAULT
+WRITE /dev/urandom partial(ask 2pg) 4096
+WRITE /dev/urandom unmapped(ask 16) -1 EFAULT
+WRITE /dev/urandom via O_RDONLY fd -1 EBADF
+READ /dev/urandom via O_WRONLY fd -1 EBADF
+LSEEK /dev/urandom whence=0 off=0 0
+LSEEK /dev/urandom whence=0 off=1 0
+LSEEK /dev/urandom whence=0 off=-1 0
+LSEEK /dev/urandom whence=0 off=100 0
+LSEEK /dev/urandom whence=0 off=9223372036854775807 0
+LSEEK /dev/urandom whence=1 off=0 0
+LSEEK /dev/urandom whence=1 off=1 0
+LSEEK /dev/urandom whence=1 off=-1 0
+LSEEK /dev/urandom whence=1 off=100 0
+LSEEK /dev/urandom whence=1 off=9223372036854775807 0
+LSEEK /dev/urandom whence=2 off=0 0
+LSEEK /dev/urandom whence=2 off=1 0
+LSEEK /dev/urandom whence=2 off=-1 0
+LSEEK /dev/urandom whence=2 off=100 0
+LSEEK /dev/urandom whence=2 off=9223372036854775807 0
+LSEEK /dev/urandom whence=3 off=0 0
+LSEEK /dev/urandom whence=3 off=1 0
+LSEEK /dev/urandom whence=3 off=-1 0
+LSEEK /dev/urandom whence=3 off=100 0
+LSEEK /dev/urandom whence=3 off=9223372036854775807 0
+LSEEK /dev/urandom whence=4 off=0 0
+LSEEK /dev/urandom whence=4 off=1 0
+LSEEK /dev/urandom whence=4 off=-1 0
+LSEEK /dev/urandom whence=4 off=100 0
+LSEEK /dev/urandom whence=4 off=9223372036854775807 0
+LSEEK /dev/urandom SEEK_CUR after read 100 0
+LSEEK /dev/urandom SEEK_CUR after SEEK_SET 1000 0
+LSEEK /dev/urandom SEEK_CUR after SEEK_SET 1000 + read 100 0
+LSEEK /dev/urandom SEEK_CUR on O_WRONLY fd after write 50 0
+PREAD /dev/urandom 16@0 16
+PREAD /dev/urandom 16@2^40 16
+PREAD /dev/urandom 16@-1 -1 EINVAL
+PREAD /dev/urandom 16@INT64_MAX -1 EINVAL
+PWRITE /dev/urandom 16@0 16
+PWRITE /dev/urandom 16@-1 -1 EINVAL
+PWRITE /dev/urandom 16@INT64_MAX -1 EINVAL
+FTRUNCATE /dev/urandom rdwr 0 -1 EINVAL
+FTRUNCATE /dev/urandom rdwr 10 -1 EINVAL
+FTRUNCATE /dev/urandom rdwr -1 -1 EINVAL
+FTRUNCATE /dev/urandom rdonly 0 -1 EINVAL
+TRUNCATE /dev/urandom path 0 -1 EINVAL
+FCNTL /dev/urandom F_SETFL O_NONBLOCK 0 then read 64 64
+OPEN /dev/urandom O_RDONLY|O_NONBLOCK 6 read 64 64
+POLL /dev/urandom O_RDONLY 1 revents=0x145
+POLL /dev/urandom O_RDONLY events=0 0 revents=0x0
+POLL /dev/urandom O_WRONLY 1 revents=0x145
+POLL /dev/urandom O_WRONLY events=0 0 revents=0x0
+POLL /dev/urandom O_RDWR 1 revents=0x145
+POLL /dev/urandom O_RDWR events=0 0 revents=0x0
+EPOLL /dev/urandom O_RDONLY ADD -1 EPERM wait 0 events=0x0
+EPOLL /dev/urandom O_RDONLY MOD ET -1 EPERM
+EPOLL /dev/urandom O_WRONLY ADD -1 EPERM wait 0 events=0x0
+EPOLL /dev/urandom O_WRONLY MOD ET -1 EPERM
+FADVISE /dev/urandom SEQUENTIAL 0
+FADVISE /dev/urandom 99 22
+FLOCK /dev/urandom first EX 0 second EX -1 EAGAIN second SH -1 EAGAIN
+FSYNC /dev/urandom -1 EINVAL fdatasync -1 EINVAL
+FIONREAD /dev/urandom -1 EINVAL value=-12345
+ISATTY /dev/urandom 0
+STAT fstat-after-ops /dev/urandom dev=0,6(raw 6) ino=6 mode=020666 nlink=1 uid=0 gid=0 rdev=1,9(raw 265) size=0 blksize=4096 blocks=0 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+CLOSE /dev/urandom 0 0
+FDNUM /dev/urandom 3 then 4

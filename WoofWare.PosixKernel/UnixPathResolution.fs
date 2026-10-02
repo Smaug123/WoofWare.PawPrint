@@ -72,8 +72,8 @@ type FileStatus =
         /// `SimulatedUnixPlatform.linkCountCeiling`.
         LinkCount : int64
         /// `st_rdev`: which device a character or block special file stands
-        /// for. 0 for every other kind of file, which is every kind this
-        /// kernel holds.
+        /// for, in the flavour's `dev_t` encoding, and 0 for every other kind
+        /// of file.
         SpecialFileDevice : int64
         /// `st_flags`, the BSD file flags `chflags(2)` sets, or `None` on a
         /// flavour whose `stat(2)` has no such field.
@@ -90,6 +90,12 @@ type StatRefusal =
     /// `st_nlink` are what the NFS server's GETATTR reports, and nothing in
     /// this machine determines them.
     | NfsDirectorySize of inode : InodeNumber
+    /// The path names the root of the device filesystem. Its `st_size` and
+    /// `st_nlink` count every node and subdirectory a real one holds, and this
+    /// kernel's holds only the nodes of the devices it has drivers for.
+    | DeviceFileSystemRoot of inode : InodeNumber
+    /// This kernel will not resolve the path.
+    | Path of PathRefusal
 
 [<RequireQualifiedAccess>]
 module StatRefusal =
@@ -99,6 +105,9 @@ module StatRefusal =
         match refusal with
         | StatRefusal.NfsDirectorySize inode ->
             $"inode %O{inode} is a directory on an NFS mount. Its st_size and st_nlink are what the NFS server's GETATTR reports, which nothing in this machine determines, so this kernel will not state them."
+        | StatRefusal.DeviceFileSystemRoot inode ->
+            $"inode %O{inode} is the root of the device filesystem. Its st_size and st_nlink count every node and subdirectory a real one holds, and this kernel's holds only the nodes of the devices it has drivers for, so it will not state them."
+        | StatRefusal.Path refusal -> PathRefusal.describe refusal
 
 /// <summary>
 /// Why this kernel refused to report a <c>struct stat</c> for a descriptor.
@@ -133,6 +142,14 @@ type FStatRefusal =
     /// this machine determines them.
     /// </remarks>
     | NfsDirectorySize of inode : InodeNumber
+    /// <summary>
+    /// The root of the device filesystem.
+    /// </summary>
+    /// <remarks>
+    /// Its <c>st_size</c> and <c>st_nlink</c> count every node and subdirectory a real one holds, and this
+    /// kernel's holds only the nodes of the devices it has drivers for.
+    /// </remarks>
+    | DeviceFileSystemRoot of inode : InodeNumber
 
 [<RequireQualifiedAccess>]
 module FStatRefusal =
@@ -146,6 +163,7 @@ module FStatRefusal =
         | FStatRefusal.Socket socket ->
             $"the descriptor is socket %O{socket}, for which this kernel holds no inode — a `SocketId` is a contention key rather than an inode number. Measured, only Linux gives a socket an inode at all (`st_dev` 8 and a distinct `st_ino` per socket, on `sockfs`), a Darwin AF_INET socket reporting 0 for both; and the rest would be invented either way — `st_mode` is S_IFSOCK|0777 on Linux against S_IFSOCK|0666 on Darwin, `st_nlink` 1 against 0, and Darwin's `st_blksize` varies with the socket itself (131072 for TCP, 9216 for UDP, 8192 for a Unix-domain socket)."
         | FStatRefusal.NfsDirectorySize inode -> StatRefusal.describe (StatRefusal.NfsDirectorySize inode)
+        | FStatRefusal.DeviceFileSystemRoot inode -> StatRefusal.describe (StatRefusal.DeviceFileSystemRoot inode)
 
 /// Why this kernel will not answer a `chmod(2)`.
 [<RequireQualifiedAccess>]
@@ -153,6 +171,8 @@ type ChModRefusal =
     /// What the mode change would do to the inode at `inode` has not been
     /// measured for this caller.
     | UnmeasuredModeChange of inode : InodeNumber * refusal : ModeChangeRefusal
+    /// This kernel will not resolve the path.
+    | Path of PathRefusal
 
 [<RequireQualifiedAccess>]
 module ChModRefusal =
@@ -162,6 +182,7 @@ module ChModRefusal =
         match refusal with
         | ChModRefusal.UnmeasuredModeChange (inode, refusal) ->
             $"changing the mode of inode %O{inode}: %s{ModeChangeRefusal.describe refusal}"
+        | ChModRefusal.Path refusal -> PathRefusal.describe refusal
 
 /// Why this kernel will not answer an `fchmod(2)`.
 [<RequireQualifiedAccess>]
@@ -197,6 +218,8 @@ type ChOwnRefusal =
     /// What the owner change would do to the inode at `inode` has not been
     /// measured for this caller.
     | UnmeasuredOwnerChange of inode : InodeNumber * refusal : OwnerChangeRefusal
+    /// This kernel will not resolve the path.
+    | Path of PathRefusal
 
 [<RequireQualifiedAccess>]
 module ChOwnRefusal =
@@ -206,6 +229,7 @@ module ChOwnRefusal =
         match refusal with
         | ChOwnRefusal.UnmeasuredOwnerChange (inode, refusal) ->
             $"changing the owner of inode %O{inode}: %s{OwnerChangeRefusal.describe refusal}"
+        | ChOwnRefusal.Path refusal -> PathRefusal.describe refusal
 
 /// Why this kernel will not answer an `fchown(2)`.
 [<RequireQualifiedAccess>]
@@ -387,7 +411,7 @@ module UnixPathResolution =
         (trailingSeparatorPolicy : TrailingSeparatorPolicy)
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<Resolution, UnixError>
+        : Result<Resolution, PathFailure>
         =
         // The held inode, not a re-walk of the recorded current directory: a real
         // process reaches its current directory through a reference it already
@@ -430,7 +454,7 @@ module UnixPathResolution =
         (trailingSeparatorPolicy : TrailingSeparatorPolicy)
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<PausedResolution, UnixError>
+        : Result<PausedResolution, PathFailure>
         =
         PathWalk.resolveParent
             (SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform)
@@ -452,10 +476,10 @@ module UnixPathResolution =
         (policy : SymlinkPolicy)
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<InodeNumber, UnixError>
+        : Result<InodeNumber, PathFailure>
         =
         resolvePathFull policy TrailingSeparatorPolicy.Demand path system
-        |> Result.bind (fun resolution -> PathWalk.existingOf resolution.Target)
+        |> Result.bind (fun resolution -> PathWalk.existingOf resolution.Target |> Result.mapError PathFailure.Errno)
 
     /// `count` as the platform's `stat(2)` would report it in `st_nlink`.
     let private reportedLinkCount (platform : SimulatedUnixPlatform) (count : int64) : int64 =
@@ -480,8 +504,9 @@ module UnixPathResolution =
     /// only in how they reach the inode. `fstat` is this plus a descriptor
     /// lookup, and `stat`/`lstat` are this plus a path resolution.
     ///
-    /// Refuses for a directory on an NFS mount, whose size and link count this
-    /// kernel cannot state; see `StatRefusal`.
+    /// Refuses for a directory on an NFS mount, and for the root of the device
+    /// filesystem, whose size and link count this kernel cannot state; see
+    /// `StatRefusal`.
     let statOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (inode : InodeNumber)
         (system : UnixSystem<'Task, 'Handler>)
@@ -498,11 +523,25 @@ module UnixPathResolution =
                 SimulatedUnixPlatform.symlinkPermissions system.Machine.UnixPlatform
 
         let fileSystem = system.Machine.FileSystem
+        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+
+        // The device filesystem's own `st_dev`, or the root filesystem's.
+        let deviceId =
+            match VirtualFileSystem.mountedRootOf inode fileSystem, system.Machine.DeviceMount with
+            | None, _ -> VirtualFileSystem.deviceId
+            | Some _, DeviceFileSystemMount.Devtmpfs devtmpfs -> devtmpfs.DeviceId
+            | Some root, DeviceFileSystemMount.Devfs ->
+                failwith
+                    $"UnixPathResolution.statOf: inode %O{inode} is on the filesystem mounted at inode %O{root}, which is Darwin's devfs; no path or descriptor can reach it (this is a bug in this library)."
 
         let sizeAndLinks : Result<int64 * int64, StatRefusal> =
             match entry.Content with
             | InodeContent.RegularFile (contents, _) ->
                 Ok (int64 contents.Length, int64 (VirtualFileSystem.bindingCount inode fileSystem))
+            // Measured 0 on both flavours, for every device.
+            | InodeContent.CharacterDevice _ -> Ok (0L, int64 (VirtualFileSystem.bindingCount inode fileSystem))
+            | InodeContent.Directory _ when (VirtualFileSystem.mountOf inode fileSystem).IsSome ->
+                Error (StatRefusal.DeviceFileSystemRoot inode)
             // `readlink` reports the target's byte length as the link's size,
             // and a guest can see it through a file-length API.
             | InodeContent.Symlink target ->
@@ -511,7 +550,7 @@ module UnixPathResolution =
                     int64 (VirtualFileSystem.bindingCount inode fileSystem)
                 )
             | InodeContent.Directory _ ->
-                let fsType = EmulatedMount.fileSystemType system.Machine.Mount
+                let fsType = UnixMachineState.fileSystemTypeOf inode system.Machine
 
                 match
                     EmulatedFileSystemType.directorySize fsType (VirtualFileSystem.entryCount inode fileSystem),
@@ -550,11 +589,15 @@ module UnixPathResolution =
                     ModificationTime = entry.Times.Modification
                     StatusChangeTime = entry.Times.StatusChange
                     BirthTime = birthTime
-                    DeviceId = VirtualFileSystem.deviceId
+                    DeviceId = deviceId
                     Inode = inode
                     LinkCount = reportedLinkCount system.Machine.UnixPlatform links
-                    // Nothing this filesystem holds is a device node.
-                    SpecialFileDevice = 0L
+                    SpecialFileDevice =
+                        match entry.Content with
+                        | InodeContent.CharacterDevice (device, _) -> CharacterDevice.specialFileDevice flavour device
+                        | InodeContent.RegularFile _
+                        | InodeContent.Directory _
+                        | InodeContent.Symlink _ -> 0L
                     FileFlags = newFileFlags system.Machine.UnixPlatform
                 }
         )
@@ -567,7 +610,8 @@ module UnixPathResolution =
         : Result<FileStatusAnswer, StatRefusal>
         =
         match resolvePath policy path system with
-        | Error error -> Ok (FileStatusAnswer.Failed error)
+        | Error (PathFailure.Errno error) -> Ok (FileStatusAnswer.Failed error)
+        | Error (PathFailure.Refused refusal) -> Error (StatRefusal.Path refusal)
         | Ok inode ->
 
         match statOf inode system with
@@ -584,7 +628,8 @@ module UnixPathResolution =
     /// Changes nothing and returns no system, for the reason `fstat` does not:
     /// a `stat` records no access.
     ///
-    /// Refuses only for a directory on an NFS mount, as `statOf` does; see
+    /// Refuses for a directory on an NFS mount and for the device filesystem's
+    /// root, as `statOf` does, and for a path this kernel will not resolve; see
     /// `StatRefusal`. The three descriptor kinds `fstat` also refuses for are
     /// unreachable from here: every inode a path resolves to is one this
     /// filesystem holds, since a name for an inode-free object cannot be
@@ -702,6 +747,10 @@ module UnixPathResolution =
         match statOf inode system with
         | Some (Ok status) -> Ok (FileStatusAnswer.Reported status)
         | Some (Error (StatRefusal.NfsDirectorySize inode)) -> Error (FStatRefusal.NfsDirectorySize inode)
+        | Some (Error (StatRefusal.DeviceFileSystemRoot inode)) -> Error (FStatRefusal.DeviceFileSystemRoot inode)
+        | Some (Error (StatRefusal.Path refusal)) ->
+            failwith
+                $"UnixPathResolution.fstat: reporting the status of inode %O{inode} refused a path, though fstat resolves none: %s{PathRefusal.describe refusal} (this is a bug in this library)."
         | None ->
             failwith
                 $"UnixPathResolution.fstat: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink or rmdir removed a still-open file or directory; the open file description must keep it alive (this is a bug in this library)."
@@ -755,7 +804,8 @@ module UnixPathResolution =
         // the empty path ENOENT and "f/under" ENOTDIR. Those are exactly what
         // `Follow` with a demanded trailing separator answers.
         match resolvePath SymlinkPolicy.Follow path system with
-        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
+        | Error (PathFailure.Refused refusal) -> Error (ChModRefusal.Path refusal)
         | Ok inode ->
             changeModeOf inode mode system
             |> Result.mapError ChModRefusal.UnmeasuredModeChange
@@ -892,7 +942,8 @@ module UnixPathResolution =
 
         let target, bits =
             match entry.Content with
-            | InodeContent.RegularFile (_, bits) -> OwnerChangeTarget.NonDirectory, bits
+            | InodeContent.RegularFile (_, bits)
+            | InodeContent.CharacterDevice (_, bits) -> OwnerChangeTarget.NonDirectory, bits
             | InodeContent.Directory directory -> OwnerChangeTarget.Directory, directory.Permissions
             | InodeContent.Symlink _ ->
                 OwnerChangeTarget.NonDirectory, SimulatedUnixPlatform.symlinkPermissions platform
@@ -927,6 +978,7 @@ module UnixPathResolution =
 
             match entry.Content with
             | InodeContent.RegularFile _
+            | InodeContent.CharacterDevice _
             | InodeContent.Directory _ -> VirtualFileSystem.setPermissions inode changed now vfs
             | InodeContent.Symlink _ ->
                 failwith
@@ -958,7 +1010,8 @@ module UnixPathResolution =
         // unsearchable directory EACCES even naming another's uid. Someone
         // else's file named as "f/" or "f/under" is ENOTDIR, not EPERM.
         match resolvePath SymlinkPolicy.Follow path system with
-        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
+        | Error (PathFailure.Refused refusal) -> Error (ChOwnRefusal.Path refusal)
         | Ok inode ->
             changeOwnerOf inode user group system
             |> Result.mapError ChOwnRefusal.UnmeasuredOwnerChange
@@ -1003,7 +1056,8 @@ module UnixPathResolution =
         // change themselves; "ld/" changes the directory and "lf/" is
         // ENOTDIR; the remaining path rows answer as `chown`'s do.
         match resolvePath SymlinkPolicy.NoFollowFinal path system with
-        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
+        | Error (PathFailure.Refused refusal) -> Error (ChOwnRefusal.Path refusal)
         | Ok inode ->
             changeOwnerOf inode user group system
             |> Result.mapError ChOwnRefusal.UnmeasuredOwnerChange
@@ -1188,18 +1242,31 @@ module UnixPathResolution =
             }
         )
 
+    /// What `statfs(2)` reports for the filesystem `inode` is on.
+    let private statisticsOfInode<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (inode : InodeNumber)
+        (system : UnixSystem<'Task, 'Handler>)
+        : FileSystemStatisticsAnswer
+        =
+        match VirtualFileSystem.mountedRootOf inode system.Machine.FileSystem with
+        | None ->
+            FileSystemStatistics.ofObject system.Machine.UnixPlatform system.Machine.Mount (OpenFileObject.File inode)
+        | Some _ ->
+            FileSystemStatistics.ofDeviceMount system.Machine.UnixPlatform system.Machine.DeviceMount
+            |> FileSystemStatisticsAnswer.Reported
+
     /// `statfs`, of a path this kernel has already copied in.
     let internal statfsParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
-        : FileSystemStatisticsAnswer
+        : Result<FileSystemStatisticsAnswer, PathRefusal>
         =
         FileSystemStatistics.assertCoherent "UnixPathResolution.statfs" system.Machine.UnixPlatform system.Machine.Mount
 
         match resolvePath SymlinkPolicy.Follow path system with
-        | Error error -> FileSystemStatisticsAnswer.Failed error
-        | Ok inode ->
-            FileSystemStatistics.ofObject system.Machine.UnixPlatform system.Machine.Mount (OpenFileObject.File inode)
+        | Error (PathFailure.Errno error) -> Ok (FileSystemStatisticsAnswer.Failed error)
+        | Error (PathFailure.Refused refusal) -> Error refusal
+        | Ok inode -> Ok (statisticsOfInode inode system)
 
     /// `statfs(2)`: report the filesystem the inode `path` names is on.
     ///
@@ -1207,7 +1274,8 @@ module UnixPathResolution =
     /// does, so a dangling link is ENOENT. Every failure is the path
     /// resolution's own, as for `stat(2)`.
     ///
-    /// Changes nothing and returns no system. Refuses a machine whose platform
+    /// Changes nothing and returns no system. Refuses a path this kernel will
+    /// not resolve (see `PathRefusal`), and throws for a machine whose platform
     /// and mount do not describe one machine, whatever the path.
     ///
     /// `path` is the argument's bytes, copied in before anything else: EFAULT
@@ -1215,19 +1283,20 @@ module UnixPathResolution =
     let statfs<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : PathArgumentBytes)
         (system : UnixSystem<'Task, 'Handler>)
-        : FileSystemStatisticsAnswer
+        : Result<FileSystemStatisticsAnswer, PathRefusal>
         =
         FileSystemStatistics.assertCoherent "UnixPathResolution.statfs" system.Machine.UnixPlatform system.Machine.Mount
 
         match copyIn path system with
-        | Error error -> FileSystemStatisticsAnswer.Failed error
+        | Error error -> Ok (FileSystemStatisticsAnswer.Failed error)
         | Ok path -> statfsParsed path system
 
     /// `fstatfs(2)`: report the filesystem the object `fd` names is on.
     ///
     /// EBADF for a descriptor the process does not hold. A file or directory
-    /// is on the machine's one mount. Every other object is on one of Linux's
-    /// internal filesystems, and Darwin answers EINVAL for it.
+    /// is on the root filesystem or the device filesystem. Every other object
+    /// is on one of Linux's internal filesystems, and Darwin answers EINVAL for
+    /// it.
     ///
     /// Changes nothing and returns no system. Refuses a machine whose platform
     /// and mount do not describe one machine, whatever the descriptor.
@@ -1243,6 +1312,7 @@ module UnixPathResolution =
 
         match FileDescriptorRegistry.tryFindObject fd system.Process.FileDescriptors with
         | None -> FileSystemStatisticsAnswer.Failed UnixError.EBADF
+        | Some (OpenFileObject.File inode) -> statisticsOfInode inode system
         | Some target -> FileSystemStatistics.ofObject system.Machine.UnixPlatform system.Machine.Mount target
 
     /// <summary>
@@ -1383,7 +1453,7 @@ module UnixPathResolution =
     let internal chdirParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
-        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, PathRefusal>
         =
         // Conformance across platforms was measured on both kernels across object type, final
         // symlink following, trailing separator, which permission bit, name length,
@@ -1397,7 +1467,8 @@ module UnixPathResolution =
         // and it follows "ld" to what it names, which is why `getcwd` afterwards
         // reports the target rather than the link.
         match resolvePath SymlinkPolicy.Follow path system with
-        | Error error -> SyscallAnswer.Failed error, system
+        | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
+        | Error (PathFailure.Refused refusal) -> Error refusal
         | Ok target ->
 
         match VirtualFileSystem.tryGetContent target system.Machine.FileSystem with
@@ -1406,7 +1477,8 @@ module UnixPathResolution =
                 $"UnixPathResolution.chdir: the walk resolved \"%s{UnixPath.toEscaped path}\" to inode %O{target}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
         // Reached by a symbolic link to a regular file as well as by a plain
         // one: `Follow` lands on the file, and only then is it a type error.
-        | Some (InodeContent.RegularFile _) -> SyscallAnswer.Failed UnixError.ENOTDIR, system
+        | Some (InodeContent.RegularFile _)
+        | Some (InodeContent.CharacterDevice _) -> Ok (SyscallAnswer.Failed UnixError.ENOTDIR, system)
         | Some (InodeContent.Symlink _) ->
             // Unreachable, and asserted rather than answered: `Follow` traverses
             // a final symlink, so the walk above cannot hand back a link — a
@@ -1439,7 +1511,7 @@ module UnixPathResolution =
                 AccessRequest.SearchDirectory
                 directory.Permissions
         then
-            SyscallAnswer.Failed UnixError.EACCES, system
+            Ok (SyscallAnswer.Failed UnixError.EACCES, system)
         else
 
         let previous = system.Process.CurrentDirectoryInode
@@ -1461,7 +1533,7 @@ module UnixPathResolution =
         // includes it — so leaving one is a reference-dropping operation, and the
         // directory a guest `rmdir`d before stepping out of it becomes free
         // exactly here. Without this it would be stranded for the run.
-        SyscallAnswer.Completed 0L, ObjectLifetime.forgetIfUnheld previous moved
+        Ok (SyscallAnswer.Completed 0L, ObjectLifetime.forgetIfUnheld previous moved)
 
     /// <summary>
     /// <c>chdir(2)</c>: set the relative-path resolution base directory to <c>path</c>.
@@ -1469,14 +1541,16 @@ module UnixPathResolution =
     /// <remarks>
     /// <c>path</c> is the argument's bytes, copied in before anything else: <c>EFAULT</c> if they
     /// were unreadable, <c>ENAMETOOLONG</c> if they run past <c>PATH_MAX</c>.
+    ///
+    /// Refuses a path this kernel will not resolve; see <c>PathRefusal</c>.
     /// </remarks>
     let chdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : PathArgumentBytes)
         (system : UnixSystem<'Task, 'Handler>)
-        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, PathRefusal>
         =
         match copyIn path system with
-        | Error error -> SyscallAnswer.Failed error, system
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
         | Ok path -> chdirParsed path system
 
     // The order of every step of `access` and `faccessat` is measured by
@@ -1619,17 +1693,20 @@ module UnixPathResolution =
                 | Some (inode, _) -> inode
                 | None -> system.Process.CurrentDirectoryInode
 
-            PathWalk.resolveFull
-                (SimulatedUnixPlatform.pathLimits platform)
-                credentials
-                system.Machine.ProtectedFiles.Symlinks
-                startDirectory
-                arguments.FinalSymlink
-                TrailingSeparatorPolicy.Demand
-                path
-                vfs
-            |> Result.bind (fun resolution -> PathWalk.existingOf resolution.Target)
-            |> Ok
+            match
+                PathWalk.resolveFull
+                    (SimulatedUnixPlatform.pathLimits platform)
+                    credentials
+                    system.Machine.ProtectedFiles.Symlinks
+                    startDirectory
+                    arguments.FinalSymlink
+                    TrailingSeparatorPolicy.Demand
+                    path
+                    vfs
+            with
+            | Error (PathFailure.Refused refusal) -> Error (AccessRefusal.Path refusal)
+            | Error (PathFailure.Errno error) -> Ok (Error error)
+            | Ok resolution -> Ok (PathWalk.existingOf resolution.Target)
 
         match target with
         | Error refusal -> Error refusal

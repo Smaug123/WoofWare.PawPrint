@@ -28,7 +28,9 @@ configuration. `sizeof(struct sockaddr_un)` — no, so it is the platform.
 Three entries currently in `SimulatedUnixPlatform` do not pass that test, and are
 there as deliberate approximations rather than as precedent. `pathLimits` holds a
 `NAME_MAX` that varies per mount on Linux, and `bindableEntryNames` holds which
-names APFS will bind, because PawPrint models exactly one filesystem per flavour.
+names APFS will bind, because PawPrint models exactly one filesystem a name can be
+created in per flavour (the device filesystem at `/dev` is closed: no name is
+created in it).
 `symlinkPermissions` holds Darwin's `umask 022` answer, because a
 symlink can only enter this filesystem through a *seed* — a tree some other
 process built, to which this run's configured umask never applied. Each has a

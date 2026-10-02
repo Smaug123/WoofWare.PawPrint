@@ -97,6 +97,8 @@
     <Compile Include="TestSignalFuzz.fs" />
     <Compile Include="TestDirectoryEnumeration.fs" />
     <Compile Include="TestDirectoryDescription.fs" />
+    <Compile Include="TestDeviceFileSystem.fs" />
+    <Compile Include="TestDeviceFileSystemAgainstHost.fs" />
     <Compile Include="TestDirectoryReadAgainstHost.fs" />
     <Compile Include="TestPathCursor.fs" />
     <Compile Include="TestVirtualFileSystem.fs" />

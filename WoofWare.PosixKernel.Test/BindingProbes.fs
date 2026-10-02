@@ -143,10 +143,7 @@ module BindingProbes =
     /// What the model answers to `call`: its errno, or `None` for success.
     let runModel (call : BindingProbeCall) (system : UnixSystem<int, string>) : UnixError option =
         match call with
-        | BindingProbeCall.Mkdir path ->
-            UnixNamespace.mkdir (PathArg.ofPath (rooted path)) 0o777 system
-            |> fst
-            |> ofAnswer
+        | BindingProbeCall.Mkdir path -> Answered.mkdir (PathArg.ofPath (rooted path)) 0o777 system |> fst |> ofAnswer
         | BindingProbeCall.OpenCreate path -> Answered.openPath creating (rooted path) 0o666 system |> fst |> ofAnswer
         | BindingProbeCall.OpenRead path -> Answered.openPath reading (rooted path) 0 system |> fst |> ofAnswer
         | BindingProbeCall.Exists path ->

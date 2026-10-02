@@ -1,0 +1,13 @@
+mknod tmpfs 0, ext4 0
+BEFORE /dev/urandom dev=0,6 ino=6 mode=020666 rdev=1,9 size=0 blksize=4096 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+READ 16 AFTER-READ /dev/urandom dev=0,6 ino=6 mode=020666 rdev=1,9 size=0 blksize=4096 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+WRITE 16 AFTER-WRITE /dev/urandom dev=0,6 ino=6 mode=020666 rdev=1,9 size=0 blksize=4096 atime=0.000000000 mtime=0.000000000 ctime=0.000000000
+LSEEK 0 POLL 0x5 EPOLL -1(Operation not permitted) FSTATFS type=0x1021994 FTRUNCATE -1(Invalid argument)
+BEFORE /dev/shm/urandom-node dev=0,30 ino=2 mode=020644 rdev=1,9 size=0 blksize=4096 atime=1790955010.816016541 mtime=1790955010.816016541 ctime=1790955010.816016541
+READ -1 AFTER-READ /dev/shm/urandom-node dev=0,30 ino=2 mode=020644 rdev=1,9 size=0 blksize=4096 atime=1790955010.816016541 mtime=1790955010.816016541 ctime=1790955010.816016541
+WRITE -1 AFTER-WRITE /dev/shm/urandom-node dev=0,30 ino=2 mode=020644 rdev=1,9 size=0 blksize=4096 atime=1790955010.816016541 mtime=1790955010.816016541 ctime=1790955010.816016541
+LSEEK -1 POLL 0x0 EPOLL -1(Bad file descriptor) FSTATFS type=0x1021994 FTRUNCATE -1(Bad file descriptor)
+BEFORE /tmp/urandom-node dev=254,16 ino=89 mode=020644 rdev=1,9 size=0 blksize=4096 atime=1790955010.816016541 mtime=1790955010.816016541 ctime=1790955010.816016541
+READ 16 AFTER-READ /tmp/urandom-node dev=254,16 ino=89 mode=020644 rdev=1,9 size=0 blksize=4096 atime=1790955010.816016541 mtime=1790955010.816016541 ctime=1790955010.816016541
+WRITE 16 AFTER-WRITE /tmp/urandom-node dev=254,16 ino=89 mode=020644 rdev=1,9 size=0 blksize=4096 atime=1790955010.816016541 mtime=1790955010.816016541 ctime=1790955010.816016541
+LSEEK 0 POLL 0x5 EPOLL -1(Operation not permitted) FSTATFS type=0xef53 FTRUNCATE -1(Invalid argument)

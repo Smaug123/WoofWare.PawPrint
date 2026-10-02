@@ -151,6 +151,7 @@ module TestRmDirRules =
                 rules.TrailingSeparator
                 (path candidate)
                 tree
+            |> Answered.errno
         with
         | Error error -> RmDirVerdict.Refuse error
         | Ok resolution ->

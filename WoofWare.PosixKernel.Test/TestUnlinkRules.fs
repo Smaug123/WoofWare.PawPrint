@@ -140,6 +140,7 @@ module TestUnlinkRules =
                 rules.TrailingSeparator
                 (path candidate)
                 tree
+            |> Answered.errno
         with
         | Error error -> UnlinkVerdict.Refuse error
         | Ok resolution ->

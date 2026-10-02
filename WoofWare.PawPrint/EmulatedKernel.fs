@@ -1203,6 +1203,12 @@ module EmulatedKernel =
         | Error (CurrentDirectoryFault.SeedNameNotBindable (name, flavour)) ->
             failwith
                 $"EmulatedKernel.FileSystem: KernelConfig.FileSystem holds the entry name \"%s{DirectoryEntryName.toEscaped name}\", which %O{flavour}'s filesystem will not bind (on Darwin, a name that is not valid UTF-8), so no filesystem that flavour could mount holds it. Rename the entry in KernelConfig.FileSystem, or configure the flavour that binds it."
+        | Error (CurrentDirectoryFault.SeedCoversDeviceFileSystem name) ->
+            failwith
+                $"EmulatedKernel.FileSystem: KernelConfig.FileSystem binds \"%s{DirectoryEntryName.toEscaped name}\" at its root to something other than an empty directory, and the kernel mounts its device filesystem there at boot. Remove that entry from KernelConfig.FileSystem: the kernel supplies /dev itself."
+        | Error (CurrentDirectoryFault.Path refusal) ->
+            failwith
+                $"EmulatedKernel.CurrentDirectory: the kernel will not resolve \"%s{described}\": %s{PathRefusal.describe refusal} Start the process somewhere outside /dev."
 
 
 
