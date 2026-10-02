@@ -37,7 +37,9 @@ module IlMachineStateExecution =
 
         state.WithTypeSystem typeSystem, result
 
-    /// `ConcreteVirtualDispatch.tryResolveVirtualImplementation` against the machine's type system.
+    /// `ConcreteVirtualDispatch.tryResolveVirtualImplementation` against the machine's type system:
+    /// `None` when nothing overrides the method named. Refuses where more than one default
+    /// interface body is most specific, where the guest would see `AmbiguousImplementationException`.
     let tryResolveVirtualImplementation
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -61,7 +63,15 @@ module IlMachineStateExecution =
                 walkBaseTypes
                 state.TypeSystem
 
-        state.WithTypeSystem typeSystem, result
+        match result with
+        | VirtualImplementation.Found implementation -> state.WithTypeSystem typeSystem, Some implementation
+        | VirtualImplementation.NotOverridden -> state.WithTypeSystem typeSystem, None
+        | VirtualImplementation.Ambiguous candidates ->
+            candidates
+            |> List.map (fun m -> $"%s{MethodOwner.describe m.Owner}::%s{m.Name}")
+            |> String.concat ", "
+            // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
+            |> failwithf "multiple most-specific default interface implementations matched this virtual slot: %s"
 
     /// How a call chooses the method it runs.
     [<RequireQualifiedAccess>]

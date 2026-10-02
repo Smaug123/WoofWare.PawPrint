@@ -1327,88 +1327,6 @@ module NullaryIlOp =
         |> Tuple.withRight WhatWeDid.Executed
         |> ExecutionResult.stepped
 
-    /// The index an `ldelem.*`/`stelem.*` opcode popped, at the width ECMA-335 III.4.8 and
-    /// III.4.26 compare it against the array's length. A native-int index keeps every one of its
-    /// bits: narrowed to 32 bits first, `0x1_0000_0001` would name element 1 of a three-element
-    /// array instead of lying outside it.
-    let private arrayIndex (index : EvalStackValue) : int64 =
-        match index with
-        | EvalStackValue.NativeInt src ->
-            match src with
-            | NativeIntSource.FunctionPointer _
-            | NativeIntSource.FieldHandlePtr _
-            | NativeIntSource.MethodHandlePtr _
-            | NativeIntSource.TypeHandlePtr _
-            | NativeIntSource.TypeDescPtr _
-            | NativeIntSource.MethodTablePtr _
-            | NativeIntSource.MethodTableAuxiliaryDataPtr _
-            | NativeIntSource.PerInstInfoPtr _
-            | NativeIntSource.PerInstDictPtr _
-            | NativeIntSource.GcHandlePtr _
-            | NativeIntSource.AssemblyHandle _
-            | NativeIntSource.ModuleHandle _
-            | NativeIntSource.MetadataImportHandle _
-            | NativeIntSource.EventPipeProviderPtr _
-            | NativeIntSource.EventPipeEventPtr _
-            | NativeIntSource.LowLevelMonitorPtr _
-            | NativeIntSource.WaitHandlePtr _
-            | NativeIntSource.EvpMdPtr _
-            | NativeIntSource.EvpMdCtxPtr _
-            | NativeIntSource.AssemblyBinderPtr _
-            | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
-            | NativeIntSource.SyntheticCrossArrayOffset _ ->
-                failwith "Refusing to treat a synthetic cross-storage byte offset as an array index"
-            | NativeIntSource.OpaqueHashBits bits ->
-                // Synthesised pointer-hash bits are deterministic, so an index derived from them
-                // is bounds-checked like any other native int rather than refused.
-                bits
-            | NativeIntSource.Verbatim i -> i
-        | EvalStackValue.Int32 int32Source -> Int32Source.value "array index" int32Source |> int64<int32>
-        | _ -> failwith $"Invalid index: {index}"
-
-    /// The `array` and `index` operands of an `ldelem.*`/`stelem.*` opcode, resolved against
-    /// the array's bounds.
-    [<RequireQualifiedAccess>]
-    type internal ArrayElementOperands =
-        /// `index` names a cell of the array at `array`.
-        | InRange of array : ManagedHeapAddress * index : int
-        /// The index lies outside the array, and `IndexOutOfRangeException` has been raised into
-        /// the guest. This is the opcode's result: the program counter has deliberately not been
-        /// advanced, because exception dispatch needs the faulting instruction's offset.
-        | OutOfRange of IlMachineState * WhatWeDid
-
-    let internal resolveArrayElementOperands
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (index : EvalStackValue)
-        (arr : EvalStackValue)
-        (currentThread : ThreadId)
-        (state : IlMachineState)
-        : ArrayElementOperands
-        =
-        let index = arrayIndex index
-
-        let arrAddr =
-            match arr with
-            | EvalStackValue.ObjectRef addr -> addr
-            | EvalStackValue.NullObjectRef -> failwith "TODO: throw NRE"
-            | _ -> failwith $"Invalid array: %O{arr}"
-
-        let shape = ManagedHeap.getArrayShape arrAddr state.ManagedHeap
-
-        if index < 0L || index >= int64<int32> shape.Length then
-            IlMachineStateExecution.raiseOpcodeFault
-                loggerFactory
-                baseClassTypes
-                OpcodeFault.IndexOutOfRange
-                currentThread
-                state
-            |> ArrayElementOperands.OutOfRange
-        else
-            // The check just established `0 <= index < Length`, and `Length` is an int32, so
-            // narrowing loses nothing.
-            ArrayElementOperands.InRange (arrAddr, int32<int64> index)
-
     /// Read an array element and project it to the width and signedness that the concrete-width
     /// `ldelem.*` opcode is asking for.
     ///
@@ -1426,8 +1344,8 @@ module NullaryIlOp =
         (state : IlMachineState)
         : ExecutionResult
         =
-        match resolveArrayElementOperands loggerFactory baseClassTypes index arr currentThread state with
-        | ArrayElementOperands.OutOfRange (state, whatWeDid) -> ExecutionResult.stepped (state, whatWeDid)
+        match ArrayElementOperands.resolve loggerFactory baseClassTypes index arr currentThread state with
+        | ArrayElementOperands.Faulted (state, whatWeDid) -> ExecutionResult.stepped (state, whatWeDid)
         | ArrayElementOperands.InRange (arrAddr, index) ->
 
         let value = IlMachineState.getArrayValue arrAddr index state
@@ -1477,8 +1395,8 @@ module NullaryIlOp =
         : ExecutionResult
         =
         // ECMA-335 III.4.26: the bounds check fires before the array-store variance check.
-        match resolveArrayElementOperands loggerFactory baseClassTypes index arr currentThread state with
-        | ArrayElementOperands.OutOfRange (state, whatWeDid) -> ExecutionResult.stepped (state, whatWeDid)
+        match ArrayElementOperands.resolve loggerFactory baseClassTypes index arr currentThread state with
+        | ArrayElementOperands.Faulted (state, whatWeDid) -> ExecutionResult.stepped (state, whatWeDid)
         | ArrayElementOperands.InRange (arrAddr, index) ->
 
         // ECMA-335 III.4.x runtime-assignment-compatibility gate (see
@@ -2398,9 +2316,22 @@ module NullaryIlOp =
 
             let popped =
                 match popped with
-                | EvalStackValue.NullObjectRef -> failwith "TODO: throw NRE"
-                | EvalStackValue.ObjectRef addr -> addr
-                | _ -> failwith $"can't get len of {popped}"
+                | EvalStackValue.NullObjectRef -> None
+                | EvalStackValue.ObjectRef addr -> Some addr
+                | _ -> failwith $"ldlen: expected an array reference, but got %O{popped}"
+
+            match popped with
+            | None ->
+                // ECMA-335 III.4.12. Don't advance the PC: exception dispatch needs the faulting
+                // instruction's offset.
+                IlMachineStateExecution.raiseOpcodeFault
+                    loggerFactory
+                    corelib
+                    OpcodeFault.NullReference
+                    currentThread
+                    state
+                |> ExecutionResult.stepped
+            | Some popped ->
 
             let shape = ManagedHeap.getArrayShape popped state.ManagedHeap
 
@@ -3168,8 +3099,8 @@ module NullaryIlOp =
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            match resolveArrayElementOperands loggerFactory corelib index arr currentThread state with
-            | ArrayElementOperands.OutOfRange (state, whatWeDid) -> ExecutionResult.stepped (state, whatWeDid)
+            match ArrayElementOperands.resolve loggerFactory corelib index arr currentThread state with
+            | ArrayElementOperands.Faulted (state, whatWeDid) -> ExecutionResult.stepped (state, whatWeDid)
             | ArrayElementOperands.InRange (arrAddr, index) ->
 
             let value = IlMachineState.getArrayValue arrAddr index state

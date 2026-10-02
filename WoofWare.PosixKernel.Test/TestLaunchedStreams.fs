@@ -115,19 +115,22 @@ module TestLaunchedStreams =
     /// One write as a client issues it: admitted, and then given the bytes the
     /// admission asked for. A pipe the process made can lose its reader, and a
     /// write into it then raises SIGPIPE, which the process ignores here
-    /// (`initialSystem`), so the write answers EPIPE.
+    /// (`initialSystem`), so the write answers EPIPE. `Error None` is a write
+    /// that sleeps, and `Error (Some refusal)` one the system refused.
     let private write
         (fd : int)
         (bytes : ImmutableArray<byte>)
         (system : UnixSystem<int, string>)
-        : Result<WriteAnswer * UnixSystem<int, string>, WriteRefusal>
+        : Result<WriteAnswer * UnixSystem<int, string>, WriteRefusal option>
         =
         match WriteOutcomes.admitThenWrite system.Leader fd UserBuffer.Mapped bytes system with
-        | Error refusal -> Error refusal
+        | Error refusal -> Error (Some refusal)
         | Ok (WriteOutcome.Returns (answer, after))
         | Ok (WriteOutcome.ReturnsRaising (answer, _, after)) -> Ok (answer, after)
         | Ok (WriteOutcome.ProcessEnded _ as outcome) ->
             failwith $"a write ended the process, whose SIGPIPE is ignored: %A{outcome}"
+        | Ok (WriteOutcome.WouldBlock _) -> Error None
+        | Ok (WriteOutcome.Restarts _ as outcome) -> failwith $"a write that never slept restarted: %A{outcome}"
 
     /// What the earlier standard streams answered, if the descriptor named one
     /// (`None` for a descriptor the reference does not model), and the
@@ -277,8 +280,8 @@ module TestLaunchedStreams =
                 }
         }
 
-    /// What the launched streams answer, or `None` where the system refused, and
-    /// the system afterwards.
+    /// What the launched streams answer, or `None` where the system refused or
+    /// the call would sleep, and the system afterwards.
     let private systemStep
         (index : int)
         (op : Op)
@@ -292,9 +295,14 @@ module TestLaunchedStreams =
             | Ok (WriteAnswer.Failed error, after) -> Some (Answer.WriteFailed error, after)
             | Error _ -> None
         | Op.Read (fd, count) ->
-            match UnixReadWrite.read fd UserBuffer.Mapped (uint64 count) system with
-            | Ok (ReadAnswer.Completed bytes, after) -> Some (Answer.ReadBytes bytes.Length, after)
-            | Ok (ReadAnswer.Failed error, after) -> Some (Answer.ReadFailed error, after)
+            match UnixReadWrite.read system.Leader fd UserBuffer.Mapped (uint64 count) system with
+            | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), after) ->
+                Some (Answer.ReadBytes bytes.Length, after)
+            | Ok (ReadOutcome.Answered (ReadAnswer.Failed error), after) -> Some (Answer.ReadFailed error, after)
+            // A read that sleeps, on a pipe the process made, which the
+            // earlier streams had no notion of.
+            | Ok (ReadOutcome.WouldBlock _, _) -> None
+            | Ok (ReadOutcome.Restarts, _) -> failwith "a read that never slept restarted"
             | Error _ -> None
         | Op.Dup fd ->
             let answer, after = UnixDescriptor.dup fd system

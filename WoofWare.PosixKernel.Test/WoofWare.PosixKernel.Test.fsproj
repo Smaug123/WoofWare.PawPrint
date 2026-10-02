@@ -11,6 +11,7 @@
   <ItemGroup>
     <Compile Include="HostPlatform.fs" />
     <Compile Include="WriteAdmissions.fs" />
+    <Compile Include="ReadOutcomes.fs" />
     <Compile Include="NewSocket.fs" />
     <Compile Include="TestDarwinReleaseAgainstHost.fs" />
     <Compile Include="TestGcHeapHardLimit.fs" />
@@ -82,6 +83,7 @@
     <Compile Include="TestSignalState.fs" />
     <Compile Include="TestSignalDispositions.fs" />
     <Compile Include="TestUnixSignal.fs" />
+    <Compile Include="TestPthreadKill.fs" />
     <Compile Include="TestSignalPickOrder.fs" />
     <Compile Include="TestSignalReceiver.fs" />
     <Compile Include="SignalFuzz.fs" />
@@ -92,6 +94,7 @@
     <Compile Include="TestPathCursor.fs" />
     <Compile Include="TestVirtualFileSystem.fs" />
     <Compile Include="TestBindingCount.fs" />
+    <Compile Include="TestDirectoryEntrySeek.fs" />
     <Compile Include="TestOpenDirRules.fs" />
     <Compile Include="TestRmDirRules.fs" />
     <Compile Include="TestPosixFadvise.fs" />
@@ -130,6 +133,7 @@
     <Compile Include="TestPipe.fs" />
     <Compile Include="TestLaunchedStreams.fs" />
     <Compile Include="TestSuppliedPipe.fs" />
+    <Compile Include="TestBlockingPipe.fs" />
     <Compile Include="TestStreamReaderGone.fs" />
     <Compile Include="TestPipeAgainstHost.fs" />
     <Compile Include="TestSockaddrField.fs" />

@@ -1204,6 +1204,36 @@ module TestImpureCases =
                 )
         }
 
+    /// Build one registration of `PipeReaderLeavesDuringWrite.cs` under
+    /// `platform`, whose exit code is the flavour's answer to the reader of a
+    /// pipe leaving while a write into it sleeps with part of it in: 0 for the
+    /// count on Linux, 100 for EPIPE on Darwin (`pipe-blocking.c` section E).
+    /// The assertion here is that the SIGPIPE it raised was not left pending,
+    /// the runtime ignoring it, and that no task is left asleep.
+    let private pipeReaderLeavesCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
+        {
+            FileName = "PipeReaderLeavesDuringWrite.cs"
+            ExpectedReturnCode =
+                match SimulatedUnixPlatform.flavour platform with
+                | SimulatedUnixFlavour.Linux -> 0
+                | SimulatedUnixFlavour.Darwin -> 100
+            KernelConfig =
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+            ExpectsUnhandledException = false
+            AssertTerminalState =
+                Some (fun state ->
+                    SignalState.pending state.Kernel.Signals |> shouldEqual []
+
+                    state.Kernel.Tasks
+                    |> Map.forall (fun _ task -> task.Parked.IsNone)
+                    |> shouldEqual true
+                )
+        }
+
     let cases : EndToEndTestCase list =
         [
             // Both of these have a current directory whose UTF-8 encoding
@@ -1355,6 +1385,8 @@ module TestImpureCases =
             pipeRawCase SimulatedUnixPlatform.macOsArm64
             pipeBrokenRawCase SimulatedUnixPlatform.linuxX64
             pipeBrokenRawCase SimulatedUnixPlatform.macOsArm64
+            pipeReaderLeavesCase SimulatedUnixPlatform.linuxX64
+            pipeReaderLeavesCase SimulatedUnixPlatform.macOsArm64
             processIdCase None
             // Small enough to fit in a byte, so the case above is not the only
             // one that pins the handler to the configuration.
@@ -1847,6 +1879,33 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // `SystemNative_StrErrorR` under glibc: the C library's text,
+                // which the flavours do not share, and GNU `strerror_r`'s
+                // returned pointers.
+                FileName = "StrErrorLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                // Compared: real .NET on a Linux host runs glibc's shim.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The same under Darwin's libc and XSI `strerror_r`.
+                FileName = "StrErrorDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                // Compared, as its Linux sibling is.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The same rows under Darwin's numbering.
                 FileName = "SocketAcceptDarwin.cs"
                 ExpectedReturnCode = 0
@@ -1970,6 +2029,31 @@ module TestImpureCases =
                 // kernel the host runs. The guest's comment says how it makes
                 // sure the wait is interrupted on the real runtime.
                 FileName = "SignalInterruptsSocketEventWait.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Always
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // A signal interrupts a blocking read of an empty pipe, which
+                // SA_RESTART restarts on both kernels, so the read returns the
+                // byte the handler writes and errno is left at 0. Compared on
+                // every host.
+                FileName = "SignalRestartsPipeRead.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Always
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // A signal ends a blocking write with part of it in: the call
+                // returns the count put in, restart or not, on both kernels.
+                // Compared on every host.
+                FileName = "SignalEndsPartPipeWrite.cs"
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
@@ -3893,6 +3977,26 @@ module TestImpureCases =
                     Some (fun state ->
                         // Discarded when they were sent, not left for a
                         // handler to be registered for.
+                        SignalState.pending state.Kernel.Signals |> shouldEqual []
+                    )
+            }
+            {
+                // libc's raise(3) under the Darwin flavour, from the main
+                // thread and another, on numbers that would end the run under
+                // Linux's numbering: the handler must read the signal under
+                // the configured platform's.
+                FileName = "LibcRaiseDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState =
+                    Some (fun state ->
+                        // Discarded when they were raised.
                         SignalState.pending state.Kernel.Signals |> shouldEqual []
                     )
             }

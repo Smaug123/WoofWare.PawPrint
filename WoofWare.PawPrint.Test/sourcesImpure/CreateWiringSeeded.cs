@@ -26,11 +26,10 @@ using System.Runtime.InteropServices;
 // O_EXCL, and XNU masks the mode argument with ACCESSPERMS so setuid/setgid/
 // sticky cannot survive creation.
 //
-// Raw P/Invoke rather than FileStream, because the BCL turns these errnos into
-// exceptions whose construction needs SystemNative_ConvertErrorPalToPlatform
-// and SystemNative_StrErrorR, neither of which exists yet. Every errno asserted
-// below has the same number on both platforms, so nothing here depends on
-// Darwin's numbering.
+// Raw P/Invoke rather than FileStream, so that each row asserts the errno
+// itself rather than the exception type the BCL makes of it, which several
+// errnos share. Every errno asserted below has the same number on both
+// platforms, so nothing here depends on Darwin's numbering.
 //
 // The exit code is the index of the first check that failed; 0 means all
 // passed. Kept below 128, since an exit code is eight bits.

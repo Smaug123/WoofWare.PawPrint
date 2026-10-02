@@ -67,6 +67,25 @@ module TestSignalTerminatedCases =
                 FileName = "PosixSignalReenabledAfterFaultRestore.cs"
                 Signo = 4
             }
+            {
+                // libc's raise(3) of SIGTERM on the main thread, with a
+                // PosixSignalRegistration handler that does not cancel it.
+                FileName = "PosixSignalRaiseNotCancelled.cs"
+                Signo = 15
+            }
+            {
+                // libc's raise(3) of SIGTERM on a thread other than the main
+                // thread, with nothing registered: the raiser's own signal,
+                // whose default kills the process.
+                FileName = "LibcRaiseTerminatesFromThread.cs"
+                Signo = 15
+            }
+            {
+                // libc's raise(3) of SIGILL and SIGABRT on the main thread,
+                // both survived, and then a second SIGILL, which is not.
+                FileName = "LibcRaiseFaultSignalSecondTime.cs"
+                Signo = 4
+            }
         ]
 
     [<TestCaseSource(nameof cases)>]
