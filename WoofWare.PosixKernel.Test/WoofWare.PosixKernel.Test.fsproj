@@ -11,6 +11,7 @@
   <ItemGroup>
     <Compile Include="HostPlatform.fs" />
     <Compile Include="WriteAdmissions.fs" />
+    <Compile Include="ReadOutcomes.fs" />
     <Compile Include="NewSocket.fs" />
     <Compile Include="TestDarwinReleaseAgainstHost.fs" />
     <Compile Include="TestGcHeapHardLimit.fs" />
@@ -131,6 +132,7 @@
     <Compile Include="TestPipe.fs" />
     <Compile Include="TestLaunchedStreams.fs" />
     <Compile Include="TestSuppliedPipe.fs" />
+    <Compile Include="TestBlockingPipe.fs" />
     <Compile Include="TestStreamReaderGone.fs" />
     <Compile Include="TestPipeAgainstHost.fs" />
     <Compile Include="TestSockaddrField.fs" />

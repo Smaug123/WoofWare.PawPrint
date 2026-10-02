@@ -456,6 +456,8 @@ class TwoPortsOneEdge
                 | Some (ParkedSyscall.Flock _)
                 | Some (ParkedSyscall.Poll _)
                 | Some (ParkedSyscall.Accept _)
+                | Some (ParkedSyscall.PipeRead _)
+                | Some (ParkedSyscall.PipeWrite _)
                 | None -> None
             | _ -> None
         )

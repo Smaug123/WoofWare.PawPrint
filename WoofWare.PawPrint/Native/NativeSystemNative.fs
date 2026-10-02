@@ -500,6 +500,10 @@ module NativeSystemNative =
                 "Model a sleeping accept's reference to its listener before closing the listener out from under it."
             | CloseRefusal.DarwinListenerDescriptorWithAccepter _ ->
                 "Model a close ending a sleeping accept with ECONNABORTED before closing the listener out from under it, or configure a Linux platform."
+            | CloseRefusal.LinuxLastPipeDescriptorWithTransfer _ ->
+                "Model a sleeping read or write's reference to its pipe end before closing the end out from under it, or keep a dup of the descriptor open."
+            | CloseRefusal.DarwinPipeDescriptorWithTransfer _ ->
+                "Model a close ending a sleeping read or write before closing its pipe end out from under it, or configure a Linux platform."
 
         $"%s{operation}: fd %d{fd}: %s{CloseRefusal.describe refusal} %s{remedy}"
 
@@ -1577,6 +1581,12 @@ module NativeSystemNative =
             | Ok (WriteOutcome.ProcessEnded ended) ->
                 failwith
                     $"%s{operation}: writing the destination ended the process (%A{ended.Termination}), but a destination opened by path is never a pipe"
+            | Ok (WriteOutcome.WouldBlock (condition, _)) ->
+                failwith
+                    $"%s{operation}: writing the destination would sleep until %A{condition}, but a destination opened by path is never a pipe"
+            | Ok (WriteOutcome.Restarts _) ->
+                failwith
+                    $"%s{operation}: writing the destination restarted after a signal, but only a sleeping write restarts, and a destination opened by path is never a pipe"
             | Ok (WriteOutcome.Returns (WriteAnswer.Failed error, system)) -> Error (withErrno ctx error system state)
             | Ok (WriteOutcome.Returns (WriteAnswer.Completed written, system)) ->
                 writeAll
@@ -1584,10 +1594,18 @@ module NativeSystemNative =
                     (withAnswered system state)
 
         let rec readWrite (state : IlMachineState) : Result<IlMachineState, IlMachineState> =
-            match UnixReadWrite.read source UserBuffer.Mapped bufferLength (system state) with
+            // As for the write: the source was opened by path, and only a
+            // pipe's read sleeps.
+            match UnixReadWrite.read ctx.Thread source UserBuffer.Mapped bufferLength (system state) with
             | Error refusal -> failwith $"%s{operation}: read: %s{ReadRefusal.describe refusal}"
-            | Ok (ReadAnswer.Failed error, system) -> Error (withErrno ctx error system state)
-            | Ok (ReadAnswer.Completed bytes, system) ->
+            | Ok (ReadOutcome.WouldBlock condition, _) ->
+                failwith
+                    $"%s{operation}: reading the source would sleep until %A{condition}, but a source opened by path is never a pipe"
+            | Ok (ReadOutcome.Restarts, _) ->
+                failwith
+                    $"%s{operation}: reading the source restarted after a signal, but only a sleeping read restarts, and a source opened by path is never a pipe"
+            | Ok (ReadOutcome.Answered (ReadAnswer.Failed error), system) -> Error (withErrno ctx error system state)
+            | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), system) ->
                 let state = withAnswered system state
 
                 if bytes.IsEmpty then
@@ -3993,6 +4011,11 @@ module NativeSystemNative =
                 // Unreachable, for the same reason.
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered an flock while its task is parked in an accept. A task blocks in one syscall at a time, so the accept's completion failed to clear its record (this is an interpreter bug)."
+            | Some (ParkedSyscall.PipeRead _ as other)
+            | Some (ParkedSyscall.PipeWrite _ as other) ->
+                // Unreachable, for the same reason.
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread} entered an flock while its task is parked in %A{other}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
             | Some (ParkedSyscall.Flock parked) ->
                 match UnixDescriptor.flockAcquire ctx.Thread (EmulatedKernel.unix state.Kernel) with
                 | Error refusal -> refused refusal
@@ -4175,12 +4198,12 @@ module NativeSystemNative =
                     (EmulatedKernel.unix state.Kernel)
             with
             | Error refusal -> refused refusal
-            | Ok (WriteAdmission.Answered (WriteAnswer.Failed error)) ->
+            | Ok (PWriteAdmission.Answered (WriteAnswer.Failed error)) ->
                 withErrnoOnly ctx error state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-            | Ok (WriteAdmission.Answered (WriteAnswer.Completed written)) ->
+            | Ok (PWriteAdmission.Answered (WriteAnswer.Completed written)) ->
                 // The zero-length no-op, which changes nothing at all — so there
                 // is no system to write back, and the buffer was never resolved.
                 let written = shimTransferCount operation bufferSize written
@@ -4189,7 +4212,7 @@ module NativeSystemNative =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim written)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-            | Ok (WriteAdmission.Transfer count) ->
+            | Ok (PWriteAdmission.Transfer count) ->
 
             // Only now are the guest's bytes extracted: the admission answered
             // every question a `pwrite` settles without reading the buffer, so
@@ -4256,6 +4279,86 @@ module NativeSystemNative =
             let fd = fdArgument operation instruction.Arguments.[0]
             let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
 
+            // Answer the call from the library's outcome, which a first entry
+            // and a re-entry after a sleep reach alike.
+            let settle
+                (buffer : BufferPointer)
+                (outcome : Result<ReadOutcome * UnixSystem<ThreadId, NativeSignalHandler>, ReadRefusal>)
+                : NativeHandlerResult option
+                =
+                match outcome with
+                | Error (ReadRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
+                | Error (ReadRefusal.SocketConnectionState _ as refusal) ->
+                    // The library says what it measured; PawPrint says which managed
+                    // caller could have reached it, which is a fact about CoreLib.
+                    failwith
+                        $"%s{operation}: fd %d{fd}: %s{ReadRefusal.describe refusal} Nothing in the BCL waits on this — CoreLib reaches a socket through `SystemNative_Receive`, `SafeSocketHandle` not being a `SafeFileHandle` — so this is a hand-rolled P/Invoke. Model the connection state (issue #956) before answering it."
+                | Error (ReadRefusal.ScannedDirectoryPosition _ as refusal) ->
+                    failwith
+                        $"%s{operation}: fd %d{fd}: %s{ReadRefusal.describe refusal} CoreLib never reads a directory through `SystemNative_Read` (it enumerates with `SystemNative_OpenDir` and `SystemNative_ReadDir`, whose descriptor it never sees), so this is a hand-rolled P/Invoke reading a directory it has partly enumerated. Rewind it with `lseek(fd, 0, SEEK_SET)`, or read before enumerating."
+                | Error (ReadRefusal.Interruption _ as refusal) ->
+                    failwith $"%s{operation}: fd %d{fd}: %s{ReadRefusal.describe refusal}"
+                | Ok (ReadOutcome.WouldBlock _, system) ->
+                    // Park re-entrantly, as `SystemNative_Accept` does: the frame
+                    // stays and the caller's program counter still names the call,
+                    // so a wake re-enters this handler, which finishes the read from
+                    // the task's park and writes the bytes through the caller's own
+                    // pointer. Nothing is written before the kernel returns.
+                    state.MapKernel (EmulatedKernel.withUnix system)
+                    |> Scheduler.parkInSyscall ctx.Thread
+                    |> NativeHandlerResult.blockedRetainingFrame
+                    |> Some
+                // A signal ended the sleep. `Common_Read` calls `read` again after
+                // EINTR, and a restart calls again with no EINTR.
+                | Ok (ReadOutcome.Restarts, system) ->
+                    callAgainAfterSignal ctx operation Interrupted.Restarted None system state
+                | Ok (ReadOutcome.Answered (ReadAnswer.Failed UnixError.EINTR), system) ->
+                    callAgainAfterSignal ctx operation Interrupted.Eintr None system state
+                | Ok (ReadOutcome.Answered (ReadAnswer.Failed error), system) ->
+                    withErrno ctx error system state
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                    |> NativeHandlerResult.completed
+                    |> Some
+                | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), system) ->
+
+                // Empty means the read moved nothing *and did not touch the buffer*,
+                // so the pointer must not be resolved: `read(f, NULL, 5)` at
+                // end-of-file is 0 rather than EFAULT, and resolving it here would
+                // turn that answer into a crash for a symbolic address.
+                let state =
+                    if bytes.IsEmpty then
+                        withAnswered system state
+                    else
+
+                    let destination =
+                        match BufferPointer.dereferenceable buffer with
+                        | Some destination -> destination
+                        | None ->
+                            failwith
+                                $"%s{operation}: fd %d{fd}: the kernel produced %d{bytes.Length} bytes for a buffer that names no storage. Every such buffer is answered or refused before the transfer (this is an interpreter bug)."
+
+                    withAnswered system state |> writeBytesThrough ctx operation destination bytes
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim bytes.Length)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            // A re-entry is told apart from a first entry by the record, as for
+            // `SystemNative_Accept`: the kernel finishes the read from the park,
+            // into the buffer the call was made with.
+            match UnixTaskTable.parkedFor ctx.Thread state.Kernel.Tasks with
+            | Some (ParkedSyscall.PipeRead _) ->
+                let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
+                settle buffer (UnixReadWrite.finishRead ctx.Thread (EmulatedKernel.unix state.Kernel))
+            | Some other ->
+                // Unreachable: a task parked in another syscall is not running
+                // IL. Refused rather than treated as a first entry, which would
+                // park over the stale record and destroy the evidence.
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread} entered a read while its task is parked in %A{other}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
+            | None ->
+
             // `Common_Read`'s own guard, and hence *ahead of the descriptor*:
             // the C returns before `ToFileDescriptor` is ever evaluated, so
             // `Read(badfd, buf, -1)` is EINVAL rather than EBADF. That ordering
@@ -4275,54 +4378,13 @@ module NativeSystemNative =
 
             let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 
-            match
-                UnixReadWrite.read
-                    fd
-                    (BufferPointer.toUserBuffer buffer)
-                    (uint64 bufferSize)
-                    (EmulatedKernel.unix state.Kernel)
-            with
-            | Error (ReadRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
-            | Error (ReadRefusal.SocketConnectionState _ as refusal) ->
-                // The library says what it measured; PawPrint says which managed
-                // caller could have reached it, which is a fact about CoreLib.
-                failwith
-                    $"%s{operation}: fd %d{fd}: %s{ReadRefusal.describe refusal} Nothing in the BCL waits on this — CoreLib reaches a socket through `SystemNative_Receive`, `SafeSocketHandle` not being a `SafeFileHandle` — so this is a hand-rolled P/Invoke. Model the connection state (issue #956) before answering it."
-            | Error (ReadRefusal.ScannedDirectoryPosition _ as refusal) ->
-                failwith
-                    $"%s{operation}: fd %d{fd}: %s{ReadRefusal.describe refusal} CoreLib never reads a directory through `SystemNative_Read` (it enumerates with `SystemNative_OpenDir` and `SystemNative_ReadDir`, whose descriptor it never sees), so this is a hand-rolled P/Invoke reading a directory it has partly enumerated. Rewind it with `lseek(fd, 0, SEEK_SET)`, or read before enumerating."
-            | Error (ReadRefusal.PipeWouldBlock _ as refusal) ->
-                failwith
-                    $"%s{operation}: fd %d{fd}: %s{ReadRefusal.describe refusal} PawPrint parks no task in a read yet. A guest reaching this reads a pipe it made with `SystemNative_Pipe` before anything was written to it; give the read end O_NONBLOCK, or write before reading."
-            | Ok (ReadAnswer.Failed error, system) ->
-                withErrno ctx error system state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
-                |> NativeHandlerResult.completed
-                |> Some
-            | Ok (ReadAnswer.Completed bytes, system) ->
-
-            // Empty means the read moved nothing *and did not touch the buffer*,
-            // so the pointer must not be resolved: `read(f, NULL, 5)` at
-            // end-of-file is 0 rather than EFAULT, and resolving it here would
-            // turn that answer into a crash for a symbolic address.
-            let state =
-                if bytes.IsEmpty then
-                    withAnswered system state
-                else
-
-                let destination =
-                    match BufferPointer.dereferenceable buffer with
-                    | Some destination -> destination
-                    | None ->
-                        failwith
-                            $"%s{operation}: fd %d{fd}: the kernel produced %d{bytes.Length} bytes for a buffer that names no storage. Every such buffer is answered or refused before the transfer (this is an interpreter bug)."
-
-                withAnswered system state |> writeBytesThrough ctx operation destination bytes
-
-            state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim bytes.Length)) ctx.Thread
-            |> NativeHandlerResult.completed
-            |> Some
+            UnixReadWrite.read
+                ctx.Thread
+                fd
+                (BufferPointer.toUserBuffer buffer)
+                (uint64 bufferSize)
+                (EmulatedKernel.unix state.Kernel)
+            |> settle buffer
         // `int64_t SystemNative_LSeek(intptr_t fd, int64_t offset, int32_t
         // whence)` (pal_io.c:767): `lseek(2)`/`lseek64(2)` verbatim, with an
         // EINTR retry and no argument validation of its own.
@@ -5288,7 +5350,9 @@ module NativeSystemNative =
                     (UnixConnection.finishAccept ctx.Thread (EmulatedKernel.unix state.Kernel))
             | Some (ParkedSyscall.SocketWait _)
             | Some (ParkedSyscall.Flock _)
-            | Some (ParkedSyscall.Poll _) ->
+            | Some (ParkedSyscall.Poll _)
+            | Some (ParkedSyscall.PipeRead _)
+            | Some (ParkedSyscall.PipeWrite _) ->
                 // Unreachable: a task parked in another syscall is not running
                 // IL. Refused rather than treated as a first entry, which would
                 // park over the stale record and destroy the evidence.
@@ -6319,6 +6383,11 @@ module NativeSystemNative =
                 // Unreachable, for the same reason.
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered a socket wait while its task is parked in an accept. A task blocks in one syscall at a time, so the accept's completion failed to clear its record (this is an interpreter bug)."
+            | Some (ParkedSyscall.PipeRead _ as other)
+            | Some (ParkedSyscall.PipeWrite _ as other) ->
+                // Unreachable, for the same reason.
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread} entered a socket wait while its task is parked in %A{other}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
             | None ->
 
             let requestedCount =
@@ -6626,7 +6695,9 @@ module NativeSystemNative =
                 settle entries (PollEventsPal.finish ctx.Thread (EmulatedKernel.unix state.Kernel))
             | Some (ParkedSyscall.SocketWait _)
             | Some (ParkedSyscall.Flock _)
-            | Some (ParkedSyscall.Accept _) ->
+            | Some (ParkedSyscall.Accept _)
+            | Some (ParkedSyscall.PipeRead _)
+            | Some (ParkedSyscall.PipeWrite _) ->
                 // Unreachable: a task parked in another syscall is not running
                 // IL. Refused rather than treated as a first entry, which would
                 // park over the stale record and destroy the evidence.
@@ -6717,15 +6788,16 @@ module NativeSystemNative =
             // delegates to `Common_Write` in `pal_io_common.h`. The C path:
             //   * negative `bufferSize`            -> errno = ERANGE, return -1
             //   * otherwise call real `write(2)`   -> may return short, may EINTR (retried)
-            // The emulated kernel never returns EINTR and never blocks, and
-            // returns short only for a non-blocking write into a pipe with room
-            // for part of it. A guest depending on EAGAIN or a partial write
-            // from a non-blocking socket would need connection state PawPrint
-            // does not model, which `UnixReadWrite.write` refuses rather than
-            // guesses. A write into a pipe with no reader answers EPIPE and
-            // raises SIGPIPE, which PawPrint's startup ignores, as CoreCLR's
-            // does, so the guest sees the EPIPE alone unless it has given the
-            // signal a disposition of its own.
+            // A blocking write into a pipe with no room for the rest of it
+            // sleeps, and the kernel finishes it on a later re-entry; a signal
+            // can end that sleep with EINTR, which the C retries, or with the
+            // count already written. A guest depending on EAGAIN or a partial
+            // write from a non-blocking socket would need connection state
+            // PawPrint does not model, which `UnixReadWrite.write` refuses
+            // rather than guesses. A write into a pipe with no reader answers
+            // EPIPE and raises SIGPIPE, which PawPrint's startup ignores, as
+            // CoreCLR's does, so the guest sees the EPIPE alone unless it has
+            // given the signal a disposition of its own.
             let operation = "SystemNative_Write"
             let fd = fdArgument operation instruction.Arguments.[0]
             let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
@@ -6739,8 +6811,8 @@ module NativeSystemNative =
                         "Nothing in the BCL waits on this: CoreLib reaches a socket through `SystemNative_Send`, `SafeSocketHandle` not being a `SafeFileHandle`, so this is a hand-rolled P/Invoke. Model the connection state (issue #956) before answering it."
                     | WriteRefusal.ExceedsRepresentableLength _ ->
                         "Write less, or raise the model's file-length limit (issue #956)."
-                    | WriteRefusal.PipeWouldBlock _ ->
-                        "PawPrint parks no task in a write yet. A guest reaching this writes more into a pipe it made with `SystemNative_Pipe` than the pipe has room for; give the write end O_NONBLOCK, or read from the pipe first."
+                    | WriteRefusal.Interruption _ ->
+                        "A signal with a handler reached a write asleep in a pipe at the moment the pipe changed, and under Darwin which of the two the kernel answers depends on which reached the sleeper first."
                     | WriteRefusal.InitProcess _ -> "Configure a process ID other than 1 (KernelConfig.ProcessId)."
                     | WriteRefusal.SignalReceiver _ ->
                         "The guest catches SIGPIPE, and its main thread blocks it while another thread does not; PawPrint delivers a process's signals to its main thread only (SignalDispatch)."
@@ -6782,75 +6854,61 @@ module NativeSystemNative =
                         $"%s{operation}: fd %d{fd}: the write raised %O{raised.Signal}, which is not modelled: %s{UnmodelledSelfSignal.describe refusal}"
                 | None -> ()
 
-            /// What `outcome` leaves the guest with: the call's result, its
-            /// effect, and the state; or the process killed by the signal the
-            /// write raised, from which the call never returns.
+            let returning (result : int) (effect : StepEffect) (state : IlMachineState) =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) ctx.Thread
+                |> NativeHandlerResult.completedWith effect
+                |> Some
+
+            /// What `outcome` leaves the guest with: the call's result and its
+            /// effect; the thread asleep, or making the call again after a
+            /// signal; or the process killed by the signal the write raised,
+            /// from which the call never returns.
             let finish
                 (outcome : WriteOutcome<WriteAnswer, ThreadId, NativeSignalHandler>)
                 (effectOf : UnixSystem<ThreadId, NativeSignalHandler> -> StepEffect)
-                : Choice<int * StepEffect * IlMachineState, ExecutionResult>
+                : NativeHandlerResult option
                 =
                 match outcome with
+                // A signal ended the sleep with nothing written. `Common_Write`
+                // calls `write` again after EINTR, and a restart calls again
+                // with no EINTR.
+                | WriteOutcome.Returns (WriteAnswer.Failed UnixError.EINTR, system) ->
+                    callAgainAfterSignal ctx operation Interrupted.Eintr None system state
+                | WriteOutcome.Restarts system ->
+                    callAgainAfterSignal ctx operation Interrupted.Restarted None system state
+                | WriteOutcome.WouldBlock (_, system) ->
+                    // Park re-entrantly, as `SystemNative_Read` does: a wake
+                    // re-enters this handler, which finishes the write from the
+                    // task's park, reading the rest of the caller's buffer as the
+                    // pipe takes it.
+                    state.MapKernel (EmulatedKernel.withUnix system)
+                    |> Scheduler.parkInSyscall ctx.Thread
+                    |> NativeHandlerResult.blockedRetainingFrame
+                    |> Some
                 | WriteOutcome.Returns (answer, system) ->
                     let result, state = answered answer system state
-                    Choice1Of2 (result, effectOf system, state)
+                    returning result (effectOf system) state
                 | WriteOutcome.ReturnsRaising (answer, raised, system) ->
                     screenRaised raised system
                     let result, state = answered answer system state
-                    Choice1Of2 (result, effectOf system, state)
+                    returning result (effectOf system) state
                 | WriteOutcome.ProcessEnded ended ->
                     match ended.Termination with
                     | ProcessTermination.Signaled (signal, coreDumped) ->
-                        Choice2Of2 (ExecutionResult.SignalTerminated (state, signal, coreDumped))
+                        ExecutionResult.SignalTerminated (state, signal, coreDumped)
+                        |> NativeHandlerResult.ofExecutionResult
+                        |> Some
                     | ProcessTermination.Exited _ ->
                         failwith
                             $"%s{operation}: fd %d{fd}: a write ended the process with an exit status (%O{ended.Termination}), which only an exit can"
 
-            let outcome =
-                if bufferSize < 0 then
-                    // `Common_Write`'s own guard, which refuses before any
-                    // dereference of `buffer`. ERANGE, where `Common_Read`
-                    // answers EINVAL for the same mistake: the asymmetry is
-                    // upstream's rather than a typo here (pal_io_common.h:41-45
-                    // against :59-63). CoreLib's own callers never pass a
-                    // negative size, so this is a guest-misuse path; surfaced
-                    // through errno rather than a crash so the guest's own error
-                    // reporting runs.
-                    let _, state =
-                        answered (WriteAnswer.Failed UnixError.ERANGE) (EmulatedKernel.unix state.Kernel) state
+            let noEffect (_ : UnixSystem<ThreadId, NativeSignalHandler>) = StepEffect.NoEffect
 
-                    Choice1Of2 (-1, StepEffect.NoEffect, state)
-                else
-
-                // Decoding the buffer pointer is deferred until the kernel says
-                // it would be read: `Common_Write` performs no dereference for a
-                // zero size, so `SystemNative_Write((IntPtr)1, (byte*)123, 0)`
-                // must succeed here as it does on the real CLR. Classification
-                // itself is total, so it is the *extraction* below that waits.
-                let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
-
-                let noEffect (_ : UnixSystem<ThreadId, NativeSignalHandler>) = StepEffect.NoEffect
-
-                match
-                    UnixReadWrite.admitWrite
-                        ctx.Thread
-                        fd
-                        (BufferPointer.toUserBuffer buffer)
-                        (uint64 bufferSize)
-                        (EmulatedKernel.unix state.Kernel)
-                with
-                | Error (WriteRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
-                | Error refusal -> refused refusal
-                | Ok (WriteOutcome.Returns (WriteAdmission.Answered answer, admitted)) ->
-                    finish (WriteOutcome.Returns (answer, admitted)) noEffect
-                | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Answered answer, raised, admitted)) ->
-                    finish (WriteOutcome.ReturnsRaising (answer, raised, admitted)) noEffect
-                | Ok (WriteOutcome.ProcessEnded ended) -> finish (WriteOutcome.ProcessEnded ended) noEffect
-                | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Transfer count, raised, _)) ->
-                    failwith
-                        $"%s{operation}: fd %d{fd}: the kernel raised %O{raised.Signal} and still asked for %d{count} bytes; a write that raises a signal takes none (this is a bug in the kernel library)."
-                | Ok (WriteOutcome.Returns (WriteAdmission.Transfer count, admitted)) ->
-
+            // The bytes of the caller's buffer from `offset` on, `count` of them,
+            // which the kernel has said it will read. Classification is total;
+            // it is the *extraction* that waits for the kernel to ask.
+            let extract (buffer : BufferPointer) (offset : int) (count : int) : ImmutableArray<byte> =
                 let source =
                     match BufferPointer.dereferenceable buffer with
                     | Some source -> source
@@ -6858,38 +6916,118 @@ module NativeSystemNative =
                         failwith
                             $"%s{operation}: fd %d{fd}: the kernel asked for %d{count} bytes from a buffer that names no storage. Every such buffer is answered or refused before the transfer (this is an interpreter bug)."
 
-                let bytes = readBytesThrough ctx operation source count state
+                readBytesThrough ctx operation (bufferFieldAt ctx operation source offset state) count state
 
-                match UnixReadWrite.write ctx.Thread fd bytes admitted with
+            // A re-entry is told apart from a first entry by the record, as for
+            // `SystemNative_Read`. The kernel says how much more of the buffer
+            // it takes now, and the rest is read from the guest only then, as a
+            // real write copies it only as room appears.
+            match UnixTaskTable.parkedFor ctx.Thread state.Kernel.Tasks with
+            | Some (ParkedSyscall.PipeWrite _) ->
+                let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
+
+                match UnixReadWrite.admitFinishWrite ctx.Thread (EmulatedKernel.unix state.Kernel) with
+                | Error (WriteRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
                 | Error refusal -> refused refusal
-                | Ok outcome ->
+                | Ok (WriteOutcome.Returns (WriteResumption.Transfer (offset, count), admitted)) ->
+                    match UnixReadWrite.finishWrite ctx.Thread (extract buffer offset count) admitted with
+                    | Error refusal -> refused refusal
+                    | Ok outcome -> finish outcome noEffect
+                | Ok (WriteOutcome.Returns (WriteResumption.Answered answer, after)) ->
+                    finish (WriteOutcome.Returns (answer, after)) noEffect
+                | Ok (WriteOutcome.ReturnsRaising (WriteResumption.Answered answer, raised, after)) ->
+                    finish (WriteOutcome.ReturnsRaising (answer, raised, after)) noEffect
+                | Ok (WriteOutcome.ReturnsRaising (WriteResumption.Transfer (_, count), raised, _)) ->
+                    failwith
+                        $"%s{operation}: fd %d{fd}: the kernel raised %O{raised.Signal} and still asked for %d{count} bytes; a write that raises a signal takes none (this is a bug in the kernel library)."
+                | Ok (WriteOutcome.ProcessEnded ended) -> finish (WriteOutcome.ProcessEnded ended) noEffect
+                | Ok (WriteOutcome.WouldBlock (condition, after)) ->
+                    finish (WriteOutcome.WouldBlock (condition, after)) noEffect
+                | Ok (WriteOutcome.Restarts after) -> finish (WriteOutcome.Restarts after) noEffect
+            | Some other ->
+                // Unreachable: a task parked in another syscall is not running
+                // IL. Refused rather than treated as a first entry, which would
+                // park over the stale record and destroy the evidence.
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread} entered a write while its task is parked in %A{other}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
+            | None ->
 
-                // The host's own view of what the guest printed, which is
-                // PawPrint's business rather than the kernel's: the kernel
-                // records what reached the pipes PawPrint drains, and this is
-                // what makes it appear on a console. One write delivers at most
-                // once, and exactly the bytes it moved.
-                let effectOf (system : UnixSystem<ThreadId, NativeSignalHandler>) : StepEffect =
-                    let before = admitted.Machine.Delivered.Length
+            if bufferSize < 0 then
+                // `Common_Write`'s own guard, which refuses before any
+                // dereference of `buffer`. ERANGE, where `Common_Read`
+                // answers EINVAL for the same mistake: the asymmetry is
+                // upstream's rather than a typo here (pal_io_common.h:41-45
+                // against :59-63). CoreLib's own callers never pass a
+                // negative size, so this is a guest-misuse path; surfaced
+                // through errno rather than a crash so the guest's own error
+                // reporting runs.
+                let result, state =
+                    answered (WriteAnswer.Failed UnixError.ERANGE) (EmulatedKernel.unix state.Kernel) state
 
-                    match system.Machine.Delivered.Length - before with
-                    | 0 -> StepEffect.NoEffect
-                    | 1 ->
-                        let delivery = system.Machine.Delivered.[before]
-                        StepEffect.WroteToFd (StandardStreams.roleOf delivery.Endpoint, delivery.Bytes)
-                    | delivered ->
-                        failwith
-                            $"%s{operation}: fd %d{fd}: one write delivered %d{delivered} times to the pipes PawPrint drains; a write delivers once or not at all (this is an interpreter bug)."
+                returning result StepEffect.NoEffect state
+            else
 
-                finish outcome effectOf
+            // Decoding the buffer pointer is deferred until the kernel says
+            // it would be read: `Common_Write` performs no dereference for a
+            // zero size, so `SystemNative_Write((IntPtr)1, (byte*)123, 0)`
+            // must succeed here as it does on the real CLR. Classification
+            // itself is total, so it is the *extraction* below that waits.
+            let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 
-            match outcome with
-            | Choice1Of2 (result, effect, state) ->
-                state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) ctx.Thread
-                |> NativeHandlerResult.completedWith effect
-                |> Some
-            | Choice2Of2 ended -> NativeHandlerResult.ofExecutionResult ended |> Some
+            match
+                UnixReadWrite.admitWrite
+                    ctx.Thread
+                    fd
+                    (BufferPointer.toUserBuffer buffer)
+                    (uint64 bufferSize)
+                    (EmulatedKernel.unix state.Kernel)
+            with
+            | Error (WriteRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
+            | Error refusal -> refused refusal
+            | Ok (WriteOutcome.Returns (WriteAdmission.Answered answer, admitted)) ->
+                finish (WriteOutcome.Returns (answer, admitted)) noEffect
+            | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Answered answer, raised, admitted)) ->
+                finish (WriteOutcome.ReturnsRaising (answer, raised, admitted)) noEffect
+            | Ok (WriteOutcome.ProcessEnded ended) -> finish (WriteOutcome.ProcessEnded ended) noEffect
+            | Ok (WriteOutcome.WouldBlock (condition, after)) ->
+                finish (WriteOutcome.WouldBlock (condition, after)) noEffect
+            | Ok (WriteOutcome.Restarts _ as outcome) ->
+                failwith
+                    $"%s{operation}: fd %d{fd}: a write that never slept answered %A{outcome}; only a finishing call restarts (this is a bug in the kernel library)."
+            | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Transfer count, raised, _))
+            | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.TransferThenSleep (count, _), raised, _)) ->
+                failwith
+                    $"%s{operation}: fd %d{fd}: the kernel raised %O{raised.Signal} and still asked for %d{count} bytes; a write that raises a signal takes none (this is a bug in the kernel library)."
+            // A blocking write into a pipe with room for part of it: the part is
+            // read now, and the rest only as the pipe takes it.
+            | Ok (WriteOutcome.Returns (WriteAdmission.TransferThenSleep (count, total), admitted)) ->
+                match UnixReadWrite.writeThenSleep ctx.Thread fd total (extract buffer 0 count) admitted with
+                | Error refusal -> refused refusal
+                | Ok outcome -> finish outcome noEffect
+            | Ok (WriteOutcome.Returns (WriteAdmission.Transfer count, admitted)) ->
+
+            match UnixReadWrite.write ctx.Thread fd (extract buffer 0 count) admitted with
+            | Error refusal -> refused refusal
+            | Ok outcome ->
+
+            // The host's own view of what the guest printed, which is
+            // PawPrint's business rather than the kernel's: the kernel
+            // records what reached the pipes PawPrint drains, and this is
+            // what makes it appear on a console. One write delivers at most
+            // once, and exactly the bytes it moved.
+            let effectOf (system : UnixSystem<ThreadId, NativeSignalHandler>) : StepEffect =
+                let before = admitted.Machine.Delivered.Length
+
+                match system.Machine.Delivered.Length - before with
+                | 0 -> StepEffect.NoEffect
+                | 1 ->
+                    let delivery = system.Machine.Delivered.[before]
+                    StepEffect.WroteToFd (StandardStreams.roleOf delivery.Endpoint, delivery.Bytes)
+                | delivered ->
+                    failwith
+                        $"%s{operation}: fd %d{fd}: one write delivered %d{delivered} times to the pipes PawPrint drains; a write delivers once or not at all (this is an interpreter bug)."
+
+            finish outcome effectOf
         | Some "SystemNative_GetNonCryptographicallySecureRandomBytes",
           [ ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
             ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],

@@ -186,6 +186,15 @@ type UnixSystemDefect<'Task> =
     /// socket, which no accept could have produced and on which
     /// `WakeCondition.satisfied` crashes.
     | ParkedAcceptOnNonListener of task : 'Task * description : OpenFileDescriptionId
+    /// A task is asleep in a pipe `read` or `write` through a description that
+    /// names something other than the pipe end the call needs, which no such
+    /// call could have produced and on which `WakeCondition.satisfied` crashes.
+    | ParkedPipeTransferOnWrongTarget of task : 'Task * description : OpenFileDescriptionId * target : OpenFileTarget
+    /// A task is asleep in a pipe transfer whose progress no call could have
+    /// made: a read of nothing, or a write of `count` bytes with `written` of
+    /// them in, where a sleeping write has put in at least none and fewer than
+    /// all.
+    | ParkedPipeTransferProgress of task : 'Task * count : int * written : int
     /// A task's park records an ordinal at or above the next one to mint, so
     /// some future park would repeat it, and the two waiters' order would be
     /// unspecified.
@@ -777,6 +786,44 @@ module UnixSystem =
                             []
                         else
                             [ UnixSystemDefect.ParkedAcceptOnNonListener (task, accept.Listener) ]
+                | Some (ParkedSyscall.PipeRead read) ->
+                    let progress =
+                        if read.Count > 0 then
+                            []
+                        else
+                            [ UnixSystemDefect.ParkedPipeTransferProgress (task, read.Count, 0) ]
+
+                    let target =
+                        match Map.tryFind read.Reader descriptions with
+                        | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, read.Reader) ]
+                        | Some description ->
+                            match description.Target with
+                            | OpenFileTarget.Pipe (_, PipeEnd.Read) -> []
+                            | target ->
+                                [ UnixSystemDefect.ParkedPipeTransferOnWrongTarget (task, read.Reader, target) ]
+
+                    progress @ target
+                | Some (ParkedSyscall.PipeWrite write) ->
+                    let progress =
+                        if write.Written >= 0 && write.Written < write.Count then
+                            []
+                        else
+                            [
+                                UnixSystemDefect.ParkedPipeTransferProgress (task, write.Count, write.Written)
+                            ]
+
+                    let target =
+                        match Map.tryFind write.Writer descriptions with
+                        | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, write.Writer) ]
+                        | Some description ->
+                            match description.Target with
+                            | OpenFileTarget.Pipe (_, PipeEnd.Write) -> []
+                            | target ->
+                                [
+                                    UnixSystemDefect.ParkedPipeTransferOnWrongTarget (task, write.Writer, target)
+                                ]
+
+                    progress @ target
             )
 
         let parkOrdinals =
