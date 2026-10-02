@@ -29,7 +29,7 @@ module TestFileDescriptorRegistry =
         (registry : FileDescriptorRegistry)
         : Result<FileDescriptorRegistry, FileDescriptorCloseError>
         =
-        FileDescriptorRegistry.dropDescriptor fd registry |> Result.map fst
+        FileDescriptorRegistry.dropDescriptor fd Set.empty registry |> Result.map fst
 
     let private someInode : InodeNumber = InodeNumber 42L
     let private otherInode : InodeNumber = InodeNumber 43L
@@ -719,18 +719,53 @@ module TestFileDescriptorRegistry =
         |> shouldEqual [ FileDescriptorRegistryDefect.DanglingFd (0, OpenFileDescriptionId 7L) ]
 
     [<Test>]
-    let ``checkInvariants rejects a description no descriptor names`` () : unit =
+    let ``checkInvariants leaves a description no descriptor names to the system's check`` () : unit =
+        // A syscall in flight can hold a description no descriptor names, and
+        // what holds one is not recorded here: `UnixSystem.checkInvariants`
+        // reports a description nothing references.
         let registry =
             FileDescriptorRegistry.Unchecked.ofParts
                 Map.empty
                 (Map.ofList [ OpenFileDescriptionId 7L, LaunchedStreams.description 1 ])
                 (OpenFileDescriptionId 8L)
 
-        FileDescriptorRegistry.checkInvariants registry
-        |> shouldEqual
-            [
-                FileDescriptorRegistryDefect.UnreferencedDescription (OpenFileDescriptionId 7L)
-            ]
+        FileDescriptorRegistry.checkInvariants registry |> shouldEqual []
+
+    [<Test>]
+    let ``dropDescriptor keeps a description held outside the table, and destroyIfUnreferenced takes it once it is not``
+        ()
+        : unit
+        =
+        let registry = LaunchedStreams.registry
+        let id = FileDescriptorRegistry.tryFindId 0 registry |> Option.get
+
+        let registry =
+            match FileDescriptorRegistry.dropDescriptor 0 (Set.singleton id) registry with
+            | Ok (registry, None) -> registry
+            | other -> failwith $"expected the description to survive, got %A{other}"
+
+        FileDescriptorRegistry.descriptions registry
+        |> Map.containsKey id
+        |> shouldEqual true
+
+        let stillHeld, destroyed =
+            FileDescriptorRegistry.destroyIfUnreferenced id (Set.singleton id) registry
+
+        destroyed |> shouldEqual None
+        stillHeld |> shouldEqual registry
+
+        let released, destroyed =
+            FileDescriptorRegistry.destroyIfUnreferenced id Set.empty registry
+
+        destroyed |> Option.isSome |> shouldEqual true
+
+        FileDescriptorRegistry.descriptions released
+        |> Map.containsKey id
+        |> shouldEqual false
+
+        // Idempotent once gone.
+        FileDescriptorRegistry.destroyIfUnreferenced id Set.empty released
+        |> shouldEqual (released, None)
 
     [<Test>]
     let ``assertInvariants passes a sound table and fails an unsound one`` () : unit =
@@ -1651,7 +1686,7 @@ module TestFileDescriptorRegistry =
         let registry = FileDescriptorRegistry.setNonBlocking fd true registry
 
         let registry =
-            match FileDescriptorRegistry.dropDescriptor duplicated registry with
+            match FileDescriptorRegistry.dropDescriptor duplicated Set.empty registry with
             | Ok (registry, destroyed) ->
                 // The original still names the description, so nothing died.
                 destroyed |> shouldEqual None

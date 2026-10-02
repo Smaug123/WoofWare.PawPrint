@@ -5,8 +5,9 @@ namespace WoofWare.PosixKernel
 ///
 /// A primitive names live kernel objects rather than a snapshot of them, and
 /// stays true to what a real kernel waits on rather than to what is convenient
-/// to evaluate. Keeping those objects alive while something waits on them is the
-/// client's obligation, and it is what `close` refuses to break.
+/// to evaluate. The park a primitive comes from holds the open file
+/// descriptions it names (`ParkedSyscall.descriptions`), so they stay alive
+/// while something waits on them.
 [<RequireQualifiedAccess>]
 type WakePrimitive =
     /// An `flock` acquisition of `mode` by the open file description
@@ -48,7 +49,7 @@ type WakePrimitive =
     ///
     /// What a blocking `accept(2)` waits for. `listener` is the description
     /// rather than the socket, as for the other primitives: it is what the call
-    /// holds, and what `close` refuses to destroy under it.
+    /// holds.
     | AcceptQueueNonEmpty of listener : OpenFileDescriptionId
     /// The pipe whose read end the open file description `reader` names holds
     /// bytes.
@@ -139,7 +140,7 @@ module WakeCondition =
         with
         | None ->
             failwith
-                $"WakeCondition.satisfied: open file description %O{description} is not in the table, so a task waiting on it (%A{primitive}) has had it closed underneath it. This library's table models no reference from a waiter to what it waits on, so a client that parks must refuse such a close (as `close` does for a pipe end a parked transfer holds)."
+                $"WakeCondition.satisfied: open file description %O{description} is not in the table, but a task waits on it (%A{primitive}), and a park holds what it waits on until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
         | Some found ->
             match found.Target with
             | OpenFileTarget.Pipe (pipeId, named) when named = pipeEnd ->
@@ -163,7 +164,7 @@ module WakeCondition =
             match FileDescriptorRegistry.descriptions registry |> Map.tryFind requester with
             | None ->
                 failwith
-                    $"WakeCondition.satisfied: open file description %O{requester} is not in the table, so a task parked on an flock of it has had that description closed underneath it. This library's table models no reference from a waiter to what it waits on, so a client that parks must refuse such a close (as `close` does for a task parked in a socket-event wait)."
+                    $"WakeCondition.satisfied: open file description %O{requester} is not in the table, but a task is parked on an flock of it, and a park holds what it waits on until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
             | Some description ->
                 FileDescriptorRegistry.flockConflicts (OpenFileDescription.object description) requester mode registry
                 |> not
@@ -176,7 +177,7 @@ module WakeCondition =
                 )
             then
                 failwith
-                    $"WakeCondition.satisfied: open file description %O{description} is not in the table, so a task waiting for it to become ready has had it closed underneath it. This library's table models no reference from a waiter to what it waits on, so a client that parks must refuse such a close (as `close` does for a descriptor a parked poll watches)."
+                    $"WakeCondition.satisfied: open file description %O{description} is not in the table, but a task waits for it to become ready, and a park holds what it waits on until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
 
             LinuxReadiness.ofDescription description system &&& conditions <> 0u
         | WakePrimitive.AcceptQueueNonEmpty listener ->
@@ -186,7 +187,7 @@ module WakeCondition =
             with
             | None ->
                 failwith
-                    $"WakeCondition.satisfied: open file description %O{listener} is not in the table, so a task parked in an accept on it has had it closed underneath it. This library's table models no reference from a waiter to what it waits on, so a client that parks must refuse such a close (as `close` does for a listener a parked accept waits on)."
+                    $"WakeCondition.satisfied: open file description %O{listener} is not in the table, but a task is parked in an accept on it, and a park holds what it waits on until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
             | Some description ->
 
             match description.Target with
@@ -241,15 +242,14 @@ module WakeCondition =
     /// task can take the lock in between, and the caller then parks again.
     ///
     /// **A condition is only ever asked of a system whose kernel objects it
-    /// still names.** A `flock` waiter on a real kernel holds a reference to the
-    /// open file it waits on, so that file cannot be destroyed underneath it;
-    /// this library's descriptor table models no such reference, so a client
-    /// that parks a task must also stop the description being closed while it
-    /// waits — as `close` already refuses to strand a task parked in a wait on
-    /// a socket event port. Asking about a description that has
-    /// gone is that obligation being broken, and it fails loudly rather than
-    /// answering: the honest answers are "grantable", which wakes the task into
-    /// an `EBADF` no kernel produces, and "not yet", which sleeps forever.
+    /// still names.** A waiter on a real kernel holds a reference to the open
+    /// file it waits on, so that file cannot be destroyed underneath it, and a
+    /// park here does the same: the descriptions it names outlive their last
+    /// descriptor until the call returns. Asking about a description that has
+    /// gone means a park was ended or a description destroyed some other way,
+    /// and it fails loudly rather than answering: the honest answers are
+    /// "grantable", which wakes the task into an `EBADF` no kernel produces,
+    /// and "not yet", which sleeps forever.
     let rec satisfied<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (condition : WakeCondition)
@@ -374,9 +374,9 @@ type SyscallOutcome =
     /// arguments named a descriptor; the condition names the kernel object that
     /// descriptor stood for, and a sleeping task keeps the object rather than
     /// the number. Descriptor numbers are reused as soon as they are free, so a
-    /// `close` of the number this call was made through — which a `dup` elsewhere
-    /// makes survivable — can leave that number naming something else entirely
-    /// by the time the waiter wakes. `ParkedSocketWait` holds its port by
+    /// `close` of the number this call was made through can leave that number
+    /// naming something else entirely by the time the waiter wakes, while the
+    /// object lives on for the waiter. `ParkedSocketWait` holds its port by
     /// description identity for exactly this reason.
     ///
     /// The system this rides with is the one a real kernel sleeps *in*, not the

@@ -422,6 +422,18 @@ module TestSyscallInterruption =
         | _ when pastDeadline -> Ending.TimedOut
         | _ -> Ending.Reparked
 
+    /// The descriptor `sleep` was entered through, where a close of it is one
+    /// Linux lets the call sleep on (`open-file-references.c`): the only
+    /// descriptor onto the description the sleeping call holds. A poll's is
+    /// not, since closing a descriptor a poll watches is refused.
+    let private enteredThrough (world : World) (sleep : Sleep) : int option =
+        match sleep with
+        | Sleep.Flock -> Some world.WaitingThrough
+        | Sleep.Accept -> Some world.Listener
+        | Sleep.EpollWait _ -> Some world.Port
+        | Sleep.Poll _
+        | Sleep.PollOfNothing -> None
+
     let private sleepsOn (flavour : SimulatedUnixFlavour) : Sleep list =
         match flavour with
         | SimulatedUnixFlavour.Darwin -> [ Sleep.Flock ; Sleep.Accept ]
@@ -478,16 +490,40 @@ module TestSyscallInterruption =
                         ArbMap.defaults |> ArbMap.generate<bool>
 
                 let! readyFirst = ArbMap.defaults |> ArbMap.generate<bool>
-                return flavour, sleep, task, sent, ready, pastDeadline, readyFirst
+
+                // On Linux, the last descriptor onto what the call sleeps on is
+                // closed under it, which changes nothing about how it ends.
+                let! closedUnder =
+                    match flavour, enteredThrough linuxWorld sleep with
+                    | SimulatedUnixFlavour.Linux, Some _ -> ArbMap.defaults |> ArbMap.generate<bool>
+                    | _ -> Gen.constant false
+
+                return flavour, sleep, task, sent, ready, pastDeadline, readyFirst, closedUnder
             }
 
-        let property (flavour, sleep, task, sent, ready, pastDeadline, readyFirst) =
+        let property (flavour, sleep, task, sent, ready, pastDeadline, readyFirst, closedUnder) =
             let world =
                 match flavour with
                 | SimulatedUnixFlavour.Linux -> linuxWorld
                 | SimulatedUnixFlavour.Darwin -> darwinWorld
 
             let system = asleep world task sleep
+
+            let held =
+                enteredThrough world sleep
+                |> Option.map (fun fd ->
+                    match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+                    | Some id -> id
+                    | None -> failwith $"fd %d{fd} names no description"
+                )
+
+            let system =
+                if closedUnder then
+                    match UnixDescriptor.close (Option.get (enteredThrough world sleep)) system with
+                    | Ok (SyscallAnswer.Completed 0L, system) -> system
+                    | other -> failwith $"%O{sleep}: expected the close to succeed, got %A{other}"
+                else
+                    system
 
             let signalled = send task sent
             let readied = if ready then makeReady world sleep else id
@@ -517,6 +553,23 @@ module TestSyscallInterruption =
             ending |> shouldEqual expected
 
             seen <- Set.add $"%A{ending}" seen
+
+            // The description the call held outlives it only if a descriptor
+            // still names it, or the call sleeps on.
+            match held, ending with
+            | _, Ending.Refused _
+            | None, _ -> ()
+            | Some held, ending ->
+                let survives = not closedUnder || ending = Ending.Reparked
+
+                if closedUnder then
+                    seen <- Set.add $"closed under, then %A{ending}" seen
+
+                FileDescriptorRegistry.descriptions after.Process.FileDescriptors
+                |> Map.containsKey held
+                |> shouldEqual survives
+
+                UnixSystem.checkInvariants after |> shouldEqual []
 
             match ending with
             | Ending.Reparked
@@ -559,6 +612,11 @@ module TestSyscallInterruption =
                     "Eintr"
                     "Restart"
                     "Reparked"
+                    "closed under, then Completed"
+                    "closed under, then TimedOut"
+                    "closed under, then Eintr"
+                    "closed under, then Restart"
+                    "closed under, then Reparked"
                     $"%A{Ending.Refused (SyscallInterruptionRefusal.SignalBesideCompletion SimulatedUnixFlavour.Darwin)}"
                     $"%A{Ending.Refused (SyscallInterruptionRefusal.MixedRestartFlags ([ Signal.SIGUSR1 ], [ Signal.SIGUSR2 ]))}"
                     $"%A{Ending.Refused (SyscallInterruptionRefusal.MixedRestartFlags ([ Signal.SIGUSR2 ], [ Signal.SIGUSR1 ]))}"

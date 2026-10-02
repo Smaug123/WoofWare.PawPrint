@@ -490,22 +490,16 @@ module NativeSystemNative =
     let private closeRefusalMessage (operation : string) (fd : int) (refusal : CloseRefusal<ThreadId>) : string =
         let remedy =
             match refusal with
-            | CloseRefusal.LinuxLastPortDescriptorWithWaiter _ ->
-                "Implement port retention for in-flight waits before closing one out from under a waiter."
             | CloseRefusal.DarwinPortDescriptorWithWaiter _ ->
                 "Measure what the woken wait reports before closing a kqueue out from under a waiter, or configure a Linux platform."
-            | CloseRefusal.LastFlockedDescriptorWithWaiter _ ->
-                "Model a blocked flock's reference to the file it waits on before closing the description out from under a waiter."
-            | CloseRefusal.ListenerWouldResetUnacceptedClient _ ->
+            | CloseRefusal.DarwinFlockedDescriptorWithWaiter _ ->
+                "Model a close that sleeps until a blocked flock returns before closing a descriptor onto the description it waits on, or configure a Linux platform."
+            | CloseRefusal.Release (DescriptionReleaseRefusal.ListenerWouldResetUnacceptedClient _) ->
                 "Accept the connection or close the client before closing the listener."
             | CloseRefusal.PolledDescriptor _ ->
-                "Model a sleeping poll's reference to the files it watches before closing one out from under it."
-            | CloseRefusal.LinuxLastListenerDescriptorWithAccepter _ ->
-                "Model a sleeping accept's reference to its listener before closing the listener out from under it."
+                "Model a sleeping poll's edge-triggered wake-ups, and its look-up of each descriptor again as it wakes, before closing one out from under it."
             | CloseRefusal.DarwinListenerDescriptorWithAccepter _ ->
                 "Model a close ending a sleeping accept with ECONNABORTED before closing the listener out from under it, or configure a Linux platform."
-            | CloseRefusal.LinuxLastPipeDescriptorWithTransfer _ ->
-                "Model a sleeping read or write's reference to its pipe end before closing the end out from under it, or keep a dup of the descriptor open."
             | CloseRefusal.DarwinPipeDescriptorWithTransfer _ ->
                 "Model a close ending a sleeping read or write before closing its pipe end out from under it, or configure a Linux platform."
 
@@ -5007,7 +5001,8 @@ module NativeSystemNative =
                     failwith
                         $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal} `socketAddress` is %O{addressArgument}; pass a real buffer."
                 | Error (AcceptRefusal.UnmeasuredKind _ as refusal)
-                | Error (AcceptRefusal.Interruption _ as refusal) ->
+                | Error (AcceptRefusal.Interruption _ as refusal)
+                | Error (AcceptRefusal.Release _ as refusal) ->
                     failwith $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal}"
                 // A signal ended the sleep. The shim's `accept4` loop calls again
                 // after EINTR, and a restart calls again with no EINTR.
@@ -6129,9 +6124,9 @@ module NativeSystemNative =
             // syscall was already *entered*: the port identity and maxevents
             // it captured outlive anything the guest has done to the
             // arguments since — the count cell can be overwritten, and the
-            // fd the wait was called through can be closed (a dup keeps the
-            // description alive; `UnixDescriptor.close`'s retention refusal keeps the
-            // last descriptor from destroying it). So a re-entry consults no
+            // fd the wait was called through can be closed (the park holds the
+            // description, so it outlives even its last descriptor until the
+            // wait returns). So a re-entry consults no
             // screen and no descriptor table: the kernel finishes the call from
             // the park.
             match UnixTaskTable.parkedFor ctx.Thread state.Kernel.Tasks with

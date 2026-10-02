@@ -178,16 +178,37 @@ module TestBlockingPipe =
             Reads : int
         }
 
-    let private endOpen (pipeEnd : PipeEnd) (r : Reference) : bool =
-        r.Fds |> Map.exists (fun _ (e, _) -> e = pipeEnd)
-
-    let private payload (index : int) (count : int) : byte list =
-        List.init count (fun i -> byte ((index * 37 + i) % 251))
+    let private endOfCall (call : Call) : PipeEnd =
+        match call with
+        | Call.Reading _ -> PipeEnd.Read
+        | Call.Writing _ -> PipeEnd.Write
 
     let private descriptionOf (call : Call) : int =
         match call with
         | Call.Reading (description, _, _)
         | Call.Writing (description, _, _, _) -> description
+
+    /// The descriptions something still references, and the end each is onto:
+    /// a descriptor names it, or a call in progress (asleep or woken, and not
+    /// yet answered) holds it.
+    let private liveDescriptions (r : Reference) : Map<int, PipeEnd> =
+        let named =
+            r.Fds
+            |> Map.toList
+            |> List.map (fun (_, (pipeEnd, description)) -> description, pipeEnd)
+
+        let held =
+            r.Parks
+            |> Map.toList
+            |> List.map (fun (_, park) -> descriptionOf park.Call, endOfCall park.Call)
+
+        Map.ofList (named @ held)
+
+    let private endOpen (pipeEnd : PipeEnd) (r : Reference) : bool =
+        liveDescriptions r |> Map.exists (fun _ e -> e = pipeEnd)
+
+    let private payload (index : int) (count : int) : byte list =
+        List.init count (fun i -> byte ((index * 37 + i) % 251))
 
     let private park (task : int) (call : Call) (r : Reference) : Reference =
         { r with
@@ -670,6 +691,16 @@ module TestBlockingPipe =
                 | Some (OpenFileTarget.Pipe (pipeId, PipeEnd.Read)) -> pipeId
                 | other -> failwith $"fd 0 is %A{other}"
 
+            // The reference's descriptions 0 and 1, as the library names them.
+            let libraryDescription : Map<int, OpenFileDescriptionId> =
+                [ 0 ; 1 ]
+                |> List.map (fun fd ->
+                    match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+                    | Some id -> fd, id
+                    | None -> failwith $"fd %d{fd} names no description"
+                )
+                |> Map.ofList
+
             let mutable reference =
                 {
                     Linux = linux
@@ -789,15 +820,21 @@ module TestBlockingPipe =
                             |> Option.map (fun task -> description, task)
                         )
 
-                    let refused =
-                        match holder with
-                        | None -> false
-                        | Some (description, _) ->
-                            not linux
-                            || reference.Fds |> Map.filter (fun _ (_, d) -> d = description) |> Map.count = 1
+                    // Linux's sleeping call holds its description, so no close
+                    // ends it (`pipe-blocking.c` section K); Darwin's ends when
+                    // the descriptor it sleeps through closes, which the model
+                    // does not follow, so every close onto it is refused.
+                    let refused = holder.IsSome && not linux
+
+                    if holder.IsSome && linux then
+                        if
+                            reference.Fds
+                            |> Map.filter (fun _ (_, d) -> Some d = (holder |> Option.map fst))
+                            |> Map.count = 1
+                        then
+                            cover "Linux close: the last descriptor onto a sleeping call's description"
 
                     match UnixDescriptor.close fd system with
-                    | Error (CloseRefusal.LinuxLastPipeDescriptorWithTransfer (_, task))
                     | Error (CloseRefusal.DarwinPipeDescriptorWithTransfer (_, task)) when refused ->
                         Some task |> shouldEqual (holder |> Option.map snd)
                     | Ok (answer, after) when not refused ->
@@ -927,6 +964,12 @@ module TestBlockingPipe =
 
                     cover (label flavourName what seen)
 
+                    if
+                        Map.containsKey (descriptionOf call) (liveDescriptions reference)
+                        && not (Map.containsKey (descriptionOf call) (liveDescriptions after))
+                    then
+                        cover $"%s{flavourName} finish: the call's return releases its description"
+
                     match actual with
                     | None -> stopped <- true
                     | Some actual -> system <- settle task seen actual
@@ -960,10 +1003,32 @@ module TestBlockingPipe =
                         if expected <> actual then
                             failwith $"%s{where}: task %d{task} parked as %A{actual}, expected %A{expected}"
 
-                    // Gone once no descriptor names either end.
+                    // A description exists exactly while something references
+                    // it: a descriptor, or a call that has not yet returned.
+                    let expectedDescriptions =
+                        liveDescriptions reference
+                        |> Map.keys
+                        |> Seq.map (fun d -> libraryDescription.[d])
+                        |> Set.ofSeq
+
+                    let actualDescriptions =
+                        FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+                        |> Map.filter (fun _ description ->
+                            match description.Target with
+                            | OpenFileTarget.Pipe (p, _) -> p = pipeId
+                            | _ -> false
+                        )
+                        |> Map.keys
+                        |> Set.ofSeq
+
+                    if expectedDescriptions <> actualDescriptions then
+                        failwith
+                            $"%s{where}: descriptions %A{actualDescriptions} exist, expected %A{expectedDescriptions}"
+
+                    // Gone once nothing references either end.
                     match Map.tryFind pipeId system.Machine.Pipes with
                     | Some pipe -> PipeBuffer.held pipe.Buffer |> shouldEqual (held reference.Buffer)
-                    | None -> Map.isEmpty reference.Fds |> shouldEqual true
+                    | None -> Map.isEmpty (liveDescriptions reference) |> shouldEqual true
 
         let gen =
             gen {
@@ -992,6 +1057,8 @@ module TestBlockingPipe =
                     $"%s{flavour} finish write, with the count already in: wrote"
                 "Linux finish read: end of file"
                 "Linux finish write: wrote"
+                "Linux close: the last descriptor onto a sleeping call's description"
+                "Linux finish: the call's return releases its description"
                 "Linux wake: fewer than could proceed"
                 "Darwin finish read: refused"
                 "Darwin finish write: refused"
@@ -1392,34 +1459,154 @@ module TestBlockingPipe =
                 |> shouldEqual 61440
             | other -> failwith $"%O{platform}: %A{other}"
 
+    /// The write by the leader of `count` bytes through `fd`, which must return
+    /// without sleeping: its answer.
+    let private leaderWriteAnswer (count : int) (fd : int) (system : UnixSystem<int, string>) =
+        match
+            WriteOutcomes.admitThenWrite
+                system.Leader
+                fd
+                UserBuffer.Mapped
+                (ImmutableArray.CreateRange (payload 5 count))
+                system
+        with
+        | Ok (WriteOutcome.Returns (answer, system))
+        | Ok (WriteOutcome.ReturnsRaising (answer, _, system)) -> answer, system
+        | other -> failwith $"expected the write to return, got %A{other}"
+
+    let private descriptionExists (description : OpenFileDescriptionId) (system : UnixSystem<int, string>) : bool =
+        FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+        |> Map.containsKey description
+
+    /// `open-file-references.c` section B on Linux: the last close of the read
+    /// end under a sleeping read wakes nothing, the read then completes when
+    /// given bytes, and the read end closes as the read returns, so the next
+    /// write is EPIPE (B1). With a `dup` kept, the end stays open (B2).
     [<Test>]
-    let ``closing the descriptor a transfer sleeps through is refused where the model cannot follow it`` () : unit =
-        // Section K: Linux holds the description while the call sleeps, so
-        // only its last descriptor is refused; Darwin ends the call on a close
-        // of the descriptor it sleeps through, so every close is refused.
-        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
-            let linux = SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Linux
-            let system = pipeHolding platform false 0 |> readerAsleep
+    let ``Linux: a sleeping read holds the read end open past its last descriptor, until it returns`` () : unit =
+        for dupKept in [ false ; true ] do
+            let system = pipeHolding SimulatedUnixPlatform.linuxX64 false 0 |> readerAsleep
 
             let reader =
                 FileDescriptorRegistry.tryFindId 3 system.Process.FileDescriptors |> Option.get
 
-            match UnixDescriptor.close 3 system with
-            | Error (CloseRefusal.LinuxLastPipeDescriptorWithTransfer (description, task)) when linux ->
-                (description, task) |> shouldEqual (reader, sleeper)
-            | Error (CloseRefusal.DarwinPipeDescriptorWithTransfer (description, task)) when not linux ->
-                (description, task) |> shouldEqual (reader, sleeper)
-            | other -> failwith $"%O{platform}: %A{other}"
+            let system =
+                if dupKept then
+                    match UnixDescriptor.dup 3 system with
+                    | SyscallAnswer.Completed _, system -> system
+                    | other -> failwith $"%A{other}"
+                else
+                    system
 
-            let duplicate, system =
-                match UnixDescriptor.dup 3 system with
-                | SyscallAnswer.Completed fd, system -> int fd, system
-                | other -> failwith $"%A{other}"
+            let system = closed 3 system
+            UnixWait.wakes (Set.singleton sleeper) system |> shouldEqual []
+            descriptionExists reader system |> shouldEqual true
+            UnixSystem.checkInvariants system |> shouldEqual []
 
-            match UnixDescriptor.close duplicate system with
-            | Ok (SyscallAnswer.Completed 0L, _) when linux -> ()
-            | Error (CloseRefusal.DarwinPipeDescriptorWithTransfer _) when not linux -> ()
-            | other -> failwith $"%O{platform}: closing a dup: %A{other}"
+            let system = leaderWrites 3 system
+
+            UnixWait.wakes (Set.singleton sleeper) system
+            |> List.map fst
+            |> shouldEqual [ sleeper ]
+
+            let system =
+                match UnixReadWrite.finishRead sleeper system with
+                | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), system) ->
+                    List.ofSeq bytes |> shouldEqual (payload 3 3)
+                    returnToUser sleeper system
+                | other -> failwith $"dup kept %b{dupKept}: expected the read to return 3 bytes, got %A{other}"
+
+            descriptionExists reader system |> shouldEqual dupKept
+            UnixSystem.checkInvariants system |> shouldEqual []
+
+            leaderWriteAnswer 1 4 system
+            |> fst
+            |> shouldEqual (
+                if dupKept then
+                    WriteAnswer.Completed 1L
+                else
+                    WriteAnswer.Failed UnixError.EPIPE
+            )
+
+    /// `open-file-references.c` section C on Linux: the last close of the write
+    /// end under a sleeping write wakes nothing, the write then completes when
+    /// given room, and the write end closes as the write returns, so a reader of
+    /// the drained pipe sees end of file (C1). With a `dup` kept, the end stays
+    /// open and a non-blocking read is EAGAIN (C2).
+    [<Test>]
+    let ``Linux: a sleeping write holds the write end open past its last descriptor, until it returns`` () : unit =
+        for dupKept in [ false ; true ] do
+            let system =
+                pipeHolding SimulatedUnixPlatform.linuxX64 false 65536 |> writerAsleep 1
+
+            let writer =
+                FileDescriptorRegistry.tryFindId 4 system.Process.FileDescriptors |> Option.get
+
+            let system =
+                if dupKept then
+                    match UnixDescriptor.dup 4 system with
+                    | SyscallAnswer.Completed _, system -> system
+                    | other -> failwith $"%A{other}"
+                else
+                    system
+
+            let system = closed 4 system
+            UnixWait.wakes (Set.singleton sleeper) system |> shouldEqual []
+            descriptionExists writer system |> shouldEqual true
+            UnixSystem.checkInvariants system |> shouldEqual []
+
+            let system = leaderReads 4096 system
+
+            UnixWait.wakes (Set.singleton sleeper) system
+            |> List.map fst
+            |> shouldEqual [ sleeper ]
+
+            let system =
+                match libraryFinishWrite sleeper (payload 7 1) system with
+                | Ok (WriteOutcome.Returns (WriteAnswer.Completed 1L, system)) -> returnToUser sleeper system
+                | other -> failwith $"dup kept %b{dupKept}: expected the write to return 1, got %A{other}"
+
+            descriptionExists writer system |> shouldEqual dupKept
+            UnixSystem.checkInvariants system |> shouldEqual []
+
+            let system = leaderReads (65536 - 4096 + 1) system
+            let _, system = UnixSocket.setNonBlocking 3 true system
+
+            match ReadOutcomes.read 3 UserBuffer.Mapped 1UL system with
+            | Ok (answer, _) ->
+                answer
+                |> shouldEqual (
+                    if dupKept then
+                        ReadAnswer.Failed UnixError.EAGAIN
+                    else
+                        ReadAnswer.Completed ImmutableArray.Empty
+                )
+            | Error refusal -> failwith $"%A{refusal}"
+
+    /// `pipe-blocking.c` section K on Darwin: closing the descriptor a transfer
+    /// sleeps through ends it at once, which this kernel does not model, and
+    /// the park does not record which descriptor that was, so every close onto
+    /// the description is refused.
+    [<Test>]
+    let ``Darwin: closing any descriptor onto a pipe end a transfer sleeps through is refused`` () : unit =
+        let system = pipeHolding SimulatedUnixPlatform.macOsArm64 false 0 |> readerAsleep
+
+        let reader =
+            FileDescriptorRegistry.tryFindId 3 system.Process.FileDescriptors |> Option.get
+
+        match UnixDescriptor.close 3 system with
+        | Error (CloseRefusal.DarwinPipeDescriptorWithTransfer (description, task)) ->
+            (description, task) |> shouldEqual (reader, sleeper)
+        | other -> failwith $"%A{other}"
+
+        let duplicate, system =
+            match UnixDescriptor.dup 3 system with
+            | SyscallAnswer.Completed fd, system -> int fd, system
+            | other -> failwith $"%A{other}"
+
+        match UnixDescriptor.close duplicate system with
+        | Error (CloseRefusal.DarwinPipeDescriptorWithTransfer _) -> ()
+        | other -> failwith $"closing a dup: %A{other}"
 
     [<Test>]
     let ``a sleeping transfer moves Darwin's timestamps when it ends, and not while it sleeps`` () : unit =

@@ -151,44 +151,35 @@ module TruncationRefusal =
 /// in a wait, and which one that is cannot be recomputed by the client:
 /// nothing stops two tasks parking on the same port, so a client repeating the
 /// search could name a different one from the one this refusal is about.
+///
+/// Under Linux a sleeping call holds the description it sleeps on, so a close
+/// under it is served: the description outlives its last descriptor until the
+/// call returns. The Darwin cases are the flavour's own answers, which end or
+/// hold up the sleeping call in ways this kernel does not model.
 [<RequireQualifiedAccess>]
 type CloseRefusal<'Task> =
-    /// The last descriptor onto a socket event port that `task` is parked in a
-    /// wait on, under the Linux flavour.
-    | LinuxLastPortDescriptorWithWaiter of port : OpenFileDescriptionId * task : 'Task
     /// Any descriptor onto a socket event port that `task` is parked in a wait
     /// on, under the Darwin flavour.
     | DarwinPortDescriptorWithWaiter of port : OpenFileDescriptionId * task : 'Task
-    /// The last descriptor onto a listening socket whose accept queue still
-    /// holds a connection whose client is open.
-    | ListenerWouldResetUnacceptedClient of listener : SocketId * connection : ConnectionId * client : SocketId
-    /// The last descriptor onto an open file description that `task` is parked
-    /// on an `flock` of.
-    ///
-    /// Unlike the two port cases above, this does not split by flavour, because
-    /// it models no platform's behaviour: a real kernel of either flavour keeps
-    /// the file alive — a blocked `flock` holds a reference to it — and
-    /// eventually grants the waiter its lock on a file nothing names any more.
-    /// This table cannot represent that reference at all, so the refusal is a
-    /// fact about the model and is the same on both. There is nothing here to
-    /// measure and complete.
-    | LastFlockedDescriptorWithWaiter of description : OpenFileDescriptionId * task : 'Task
+    /// Releasing the description destroys an object in a state this kernel
+    /// has not measured.
+    | Release of DescriptionReleaseRefusal
+    /// Any descriptor onto an open file description that `task` is parked on
+    /// an `flock` of, under the Darwin flavour.
+    | DarwinFlockedDescriptorWithWaiter of description : OpenFileDescriptionId * task : 'Task
     /// The descriptor `fd`, which `task` is parked in a `poll(2)` watching.
     ///
-    /// Refused under either flavour, because this table cannot represent what
-    /// Linux does: the sleeping poll keeps the file it found open, so the file
-    /// can still wake it, and it then looks the number up again and reports
-    /// what the number names by then.
+    /// Refused under either flavour. Linux's sleeping poll keeps the file it
+    /// found, which this kernel represents, but when it wakes it looks the
+    /// number up again and reports what the number names by then, and it is
+    /// woken only by the files it found: a wake that finds nothing ready under
+    /// the number sleeps again until the next one. This kernel's wake
+    /// conditions are levels, not edges, so such a poll would be woken again
+    /// at once, for ever.
     | PolledDescriptor of fd : int * task : 'Task
-    /// The last descriptor onto a listening socket that `task` is parked in an
-    /// `accept(2)` on, under the Linux flavour.
-    | LinuxLastListenerDescriptorWithAccepter of listener : OpenFileDescriptionId * task : 'Task
     /// Any descriptor onto a listening socket that `task` is parked in an
     /// `accept(2)` on, under the Darwin flavour.
     | DarwinListenerDescriptorWithAccepter of listener : OpenFileDescriptionId * task : 'Task
-    /// The last descriptor onto a pipe end that `task` is asleep in a `read` or
-    /// `write` through, under the Linux flavour.
-    | LinuxLastPipeDescriptorWithTransfer of description : OpenFileDescriptionId * task : 'Task
     /// Any descriptor onto a pipe end that `task` is asleep in a `read` or
     /// `write` through, under the Darwin flavour.
     | DarwinPipeDescriptorWithTransfer of description : OpenFileDescriptionId * task : 'Task
@@ -200,24 +191,17 @@ module CloseRefusal =
     /// number, and what it would have to build to lift the refusal.
     let describe (refusal : CloseRefusal<'Task>) : string =
         match refusal with
-        | CloseRefusal.LinuxLastPortDescriptorWithWaiter (port, task) ->
-            $"it is the last descriptor onto socket event port %O{port}, and task %O{task} is parked in a wait on it. Measured, Linux's epoll_wait holds the port by file reference: the last close leaves the in-flight wait's registrations live, and a later edge can still complete it. Representing that needs the port to outlive its last descriptor, which this kernel's descriptor table cannot express."
         | CloseRefusal.DarwinPortDescriptorWithWaiter (port, task) ->
             $"the descriptor names socket event port %O{port}, and task %O{task} is parked in a wait on it. Measured, Darwin's kevent *ends* such a wait with an error when the fd it was entered through closes -- but which error is not measured precisely, and what a close of a *different* descriptor onto the same kqueue does is not measured at all."
-        | CloseRefusal.LastFlockedDescriptorWithWaiter (description, task) ->
-            $"the descriptor is the last one onto open file description %O{description}, and task %O{task} is parked on an `flock` of it. A real kernel's blocked `flock` holds a reference to the file, so the description outlives every descriptor onto it and the waiter is eventually granted its lock; this table has no such reference to represent, so destroying the description would either strand the waiter for ever or wake it into an EBADF no kernel produces."
+        | CloseRefusal.DarwinFlockedDescriptorWithWaiter (description, task) ->
+            $"the descriptor names open file description %O{description}, and task %O{task} is parked on an `flock` of it. Measured on Darwin (open-file-references.c section D), closing the descriptor the flock was entered through does not return until the flock has, whether or not a dup keeps the description: the close blocks until the lock is granted or a signal ends the flock. This kernel models no close that sleeps, nor which descriptor a call was entered through."
         | CloseRefusal.PolledDescriptor (fd, task) ->
-            $"task %O{task} is parked in a poll(2) watching fd %d{fd}. Measured on Linux (poll-timeout.c), the sleeping poll keeps the file it found: the close does not wake it, the closed file can still wake it (a datagram sent to a closed UDP socket's address did), and when it wakes it looks the number up again, answering POLLNVAL if the number is free and the new file's readiness if another open took the number. Representing that needs the file to outlive its descriptor while the poll sleeps, which this kernel's descriptor table cannot express."
-        | CloseRefusal.LinuxLastListenerDescriptorWithAccepter (listener, task) ->
-            $"it is the last descriptor onto the listening socket of open file description %O{listener}, and task %O{task} is parked in an accept on it. Measured on Linux (blocking-accept.c), the sleeping accept holds the file: the close does not wake it, the socket goes on listening, and a later connect completes and wakes it with a new descriptor. Representing that needs the listener to outlive its last descriptor, which this kernel's descriptor table cannot express."
+            $"task %O{task} is parked in a poll(2) watching fd %d{fd}. Measured on Linux (poll-timeout.c), the sleeping poll keeps the file it found: the close does not wake it, the closed file can still wake it (a datagram sent to a closed UDP socket's address did), and when it wakes it looks the number up again, answering POLLNVAL if the number is free and the new file's readiness if another open took the number. This kernel keeps the file alive, but a poll woken by that file and finding nothing under the number sleeps again until the file's next wake-up, an edge, where this kernel's wake conditions are levels: the poll would be woken again at once, for ever."
         | CloseRefusal.DarwinListenerDescriptorWithAccepter (listener, task) ->
             $"the descriptor names the listening socket of open file description %O{listener}, and task %O{task} is parked in an accept on it. Measured on Darwin (blocking-accept.c), closing the descriptor the accept was entered through ends it at once with ECONNABORTED, even while a dup keeps the listener open, and closing another descriptor onto it does not; this kernel models neither a close ending a sleeping call nor which descriptor a call was entered through."
-        | CloseRefusal.LinuxLastPipeDescriptorWithTransfer (description, task) ->
-            $"it is the last descriptor onto the pipe end of open file description %O{description}, and task %O{task} is asleep in a read or write through it. Measured on Linux (pipe-blocking.c section K), the sleeping call holds the file: the close does not wake it, the end stays open, and the call completes when given data or room. Representing that needs the description to outlive its last descriptor, which this kernel's descriptor table cannot express."
         | CloseRefusal.DarwinPipeDescriptorWithTransfer (description, task) ->
             $"the descriptor names the pipe end of open file description %O{description}, and task %O{task} is asleep in a read or write through it. Measured on Darwin (pipe-blocking.c section K), closing the descriptor the call sleeps through ends it at once, a read with end of file and a write with EPIPE, while closing a dup of it does not; this kernel models neither a close ending a sleeping call nor which descriptor a call was entered through."
-        | CloseRefusal.ListenerWouldResetUnacceptedClient (listener, connection, client) ->
-            $"the close destroys listening socket %O{listener} while connection %O{connection} sits unaccepted in its queue, and that connection's client (socket %O{client}) is still open. A real kernel RSTs the unaccepted client on listener close, leaving it in a state this kernel has not measured: its readiness level, and what connect(2) then answers, are both unknown, and it would otherwise be indistinguishable from a cleanly FIN'd peer."
+        | CloseRefusal.Release refusal -> DescriptionReleaseRefusal.describe refusal
 
 /// What `ioctl(fd, FIONREAD, &count)` answered.
 [<RequireQualifiedAccess>]
@@ -334,110 +318,6 @@ type private DescriptorFault =
 
 [<RequireQualifiedAccess>]
 module UnixDescriptor =
-
-    /// Every inode that must not be freed: `UnixProcessState.heldInodes`, closed under
-    /// `DirectoryContent.Parent`.
-    ///
-    /// The closure is not caution — it is measured. `rmdir` can remove a
-    /// directory something still holds, and that orphan keeps its "..": probed
-    /// on both flavours, with `a/b` and the current directory inside `b`,
-    /// `rmdir(b)` then `rmdir(a)` both succeed and `stat("..")` still answers
-    /// `a`'s inode while `stat("../..")` still answers the live grandparent's.
-    /// So a held orphan holds its whole ancestor chain, and freeing one of them
-    /// would leave a `DirectoryContent.Parent` naming an inode the graph no
-    /// longer contains.
-    ///
-    /// This is the set `VirtualFileSystem.checkInvariants` takes as `pinned`,
-    /// and the check `forgetIfUnheld` makes before freeing an inode. Ancestors
-    /// that are still reachable from the root are in it too, harmlessly: both
-    /// callers only ever ask about an inode no name reaches.
-    let pinnedInodes<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (system : UnixSystem<'Task, 'Handler>)
-        : Set<InodeNumber>
-        =
-        let rec climb (frontier : InodeNumber list) (seen : Set<InodeNumber>) : Set<InodeNumber> =
-            match frontier with
-            | [] -> seen
-            | inode :: rest ->
-                if Set.contains inode seen then
-                    climb rest seen
-                else
-
-                let seen = Set.add inode seen
-
-                match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
-                | Some (InodeContent.Directory directory) -> climb (directory.Parent :: rest) seen
-                // A file or a link records no parent, and a held inode the graph
-                // has already forgotten records nothing at all — which is a
-                // defect (`UnixSystemDefect.DanglingOpenInode`) rather than
-                // something to climb from.
-                | Some (InodeContent.RegularFile _)
-                | Some (InodeContent.Symlink _)
-                | None -> climb rest seen
-
-        climb (UnixProcessState.heldInodes system.Process |> Set.toList) Set.empty
-
-    /// Free `inode` if the filesystem no longer names it and this system holds
-    /// no reference to it — what a real kernel does once the last link and the
-    /// last descriptor have both gone.
-    ///
-    /// Total and idempotent: an inode that still has a name, that something
-    /// still holds, or that is already gone, is left exactly as it was. Call it
-    /// after anything that can drop a reference of either kind — removing a
-    /// name, and closing a descriptor — because either may be the one that
-    /// finishes the job, and which one that is cannot be known from the call
-    /// site.
-    ///
-    /// Freeing a *directory* cascades onto its recorded parent, which the
-    /// directory's ".." was the last reference to. So one call collects a whole
-    /// orphaned chain, and the caller passes only the inode whose reference it
-    /// just dropped.
-    let rec forgetIfUnheld<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (inode : InodeNumber)
-        (system : UnixSystem<'Task, 'Handler>)
-        : UnixSystem<'Task, 'Handler>
-        =
-        // The root is excluded explicitly rather than by the binding count,
-        // which is zero for it by construction: nothing holds an entry naming
-        // the root (`VirtualFileSystemDefect.RootHasIncomingLink` states that),
-        // so the count alone would free the filesystem out from under every
-        // path. A guest can reach here with it — `close(open("/"))` is an
-        // ordinary thing to do.
-        if inode = VirtualFileSystem.root system.Machine.FileSystem then
-            system
-        elif (VirtualFileSystem.tryGet inode system.Machine.FileSystem).IsNone then
-            system
-        elif VirtualFileSystem.bindingCount inode system.Machine.FileSystem <> 0 then
-            system
-        elif Set.contains inode (pinnedInodes system) then
-            system
-        else
-
-        // Read before the removal, because it is the removal that makes the
-        // parent's own reference count drop.
-        let parent =
-            match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
-            | Some (InodeContent.Directory directory) -> Some directory.Parent
-            | Some (InodeContent.RegularFile _)
-            | Some (InodeContent.Symlink _)
-            | None -> None
-
-        let freed =
-            { system with
-                Machine =
-                    { system.Machine with
-                        FileSystem = VirtualFileSystem.forget inode system.Machine.FileSystem
-                    }
-            }
-
-        // A directory freed here was the last thing holding its parent's ".."
-        // reference, so the parent may now be free in turn — the chain a held
-        // orphan kept alive is collected as soon as the last holder goes.
-        // Terminating: each step has removed one inode, and the root is refused
-        // above.
-        match parent with
-        | None -> freed
-        | Some parent -> forgetIfUnheld parent freed
 
     /// The effective user ID, as `geteuid(2)` reports it.
     ///
@@ -1123,10 +1003,12 @@ module UnixDescriptor =
     /// From the record rather than by re-issuing `flock` with the descriptor
     /// the call was made through, and not as a convenience: descriptor numbers
     /// are allocated lowest-free and reused as soon as they are freed, so a
-    /// `close` of that number elsewhere — survivable whenever a `dup` keeps the
-    /// description alive — can leave it naming a different object by the time
-    /// the lock frees. A real kernel has no such hazard: the sleeping call
-    /// holds the file. `task` must be parked in an `flock`.
+    /// `close` of that number elsewhere can leave it naming a different object
+    /// by the time the lock frees. A real kernel has no such hazard: the
+    /// sleeping call holds the file, and the park holds the description, which
+    /// outlives its last descriptor until this call returns and goes then,
+    /// taking with it any lock it was granted. `task` must be parked in an
+    /// `flock`.
     ///
     /// A grant clears the park record. `WouldBlock`, with the same condition
     /// and the task re-parked on the same record behind every other park, is
@@ -1181,7 +1063,7 @@ module UnixDescriptor =
         match Map.tryFind requester descriptions with
         | None ->
             failwith
-                $"UnixDescriptor.flockAcquire: open file description %O{requester} is not in the table, so a task parked on an flock of it has had that description closed underneath it. `close` refuses such a close precisely so that this cannot happen (this is a bug in this library, or in a caller that destroyed the description without UnixDescriptor.close)."
+                $"UnixDescriptor.flockAcquire: open file description %O{requester} is not in the table, but task %O{task} is parked on an flock of it, and a park holds its description until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
         | Some description ->
 
         match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform, description.Flock with
@@ -1200,10 +1082,19 @@ module UnixDescriptor =
                     }
             }
 
-        let finished =
-            { advanced with
-                Tasks = UnixTaskTable.unpark task advanced.Tasks
-            }
+        // The call returns: its park goes, and with it the call's reference to
+        // the description, which goes too if no descriptor names it any more
+        // (`open-file-references.c` sections D and F: the lock it was granted
+        // goes with it).
+        let finished () =
+            let unparked =
+                { advanced with
+                    Tasks = UnixTaskTable.unpark task advanced.Tasks
+                }
+
+            // A socket has one description, so no other description's lock can
+            // obstruct an `flock` of one, and such a call never sleeps.
+            ObjectLifetime.releaseUnreferencedUnrefusable "UnixDescriptor.flockAcquire" [ requester ] unparked
 
         match error with
         | Some FlockError.BadFd ->
@@ -1215,8 +1106,8 @@ module UnixDescriptor =
             match SyscallInterruption.ofPark task advanced with
             | Error refusal -> Error (FLockRefusal.Interruption refusal)
             | Ok (Some SyscallInterruption.Eintr) ->
-                Ok (SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.EINTR), finished)
-            | Ok (Some SyscallInterruption.Restart) -> Ok (SyscallOutcome.Restarts, finished)
+                Ok (SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.EINTR), finished ())
+            | Ok (Some SyscallInterruption.Restart) -> Ok (SyscallOutcome.Restarts, finished ())
             | Ok None ->
                 // Beaten: the waiter sleeps again on the same record, re-queued behind
                 // every park already made, as a real kernel re-queues it.
@@ -1234,7 +1125,7 @@ module UnixDescriptor =
             // answers whichever came first, which `beforeCompleting` refuses.
             match SyscallInterruption.beforeCompleting task advanced with
             | Error refusal -> Error (FLockRefusal.Interruption refusal)
-            | Ok () -> Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), finished)
+            | Ok () -> Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), finished ())
 
     /// `ioctl(fd, FIONREAD, &count)`: how many bytes a read of the pipe end `fd`
     /// names could take now, written into the caller's `int` at `destination`.
@@ -1395,15 +1286,23 @@ module UnixDescriptor =
 
         TerminalAttributesAnswer.NotATerminal error
 
-    /// `close(2)`: drop `fd` from the process's table, together with the kernel
-    /// objects the description it named was the last reference to — the socket,
-    /// the connections nothing else references, and the inode whose last name
-    /// had already gone.
+    /// `close(2)`: drop `fd` from the process's table, together with the
+    /// description it named if nothing references that any more, and the kernel
+    /// objects the description was the last reference to — the socket, the
+    /// connections nothing else references, the pipe, and the inode whose last
+    /// name had already gone.
     ///
-    /// `FileDescriptorRegistry.dropDescriptor` cannot do this itself: the socket table is
-    /// the machine's rather than the process's, and whether an inode is still
-    /// named is a question about the filesystem. Closing one of several
-    /// descriptors onto a description destroys nothing, and so frees neither.
+    /// A description is referenced by every descriptor naming it and by every
+    /// syscall in flight that holds it (`ParkedSyscall.descriptions`), as a
+    /// real kernel holds a file for a call that sleeps on it. So under Linux a
+    /// close under a sleeping call is served, and the call sleeps on: the
+    /// description goes when the call returns, which is when its finishing call
+    /// releases it.
+    ///
+    /// `FileDescriptorRegistry.dropDescriptor` cannot do this itself: the
+    /// socket table is the machine's rather than the process's, whether an
+    /// inode is still named is a question about the filesystem, and what a
+    /// sleeping call holds is the task table's.
     ///
     /// EBADF is its only errno; see `CloseRefusal` for the inputs it declines
     /// to answer at all.
@@ -1412,175 +1311,52 @@ module UnixDescriptor =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, CloseRefusal<'Task>>
         =
-        // Resolved before the close so both port refusals below can name what the
-        // fd referred to.
-        let closing = FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors
+        match FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors with
+        | None -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
+        | Some (closingId, closing) ->
 
-        match FileDescriptorRegistry.dropDescriptor fd system.Process.FileDescriptors with
-        | Error FileDescriptorCloseError.BadFd -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
-        | Ok (registry, destroyed) ->
-
-        // Closing a descriptor onto a port with a task parked in a wait on it is
-        // where the flavours part, and each side is measured (by
-        // SocketEventWaitSurvivesCloseLinux.cs in this repository's tests, and
-        // its macOS run):
-        //
-        //   * Linux's epoll_wait holds the port by file reference — a close that
-        //     leaves a dup changes nothing, and even the last close leaves the
-        //     in-flight syscall's registrations alive for a later edge to
-        //     complete. The dup case is modelled (the description survives and
-        //     the wait completes); the last-close case would need retention this
-        //     table does not represent, so it refuses.
-        //   * Darwin's kevent *ends* with an error when the fd it was entered
-        //     through closes (measured; which error, and what a close of a
-        //     different descriptor onto the same kqueue does, are not), so any
-        //     such close refuses.
-        //
-        // Checked against the parked-wait record rather than a task's run state,
-        // so the window between a wake and the woken task's re-entry is covered
-        // too.
-        let portRefusal : CloseRefusal<'Task> option =
-            match closing with
-            | None -> None
-            | Some (closingId, description) ->
-
-            match description.Target with
-            | OpenFileTarget.File _
-            | OpenFileTarget.Directory _
-            | OpenFileTarget.Socket _
-            | OpenFileTarget.Pipe _ -> None
-            | OpenFileTarget.SocketEventPort _ ->
-
-            let waiter =
-                system.Tasks
-                |> Map.tryPick (fun task state ->
-                    match state.Parked |> Option.map (fun park -> park.Syscall) with
-                    | Some (ParkedSyscall.SocketWait wait) when wait.Port = closingId -> Some task
-                    | Some _
-                    | None -> None
-                )
-
-            match waiter with
-            | None -> None
-            | Some task ->
-                match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
-                | SimulatedUnixFlavour.Linux ->
-                    if destroyed.IsSome then
-                        Some (CloseRefusal.LinuxLastPortDescriptorWithWaiter (closingId, task))
-                    else
-                        None
-                | SimulatedUnixFlavour.Darwin -> Some (CloseRefusal.DarwinPortDescriptorWithWaiter (closingId, task))
-
-        match portRefusal with
-        | Some refusal -> Error refusal
-        | None ->
-
-        // The same question for a listening socket with a task parked in
-        // `accept` on it, and each side is measured (`blocking-accept.c`,
-        // section C): Linux's accept holds the file, so a close that leaves
-        // another descriptor changes nothing and the last close leaves the
-        // socket listening under the sleeping call, which this table cannot
-        // represent; Darwin's ends with ECONNABORTED when the descriptor it was
-        // entered through closes, which it models no way to deliver.
-        let accepterRefusal : CloseRefusal<'Task> option =
-            match closing with
-            | None -> None
-            | Some (closingId, _) ->
-
-            let accepter =
-                system.Tasks
-                |> Map.tryPick (fun task state ->
-                    match state.Parked |> Option.map (fun park -> park.Syscall) with
-                    | Some (ParkedSyscall.Accept accept) when accept.Listener = closingId -> Some task
-                    | Some _
-                    | None -> None
-                )
-
-            match accepter with
-            | None -> None
-            | Some task ->
-                match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
-                | SimulatedUnixFlavour.Linux ->
-                    if destroyed.IsSome then
-                        Some (CloseRefusal.LinuxLastListenerDescriptorWithAccepter (closingId, task))
-                    else
-                        None
-                | SimulatedUnixFlavour.Darwin ->
-                    Some (CloseRefusal.DarwinListenerDescriptorWithAccepter (closingId, task))
-
-        match accepterRefusal with
-        | Some refusal -> Error refusal
-        | None ->
-
-        // The same question for a pipe end with a task asleep in a transfer
-        // through it, measured (`pipe-blocking.c`, section K) to part the
-        // flavours as accept does: Linux's sleeping call holds the file, so a
-        // close that leaves another descriptor changes nothing and the last
-        // close leaves the end open under the call, which this table cannot
-        // represent; Darwin's ends at once when the descriptor it sleeps
-        // through closes, which it models no way to deliver.
-        let transferRefusal : CloseRefusal<'Task> option =
-            match closing with
-            | None -> None
-            | Some (closingId, _) ->
-
-            let sleeper =
-                system.Tasks
-                |> Map.tryPick (fun task state ->
-                    match state.Parked |> Option.map (fun park -> park.Syscall) with
-                    | Some (ParkedSyscall.PipeRead read) when read.Reader = closingId -> Some task
-                    | Some (ParkedSyscall.PipeWrite write) when write.Writer = closingId -> Some task
-                    | Some _
-                    | None -> None
-                )
-
-            match sleeper with
-            | None -> None
-            | Some task ->
-                match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
-                | SimulatedUnixFlavour.Linux ->
-                    if destroyed.IsSome then
-                        Some (CloseRefusal.LinuxLastPipeDescriptorWithTransfer (closingId, task))
-                    else
-                        None
-                | SimulatedUnixFlavour.Darwin -> Some (CloseRefusal.DarwinPipeDescriptorWithTransfer (closingId, task))
-
-        match transferRefusal with
-        | Some refusal -> Error refusal
-        | None ->
-
-        // The same question for a lock rather than a port, and the reason
-        // `WakeCondition.satisfied` may treat a vanished description as a
-        // broken precondition rather than as something to answer.
-        //
-        // Two ladders over one park record rather than one ladder, because they
-        // ask different questions of different things: this one fires only on a
-        // close that destroys the description and does not care what kind of
-        // object it names, where the port one is gated on the object being a
-        // port and fires on any Darwin close. A description can in principle
-        // match both — nothing on Linux refuses an `flock` of a port descriptor,
-        // so one description can hold a lock and carry a waiter — in which case
-        // the port refusal above wins and this one is never named. Either way it
-        // is a refusal, so the shadowing costs only which message is reported.
-        let flockRefusal : CloseRefusal<'Task> option =
-            match destroyed with
-            | None -> None
-            | Some _ ->
-
-            match closing with
-            | None -> None
-            | Some (closingId, _) ->
-
+        let parks =
             system.Tasks
-            |> Map.tryPick (fun task state ->
-                match state.Parked |> Option.map (fun park -> park.Syscall) with
-                | Some (ParkedSyscall.Flock parked) when parked.Requester = closingId ->
-                    Some (CloseRefusal.LastFlockedDescriptorWithWaiter (closingId, task))
-                | Some _
-                | None -> None
-            )
+            |> Map.toList
+            |> List.choose (fun (task, state) -> state.Parked |> Option.map (fun park -> task, park.Syscall))
 
-        match flockRefusal with
+        // Under Darwin, a close of the descriptor a sleeping call was entered
+        // through ends the call (kevent, accept, a pipe transfer), or itself
+        // waits until the call has returned (flock), and the park does not
+        // record which descriptor that was, so any close onto the description
+        // refuses. Each is measured: `SocketEventWaitSurvivesCloseLinux.cs`'s
+        // macOS run, `blocking-accept.c` section C, `pipe-blocking.c` section K
+        // and `open-file-references.c` section D.
+        //
+        // Checked against the park record rather than a task's run state, so
+        // the window between a wake and the woken task's re-entry is covered
+        // too.
+        let darwinRefusal : CloseRefusal<'Task> option =
+            match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+            | SimulatedUnixFlavour.Linux -> None
+            | SimulatedUnixFlavour.Darwin ->
+                parks
+                |> List.tryPick (fun (task, parked) ->
+                    match parked with
+                    | ParkedSyscall.SocketWait wait when wait.Port = closingId ->
+                        Some (CloseRefusal.DarwinPortDescriptorWithWaiter (closingId, task))
+                    | ParkedSyscall.Accept accept when accept.Listener = closingId ->
+                        Some (CloseRefusal.DarwinListenerDescriptorWithAccepter (closingId, task))
+                    | ParkedSyscall.PipeRead read when read.Reader = closingId ->
+                        Some (CloseRefusal.DarwinPipeDescriptorWithTransfer (closingId, task))
+                    | ParkedSyscall.PipeWrite write when write.Writer = closingId ->
+                        Some (CloseRefusal.DarwinPipeDescriptorWithTransfer (closingId, task))
+                    | ParkedSyscall.Flock parked when parked.Requester = closingId ->
+                        Some (CloseRefusal.DarwinFlockedDescriptorWithWaiter (closingId, task))
+                    | ParkedSyscall.SocketWait _
+                    | ParkedSyscall.Accept _
+                    | ParkedSyscall.PipeRead _
+                    | ParkedSyscall.PipeWrite _
+                    | ParkedSyscall.Flock _
+                    | ParkedSyscall.Poll _ -> None
+                )
+
+        match darwinRefusal with
         | Some refusal -> Error refusal
         | None ->
 
@@ -1588,10 +1364,10 @@ module UnixDescriptor =
         // closing one it watches changes what it reports -- by number, not by
         // description, so a `dup` keeping the description alive does not help.
         let pollRefusal : CloseRefusal<'Task> option =
-            system.Tasks
-            |> Map.tryPick (fun task state ->
-                match state.Parked |> Option.map (fun park -> park.Syscall) with
-                | Some (ParkedSyscall.Poll parked) ->
+            parks
+            |> List.tryPick (fun (task, parked) ->
+                match parked with
+                | ParkedSyscall.Poll parked ->
                     let watches =
                         parked.Entries
                         |> List.exists (fun entry ->
@@ -1604,207 +1380,41 @@ module UnixDescriptor =
                         Some (CloseRefusal.PolledDescriptor (fd, task))
                     else
                         None
-                | Some (ParkedSyscall.Flock _)
-                | Some (ParkedSyscall.SocketWait _)
-                | Some (ParkedSyscall.Accept _)
-                | Some (ParkedSyscall.PipeRead _)
-                | Some (ParkedSyscall.PipeWrite _)
-                | None -> None
+                | ParkedSyscall.Flock _
+                | ParkedSyscall.SocketWait _
+                | ParkedSyscall.Accept _
+                | ParkedSyscall.PipeRead _
+                | ParkedSyscall.PipeWrite _ -> None
             )
 
         match pollRefusal with
         | Some refusal -> Error refusal
         | None ->
 
-        let socketEffects
-            : Result<
-                  Map<SocketId, SocketDescription> * Map<ConnectionId, TcpConnection> * SocketId list,
-                  CloseRefusal<'Task>
-               > =
-            match destroyed with
-            | None -> Ok (system.Machine.Sockets, system.Machine.Connections, [])
-            | Some description ->
-
-            match description.Target with
-            | OpenFileTarget.SocketEventPort _
-            | OpenFileTarget.File _
-            | OpenFileTarget.Directory _
-            | OpenFileTarget.Pipe _ -> Ok (system.Machine.Sockets, system.Machine.Connections, [])
-            | OpenFileTarget.Socket socketId ->
-
-            let dying =
-                match Map.tryFind socketId system.Machine.Sockets with
-                | Some socket -> socket
-                | None ->
-                    failwith
-                        $"UnixDescriptor.close: fd %d{fd}'s description names socket %O{socketId}, which this system's socket table does not hold. Closing is the only operation here that removes a socket, and it removes it together with the description that named it, so a live descriptor onto an absent socket means the two tables were built out of step. There is nothing to repair it with: the objects this close would have released cannot be found (this is a bug in this library or in whatever assembled this system)."
-
-            let sockets = Map.remove socketId system.Machine.Sockets
-
-            // A connection lives while any socket phase or accept queue
-            // references it. The dying socket may have been the last such
-            // reference — directly, or by being the listener whose queue held it
-            // (the queue dies with the listener, as Linux's
-            // inet_csk_listen_stop discards a closed listener's accept queue).
-            let candidates =
-                match dying.Phase with
-                | SocketPhase.Established connection
-                | SocketPhase.EstablishedPendingReport connection -> [ connection ]
-                | SocketPhase.Listening listenState -> listenState.Queue
-                | SocketPhase.Idle
-                | SocketPhase.Refused _
-                | SocketPhase.DatagramPeer _ -> []
-
-            let stillReferenced (connection : ConnectionId) : bool =
-                sockets
-                |> Map.exists (fun _ survivor ->
-                    match survivor.Phase with
-                    | SocketPhase.Established c
-                    | SocketPhase.EstablishedPendingReport c -> c = connection
-                    | SocketPhase.Listening listenState -> List.contains connection listenState.Queue
-                    | SocketPhase.Idle
-                    | SocketPhase.Refused _
-                    | SocketPhase.DatagramPeer _ -> false
-                )
-
-            // What this close does to the sockets sharing the dying socket's
-            // connections splits by which end is dying. The peer of an
-            // established pair sees the FIN: its level becomes the measured
-            // half-closed IN|OUT|RDHUP and the driver signals it (`order3.c` row
-            // Q) — collected here and signalled below, once the socket table
-            // reflects the close, so the level the signal filters against is the
-            // survivor's new one. A dying *listener* instead RSTs its unaccepted
-            // queue entries' clients, whose resulting level is unmeasured — that
-            // case refuses when a registration could observe it, and an RST
-            // raises ERR, which no interest mask can hide, so any registration
-            // could.
-            let establishedSurvivors : Result<SocketId list, CloseRefusal<'Task>> =
-                match dying.Phase with
-                | SocketPhase.Established _
-                | SocketPhase.EstablishedPendingReport _ ->
-                    sockets
-                    |> Map.toList
-                    |> List.choose (fun (survivorId, survivor) ->
-                        match survivor.Phase with
-                        | SocketPhase.Established c
-                        | SocketPhase.EstablishedPendingReport c when List.contains c candidates -> Some survivorId
-                        | _ -> None
-                    )
-                    |> Ok
-                | SocketPhase.Listening _ ->
-                    // The first candidate with a live client, which is the one
-                    // the old `for`-and-crash reported.
-                    let refusal =
-                        candidates
-                        |> List.tryPick (fun candidate ->
-                            sockets
-                            |> Map.toSeq
-                            |> Seq.filter (fun (_, survivor) ->
-                                match survivor.Phase with
-                                | SocketPhase.Established c
-                                | SocketPhase.EstablishedPendingReport c -> c = candidate
-                                | SocketPhase.Listening _
-                                | SocketPhase.Idle
-                                | SocketPhase.Refused _
-                                | SocketPhase.DatagramPeer _ -> false
-                            )
-                            |> Seq.map fst
-                            |> Seq.tryHead
-                            |> Option.map (fun survivor ->
-                                CloseRefusal.ListenerWouldResetUnacceptedClient (socketId, candidate, survivor)
-                            )
-                        )
-
-                    match refusal with
-                    | Some refusal -> Error refusal
-                    | None -> Ok []
-                | SocketPhase.Idle
-                | SocketPhase.Refused _
-                | SocketPhase.DatagramPeer _ -> Ok []
-
-            match establishedSurvivors with
-            | Error refusal -> Error refusal
-            | Ok establishedSurvivors ->
-
-            let connections =
-                (system.Machine.Connections, candidates)
-                ||> List.fold (fun connections connection ->
-                    if stillReferenced connection then
-                        connections
-                    else
-                        Map.remove connection connections
-                )
-
-            Ok (sockets, connections, establishedSurvivors)
-
-        match socketEffects with
-        | Error refusal -> Error refusal
-        | Ok (sockets, connections, establishedSurvivors) ->
+        let registry, destroyed =
+            match
+                FileDescriptorRegistry.dropDescriptor
+                    fd
+                    (ObjectLifetime.heldByCalls system.Tasks)
+                    system.Process.FileDescriptors
+            with
+            | Ok dropped -> dropped
+            | Error FileDescriptorCloseError.BadFd ->
+                failwith
+                    $"UnixDescriptor.close: fd %d{fd} named open file description %O{closingId} (%A{closing.Target}) a moment ago, and the registry now calls it a bad descriptor (this is a bug in this library)."
 
         let closed =
             { system with
-                Machine =
-                    { system.Machine with
-                        Sockets = sockets
-                        Connections = connections
-                    }
                 Process =
                     { system.Process with
                         FileDescriptors = registry
                     }
             }
 
-        // The FIN's edge, raised now that the survivor's level is the
-        // half-closed one. The signal filters by each registration's interest,
-        // so a survivor nobody watches — or one watched only for conditions the
-        // half-closed level does not meet — records nothing.
-        let closed =
-            (closed, establishedSurvivors)
-            ||> List.fold (fun system survivor ->
-                { system with
-                    Process = UnixProcessState.signalSocketStateChange survivor system.Process
-                }
-            )
+        match destroyed with
+        | None -> Ok (SyscallAnswer.Completed 0L, closed)
+        | Some destroyed ->
 
-        // The close may have been the last reference to an inode whose last name
-        // went away earlier, which is what keeps `read` on an unlinked descriptor
-        // working right up until the descriptor goes. Reaped against the *closed*
-        // system, so this description no longer counts as holding it.
-        let reaped =
-            match destroyed with
-            | None -> closed
-            | Some description ->
-
-            match description.Target with
-            | OpenFileTarget.File (inode, _)
-            | OpenFileTarget.Directory (inode, _) -> forgetIfUnheld inode closed
-            | OpenFileTarget.Pipe (pipeId, _) ->
-                // The pipe goes when neither end is open any more: it is the
-                // last description onto either end that frees it, not the last
-                // onto both.
-                // An end the client holds stays open whatever the process
-                // closes, so a launched pipe the client drains outlives the
-                // process's last descriptor onto it. A client asleep in a write
-                // does not: once no reader is left its write fails, and it
-                // closes its end.
-                let pipe = UnixMachineState.pipe pipeId closed.Machine
-                let readable = UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Read closed.Process
-
-                let pipe = if readable then pipe else PipeState.readEndClosed pipe
-
-                if
-                    readable
-                    || UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Write closed.Process
-                then
-                    closed
-                else
-                    { closed with
-                        Machine =
-                            { closed.Machine with
-                                Pipes = Map.remove pipeId closed.Machine.Pipes
-                            }
-                    }
-            | OpenFileTarget.SocketEventPort _
-            | OpenFileTarget.Socket _ -> closed
-
-        Ok (SyscallAnswer.Completed 0L, reaped)
+        match ObjectLifetime.releaseDestroyed destroyed closed with
+        | Error refusal -> Error (CloseRefusal.Release refusal)
+        | Ok released -> Ok (SyscallAnswer.Completed 0L, released)

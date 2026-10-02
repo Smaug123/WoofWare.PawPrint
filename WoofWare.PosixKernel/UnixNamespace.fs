@@ -1246,7 +1246,7 @@ module UnixNamespace =
         // last one closes.
         Ok (
             SyscallAnswer.Completed 0L,
-            UnixDescriptor.forgetIfUnheld
+            ObjectLifetime.forgetIfUnheld
                 target
                 { system with
                     Machine =
@@ -1316,7 +1316,7 @@ module UnixNamespace =
         // keeping alive.
         Ok (
             SyscallAnswer.Completed 0L,
-            UnixDescriptor.forgetIfUnheld
+            ObjectLifetime.forgetIfUnheld
                 target
                 { system with
                     Machine =
@@ -1556,7 +1556,7 @@ module UnixNamespace =
             SyscallAnswer.Completed 0L,
             match outcome.Displaced with
             | None -> moved
-            | Some displaced -> UnixDescriptor.forgetIfUnheld displaced moved
+            | Some displaced -> ObjectLifetime.forgetIfUnheld displaced moved
         )
 
     /// `rename(2)` in one call, for a caller holding both pathnames already —

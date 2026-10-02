@@ -500,7 +500,7 @@ module TestSocketTable =
                                             FileSystem = filesystem
                                         }
                                 }
-                                |> UnixDescriptor.forgetIfUnheld inode
+                                |> ObjectLifetime.forgetIfUnheld inode
 
                             observedUnlinks <- observedUnlinks + 1
 
@@ -553,7 +553,7 @@ module TestSocketTable =
                 FileDescriptorRegistry.checkInvariants kernel.Process.FileDescriptors
                 |> shouldEqual []
 
-                VirtualFileSystem.checkInvariants (UnixDescriptor.pinnedInodes kernel) kernel.Machine.FileSystem
+                VirtualFileSystem.checkInvariants (ObjectLifetime.pinnedInodes kernel) kernel.Machine.FileSystem
                 |> shouldEqual []
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen genWalkSeed) property)

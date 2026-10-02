@@ -165,10 +165,15 @@ type UnixSystemDefect<'Task> =
     | DuplicateSocketEventRegistrationOrdinal of registeredAt : int64
     /// A task is parked on an open file description the table does not hold,
     /// so its wait can never be satisfied, and asking `WakeCondition.satisfied`
-    /// about it crashes. `close` refuses to destroy a description a task is
-    /// parked on, so this is a park recorded without one or a close made
-    /// around it.
+    /// about it crashes. A park holds what it names until the call returns, so
+    /// this is a park recorded without the description, or one destroyed
+    /// without the park being consulted.
     | ParkedOnAbsentDescription of task : 'Task * description : OpenFileDescriptionId
+    /// An open file description survives that no descriptor names and no
+    /// syscall in flight holds (`ParkedSyscall.descriptions`). A real kernel
+    /// frees a file when its last reference goes, so this is a leak: a close,
+    /// or the return of a call that held it, failed to release it.
+    | UnreferencedDescription of description : OpenFileDescriptionId
     /// A task is parked in a socket-event wait on a description that is not a
     /// socket event port, which no wait could have produced and which
     /// `SocketEventPort.hasDeliverableEvent` crashes on.
@@ -518,7 +523,8 @@ module UnixSystem =
     /// device against the platform, the connection table against the sockets
     /// that reference it, the descriptor table against the filesystem, the
     /// current directory against both, each task's park against the descriptor
-    /// table, the signal state against the task table, and the machine's
+    /// table and each description against the descriptors and parks that
+    /// reference it, the signal state against the task table, and the machine's
     /// filesystem type and buffer check and the process's supplementary groups
     /// and file-mode creation mask against its platform.
     ///
@@ -527,7 +533,7 @@ module UnixSystem =
     /// `VirtualFileSystem.checkInvariants` for the filesystem. The latter takes
     /// a `pinned` argument, which is what `pinnedInodes` computes, so a caller
     /// wanting the whole picture pairs this with
-    /// `VirtualFileSystem.checkInvariants (UnixDescriptor.pinnedInodes system) system.Machine.FileSystem`.
+    /// `VirtualFileSystem.checkInvariants (ObjectLifetime.pinnedInodes system) system.Machine.FileSystem`.
     ///
     /// A client that holds its own references into these tables owes its own
     /// rules about them on top of these.
@@ -711,9 +717,9 @@ module UnixSystem =
             |> List.map (fun (registeredAt, _) -> UnixSystemDefect.DuplicateSocketEventRegistrationOrdinal registeredAt)
 
         // Each task's park against the descriptor table. A park names what the
-        // task waits on, and the wake reads the description back; `close`
-        // refuses to destroy one a task is parked on, so an absent one was
-        // parked on without going through the syscall or closed around it.
+        // task waits on, and the wake reads the description back; the park
+        // holds it until the call returns, so an absent one was parked on
+        // without going through the syscall or destroyed around it.
         let parks =
             let descriptions =
                 FileDescriptorRegistry.descriptions system.Process.FileDescriptors
@@ -828,6 +834,23 @@ module UnixSystem =
 
                     progress @ target
             )
+
+        // Every description is referenced: by a descriptor, or by a call in
+        // flight that holds it.
+        let unreferencedDescriptions =
+            let named =
+                FileDescriptorRegistry.fds system.Process.FileDescriptors
+                |> Map.toSeq
+                |> Seq.map snd
+                |> Set.ofSeq
+
+            let held = ObjectLifetime.heldByCalls system.Tasks
+
+            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+            |> Map.toList
+            |> List.map fst
+            |> List.filter (fun id -> not (Set.contains id named) && not (Set.contains id held))
+            |> List.map UnixSystemDefect.UnreferencedDescription
 
         let parkOrdinals =
             system.Tasks
@@ -1168,6 +1191,7 @@ module UnixSystem =
         @ ordinalFreshness
         @ ordinalDuplicates
         @ parks
+        @ unreferencedDescriptions
         @ parkOrdinalFreshness
         @ parkOrdinalDuplicates
         @ bindings
