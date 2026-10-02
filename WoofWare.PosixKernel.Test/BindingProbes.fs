@@ -143,16 +143,19 @@ module BindingProbes =
     /// What the model answers to `call`: its errno, or `None` for success.
     let runModel (call : BindingProbeCall) (system : UnixSystem<int, string>) : UnixError option =
         match call with
-        | BindingProbeCall.Mkdir path -> UnixNamespace.mkdir (rooted path) 0o777 system |> fst |> ofAnswer
+        | BindingProbeCall.Mkdir path ->
+            UnixNamespace.mkdir (PathArg.ofPath (rooted path)) 0o777 system
+            |> fst
+            |> ofAnswer
         | BindingProbeCall.OpenCreate path -> Answered.openPath creating (rooted path) 0o666 system |> fst |> ofAnswer
         | BindingProbeCall.OpenRead path -> Answered.openPath reading (rooted path) 0 system |> fst |> ofAnswer
         | BindingProbeCall.Exists path ->
-            match UnixPathResolution.stat SymlinkPolicy.Follow (rooted path) system with
+            match UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofPath (rooted path)) system with
             | Ok (FileStatusAnswer.Reported _) -> None
             | Ok (FileStatusAnswer.Failed error) -> Some error
             | Error refusal -> failwith $"stat refused: %s{StatRefusal.describe refusal}"
         | BindingProbeCall.ReadLink path ->
-            match UnixNamespace.readlink (rooted path) UserBuffer.Mapped 8192 system with
+            match UnixNamespace.readlink (PathArg.ofPath (rooted path)) UserBuffer.Mapped 8192 system with
             | Ok (ReadLinkAnswer.Reported _) -> None
             | Ok (ReadLinkAnswer.Failed error) -> Some error
             | Error refusal -> failwith $"readlink refused its buffer: %A{refusal}"
@@ -160,7 +163,7 @@ module BindingProbes =
         | BindingProbeCall.RmDir path -> Answered.rmdir (rooted path) system |> fst |> ofAnswer
         | BindingProbeCall.Rename (source, destination) ->
             let argument (path : byte list) =
-                PathArgumentBytes.Bytes (ImmutableArray.CreateRange (UnixPathText.separatorByte :: path))
+                PathArg.ofBytes (UnixPathText.separatorByte :: path)
 
             match UnixNamespace.rename (argument source) (argument destination) system with
             | Ok (answer, _) -> ofAnswer answer

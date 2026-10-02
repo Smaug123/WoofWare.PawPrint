@@ -266,7 +266,9 @@ module TestUmask =
         }
 
     let private created (p : string) (system : UnixSystem<int, string>) : int =
-        match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (UnixPath.parseOrFail context p) system with
+        match
+            UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (PathArg.ofPath (UnixPath.parseOrFail context p)) system
+        with
         | Ok (FileStatusAnswer.Reported status) -> status.Mode &&& 0o7777
         | other -> failwith $"%s{p}: %A{other}"
 
@@ -304,7 +306,7 @@ module TestUmask =
                         failwith
                             $"%O{platform}: umask(0o%04o{mask}), open(0o%04o{requested}) created 0o%04o{opened}, measured 0o%04o{expectedOpen}"
 
-                    match UnixNamespace.mkdir target requested system with
+                    match UnixNamespace.mkdir (PathArg.ofPath target) requested system with
                     | SyscallAnswer.Completed _, afterMkdir ->
                         let made = created "/e" afterMkdir
                         let expectedMkdir = requested &&& mkdirMask platform &&& ~~~stored

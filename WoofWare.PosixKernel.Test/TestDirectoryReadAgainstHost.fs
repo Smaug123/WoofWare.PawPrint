@@ -242,7 +242,7 @@ module TestDirectoryReadAgainstHost =
         | SyscallAnswer.Failed error -> failwith $"model %s{what} failed with %O{error}"
 
     let private modelInode (path : string) (system : UnixSystem<int, string>) : InodeNumber =
-        match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (rooted path) system with
+        match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (PathArg.ofPath (rooted path)) system with
         | Ok (FileStatusAnswer.Reported status) -> status.Inode
         | other -> failwith $"model stat %s{path}: %A{other}"
 
@@ -309,7 +309,9 @@ module TestDirectoryReadAgainstHost =
                         UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
                     let system =
-                        UnixNamespace.mkdir (rooted "d") 0o755 system |> completed "mkdir d" |> snd
+                        UnixNamespace.mkdir (PathArg.ofPath (rooted "d")) 0o755 system
+                        |> completed "mkdir d"
+                        |> snd
 
                     let system =
                         (system, entries)
@@ -318,7 +320,7 @@ module TestDirectoryReadAgainstHost =
                                 hostMkdir (Path.Combine (hostD, name), 0o755u)
                                 |> hostSucceeded $"mkdir %s{name}"
 
-                                UnixNamespace.mkdir (rooted $"d/%s{name}") 0o755 system
+                                UnixNamespace.mkdir (PathArg.ofPath (rooted $"d/%s{name}")) 0o755 system
                                 |> completed $"mkdir %s{name}"
                                 |> snd
                             else

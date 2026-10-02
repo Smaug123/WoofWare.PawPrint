@@ -290,12 +290,10 @@ type PathArgument =
     /// The entry point returns its failure sentinel, and the caller stores
     /// `error` wherever its libc keeps errno.
     ///
-    /// This is what `getname()` reports, so it is `ENAMETOOLONG` — the only way
-    /// a pathname's *bytes* can be wrong, everything else being a question about
-    /// what they resolve to — or `EFAULT`, when the caller could not read the
-    /// bytes at all. `PathArgument.parse` produces only the former, having been
-    /// handed bytes already; a caller reading them out of a guest's memory
-    /// produces the latter itself.
+    /// This is what `getname()` reports: `EFAULT`, when the bytes could not be
+    /// read at all, or `ENAMETOOLONG`, when they hold no NUL within `PATH_MAX`
+    /// bytes. Those are the only ways a pathname's *bytes* can be wrong,
+    /// everything else being a question about what they resolve to.
     ///
     /// Which one it is never changes where the failure surfaces. Measured on
     /// both kernels: with a source that does not exist, an unreadable
@@ -308,80 +306,39 @@ type PathArgument =
 /// The bytes of a pathname argument as the caller found them, before anything
 /// has decided what they say.
 ///
-/// Distinct from `PathArgument`, which is what the bytes turned out to *mean*.
-/// The two are separate because a syscall taking more than one pathname copies
-/// them in at measured points and may never reach the second: `rename` on
-/// Darwin resolves its source completely first, so a caller that decoded both up
-/// front would refuse a pathname the kernel never looked at.
+/// Every syscall here that takes a pathname takes one of these, and copies it
+/// in itself at the point its kernel does: some screen another argument first,
+/// and a syscall taking two pathnames may never reach the second.
 [<RequireQualifiedAccess>]
 type PathArgumentBytes =
     /// The caller could not read the pathname at all, which is EFAULT wherever
     /// the kernel gets round to copying it in.
     | Unreadable
-    /// The pathname's bytes **without a NUL terminator**, as `PathArgument.parse`
-    /// takes them. A NUL among them is one the kernel could never have been
-    /// handed -- a C string ends at its first NUL -- and `PathArgument.parse`
-    /// refuses it.
-    | Bytes of bytes : ImmutableArray<byte>
-
-/// <summary>
-/// Why this kernel cannot say what a path argument names.
-/// </summary>
-/// <remarks>
-/// This indicates a bug in the caller: no guest can hand a kernel such bytes.
-/// </remarks>
-[<RequireQualifiedAccess>]
-type PathArgumentRefusal =
-    /// The bytes hold a NUL at `offset`. A kernel receives a pathname as a C
-    /// string, which ends at its first NUL, so bytes carrying one are not a
-    /// pathname any kernel was ever handed: the caller read past the end of
-    /// the string, or built the bytes from something that was never one.
-    | InteriorNul of offset : int
+    /// The pathname's bytes, without the NUL that ends them: read up to the
+    /// NUL, or up to `PathLimits.pathMaxBytes` bytes if there is none that
+    /// soon. A kernel stops looking there, and answers ENAMETOOLONG for a
+    /// pathname with no NUL within that many bytes.
+    | Bytes of bytes : UnixByteString
 
 [<RequireQualifiedAccess>]
 module PathArgument =
 
-    /// <summary>
-    /// What path the kernel would look up, given the bytes of a path argument.
-    /// </summary>
-    /// <example>
-    /// Both arguments to <c>rename(2)</c> undergo this parsing.
-    /// </example>
-    /// <returns>
-    /// <c>Error(PathArgumentRefusal)</c> if the bytes are not a C string at all.
-    /// <c>Ok(Failed)</c> if the path is valid to pass to the kernel, but fails the <c>limits</c>.
-    /// <c>Ok(Parsed)</c> if the parse was successful.
-    /// </returns>
-    /// <param name="limits">
-    /// The emulated kernel's path-limits behaviour; use <c>SimulatedUnixPlatform.pathLimits</c>
-    /// to obtain this.
-    /// </param>
-    /// <param name="bytes">
-    /// The path argument, without its NUL terminator.
-    /// If it holds a NUL, we return a refusal.
-    /// </param>
-    let parse (limits : PathLimits) (bytes : ImmutableArray<byte>) : Result<PathArgument, PathArgumentRefusal> =
+    /// What path the kernel would look up, given a syscall's path argument:
+    /// what `getname()` answers when it copies the argument in. `limits` is the
+    /// kernel's, from `SimulatedUnixPlatform.pathLimits`.
+    let copyIn (limits : PathLimits) (argument : PathArgumentBytes) : PathArgument =
         // A forged `PathLimits` has a `PathMaxBytes` of zero, which is not very
         // helpful but is modelled; reject it.
-        let limits = PathLimits.assertValid "PathArgument.parse" limits
+        let limits = PathLimits.assertValid "PathArgument.copyIn" limits
 
-        // `ImmutableArray` is a struct wrapping an array, so `default` carries a
-        // null one and would throw on the `Length` read below rather than at the
-        // point the mistake was made.
-        if bytes.IsDefault then
-            failwith
-                "PathArgument.parse: bytes is the default ImmutableArray, whose underlying array is null. That is not an empty path; pass ImmutableArray<byte>.Empty."
-
-        // Before the length: a NUL says the bytes are not the C string the
-        // kernel would have copied in, so no rule about that string applies.
-        match UnixByteString.ofBytes bytes with
-        | Error (UnixByteStringDefect.ContainsNul offset) -> Error (PathArgumentRefusal.InteriorNul offset)
-        | Ok path ->
+        match argument with
+        | PathArgumentBytes.Unreadable -> PathArgument.Failed UnixError.EFAULT
+        | PathArgumentBytes.Bytes path ->
 
         // The limit counts the NUL byte, but the caller has not passed that; hence `- 1`.
         // PATH_MAX is enforced by getname()/copyinstr when the kernel copies the
         // string in, before anything looks at what it says.
         if UnixByteString.length path > PathLimits.pathMaxBytes limits - 1 then
-            Ok (PathArgument.Failed UnixError.ENAMETOOLONG)
+            PathArgument.Failed UnixError.ENAMETOOLONG
         else
-            Ok (PathArgument.Parsed (UnixPath.ofByteString path))
+            PathArgument.Parsed (UnixPath.ofByteString path)
