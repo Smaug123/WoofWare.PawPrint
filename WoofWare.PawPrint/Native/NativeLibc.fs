@@ -198,7 +198,7 @@ module NativeLibc =
         match raised.Target with
         | ValueSome target when
             target <> leader
-            && List.contains raised (SignalState.pending after.Process.Signals)
+            && List.contains raised (SignalState.pending (UnixProcessState.signals after.Process))
             ->
             Some (UnmodelledSelfSignal.PendingOnOtherThread raised.Signal)
         | ValueSome _
