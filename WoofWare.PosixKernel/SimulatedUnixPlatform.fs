@@ -403,7 +403,7 @@ module SimulatedUnixPlatform =
     /// Whose `<errno.h>` numbering this platform reports, for the errors where
     /// the two Unixes disagree.
     ///
-    /// This is the choice `UnixError.toRawErrno` refuses to make on its own, and
+    /// This is the choice `UnixError.toRawErrnoUnder` takes as its first argument, and
     /// it is what lets an `ELOOP` reach a guest at all: raw 40 is `ELOOP` on
     /// Linux but `EMSGSIZE` on Darwin, so the number is meaningless until
     /// something says which Unix is being impersonated. The flavour says.

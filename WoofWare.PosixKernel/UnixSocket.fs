@@ -606,10 +606,10 @@ module UnixSocket =
     /// `O_CLOEXEC`: `asm-generic/fcntl.h`'s values, which x86-64 and aarch64
     /// both use. Measured on aarch64 only.
     [<Literal>]
-    let private LinuxSockNonBlock = 0x800
+    let private LinuxSockNonBlock = OpenFlagNumbering.LinuxNonBlock
 
     [<Literal>]
-    let private LinuxSockCloExec = 0x80000
+    let private LinuxSockCloExec = OpenFlagNumbering.LinuxCloseOnExec
 
     /// `SOCK_TYPE_MASK`: the bits of the type word that name a type rather than
     /// a flag.

@@ -170,7 +170,7 @@ module TestUnixErrorPal =
         UnixErrorPal.ofRawErrno 0 |> shouldEqual UnixErrorPal.palSuccess
 
     [<Test>]
-    let ``ofRawErrno inverts toRawErrno wherever toRawErrno answers`` () : unit =
+    let ``ofRawErrno inverts every portable error's raw number`` () : unit =
         for error in UnixError.all do
             match UnixError.rawNumbering error with
             | RawErrnoPortability.PlatformDependent _
@@ -179,9 +179,7 @@ module TestUnixErrorPal =
                 // Not invertible, and deliberately so: see the refusal test
                 // below, which drives both of ELOOP's candidate numbers.
                 ()
-            | RawErrnoPortability.Portable _ ->
-                UnixErrorPal.ofRawErrno (UnixError.toRawErrno error)
-                |> shouldEqual (UnixErrorPal.toPal error)
+            | RawErrnoPortability.Portable raw -> UnixErrorPal.ofRawErrno raw |> shouldEqual (UnixErrorPal.toPal error)
 
     /// ENOTBLK is 15 on both Linux and Darwin, so its meaning needs no platform
     /// choice — but `Interop.Error` has no entry for it, so upstream's switch

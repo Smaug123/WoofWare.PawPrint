@@ -182,7 +182,12 @@ module TestEntropyAgainstHost =
                             let modelled =
                                 match UnixEntropy.getRandom (classify where) count flags system with
                                 | Ok (GetRandomAnswer.Completed draw, _) -> Ok (int64 (EntropyDraw.count draw))
-                                | Ok (GetRandomAnswer.Failed error, _) -> Error (UnixError.toRawErrno error)
+                                | Ok (GetRandomAnswer.Failed error, _) ->
+                                    Error (
+                                        UnixError.toRawErrnoUnder
+                                            (SimulatedUnixPlatform.rawErrnoNumbering system.Machine.UnixPlatform)
+                                            error
+                                    )
                                 | Error refusal ->
                                     failwith $"%A{where}, %d{count} bytes, flags 0x%x{flags}: refused, %O{refusal}"
 
@@ -276,7 +281,12 @@ module TestEntropyAgainstHost =
                     let modelled =
                         match UnixEntropy.getEntropy (classify where) length system with
                         | Ok (GetEntropyAnswer.Completed _, _) -> Ok 0L
-                        | Ok (GetEntropyAnswer.Failed error, _) -> Error (UnixError.toRawErrno error)
+                        | Ok (GetEntropyAnswer.Failed error, _) ->
+                            Error (
+                                UnixError.toRawErrnoUnder
+                                    (SimulatedUnixPlatform.rawErrnoNumbering system.Machine.UnixPlatform)
+                                    error
+                            )
                         | Error refusal -> failwith $"%A{where}, %d{length} bytes: refused, %O{refusal}"
 
                     if measured <> modelled then

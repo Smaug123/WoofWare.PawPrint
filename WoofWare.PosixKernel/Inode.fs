@@ -229,13 +229,12 @@ module InodeOwner =
         // in a set-group-ID parent whether or not the creator is in that group.
         // Darwin 27.0: the parent's gid every time, including a `wheel` parent
         // the creator is not in, and whether or not the parent is set-group-ID.
-        let setGroupId = 0o2000
 
         let group =
             match rule with
             | NewInodeGroupRule.Parents -> parentOwner.Group
             | NewInodeGroupRule.CreatorsUnlessParentSetGroupId ->
-                if PermissionBits.toInt parentPermissions &&& setGroupId <> 0 then
+                if PermissionBits.toInt parentPermissions &&& PermissionBits.setGroupId <> 0 then
                     parentOwner.Group
                 else
                     credentials.EffectiveGroup

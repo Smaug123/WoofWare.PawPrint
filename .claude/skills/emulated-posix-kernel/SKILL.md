@@ -1,6 +1,6 @@
 ---
 name: emulated-posix-kernel
-description: Deciding how the emulated kernel should answer a syscall — whether a fact belongs to the flavour, to configuration, or to the interpreter; whose encoding a value is stated in; where per-thread state lives; which test tier can observe the answer. Use when adding or changing anything in WoofWare.PosixKernel (the Unix* syscall files — UnixSocket.fs, UnixConnection.fs, UnixPoll.fs, UnixDescriptor.fs, UnixPathResolution.fs, UnixReadWrite.fs, UnixNamespace.fs, UnixPipe.fs, UnixSystem.fs — as well as the platform profile and the per-syscall divergence rules it selects between — SimulatedUnixPlatform.fs, SimulatedUnixFlavour.fs, CreatingOpenRules.fs, MkDirRules.fs, RemovalRules.fs, RenameRules.fs, AccessRules.fs, OwnerChangeRules.fs, ProtectedFiles.fs, Sockaddr.fs, UserBuffer.fs, EmulatedFileSystemType.fs — and VirtualFileSystem.fs, PathWalk.fs, FileDescriptorRegistry.fs, Signal.fs), in EmulatedKernel.fs or SignalState.fs, in a Native/*Pal.fs adapter, or in a Native/ handler that reports kernel state. Carries measured Linux/Darwin divergence tables — consult them rather than re-measuring.
+description: Deciding how the emulated kernel should answer a syscall — whether a fact belongs to the flavour, to configuration, or to the interpreter; whose encoding a value is stated in; where per-thread state lives; which test tier can observe the answer. Use when adding or changing anything in WoofWare.PosixKernel (the Unix* syscall files — UnixSocket.fs, UnixConnection.fs, UnixPoll.fs, UnixDescriptor.fs, UnixPathResolution.fs, UnixReadWrite.fs, UnixNamespace.fs, UnixPipe.fs, UnixSignal.fs, UnixClock.fs, UnixEntropy.fs, UnixTaskLifecycle.fs, UnixWait.fs, UnixSystem.fs — as well as the platform profile and the per-syscall divergence rules it selects between — SimulatedUnixPlatform.fs, SimulatedUnixFlavour.fs, CreatingOpenRules.fs, MkDirRules.fs, RemovalRules.fs, RenameRules.fs, AccessRules.fs, OwnerChangeRules.fs, ProtectedFiles.fs, Sockaddr.fs, UserBuffer.fs, EmulatedFileSystemType.fs — and VirtualFileSystem.fs, PathWalk.fs, FileDescriptorRegistry.fs, Signal.fs), in EmulatedKernel.fs or SignalState.fs, in a Native/*Pal.fs adapter, or in a Native/ handler that reports kernel state. Carries measured Linux/Darwin divergence tables — consult them rather than re-measuring.
 ---
 
 # Deciding what the emulated kernel says
@@ -90,11 +90,26 @@ needs a task to block signals puts it in a handler (`HandlerFrames` in
 has never heard of .NET, so **it states POSIX values and no client's encoding of
 them**: a raw `<errno.h>` number, epoll's own readiness conditions, a signo, the
 set of sockets it will create. A conversion between one of those and a .NET
-encoding goes on PawPrint's side, in `WoofWare.PawPrint/Native/`, beside the four
-that live there — `UnixErrorPal` (`Interop.Error`'s numbering),
-`SocketEventsPal` (the `SocketEvents` bits), `SocketArgumentsPal` (the
-`AF_*`/`SOCK_*`/`PT_*` numbering and the shim's argument screens) and
-`PosixSignalPal` (the managed `PosixSignal` enum).
+encoding goes on PawPrint's side, in `WoofWare.PawPrint/Native/`, as a
+`*Pal.fs` adapter beside the sixteen that live there (count them with
+`ls WoofWare.PawPrint/Native/*Pal.fs`):
+
+- errors and signals: `UnixErrorPal` (`Interop.Error`'s numbering),
+  `PosixSignalPal` (the managed `PosixSignal` enum), `KillSignalPal`
+  (`Process.Kill`'s `Interop.Sys.Signals`);
+- sockets and readiness: `SocketEventsPal` (the `SocketEvents` bits),
+  `SocketArgumentsPal` (the `AF_*`/`SOCK_*`/`PT_*` numbering and the shim's
+  argument screens), `SocketShimPal` (compile-time constants the shim
+  reports, such as its socket-address sizes), `PollEventsPal` (the
+  `PollEvents` bits);
+- files: `OpenFlagsPal`, `PipeFlagsPal`, `FileAdvicePal` (the shim's
+  `OpenFlags`, `PipeFlags` and `FileAdvice` numberings and their screens),
+  `FileStatusPal` (`st_flags` as the shim reports it), `FileSystemTypePal`
+  (the shim's filesystem-type numbers), `DirectoryEntryPal` (the shim's
+  `DirectoryEntry`);
+- the rest: `ClockPal` (which clock each timestamp entry point reads),
+  `EnvironmentPal` (the PAL's view of the environment), `OsThreadIdPal` (the
+  two widths the shim reports a thread ID in).
 
 `scripts/check-pal-residue.py` enforces this as the `pal-residue` flake check.
 The allowlist is **empty**, and the check is now a ratchet: adding an entry is a
