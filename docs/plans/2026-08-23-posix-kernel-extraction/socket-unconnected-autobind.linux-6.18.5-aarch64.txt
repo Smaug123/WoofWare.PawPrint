@@ -1,0 +1,26 @@
+Linux 6.18.5 aarch64
+INET  STREAM write 0         -> -1 Broken pipe                  before 0.0.0.0:0            after 0.0.0.0:0
+INET  STREAM write 1         -> -1 Broken pipe                  before 0.0.0.0:0            after 0.0.0.0:0
+INET  STREAM write 65536     -> -1 Broken pipe                  before 0.0.0.0:0            after 0.0.0.0:0
+INET  STREAM read 1 nonblock -> -1 Transport endpoint is not connected before 0.0.0.0:0            after 0.0.0.0:0
+INET  DGRAM  write 0         -> -1 Destination address required before 0.0.0.0:0            after 0.0.0.0:nonzero
+INET  DGRAM  write 1         -> -1 Destination address required before 0.0.0.0:0            after 0.0.0.0:nonzero
+INET  DGRAM  write 65536     -> -1 Message too long             before 0.0.0.0:0            after 0.0.0.0:nonzero
+INET  DGRAM  read 1 nonblock -> -1 Resource temporarily unavailable before 0.0.0.0:0            after 0.0.0.0:0
+INET6 STREAM write 0         -> -1 Broken pipe                  before [::]:0               after [::]:0
+INET6 STREAM write 1         -> -1 Broken pipe                  before [::]:0               after [::]:0
+INET6 STREAM write 65536     -> -1 Broken pipe                  before [::]:0               after [::]:0
+INET6 STREAM read 1 nonblock -> -1 Transport endpoint is not connected before [::]:0               after [::]:0
+INET6 DGRAM  write 0         -> -1 Destination address required before [::]:0               after [::]:nonzero
+INET6 DGRAM  write 1         -> -1 Destination address required before [::]:0               after [::]:nonzero
+INET6 DGRAM  write 65536     -> -1 Destination address required before [::]:0               after [::]:nonzero
+INET6 DGRAM  read 1 nonblock -> -1 Resource temporarily unavailable before [::]:0               after [::]:0
+UNIX  STREAM write 0         -> -1 Transport endpoint is not connected before unix len 2           after unix len 2
+UNIX  STREAM write 1         -> -1 Transport endpoint is not connected before unix len 2           after unix len 2
+UNIX  STREAM write 65536     -> -1 Transport endpoint is not connected before unix len 2           after unix len 2
+UNIX  STREAM read 1 nonblock -> -1 Invalid argument             before unix len 2           after unix len 2
+UNIX  DGRAM  write 0         -> -1 Transport endpoint is not connected before unix len 2           after unix len 2
+UNIX  DGRAM  write 1         -> -1 Transport endpoint is not connected before unix len 2           after unix len 2
+UNIX  DGRAM  write 65536     -> -1 Transport endpoint is not connected before unix len 2           after unix len 2
+UNIX  DGRAM  read 1 nonblock -> -1 Resource temporarily unavailable before unix len 2           after unix len 2
+INET  DGRAM  half-bound (bind 0, connect 0, AF_UNSPEC 0) write 1 -> -1 Destination address required; before 127.0.0.1:0 after 127.0.0.1:nonzero

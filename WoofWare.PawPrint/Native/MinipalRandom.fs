@@ -43,7 +43,7 @@ module MinipalRandom =
         // `getentropy(2)`'s 256 at a time, rather than modelling a second
         // generator: a process sees only the bytes. No descriptor is involved on
         // Darwin (measured by the same probe).
-        match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+        match SimulatedUnixPlatform.flavour (UnixMachineState.platform system.Machine) with
         | SimulatedUnixFlavour.Linux ->
             match UnixEntropy.getRandom UserBuffer.Mapped (uint64 remaining) GetRandomFlags.Insecure system with
             | Ok (GetRandomAnswer.Completed draw, system) -> draw, system

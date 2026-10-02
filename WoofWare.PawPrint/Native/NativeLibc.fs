@@ -87,13 +87,11 @@ module NativeLibc =
         // same managed-exception path as a segmentation fault's
         // (pal/src/exception/signal.cpp, sigbus_handler and sigsegv_handler,
         // each calling common_signal_handler), so it is refused too.
-        let numbering = SimulatedUnixPlatform.signalNumbering platform
-
-        match SimulatedUnixPlatform.flavour platform, Signal.toRawSignoUnder numbering signal with
+        match SimulatedUnixPlatform.flavour platform, signal with
         | SimulatedUnixFlavour.Darwin, _ -> false
-        | SimulatedUnixFlavour.Linux, 11
-        | SimulatedUnixFlavour.Linux, 7 -> true
-        | SimulatedUnixFlavour.Linux, 8 ->
+        | SimulatedUnixFlavour.Linux, Signal.SIGSEGV
+        | SimulatedUnixFlavour.Linux, Signal.SIGBUS -> true
+        | SimulatedUnixFlavour.Linux, Signal.SIGFPE ->
             match SimulatedUnixPlatform.architecture platform with
             | SimulatedUnixArchitecture.X64 -> true
             | SimulatedUnixArchitecture.Arm64 -> false
@@ -118,7 +116,6 @@ module NativeLibc =
         : UnmodelledSelfSignal option
         =
         let numbering = SimulatedUnixPlatform.signalNumbering platform
-        let signal = Signal.canonicalUnder numbering signal
 
         // The PAL's fault handler, run for a signal a thread sent and takes
         // itself, interrupts its `kill` or `raise` in libc, so it finds no
@@ -149,7 +146,7 @@ module NativeLibc =
         | SignalDisposition.Catch {
                                       Handler = NativeSignalHandler.SystemNative
                                   } ->
-            match PosixSignalShim.chainsToNativeHandler numbering signal shim with
+            match PosixSignalShim.chainsToNativeHandler signal shim with
             | None -> None
             | Some (NativeSignalHandler.CoreClrPalFault replaced) -> faultHandler replaced
             | Some chained ->
@@ -198,7 +195,7 @@ module NativeLibc =
         match raised.Target with
         | ValueSome target when
             target <> leader
-            && List.contains raised (SignalState.pending after.Process.Signals)
+            && List.contains raised (SignalState.pending (UnixProcessState.signals after.Process))
             ->
             Some (UnmodelledSelfSignal.PendingOnOtherThread raised.Signal)
         | ValueSome _

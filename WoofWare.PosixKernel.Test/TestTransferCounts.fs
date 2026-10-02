@@ -629,6 +629,8 @@ module TestTransferCounts =
     [<RequireQualifiedAccess>]
     type private Seen =
         | Errno of UnixError
+        /// The call failed with this errno and raised `SIGPIPE`.
+        | ErrnoRaisingSigPipe of UnixError
         | Moved of int
         | Refused
 
@@ -758,12 +760,35 @@ module TestTransferCounts =
             | Ok (ReadAnswer.Completed bytes) -> Seen.Moved bytes.Length
             | Error _ -> Seen.Refused
         | "write" ->
-            match WriteAdmissions.unchanged fd buffer count system with
-            | Ok (WriteAdmission.Answered (WriteAnswer.Failed error)) -> Seen.Errno error
-            | Ok (WriteAdmission.Answered (WriteAnswer.Completed written)) -> Seen.Moved (int written)
-            | Ok (WriteAdmission.Transfer count) -> Seen.Moved count
-            | Ok (WriteAdmission.TransferThenSleep _ as admission) ->
-                failwith $"a write of a descriptor here would sleep: %A{admission}"
+            // `SIGPIPE` ignored, so that a write raising it returns.
+            let system =
+                { system with
+                    Process =
+                        { system.Process with
+                            Signals =
+                                SignalState.setDisposition
+                                    Signal.SIGPIPE
+                                    SignalDisposition.Ignore
+                                    system.Process.Signals
+                        }
+                }
+
+            match UnixReadWrite.admitWrite system.Leader fd buffer count system with
+            | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Answered (WriteAnswer.Failed error), signal, _)) when
+                signal.Signal = Signal.SIGPIPE
+                ->
+                Seen.ErrnoRaisingSigPipe error
+            | Ok (WriteOutcome.Returns (admission, after)) ->
+                if after <> system then
+                    failwith $"admitWrite on fd %d{fd} changed the system for an admission of %A{admission}"
+
+                match admission with
+                | WriteAdmission.Answered (WriteAnswer.Failed error) -> Seen.Errno error
+                | WriteAdmission.Answered (WriteAnswer.Completed written) -> Seen.Moved (int written)
+                | WriteAdmission.Transfer count -> Seen.Moved count
+                | WriteAdmission.TransferThenSleep _ ->
+                    failwith $"a write of a descriptor here would sleep: %A{admission}"
+            | Ok other -> failwith $"unexpected write outcome %A{other}"
             | Error _ -> Seen.Refused
         | "pwrite" ->
             match UnixReadWrite.admitPWrite fd buffer count 0L system with
@@ -778,8 +803,8 @@ module TestTransferCounts =
     /// address space). Linux is the aarch64 machine it was measured on.
     ///
     /// Each row is the descriptor's answer on Linux and on Darwin. Refused means
-    /// this library declines to answer (a socket's connection state); every
-    /// errno is measured. An open file whose access mode forbids the call is
+    /// this library declines to answer; every errno is measured. The socket is
+    /// an unconnected TCP socket. An open file whose access mode forbids the call is
     /// "readonly" or "writeonly"; the standard streams are the two ends of a
     /// pipe, stdin the read end at end-of-file.
     [<Test>]
@@ -794,6 +819,8 @@ module TestTransferCounts =
         let espipe = Seen.Errno UnixError.ESPIPE
         let eisdir = Seen.Errno UnixError.EISDIR
         let enxio = Seen.Errno UnixError.ENXIO
+        let enotconn = Seen.Errno UnixError.ENOTCONN
+        let epipe = Seen.ErrnoRaisingSigPipe UnixError.EPIPE
         let maxLinux = Seen.Moved (int LinuxMaxTransfer)
         let counts = [ 0UL ; 5UL ; IntMax + 1UL ; UInt64.MaxValue ]
 
@@ -810,8 +837,8 @@ module TestTransferCounts =
                 [ Seen.Moved 0 ; Seen.Moved 0 ; einval ; einval ]
                 "read",
                 "socket",
-                [ Seen.Moved 0 ; Seen.Refused ; Seen.Refused ; efault ],
-                [ Seen.Refused ; Seen.Refused ; einval ; einval ]
+                [ Seen.Moved 0 ; enotconn ; enotconn ; efault ],
+                [ enotconn ; enotconn ; einval ; einval ]
 
                 "pread", "closed", [ ebadf ; ebadf ; ebadf ; ebadf ], [ ebadf ; ebadf ; einval ; einval ]
                 "pread", "writeonly", [ ebadf ; ebadf ; ebadf ; ebadf ], [ ebadf ; ebadf ; einval ; einval ]
@@ -830,10 +857,7 @@ module TestTransferCounts =
                 "stdout",
                 [ Seen.Moved 0 ; Seen.Moved 5 ; maxLinux ; efault ],
                 [ Seen.Moved 0 ; Seen.Moved 5 ; einval ; einval ]
-                "write",
-                "socket",
-                [ Seen.Refused ; Seen.Refused ; Seen.Refused ; efault ],
-                [ Seen.Refused ; Seen.Refused ; einval ; einval ]
+                "write", "socket", [ epipe ; epipe ; epipe ; efault ], [ enotconn ; enotconn ; einval ; einval ]
 
                 "pwrite", "closed", [ ebadf ; ebadf ; ebadf ; ebadf ], [ ebadf ; ebadf ; einval ; einval ]
                 "pwrite", "readonly", [ ebadf ; ebadf ; ebadf ; ebadf ], [ ebadf ; ebadf ; einval ; einval ]

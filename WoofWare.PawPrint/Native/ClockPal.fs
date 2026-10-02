@@ -90,7 +90,7 @@ module ClockPal =
         | Ok (Ok reading) -> reading
         | Ok (Error error) ->
             failwith
-                $"%s{entryPoint}: clock_gettime(%d{clockId}) failed with %O{error} on %O{machine.UnixPlatform}. The real shim reads this clock unconditionally; PawPrint has chosen a clock id the simulated flavour does not have."
+                $"%s{entryPoint}: clock_gettime(%d{clockId}) failed with %O{error} on %O{UnixMachineState.platform machine}. The real shim reads this clock unconditionally; PawPrint has chosen a clock id the simulated flavour does not have."
         | Error refusal ->
             failwith
                 $"%s{entryPoint}: the kernel will not answer clock_gettime(%d{clockId}): %s{ClockGettimeRefusal.describe refusal} The real shim reads this clock, so PawPrint cannot answer without it."
@@ -139,7 +139,7 @@ module ClockPal =
     /// CoreLib only ever subtracts two readings of it.
     let monotonicTimestampNanos (machine : UnixMachineState) : int64 =
         let clockId =
-            match SimulatedUnixPlatform.flavour machine.UnixPlatform with
+            match SimulatedUnixPlatform.flavour (UnixMachineState.platform machine) with
             | SimulatedUnixFlavour.Linux -> linuxClockMonotonic
             | SimulatedUnixFlavour.Darwin -> darwinClockUptimeRaw
 
@@ -162,7 +162,7 @@ module ClockPal =
         // The arithmetic follows `minipal_lowres_ticks` on each flavour: Linux
         // converts the timespec field by field, Darwin divides
         // `clock_gettime_nsec_np`'s nanoseconds.
-        match SimulatedUnixPlatform.flavour machine.UnixPlatform with
+        match SimulatedUnixPlatform.flavour (UnixMachineState.platform machine) with
         | SimulatedUnixFlavour.Linux ->
             let reading = read entryPoint linuxClockMonotonicCoarse machine
 

@@ -44,7 +44,7 @@ module TestKernelConfig =
     /// asserting "the kernel held *this* inode" is checked against the graph
     /// rather than against the kernel's own answer.
     let private inodeOf (kernel : EmulatedKernel) (path : string) : InodeNumber =
-        let vfs = kernel.FileSystem
+        let vfs = kernel.Machine.FileSystem
 
         match
             PathWalk.resolveExisting
@@ -169,11 +169,11 @@ module TestKernelConfig =
                 }
 
         kernel.UnixPlatform |> shouldEqual SimulatedUnixPlatform.macOsArm64
-        kernel.Mount |> shouldEqual (EmulatedMount.Apfs ApfsMount.defaults)
-        kernel.SoMaxConn |> shouldEqual 128
-        kernel.EphemeralPortRange |> shouldEqual (49152us, 65535us)
+        kernel.Machine.Mount |> shouldEqual (EmulatedMount.Apfs ApfsMount.defaults)
+        kernel.Machine.SoMaxConn |> shouldEqual 128
+        kernel.Machine.EphemeralPortRange |> shouldEqual (49152us, 65535us)
 
-        kernel.Credentials
+        kernel.Process.Credentials
         |> shouldEqual (Credentials.ofIds (UserId.parseOrFail "test" 501u) (GroupId.parseOrFail "test" 20u) [])
 
         EmulatedKernel.checkInvariants kernel |> shouldEqual []
@@ -188,17 +188,17 @@ module TestKernelConfig =
                     GroupId = Some 1000u
                 }
 
-        configured.EphemeralPortRange |> shouldEqual (40000us, 40010us)
+        configured.Machine.EphemeralPortRange |> shouldEqual (40000us, 40010us)
 
-        configured.Credentials
+        configured.Process.Credentials
         |> shouldEqual (Credentials.ofIds (UserId.parseOrFail "test" 1000u) (GroupId.parseOrFail "test" 1000u) [])
 
         // The default configuration is Linux's, in every one of those fields.
         let linux = KernelConfig.toKernel KernelConfig.Default
         linux.UnixPlatform |> shouldEqual SimulatedUnixPlatform.linuxX64
-        linux.EphemeralPortRange |> shouldEqual (32768us, 60999us)
+        linux.Machine.EphemeralPortRange |> shouldEqual (32768us, 60999us)
 
-        linux.Credentials
+        linux.Process.Credentials
         |> shouldEqual (Credentials.ofIds (UserId.parseOrFail "test" 1000u) (GroupId.parseOrFail "test" 1000u) [])
 
     [<Test>]
@@ -216,7 +216,7 @@ module TestKernelConfig =
                     SupplementaryGroups = groups
                 }
 
-        kernel.Credentials
+        kernel.Process.Credentials
         |> shouldEqual (
             Credentials.ofIds
                 (UserId.parseOrFail "test" 37u)
@@ -283,7 +283,7 @@ module TestKernelConfig =
     /// The owner of the inode `path` names, walked as root without following
     /// a final symlink, so that a link's own owner is what is read.
     let private ownerAt (kernel : EmulatedKernel) (path : string) : InodeOwner =
-        let vfs = kernel.FileSystem
+        let vfs = kernel.Machine.FileSystem
 
         match
             PathWalk.resolveExisting
@@ -400,7 +400,7 @@ module TestKernelConfig =
                     (path, ownerAt kernel path) |> shouldEqual (path, owner)
 
                 // Nothing but the root and the seed's own entries.
-                VirtualFileSystem.inodes kernel.FileSystem
+                VirtualFileSystem.inodes kernel.Machine.FileSystem
                 |> Map.count
                 |> shouldEqual (List.length paths + 1)
 
@@ -478,7 +478,7 @@ module TestKernelConfig =
                 SimulatedUnixPlatform.macOsArm64, 0o7022
             ] do
             let kernel = KernelConfig.toKernel (configured platform bits)
-            kernel.Umask |> shouldEqual (PermissionBits.parseOrFail "test" bits)
+            kernel.Process.Umask |> shouldEqual (PermissionBits.parseOrFail "test" bits)
             EmulatedKernel.checkInvariants kernel |> shouldEqual []
 
     [<Test>]
@@ -492,5 +492,7 @@ module TestKernelConfig =
 
         let kernel = KernelConfig.toKernel config
 
-        kernel.CurrentDirectoryInode |> shouldEqual (inodeOf kernel "/outer/inner")
+        kernel.Process.CurrentDirectoryInode
+        |> shouldEqual (inodeOf kernel "/outer/inner")
+
         EmulatedKernel.checkInvariants kernel |> shouldEqual []

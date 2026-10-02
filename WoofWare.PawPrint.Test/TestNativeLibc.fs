@@ -204,7 +204,7 @@ module TestNativeLibc =
 
                     let expectedMask =
                         match numbering, Signal.toRawSignoUnder numbering signal with
-                        | SignalNumbering.Linux, 11 -> Set.singleton (Signal.Other 34)
+                        | SignalNumbering.Linux, 11 -> Set.singleton (Signal.RealTime 2)
                         | _ -> Set.empty
 
                     action.Mask |> shouldEqual expectedMask
@@ -249,16 +249,16 @@ module TestNativeLibc =
         for numbering in everyNumbering do
             let refused =
                 [
-                    yield Signal.Other 9
+                    yield Signal.SIGKILL
+                    yield Signal.SIGSTOP
                     yield Signal.SIGTERM
                     match numbering with
                     | SignalNumbering.Linux ->
-                        yield Signal.Other 19
-                        yield Signal.Other 32
-                        yield Signal.Other 33
+                        yield Signal.RealTime 0
+                        yield Signal.RealTime 1
                     | SignalNumbering.Darwin ->
-                        yield Signal.Other 17
-                        yield Signal.Other 32
+                        // Linux's 32, which is not a signal on Darwin.
+                        yield Signal.RealTime 0
                 ]
 
             for s in refused do
@@ -309,17 +309,17 @@ module TestNativeLibc =
                     else
                         Some (UnmodelledSelfSignal.FaultHandlerNeededLater (signal numbering signo))
 
-                (platform, signo, screenOn platform leader (fresh numbering) (Signal.Other signo))
+                (platform, signo, screenOn platform leader (fresh numbering) (signal numbering signo))
                 |> shouldEqual (platform, signo, expected)
 
                 // System.Native's handler runs the fault handler first, so the
                 // same answer holds with a registration.
-                let registered = register numbering (Signal.Other signo) (fresh numbering)
+                let registered = register numbering (signal numbering signo) (fresh numbering)
 
-                PosixSignalShim.chainsToNativeHandler numbering (signal numbering signo) (snd registered)
+                PosixSignalShim.chainsToNativeHandler (signal numbering signo) (snd registered)
                 |> shouldEqual (Some faultHandler)
 
-                (platform, signo, screenOn platform leader registered (Signal.Other signo))
+                (platform, signo, screenOn platform leader registered (signal numbering signo))
                 |> shouldEqual (platform, signo, expected)
 
     [<Test>]
@@ -331,10 +331,14 @@ module TestNativeLibc =
                 let expected =
                     Some (UnmodelledSelfSignal.FaultSignalFromOtherThread (signal numbering signo))
 
-                screenOn platform 1 (fresh numbering) (Signal.Other signo)
+                screenOn platform 1 (fresh numbering) (signal numbering signo)
                 |> shouldEqual expected
 
-                screenOn platform 1 (register numbering (Signal.Other signo) (fresh numbering)) (Signal.Other signo)
+                screenOn
+                    platform
+                    1
+                    (register numbering (signal numbering signo) (fresh numbering))
+                    (signal numbering signo)
                 |> shouldEqual expected
 
     [<Test>]
@@ -349,7 +353,7 @@ module TestNativeLibc =
                 launched numbering (signos |> List.map (signal numbering) |> Set.ofList)
 
             for signo in signos do
-                (platform, signo, screenOn platform leader (ignored, PosixSignalShim.initial) (Signal.Other signo))
+                (platform, signo, screenOn platform leader (ignored, PosixSignalShim.initial) (signal numbering signo))
                 |> shouldEqual (platform, signo, None)
 
     [<Test>]
@@ -365,14 +369,14 @@ module TestNativeLibc =
                                           } ->
                     let sent = signal numbering signo
 
-                    screen (fresh numbering) (Signal.Other signo)
+                    screen (fresh numbering) (signal numbering signo)
                     |> shouldEqual (Some (UnmodelledSelfSignal.NativeHandler (sent, handler)))
 
                     // Registered and pending: System.Native's handler runs
                     // the runtime's first. (Linux's 33 is glibc's, which no
                     // handler can be registered for.)
                     if not (Signal.isUncatchableUnder numbering sent) then
-                        let signals, shim = register numbering (Signal.Other signo) (fresh numbering)
+                        let signals, shim = register numbering (signal numbering signo) (fresh numbering)
 
                         match KernelSignals.disposition sent signals with
                         | SignalDisposition.Catch action ->
@@ -384,7 +388,7 @@ module TestNativeLibc =
 
                         let registered = enqueue (processDirected sent) signals, shim
 
-                        screen registered (Signal.Other signo)
+                        screen registered (signal numbering signo)
                         |> shouldEqual (Some (UnmodelledSelfSignal.NativeHandler (sent, handler)))
                 | SignalDisposition.Ignore
                 | SignalDisposition.Default -> ()
@@ -597,9 +601,6 @@ module TestNativeLibc =
             for sent in registered do
                 screen (signals, shim) sent |> shouldEqual None
 
-                screen (signals, shim) (Signal.Other (Signal.toRawSignoUnder numbering sent))
-                |> shouldEqual None
-
         let gen =
             gen {
                 let! numbering = Gen.elements everyNumbering
@@ -613,12 +614,11 @@ module TestNativeLibc =
             Prop.forAll (Arb.fromGen gen) (fun (numbering, mask, pending) -> property numbering mask pending)
         )
 
-        // The same signal, pending while registered, spelt either way.
+        // The same signal, pending while registered.
         for numbering in everyNumbering do
             let signals, shim = register numbering Signal.SIGTERM (fresh numbering)
             let pending = enqueue (processDirected Signal.SIGTERM) signals, shim
             screen pending Signal.SIGTERM |> shouldEqual None
-            screen pending (Signal.Other 15) |> shouldEqual None
 
     [<Test>]
     let ``inherited ignores are set as the process is created`` () : unit =

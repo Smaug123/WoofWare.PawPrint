@@ -51,7 +51,7 @@ module TestUnixSignal =
         match UnixSignal.kill self 9 system with
         | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
             ended.Termination
-            |> shouldEqual (ProcessTermination.Signaled (Signal.Other 9, false))
+            |> shouldEqual (ProcessTermination.Signaled (Signal.SIGKILL, false))
 
             ended.Machine |> shouldEqual system.Machine
             // The process's end takes its tasks' per-task entries with them.
@@ -198,7 +198,12 @@ module TestUnixSignal =
                                 0
                                 (Set.singleton 0)
                                 {
-                                    Signal = Signal.Other signo
+                                    Signal =
+                                        match
+                                            Signal.ofRawSignoUnder (SignalState.numbering system.Process.Signals) signo
+                                        with
+                                        | ValueSome signal -> signal
+                                        | ValueNone -> failwith $"%d{signo} was sent, so it is a signal"
                                     Target = ValueNone
                                 }
                                 system.Process.Signals

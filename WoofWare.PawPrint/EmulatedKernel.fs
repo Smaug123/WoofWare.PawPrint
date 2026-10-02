@@ -553,13 +553,14 @@ type EmulatedKernel =
     {
         /// See `UnixProcessState`.
         ///
-        /// Read through the forwarding members below rather than directly, so that
-        /// moving a field in or out of here costs no call site.
+        /// Never read field by field: PawPrint is a client of the kernel, and
+        /// learns what it holds through the syscalls and the queries
+        /// `UnixProcessState` provides, as the members below do.
         Process : UnixProcessState<ThreadId, NativeSignalHandler>
         /// The POSIX machine this process is running on: see `UnixMachineState`.
         ///
-        /// Read through the forwarding members below rather than directly, so that
-        /// moving a field in or out of here costs no call site.
+        /// Never read field by field, for the reason `Process` gives; the
+        /// queries are `UnixMachineState`'s.
         Machine : UnixMachineState
         /// Per-thread value CoreCLR keeps in its `t_lastPInvokeError` thread-local and
         /// `Marshal.GetLastPInvokeError` (equivalently `GetLastWin32Error`) reads. A
@@ -760,36 +761,22 @@ type EmulatedKernel =
     /// write, in the order it wrote them: the kernel's deliveries to the pipes
     /// PawPrint drains, labelled by stream.
     member this.OutputLog : ImmutableArray<OutputLogEntry> =
-        StandardStreams.outputLog this.Machine.Delivered
+        StandardStreams.outputLog (UnixMachineState.delivered this.Machine)
 
-    // Forwarding members for everything `Process` now holds, so that this split
-    // costs no read site. They go when stage 6 moves the state to the library and
-    // call sites learn to say `kernel.Process.X`.
-    member this.FileDescriptors : FileDescriptorRegistry = this.Process.FileDescriptors
-    member this.Environment : UnixByteString list = this.Process.Environment
-    member this.CurrentDirectoryInode : InodeNumber = this.Process.CurrentDirectoryInode
-    member this.ProcessPath : AbsoluteUnixPath option = this.Process.ProcessPath
 
-    member this.Credentials : Credentials = this.Process.Credentials
-    member this.Umask : PermissionBits = this.Process.Umask
-    member this.Signals : SignalState<ThreadId, NativeSignalHandler> = this.Process.Signals
+    /// The environment the simulated process was started with: see
+    /// `UnixProcessState.Environment`.
+    member this.Environment : UnixByteString list =
+        UnixProcessState.environment this.Process
 
-    // Forwarding members for everything `Machine` now holds, so that this split
-    // costs no read site. They go when stage 6 moves `UnixMachineState` to the
-    // library and call sites learn to say `kernel.Machine.X`.
-    member this.Sockets : Map<SocketId, SocketDescription> = this.Machine.Sockets
-    member this.Connections : Map<ConnectionId, TcpConnection> = this.Machine.Connections
-    member this.NextConnectionId : ConnectionId = this.Machine.NextConnectionId
+    /// The path of the executable that started the simulated process: see
+    /// `UnixProcessState.ProcessPath`.
+    member this.ProcessPath : AbsoluteUnixPath option =
+        UnixProcessState.processPath this.Process
 
-    member this.NextSocketEventRegistrationOrdinal : int64 =
-        this.Machine.NextSocketEventRegistrationOrdinal
-
-    member this.NextEphemeralPort : uint16 = this.Machine.NextEphemeralPort
-    member this.EphemeralPortRange : uint16 * uint16 = this.Machine.EphemeralPortRange
-    member this.SoMaxConn : int = this.Machine.SoMaxConn
-    member this.LocalAddresses : uint32 list = this.Machine.LocalAddresses
-    member this.LocalRoutes : Ipv4Prefix list = this.Machine.LocalRoutes
-    member this.NextSocketId : SocketId = this.Machine.NextSocketId
+    /// The simulated process's signal state, which `SignalState`'s queries read.
+    member this.Signals : SignalState<ThreadId, NativeSignalHandler> =
+        UnixProcessState.signals this.Process
 
     /// The virtual clock in 100 ns ticks (`ClockPal.nanosecondsPerTick`): the
     /// machine's uptime, which PawPrint only ever advances by whole ticks, so
@@ -813,7 +800,7 @@ type EmulatedKernel =
     /// matching jump in `StepCounter` (which would skew the spurious-wakeup
     /// schedule).
     member this.VirtualClockTicks : int64 =
-        let nanoseconds = this.Machine.NanosecondsSinceBoot
+        let nanoseconds = UnixMachineState.nanosecondsSinceBoot this.Machine
 
         if nanoseconds % ClockPal.nanosecondsPerTick <> 0L then
             failwith
@@ -821,11 +808,14 @@ type EmulatedKernel =
 
         nanoseconds / ClockPal.nanosecondsPerTick
 
-    member this.ProcessorCount : int = this.Machine.ProcessorCount
-    member this.UserBufferCheck : UserBufferCheck = this.Machine.UserBufferCheck
-    member this.UnixPlatform : SimulatedUnixPlatform = this.Machine.UnixPlatform
-    member this.FileSystem : VirtualFileSystem = this.Machine.FileSystem
-    member this.Mount : EmulatedMount = this.Machine.Mount
+    /// The number of logical processors the machine reports: see
+    /// `UnixMachineState.ProcessorCount`, and `EmulatedKernel.effectiveProcessorCount`
+    /// for the number the guest observes.
+    member this.ProcessorCount : int = UnixMachineState.processorCount this.Machine
+
+    /// The platform the simulated process runs on, fixed when the kernel was made.
+    member this.UnixPlatform : SimulatedUnixPlatform =
+        UnixMachineState.platform this.Machine
 
 /// A way this kernel's own tables disagree with the POSIX system underneath
 /// them — a state no kernel could be in, and which `EmulatedKernel` exists to
@@ -853,7 +843,8 @@ type EmulatedKernelDefect =
     /// finish. Such a thread sleeps for the rest of the run.
     | SyscallWaiterWithoutRecord of thread : ThreadId
     /// A task records a park while its thread is in a status that cannot be
-    /// holding a syscall open.
+    /// holding a syscall open. The idle signal dispatcher, `Parked`, can be
+    /// holding its read of the signal pipe open, and only that.
     ///
     /// `Runnable` is legitimate and not slack: between a sweep waking a waiter
     /// and the woken thread re-entering its handler, the thread is `Runnable`
@@ -1095,9 +1086,10 @@ module EmulatedKernel =
             OptimalMaxSpinWaitsPerSpinIteration = defaultOptimalMaxSpinWaitsPerSpinIteration
             Machine = system.Machine
             Process =
-                { system.Process with
-                    Environment = encodeEnvironment "EmulatedKernel.defaultEnvironment" defaultEnvironment
-                }
+                system.Process
+                |> UnixProcessState.withEnvironment
+                    "EmulatedKernel.defaultEnvironment"
+                    (encodeEnvironment "EmulatedKernel.defaultEnvironment" defaultEnvironment)
         }
 
     /// `createInheritingSignalIgnores` for a process whose launcher left no
@@ -1698,7 +1690,7 @@ module EmulatedKernel =
             |> List.collect (fun (thread, status) ->
                 let recorded =
                     match Map.tryFind thread kernel.Tasks with
-                    | Some task -> task.Parked
+                    | Some task -> UnixTaskState.park task
                     | None -> None
 
                 match status, recorded with
@@ -1706,6 +1698,12 @@ module EmulatedKernel =
                 | ThreadStatus.BlockedInSyscall, Some _
                 | ThreadStatus.Runnable, _
                 | _, None -> []
+                // The signal dispatcher, idle, asleep in its read of the signal
+                // pipe; `SignalDispatch` finishes that read.
+                | ThreadStatus.Parked,
+                  Some {
+                           Syscall = ParkedSyscall.PipeRead _
+                       } when PosixSignalShim.signalThread kernel.PosixSignalShim = Some thread -> []
                 | status, Some _ -> [ EmulatedKernelDefect.SyscallRecordWithoutWaiter (thread, status) ]
             )
 
@@ -1735,7 +1733,7 @@ module EmulatedKernel =
             | None -> []
 
         let frames =
-            SignalState.tasksWithFrames kernel.Process.Signals
+            SignalState.tasksWithFrames kernel.Signals
             |> Set.toList
             |> List.map EmulatedKernelDefect.HandlerFramesBetweenInstructions
 

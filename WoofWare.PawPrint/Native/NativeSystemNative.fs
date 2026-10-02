@@ -314,7 +314,7 @@ module NativeSystemNative =
             // refuses both with EINVAL, the shim checks neither, and the
             // process carries on with that errno.
             NonCanceledPosixSignal.ContinuesWithErrno (state, UnixError.EINVAL)
-        | ValueSome signal when PosixSignalPal.handledWithoutRestoring numbering signal ->
+        | ValueSome signal when PosixSignalPal.handledWithoutRestoring signal ->
             // An explicit no-op arm (SIGCONT, SIGTSTP, SIGTTIN, SIGTTOU,
             // SIGCHLD, SIGURG, SIGWINCH): the runtime cannot stop or continue
             // itself, and the ignored ones are literally no-ops. What the
@@ -331,8 +331,8 @@ module NativeSystemNative =
         // re-raises the signal with `kill(2)`, so the process gets the
         // kernel's default: this sends it through the kernel model as a
         // signal the process sends itself.
-        match PosixSignalShim.original numbering signal state.Kernel.PosixSignalShim with
-        | SignalDisposition.Catch _ when not (PosixSignalShim.isCancelableTermination numbering signal) ->
+        match PosixSignalShim.original signal state.Kernel.PosixSignalShim with
+        | SignalDisposition.Catch _ when not (PosixSignalShim.isCancelableTermination signal) ->
             NonCanceledPosixSignal.Continues state
         | SignalDisposition.Catch saved ->
             // SIGINT, SIGQUIT or SIGTERM, restored to a handler the shim did
@@ -1076,8 +1076,10 @@ module NativeSystemNative =
     /// This is the whole of PawPrint's half of `stat`. `UnixPathResolution.fstat`
     /// answers what a kernel knows; the layout it goes into is .NET's platform
     /// abstraction layer, which is PawPrint's business and not a POSIX
-    /// simulator's — so the offsets, the `FileStatusFlags` word and the fields
-    /// this kernel does not model are all decided here.
+    /// simulator's — so the offsets, the `FileStatusFlags` word and the
+    /// `UserFlags` encoding are decided here. The shim's struct carries no
+    /// `st_nlink`, `st_blksize` or `st_blocks`, so nothing here reads the
+    /// kernel's link count.
     ///
     /// The output struct is written as a **byte image at ABI offsets**, not by
     /// setting fields on the pointee type by name. That is what the C does — it
@@ -1144,21 +1146,14 @@ module NativeSystemNative =
              | None -> UnixTimestamp.epoch)
 
         putInt64 88 status.DeviceId
-        // `st_rdev`, non-zero only for device nodes, which the emulated
-        // filesystem cannot represent — so this kernel reports no such field and
-        // PawPrint writes what a real runtime would see for a file that is not
-        // one.
-        putInt64 96 0L
+        putInt64 96 status.SpecialFileDevice
 
         putInt64
             104
             (match status.Inode with
              | InodeNumber value -> value)
 
-        // macOS's `UF_HIDDEN`, gated on `HAVE_STAT_FLAGS`. The emulated kernel
-        // models no BSD file flags and nothing in its filesystem is hidden, so
-        // zero is the honest answer on either platform.
-        putUInt32 112 0u
+        putUInt32 112 (FileStatusPal.userFlags status.FileFlags)
 
         writeBytesThrough ctx operation output (ImmutableArray.CreateRange image) state
         |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
@@ -2602,14 +2597,15 @@ module NativeSystemNative =
             // allocation pattern and its timer bucketing — depend on which
             // core the *interpreter* happened to be running on.
             //
-            // We report a real per-thread placement, not the `-1` "platform
-            // lacks sched_getcpu" sentinel (legitimate on macOS, and handled by
-            // CoreLib via a `Environment.CurrentManagedThreadId` fallback):
-            // PawPrint reports a Linux platform identity through
-            // `SystemNative_GetUnixRelease`, and on Linux the call works.
+            // The simulated flavour decides which build of the shim the guest
+            // is calling. Darwin's libc has no `sched_getcpu`, so its shim is
+            // built without HAVE_SCHED_GETCPU and answers -1 on every call (measured on
+            // Darwin 27.0.0 through the real libSystem.Native), which CoreLib
+            // reads as "not supported" and replaces with
+            // `Environment.CurrentManagedThreadId`.
             //
-            // The value is fixed at thread creation by
-            // `EmulatedKernel.cpuForRotation` and stored in
+            // Under Linux the value is the calling task's placement, fixed at
+            // thread creation by `EmulatedKernel.cpuForRotation` and stored in
             // `ThreadState.Cpu`; see there for why round-robin, and why
             // "pinned to" and "currently running on" coincide under a
             // scheduler that never migrates threads. It is returned verbatim
@@ -2617,11 +2613,11 @@ module NativeSystemNative =
             // kernel's env table live, so if environment mutation is ever
             // added, a re-derivation could silently turn a guest's shard index
             // into an out-of-range one.
-            let cpu = UnixTaskTable.cpuOf ctx.Thread state.Kernel.Tasks
-
-            let (CpuId.CpuId cpu) = cpu
-
-            pushInt32 cpu ctx |> Some
+            match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
+            | SimulatedUnixFlavour.Darwin -> pushInt32 (-1) ctx |> Some
+            | SimulatedUnixFlavour.Linux ->
+                let (CpuId.CpuId cpu) = UnixTaskTable.cpuOf ctx.Thread state.Kernel.Tasks
+                pushInt32 cpu ctx |> Some
         | Some "SystemNative_TryGetUInt32OSThreadId",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32) ->
@@ -4098,11 +4094,12 @@ module NativeSystemNative =
                 =
                 match outcome with
                 | Error (ReadRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
-                | Error (ReadRefusal.SocketConnectionState _ as refusal) ->
+                | Error (ReadRefusal.UnmodelledSocketPhase _ as refusal)
+                | Error (ReadRefusal.DatagramSleep _ as refusal) ->
                     // The library says what it measured; PawPrint says which managed
                     // caller could have reached it, which is a fact about CoreLib.
                     failwith
-                        $"%s{operation}: fd %d{fd}: %s{ReadRefusal.describe refusal} Nothing in the BCL waits on this — CoreLib reaches a socket through `SystemNative_Receive`, `SafeSocketHandle` not being a `SafeFileHandle` — so this is a hand-rolled P/Invoke. Model the connection state (issue #956) before answering it."
+                        $"%s{operation}: fd %d{fd}: %s{ReadRefusal.describe refusal} Nothing in the BCL reaches this: CoreLib reads a socket through `SystemNative_Receive`, `SafeSocketHandle` not being a `SafeFileHandle`, so this is a hand-rolled P/Invoke."
                 | Error (ReadRefusal.ScannedDirectoryPosition _ as refusal) ->
                     failwith
                         $"%s{operation}: fd %d{fd}: %s{ReadRefusal.describe refusal} CoreLib never reads a directory through `SystemNative_Read` (it enumerates with `SystemNative_OpenDir` and `SystemNative_ReadDir`, whose descriptor it never sees), so this is a hand-rolled P/Invoke reading a directory it has partly enumerated. Rewind it with `lseek(fd, 0, SEEK_SET)`, or read before enumerating."
@@ -5081,15 +5078,14 @@ module NativeSystemNative =
                 // (pal_networking.c:1733). Applied on every flavour rather than
                 // under a platform test, because on Linux the kernel never set the
                 // flag and clearing it is a no-op. The shim closes the accepted
-                // socket if the `fcntl` fails; nothing here can fail.
+                // socket if the `fcntl` fails, which it cannot on a socket the
+                // kernel has just made.
                 let unix =
-                    { unix with
-                        Process =
-                            { unix.Process with
-                                FileDescriptors =
-                                    FileDescriptorRegistry.setNonBlocking acceptedFd false unix.Process.FileDescriptors
-                            }
-                    }
+                    match UnixSocket.setNonBlocking acceptedFd false unix with
+                    | SetNonBlockingAnswer.Set, unix -> unix
+                    | SetNonBlockingAnswer.Failed error, _ ->
+                        failwith
+                            $"%s{operation}: clearing O_NONBLOCK on the accepted socket, fd %d{acceptedFd}, failed with %O{error}; fcntl(F_SETFL) fails on no socket (this is an interpreter bug)."
 
                 let state = state.MapKernel (EmulatedKernel.withUnix unix)
 
@@ -5620,7 +5616,7 @@ module NativeSystemNative =
                     // `kqueue()`, which the kernel does not yet answer as a call of
                     // its own: the allocation it makes is exactly the port's.
                     let fd, registry =
-                        FileDescriptorRegistry.createSocketEventPort state.Kernel.FileDescriptors
+                        FileDescriptorRegistry.createSocketEventPort state.Kernel.Process.FileDescriptors
 
                     fd,
                     state.MapKernel (fun kernel ->
@@ -6593,13 +6589,13 @@ module NativeSystemNative =
             // A blocking write into a pipe with no room for the rest of it
             // sleeps, and the kernel finishes it on a later re-entry; a signal
             // can end that sleep with EINTR, which the C retries, or with the
-            // count already written. A guest depending on EAGAIN or a partial
-            // write from a non-blocking socket would need connection state
-            // PawPrint does not model, which `UnixReadWrite.write` refuses
-            // rather than guesses. A write into a pipe with no reader answers
-            // EPIPE and raises SIGPIPE, which PawPrint's startup ignores, as
-            // CoreCLR's does, so the guest sees the EPIPE alone unless it has
-            // given the signal a disposition of its own.
+            // count already written. A socket with no peer answers its own
+            // errno; one with a peer moves bytes, which the kernel does not
+            // model and `UnixReadWrite.write` refuses rather than guesses. A
+            // write into a pipe with no reader, or into a Linux stream socket
+            // with no peer, answers EPIPE and raises SIGPIPE, which PawPrint's
+            // startup ignores, as CoreCLR's does, so the guest sees the EPIPE
+            // alone unless it has given the signal a disposition of its own.
             let operation = "SystemNative_Write"
             let fd = fdArgument operation instruction.Arguments.[0]
             let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
@@ -6609,8 +6605,11 @@ module NativeSystemNative =
                 // managed caller could have reached it.
                 let reachability =
                     match refusal with
-                    | WriteRefusal.SocketConnectionState _ ->
-                        "Nothing in the BCL waits on this: CoreLib reaches a socket through `SystemNative_Send`, `SafeSocketHandle` not being a `SafeFileHandle`, so this is a hand-rolled P/Invoke. Model the connection state (issue #956) before answering it."
+                    | WriteRefusal.UnmodelledSocketPhase _
+                    | WriteRefusal.SendBuffer _
+                    | WriteRefusal.Inet6Binding _
+                    | WriteRefusal.EphemeralPortsExhausted _ ->
+                        "Nothing in the BCL reaches this: CoreLib writes to a socket through `SystemNative_Send`, `SafeSocketHandle` not being a `SafeFileHandle`, so this is a hand-rolled P/Invoke."
                     | WriteRefusal.ExceedsRepresentableLength _ ->
                         "Write less, or raise the model's file-length limit (issue #956)."
                     | WriteRefusal.Interruption _ ->
@@ -6818,9 +6817,9 @@ module NativeSystemNative =
             // what makes it appear on a console. One write delivers at most
             // once, and exactly the bytes it moved.
             let effectOf (system : UnixSystem<ThreadId, NativeSignalHandler>) : StepEffect =
-                let before = DeliveryLog.count admitted.Machine.Delivered
+                let before = DeliveryLog.count (UnixMachineState.delivered admitted.Machine)
 
-                match DeliveryLog.since before system.Machine.Delivered with
+                match DeliveryLog.since before (UnixMachineState.delivered system.Machine) with
                 | [] -> StepEffect.NoEffect
                 | [ delivery ] -> StepEffect.WroteToFd (StandardStreams.roleOf delivery.Endpoint, delivery.Bytes)
                 | delivered ->

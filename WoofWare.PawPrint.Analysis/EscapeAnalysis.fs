@@ -12,7 +12,9 @@ open WoofWare.PawPrint
 [<RequireQualifiedAccess>]
 type Opacity =
     /// A <c>callvirt</c> to a method that may be overridden: the method named may not be the one
-    /// that runs.
+    /// that runs. That includes a <c>constrained.</c> call whose type does not decide it: a class
+    /// that may be derived from, or a type variable of a definition analysed for every instantiation
+    /// at once.
     | VirtualCall
     /// <c>calli</c>, or a call through a dynamic method's scope: no metadata names the target.
     | IndirectCall
@@ -45,6 +47,36 @@ type internal OutsideBodyFact =
     /// method is instantiated when the JIT binds a member of it.
     | Opaque of Opacity
 
+/// How a call's token instantiates the method it names, as the calling body spells it.
+[<RequireQualifiedAccess>]
+type internal CalleeSpelling =
+    /// The callee has no type variables, so every call reaches the same method.
+    | Fixed
+    /// The token names a generic definition rather than an instantiation of it: a MethodDef of a
+    /// generic type's method, or a MemberRef whose parent is a generic type named without
+    /// arguments. Nothing says which instantiation runs.
+    | Typical
+    /// The token, of the calling body's assembly, whose type arguments, read against the calling
+    /// body's instantiation, instantiate the callee: a MethodSpec, or a MemberRef whose parent is a
+    /// TypeSpec or a non-generic type with a generic ancestor.
+    | Spelled of MetadataToken
+
+/// A method a body calls, and how the call instantiates it.
+type internal Callee =
+    {
+        Callee : MethodKey
+        Spelling : CalleeSpelling
+    }
+
+/// A call instruction, as far as the body says.
+[<RequireQualifiedAccess>]
+type internal CallSite =
+    /// A call of this method.
+    | Direct of Callee
+    /// A `callvirt` of a method a derived type may override, which a `constrained.` prefix naming
+    /// this type, a token of the calling body's assembly, directs: the type decides what runs.
+    | Constrained of constrainedType : MetadataToken * Callee
+
 /// What one method body does by itself: the exceptions it raises, the places it cannot see
 /// through, and the methods it calls, each at the IL offset where it happens, so that the body's
 /// own exception clauses can be applied to all three alike.
@@ -52,7 +84,7 @@ type internal LocalFacts =
     {
         Raises : (int * ThrownType) list
         Opaque : (int * Opacity) list
-        Calls : (int * MethodKey) list
+        Calls : (int * CallSite) list
         /// Each `rethrow`, with the `catch` or `filter` clause whose handler it is in: it re-raises
         /// what that clause caught.
         Rethrows : (int * ExceptionRegion) list
@@ -84,7 +116,7 @@ type internal Rethrown =
 /// What a call instruction's token names.
 [<RequireQualifiedAccess>]
 type internal CallTarget =
-    | Method of MethodKey
+    | Method of Callee
     | ArrayAccessor of arrayType : TypeDefn * ArrayAccessor
     | Missing
     | TypeMissing
@@ -103,6 +135,42 @@ type internal Runs =
     /// Nothing the analysis can see into.
     | Opaque of Opacity
 
+/// Which instantiation of a method definition a summary describes.
+[<RequireQualifiedAccess>]
+type internal Instantiation =
+    /// Every instantiation at once: the definition's type variables stand for any types, so a call
+    /// whose target turns on one of them is opaque.
+    | Open
+    /// One instantiation: the declaring type's arguments, then the method's own.
+    | Closed of typeArguments : ConcreteTypeHandle list * methodArguments : ConcreteTypeHandle list
+
+/// One instantiation of a method definition, which a summary is computed for.
+type internal MethodInstance =
+    {
+        Definition : MethodKey
+        Arguments : Instantiation
+    }
+
+/// What a `constrained.` call does in one instance of the method making it.
+[<RequireQualifiedAccess>]
+type internal ConstrainedOutcome =
+    /// It calls this instance.
+    | Reaches of MethodInstance
+    /// It throws this instead of calling anything.
+    | Raises of ThrownType
+    /// The type the prefix names does not decide what runs.
+    | Undecided
+
+/// What one instance of a method calls, each at the IL offset of the call: the instances it
+/// reaches, what calls raise instead of reaching anything, and the calls whose target the instance
+/// does not decide.
+type internal InstanceCalls =
+    {
+        Callees : (int * MethodInstance) list
+        Raises : (int * ThrownType) list
+        Undecided : (int * Opacity) list
+    }
+
 /// An escape analysis in progress: the assemblies loaded so far and every answer computed so far.
 /// Immutable; each query returns the state to ask the next one of.
 type EscapeAnalysisState =
@@ -119,7 +187,12 @@ type EscapeAnalysisState =
             TypeSystem : TypeSystemState
             BaseTypes : BaseClassTypes<DumpedAssembly>
             Facts : Map<MethodKey, LocalFacts>
-            Summaries : Map<MethodKey, Escapes>
+            /// What each instance summarised so far calls.
+            InstanceCalls : Map<MethodInstance, InstanceCalls>
+            /// Whether dispatch on a receiver of each type definition can be resolved, as far as it
+            /// has been asked (`dispatchBinds`).
+            DispatchBinds : Map<ResolvedTypeIdentity, bool>
+            Summaries : Map<MethodInstance, Escapes>
             /// Each type definition's base type, as far as it has been asked; `None` at the root.
             Bases : Map<ResolvedTypeIdentity, ResolvedTypeIdentity option>
         }
@@ -146,9 +219,13 @@ type EscapeAnalysisState =
 /// generic instantiation that a constraint added since rejects, or a named type whose own base
 /// type, interfaces or fields are gone.
 ///
-/// A method's summary is computed once and shared by every instantiation of it: a generic
-/// method's IL is the same for all of them, and the calls whose target an instantiation decides
-/// are opaque.
+/// A generic method's IL is read once, since every instantiation runs the same IL, but its summary
+/// is computed for each closed instantiation a call reaches. An instantiation decides what a
+/// <c>constrained.</c> call on one of the method's type variables runs when it makes that a value
+/// type or a sealed class. Asked about by itself, a generic definition stands for every
+/// instantiation at once, so such a call is opaque in it. An instantiation whose type arguments nest
+/// more than eight deep is analysed as its definition instead, so that a method calling itself at
+/// ever deeper instantiations reaches finitely many.
 /// </remarks>
 [<RequireQualifiedAccess>]
 module EscapeAnalysis =
@@ -189,6 +266,8 @@ module EscapeAnalysis =
                 }
             BaseTypes = context.BaseTypes
             Facts = Map.empty
+            InstanceCalls = Map.empty
+            DispatchBinds = Map.empty
             Summaries = Map.empty
             Bases = Map.empty
         }
@@ -516,16 +595,59 @@ module EscapeAnalysis =
         // A `filter` handler holds whatever its filter accepted.
         | _ -> state, asThrown
 
-    /// What a call instruction's metadata token names.
-    let rec private callTarget
+    /// Whether a substitution mentions a type variable, which only a generic definition named
+    /// without arguments leaves standing.
+    let rec private mentionsVariable (arguments : ImmutableArray<TypeConcretization.SubstitutionArgument>) : bool =
+        arguments
+        |> Seq.exists (fun argument ->
+            match argument with
+            | TypeConcretization.SubstitutionArgument.Formal _ -> true
+            | TypeConcretization.SubstitutionArgument.Closed _ -> false
+            | TypeConcretization.SubstitutionArgument.Spelled (_, _, context) -> mentionsVariable context
+        )
+
+    /// What a call instruction's metadata token names, and whether it names the generic definition
+    /// of the callee's declaring type rather than an instantiation of it.
+    let rec private callTargetOf
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
         (token : MetadataToken)
-        : EscapeAnalysisState * CallTarget
+        : EscapeAnalysisState * CallTarget * bool
         =
         match token with
-        | MetadataToken.MethodDef handle -> state, CallTarget.Method (MethodKey.make assembly handle)
-        | MetadataToken.MethodSpecification handle -> callTarget state assembly assembly.MethodSpecs.[handle].Method
+        | MetadataToken.MethodDef handle ->
+            let method = assembly.Methods.[handle]
+            let typical = not method.DeclaringTypeGenerics.IsEmpty
+
+            let spelling =
+                if typical || not method.Generics.IsEmpty then
+                    CalleeSpelling.Typical
+                else
+                    CalleeSpelling.Fixed
+
+            let callee =
+                {
+                    Callee = MethodKey.make assembly handle
+                    Spelling = spelling
+                }
+
+            state, CallTarget.Method callee, typical
+        | MetadataToken.MethodSpecification handle ->
+            match callTargetOf state assembly assembly.MethodSpecs.[handle].Method with
+            | state, CallTarget.Method callee, typical ->
+                let spelling =
+                    if typical then
+                        CalleeSpelling.Typical
+                    else
+                        CalleeSpelling.Spelled token
+
+                state,
+                CallTarget.Method
+                    { callee with
+                        Spelling = spelling
+                    },
+                typical
+            | unresolved -> unresolved
         | MetadataToken.MemberReference handle ->
             let ctx : TypeConcretization.ConcretizationContext<DumpedAssembly> =
                 {
@@ -547,14 +669,48 @@ module EscapeAnalysis =
                 }
 
             match target with
-            | MethodReferenceTarget.Defined (declaring, method, _) ->
-                state, CallTarget.Method (MethodKey.make declaring method)
+            | MethodReferenceTarget.Defined (declaring, method, declaringTypeArguments) ->
+                // A TypeSpec parent spells the declaring type's arguments; any other parent spells
+                // none, so a type variable left in them is the parent's own.
+                let typical =
+                    match assembly.Members.[handle].Parent with
+                    | MetadataToken.TypeSpecification _ -> false
+                    | _ -> mentionsVariable declaringTypeArguments.Arguments
+
+                let definition = declaring.Methods.[method]
+
+                let spelling =
+                    // A generic method named without a MethodSpec has no arguments to run with.
+                    if typical || not definition.Generics.IsEmpty then
+                        CalleeSpelling.Typical
+                    elif definition.DeclaringTypeGenerics.IsEmpty then
+                        CalleeSpelling.Fixed
+                    else
+                        CalleeSpelling.Spelled token
+
+                let callee =
+                    {
+                        Callee = MethodKey.make declaring method
+                        Spelling = spelling
+                    }
+
+                state, CallTarget.Method callee, typical
             | MethodReferenceTarget.ArrayMethod (arrayType, accessor) ->
-                state, CallTarget.ArrayAccessor (arrayType, accessor)
-            | MethodReferenceTarget.Missing -> state, CallTarget.Missing
-            | MethodReferenceTarget.ParentTypeMissing _ -> state, CallTarget.TypeMissing
-            | MethodReferenceTarget.DependsOnInstantiation -> state, CallTarget.DependsOnInstantiation
+                state, CallTarget.ArrayAccessor (arrayType, accessor), false
+            | MethodReferenceTarget.Missing -> state, CallTarget.Missing, false
+            | MethodReferenceTarget.ParentTypeMissing _ -> state, CallTarget.TypeMissing, false
+            | MethodReferenceTarget.DependsOnInstantiation -> state, CallTarget.DependsOnInstantiation, false
         | other -> failwith $"A call in %s{assembly.DefinitionFullName} names %O{other}, which is not a method"
+
+    /// What a call instruction's metadata token names.
+    let private callTarget
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (token : MetadataToken)
+        : EscapeAnalysisState * CallTarget
+        =
+        let state, target, _ = callTargetOf state assembly token
+        state, target
 
     let private methodOf
         (state : EscapeAnalysisState)
@@ -689,6 +845,42 @@ module EscapeAnalysis =
         match signature.ReturnType with
         | MethodReturnType.Void -> signature.ParameterTypes
         | MethodReturnType.Returns ty -> ty :: signature.ParameterTypes
+
+    /// Does every type reference that instantiating a spelling reads name a type? As
+    /// `spellingBindFailure`, and through a function pointer's signature as well, whose types
+    /// TypeSystem instantiates although the JIT binds none of them.
+    let rec private concretizable
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (spelling : TypeDefn)
+        : EscapeAnalysisState * bool
+        =
+        let all (state : EscapeAnalysisState) (spellings : TypeDefn seq) =
+            ((state, true), spellings)
+            ||> Seq.fold (fun (state, soFar) spelling ->
+                if soFar then
+                    concretizable state assembly spelling
+                else
+                    state, false
+            )
+
+        match spelling with
+        | TypeDefn.FunctionPointer signature -> all state (signatureTypes signature)
+        | TypeDefn.GenericInstantiation (root, arguments) -> all state (Seq.append [ root ] arguments)
+        | TypeDefn.Array (element, _)
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element
+        | TypeDefn.Pointer element
+        | TypeDefn.Byref element
+        | TypeDefn.Pinned element -> concretizable state assembly element
+        | TypeDefn.Modified modified -> concretizable state assembly modified.Unmodified
+        | TypeDefn.FromReference _
+        | TypeDefn.FromDefinition _
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.GenericMethodParameter _
+        | TypeDefn.Void ->
+            let state, failure = spellingBindFailure state assembly spelling
+            state, failure.IsNone
 
     /// The type definitions a spelling names that resolve, arguments included.
     let rec private namedIdentities
@@ -858,7 +1050,10 @@ module EscapeAnalysis =
             state, Some target, raisesOf failure
         | MetadataToken.MethodSpecification handle ->
             let spec = assembly.MethodSpecs.[handle]
-            let state, target, failures = bindToken state assembly spec.Method
+            let state, _, failures = bindToken state assembly spec.Method
+            // The specification, not the method it instantiates, says how the callee is instantiated.
+            let state, target = callTarget state assembly token
+            let target = Some target
 
             let state, argumentsFailure = firstBindFailure state assembly spec.Signature
             state, target, raisesOf argumentsFailure @ failures
@@ -1084,7 +1279,7 @@ module EscapeAnalysis =
                 | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Call | UnaryMetadataTokenIlOp.Newobj | UnaryMetadataTokenIlOp.Jmp),
                                            _) ->
                     match methodTarget with
-                    | Some (CallTarget.Method callee) -> state, Some (declaringTypeOf state callee)
+                    | Some (CallTarget.Method callee) -> state, Some (declaringTypeOf state callee.Callee)
                     | _ -> state, None
                 | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Ldsfld | UnaryMetadataTokenIlOp.Stsfld | UnaryMetadataTokenIlOp.Ldsflda),
                                            MetadataOperand.FromMetadata token) ->
@@ -1110,15 +1305,39 @@ module EscapeAnalysis =
         // folds cuts that code off; it folds a branch a capability query decides, so for code
         // only such a branch reaches, this is an over-approximation.
         let bind
-            (state : EscapeAnalysisState, targets : Map<int, CallTarget>, bindingFailures : Set<OutsideBodyFact>)
+            (
+                state : EscapeAnalysisState,
+                targets : Map<int, CallTarget>,
+                unbound : Set<int>,
+                bindingFailures : Set<OutsideBodyFact>
+            )
             (index : int)
             =
             let op, _ = ops.[index]
 
-            let state, methodTarget, bindingFailures =
+            let state, methodTarget, unbound, bindingFailures =
                 match op with
                 | IlOp.UnaryMetadataToken (tokenOp, MetadataOperand.FromMetadata token) ->
                     let state, target, failures = bindToken state assembly token.Token
+
+                    // A token that fails to bind names nothing to instantiate: the JIT throws
+                    // before the body runs.
+                    let target, unbound =
+                        if failures.IsEmpty then
+                            target, unbound
+                        else
+                            let target =
+                                match target with
+                                | Some (CallTarget.Method callee) ->
+                                    Some (
+                                        CallTarget.Method
+                                            { callee with
+                                                Spelling = CalleeSpelling.Typical
+                                            }
+                                    )
+                                | other -> other
+
+                            target, Set.add index unbound
 
                     // Binding also runs the module initializer of every other module it activates;
                     // this module's has run, since its code is running.
@@ -1144,23 +1363,41 @@ module EscapeAnalysis =
                         else
                             failures
 
-                    state, target, Set.union bindingFailures (Set.ofList failures)
-                | _ -> state, None, bindingFailures
+                    state, target, unbound, Set.union bindingFailures (Set.ofList failures)
+                | _ -> state, None, unbound, bindingFailures
 
             let targets =
                 match methodTarget with
                 | Some target -> Map.add index target targets
                 | None -> targets
 
-            state, targets, bindingFailures
+            state, targets, unbound, bindingFailures
+
+        // The `constrained.` prefix on the instruction at `index`: its own index, and the type it
+        // names. An instruction's prefixes immediately precede it, and none of them can be a
+        // branch target.
+        let constrainedPrefix (index : int) : (int * MetadataToken) option =
+            let rec back (at : int) : (int * MetadataToken) option =
+                if at < 0 then
+                    None
+                else
+                    match fst ops.[at] with
+                    | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Constrained, MetadataOperand.FromMetadata token) ->
+                        Some (at, token.Token)
+                    | IlOp.Nullary (NullaryIlOp.Tail | NullaryIlOp.Volatile | NullaryIlOp.Readonly)
+                    | IlOp.UnaryConst (UnaryConstIlOp.Unaligned _) -> back (at - 1)
+                    | _ -> None
+
+            back (index - 1)
 
         let folder
             (targets : Map<int, CallTarget>)
+            (unbound : Set<int>)
             (
                 state : EscapeAnalysisState,
                 raises : (int * ThrownType) list,
                 opaque : (int * Opacity) list,
-                calls : (int * MethodKey) list
+                calls : (int * CallSite) list
             )
             (index : int)
             =
@@ -1210,7 +1447,8 @@ module EscapeAnalysis =
                                                          MetadataOperand.FromMetadata token)) ->
                             match callTarget state assembly token.Token with
                             | state, CallTarget.Method constructor ->
-                                state, ThrowOperand.Object (ThrownType.Exactly (declaringTypeOf state constructor))
+                                state,
+                                ThrowOperand.Object (ThrownType.Exactly (declaringTypeOf state constructor.Callee))
                             | state, _ -> state, ThrowOperand.Untyped
                         | Some (IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Call | UnaryMetadataTokenIlOp.Callvirt),
                                                          MetadataOperand.FromMetadata token)) ->
@@ -1235,7 +1473,7 @@ module EscapeAnalysis =
                     let onInterface =
                         match methodTarget with
                         | Some (CallTarget.Method target) ->
-                            let _, declaring = definitionOf state (declaringTypeOf state target)
+                            let _, declaring = definitionOf state (declaringTypeOf state target.Callee)
                             declaring.TypeAttributes.HasFlag TypeAttributes.Interface
                         | _ -> false
 
@@ -1249,7 +1487,7 @@ module EscapeAnalysis =
                     | MetadataOperand.FromDynamicScope _, _, _ ->
                         state, raises, (offset, Opacity.IndirectCall) :: opaque, calls
                     | MetadataOperand.FromMetadata _, Some (CallTarget.Method callee), Some expansion when
-                        callee = key
+                        callee.Callee = key
                         && call <> UnaryMetadataTokenIlOp.Newobj
                         && call <> UnaryMetadataTokenIlOp.Jmp
                         ->
@@ -1268,6 +1506,13 @@ module EscapeAnalysis =
                             let helper =
                                 MethodKey.make corelib (IntrinsicBody.platformNotSupportedHelper corelib)
 
+                            let helper =
+                                CallSite.Direct
+                                    {
+                                        Callee = helper
+                                        Spelling = CalleeSpelling.Fixed
+                                    }
+
                             state, raises, opaque, (offset, helper) :: calls
                         | SelfCallExpansion.Primitive primitive ->
                             raisedHere (contractRaises state (IntrinsicPrimitive.contract primitive))
@@ -1284,6 +1529,13 @@ module EscapeAnalysis =
 
                                     let helper = MethodKey.make corelib (IntrinsicBody.argumentOutOfRangeHelper corelib)
 
+                                    let helper =
+                                        CallSite.Direct
+                                            {
+                                                Callee = helper
+                                                Spelling = CalleeSpelling.Fixed
+                                            }
+
                                     state, raises, opaque, (offset, helper) :: calls
                                 else
                                     state, raises, opaque, calls
@@ -1294,13 +1546,15 @@ module EscapeAnalysis =
                     | MetadataOperand.FromMetadata _, Some (CallTarget.Method callee), _ ->
                         // A static virtual is dispatched on the type a `constrained.` prefix names,
                         // which is how the only legal call to one is written.
-                        if
-                            (call = UnaryMetadataTokenIlOp.Callvirt && isOverridable state callee)
-                            || isStaticVirtual state callee
-                        then
+                        if isStaticVirtual state callee.Callee then
                             state, raises, (offset, Opacity.VirtualCall) :: opaque, calls
+                        elif call = UnaryMetadataTokenIlOp.Callvirt && isOverridable state callee.Callee then
+                            match constrainedPrefix index with
+                            | Some (prefix, constrainedType) when not (unbound.Contains prefix) ->
+                                state, raises, opaque, (offset, CallSite.Constrained (constrainedType, callee)) :: calls
+                            | _ -> state, raises, (offset, Opacity.VirtualCall) :: opaque, calls
                         else
-                            state, raises, opaque, (offset, callee) :: calls
+                            state, raises, opaque, (offset, CallSite.Direct callee) :: calls
                     | MetadataOperand.FromMetadata _, Some (CallTarget.ArrayAccessor (arrayType, accessor)), _ ->
                         let raised =
                             arrayAccessorRaises state arrayType accessor
@@ -1361,8 +1615,9 @@ module EscapeAnalysis =
             else
                 localFailures
 
-        let state, targets, bindingFailures =
-            ((state, Map.empty, localFailures), [ 0 .. ops.Length - 1 ]) ||> List.fold bind
+        let state, targets, unbound, bindingFailures =
+            ((state, Map.empty, Set.empty, localFailures), [ 0 .. ops.Length - 1 ])
+            ||> List.fold bind
 
         // What each call to a capability query returns on this CPU, which decides a branch on it.
         let constants =
@@ -1372,9 +1627,9 @@ module EscapeAnalysis =
                 match op, Map.tryFind index targets with
                 | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Call, MetadataOperand.FromMetadata _),
                   Some (CallTarget.Method callee) ->
-                    let calleeAssembly, _ = methodOf state callee
+                    let calleeAssembly, _ = methodOf state callee.Callee
 
-                    IntrinsicBody.constantResult state.Profile calleeAssembly callee.Method.Get
+                    IntrinsicBody.constantResult state.Profile calleeAssembly callee.Callee.Method.Get
                     |> Option.map (fun value -> offset, value)
                 | _ -> None
             )
@@ -1386,7 +1641,7 @@ module EscapeAnalysis =
             ((state, [], [], []), [ 0 .. ops.Length - 1 ])
             ||> List.fold (fun acc index ->
                 if executed.Contains (snd ops.[index]) then
-                    folder targets acc index
+                    folder targets unbound acc index
                 else
                     acc
             )
@@ -1431,6 +1686,490 @@ module EscapeAnalysis =
             OutsideBody = bindingFailures
         }
 
+    /// How deeply an instance's type arguments may nest. A generic method can call itself at a
+    /// deeper instantiation each time, so the instances reachable from one call are unbounded; one
+    /// nested deeper than this is analysed as the open definition instead.
+    let private instantiationDepthLimit : int = 8
+
+    /// Whether a spelling mentions a type variable of the body that spells it.
+    let rec private mentionsTypeVariable (spelling : TypeDefn) : bool =
+        match spelling with
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.GenericMethodParameter _ -> true
+        | TypeDefn.GenericInstantiation (root, arguments) ->
+            mentionsTypeVariable root || Seq.exists mentionsTypeVariable arguments
+        | TypeDefn.Array (element, _)
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element
+        | TypeDefn.Pointer element
+        | TypeDefn.Byref element
+        | TypeDefn.Pinned element -> mentionsTypeVariable element
+        | TypeDefn.Modified modified -> mentionsTypeVariable modified.Unmodified
+        | TypeDefn.FunctionPointer signature -> signatureTypes signature |> List.exists mentionsTypeVariable
+        | TypeDefn.FromReference _
+        | TypeDefn.FromDefinition _
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.Void -> false
+
+    /// The type arguments a call's token spells, over the calling body's type variables.
+    let rec private spelledArguments (assembly : DumpedAssembly) (token : MetadataToken) : TypeDefn list =
+        match token with
+        | MetadataToken.MethodSpecification handle ->
+            let spec = assembly.MethodSpecs.[handle]
+            List.ofSeq spec.Signature @ spelledArguments assembly spec.Method
+        | MetadataToken.MemberReference handle ->
+            match assembly.Members.[handle].Parent with
+            | MetadataToken.TypeSpecification parent -> [ assembly.TypeSpecs.[parent].Signature ]
+            | _ -> []
+        | _ -> []
+
+    /// How deeply a type's arguments nest.
+    let rec private depthOf (state : EscapeAnalysisState) (handle : ConcreteTypeHandle) : int =
+        match handle with
+        | ConcreteTypeHandle.Concrete _ ->
+            match AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes with
+            | Some ty -> 1 + (ty.Generics |> Seq.map (depthOf state) |> Seq.fold max 0)
+            | None -> failwith $"Concrete type handle %O{handle} is not registered"
+        | ConcreteTypeHandle.Byref element
+        | ConcreteTypeHandle.Pointer element
+        | ConcreteTypeHandle.OneDimArrayZero element
+        | ConcreteTypeHandle.Array (element, _) -> 1 + depthOf state element
+        | ConcreteTypeHandle.FunctionPointer signature ->
+            let returned =
+                match signature.ReturnType with
+                | MethodReturnType.Void -> []
+                | MethodReturnType.Returns ty -> [ ty ]
+
+            1
+            + (returned @ signature.ParameterTypes
+               |> List.map (depthOf state)
+               |> List.fold max 0)
+
+    /// The instance of `definition` these arguments make, or its open definition if they nest
+    /// deeper than `instantiationDepthLimit`.
+    let private instanceOf
+        (state : EscapeAnalysisState)
+        (definition : MethodKey)
+        (typeArguments : ConcreteTypeHandle list)
+        (methodArguments : ConcreteTypeHandle list)
+        : MethodInstance
+        =
+        let arguments =
+            if
+                typeArguments @ methodArguments
+                |> List.exists (fun argument -> depthOf state argument > instantiationDepthLimit)
+            then
+                Instantiation.Open
+            else
+                Instantiation.Closed (typeArguments, methodArguments)
+
+        {
+            Definition = definition
+            Arguments = arguments
+        }
+
+    /// A type a body of `assembly` spells, as that body's instantiation makes it.
+    let private concretize
+        (state : EscapeAnalysisState)
+        (assembly : string)
+        (typeArguments : ConcreteTypeHandle list)
+        (methodArguments : ConcreteTypeHandle list)
+        (spelling : TypeDefn)
+        : EscapeAnalysisState * ConcreteTypeHandle
+        =
+        let typeSystem, handle =
+            TypeSystemState.concretizeType
+                state.LoggerFactory
+                state.RuntimeDirs
+                state.BaseTypes
+                state.TypeSystem
+                assembly
+                (ImmutableArray.CreateRange typeArguments)
+                (ImmutableArray.CreateRange methodArguments)
+                spelling
+
+        { state with
+            TypeSystem = typeSystem
+        },
+        handle
+
+    /// The arguments of the declaring type and of the method that a call's token, of a body of
+    /// `assembly` whose instantiation is `typeArguments` and `methodArguments`, instantiates its
+    /// callee with: a MemberRef's as the interpreter binds them
+    /// (`MemberReferenceInstantiation.resolveMember`), and a MethodSpec's own.
+    let rec private spelledInstantiation
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (typeArguments : ConcreteTypeHandle list)
+        (methodArguments : ConcreteTypeHandle list)
+        (token : MetadataToken)
+        : EscapeAnalysisState * ConcreteTypeHandle list * ConcreteTypeHandle list
+        =
+        match token with
+        | MetadataToken.MethodSpecification handle ->
+            let spec = assembly.MethodSpecs.[handle]
+
+            let state, calleeMethodArguments =
+                ((state, []), spec.Signature)
+                ||> Seq.fold (fun (state, handles) argument ->
+                    let state, handle =
+                        concretize state assembly.DefinitionFullName typeArguments methodArguments argument
+
+                    state, handle :: handles
+                )
+
+            let state, calleeTypeArguments, _ =
+                match spec.Method with
+                | MetadataToken.MethodDef _ -> state, [], []
+                | inner -> spelledInstantiation state assembly typeArguments methodArguments inner
+
+            state, calleeTypeArguments, List.rev calleeMethodArguments
+        | MetadataToken.MemberReference handle ->
+            let typeSystem, _, _, declaringTypeArguments =
+                MemberReferenceInstantiation.resolveMember
+                    state.LoggerFactory
+                    state.RuntimeDirs
+                    state.BaseTypes
+                    assembly
+                    (ImmutableArray.CreateRange typeArguments)
+                    (ImmutableArray.CreateRange methodArguments)
+                    handle
+                    state.TypeSystem
+
+            let state =
+                { state with
+                    TypeSystem = typeSystem
+                }
+
+            // Closed already: the interpreter concretises them in the calling assembly with no
+            // context (`ExecutionConcretization.concretizeMethodForExecution`), as here.
+            let state, calleeTypeArguments =
+                ((state, []), declaringTypeArguments)
+                ||> Seq.fold (fun (state, handles) argument ->
+                    let state, handle = concretize state assembly.DefinitionFullName [] [] argument
+                    state, handle :: handles
+                )
+
+            state, List.rev calleeTypeArguments, []
+        | other -> failwith $"A call in %s{assembly.DefinitionFullName} spells an instantiation with %O{other}"
+
+    /// The instance a call of `callee` from a body of `assembly` reaches, when that body runs as
+    /// `caller`.
+    let private calleeInstance
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (caller : Instantiation)
+        (callee : Callee)
+        : EscapeAnalysisState * MethodInstance
+        =
+        let unknown : MethodInstance =
+            {
+                Definition = callee.Callee
+                Arguments = Instantiation.Open
+            }
+
+        match callee.Spelling with
+        | CalleeSpelling.Fixed -> state, instanceOf state callee.Callee [] []
+        | CalleeSpelling.Typical -> state, unknown
+        | CalleeSpelling.Spelled token ->
+            let context =
+                match caller with
+                | Instantiation.Closed (typeArguments, methodArguments) -> Some (typeArguments, methodArguments)
+                | Instantiation.Open ->
+                    if spelledArguments assembly token |> List.exists mentionsTypeVariable then
+                        None
+                    else
+                        Some ([], [])
+
+            match context with
+            | None -> state, unknown
+            | Some (typeArguments, methodArguments) ->
+                let state, calleeTypeArguments, calleeMethodArguments =
+                    spelledInstantiation state assembly typeArguments methodArguments token
+
+                state, instanceOf state callee.Callee calleeTypeArguments calleeMethodArguments
+
+    /// Whether everything dispatch reads of a receiver of the type `identity` binds: its base types,
+    /// the interfaces any of them implements, and the signature of every method of each, which
+    /// dispatch compares to find what implements a method. It reads no method's locals.
+    let rec private dispatchBinds
+        (state : EscapeAnalysisState)
+        (identity : ResolvedTypeIdentity)
+        : EscapeAnalysisState * bool
+        =
+        match state.DispatchBinds.TryFind identity with
+        | Some known -> state, known
+        | None ->
+
+        let assembly, ty = definitionOf state identity
+
+        // A type a spelling names, if the spelling binds.
+        let named (state : EscapeAnalysisState) (spelling : TypeDefn) : EscapeAnalysisState * bool =
+            match concretizable state assembly spelling with
+            | state, false -> state, false
+            | state, true ->
+                match nominalIdentity state assembly spelling with
+                | state, Some related -> dispatchBinds state related
+                | state, None -> state, true
+
+        let typeToken (state : EscapeAnalysisState) (token : MetadataToken) : EscapeAnalysisState * bool =
+            match token with
+            | MetadataToken.TypeDefinition handle -> dispatchBinds state assembly.TypeDefs.[handle].Identity
+            | MetadataToken.TypeReference handle ->
+                match resolveTypeRef state assembly assembly.TypeRefs.[handle] with
+                | state, Some related -> dispatchBinds state related
+                | state, None -> state, false
+            | MetadataToken.TypeSpecification handle -> named state assembly.TypeSpecs.[handle].Signature
+            | _ -> state, false
+
+        let methodBinds
+            (state : EscapeAnalysisState)
+            (method : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+            : EscapeAnalysisState * bool
+            =
+            ((state, true), signatureTypes method.Signature)
+            ||> List.fold (fun (state, soFar) spelling ->
+                if soFar then
+                    concretizable state assembly spelling
+                else
+                    state, false
+            )
+
+        let checks : (EscapeAnalysisState -> EscapeAnalysisState * bool) list =
+            [
+                match ty.BaseType with
+                | None -> ()
+                | Some (BaseTypeInfo.TypeDef handle) ->
+                    yield fun state -> typeToken state (MetadataToken.TypeDefinition handle)
+                | Some (BaseTypeInfo.TypeRef handle) ->
+                    yield fun state -> typeToken state (MetadataToken.TypeReference handle)
+                | Some (BaseTypeInfo.TypeSpec handle) ->
+                    yield fun state -> typeToken state (MetadataToken.TypeSpecification handle)
+                for implemented in ty.ImplementedInterfaces do
+                    yield fun state -> typeToken state implemented.InterfaceHandle
+                for method in ty.Methods do
+                    yield fun state -> methodBinds state method
+            ]
+
+        let state, binds =
+            ((state, true), checks)
+            ||> List.fold (fun (state, soFar) check -> if soFar then check state else state, false)
+
+        { state with
+            DispatchBinds = state.DispatchBinds.Add (identity, binds)
+        },
+        binds
+
+    /// What a `constrained.` call does, when the body of `assembly` making it runs as `caller`, if
+    /// the type the prefix names decides it, which it does for a value type and for a sealed class
+    /// (ECMA-335 III.2.1). Undecided where an instance of a derived class may receive the call, or
+    /// the type is not known.
+    let private constrainedInstance
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (caller : Instantiation)
+        (constrainedType : MetadataToken)
+        (callee : Callee)
+        : EscapeAnalysisState * ConstrainedOutcome
+        =
+        let state, named = calleeInstance state assembly caller callee
+
+        let typeSystem, spelling, spellingAssembly =
+            TypeSystemState.resolveTypeMetadataToken
+                state.LoggerFactory
+                state.RuntimeDirs
+                state.BaseTypes
+                state.TypeSystem
+                assembly
+                constrainedType
+
+        let state =
+            { state with
+                TypeSystem = typeSystem
+            }
+
+        let context =
+            match caller with
+            | Instantiation.Closed (typeArguments, methodArguments) -> Some (typeArguments, methodArguments)
+            | Instantiation.Open ->
+                if mentionsTypeVariable spelling then
+                    None
+                else
+                    Some ([], [])
+
+        match named.Arguments, context with
+        | Instantiation.Open, _
+        | _, None -> state, ConstrainedOutcome.Undecided
+        | Instantiation.Closed (namedTypeArguments, namedMethodArguments), Some (typeArguments, methodArguments) ->
+
+        let state, receiver =
+            concretize state spellingAssembly.DefinitionFullName typeArguments methodArguments spelling
+
+        let _, definition = methodOf state named.Definition
+
+        // Instantiating the method the call names reads its locals, which the JIT does not unless
+        // that method runs.
+        let namedLocals =
+            match definition.Body with
+            | MethodBody.Il body -> body.LocalVars |> Option.map List.ofSeq |> Option.defaultValue []
+            | _ -> []
+
+        let state, binds =
+            match TypeSystemState.tryGetConcreteTypeInfo state.TypeSystem receiver with
+            | None -> state, true
+            | Some (_, receiverType) ->
+                match dispatchBinds state receiverType.Identity with
+                | state, true -> dispatchBinds state definition.RequiredDeclaringType.Identity
+                | state, false -> state, false
+
+        let state, binds =
+            if binds then
+                let definitionAssembly = assemblyOf state definition.DeclaringAssemblyFullName
+
+                ((state, true), namedLocals)
+                ||> List.fold (fun (state, soFar) spelling ->
+                    if soFar then
+                        concretizable state definitionAssembly spelling
+                    else
+                        state, false
+                )
+            else
+                state, false
+
+        if not binds then
+            state, ConstrainedOutcome.Undecided
+        else
+
+        let typeSystem, concretized, declaringType =
+            MethodConcretisation.concretizeMethodWithAllGenerics
+                state.LoggerFactory
+                state.RuntimeDirs
+                state.BaseTypes
+                (ImmutableArray.CreateRange namedTypeArguments)
+                definition
+                (ImmutableArray.CreateRange namedMethodArguments)
+                state.TypeSystem
+
+        let implementationOn (walkBaseTypes : bool) (typeSystem : TypeSystemState) =
+            ConcreteVirtualDispatch.tryResolveVirtualImplementation
+                state.LoggerFactory
+                state.RuntimeDirs
+                state.BaseTypes
+                concretized.Generics
+                concretized
+                receiver
+                walkBaseTypes
+                typeSystem
+
+        // What `callvirt` runs on a receiver of exactly the type `receiver`: an override, or else
+        // the method the call names.
+        let dispatchedOn (typeSystem : TypeSystemState) : TypeSystemState * VirtualImplementation =
+            match implementationOn true typeSystem with
+            | typeSystem, VirtualImplementation.NotOverridden ->
+                let named : DispatchedMethod =
+                    {
+                        Definition = definition
+                        TypeGenerics = ImmutableArray.CreateRange namedTypeArguments
+                        MethodGenerics = ImmutableArray.CreateRange namedMethodArguments
+                    }
+
+                typeSystem, VirtualImplementation.Found named
+            | decided -> decided
+
+        // A type that is not one the method's declaring type admits leaves what runs to the
+        // receiver's class: one implementing `IDynamicInterfaceCastable` is asked for it.
+        let typeSystem, admitted =
+            TypeAssignability.isConcreteTypeAssignableTo
+                state.LoggerFactory
+                state.RuntimeDirs
+                state.BaseTypes
+                typeSystem
+                receiver
+                declaringType
+
+        // `None` where the type does not decide what runs.
+        let typeSystem, runs =
+            match TypeSystemState.tryGetConcreteTypeInfo typeSystem receiver with
+            | _ when not admitted -> typeSystem, None
+            // An array may be of a covariant derived element type.
+            | None -> typeSystem, None
+            | Some (_, receiverType) ->
+                if LoadedTypeInfo.isValueType state.BaseTypes typeSystem._LoadedAssemblies receiverType then
+                    match implementationOn false typeSystem with
+                    | typeSystem, VirtualImplementation.NotOverridden ->
+                        // A value type that does not implement the method itself is boxed, and the
+                        // call dispatched on the box (ECMA-335 III.2.1): to a method it inherits from
+                        // Object, ValueType or Enum, or to an interface's default body. A boxed
+                        // Nullable is its underlying value or null, not a Nullable.
+                        if receiverType.Identity <> state.BaseTypes.Nullable.Identity then
+                            let typeSystem, decided = dispatchedOn typeSystem
+                            typeSystem, Some decided
+                        else
+                            typeSystem, None
+                    | typeSystem, decided -> typeSystem, Some decided
+                elif receiverType.TypeAttributes.HasFlag TypeAttributes.Sealed then
+                    let typeSystem, decided = dispatchedOn typeSystem
+                    typeSystem, Some decided
+                else
+                    typeSystem, None
+
+        let state =
+            { state with
+                TypeSystem = typeSystem
+            }
+
+        match runs with
+        | None
+        | Some VirtualImplementation.NotOverridden
+        | Some (VirtualImplementation.Unmodelled _) -> state, ConstrainedOutcome.Undecided
+        | Some (VirtualImplementation.Ambiguous _) ->
+            state,
+            ConstrainedOutcome.Raises (
+                ThrownType.Exactly (corelibType state "System.Runtime" "AmbiguousImplementationException")
+            )
+        | Some (VirtualImplementation.Found runs) ->
+            match runs.Definition.TryMetadata with
+            | None -> state, ConstrainedOutcome.Undecided
+            | Some facts ->
+                let key =
+                    MethodKey.make (assemblyOf state runs.Definition.DeclaringAssemblyFullName) facts.Handle
+
+                state,
+                ConstrainedOutcome.Reaches (
+                    instanceOf state key (List.ofSeq runs.TypeGenerics) (List.ofSeq runs.MethodGenerics)
+                )
+
+    /// What `instance` calls, from the facts of its definition.
+    let private callsOf
+        (state : EscapeAnalysisState)
+        (instance : MethodInstance)
+        (facts : LocalFacts)
+        : EscapeAnalysisState * InstanceCalls
+        =
+        let assembly = assemblyOf state instance.Definition.AssemblyFullName
+
+        let state, callees, raises, undecided =
+            ((state, [], [], []), facts.Calls)
+            ||> List.fold (fun (state, callees, raises, undecided) (offset, site) ->
+                match site with
+                | CallSite.Direct callee ->
+                    let state, reached = calleeInstance state assembly instance.Arguments callee
+                    state, (offset, reached) :: callees, raises, undecided
+                | CallSite.Constrained (constrainedType, callee) ->
+                    match constrainedInstance state assembly instance.Arguments constrainedType callee with
+                    | state, ConstrainedOutcome.Reaches reached ->
+                        state, (offset, reached) :: callees, raises, undecided
+                    | state, ConstrainedOutcome.Raises thrown -> state, callees, (offset, thrown) :: raises, undecided
+                    | state, ConstrainedOutcome.Undecided ->
+                        state, callees, raises, (offset, Opacity.VirtualCall) :: undecided
+            )
+
+        state,
+        {
+            Callees = List.rev callees
+            Raises = List.rev raises
+            Undecided = List.rev undecided
+        }
+
     /// The full name of a type the analysis has loaded, for reporting.
     let typeName (state : EscapeAnalysisState) (identity : ResolvedTypeIdentity) : string =
         let assembly, ty = definitionOf state identity
@@ -1445,32 +2184,56 @@ module EscapeAnalysis =
     /// and remembers them all.
     /// </remarks>
     let escapes (state : EscapeAnalysisState) (method : MethodKey) : EscapeAnalysisState * Escapes =
-        match state.Summaries.TryFind method with
+        // A generic definition is asked about for every instantiation at once.
+        let root =
+            let _, definition = methodOf state method
+
+            if definition.DeclaringTypeGenerics.IsEmpty && definition.Generics.IsEmpty then
+                instanceOf state method [] []
+            else
+                {
+                    Definition = method
+                    Arguments = Instantiation.Open
+                }
+
+        match state.Summaries.TryFind root with
         | Some known -> state, known
         | None ->
 
-        // Every method reachable from `method` that has no summary yet, with its local facts.
-        let rec discover (state : EscapeAnalysisState) (pending : MethodKey list) (found : MethodKey list) =
+        // Every instance reachable from `root` that has no summary yet, with what it calls and the
+        // local facts of its definition.
+        let rec discover (state : EscapeAnalysisState) (pending : MethodInstance list) (found : MethodInstance list) =
             match pending with
             | [] -> state, found
-            | key :: rest when state.Summaries.ContainsKey key || state.Facts.ContainsKey key ->
+            | key :: rest when state.Summaries.ContainsKey key || state.InstanceCalls.ContainsKey key ->
                 discover state rest found
             | key :: rest ->
-                let state, facts = factsOf state key
+                let state, facts =
+                    match state.Facts.TryFind key.Definition with
+                    | Some facts -> state, facts
+                    | None ->
+                        let state, facts = factsOf state key.Definition
+
+                        { state with
+                            Facts = state.Facts.Add (key.Definition, facts)
+                        },
+                        facts
+
+                let state, calls = callsOf state key facts
 
                 let state =
                     { state with
-                        Facts = state.Facts.Add (key, facts)
+                        InstanceCalls = state.InstanceCalls.Add (key, calls)
                     }
 
-                discover state ((facts.Calls |> List.map snd) @ rest) (key :: found)
+                discover state ((calls.Callees |> List.map snd) @ rest) (key :: found)
 
-        let state, reachable = discover state [ method ] []
+        let state, reachable = discover state [ root ] []
 
         // Whether a raise at `offset` of `key`'s body gets out of it.
-        let escapesAt (state : EscapeAnalysisState) (key : MethodKey) (offset : int) (thrown : ThrownType option) =
-            let facts = state.Facts.[key]
-            escapesHandlers state (assemblyOf state key.AssemblyFullName) facts.Regions offset thrown
+        let escapesAt (state : EscapeAnalysisState) (key : MethodInstance) (offset : int) (thrown : ThrownType option) =
+            let facts = state.Facts.[key.Definition]
+            escapesHandlers state (assemblyOf state key.Definition.AssemblyFullName) facts.Regions offset thrown
 
         // What each `rethrow` in `key`'s body re-raises, given what its callees let escape: what
         // its clause caught of what the clause's protected block raised. That block may hold
@@ -1479,12 +2242,13 @@ module EscapeAnalysis =
         // fixed point.
         let rethrown
             (state : EscapeAnalysisState)
-            (key : MethodKey)
-            (summaryOf : MethodKey -> Escapes)
+            (key : MethodInstance)
+            (summaryOf : MethodInstance -> Escapes)
             : EscapeAnalysisState * (int * ThrownType option) list
             =
-            let facts = state.Facts.[key]
-            let assembly = assemblyOf state key.AssemblyFullName
+            let facts = state.Facts.[key.Definition]
+            let calls = state.InstanceCalls.[key]
+            let assembly = assemblyOf state key.Definition.AssemblyFullName
 
             let protectedBy (clause : ExceptionRegion) : ExceptionOffset =
                 match clause with
@@ -1508,13 +2272,13 @@ module EscapeAnalysis =
 
                         let raised =
                             [
-                                for at, thrown in facts.Raises do
+                                for at, thrown in facts.Raises @ calls.Raises do
                                     if inside at then
                                         yield at, Some thrown
-                                for at, _ in facts.Opaque do
+                                for at, _ in facts.Opaque @ calls.Undecided do
                                     if inside at then
                                         yield at, None
-                                for at, callee in facts.Calls do
+                                for at, callee in calls.Callees do
                                     if inside at then
                                         let calleeEscapes = summaryOf callee
 
@@ -1560,8 +2324,9 @@ module EscapeAnalysis =
                         yield offset, thrown
             ]
 
-        let seedOf (state : EscapeAnalysisState) (key : MethodKey) : EscapeAnalysisState * Escapes =
-            let facts = state.Facts.[key]
+        let seedOf (state : EscapeAnalysisState) (key : MethodInstance) : EscapeAnalysisState * Escapes =
+            let facts = state.Facts.[key.Definition]
+            let calls = state.InstanceCalls.[key]
 
             // What happens outside the body is past all its handlers.
             let outside =
@@ -1582,7 +2347,7 @@ module EscapeAnalysis =
                 )
 
             let state, types =
-                ((state, outside), facts.Raises)
+                ((state, outside), facts.Raises @ calls.Raises)
                 ||> List.fold (fun (state, types) (offset, thrown) ->
                     match escapesAt state key offset (Some thrown) with
                     | state, true -> state, Set.add thrown types
@@ -1590,7 +2355,7 @@ module EscapeAnalysis =
                 )
 
             let state, unknown =
-                ((state, opaqueOutside), facts.Opaque)
+                ((state, opaqueOutside), facts.Opaque @ calls.Undecided)
                 ||> List.fold (fun (state, unknown) (offset, _) ->
                     if unknown then
                         state, true
@@ -1613,8 +2378,8 @@ module EscapeAnalysis =
 
         // Iterate to the least fixed point: each method lets escape its own seed and whatever its
         // callees let escape past its handlers.
-        let rec iterate (state : EscapeAnalysisState) (current : Map<MethodKey, Escapes>) =
-            let summaryOf (key : MethodKey) : Escapes =
+        let rec iterate (state : EscapeAnalysisState) (current : Map<MethodInstance, Escapes>) =
+            let summaryOf (key : MethodInstance) : Escapes =
                 match state.Summaries.TryFind key with
                 | Some known -> known
                 | None -> current.[key]
@@ -1622,10 +2387,10 @@ module EscapeAnalysis =
             let state, next =
                 ((state, current), reachable)
                 ||> List.fold (fun (state, next) key ->
-                    let facts = state.Facts.[key]
+                    let calls = state.InstanceCalls.[key]
 
                     let state, escaping =
-                        ((state, seeds.[key]), facts.Calls)
+                        ((state, seeds.[key]), calls.Callees)
                         ||> List.fold (fun (state, acc) (offset, callee) ->
                             let calleeEscapes = summaryOf callee
 
@@ -1695,4 +2460,4 @@ module EscapeAnalysis =
                     ||> Map.fold (fun acc key value -> Map.add key value acc)
             }
 
-        state, state.Summaries.[method]
+        state, state.Summaries.[root]
