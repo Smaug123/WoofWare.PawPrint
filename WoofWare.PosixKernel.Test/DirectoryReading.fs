@@ -5,7 +5,7 @@ open WoofWare.PosixKernel
 /// Opening and reading a directory the way `opendir(3)` and `readdir(3)` do it
 /// over the library's primitives, for fixtures whose subject is something else.
 [<RequireQualifiedAccess>]
-module DirectoryReading =
+module internal DirectoryReading =
 
     /// `opendir(3)`'s open: `O_RDONLY|O_DIRECTORY|O_CLOEXEC`.
     let flags : OpenFlags =

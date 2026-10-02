@@ -2,37 +2,104 @@ namespace WoofWare.PosixKernel
 
 open System.Collections.Immutable
 
+/// A bit of `open(2)`'s flag word that the simulated flavour defines and this
+/// kernel does not model. `UnixNamespace.openPath` refuses a word holding any
+/// of them (`OpenRefusal.UnmodelledFlags`) rather than ignore what the caller
+/// asked for.
+[<RequireQualifiedAccess>]
+type UnmodelledOpenFlag =
+    /// `O_NOCTTY`, on both flavours.
+    | NoControllingTerminal
+    /// `O_APPEND`, on both flavours.
+    | Append
+    /// `O_NONBLOCK`, on both flavours.
+    | NonBlocking
+    /// `O_ASYNC` (Linux's `FASYNC`), on both flavours.
+    | Asynchronous
+    /// `O_DSYNC` without `O_SYNC`, on both flavours.
+    | DataSynchronous
+    /// Linux's `O_DIRECT`.
+    | Direct
+    /// Linux's `O_LARGEFILE`.
+    | LargeFile
+    /// Linux's `O_NOATIME`.
+    | NoAccessTime
+    /// Linux's `O_PATH`.
+    | PathOnly
+    /// Linux's `__O_TMPFILE`, the bit `O_TMPFILE` adds to `O_DIRECTORY`.
+    | TemporaryFile
+    /// Darwin's `O_SHLOCK`.
+    | SharedLock
+    /// Darwin's `O_EXLOCK`.
+    | ExclusiveLock
+    /// Darwin's `O_RESOLVE_BENEATH`.
+    | ResolveBeneath
+    /// Darwin's `O_UNIQUE`.
+    | Unique
+    /// Darwin's `O_EVTONLY`.
+    | EventOnly
+    /// Darwin's `O_SYMLINK`.
+    | Symlink
+    /// Darwin's `O_CLOFORK`.
+    | CloseOnFork
+    /// Darwin's `O_NOFOLLOW_ANY`.
+    | NoFollowAny
+    /// Darwin's `O_EXEC`, which with `O_DIRECTORY` is `O_SEARCH`.
+    | Execute
+    /// Darwin's `O_POPUP`.
+    | Popup
+
+[<RequireQualifiedAccess>]
+module UnmodelledOpenFlag =
+    /// The flag's name in the flavour's `<fcntl.h>`.
+    let name (flag : UnmodelledOpenFlag) : string =
+        match flag with
+        | UnmodelledOpenFlag.NoControllingTerminal -> "O_NOCTTY"
+        | UnmodelledOpenFlag.Append -> "O_APPEND"
+        | UnmodelledOpenFlag.NonBlocking -> "O_NONBLOCK"
+        | UnmodelledOpenFlag.Asynchronous -> "O_ASYNC"
+        | UnmodelledOpenFlag.DataSynchronous -> "O_DSYNC"
+        | UnmodelledOpenFlag.Direct -> "O_DIRECT"
+        | UnmodelledOpenFlag.LargeFile -> "O_LARGEFILE"
+        | UnmodelledOpenFlag.NoAccessTime -> "O_NOATIME"
+        | UnmodelledOpenFlag.PathOnly -> "O_PATH"
+        | UnmodelledOpenFlag.TemporaryFile -> "__O_TMPFILE"
+        | UnmodelledOpenFlag.SharedLock -> "O_SHLOCK"
+        | UnmodelledOpenFlag.ExclusiveLock -> "O_EXLOCK"
+        | UnmodelledOpenFlag.ResolveBeneath -> "O_RESOLVE_BENEATH"
+        | UnmodelledOpenFlag.Unique -> "O_UNIQUE"
+        | UnmodelledOpenFlag.EventOnly -> "O_EVTONLY"
+        | UnmodelledOpenFlag.Symlink -> "O_SYMLINK"
+        | UnmodelledOpenFlag.CloseOnFork -> "O_CLOFORK"
+        | UnmodelledOpenFlag.NoFollowAny -> "O_NOFOLLOW_ANY"
+        | UnmodelledOpenFlag.Execute -> "O_EXEC"
+        | UnmodelledOpenFlag.Popup -> "O_POPUP"
+
 /// What a caller asked `open(2)` for, as facts about the open rather than as a
-/// bit pattern.
+/// bit pattern: the flag word as `OpenFlagWord.decode` reads it for one
+/// flavour.
 ///
-/// Parsed rather than raw, unlike `mkdir`'s `mode`, because a bit pattern
-/// lets this kernel *guess*: given an `int`, a flag it does not model is
-/// indistinguishable from one it does, and it would silently do something the
-/// caller did not ask for. A record has
-/// exactly the fields this kernel acts on, so a caller can see what is
-/// supported, and a flag that is not here is one the client had to decide about
-/// before calling. An `int -> OpenFlags` decoder can be added later if a caller
-/// wants one; it cannot be taken away once the surface is a number.
-///
-/// A caller holding a raw flag word answers two cases itself before calling,
-/// an unrecognised bit and an access mode that is none of the three, because
-/// neither is expressible once the flags are parsed.
-type OpenFlags =
+/// Every field is a flag this kernel acts on, or (`CloseOnExec`,
+/// `Synchronous`) one it accepts knowing it changes nothing here. A word
+/// holding any other bit its flavour defines never becomes one of these: the
+/// decoder refuses it, so the kernel cannot guess at a flag it does not
+/// model.
+type internal OpenFlags =
     {
-        /// `O_RDONLY`, `O_WRONLY` or `O_RDWR`. A real `open` takes these as the
-        /// low two bits and rejects the fourth combination; by the time the
-        /// flags are a record there is no fourth combination to reject.
+        /// `O_RDONLY`, `O_WRONLY` or `O_RDWR`, access modes 0, 1 and 2. The
+        /// fourth, 3, never decodes to one of these: Darwin answers EINVAL
+        /// for it, and Linux opens a descriptor that can neither read nor
+        /// write, which this kernel refuses.
         Access : FileAccessMode
         /// `O_CREAT`: create the final component if nothing holds that name.
         Create : bool
         /// `O_EXCL`: fail EEXIST if the final component exists.
         ///
-        /// Pass this exactly as the caller set it, **without** first ANDing it
-        /// with `Create`. That it does nothing on its own is a measured kernel
-        /// fact this library owns — `open(existing, O_WRONLY|O_EXCL)` succeeds
-        /// and `open(missing, O_WRONLY|O_EXCL)` is ENOENT, exactly as without
-        /// it — and a client that pre-combined them would be asserting the rule
-        /// rather than exercising it.
+        /// Exactly as the word set it, **without** first ANDing it with
+        /// `Create`. That it does nothing on its own is a measured kernel fact
+        /// `UnixNamespace.openPathParsed` owns — `open(existing,
+        /// O_WRONLY|O_EXCL)` succeeds and `open(missing, O_WRONLY|O_EXCL)` is
+        /// ENOENT, exactly as without it.
         Exclusive : bool
         /// `O_TRUNC`: empty a regular file that is opened successfully.
         ///
@@ -45,20 +112,20 @@ type OpenFlags =
         NoFollow : bool
         /// `O_CLOEXEC`. Accepted and ignored: it sets `FD_CLOEXEC`, which
         /// matters only across `exec`, and this kernel models neither `fork` nor
-        /// `exec`. Here so that a caller can say it was asked for rather than
-        /// having to drop it silently.
+        /// `exec`.
         CloseOnExec : bool
-        /// `O_SYNC`. Accepted and ignored: it governs when a write reaches
-        /// storage rather than whether it is visible, and this filesystem holds
-        /// its bytes in memory, so every write is already as durable as the
-        /// model gets. Here for the same reason as `CloseOnExec`.
+        /// `O_SYNC` (on Linux, the `__O_SYNC` bit, which the kernel completes to
+        /// `O_SYNC` whether or not `O_DSYNC` is beside it). Accepted and
+        /// ignored: it governs when a write reaches storage rather than whether
+        /// it is visible, and this filesystem holds its bytes in memory, so
+        /// every write is already as durable as the model gets.
         Synchronous : bool
         /// `O_DIRECTORY`: fail ENOTDIR unless the path names a directory.
         ///
         /// Modelled only as `opendir(3)` uses it: with `O_RDONLY`, and without
-        /// `O_CREAT`, `O_TRUNC` or `O_NOFOLLOW`. `UnixNamespace.openPath`
+        /// `O_TRUNC` or `O_NOFOLLOW` (`O_CREAT` with it is EINVAL). The decoder
         /// refuses every other combination, whose check order against those
-        /// flags is unmeasured.
+        /// flags is unmodelled.
         Directory : bool
     }
 
@@ -309,6 +376,20 @@ type OpenRefusal =
     /// An `O_TRUNC` open of the file at `inode`, whose effect on the file's
     /// set-ID bits has not been measured for this caller. Nothing was changed.
     | UnmeasuredSetIdChange of inode : InodeNumber * refusal : SetIdChangeRefusal
+    /// The flag word `flags` holds bits the simulated flavour defines and this
+    /// kernel does not model, named in `unmodelled` in ascending order of bit.
+    /// Nothing was read or changed.
+    | UnmodelledFlags of flags : int * unmodelled : UnmodelledOpenFlag list
+    /// The flag word `flags` asks for Linux's access mode 3, which opens a
+    /// descriptor that can neither read nor write and serves only `ioctl(2)`
+    /// and the calls that need no access mode. This kernel's descriptions
+    /// permit reading, writing or both. Nothing was read or changed.
+    | IoctlOnlyAccessMode of flags : int
+    /// The flag word `flags` asks for `O_DIRECTORY` with a write access mode,
+    /// `O_TRUNC` or `O_NOFOLLOW`. This kernel models `O_DIRECTORY` only as
+    /// `opendir(3)` uses it, alone with `O_RDONLY`. Nothing was read or
+    /// changed.
+    | UnmodelledDirectoryOpen of flags : int
 
 [<RequireQualifiedAccess>]
 module OpenRefusal =
@@ -318,6 +399,185 @@ module OpenRefusal =
         match refusal with
         | OpenRefusal.UnmeasuredSetIdChange (inode, refusal) ->
             $"opening inode %O{inode} with O_TRUNC: %s{SetIdChangeRefusal.describe refusal}"
+        | OpenRefusal.UnmodelledFlags (flags, unmodelled) ->
+            let names = unmodelled |> List.map UnmodelledOpenFlag.name |> String.concat ", "
+
+            $"flags 0x%x{flags} hold %s{names}, which this platform defines and this kernel does not model; model them before answering."
+        | OpenRefusal.IoctlOnlyAccessMode flags ->
+            $"flags 0x%x{flags} ask for access mode 3, which Linux opens (demanding the read and write permission bits) as a descriptor that can neither read nor write: read, write and flock answer EBADF, ftruncate EINVAL, and only ioctl and the calls that need no access mode succeed. This kernel's descriptions permit reading, writing or both; model the fourth before answering."
+        | OpenRefusal.UnmodelledDirectoryOpen flags ->
+            $"flags 0x%x{flags} ask for O_DIRECTORY with a write access mode, O_TRUNC or O_NOFOLLOW. Only O_DIRECTORY|O_RDONLY (what opendir(3) opens with) is modelled; where ENOTDIR falls among EISDIR, EACCES and ELOOP for any other combination is not."
+
+/// `open(2)`'s flag word, in the simulated flavour's own `<fcntl.h>`
+/// numbering, read as the kernel reads it.
+[<RequireQualifiedAccess>]
+module internal OpenFlagWord =
+
+    /// What the flag word asks for, or how the call ends without reading the
+    /// path.
+    [<RequireQualifiedAccess>]
+    type Decoding =
+        /// The word is one this kernel models, asking for this.
+        | Decoded of OpenFlags
+        /// The kernel answers this errno before it copies the path in.
+        | Fails of UnixError
+        | Refused of OpenRefusal
+
+    /// What one bit above the access mode asks for.
+    [<RequireQualifiedAccess>]
+    type private Meaning =
+        | Create
+        | Exclusive
+        | Truncate
+        | NoFollow
+        | Directory
+        | CloseOnExec
+        | Synchronous
+        /// `O_DSYNC`, which `O_SYNC` beside it subsumes.
+        | DataSynchronous
+        | Unmodelled of UnmodelledOpenFlag
+
+    // Each flavour's numbering of every bit it defines above the access mode,
+    // in ascending order of bit. Measured by open-flags.c on Linux 6.18.5
+    // aarch64, Linux 6.12.111 x86-64 and Darwin 27.0 arm64: a single-bit row
+    // differs from the bare access mode's for exactly these bits, bar those
+    // that cannot act alone (O_EXCL; O_NOCTTY on a file that is not a
+    // terminal; Linux's O_LARGEFILE, which a 64-bit kernel sets on every
+    // description; Darwin's O_SYMLINK and O_POPUP). Every other bit is ignored
+    // by both kernels, Darwin included, so it is ignored here too.
+    //
+    // Linux's O_SYNC is two bits, __O_SYNC and O_DSYNC, and the kernel reads
+    // __O_SYNC alone as O_SYNC (F_GETFL reads both back).
+
+    let private linuxBits (architecture : SimulatedUnixArchitecture) : (int * Meaning) list =
+        // aarch64's <asm/fcntl.h> moves four bits; x86-64 keeps the generic
+        // numbering.
+        let directory, noFollow, direct, largeFile =
+            match architecture with
+            | SimulatedUnixArchitecture.X64 -> 0x10000, 0x20000, 0x4000, 0x8000
+            | SimulatedUnixArchitecture.Arm64 -> 0x4000, 0x8000, 0x10000, 0x20000
+
+        [
+            0x40, Meaning.Create
+            0x80, Meaning.Exclusive
+            0x100, Meaning.Unmodelled UnmodelledOpenFlag.NoControllingTerminal
+            0x200, Meaning.Truncate
+            0x400, Meaning.Unmodelled UnmodelledOpenFlag.Append
+            0x800, Meaning.Unmodelled UnmodelledOpenFlag.NonBlocking
+            0x1000, Meaning.DataSynchronous
+            0x2000, Meaning.Unmodelled UnmodelledOpenFlag.Asynchronous
+            direct, Meaning.Unmodelled UnmodelledOpenFlag.Direct
+            largeFile, Meaning.Unmodelled UnmodelledOpenFlag.LargeFile
+            directory, Meaning.Directory
+            noFollow, Meaning.NoFollow
+            0x40000, Meaning.Unmodelled UnmodelledOpenFlag.NoAccessTime
+            0x80000, Meaning.CloseOnExec
+            0x100000, Meaning.Synchronous
+            0x200000, Meaning.Unmodelled UnmodelledOpenFlag.PathOnly
+            0x400000, Meaning.Unmodelled UnmodelledOpenFlag.TemporaryFile
+        ]
+        |> List.sortBy fst
+
+    let private darwinBits : (int * Meaning) list =
+        [
+            0x4, Meaning.Unmodelled UnmodelledOpenFlag.NonBlocking
+            0x8, Meaning.Unmodelled UnmodelledOpenFlag.Append
+            0x10, Meaning.Unmodelled UnmodelledOpenFlag.SharedLock
+            0x20, Meaning.Unmodelled UnmodelledOpenFlag.ExclusiveLock
+            0x40, Meaning.Unmodelled UnmodelledOpenFlag.Asynchronous
+            0x80, Meaning.Synchronous
+            0x100, Meaning.NoFollow
+            0x200, Meaning.Create
+            0x400, Meaning.Truncate
+            0x800, Meaning.Exclusive
+            0x1000, Meaning.Unmodelled UnmodelledOpenFlag.ResolveBeneath
+            0x2000, Meaning.Unmodelled UnmodelledOpenFlag.Unique
+            0x8000, Meaning.Unmodelled UnmodelledOpenFlag.EventOnly
+            0x20000, Meaning.Unmodelled UnmodelledOpenFlag.NoControllingTerminal
+            0x100000, Meaning.Directory
+            0x200000, Meaning.Unmodelled UnmodelledOpenFlag.Symlink
+            0x400000, Meaning.DataSynchronous
+            0x1000000, Meaning.CloseOnExec
+            // Not in the SDK's headers, but the kernel sets FD_CLOFORK for it.
+            0x8000000, Meaning.Unmodelled UnmodelledOpenFlag.CloseOnFork
+            0x20000000, Meaning.Unmodelled UnmodelledOpenFlag.NoFollowAny
+            0x40000000, Meaning.Unmodelled UnmodelledOpenFlag.Execute
+            0x80000000, Meaning.Unmodelled UnmodelledOpenFlag.Popup
+        ]
+
+    /// Read `flags` as `platform`'s kernel does.
+    let decode (platform : SimulatedUnixPlatform) (flags : int) : Decoding =
+        let flavour = SimulatedUnixPlatform.flavour platform
+
+        let meanings =
+            match flavour with
+            | SimulatedUnixFlavour.Linux -> linuxBits (SimulatedUnixPlatform.architecture platform)
+            | SimulatedUnixFlavour.Darwin -> darwinBits
+            |> List.filter (fun (bit, _) -> flags &&& bit <> 0)
+            |> List.map snd
+
+        let has (meaning : Meaning) : bool = List.contains meaning meanings
+
+        let unmodelled =
+            meanings
+            |> List.choose (fun meaning ->
+                match meaning with
+                | Meaning.Unmodelled flag -> Some flag
+                | Meaning.DataSynchronous when not (has Meaning.Synchronous) -> Some UnmodelledOpenFlag.DataSynchronous
+                | Meaning.Create
+                | Meaning.Exclusive
+                | Meaning.Truncate
+                | Meaning.NoFollow
+                | Meaning.Directory
+                | Meaning.CloseOnExec
+                | Meaning.Synchronous
+                | Meaning.DataSynchronous -> None
+            )
+
+        // Refused first: a flag this kernel does not model can lift a screen
+        // below (Linux's O_PATH lifts O_CREAT|O_DIRECTORY's EINVAL), so no
+        // answer is certain once one is present.
+        if not unmodelled.IsEmpty then
+            Decoding.Refused (OpenRefusal.UnmodelledFlags (flags, unmodelled))
+        // Measured on both, for every word of modelled and undefined bits:
+        // EINVAL, before the path is copied in. Linux has done so since 6.4.
+        elif has Meaning.Create && has Meaning.Directory then
+            Decoding.Fails UnixError.EINVAL
+        else
+
+        match flags &&& 3 with
+        | 3 ->
+            match flavour with
+            // Measured for every word: EINVAL, before the path is copied in.
+            | SimulatedUnixFlavour.Darwin -> Decoding.Fails UnixError.EINVAL
+            | SimulatedUnixFlavour.Linux -> Decoding.Refused (OpenRefusal.IoctlOnlyAccessMode flags)
+        | access ->
+
+        let decoded : OpenFlags =
+            {
+                Access =
+                    match access with
+                    | 0 -> FileAccessMode.ReadOnly
+                    | 1 -> FileAccessMode.WriteOnly
+                    | _ -> FileAccessMode.ReadWrite
+                Create = has Meaning.Create
+                Exclusive = has Meaning.Exclusive
+                Truncate = has Meaning.Truncate
+                NoFollow = has Meaning.NoFollow
+                CloseOnExec = has Meaning.CloseOnExec
+                Synchronous = has Meaning.Synchronous
+                Directory = has Meaning.Directory
+            }
+
+        if
+            decoded.Directory
+            && (decoded.Access <> FileAccessMode.ReadOnly
+                || decoded.Truncate
+                || decoded.NoFollow)
+        then
+            Decoding.Refused (OpenRefusal.UnmodelledDirectoryOpen flags)
+        else
+            Decoding.Decoded decoded
 
 [<RequireQualifiedAccess>]
 module UnixNamespace =
@@ -343,19 +603,6 @@ module UnixNamespace =
         | None ->
             failwith
                 $"%s{context}: about to create an inode in inode %O{directory}, which the walk had established was a directory, but it is now absent or not a directory (this is a bug in this library)."
-
-    /// Refuse an `O_DIRECTORY` open this library does not model; see
-    /// `OpenFlags.Directory`.
-    let private refuseUnmodelledDirectoryOpen (flags : OpenFlags) : unit =
-        if
-            flags.Directory
-            && (flags.Access <> FileAccessMode.ReadOnly
-                || flags.Create
-                || flags.Truncate
-                || flags.NoFollow)
-        then
-            failwith
-                $"UnixNamespace.openPath: O_DIRECTORY with %A{flags}. Only O_DIRECTORY|O_RDONLY without O_CREAT, O_TRUNC or O_NOFOLLOW (what opendir(3) opens with) is modelled; where ENOTDIR falls among EISDIR, EACCES, ELOOP and the creation checks for any other combination is unmeasured."
 
     /// `openPath`, of a path this kernel has already copied in.
     let internal openPathParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -402,7 +649,15 @@ module UnixNamespace =
                 }
             )
 
-        refuseUnmodelledDirectoryOpen flags
+        if
+            flags.Directory
+            && (flags.Access <> FileAccessMode.ReadOnly
+                || flags.Create
+                || flags.Truncate
+                || flags.NoFollow)
+        then
+            failwith
+                $"UnixNamespace.openPath: O_DIRECTORY with %A{flags}, a combination OpenFlagWord.decode refuses or answers EINVAL before the path is read (this is a bug in this library)."
 
         if flags.Directory then
             // `opendir(3)` is exactly this open, and its rows are measured on
@@ -613,8 +868,17 @@ module UnixNamespace =
     /// `open(2)`: resolve `path`, apply every check a kernel makes, and return a
     /// descriptor onto what it names.
     ///
-    /// `path` is the argument's bytes, copied in before anything but the
-    /// `O_DIRECTORY` refusal below: EFAULT if they were unreadable,
+    /// `flags` is raw, in the simulated flavour's own `<fcntl.h>` numbering,
+    /// which differs between Linux's architectures as well as between
+    /// flavours. A bit the flavour does not define is ignored, as both
+    /// kernels ignore it. A bit it defines is either one this kernel models
+    /// or a refusal naming it (`OpenRefusal.UnmodelledFlags`), never silently
+    /// dropped.
+    ///
+    /// The word is screened before the path is copied in, so its EINVAL comes
+    /// ahead of EFAULT, ENAMETOOLONG, EEXIST and EISDIR: on both flavours for
+    /// `O_CREAT|O_DIRECTORY`, and on Darwin for access mode 3. Then `path` is
+    /// the argument's bytes, copied in: EFAULT if they were unreadable,
     /// ENAMETOOLONG if they run past `PATH_MAX`.
     ///
     /// Named for the path it takes, `open` being an F# keyword and
@@ -629,20 +893,23 @@ module UnixNamespace =
     /// 0o0755 on both flavours, so a bit above the permission word is dropped
     /// exactly as the platform's own mask drops it.
     ///
-    /// Never refused: every outcome is a descriptor or an errno. The one
-    /// exception is an `O_DIRECTORY` combination this library does not model;
-    /// see `OpenFlags.Directory`.
+    /// Refused, before anything is read or changed, for a flag word this kernel
+    /// does not model (see `OpenRefusal`), and for an `O_TRUNC` open whose
+    /// effect on set-ID bits is unmeasured. Every other outcome is a descriptor
+    /// or an errno.
     let openPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (flags : OpenFlags)
+        (flags : int)
         (path : PathArgumentBytes)
         (mode : int)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, OpenRefusal>
         =
-        // Before the path is copied in: measured (`path-copyin-order.c`), both
-        // kernels answer `O_CREAT|O_DIRECTORY` EINVAL whatever the path pointer
-        // is, so an unmodelled combination is refused before the path is read.
-        refuseUnmodelledDirectoryOpen flags
+        // Before the path is copied in: measured (`open-flags.c`), each
+        // kernel screens the word whatever the path pointer is.
+        match OpenFlagWord.decode system.Machine.UnixPlatform flags with
+        | OpenFlagWord.Decoding.Refused refusal -> Error refusal
+        | OpenFlagWord.Decoding.Fails error -> Ok (SyscallAnswer.Failed error, system)
+        | OpenFlagWord.Decoding.Decoded flags ->
 
         match UnixPathResolution.copyIn path system with
         | Error error -> Ok (SyscallAnswer.Failed error, system)

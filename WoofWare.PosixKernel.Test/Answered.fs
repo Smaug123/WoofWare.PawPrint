@@ -6,7 +6,7 @@ open WoofWare.PosixKernel
 /// throughout never reaches, answered: a refusal fails the test that made the
 /// call, naming it.
 [<RequireQualifiedAccess>]
-module Answered =
+module internal Answered =
 
     let openPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (flags : OpenFlags)
@@ -15,7 +15,7 @@ module Answered =
         (system : UnixSystem<'Task, 'Handler>)
         : SyscallAnswer * UnixSystem<'Task, 'Handler>
         =
-        match UnixNamespace.openPath flags (PathArg.ofPath path) mode system with
+        match OpenFlagWords.openPath flags (PathArg.ofPath path) mode system with
         | Ok answer -> answer
         | Error refusal -> failwith $"open(%O{path}) was refused: %s{OpenRefusal.describe refusal}"
 
