@@ -122,6 +122,7 @@
     <Compile Include="StructMarshalStub.fs" />
     <Compile Include="MulticastDelegateStub.fs" />
     <Compile Include="DelegateRepresentation.fs" />
+    <Compile Include="ArrayElementOperands.fs" />
     <Compile Include="NullaryIlOp.fs" />
     <Compile Include="DynamicScopeOperand.fs" />
     <Compile Include="InternalSignatureTypeResolution.fs" />
