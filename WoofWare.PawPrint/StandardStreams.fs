@@ -42,15 +42,17 @@ module OutputLogEntry =
 /// How PawPrint launches a guest, and how it reads back what the guest wrote.
 ///
 /// Every guest starts as the oracle `RealRuntime` starts one: each standard
-/// stream on a pipe of its own, standard input supplying nothing and the two
-/// output streams drained by PawPrint as fast as the guest writes. The kernel
-/// knows those pipes only by the descriptor each was launched on; the roles
-/// are PawPrint's.
+/// stream on a pipe of its own, standard input supplying the bytes the host
+/// gave it (`KernelConfig.StandardInput`) and the two output streams drained
+/// by PawPrint as fast as the guest writes. The kernel knows those pipes only
+/// by the descriptor each was launched on; the roles are PawPrint's.
 [<RequireQualifiedAccess>]
 module StandardStreams =
     /// The launch table every guest starts with: descriptors 0, 1 and 2, as
-    /// `UnixSystem.pipedStandardStreams` describes.
-    let launch : Map<int, LaunchDescriptor> = UnixSystem.pipedStandardStreams
+    /// `UnixSystem.pipedStandardStreams` describes, with `standardInput` the
+    /// bytes PawPrint writes into descriptor 0's pipe before closing it.
+    let launch (standardInput : ImmutableArray<byte>) : Map<int, LaunchDescriptor> =
+        Map.add 0 (LaunchDescriptor.Supplied standardInput) UnixSystem.pipedStandardStreams
 
     /// The standard stream whose pipe the client's `endpoint` is the far end of.
     ///

@@ -127,6 +127,7 @@
     <Compile Include="TestNativeMemoryPool.fs" />
     <Compile Include="TestSeedForOracle.fs" />
     <Compile Include="TestRealRuntimeCleanup.fs" />
+    <Compile Include="TestRealRuntimeStandardInput.fs" />
     <Compile Include="TestGuestPathBytes.fs" />
     <Compile Include="TestRuntimeConfig.fs" />
     <Compile Include="TestDynamicCodeSupport.fs" />
@@ -230,6 +231,7 @@
     <Compile Include="TestStartupSignalDispositions.fs" />
     <Compile Include="TestSocketEventsPal.fs" />
     <Compile Include="KernelTasks.fs" />
+    <Compile Include="ThreadFixtures.fs" />
     <Compile Include="TestPollEventsPal.fs" />
     <Compile Include="TestFileAdvicePal.fs" />
     <Compile Include="TestFileSystemTypePal.fs" />

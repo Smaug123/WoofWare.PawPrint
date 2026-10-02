@@ -14,7 +14,8 @@ open WoofWare.PosixKernel
 /// kernel. The world is built so that every primitive's answer is known: two socket
 /// event ports, which share one anonymous inode and so contend under `flock`, with an
 /// exclusive lock held through the first; neither port has anything to deliver;
-/// and the standard streams, whose readiness is the launch shape's.
+/// the standard streams, whose readiness is the launch shape's; and two tasks,
+/// of which only `signalled` has a caught signal pending.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestWakeCondition =
@@ -54,7 +55,25 @@ module TestWakeCondition =
             | registry, None -> registry
             | _, Some error -> failwith $"expected the lock to be granted, got %O{error}"
 
-        let system = withRegistry registry system
+        let system = withRegistry registry system |> Tasks.spawn 1
+
+        let system =
+            { system with
+                Process =
+                    { system.Process with
+                        Signals =
+                            system.Process.Signals
+                            |> SignalState.setDisposition
+                                Signal.SIGUSR1
+                                (SignalDisposition.Catch (SignalCatch.ofHandler "h"))
+                            |> SignalState.enqueue
+                                {
+                                    Signal = Signal.SIGUSR1
+                                    Target = ValueSome 1
+                                }
+                    }
+            }
+
         system, idOf lockerFd system, idOf blockedFd system
 
     let private system : UnixSystem<int, string> =
@@ -91,9 +110,13 @@ module TestWakeCondition =
             Machine = UnixMachineState.advanceClock clock system.Machine
         }
 
-    let private oracleHolds (clock : int64) (primitive : WakePrimitive) : bool =
+    /// The task with a caught signal pending; the other, 0, has none.
+    let private signalled : int = 1
+
+    let private oracleHolds (waiter : int) (clock : int64) (primitive : WakePrimitive) : bool =
         match primitive with
         | WakePrimitive.DeadlinePassed deadline -> clock >= deadline
+        | WakePrimitive.SignalDeliverable -> waiter = signalled
         | WakePrimitive.FlockGrantable _
         | WakePrimitive.SocketEventDeliverable _
         | WakePrimitive.DescriptorReady _
@@ -118,8 +141,10 @@ module TestWakeCondition =
 
         List.ofSeq found
 
-    let private oracleSatisfied (clock : int64) (condition : WakeCondition) : Set<WakePrimitive> =
-        flatten condition |> List.filter (oracleHolds clock) |> Set.ofList
+    let private oracleSatisfied (waiter : int) (clock : int64) (condition : WakeCondition) : Set<WakePrimitive> =
+        flatten condition |> List.filter (oracleHolds waiter clock) |> Set.ofList
+
+    let private waiterGen : Gen<int> = Gen.elements [ 0 ; signalled ]
 
     /// Clocks from a small range, so that deadlines drawn from the same range land on
     /// both sides of the clock and on it.
@@ -130,6 +155,7 @@ module TestWakeCondition =
             [
                 Gen.elements (List.map fst fixedTruths)
                 clockGen |> Gen.map WakePrimitive.DeadlinePassed
+                Gen.constant WakePrimitive.SignalDeliverable
             ]
 
     let rec private conditionGen (size : int) : Gen<WakeCondition> =
@@ -155,8 +181,17 @@ module TestWakeCondition =
         // The oracle's fixed rows are hand-stated, so they are checked once here; every law
         // below leans on them.
         for primitive, truth in fixedTruths do
-            WakeCondition.satisfied (WakeCondition.Primitive primitive) system
-            |> shouldEqual (if truth then Set.singleton primitive else Set.empty)
+            for waiter in [ 0 ; signalled ] do
+                WakeCondition.satisfied waiter (WakeCondition.Primitive primitive) system
+                |> shouldEqual (if truth then Set.singleton primitive else Set.empty)
+
+        let signal = WakePrimitive.SignalDeliverable
+
+        WakeCondition.satisfied 0 (WakeCondition.Primitive signal) system
+        |> shouldEqual Set.empty
+
+        WakeCondition.satisfied signalled (WakeCondition.Primitive signal) system
+        |> shouldEqual (Set.singleton signal)
 
     [<Test>]
     let ``satisfied agrees with the flattening oracle`` () : unit =
@@ -164,16 +199,16 @@ module TestWakeCondition =
         let mutable nonEmpty = 0
 
         let property =
-            Prop.forAll (Arb.fromGen (Gen.zip clockGen sizedCondition))
-            <| fun (clock, condition) ->
-                let actual = WakeCondition.satisfied condition (at clock)
+            Prop.forAll (Arb.fromGen (Gen.zip3 waiterGen clockGen sizedCondition))
+            <| fun (waiter, clock, condition) ->
+                let actual = WakeCondition.satisfied waiter condition (at clock)
 
                 if Set.isEmpty actual then
                     empty <- empty + 1
                 else
                     nonEmpty <- nonEmpty + 1
 
-                actual |> shouldEqual (oracleSatisfied clock condition)
+                actual |> shouldEqual (oracleSatisfied waiter clock condition)
 
         Check.One (propertyConfig, property)
         empty |> shouldBeGreaterThan 50
@@ -193,10 +228,10 @@ module TestWakeCondition =
             <| fun (clock, first, rest) ->
                 let system = at clock
 
-                WakeCondition.satisfied (WakeCondition.AnyOf (first, rest)) system
+                WakeCondition.satisfied signalled (WakeCondition.AnyOf (first, rest)) system
                 |> shouldEqual (
                     first :: rest
-                    |> List.map (fun c -> WakeCondition.satisfied c system)
+                    |> List.map (fun c -> WakeCondition.satisfied signalled c system)
                     |> Set.unionMany
                 )
 
@@ -212,11 +247,11 @@ module TestWakeCondition =
                 let right = WakeCondition.AnyOf (a, [ WakeCondition.AnyOf (b, [ c ]) ])
                 let flat = WakeCondition.AnyOf (a, [ b ; c ])
 
-                WakeCondition.satisfied left system
-                |> shouldEqual (WakeCondition.satisfied right system)
+                WakeCondition.satisfied signalled left system
+                |> shouldEqual (WakeCondition.satisfied signalled right system)
 
-                WakeCondition.satisfied left system
-                |> shouldEqual (WakeCondition.satisfied flat system)
+                WakeCondition.satisfied signalled left system
+                |> shouldEqual (WakeCondition.satisfied signalled flat system)
 
         Check.One (propertyConfig, property)
 
@@ -226,12 +261,12 @@ module TestWakeCondition =
             Prop.forAll (Arb.fromGen (Gen.zip clockGen sizedCondition))
             <| fun (clock, a) ->
                 let system = at clock
-                let alone = WakeCondition.satisfied a system
+                let alone = WakeCondition.satisfied signalled a system
 
-                WakeCondition.satisfied (WakeCondition.AnyOf (a, [ a ])) system
+                WakeCondition.satisfied signalled (WakeCondition.AnyOf (a, [ a ])) system
                 |> shouldEqual alone
 
-                WakeCondition.satisfied (WakeCondition.AnyOf (a, [])) system
+                WakeCondition.satisfied signalled (WakeCondition.AnyOf (a, [])) system
                 |> shouldEqual alone
 
         Check.One (propertyConfig, property)
@@ -248,7 +283,7 @@ module TestWakeCondition =
 
                 let primitive = WakePrimitive.DeadlinePassed deadline
 
-                WakeCondition.satisfied (WakeCondition.Primitive primitive) (at clock)
+                WakeCondition.satisfied signalled (WakeCondition.Primitive primitive) (at clock)
                 |> shouldEqual (
                     if clock >= deadline then
                         Set.singleton primitive
@@ -273,7 +308,8 @@ module TestWakeCondition =
                         | WakePrimitive.FlockGrantable _
                         | WakePrimitive.SocketEventDeliverable _
                         | WakePrimitive.DescriptorReady _
-                        | WakePrimitive.AcceptQueueNonEmpty _ -> None
+                        | WakePrimitive.AcceptQueueNonEmpty _
+                        | WakePrimitive.SignalDeliverable -> None
                     )
                 )
 

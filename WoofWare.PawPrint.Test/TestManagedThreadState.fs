@@ -41,7 +41,11 @@ module TestManagedThreadState =
             s &&& ~~~allReported |> shouldEqual System.Threading.ThreadState.Running
 
             has System.Threading.ThreadState.Unstarted s
-            |> shouldEqual (status = ThreadStatus.NotStarted)
+            |> shouldEqual (
+                match status with
+                | ThreadStatus.NotStarted _ -> true
+                | _ -> false
+            )
 
             has System.Threading.ThreadState.Stopped s
             |> shouldEqual (

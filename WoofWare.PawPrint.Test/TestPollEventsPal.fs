@@ -333,14 +333,16 @@ module TestPollEventsPal =
                 // whose writer has gone and supplied nothing, and output a
                 // client drains.
                 match (UnixMachineState.pipe pipeId system.Machine).Origin with
-                | PipeOrigin.Launched (_, LaunchDescriptor.SuppliedNothing) ->
+                | PipeOrigin.Launched (_, ClientEnd.WriteEndClosed) ->
                     { ReadinessLevel.none with
                         Hup = true
                     }
-                | PipeOrigin.Launched (_, LaunchDescriptor.Drained) ->
+                | PipeOrigin.Launched (_, ClientEnd.Draining) ->
                     { ReadinessLevel.none with
                         Out = true
                     }
+                | PipeOrigin.Launched (_, ClientEnd.Supplying _) ->
+                    failwith "TestPollEventsPal: no row launches a guest with bytes on its standard input."
                 | PipeOrigin.Made _ -> failwith "TestPollEventsPal: no row polls a pipe the guest made."
 
         (if level.In && palEvents &&& pal.["PAL_POLLIN"] <> 0s then
@@ -425,10 +427,17 @@ module TestPollEventsPal =
                     let expected = fds |> List.map (fun fd -> sixBitProjection pal system fd palEvents)
                     let expectedCount = expected |> List.filter (fun r -> r <> 0s) |> List.length
 
-                    match PollEventsPal.poll poller (fds |> List.map (fun fd -> fd, palEvents)) 0 system with
+                    match
+                        PollEventsPal.pollConverted
+                            poller
+                            (PollEventsPal.convert (fds |> List.map (fun fd -> fd, palEvents)))
+                            0
+                            system
+                    with
                     | Error refusal -> yield $"PAL events 0x%04x{raw}: refused: %s{PollRefusal.describe refusal}"
                     | Ok (PollOutcome.WouldBlock condition, _) ->
                         yield $"PAL events 0x%04x{raw}: parked at timeout 0 on %A{condition}"
+                    | Ok (PollOutcome.Failed error, _) -> yield $"PAL events 0x%04x{raw}: failed with %O{error}"
                     | Ok (PollOutcome.Answered (reported, count), _) ->
                         for fd, expected, reported in List.zip3 fds expected reported do
                             if expected <> reported then

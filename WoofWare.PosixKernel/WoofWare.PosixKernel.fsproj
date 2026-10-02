@@ -63,6 +63,7 @@
         <Compile Include="UnixSystemState.fs" />
         <Compile Include="UnixSocket.fs" />
         <Compile Include="Readiness.fs" />
+        <Compile Include="SyscallInterruption.fs" />
         <Compile Include="WakeCondition.fs" />
         <Compile Include="UnixWait.fs" />
         <Compile Include="UnixConnection.fs" />

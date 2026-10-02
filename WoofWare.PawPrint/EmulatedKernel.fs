@@ -825,9 +825,10 @@ type EmulatedKernelDefect =
     /// A thread exists with no task, so anything asking the kernel which
     /// processor it runs on or what OS thread id it reports would crash.
     | ThreadWithoutTask of thread : ThreadId
-    /// A task exists for a thread that does not, or that has terminated, so its
-    /// processor placement and OS thread id are held for a thread that can never
-    /// read them.
+    /// A task exists for a thread that does not, that has not been started, or
+    /// that has terminated: for a thread with no OS thread, so its processor
+    /// placement and OS thread id are held for a thread that cannot read them,
+    /// and an id is spent that a later thread should have had.
     | TaskWithoutThread of thread : ThreadId
     /// A thread is parked in `ThreadStatus.BlockedInSyscall` but its task records
     /// no park, so nothing says what it is waiting for: no sweep can decide
@@ -1013,9 +1014,11 @@ module EmulatedKernel =
 
 
     /// A freshly-minted simulated process on a machine of the given platform,
-    /// as PawPrint starts one. The platform is fixed here for the kernel's
-    /// life: every field derived from it is derived once, by this constructor
-    /// and the setters that read it back.
+    /// as PawPrint starts one, with `standardInput` the bytes its launcher
+    /// writes into its standard input before closing it (see
+    /// `StandardStreams.launch`). The platform and the launch are fixed here
+    /// for the kernel's life: every field derived from the platform is derived
+    /// once, by this constructor and the setters that read it back.
     ///
     /// Its one task is the thread `Main` will run on, `ThreadId 0`, on processor 0:
     /// `IlMachineState.addThread` gives that thread its first frame, and every
@@ -1032,11 +1035,11 @@ module EmulatedKernel =
     /// change what a recorded trace observes. The entropy pool's seed,
     /// `UnixSystem.defaultEntropySeed`, is part of the same contract, and
     /// PawPrint's tests pin it rather than a second copy of the value.
-    let create (platform : SimulatedUnixPlatform) : EmulatedKernel =
+    let create (platform : SimulatedUnixPlatform) (standardInput : ImmutableArray<byte>) : EmulatedKernel =
         // Processor 0 is where the CPU rotation puts the first thread it places
         // (`cpuForRotation 0`), which is this one.
         let system : UnixSystem<ThreadId, NativeSignalHandler> =
-            UnixSystem.initial platform StandardStreams.launch (ThreadId 0) (CpuId 0)
+            UnixSystem.initial platform (StandardStreams.launch standardInput) (ThreadId 0) (CpuId 0)
 
         let signals =
             StartupSignalDispositions.initial (SimulatedUnixPlatform.signalNumbering platform) Set.empty
@@ -1071,14 +1074,15 @@ module EmulatedKernel =
 
 
     /// `create` on `UnixSystem.defaultUnixPlatform`, the platform a host that
-    /// configures nothing gets.
+    /// configures nothing gets, with nothing on standard input.
     ///
     /// That platform, Linux/x64, suits PawPrint as a default for two reasons of
     /// its own: it is the platform whose CoreLib routes `Environment.OSVersion`
     /// through `SystemNative_GetUnixRelease` (the macOS CoreLib uses
     /// `Interop.libobjc.GetOperatingSystemVersion` instead), and it is what
     /// PawPrint's CI runs on.
-    let initial : EmulatedKernel = create UnixSystem.defaultUnixPlatform
+    let initial : EmulatedKernel =
+        create UnixSystem.defaultUnixPlatform ImmutableArray.Empty
 
     /// Apply an operation to the simulated process's own state. Those operations
     /// live in `UnixProcessState`, which takes that state rather than the kernel.
@@ -1662,36 +1666,31 @@ module EmulatedKernel =
                 $"EmulatedKernel.abort: %O{thread} raised SIGABRT at its default disposition, and the process did not die of it: %O{other}"
 
     /// Check that the kernel has a task for exactly the threads in `threads`
-    /// that have not terminated, and that each task's park agrees with its
-    /// thread's status.
+    /// that have an OS thread (`ThreadStatus.hasOsThread`: started, and not
+    /// terminated), and that each task's park agrees with its thread's status.
     ///
-    /// `threads` is every thread with its status, terminated ones included.
-    /// Separate from `checkInvariants`, and taking the threads as an argument,
-    /// because `EmulatedKernel` compiles before `IlMachineState` and so cannot
-    /// reach `ThreadState` to ask. Callers that have both should call both.
+    /// `threads` is every thread with its status, unstarted and terminated ones
+    /// included. Separate from `checkInvariants`, and taking the threads as an
+    /// argument, because `EmulatedKernel` compiles before `IlMachineState` and so
+    /// cannot reach `ThreadState` to ask. Callers that have both should call both.
     ///
-    /// A thread's task is spawned when the thread is created and leaves the table
-    /// when it terminates (`Scheduler.onThreadTerminated`), so this catches a
-    /// thread created without a task, a task spawned for a thread that was never
-    /// created, and a thread that terminated without the kernel being told.
+    /// A guest thread's task is spawned when the guest starts it
+    /// (`IlMachineState.startUnstartedThread`), the signal dispatcher's when it is
+    /// created, and a task leaves the table when its thread terminates
+    /// (`Scheduler.onThreadTerminated`). So this catches a thread started without
+    /// a task, a task spawned for a thread that was never created or not yet
+    /// started, and a thread that terminated without the kernel being told.
     ///
     /// The leader's task is the exception to the first half: `create` makes it
     /// with the kernel, before `IlMachineState.addThread` makes its thread, so
     /// until then this reports it as a task with no thread.
-    ///
-    /// A `NotStarted` thread has a task too, although a real process has no
-    /// kernel task for a thread that has not been started: PawPrint spawns a
-    /// guest thread's task when the guest constructs its `Thread`, not when it
-    /// starts it.
-    /// That stays so until stage 4 of the process-lifecycle plan moves
-    /// registration to `Start`, which will narrow this check to started threads.
     let checkTaskInvariants
         (threads : Map<ThreadId, ThreadStatus>)
         (kernel : EmulatedKernel)
         : EmulatedKernelDefect list
         =
         let liveThreads =
-            threads |> Map.filter (fun _ status -> status <> ThreadStatus.Terminated)
+            threads |> Map.filter (fun _ status -> ThreadStatus.hasOsThread status)
 
         // The comparison is the library's; naming the two failures is this
         // kernel's, because `EmulatedKernelDefect` is PawPrint's vocabulary.
@@ -1994,6 +1993,16 @@ type KernelConfig =
         /// 32 and 33, which no launcher can ignore through `sigaction`, and
         /// SIGTERM; see `StartupSignalDispositions.refusal`.
         InheritedSignalIgnores : Set<Signal>
+        /// The bytes the simulated process's launcher writes into its standard
+        /// input, a pipe, with one blocking write before closing its end, as
+        /// `cmd < file` or a harness feeding a child does. Empty by default: the
+        /// guest reads end of file at once.
+        ///
+        /// What the pipe cannot hold yet goes in as the guest reads, so a guest
+        /// never waits for input and sees end of file only after the last
+        /// byte. More than one `write(2)` moves on `UnixPlatform` (0x7FFFF000
+        /// bytes on Linux) is refused.
+        StandardInput : ImmutableArray<byte>
         /// Whether the simulated process writes a core dump when a signal
         /// whose default action dumps core kills it (`Signal.dumpsCoreUnder`),
         /// which a host sees as the core flag of `RunOutcome.termination`.
@@ -2044,6 +2053,7 @@ type KernelConfig =
             LocalAddresses = UnixSystem.defaultLocalAddresses
             LocalRoutes = UnixSystem.defaultLocalRoutes
             InheritedSignalIgnores = Set.empty
+            StandardInput = ImmutableArray.Empty
             CoreDumps = UnixSystem.defaultCoreDumps
             PidMax = None
             LeaderThreadId = None
@@ -2101,7 +2111,7 @@ module KernelConfig =
                 (config.SupplementaryGroups
                  |> List.map (GroupId.parseOrFail "KernelConfig.SupplementaryGroups"))
 
-        EmulatedKernel.create platform
+        EmulatedKernel.create platform config.StandardInput
         |> EmulatedKernel.withInheritedSignalIgnores "KernelConfig.InheritedSignalIgnores" config.InheritedSignalIgnores
         |> EmulatedKernel.mapProcess (UnixProcessState.withCoreDumps config.CoreDumps)
         |> EmulatedKernel.withEnvironment "KernelConfig.Environment" config.Environment

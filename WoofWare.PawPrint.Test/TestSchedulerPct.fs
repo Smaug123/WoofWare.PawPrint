@@ -275,7 +275,7 @@ module TestSchedulerPct =
     let private notRunnableGen : Gen<ThreadStatus> =
         Gen.elements
             [
-                ThreadStatus.NotStarted
+                ThreadStatus.NotStarted (CpuId 0)
                 ThreadStatus.Terminated
                 ThreadStatus.Parked
                 ThreadStatus.WaitingForForegroundThreads

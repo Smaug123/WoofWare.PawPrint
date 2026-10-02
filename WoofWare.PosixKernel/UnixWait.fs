@@ -52,8 +52,8 @@ module UnixWait =
     /// until its call finishes, so the parks alone cannot say who is asleep.
     ///
     /// A waiter whose `flock` has become grantable, whose polled descriptor is
-    /// ready, or whose deadline has passed wakes, whoever else is waiting for
-    /// the same thing. Waiters on a socket event port, and waiters in `accept`
+    /// ready, whose deadline has passed, or to which a signal with a handler is
+    /// deliverable wakes, whoever else is waiting for the same thing. Waiters on a socket event port, and waiters in `accept`
     /// on a listener, queue exclusively: something to take wakes one of them,
     /// the one that parked *last* on a socket event port and the one that
     /// parked *first* on a listener. It wakes none of them while any task
@@ -77,7 +77,7 @@ module UnixWait =
                     failwith
                         $"UnixWait.wakes: task %O{task} is asleep in a syscall but records no park, so nothing says what it waits for. A park is recorded by `UnixWait.park` when the task goes to sleep (this is a bug in the client)."
                 | Some park ->
-                    let fired = WakeCondition.satisfied (WakeCondition.ofPark park.Syscall) system
+                    let fired = WakeCondition.satisfied task (WakeCondition.ofPark park.Syscall) system
 
                     if Set.isEmpty fired then
                         None
@@ -116,14 +116,16 @@ module UnixWait =
         // them all does not invent a winner; it leaves the choice to the
         // client's scheduler. A `poll` queues itself on each description it
         // watches non-exclusively, so every poller of a description that
-        // becomes ready wakes; and a deadline is each waiter's own.
+        // becomes ready wakes; and a deadline, like a signal, is each waiter's
+        // own.
         let exclusiveQueueOf (primitive : WakePrimitive) : ExclusiveWaitQueue option =
             match primitive with
             | WakePrimitive.SocketEventDeliverable port -> Some (ExclusiveWaitQueue.SocketEventPort port)
             | WakePrimitive.AcceptQueueNonEmpty listener -> Some (ExclusiveWaitQueue.Listener listener)
             | WakePrimitive.FlockGrantable _
             | WakePrimitive.DescriptorReady _
-            | WakePrimitive.DeadlinePassed _ -> None
+            | WakePrimitive.DeadlinePassed _
+            | WakePrimitive.SignalDeliverable -> None
 
         let finishing : Set<ExclusiveWaitQueue> =
             system.Tasks

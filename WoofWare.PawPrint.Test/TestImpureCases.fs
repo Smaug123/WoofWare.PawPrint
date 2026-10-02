@@ -1255,6 +1255,45 @@ module TestImpureCases =
             // truncating to 16 bits is caught here.
             processIdCase (Some 4194303)
             {
+                // A thread's id is minted when it is started: the never-started
+                // thread takes none, and the two workers, started in the reverse
+                // of their construction order, take the ids after the pid in
+                // start order.
+                FileName = "ThreadIdsFollowStartOrder.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                // Real .NET's own runtime threads take ids too; the order alone
+                // is measured by `thread-start-order.cs`.
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState =
+                    Some (fun state ->
+                        OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
+                        |> Seq.toArray
+                        |> shouldEqual (
+                            let pid = ProcessId.toInt32 UnixSystem.defaultProcessId
+
+                            [| pid ; pid + 1 ; pid + 2 |]
+                            |> Array.collect (fun value ->
+                                [|
+                                    byte (value &&& 0xFF)
+                                    byte ((value >>> 8) &&& 0xFF)
+                                    byte ((value >>> 16) &&& 0xFF)
+                                    byte ((value >>> 24) &&& 0xFF)
+                                |]
+                            )
+                        )
+
+                        // The never-started thread has no task, and the workers'
+                        // exits took theirs.
+                        EmulatedKernel.checkTaskInvariants
+                            (state.ThreadState |> Map.map (fun _ ts -> ts.Status))
+                            state.Kernel
+                        |> shouldEqual []
+                    )
+            }
+            {
                 // The replay contract for the two random streams: under the
                 // default configuration these bytes are what every run hands
                 // the guest. The guest's header says what each row reads. A
@@ -1809,6 +1848,49 @@ module TestImpureCases =
                 AppContext = AppContextProperties.empty
                 // Compared. The `3` it reads out of an event is the user data it
                 // registered, not a descriptor number.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // A signal interrupts the main thread's socket event wait, and
+                // the shim's EINTR loop leaves errno at EINTR when the wait then
+                // succeeds. Compared on every host: epoll_wait and kevent both
+                // fail with EINTR under SA_RESTART, and EINTR is 4 on both
+                // kernels, so the real runtime reports the same errno whichever
+                // kernel the host runs. The guest's comment says how it makes
+                // sure the wait is interrupted on the real runtime.
+                FileName = "SignalInterruptsSocketEventWait.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Always
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // A shim function a signal interrupts calls again with what it
+                // copied from the caller's memory before its loop: accept's
+                // length and poll's descriptors, rewritten by another thread
+                // while the call slept. Compared on every host: both shims copy,
+                // on both kernels.
+                FileName = "SignalRetryKeepsShimCopies.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Always
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // A socket event wait a signal interrupts is made again past the
+                // wrapper's screens, so a count rewritten to -1 meanwhile reaches
+                // epoll_wait, which answers EINVAL. Linux only: macOS's kevent
+                // answers a negative count with no events.
+                FileName = "SignalRetrySocketWaitCountLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
                 Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
@@ -3825,16 +3907,17 @@ module TestImpureCases =
             // that is not compared starts no second run at all.
             let realResult, pawPrintResult =
                 if comparesHere then
-                    // The case's own seed and environment overlay drive the oracle too,
-                    // exactly as they do for a `sourcesPure` case, so both runtimes see
-                    // one description of a filesystem and of the variables the case
-                    // names.
+                    // The case's own seed, environment overlay and standard input drive
+                    // the oracle too, exactly as they do for a `sourcesPure` case, so
+                    // both runtimes see one description of a filesystem, of the
+                    // variables the case names, and of the bytes on standard input.
                     let realResult, pawPrintResult =
                         DifferentialOracle.alongsideInterpreted
                             (fun () ->
                                 RealRuntime.executeWithSeed
                                     case.KernelConfig.FileSystem
                                     case.KernelConfig.Environment
+                                    case.KernelConfig.StandardInput
                                     [||]
                                     image
                             )

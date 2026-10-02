@@ -119,7 +119,9 @@ module TestSignalDispatch =
         // untouched so far, is swapped for one of `platform`'s before anything
         // is made in it.
         let state =
-            state.MapKernel (EmulatedKernel.mapMachine (fun _ -> (EmulatedKernel.create platform).Machine))
+            state.MapKernel (
+                EmulatedKernel.mapMachine (fun _ -> (EmulatedKernel.create platform ImmutableArray.Empty).Machine)
+            )
 
         let state =
             match NativeSystemNative.initializeSignalHandling "test" state.Kernel.Leader state with
@@ -1047,7 +1049,12 @@ module TestSignalDispatch =
         // Which thread takes a signal sent to the process is the kernel's
         // answer, and it is the leader: not the lowest-numbered thread that
         // happens to be running, so no other thread's status enters into it.
-        for sibling in [ ThreadStatus.Terminated ; ThreadStatus.NotStarted ; ThreadStatus.Runnable ] do
+        for sibling in
+            [
+                ThreadStatus.Terminated
+                ThreadStatus.NotStarted (CpuId 0)
+                ThreadStatus.Runnable
+            ] do
             let state, dispatcher, _ = preparedState ()
 
             let state' =
