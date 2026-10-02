@@ -1,0 +1,414 @@
+P	clear	P1.0 fresh listener	rv=0	-	[]
+P	clear	P1.1 one connection queued	rv=1	-	[L:READ flags=0x21 fflags=0 data=1 udata=0x11]
+P	clear	P1.2 again	rv=0	-	[]
+P	clear	P1.3 a second queued	rv=1	-	[L:READ flags=0x21 fflags=0 data=2 udata=0x11]
+P	clear	P1.4 again	rv=0	-	[]
+P	clear	P1.5 one accepted, one queued	rv=0	-	[]
+P	clear	P1.6 again	rv=0	-	[]
+P	clear	P1.7 both accepted	rv=0	-	[]
+P	clear	P1.8 connected and accepted before the poll	rv=0	-	[]
+P	clear	P2.0 idle socket	rv=0	-	[]
+P	clear	P2.1 connect	EINPROGRESS
+P	clear	P2.2 connected	rv=1	-	[S:WRITE flags=0x21 fflags=0 data=146988 udata=0x22]
+P	clear	P2.3 again	rv=0	-	[]
+P	clear	P2.4 SO_SNDBUF=146988
+P	clear	P2.5 after the peer accepted	rv=0	-	[]
+P	clear	P2.6 ADD on a connected socket, new kqueue	rv=1	-	[S:WRITE flags=0x21 fflags=0 data=146988 udata=0x24]
+P	clear	P2.7 ADD WRITE on the accepted end	rv=1	-	[A:WRITE flags=0x21 fflags=0 data=146988 udata=0x25]
+P	clear	P2.8 accepted SO_SNDBUF=146988
+P	clear	P3.0 connect	EINPROGRESS
+P	clear	P3.1 refused	rv=2	-	[S:WRITE flags=0x8021 fflags=61 data=2048 udata=0x32; S:READ flags=0x8021 fflags=61 data=0 udata=0x31]
+P	clear	P3.2 again	rv=0	-	[]
+P	clear	P3.3 SO_ERROR=ECONNREFUSED
+P	clear	P3.4 after the SO_ERROR read	rv=0	-	[]
+P	clear	P3.5 re-ADD after the SO_ERROR read	rv=2	-	[S:READ flags=0x8021 fflags=0 data=0 udata=0x33; S:WRITE flags=0x8021 fflags=0 data=2048 udata=0x34]
+P	clear	P3b.0 blocking connect	ECONNREFUSED
+P	clear	P3b.1 SO_ERROR=-
+P	clear	P3b.2 ADD after a blocking refusal	rv=2	-	[S:READ flags=0x8021 fflags=0 data=0 udata=0x35; S:WRITE flags=0x8021 fflags=0 data=2048 udata=0x36]
+P	clear	P12.0 fresh IPv6 listener	rv=0	-	[]
+P	clear	P12.1 fresh IPv6 socket	rv=0	-	[]
+P	clear	P12.2 connect	EINPROGRESS
+P	clear	P12.3 IPv6 connected	rv=2	-	[C6:WRITE flags=0x21 fflags=0 data=146808 udata=0xc4; L6:READ flags=0x21 fflags=0 data=1 udata=0xc1]
+P	clear	P12.4 accepted end after its peer closed	rv=2	-	[A6:READ flags=0x8021 fflags=0 data=0 udata=0xc5; A6:WRITE flags=0x21 fflags=0 data=146808 udata=0xc6]
+P	clear	P4.0 established	rv=1	-	[A:WRITE flags=0x21 fflags=0 data=146988 udata=0x42]
+P	clear	P4.1 again	rv=0	-	[]
+P	clear	P4.2 peer wrote 5	rv=1	-	[A:READ flags=0x21 fflags=0 data=5 udata=0x41]
+P	clear	P4.3 again	rv=0	-	[]
+P	clear	P4.4 peer wrote 3 more, unread	rv=1	-	[A:READ flags=0x21 fflags=0 data=8 udata=0x41]
+P	clear	P4.5 read 8
+P	clear	P4.6 after reading all	rv=0	-	[]
+P	clear	P4.7 written and read before the poll	rv=0	-	[]
+P	clear	P5.0 established	rv=1	-	[A:WRITE flags=0x21 fflags=0 data=146988 udata=0x52]
+P	clear	P5.1 peer shut down writing	rv=1	-	[A:READ flags=0x8021 fflags=0 data=0 udata=0x51]
+P	clear	P5.2 again	rv=0	-	[]
+P	clear	P5.3 re-ADD both	rv=2	-	[A:READ flags=0x8021 fflags=0 data=0 udata=0x53; A:WRITE flags=0x21 fflags=0 data=146988 udata=0x54]
+P	clear	P6.0 established	rv=1	-	[A:WRITE flags=0x21 fflags=0 data=146988 udata=0x52]
+P	clear	P6.1 peer closed	rv=1	-	[A:READ flags=0x8021 fflags=0 data=0 udata=0x51]
+P	clear	P6.2 again	rv=0	-	[]
+P	clear	P6.3 re-ADD both	rv=2	-	[A:READ flags=0x8021 fflags=0 data=0 udata=0x53; A:WRITE flags=0x21 fflags=0 data=146988 udata=0x54]
+P	clear	P7.0 established	rv=1	-	[A:WRITE flags=0x21 fflags=0 data=146988 udata=0x72]
+P	clear	P7.1 peer closed with unread data	rv=2	-	[A:WRITE flags=0x8021 fflags=54 data=146988 udata=0x72; A:READ flags=0x8021 fflags=54 data=0 udata=0x71]
+P	clear	P7.2 again	rv=0	-	[]
+P	clear	P8.0 established	rv=1	-	[C:WRITE flags=0x21 fflags=0 data=146988 udata=0x81]
+P	clear	P8.1 wrote 507280 until EAGAIN
+P	clear	P8.2 send buffer full	rv=1	-	[C:WRITE flags=0x21 fflags=0 data=392748 udata=0x81]
+P	clear	P8.3 peer read 1 byte	rv=0	-	[]
+P	clear	P8.4 peer read 507279 more
+P	clear	P8.5 after the peer read everything	rv=0	-	[]
+P	clear	P8.6 again	rv=0	-	[]
+P	clear	P9.0 fresh UDP	rv=1	-	[U:WRITE flags=0x21 fflags=0 data=9216 udata=0x92]
+P	clear	P9.1 connect -, SO_SNDBUF=9216
+P	clear	P9.2 connected UDP	rv=1	-	[U:WRITE flags=0x21 fflags=0 data=9216 udata=0x92]
+P	clear	P9.3 idle TCP	rv=0	-	[]
+P	clear	P10.0 bound, idle	rv=0	-	[]
+P	clear	P10.1 listening	rv=0	-	[]
+P	clear	P10.2 connected to	rv=1	-	[S:READ flags=0x21 fflags=0 data=1 udata=0xa1]
+P	clear	P11.0 one queued	rv=1	-	[L:READ flags=0x21 fflags=0 data=1 udata=0xb1]
+P	clear	P11.1 the accepted connection's peer wrote and closed	rv=0	-	[]
+P	level	P1.0 fresh listener	rv=0	-	[]
+P	level	P1.1 one connection queued	rv=1	-	[L:READ flags=0x1 fflags=0 data=1 udata=0x11]
+P	level	P1.2 again	rv=1	-	[L:READ flags=0x1 fflags=0 data=1 udata=0x11]
+P	level	P1.3 a second queued	rv=1	-	[L:READ flags=0x1 fflags=0 data=2 udata=0x11]
+P	level	P1.4 again	rv=1	-	[L:READ flags=0x1 fflags=0 data=2 udata=0x11]
+P	level	P1.5 one accepted, one queued	rv=1	-	[L:READ flags=0x1 fflags=0 data=1 udata=0x11]
+P	level	P1.6 again	rv=1	-	[L:READ flags=0x1 fflags=0 data=1 udata=0x11]
+P	level	P1.7 both accepted	rv=0	-	[]
+P	level	P1.8 connected and accepted before the poll	rv=0	-	[]
+P	level	P2.0 idle socket	rv=0	-	[]
+P	level	P2.1 connect	EINPROGRESS
+P	level	P2.2 connected	rv=1	-	[S:WRITE flags=0x1 fflags=0 data=146988 udata=0x22]
+P	level	P2.3 again	rv=1	-	[S:WRITE flags=0x1 fflags=0 data=146988 udata=0x22]
+P	level	P2.4 SO_SNDBUF=146988
+P	level	P2.5 after the peer accepted	rv=1	-	[S:WRITE flags=0x1 fflags=0 data=146988 udata=0x22]
+P	level	P2.6 ADD on a connected socket, new kqueue	rv=1	-	[S:WRITE flags=0x1 fflags=0 data=146988 udata=0x24]
+P	level	P2.7 ADD WRITE on the accepted end	rv=2	-	[S:WRITE flags=0x1 fflags=0 data=146988 udata=0x24; A:WRITE flags=0x1 fflags=0 data=146988 udata=0x25]
+P	level	P2.8 accepted SO_SNDBUF=146988
+P	level	P3.0 connect	EINPROGRESS
+P	level	P3.1 refused	rv=2	-	[S:WRITE flags=0x8001 fflags=61 data=2048 udata=0x32; S:READ flags=0x8001 fflags=61 data=0 udata=0x31]
+P	level	P3.2 again	rv=2	-	[S:WRITE flags=0x8001 fflags=61 data=2048 udata=0x32; S:READ flags=0x8001 fflags=61 data=0 udata=0x31]
+P	level	P3.3 SO_ERROR=ECONNREFUSED
+P	level	P3.4 after the SO_ERROR read	rv=2	-	[S:WRITE flags=0x8001 fflags=0 data=2048 udata=0x32; S:READ flags=0x8001 fflags=0 data=0 udata=0x31]
+P	level	P3.5 re-ADD after the SO_ERROR read	rv=2	-	[S:WRITE flags=0x8001 fflags=0 data=2048 udata=0x34; S:READ flags=0x8001 fflags=0 data=0 udata=0x33]
+P	level	P3b.0 blocking connect	ECONNREFUSED
+P	level	P3b.1 SO_ERROR=-
+P	level	P3b.2 ADD after a blocking refusal	rv=2	-	[S:READ flags=0x8001 fflags=0 data=0 udata=0x35; S:WRITE flags=0x8001 fflags=0 data=2048 udata=0x36]
+P	level	P12.0 fresh IPv6 listener	rv=0	-	[]
+P	level	P12.1 fresh IPv6 socket	rv=0	-	[]
+P	level	P12.2 connect	EINPROGRESS
+P	level	P12.3 IPv6 connected	rv=2	-	[C6:WRITE flags=0x1 fflags=0 data=146808 udata=0xc4; L6:READ flags=0x1 fflags=0 data=1 udata=0xc1]
+P	level	P12.4 accepted end after its peer closed	rv=2	-	[A6:READ flags=0x8001 fflags=0 data=0 udata=0xc5; A6:WRITE flags=0x1 fflags=0 data=146808 udata=0xc6]
+P	level	P4.0 established	rv=1	-	[A:WRITE flags=0x1 fflags=0 data=146988 udata=0x42]
+P	level	P4.1 again	rv=1	-	[A:WRITE flags=0x1 fflags=0 data=146988 udata=0x42]
+P	level	P4.2 peer wrote 5	rv=2	-	[A:WRITE flags=0x1 fflags=0 data=146988 udata=0x42; A:READ flags=0x1 fflags=0 data=5 udata=0x41]
+P	level	P4.3 again	rv=2	-	[A:WRITE flags=0x1 fflags=0 data=146988 udata=0x42; A:READ flags=0x1 fflags=0 data=5 udata=0x41]
+P	level	P4.4 peer wrote 3 more, unread	rv=2	-	[A:WRITE flags=0x1 fflags=0 data=146988 udata=0x42; A:READ flags=0x1 fflags=0 data=8 udata=0x41]
+P	level	P4.5 read 8
+P	level	P4.6 after reading all	rv=1	-	[A:WRITE flags=0x1 fflags=0 data=146988 udata=0x42]
+P	level	P4.7 written and read before the poll	rv=1	-	[A:WRITE flags=0x1 fflags=0 data=146988 udata=0x42]
+P	level	P5.0 established	rv=1	-	[A:WRITE flags=0x1 fflags=0 data=146988 udata=0x52]
+P	level	P5.1 peer shut down writing	rv=2	-	[A:WRITE flags=0x1 fflags=0 data=146988 udata=0x52; A:READ flags=0x8001 fflags=0 data=0 udata=0x51]
+P	level	P5.2 again	rv=2	-	[A:WRITE flags=0x1 fflags=0 data=146988 udata=0x52; A:READ flags=0x8001 fflags=0 data=0 udata=0x51]
+P	level	P5.3 re-ADD both	rv=2	-	[A:WRITE flags=0x1 fflags=0 data=146988 udata=0x54; A:READ flags=0x8001 fflags=0 data=0 udata=0x53]
+P	level	P6.0 established	rv=1	-	[A:WRITE flags=0x1 fflags=0 data=146988 udata=0x52]
+P	level	P6.1 peer closed	rv=2	-	[A:WRITE flags=0x1 fflags=0 data=146988 udata=0x52; A:READ flags=0x8001 fflags=0 data=0 udata=0x51]
+P	level	P6.2 again	rv=2	-	[A:WRITE flags=0x1 fflags=0 data=146988 udata=0x52; A:READ flags=0x8001 fflags=0 data=0 udata=0x51]
+P	level	P6.3 re-ADD both	rv=2	-	[A:WRITE flags=0x1 fflags=0 data=146988 udata=0x54; A:READ flags=0x8001 fflags=0 data=0 udata=0x53]
+P	level	P7.0 established	rv=1	-	[A:WRITE flags=0x1 fflags=0 data=146988 udata=0x72]
+P	level	P7.1 peer closed with unread data	rv=2	-	[A:WRITE flags=0x8001 fflags=54 data=146988 udata=0x72; A:READ flags=0x8001 fflags=54 data=0 udata=0x71]
+P	level	P7.2 again	rv=2	-	[A:WRITE flags=0x8001 fflags=54 data=146988 udata=0x72; A:READ flags=0x8001 fflags=54 data=0 udata=0x71]
+P	level	P8.0 established	rv=1	-	[C:WRITE flags=0x1 fflags=0 data=146988 udata=0x81]
+P	level	P8.1 wrote 1113592 until EAGAIN
+P	level	P8.2 send buffer full	rv=1	-	[C:WRITE flags=0x1 fflags=0 data=163164 udata=0x81]
+P	level	P8.3 peer read 1 byte	rv=1	-	[C:WRITE flags=0x1 fflags=0 data=163164 udata=0x81]
+P	level	P8.4 peer read 1113591 more
+P	level	P8.5 after the peer read everything	rv=1	-	[C:WRITE flags=0x1 fflags=0 data=245292 udata=0x81]
+P	level	P8.6 again	rv=1	-	[C:WRITE flags=0x1 fflags=0 data=245292 udata=0x81]
+P	level	P9.0 fresh UDP	rv=1	-	[U:WRITE flags=0x1 fflags=0 data=9216 udata=0x92]
+P	level	P9.1 connect -, SO_SNDBUF=9216
+P	level	P9.2 connected UDP	rv=1	-	[U:WRITE flags=0x1 fflags=0 data=9216 udata=0x92]
+P	level	P9.3 idle TCP	rv=1	-	[U:WRITE flags=0x1 fflags=0 data=9216 udata=0x92]
+P	level	P10.0 bound, idle	rv=0	-	[]
+P	level	P10.1 listening	rv=0	-	[]
+P	level	P10.2 connected to	rv=1	-	[S:READ flags=0x1 fflags=0 data=1 udata=0xa1]
+P	level	P11.0 one queued	rv=1	-	[L:READ flags=0x1 fflags=0 data=1 udata=0xb1]
+P	level	P11.1 the accepted connection's peer wrote and closed	rv=0	-	[]
+R	R1 two receipts, room for 8	rv=2	-	[L:READ flags=0x4061 fflags=0 data=0 udata=0x1; C:WRITE flags=0x4061 fflags=0 data=0 udata=0x2]
+R	R1 poll	rv=2	-	[L:READ flags=0x61 fflags=0 data=1 udata=0x1; C:WRITE flags=0x61 fflags=0 data=146988 udata=0x2]
+R	R2 two receipts, room for 1	rv=1	-	[L:READ flags=0x4061 fflags=0 data=0 udata=0x1]
+R	R2 poll	rv=2	-	[L:READ flags=0x61 fflags=0 data=1 udata=0x1; C:WRITE flags=0x61 fflags=0 data=146988 udata=0x2]
+R	R3 two receipts, room for 0	rv=0	-	[]
+R	R3 poll	rv=2	-	[L:READ flags=0x61 fflags=0 data=1 udata=0x1; C:WRITE flags=0x61 fflags=0 data=146988 udata=0x2]
+R	R4 DELETE of nothing with receipt, room for 8	rv=1	-	[C:READ flags=0x4042 fflags=0 data=2 udata=0x3]
+R	R4 DELETE of nothing with receipt, room for 0	rv=-1	ENOENT	[]
+R	R4 DELETE of nothing, room for 8	rv=1	-	[C:READ flags=0x4002 fflags=0 data=2 udata=0x3]
+R	R4 DELETE of nothing, room for 0	rv=-1	ENOENT	[]
+R	R5 [DELETE of nothing, ADD] with receipts, room for 0	rv=-1	ENOENT	[]
+R	R5 poll	rv=0	-	[]
+R	R6 [DELETE of nothing, ADD], room for 8	rv=1	-	[C:READ flags=0x4002 fflags=0 data=2 udata=0x3]
+R	R6 poll	rv=1	-	[L:READ flags=0x21 fflags=0 data=1 udata=0x1]
+R	R7 [DELETE of nothing, ADD], room for 0	rv=-1	ENOENT	[]
+R	R7 poll	rv=0	-	[]
+R	R8 ADD of a ready listener, room for 8	rv=1	-	[L:READ flags=0x21 fflags=0 data=1 udata=0x1]
+R	R8 poll	rv=0	-	[]
+R	R9 ADD with receipt beside a queued registration, room for 8	rv=1	-	[L:READ flags=0x4061 fflags=0 data=0 udata=0x1]
+R	R9 poll	rv=2	-	[C:WRITE flags=0x21 fflags=0 data=146988 udata=0x2; L:READ flags=0x61 fflags=0 data=1 udata=0x1]
+R	R9b ADD without receipt beside a queued registration, room for 8	rv=2	-	[C:WRITE flags=0x21 fflags=0 data=146988 udata=0x2; L:READ flags=0x21 fflags=0 data=1 udata=0x1]
+R	R9b poll	rv=0	-	[]
+R	R10 ADD of a closed descriptor with receipt, room for 8	rv=1	-	[closed:READ flags=0x4061 fflags=0 data=9 udata=0x4]
+R	R10 ADD of a closed descriptor with receipt, room for 0	rv=-1	EBADF	[]
+R	R10 ADD of a closed descriptor, room for 8	rv=1	-	[closed:READ flags=0x4021 fflags=0 data=9 udata=0x4]
+R	R10 ADD of a closed descriptor, room for 0	rv=-1	EBADF	[]
+R	R10 DELETE of a closed descriptor with receipt, room for 8	rv=1	-	[closed:READ flags=0x4042 fflags=0 data=2 udata=0x4]
+R	R11 ADD of ident UINT64_MAX with receipt, room for 8	rv=1	-	[ident18446744073709551615:READ flags=0x4061 fflags=0 data=9 udata=0x5]
+R	R11 ADD of ident 2^32+L with receipt, room for 8	rv=1	-	[ident4294967299:READ flags=0x4061 fflags=0 data=22 udata=0x5]
+R	R11 ADD of ident INT_MAX with receipt, room for 8	rv=1	-	[ident2147483647:READ flags=0x4061 fflags=0 data=9 udata=0x5]
+R	R11 ADD of ident INT_MAX+1 with receipt, room for 8	rv=1	-	[ident2147483648:READ flags=0x4061 fflags=0 data=9 udata=0x5]
+R	R11 ADD of ident (uint64)-1 with receipt, room for 8	rv=1	-	[ident18446744073709551615:READ flags=0x4061 fflags=0 data=9 udata=0x5]
+R	R11 ADD of ident 1000000 with receipt, room for 8	rv=1	-	[ident1000000:READ flags=0x4061 fflags=0 data=9 udata=0x5]
+R	R11 poll	rv=0	-	[]
+R	R12 [ADD, DELETE of nothing, ADD] with receipts, room for 2	rv=2	-	[L:READ flags=0x4061 fflags=0 data=0 udata=0x1; C:READ flags=0x4042 fflags=0 data=2 udata=0x3]
+R	R12 poll	rv=2	-	[L:READ flags=0x61 fflags=0 data=1 udata=0x1; C:WRITE flags=0x61 fflags=0 data=146988 udata=0x2]
+R	R13 [ADD closed, ADD], room for 1	rv=1	-	[closed:READ flags=0x4021 fflags=0 data=9 udata=0x4]
+R	R13 poll	rv=1	-	[L:READ flags=0x21 fflags=0 data=1 udata=0x1]
+R	R14 two ADDs of ready registrations without receipts, room for 1	rv=1	-	[L:READ flags=0x21 fflags=0 data=1 udata=0x1]
+R	R14 poll	rv=1	-	[C:WRITE flags=0x21 fflags=0 data=146988 udata=0x2]
+R	R15 receipt entry, every field	rv=1	-	ident=L filter=-1 flags=0x4061 fflags=0 data=0 udata=0x1
+R	R16 ADD|ONESHOT on a ready listener with receipt	rv=1	-	[L:READ flags=0x4051 fflags=0 data=0 udata=0x6]
+R	R16 ADD|ONESHOT poll	rv=1	-	[L:READ flags=0x51 fflags=0 data=1 udata=0x6]
+R	R16 ADD|DISPATCH on a ready listener with receipt	rv=1	-	[L:READ flags=0x40c1 fflags=0 data=0 udata=0x6]
+R	R16 ADD|DISPATCH poll	rv=1	-	[L:READ flags=0xc1 fflags=0 data=1 udata=0x6]
+R	R16 ADD|DISABLE on a ready listener with receipt	rv=1	-	[L:READ flags=0x4049 fflags=0 data=0 udata=0x6]
+R	R16 ADD|DISABLE poll	rv=0	-	[]
+R	R16 ENABLE alone on a ready listener with receipt	rv=1	-	[L:READ flags=0x4044 fflags=0 data=2 udata=0x6]
+R	R16 ENABLE alone poll	rv=0	-	[]
+R	R16 DISABLE alone on a ready listener with receipt	rv=1	-	[L:READ flags=0x4048 fflags=0 data=2 udata=0x6]
+R	R16 DISABLE alone poll	rv=0	-	[]
+R	R16 no flags on a ready listener with receipt	rv=1	-	[L:READ flags=0x4040 fflags=0 data=2 udata=0x6]
+R	R16 no flags poll	rv=0	-	[]
+R	R16 ADD|DELETE on a ready listener with receipt	rv=1	-	[L:READ flags=0x4042 fflags=0 data=2 udata=0x6]
+R	R16 ADD|DELETE poll	rv=0	-	[]
+R	R16 ADD with NOTE_LOWAT 2 on a listener with one queued	rv=1	-	[L:READ flags=0x4061 fflags=1 data=0 udata=0x7]
+R	R16 NOTE_LOWAT poll	rv=1	-	[L:READ flags=0x61 fflags=0 data=1 udata=0x7]
+R	R16 ADD with data 100 and no fflags	rv=1	-	[C:READ flags=0x4061 fflags=0 data=0 udata=0x8]
+R	R16 EVFILT_EXCEPT on a socket	rv=1	-	[C:OTHER flags=0x4061 fflags=0 data=0 udata=0x9]
+R	R16 filter -100	rv=1	-	[C:OTHER flags=0x4061 fflags=0 data=22 udata=0x9]
+O	clear	O1 registered L1,L2,L3; connected L1,L2,L3	rv=3	-	[L1:READ flags=0x21 fflags=0 data=1 udata=0x101; L2:READ flags=0x21 fflags=0 data=1 udata=0x102; L3:READ flags=0x21 fflags=0 data=1 udata=0x103]
+O	clear	O1 registered L1,L2,L3; connected L1,L3,L2	rv=3	-	[L1:READ flags=0x21 fflags=0 data=1 udata=0x101; L3:READ flags=0x21 fflags=0 data=1 udata=0x103; L2:READ flags=0x21 fflags=0 data=1 udata=0x102]
+O	clear	O1 registered L1,L2,L3; connected L2,L1,L3	rv=3	-	[L2:READ flags=0x21 fflags=0 data=1 udata=0x102; L1:READ flags=0x21 fflags=0 data=1 udata=0x101; L3:READ flags=0x21 fflags=0 data=1 udata=0x103]
+O	clear	O1 registered L1,L2,L3; connected L2,L3,L1	rv=3	-	[L2:READ flags=0x21 fflags=0 data=1 udata=0x102; L3:READ flags=0x21 fflags=0 data=1 udata=0x103; L1:READ flags=0x21 fflags=0 data=1 udata=0x101]
+O	clear	O1 registered L1,L2,L3; connected L3,L1,L2	rv=3	-	[L3:READ flags=0x21 fflags=0 data=1 udata=0x103; L1:READ flags=0x21 fflags=0 data=1 udata=0x101; L2:READ flags=0x21 fflags=0 data=1 udata=0x102]
+O	clear	O1 registered L1,L2,L3; connected L3,L2,L1	rv=3	-	[L3:READ flags=0x21 fflags=0 data=1 udata=0x103; L2:READ flags=0x21 fflags=0 data=1 udata=0x102; L1:READ flags=0x21 fflags=0 data=1 udata=0x101]
+O	clear	O2 refused, registered READ,WRITE	rv=2	-	[S:WRITE flags=0x8021 fflags=61 data=2048 udata=0x2; S:READ flags=0x8021 fflags=61 data=0 udata=0x1]
+O	clear	O2b one connect, registered S:WRITE,L:READ	rv=2	-	[S:WRITE flags=0x21 fflags=0 data=146988 udata=0x2; L:READ flags=0x21 fflags=0 data=1 udata=0x1]
+O	clear	O2 refused, registered WRITE,READ	rv=2	-	[S:WRITE flags=0x8021 fflags=61 data=2048 udata=0x2; S:READ flags=0x8021 fflags=61 data=0 udata=0x1]
+O	clear	O2b one connect, registered L:READ,S:WRITE	rv=2	-	[S:WRITE flags=0x21 fflags=0 data=146988 udata=0x2; L:READ flags=0x21 fflags=0 data=1 udata=0x1]
+O	clear	O3 connected L1, L2, L1 again	rv=2	-	[L1:READ flags=0x21 fflags=0 data=2 udata=0x101; L2:READ flags=0x21 fflags=0 data=1 udata=0x102]
+O	clear	O4 room for 1	rv=0	-	[]
+O	clear	O4 room for 1	rv=1	-	[L1:READ flags=0x21 fflags=0 data=3 udata=0x101]
+O	clear	O4 room for 1	rv=0	-	[]
+O	clear	O4 room for 1	rv=0	-	[]
+O	clear	O5 L1,L2 registered; connected L2, L3, L1; then L3 ADDed	rv=2	-	[L2:READ flags=0x21 fflags=0 data=1 udata=0x102; L1:READ flags=0x21 fflags=0 data=1 udata=0x101]
+O	clear	O5 the rest	rv=1	-	[L3:READ flags=0x21 fflags=0 data=1 udata=0x103]
+O	clear	O6 one listener through L and its dup D, registered L,D; a connection	rv=2	-	[D:READ flags=0x21 fflags=0 data=1 udata=0x2; L:READ flags=0x21 fflags=0 data=1 udata=0x1]
+O	clear	O6 one listener through L and its dup D, registered D,L; a connection	rv=2	-	[L:READ flags=0x21 fflags=0 data=1 udata=0x1; D:READ flags=0x21 fflags=0 data=1 udata=0x2]
+O	level	O1 registered L1,L2,L3; connected L1,L2,L3	rv=3	-	[L1:READ flags=0x1 fflags=0 data=1 udata=0x101; L2:READ flags=0x1 fflags=0 data=1 udata=0x102; L3:READ flags=0x1 fflags=0 data=1 udata=0x103]
+O	level	O1 registered L1,L2,L3; connected L1,L3,L2	rv=3	-	[L1:READ flags=0x1 fflags=0 data=1 udata=0x101; L3:READ flags=0x1 fflags=0 data=1 udata=0x103; L2:READ flags=0x1 fflags=0 data=1 udata=0x102]
+O	level	O1 registered L1,L2,L3; connected L2,L1,L3	rv=3	-	[L2:READ flags=0x1 fflags=0 data=1 udata=0x102; L1:READ flags=0x1 fflags=0 data=1 udata=0x101; L3:READ flags=0x1 fflags=0 data=1 udata=0x103]
+O	level	O1 registered L1,L2,L3; connected L2,L3,L1	rv=3	-	[L2:READ flags=0x1 fflags=0 data=1 udata=0x102; L3:READ flags=0x1 fflags=0 data=1 udata=0x103; L1:READ flags=0x1 fflags=0 data=1 udata=0x101]
+O	level	O1 registered L1,L2,L3; connected L3,L1,L2	rv=3	-	[L3:READ flags=0x1 fflags=0 data=1 udata=0x103; L1:READ flags=0x1 fflags=0 data=1 udata=0x101; L2:READ flags=0x1 fflags=0 data=1 udata=0x102]
+O	level	O1 registered L1,L2,L3; connected L3,L2,L1	rv=3	-	[L3:READ flags=0x1 fflags=0 data=1 udata=0x103; L2:READ flags=0x1 fflags=0 data=1 udata=0x102; L1:READ flags=0x1 fflags=0 data=1 udata=0x101]
+O	level	O2 refused, registered READ,WRITE	rv=2	-	[S:WRITE flags=0x8001 fflags=61 data=2048 udata=0x2; S:READ flags=0x8001 fflags=61 data=0 udata=0x1]
+O	level	O2b one connect, registered S:WRITE,L:READ	rv=2	-	[S:WRITE flags=0x1 fflags=0 data=146988 udata=0x2; L:READ flags=0x1 fflags=0 data=1 udata=0x1]
+O	level	O2 refused, registered WRITE,READ	rv=2	-	[S:WRITE flags=0x8001 fflags=61 data=2048 udata=0x2; S:READ flags=0x8001 fflags=61 data=0 udata=0x1]
+O	level	O2b one connect, registered L:READ,S:WRITE	rv=2	-	[S:WRITE flags=0x1 fflags=0 data=146988 udata=0x2; L:READ flags=0x1 fflags=0 data=1 udata=0x1]
+O	level	O3 connected L1, L2, L1 again	rv=2	-	[L1:READ flags=0x1 fflags=0 data=2 udata=0x101; L2:READ flags=0x1 fflags=0 data=1 udata=0x102]
+O	level	O4 room for 1	rv=1	-	[L1:READ flags=0x1 fflags=0 data=2 udata=0x101]
+O	level	O4 room for 1	rv=1	-	[L2:READ flags=0x1 fflags=0 data=1 udata=0x102]
+O	level	O4 room for 1	rv=1	-	[L1:READ flags=0x1 fflags=0 data=3 udata=0x101]
+O	level	O4 room for 1	rv=1	-	[L2:READ flags=0x1 fflags=0 data=1 udata=0x102]
+O	level	O5 L1,L2 registered; connected L2, L3, L1; then L3 ADDed	rv=2	-	[L2:READ flags=0x1 fflags=0 data=1 udata=0x102; L1:READ flags=0x1 fflags=0 data=1 udata=0x101]
+O	level	O5 the rest	rv=3	-	[L3:READ flags=0x1 fflags=0 data=1 udata=0x103; L2:READ flags=0x1 fflags=0 data=1 udata=0x102; L1:READ flags=0x1 fflags=0 data=1 udata=0x101]
+O	level	O6 one listener through L and its dup D, registered L,D; a connection	rv=2	-	[D:READ flags=0x1 fflags=0 data=1 udata=0x2; L:READ flags=0x1 fflags=0 data=1 udata=0x1]
+O	level	O6 one listener through L and its dup D, registered D,L; a connection	rv=2	-	[L:READ flags=0x1 fflags=0 data=1 udata=0x1; D:READ flags=0x1 fflags=0 data=1 udata=0x2]
+D	D1 ADD|CLEAR udata 1	rv=1	-	[L:READ flags=0x21 fflags=0 data=1 udata=0x1]
+D	D1 re-ADD|CLEAR udata 2 after delivery	rv=1	-	[L:READ flags=0x21 fflags=0 data=1 udata=0x2]
+D	D1 again	rv=0	-	[]
+D	D2 ADD udata 1, re-ADD udata 2 while queued	rv=1	-	[L:READ flags=0x21 fflags=0 data=1 udata=0x2]
+D	D2 again	rv=0	-	[]
+D	D3 ADD|CLEAR	rv=1	-	[L:READ flags=0x21 fflags=0 data=1 udata=0x1]
+D	D3 re-ADD without CLEAR	rv=1	-	[L:READ flags=0x21 fflags=0 data=1 udata=0x2]
+D	D3 again	rv=0	-	[]
+D	D3 again	rv=0	-	[]
+D	D4 ADD without CLEAR	rv=1	-	[L:READ flags=0x1 fflags=0 data=1 udata=0x1]
+D	D4 again	rv=1	-	[L:READ flags=0x1 fflags=0 data=1 udata=0x1]
+D	D4 re-ADD with CLEAR	rv=1	-	[L:READ flags=0x1 fflags=0 data=1 udata=0x2]
+D	D4 again	rv=1	-	[L:READ flags=0x1 fflags=0 data=1 udata=0x2]
+D	D5 ADD, re-ADD on nothing ready	rv=0	-	[]
+D	D5 then a connection	rv=1	-	[L:READ flags=0x21 fflags=0 data=1 udata=0x2]
+D	D6 two queued, the first deleted	rv=1	-	[C:WRITE flags=0x21 fflags=0 data=146988 udata=0x2]
+D	D6 the first ADDed again	rv=1	-	[L:READ flags=0x21 fflags=0 data=1 udata=0x3]
+D	D7 L, C queued, then L re-ADDed	rv=2	-	[L:READ flags=0x21 fflags=0 data=1 udata=0x3; C:WRITE flags=0x21 fflags=0 data=146988 udata=0x2]
+D	D8 the same ADD twice in one changelist, room for 8	rv=2	-	[L:READ flags=0x4061 fflags=0 data=0 udata=0x1; L:READ flags=0x4061 fflags=0 data=0 udata=0x2]
+D	D8 poll	rv=1	-	[L:READ flags=0x61 fflags=0 data=1 udata=0x2]
+D	D8 the same DELETE twice in one changelist, room for 8	rv=2	-	[L:READ flags=0x4042 fflags=0 data=0 udata=0x0; L:READ flags=0x4042 fflags=0 data=2 udata=0x0]
+F	file-rdwr(at end) READ ADD with receipt	rv=1	-	[file-rdwr(at end):READ flags=0x4061 fflags=0 data=0 udata=0xf0]
+F	file-rdwr(at end) READ poll	rv=0	-	[]
+F	file-rdwr(at end) WRITE ADD with receipt	rv=1	-	[file-rdwr(at end):WRITE flags=0x4061 fflags=0 data=0 udata=0xf0]
+F	file-rdwr(at end) WRITE poll	rv=1	-	[file-rdwr(at end):WRITE flags=0x61 fflags=0 data=1 udata=0xf0]
+F	file-rdonly READ ADD with receipt	rv=1	-	[file-rdonly:READ flags=0x4061 fflags=0 data=0 udata=0xf1]
+F	file-rdonly READ poll	rv=1	-	[file-rdonly:READ flags=0x61 fflags=0 data=10 udata=0xf1]
+F	file-rdonly WRITE ADD with receipt	rv=1	-	[file-rdonly:WRITE flags=0x4061 fflags=0 data=0 udata=0xf1]
+F	file-rdonly WRITE poll	rv=1	-	[file-rdonly:WRITE flags=0x61 fflags=0 data=1 udata=0xf1]
+F	file-wronly READ ADD with receipt	rv=1	-	[file-wronly:READ flags=0x4061 fflags=0 data=0 udata=0xf2]
+F	file-wronly READ poll	rv=1	-	[file-wronly:READ flags=0x61 fflags=0 data=10 udata=0xf2]
+F	file-wronly WRITE ADD with receipt	rv=1	-	[file-wronly:WRITE flags=0x4061 fflags=0 data=0 udata=0xf2]
+F	file-wronly WRITE poll	rv=1	-	[file-wronly:WRITE flags=0x61 fflags=0 data=1 udata=0xf2]
+F	directory READ ADD with receipt	rv=1	-	[directory:READ flags=0x4061 fflags=0 data=22 udata=0xf3]
+F	directory READ poll	rv=0	-	[]
+F	directory WRITE ADD with receipt	rv=1	-	[directory:WRITE flags=0x4061 fflags=0 data=22 udata=0xf3]
+F	directory WRITE poll	rv=0	-	[]
+F	pipe-read-empty READ ADD with receipt	rv=1	-	[pipe-read-empty:READ flags=0x4061 fflags=0 data=0 udata=0xf4]
+F	pipe-read-empty READ poll	rv=0	-	[]
+F	pipe-read-empty WRITE ADD with receipt	rv=1	-	[pipe-read-empty:WRITE flags=0x4061 fflags=0 data=0 udata=0xf4]
+F	pipe-read-empty WRITE poll	rv=0	-	[]
+F	pipe-read-3 READ ADD with receipt	rv=1	-	[pipe-read-3:READ flags=0x4061 fflags=0 data=0 udata=0xf5]
+F	pipe-read-3 READ poll	rv=1	-	[pipe-read-3:READ flags=0x61 fflags=0 data=3 udata=0xf5]
+F	pipe-read-3 WRITE ADD with receipt	rv=1	-	[pipe-read-3:WRITE flags=0x4061 fflags=0 data=0 udata=0xf5]
+F	pipe-read-3 WRITE poll	rv=0	-	[]
+F	pipe-write READ ADD with receipt	rv=1	-	[pipe-write:READ flags=0x4061 fflags=0 data=0 udata=0xf6]
+F	pipe-write READ poll	rv=0	-	[]
+F	pipe-write WRITE ADD with receipt	rv=1	-	[pipe-write:WRITE flags=0x4061 fflags=0 data=0 udata=0xf6]
+F	pipe-write WRITE poll	rv=1	-	[pipe-write:WRITE flags=0x61 fflags=0 data=16384 udata=0xf6]
+F	kqueue READ ADD with receipt	rv=1	-	[kqueue:READ flags=0x4061 fflags=0 data=0 udata=0xf7]
+F	kqueue READ poll	rv=0	-	[]
+F	kqueue WRITE ADD with receipt	rv=1	-	[kqueue:WRITE flags=0x4061 fflags=0 data=22 udata=0xf7]
+F	kqueue WRITE poll	rv=0	-	[]
+F	dev-null READ ADD with receipt	rv=1	-	[dev-null:READ flags=0x4061 fflags=0 data=22 udata=0xf8]
+F	dev-null READ poll	rv=0	-	[]
+F	dev-null WRITE ADD with receipt	rv=1	-	[dev-null:WRITE flags=0x4061 fflags=0 data=22 udata=0xf8]
+F	dev-null WRITE poll	rv=0	-	[]
+G	G1 registered through L, L closed, D lives, then a connection	rv=0	-	[]
+G	G1 then ADD through D	rv=1	-	[D:READ flags=0x21 fflags=0 data=1 udata=0x2]
+G	G1 DELETE through the closed L	rv=1	-	[L:READ flags=0x4042 fflags=0 data=2 udata=0x0]
+G	G2 registered through D, L closed, then a connection	rv=1	-	[D:READ flags=0x21 fflags=0 data=1 udata=0x1]
+G	G3 the new listener reused the number: 1
+G	G3 registered on L, L closed, a new listener on the same number connected to	rv=0	-	[]
+G	G4 queued through L, then L closed while D lives	rv=0	-	[]
+G	G5 L in two kqueues and D in the second; L closed; first kqueue	rv=0	-	[]
+G	G5 second kqueue	rv=1	-	[D:READ flags=0x21 fflags=0 data=1 udata=0x3]
+G	G6 registered on L, then dup2 over L (the listener lives on as Lcopy)	rv=0	-	[]
+X	X1 fresh TCP SO_SNDBUF=131072 SO_SNDLOWAT=2048
+X	X1 refused TCP SO_SNDBUF=131072
+X	X1 fresh TCP6 SO_SNDBUF=131072
+X	X1 listener SO_SNDBUF=131072
+X	X2 ADD high=0x0 low=open	rv=1	-	data=0
+X	X2 DELETE high=0x0 low=open	rv=1	-	data=2
+X	X2 ADD high=0x0 low=closed	rv=1	-	data=9
+X	X2 DELETE high=0x0 low=closed	rv=1	-	data=2
+X	X2 ADD high=0x0 low=0x7fffffff	rv=1	-	data=9
+X	X2 DELETE high=0x0 low=0x7fffffff	rv=1	-	data=2
+X	X2 ADD high=0x0 low=0x80000000	rv=1	-	data=9
+X	X2 DELETE high=0x0 low=0x80000000	rv=1	-	data=2
+X	X2 ADD high=0x0 low=0xffffffff	rv=1	-	data=9
+X	X2 DELETE high=0x0 low=0xffffffff	rv=1	-	data=2
+X	X2 ADD high=0x1 low=open	rv=1	-	data=22
+X	X2 DELETE high=0x1 low=open	rv=1	-	data=2
+X	X2 ADD high=0x1 low=closed	rv=1	-	data=9
+X	X2 DELETE high=0x1 low=closed	rv=1	-	data=2
+X	X2 ADD high=0x1 low=0x7fffffff	rv=1	-	data=9
+X	X2 DELETE high=0x1 low=0x7fffffff	rv=1	-	data=2
+X	X2 ADD high=0x1 low=0x80000000	rv=1	-	data=9
+X	X2 DELETE high=0x1 low=0x80000000	rv=1	-	data=2
+X	X2 ADD high=0x1 low=0xffffffff	rv=1	-	data=9
+X	X2 DELETE high=0x1 low=0xffffffff	rv=1	-	data=2
+X	X2 ADD high=0x2 low=open	rv=1	-	data=22
+X	X2 DELETE high=0x2 low=open	rv=1	-	data=2
+X	X2 ADD high=0x2 low=closed	rv=1	-	data=9
+X	X2 DELETE high=0x2 low=closed	rv=1	-	data=2
+X	X2 ADD high=0x2 low=0x7fffffff	rv=1	-	data=9
+X	X2 DELETE high=0x2 low=0x7fffffff	rv=1	-	data=2
+X	X2 ADD high=0x2 low=0x80000000	rv=1	-	data=9
+X	X2 DELETE high=0x2 low=0x80000000	rv=1	-	data=2
+X	X2 ADD high=0x2 low=0xffffffff	rv=1	-	data=9
+X	X2 DELETE high=0x2 low=0xffffffff	rv=1	-	data=2
+X	X2 ADD high=0x7fffffff low=open	rv=1	-	data=22
+X	X2 DELETE high=0x7fffffff low=open	rv=1	-	data=2
+X	X2 ADD high=0x7fffffff low=closed	rv=1	-	data=9
+X	X2 DELETE high=0x7fffffff low=closed	rv=1	-	data=2
+X	X2 ADD high=0x7fffffff low=0x7fffffff	rv=1	-	data=9
+X	X2 DELETE high=0x7fffffff low=0x7fffffff	rv=1	-	data=2
+X	X2 ADD high=0x7fffffff low=0x80000000	rv=1	-	data=9
+X	X2 DELETE high=0x7fffffff low=0x80000000	rv=1	-	data=2
+X	X2 ADD high=0x7fffffff low=0xffffffff	rv=1	-	data=9
+X	X2 DELETE high=0x7fffffff low=0xffffffff	rv=1	-	data=2
+X	X2 ADD high=0x80000000 low=open	rv=1	-	data=22
+X	X2 DELETE high=0x80000000 low=open	rv=1	-	data=2
+X	X2 ADD high=0x80000000 low=closed	rv=1	-	data=9
+X	X2 DELETE high=0x80000000 low=closed	rv=1	-	data=2
+X	X2 ADD high=0x80000000 low=0x7fffffff	rv=1	-	data=9
+X	X2 DELETE high=0x80000000 low=0x7fffffff	rv=1	-	data=2
+X	X2 ADD high=0x80000000 low=0x80000000	rv=1	-	data=9
+X	X2 DELETE high=0x80000000 low=0x80000000	rv=1	-	data=2
+X	X2 ADD high=0x80000000 low=0xffffffff	rv=1	-	data=9
+X	X2 DELETE high=0x80000000 low=0xffffffff	rv=1	-	data=2
+X	X2 ADD high=0xffffffff low=open	rv=1	-	data=22
+X	X2 DELETE high=0xffffffff low=open	rv=1	-	data=2
+X	X2 ADD high=0xffffffff low=closed	rv=1	-	data=9
+X	X2 DELETE high=0xffffffff low=closed	rv=1	-	data=2
+X	X2 ADD high=0xffffffff low=0x7fffffff	rv=1	-	data=9
+X	X2 DELETE high=0xffffffff low=0x7fffffff	rv=1	-	data=2
+X	X2 ADD high=0xffffffff low=0x80000000	rv=1	-	data=9
+X	X2 DELETE high=0xffffffff low=0x80000000	rv=1	-	data=2
+X	X2 ADD high=0xffffffff low=0xffffffff	rv=1	-	data=9
+X	X2 DELETE high=0xffffffff low=0xffffffff	rv=1	-	data=2
+X	X3 DELETE of nothing on file READ	rv=1	-	[file:READ flags=0x4042 fflags=0 data=2 udata=0x0]
+X	X3 DELETE of nothing on file WRITE	rv=1	-	[file:WRITE flags=0x4042 fflags=0 data=2 udata=0x0]
+X	X3 DELETE of nothing on pipe-read READ	rv=1	-	[pipe-read:READ flags=0x4042 fflags=0 data=2 udata=0x0]
+X	X3 DELETE of nothing on pipe-read WRITE	rv=1	-	[pipe-read:WRITE flags=0x4042 fflags=0 data=2 udata=0x0]
+X	X3 DELETE of nothing on pipe-write READ	rv=1	-	[pipe-write:READ flags=0x4042 fflags=0 data=2 udata=0x0]
+X	X3 DELETE of nothing on pipe-write WRITE	rv=1	-	[pipe-write:WRITE flags=0x4042 fflags=0 data=2 udata=0x0]
+X	X3 DELETE of nothing on kqueue READ	rv=1	-	[kqueue:READ flags=0x4042 fflags=0 data=2 udata=0x0]
+X	X3 DELETE of nothing on kqueue WRITE	rv=1	-	[kqueue:WRITE flags=0x4042 fflags=0 data=2 udata=0x0]
+X	X3 DELETE of nothing on directory READ	rv=1	-	[directory:READ flags=0x4042 fflags=0 data=2 udata=0x0]
+X	X3 DELETE of nothing on directory WRITE	rv=1	-	[directory:WRITE flags=0x4042 fflags=0 data=2 udata=0x0]
+X	X3 DELETE of nothing on udp READ	rv=1	-	[udp:READ flags=0x4042 fflags=0 data=2 udata=0x0]
+X	X3 DELETE of nothing on udp WRITE	rv=1	-	[udp:WRITE flags=0x4042 fflags=0 data=2 udata=0x0]
+X	X4 [ADD, DELETE of nothing] with receipts, room for 1	rv=-1	ENOENT	[]
+X	X4 poll	rv=1	-	[L:READ flags=0x61 fflags=0 data=1 udata=0x1]
+X	X4 [ADD rcpt, DELETE of nothing, ADD] room for 1	rv=-1	ENOENT	[]
+X	X4 poll	rv=1	-	[L:READ flags=0x61 fflags=0 data=1 udata=0x1]
+X	X4 [ADD of ready, DELETE of nothing] no receipts, room for 1	rv=1	-	[C:READ flags=0x4002 fflags=0 data=2 udata=0x3]
+X	X4 poll	rv=1	-	[L:READ flags=0x21 fflags=0 data=1 udata=0x1]
+X	X5 DELETE of nothing beside a queued registration, room for 8	rv=1	-	[C:READ flags=0x4002 fflags=0 data=2 udata=0x3]
+X	X5 poll	rv=1	-	[L:READ flags=0x21 fflags=0 data=1 udata=0x1]
+X	X6 receipt with a NULL timeout and something queued	rv=1	-
+X	X7 ADD|CLEAR	rv=1	-	[L:READ flags=0x21 fflags=0 data=1 udata=0x1]
+X	X7 re-ADD|CLEAR|RECEIPT	rv=1	-	[L:READ flags=0x4061 fflags=0 data=0 udata=0x2]
+X	X7 poll	rv=1	-	[L:READ flags=0x21 fflags=0 data=1 udata=0x2]
+X	X8 ADD of a ready listener with a NULL timeout	rv=1	[L:READ flags=0x21 fflags=0 data=1 udata=0x1]
+Y	Y1 trial 0: sleeper through K, K closed	rv=-1	EBADF
+Y	Y1 then L ready; a {0,0} wait through D	rv=-1	EBADF	[]
+Y	Y1 an ADD with receipt through D, room for 8	rv=1	-	[L2:READ flags=0x4061 fflags=0 data=0 udata=0x2]
+Y	Y1 an ADD with receipt through D, room for 0	rv=0	-	[]
+Y	Y1 an ADD without receipt through D, room for 0	rv=0	-	[]
+Y	Y1 trial 1: sleeper through K, K closed	rv=-1	EBADF
+Y	Y1 then L ready; a {0,0} wait through D	rv=-1	EBADF	[]
+Y	Y1 an ADD with receipt through D, room for 8	rv=1	-	[L2:READ flags=0x4061 fflags=0 data=0 udata=0x2]
+Y	Y1 an ADD with receipt through D, room for 0	rv=0	-	[]
+Y	Y1 an ADD without receipt through D, room for 0	rv=0	-	[]
+Y	Y1 trial 2: sleeper through K, K closed	rv=-1	EBADF
+Y	Y1 then L ready; a {0,0} wait through D	rv=-1	EBADF	[]
+Y	Y1 an ADD with receipt through D, room for 8	rv=1	-	[L2:READ flags=0x4061 fflags=0 data=0 udata=0x2]
+Y	Y1 an ADD with receipt through D, room for 0	rv=0	-	[]
+Y	Y1 an ADD without receipt through D, room for 0	rv=0	-	[]
+Y	Y2 trial 0: asleep before the ADD 1; returned after it 1	rv=1	-
+Y	Y2 trial 1: asleep before the ADD 1; returned after it 1	rv=1	-
+Y	Y2 trial 2: asleep before the ADD 1; returned after it 1	rv=1	-
+Y	Y3 [ADD with receipt, unreadable], room for 8	rv=-1	EFAULT	[]
+Y	Y3 poll	rv=1	-	[L:READ flags=0x61 fflags=0 data=1 udata=0x1]
+Y	Y3 [ADD of a ready listener, unreadable], room for 8	rv=-1	EFAULT	[]
+Y	Y3 poll	rv=1	-	[L:READ flags=0x21 fflags=0 data=1 udata=0x1]
+Y	Y3 [DELETE of nothing, unreadable], room for 8	rv=-1	EFAULT	[]
+Y	Y3 [DELETE of nothing, unreadable], room for 0	rv=-1	ENOENT	[]
+Y	Y3 [ADD, unreadable], room for 0	rv=-1	EFAULT	[]
+Y	Y3 poll	rv=1	-	[L:READ flags=0x21 fflags=0 data=1 udata=0x1]
