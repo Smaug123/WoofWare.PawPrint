@@ -161,14 +161,14 @@ type WriteRefusal =
     /// depends on the size of the socket's send buffer, which is not modelled
     /// (see `UnconnectedSocketWrite.DependsOnSendBuffer`).
     | SendBuffer of socket : SocketId
-    /// An unbound IPv6 datagram socket with no peer, on Linux, which a write
+    /// An IPv6 datagram socket with no peer and no port, on Linux, which a write
     /// binds to an ephemeral port before it fails
     /// (`UnconnectedSocketRules.writeBindsFirst`): this kernel binds only IPv4
     /// sockets, so it cannot record the binding.
     | Inet6Binding of socket : SocketId
-    /// An unbound datagram socket with no peer, on Linux, which a write binds
-    /// to an ephemeral port before it fails, when every port in the ephemeral
-    /// range is taken. What the kernel answers then is not measured.
+    /// A datagram socket with no peer and no port, on Linux, which a write
+    /// binds to an ephemeral port before it fails, when every port in the
+    /// ephemeral range is taken. What the kernel answers then is not measured.
     | EphemeralPortsExhausted of socket : SocketId * low : uint16 * high : uint16
     /// The write would leave the file longer than this kernel can represent.
     | ExceedsRepresentableLength of inode : InodeNumber * offset : int64 * count : int
@@ -837,14 +837,19 @@ module UnixReadWrite =
         match socket.Phase with
         | SocketPhase.Idle
         | SocketPhase.Listening _ ->
-            // The binding a write makes before it answers, if any: to the
-            // wildcard and an ephemeral port, with nothing locked, as
-            // `listen(2)`'s implicit bind is.
+            // The binding a write makes before it answers, if any: a port
+            // for a socket that has none. An unbound socket gets the wildcard
+            // address with nothing locked, as `listen(2)`'s implicit bind
+            // does; a half-bound one (a Linux dissolve kept its locked address
+            // and dropped its port) keeps its address and locks, as connect's
+            // implicit bind does. Measured on Linux, socket-unconnected-autobind.c:
+            // `127.0.0.1:0` reads back `127.0.0.1:<ephemeral>` after the
+            // failed write.
             let bound : Result<UnixSystem<'Task, 'Handler>, WriteRefusal> =
                 match socket.Binding with
-                | Some _ -> Ok system
-                | None when not (UnconnectedSocketRules.writeBindsFirst flavour socket.Domain socket.Kind) -> Ok system
-                | None ->
+                | Some binding when binding.Endpoint.Port <> 0us -> Ok system
+                | _ when not (UnconnectedSocketRules.writeBindsFirst flavour socket.Domain socket.Kind) -> Ok system
+                | existing ->
 
                 match socket.Domain with
                 | SocketDomain.Inet6 -> Error (WriteRefusal.Inet6Binding socketId)
@@ -854,11 +859,20 @@ module UnixReadWrite =
                 | SocketDomain.Inet ->
 
                 let candidate (port : uint16) : SocketBinding =
-                    {
-                        Endpoint = InternetEndpoint.ofParts InternetEndpoint.WildcardAddress port
-                        LockedAddress = None
-                        LockedPort = false
-                    }
+                    match existing with
+                    | Some halfBound ->
+                        { halfBound with
+                            Endpoint =
+                                { halfBound.Endpoint with
+                                    Port = port
+                                }
+                        }
+                    | None ->
+                        {
+                            Endpoint = InternetEndpoint.ofParts InternetEndpoint.WildcardAddress port
+                            LockedAddress = None
+                            LockedPort = false
+                        }
 
                 match
                     UnixMachineState.allocateEphemeralPort

@@ -276,6 +276,72 @@ module TestUnconnectedSocketTransfer =
         )
         |> shouldEqual []
 
+    /// A Linux UDP socket bound to `127.0.0.1:0`, connected, and dissolved by an
+    /// `AF_UNSPEC` connect keeps its address and drops its port; a write then
+    /// gives it a port and keeps the address, failing as it would have
+    /// (socket-unconnected-autobind.c, the half-bound row).
+    [<Test>]
+    let ``a failed write gives a half-bound Linux UDP socket a port and keeps its address`` () : unit =
+        let system : UnixSystem<int, string> =
+            UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
+        let fd, system =
+            NewSocket.create SocketDomain.Inet SocketKind.Datagram SocketProtocol.Udp system
+
+        let connectTo (endpoint : InternetEndpoint) (family : int) (system : UnixSystem<int, string>) =
+            match UnixConnection.connect fd UserBuffer.Mapped 16u (Some family) (Some endpoint) system with
+            | Ok (ConnectOutcome.Completed, system) -> system
+            | other -> failwith $"connect did not complete: %A{other}"
+
+        let loopbackAt (port : uint16) =
+            InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+
+        let system =
+            match
+                UnixSocket.bind
+                    fd
+                    UserBuffer.Mapped
+                    16u
+                    (Some SimulatedUnixPlatform.internetAddressFamily)
+                    (Some (loopbackAt 0us))
+                    system
+            with
+            | Ok (BindAnswer.Bound _, system) -> system
+            | other -> failwith $"bind failed: %A{other}"
+            |> connectTo (loopbackAt 9us) SimulatedUnixPlatform.internetAddressFamily
+
+        let socketId =
+            match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+            | Some (OpenFileTarget.Socket socketId) -> socketId
+            | other -> failwith $"not a socket: %A{other}"
+
+        // The `AF_UNSPEC` connect, whose sockaddr carries a family and no
+        // endpoint.
+        let system =
+            match UnixConnection.connectSocket socketId false 16u (Some 0) None system with
+            | Ok (ConnectOutcome.Completed, system) -> system
+            | other -> failwith $"the dissolve did not complete: %A{other}"
+
+        let before = system.Machine.Sockets.[socketId]
+        before.Phase |> shouldEqual SocketPhase.Idle
+        before.Binding |> Option.map _.Endpoint |> shouldEqual (Some (loopbackAt 0us))
+
+        match UnixReadWrite.admitWrite system.Leader fd UserBuffer.Mapped 1UL system with
+        | Ok (WriteOutcome.Returns (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EDESTADDRREQ), after)) ->
+            let low, high = system.Machine.EphemeralPortRange
+
+            match after.Machine.Sockets.[socketId].Binding with
+            | Some binding ->
+                binding.Endpoint.Address |> shouldEqual InternetEndpoint.LoopbackAddress
+
+                (binding.Endpoint.Port >= low && binding.Endpoint.Port <= high)
+                |> shouldEqual true
+
+                binding.LockedAddress |> shouldEqual before.Binding.Value.LockedAddress
+                binding.LockedPort |> shouldEqual before.Binding.Value.LockedPort
+            | None -> failwith "the write unbound the socket"
+        | other -> failwith $"expected EDESTADDRREQ, got %A{other}"
+
     /// The process the kernel-side rows run in: a leader, 0, and a worker, 1,
     /// which makes every call, as the probe made its writes on a worker; with
     /// `SIGPIPE` caught, so that a write raising it returns.

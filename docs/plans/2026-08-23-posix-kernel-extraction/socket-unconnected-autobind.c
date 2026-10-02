@@ -3,7 +3,9 @@
 // type, at write counts 0, 1 and 65536 and a non-blocking 1-byte read. A
 // datagram socket that sends picks an ephemeral port before it looks for a
 // destination on some kernels, which would make even a failing write change
-// the socket.
+// the socket. Then the half-bound UDP socket: bound to 127.0.0.1:0, connected,
+// and dissolved by an AF_UNSPEC connect, which on Linux leaves the address and
+// drops the port, before the same failing write.
 //
 // Build: `nix develop -c clang -O0 -o /tmp/p <this file>` on Darwin,
 // `gcc -O0 -o /tmp/p <this file>` on Linux.
@@ -76,5 +78,30 @@ int main(void) {
                        r < 0 ? strerror(e) : "", before, after);
                 close(fd);
             }
+
+    // The half-bound socket.
+    {
+        int fd = socket(AF_INET, SOCK_DGRAM, 0);
+        struct sockaddr_in a;
+        memset(&a, 0, sizeof a);
+        a.sin_family = AF_INET;
+        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        int b = bind(fd, (struct sockaddr *)&a, sizeof a);
+        struct sockaddr_in peer = a;
+        peer.sin_port = htons(9);
+        int c = connect(fd, (struct sockaddr *)&peer, sizeof peer);
+        struct sockaddr unspec;
+        memset(&unspec, 0, sizeof unspec);
+        unspec.sa_family = AF_UNSPEC;
+        int u = connect(fd, &unspec, sizeof unspec);
+        char before[96], after[96];
+        name(fd, before, sizeof before);
+        ssize_t r = write(fd, buf, 1);
+        int e = errno;
+        name(fd, after, sizeof after);
+        printf("INET  DGRAM  half-bound (bind %d, connect %d, AF_UNSPEC %d) write 1 -> %zd %s; before %s after %s\n", b, c,
+               u, r, r < 0 ? strerror(e) : "", before, after);
+        close(fd);
+    }
     return 0;
 }

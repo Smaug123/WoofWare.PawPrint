@@ -23,3 +23,4 @@ UNIX  DGRAM  write 0         -> -1 Destination address required before unix len 
 UNIX  DGRAM  write 1         -> -1 Destination address required before unix len 16          after unix len 16
 UNIX  DGRAM  write 65536     -> -1 Destination address required before unix len 16          after unix len 16
 UNIX  DGRAM  read 1 nonblock -> -1 Resource temporarily unavailable before unix len 16          after unix len 16
+INET  DGRAM  half-bound (bind 0, connect 0, AF_UNSPEC -1) write 1 -> -1 Destination address required; before 0.0.0.0:nonzero after 0.0.0.0:nonzero

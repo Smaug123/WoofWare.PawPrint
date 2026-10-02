@@ -126,10 +126,11 @@ module UnconnectedSocketRules =
         | SimulatedUnixFlavour.Darwin, SocketKind.SeqPacket, _ ->
             failwith "UnconnectedSocketRules.write: no Darwin socket is SOCK_SEQPACKET"
 
-    /// Whether `write(2)` on an unbound socket of this domain and kind with no
-    /// peer first binds it to the wildcard address and an ephemeral port, and
-    /// keeps that binding whatever the write then answers. Reading binds
-    /// nothing.
+    /// Whether `write(2)` on a socket of this domain and kind with no peer and
+    /// no port first gives it an ephemeral port, and keeps that binding
+    /// whatever the write then answers. An unbound socket is bound to the
+    /// wildcard address; one bound to an address with port 0 keeps its
+    /// address. Reading binds nothing.
     let writeBindsFirst (flavour : SimulatedUnixFlavour) (domain : SocketDomain) (kind : SocketKind) : bool =
         // Measured by socket-unconnected-autobind.c: getsockname(2) after a
         // failed write of 0, 1 or 65536 bytes reports an ephemeral port for a

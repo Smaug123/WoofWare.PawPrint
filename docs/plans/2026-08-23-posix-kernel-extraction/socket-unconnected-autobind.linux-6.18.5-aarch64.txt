@@ -23,3 +23,4 @@ UNIX  DGRAM  write 0         -> -1 Transport endpoint is not connected before un
 UNIX  DGRAM  write 1         -> -1 Transport endpoint is not connected before unix len 2           after unix len 2
 UNIX  DGRAM  write 65536     -> -1 Transport endpoint is not connected before unix len 2           after unix len 2
 UNIX  DGRAM  read 1 nonblock -> -1 Resource temporarily unavailable before unix len 2           after unix len 2
+INET  DGRAM  half-bound (bind 0, connect 0, AF_UNSPEC 0) write 1 -> -1 Destination address required; before 127.0.0.1:0 after 127.0.0.1:nonzero
