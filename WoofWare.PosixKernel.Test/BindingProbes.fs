@@ -160,7 +160,7 @@ module BindingProbes =
         | BindingProbeCall.RmDir path -> Answered.rmdir (rooted path) system |> fst |> ofAnswer
         | BindingProbeCall.Rename (source, destination) ->
             let argument (path : byte list) =
-                PathArgumentBytes.Bytes (ImmutableArray.CreateRange (UnixPathText.separatorByte :: path))
+                PathArg.ofBytes (UnixPathText.separatorByte :: path)
 
             match UnixNamespace.rename (argument source) (argument destination) system with
             | Ok (answer, _) -> ofAnswer answer

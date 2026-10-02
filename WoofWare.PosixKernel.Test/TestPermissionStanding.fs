@@ -543,8 +543,7 @@ module TestPermissionStanding =
 
     let private path (p : string) : UnixPath = UnixPath.parseOrFail context p
 
-    let private argument (p : string) : PathArgumentBytes =
-        PathArgumentBytes.Bytes (ImmutableArray.CreateRange (System.Text.Encoding.UTF8.GetBytes p))
+    let private argument (p : string) : PathArgumentBytes = PathArg.ofText p
 
     [<RequireQualifiedAccess>]
     type private Call =
@@ -570,7 +569,6 @@ module TestPermissionStanding =
                 match UnixNamespace.rename (argument source) (argument destination) system with
                 | Ok answer -> Ok answer
                 | Error (RenameRefusal.Sticky refusal) -> Error refusal
-                | Error (RenameRefusal.PathArgument refusal) -> failwith $"%A{call}: %A{refusal}"
 
         match result with
         | Error refusal -> Outcome.Refused refusal, system

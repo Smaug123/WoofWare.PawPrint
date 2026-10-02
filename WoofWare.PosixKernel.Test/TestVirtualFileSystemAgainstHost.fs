@@ -2897,10 +2897,7 @@ module TestVirtualFileSystemAgainstHost =
                     RenameRefusal.Refused (errno ())
 
             let modelSaid =
-                let bytes (path : string) =
-                    UnixPathText.utf8.GetBytes path
-                    |> ImmutableArray.CreateRange
-                    |> PathArgumentBytes.Bytes
+                let bytes (path : string) = PathArg.ofText path
 
                 match UnixNamespace.rename (bytes source) (bytes destination) (renameModelSystem (buildModel ())) with
                 | Ok (SyscallAnswer.Completed 0L, _) -> RenameRefusal.Succeeded

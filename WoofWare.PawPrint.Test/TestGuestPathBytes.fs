@@ -7,7 +7,7 @@ open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
-/// PawPrint's half of a path argument: the rules are `PathArgument.parse`'s and
+/// PawPrint's half of a path argument: the rules are `PathArgument.copyIn`'s and
 /// are tested in `WoofWare.PosixKernel.Test.TestPathArgument`, so what is left
 /// here is what PawPrint does with each outcome.
 [<TestFixture>]

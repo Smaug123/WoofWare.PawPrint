@@ -948,21 +948,24 @@ module NativeSystemNative =
     /// heap. `readGuestPathBytes` is the half that needs a machine.
     ///
     /// The rules themselves, and the order they run in, are
-    /// `PathArgument.parse`'s.
+    /// `PathArgument.copyIn`'s.
     let internal parseGuestPathBytes
         (operation : string)
         (limits : PathLimits)
         (bytes : byte[])
         : Result<UnixPath, UnixError>
         =
-        match PathArgument.parse limits (ImmutableArray.CreateRange bytes) with
-        | Ok (PathArgument.Parsed path) -> Ok path
-        | Ok (PathArgument.Failed error) -> Error error
-        | Error (PathArgumentRefusal.InteriorNul offset) ->
+        match UnixByteString.ofBytes (ImmutableArray.CreateRange bytes) with
+        | Error (UnixByteStringDefect.ContainsNul offset) ->
             // The bytes come from reading the guest's C string up to its NUL,
             // so a NUL among them means that read went wrong.
             failwith
                 $"%s{operation}: the bytes read for the guest's path hold a NUL at offset %d{offset}, which a C string cannot: the read ran past the string's end (this is an interpreter bug)."
+        | Ok bytes ->
+
+        match PathArgument.copyIn limits (PathArgumentBytes.Bytes bytes) with
+        | PathArgument.Parsed path -> Ok path
+        | PathArgument.Failed error -> Error error
 
     /// The resolution of a guest path, or the errno the lookup owes the guest.
     ///
@@ -1321,14 +1324,21 @@ module NativeSystemNative =
 
         let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
 
-        NativeCall.readNullTerminatedBytesWithin
-            operation
-            ctx.BaseClassTypes
-            state
-            pointer
-            (PathLimits.pathMaxBytes limits)
-        |> ImmutableArray.CreateRange
-        |> PathArgumentBytes.Bytes
+        let bytes =
+            NativeCall.readNullTerminatedBytesWithin
+                operation
+                ctx.BaseClassTypes
+                state
+                pointer
+                (PathLimits.pathMaxBytes limits)
+
+        match UnixByteString.ofBytes (ImmutableArray.CreateRange bytes) with
+        | Ok bytes -> PathArgumentBytes.Bytes bytes
+        | Error (UnixByteStringDefect.ContainsNul offset) ->
+            // The bytes come from reading the guest's C string up to its NUL,
+            // so a NUL among them means that read went wrong.
+            failwith
+                $"%s{operation}: the bytes read for the guest's `%s{parameter}` hold a NUL at offset %d{offset}, which a C string cannot: the read ran past the string's end (this is an interpreter bug)."
 
     /// `SystemNative_Rename`: the only syscall here that takes two pathnames,
     /// and so the only one where *when* each is read out of guest memory is
@@ -1348,9 +1358,6 @@ module NativeSystemNative =
             | Error (RenameRefusal.Sticky refusal) ->
                 failwith
                     $"%s{operation}: RenameRefusal.Sticky: %s{StickyRefusal.describe refusal} %s{unmeasuredDarwinRow}"
-            | Error (RenameRefusal.PathArgument (PathArgumentRefusal.InteriorNul offset)) ->
-                failwith
-                    $"%s{operation}: the bytes read for one of the guest's paths hold a NUL at offset %d{offset}, which a C string cannot: the read ran past the string's end (this is an interpreter bug)."
             | Ok (SyscallAnswer.Failed error, system) ->
                 withErrno ctx error system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
@@ -1366,9 +1373,8 @@ module NativeSystemNative =
             pathArgumentBytes ctx operation "oldPath" ctx.Instruction.Arguments.[0] state
 
         match UnixNamespace.renameSourcePhase source (EmulatedKernel.unix state.Kernel) with
-        | Error refusal -> answer (Error (RenameRefusal.PathArgument refusal))
-        | Ok (RenameProgress.Answered (syscallAnswer, system)) -> answer (Ok (syscallAnswer, system))
-        | Ok (RenameProgress.NeedsDestination paused) ->
+        | RenameProgress.Answered (syscallAnswer, system) -> answer (Ok (syscallAnswer, system))
+        | RenameProgress.NeedsDestination paused ->
             pathArgumentBytes ctx operation "newPath" ctx.Instruction.Arguments.[1] state
             |> fun destination -> UnixNamespace.renameWithDestination destination paused
             |> answer
@@ -3406,8 +3412,6 @@ module NativeSystemNative =
                         "Configure a user other than root (KernelConfig.UserId), or the Linux platform, to run this guest."
                     | AccessRefusal.ExtendedRights _ ->
                         "Only a guest calling the shim by hand can ask for Darwin's extended rights; model them before answering."
-                    | AccessRefusal.PathArgument _ ->
-                        "The bytes were read up to the guest's NUL, so this is an interpreter bug."
                     | AccessRefusal.UnmodelledFlags _
                     | AccessRefusal.UnmodelledDescriptor _ ->
                         "access(2) takes no flags and no dirfd, so this is a bug in the kernel library."

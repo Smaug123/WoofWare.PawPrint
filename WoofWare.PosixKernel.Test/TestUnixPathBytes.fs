@@ -233,12 +233,7 @@ module TestUnixPathBytes =
             fst (Answered.openPath creating (pathOf name) 0o666 orphaned)
             |> shouldEqual (SyscallAnswer.Failed UnixError.ENOENT)
 
-            match
-                UnixNamespace.rename
-                    (PathArgumentBytes.Bytes (ImmutableArray.CreateRange (text "/d/f")))
-                    (PathArgumentBytes.Bytes (ImmutableArray.CreateRange name))
-                    orphaned
-            with
+            match UnixNamespace.rename (PathArg.ofBytes (text "/d/f")) (PathArg.ofBytes name) orphaned with
             | Ok (answer, _) -> answer |> shouldEqual (SyscallAnswer.Failed UnixError.ENOENT)
             | Error refusal -> failwith $"rename refused its arguments: %A{refusal}"
 
@@ -503,7 +498,7 @@ module TestUnixPathBytes =
         |> List.ofArray
 
     [<Test>]
-    let ``PathArgument.parse agrees with the table recorded before paths were bytes`` () : unit =
+    let ``PathArgument.copyIn agrees with the table recorded before paths were bytes`` () : unit =
         // Every input is valid UTF-8, the domain the old decoding parse could
         // answer; there, nothing should have changed.
         recorded.Length |> shouldBeGreaterThan 500
@@ -518,16 +513,22 @@ module TestUnixPathBytes =
             let bytes = UTF8Encoding(false, true).GetBytes input
 
             let actual =
+                // Bytes holding a NUL are no longer a path argument at all: the
+                // refusal the table records moved to the byte string's
+                // construction, which names the same offset.
+                match UnixByteString.ofBytes (ImmutableArray.CreateRange bytes) with
+                | Error (UnixByteStringDefect.ContainsNul offset) -> $"InteriorNul %d{offset}"
+                | Ok argument ->
+
                 match
-                    PathArgument.parse (SimulatedUnixPlatform.pathLimits platform) (ImmutableArray.CreateRange bytes)
+                    PathArgument.copyIn (SimulatedUnixPlatform.pathLimits platform) (PathArgumentBytes.Bytes argument)
                 with
-                | Ok (PathArgument.Parsed path) ->
+                | PathArgument.Parsed path ->
                     if Seq.toArray (UnixByteString.toBytes (UnixPath.toByteString path)) = bytes then
                         "Parsed"
                     else
                         "Parsed, but not verbatim"
-                | Ok (PathArgument.Failed error) -> $"Failed %A{error}"
-                | Error (PathArgumentRefusal.InteriorNul offset) -> $"InteriorNul %d{offset}"
+                | PathArgument.Failed error -> $"Failed %A{error}"
 
             if actual <> expected then
                 failwith $"%s{flavour}, %d{bytes.Length} bytes: recorded %s{expected}, now %s{actual}"

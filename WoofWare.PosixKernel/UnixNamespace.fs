@@ -192,8 +192,6 @@ type RenameProgress<'Task, 'Handler when 'Task : comparison and 'Handler : equal
 /// Why this kernel will not answer a `rename(2)`.
 [<RequireQualifiedAccess>]
 type RenameRefusal =
-    /// One of the pathnames' bytes are not a pathname at all.
-    | PathArgument of refusal : PathArgumentRefusal
     /// A sticky directory whose rule Darwin has not been measured to apply to
     /// this caller.
     | Sticky of refusal : StickyRefusal
@@ -204,8 +202,6 @@ module RenameRefusal =
     /// entry point asked, and with which paths.
     let describe (refusal : RenameRefusal) : string =
         match refusal with
-        | RenameRefusal.PathArgument (PathArgumentRefusal.InteriorNul offset) ->
-            $"a pathname's bytes hold a NUL at offset %d{offset}, so they are not a C string: the caller read past the string's end, or built the bytes from something that was never one."
         | RenameRefusal.Sticky refusal -> StickyRefusal.describe refusal
 
 /// Why this kernel will not answer a `clonefile(2)`.
@@ -223,8 +219,6 @@ type CloneFileRefusal =
     /// The caller is privileged, which changes who owns the clone and which
     /// permission bits it keeps, unmeasured.
     | PrivilegedCaller
-    /// One of the pathnames' bytes are not a pathname at all.
-    | PathArgument of refusal : PathArgumentRefusal
     /// The source is the directory at `inode`; cloning one copies its whole
     /// tree, which this kernel does not model.
     | DirectorySource of inode : InodeNumber
@@ -248,8 +242,6 @@ module CloneFileRefusal =
             $"flags 0x%x{flags} ask for CLONE_NOFOLLOW (0x1), CLONE_NOFOLLOW_ANY (0x8) or CLONE_RESOLVE_BENEATH (0x10). Each changes how a pathname resolves, and cloning a symbolic link itself is not modelled."
         | CloneFileRefusal.PrivilegedCaller ->
             "the caller is privileged. A privileged clone keeps the source's owner unless CLONE_NOOWNERCOPY is given, and which permission bits it keeps has not been measured."
-        | CloneFileRefusal.PathArgument (PathArgumentRefusal.InteriorNul offset) ->
-            $"a pathname's bytes hold a NUL at offset %d{offset}, so they are not a C string: the caller read past the string's end, or built the bytes from something that was never one."
         | CloneFileRefusal.DirectorySource inode ->
             $"the source is directory %O{inode}. clonefile clones a directory's whole tree, which this kernel does not model."
         | CloneFileRefusal.UnmeasuredSpecialBits (inode, standing, permissions) ->
@@ -991,41 +983,12 @@ module UnixNamespace =
                 }
         )
 
-    /// How a phase of `rename`'s two-path walk ended, when it did not produce a
-    /// resolution.
-    ///
-    /// Two kinds, because the two are answered differently: an errno is what the
-    /// caller is told, while a refusal is this kernel saying the bytes it was
-    /// handed are not a pathname at all (see `PathArgumentRefusal`).
-    [<RequireQualifiedAccess>]
-    type private RenameStop =
-        | Errno of error : UnixError
-        | Refused of refusal : PathArgumentRefusal
-
-    /// `getname()`: what the kernel learns when it copies one pathname in,
-    /// before anything looks at what it says.
-    ///
-    /// The decode happens here rather than in the caller, and that is the point
-    /// of taking bytes: a caller that decoded a pathname the syscall never
-    /// copies in would refuse one `rename(2)` never read.
-    let private copiedIn (limits : PathLimits) (argument : PathArgumentBytes) : Result<UnixPath, RenameStop> =
-        match argument with
-        | PathArgumentBytes.Unreadable -> Error (RenameStop.Errno UnixError.EFAULT)
-        | PathArgumentBytes.Bytes bytes ->
-
-        match PathArgument.parse limits bytes with
-        | Error refusal -> Error (RenameStop.Refused refusal)
-        | Ok (PathArgument.Failed error) -> Error (RenameStop.Errno error)
-        | Ok (PathArgument.Parsed path) -> Ok path
-
     let private renameStopped
         (system : UnixSystem<'Task, 'Handler>)
-        (stop : RenameStop)
-        : Result<RenameProgress<'Task, 'Handler>, PathArgumentRefusal>
+        (error : UnixError)
+        : RenameProgress<'Task, 'Handler>
         =
-        match stop with
-        | RenameStop.Refused refusal -> Error refusal
-        | RenameStop.Errno error -> Ok (RenameProgress.Answered (SyscallAnswer.Failed error, system))
+        RenameProgress.Answered (SyscallAnswer.Failed error, system)
 
     /// Everything `rename(2)` does before it copies its *destination* pathname
     /// in: on Linux the source's pathname and parent walk, on Darwin the whole
@@ -1037,23 +1000,20 @@ module UnixNamespace =
     let renameSourcePhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (source : PathArgumentBytes)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<RenameProgress<'Task, 'Handler>, PathArgumentRefusal>
+        : RenameProgress<'Task, 'Handler>
         =
         let rules = SimulatedUnixPlatform.renameRules system.Machine.UnixPlatform
-        let limits = SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform
 
         let paused (progress : RenameSourceProgress) =
-            Ok (
-                RenameProgress.NeedsDestination
-                    {
-                        System = system
-                        Rules = rules
-                        SourceProgress = progress
-                    }
-            )
+            RenameProgress.NeedsDestination
+                {
+                    System = system
+                    Rules = rules
+                    SourceProgress = progress
+                }
 
-        match copiedIn limits source with
-        | Error stop -> renameStopped system stop
+        match UnixPathResolution.copyIn source system with
+        | Error error -> renameStopped system error
         | Ok sourcePath ->
 
         // `NoFollowFinal` for both paths on both flavours — `rename` moves the
@@ -1069,30 +1029,29 @@ module UnixNamespace =
                     sourcePath
                     system
             with
-            | Error error -> renameStopped system (RenameStop.Errno error)
+            | Error error -> renameStopped system error
             | Ok parent -> paused (RenameSourceProgress.ParentWalked parent)
         | RenameWalkOrder.SourceThenDestination ->
 
         match
             UnixPathResolution.resolvePathFull SymlinkPolicy.NoFollowFinal rules.TrailingSeparator sourcePath system
         with
-        | Error error -> renameStopped system (RenameStop.Errno error)
+        | Error error -> renameStopped system error
         | Ok sourceResolution ->
 
         // Darwin's source-side `namei` runs under rename semantics, so two of
         // the refusals the verdict would otherwise make are settled here —
         // before the destination's pathname has been read at all.
         match RenameRules.sourceScreen rules.WalkOrder sourceResolution with
-        | Some error -> renameStopped system (RenameStop.Errno error)
+        | Some error -> renameStopped system error
         | None -> paused (RenameSourceProgress.Resolved sourceResolution)
 
     /// The rest of `rename(2)`, given the destination pathname the kernel has
     /// just reached the point of copying in.
     ///
-    /// Every outcome is a success or an errno, except the two things that are
-    /// neither: a pathname whose bytes are not a pathname at all, and a sticky
-    /// directory whose rule Darwin has not been measured to apply to this
-    /// caller. Neither changes anything.
+    /// Every outcome is a success or an errno, except where Darwin's sticky
+    /// rule has not been measured for this caller (`StickyRefusal`), which
+    /// changes nothing.
     let renameWithDestination<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (destination : PathArgumentBytes)
         (paused : PausedRename<'Task, 'Handler>)
@@ -1106,11 +1065,10 @@ module UnixNamespace =
 
         let system = paused.System
         let rules = paused.Rules
-        let limits = SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform
 
-        let resolved : Result<Resolution * Resolution, RenameStop> =
-            match copiedIn limits destination with
-            | Error stop -> Error stop
+        let resolved : Result<Resolution * Resolution, UnixError> =
+            match UnixPathResolution.copyIn destination system with
+            | Error error -> Error error
             | Ok destinationPath ->
 
             match paused.SourceProgress with
@@ -1122,7 +1080,6 @@ module UnixNamespace =
                     rules.TrailingSeparator
                     destinationPath
                     system
-                |> Result.mapError RenameStop.Errno
                 |> Result.map (fun destinationResolution -> sourceResolution, destinationResolution)
             | RenameSourceProgress.ParentWalked sourceParent ->
 
@@ -1134,7 +1091,7 @@ module UnixNamespace =
                     destinationPath
                     system
             with
-            | Error error -> Error (RenameStop.Errno error)
+            | Error error -> Error error
             | Ok destinationParent ->
 
             // Source before destination, and here the order *is* pinned: the
@@ -1142,7 +1099,7 @@ module UnixNamespace =
             // is ENAMETOOLONG while a 300-byte destination name under the same
             // orphaned parent is ENOENT. Measured both ways.
             match PathWalk.completeResolution sourceParent with
-            | Error error -> Error (RenameStop.Errno error)
+            | Error error -> Error error
             | Ok sourceResolution ->
 
             // Linux's source screen runs here: after both parents and the
@@ -1152,7 +1109,7 @@ module UnixNamespace =
             // ENOENT — and it beats the destination's NAME_MAX, which is what
             // makes `rename("nope", <300-byte name>)` ENOENT.
             match RenameRules.sourceScreen rules.WalkOrder sourceResolution with
-            | Some error -> Error (RenameStop.Errno error)
+            | Some error -> Error error
             | None ->
 
             // A destination parent that has lost its own last name — reachable
@@ -1163,16 +1120,14 @@ module UnixNamespace =
             // ENAMETOOLONG there. So this is the Linux position of a check both
             // flavours make, not a check only Linux makes.
             if PathWalk.pausedParentIsOrphaned destinationParent then
-                Error (RenameStop.Errno UnixError.ENOENT)
+                Error UnixError.ENOENT
             else
 
             PathWalk.completeResolution destinationParent
-            |> Result.mapError RenameStop.Errno
             |> Result.map (fun destinationResolution -> sourceResolution, destinationResolution)
 
         match resolved with
-        | Error (RenameStop.Refused refusal) -> Error (RenameRefusal.PathArgument refusal)
-        | Error (RenameStop.Errno error) -> Ok (SyscallAnswer.Failed error, system)
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
         | Ok (sourceResolution, destinationResolution) ->
 
         match
@@ -1254,9 +1209,8 @@ module UnixNamespace =
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, RenameRefusal>
         =
         match renameSourcePhase source system with
-        | Error refusal -> Error (RenameRefusal.PathArgument refusal)
-        | Ok (RenameProgress.Answered (answer, system)) -> Ok (answer, system)
-        | Ok (RenameProgress.NeedsDestination paused) -> renameWithDestination destination paused
+        | RenameProgress.Answered (answer, system) -> Ok (answer, system)
+        | RenameProgress.NeedsDestination paused -> renameWithDestination destination paused
 
 
     /// `clonefile(source, destination, flags)`, up to the point where the
@@ -1327,11 +1281,8 @@ module UnixNamespace =
 
         let system = paused.System
 
-        let limits = SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform
-
-        match copiedIn limits source with
-        | Error (RenameStop.Refused refusal) -> Error (CloneFileRefusal.PathArgument refusal)
-        | Error (RenameStop.Errno error) -> Ok (CloneFileProgress.Answered (SyscallAnswer.Failed error, system))
+        match UnixPathResolution.copyIn source system with
+        | Error error -> Ok (CloneFileProgress.Answered (SyscallAnswer.Failed error, system))
         | Ok sourcePath ->
 
         match UnixPathResolution.resolvePath SymlinkPolicy.Follow sourcePath system with
@@ -1399,13 +1350,11 @@ module UnixNamespace =
 
         let system = paused.System
         let failed (error : UnixError) = Ok (SyscallAnswer.Failed error, system)
-        let limits = SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform
         let rules = SimulatedUnixPlatform.creatingOpenRules system.Machine.UnixPlatform
         let credentials = system.Process.Credentials
 
-        match copiedIn limits destination with
-        | Error (RenameStop.Refused refusal) -> Error (CloneFileRefusal.PathArgument refusal)
-        | Error (RenameStop.Errno error) -> failed error
+        match UnixPathResolution.copyIn destination system with
+        | Error error -> failed error
         | Ok destinationPath ->
 
         match

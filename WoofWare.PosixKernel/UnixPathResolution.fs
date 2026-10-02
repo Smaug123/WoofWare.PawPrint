@@ -337,6 +337,18 @@ type AccessProgress<'Task, 'Handler when 'Task : comparison and 'Handler : equal
 [<RequireQualifiedAccess>]
 module UnixPathResolution =
 
+    /// `getname()`: copy a syscall's path argument in, as this system's kernel
+    /// does, before anything looks at what it says. Every path-taking syscall
+    /// here calls this at the point its kernel copies the pathname in.
+    let internal copyIn<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (argument : PathArgumentBytes)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<UnixPath, UnixError>
+        =
+        match PathArgument.copyIn (SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform) argument with
+        | PathArgument.Failed error -> Error error
+        | PathArgument.Parsed path -> Ok path
+
     /// Whether `path`, as the bytes a kernel would copy in, is within this
     /// platform's `PATH_MAX`. A `UnixPath` is text of any length, so the
     /// copy-in rule every path-taking syscall applies before it looks at the
@@ -359,7 +371,7 @@ module UnixPathResolution =
     /// <remarks>
     /// Callers that only want the resulting inode should use <c>resolvePath</c> instead.
     /// A path longer than this platform's <c>PATH_MAX</c> is <c>ENAMETOOLONG</c> before
-    /// anything is looked up, as the kernel's copy-in refuses it; <c>PathArgument.parse</c>
+    /// anything is looked up, as the kernel's copy-in refuses it; <c>PathArgument.copyIn</c>
     /// applies the same rule to raw bytes.
     /// This function is for callers that must distinguish
     /// "the name exists" from "the name is free in a directory that exists", such as
@@ -1429,17 +1441,9 @@ module UnixPathResolution =
         let platform = system.Machine.UnixPlatform
         let vfs = system.Machine.FileSystem
 
-        let path =
-            match path with
-            | PathArgumentBytes.Unreadable -> Ok (PathArgument.Failed UnixError.EFAULT)
-            | PathArgumentBytes.Bytes bytes ->
-                PathArgument.parse (SimulatedUnixPlatform.pathLimits platform) bytes
-                |> Result.mapError AccessRefusal.PathArgument
-
-        match path with
-        | Error refusal -> Error refusal
-        | Ok (PathArgument.Failed error) -> Ok (SyscallAnswer.Failed error)
-        | Ok (PathArgument.Parsed path) ->
+        match copyIn path system with
+        | Error error -> Ok (SyscallAnswer.Failed error)
+        | Ok path ->
 
         let credentials =
             match arguments.Ids with

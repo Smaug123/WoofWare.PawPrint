@@ -284,8 +284,7 @@ module TestDirectorySize =
     let private rooted (relative : string) : UnixPath =
         UnixPath.parseOrFail context $"/%s{relative}"
 
-    let private argument (relative : string) : PathArgumentBytes =
-        PathArgumentBytes.Bytes (ImmutableArray.CreateRange (Text.Encoding.UTF8.GetBytes $"/%s{relative}"))
+    let private argument (relative : string) : PathArgumentBytes = PathArg.ofText $"/%s{relative}"
 
     let private completed
         (what : string)

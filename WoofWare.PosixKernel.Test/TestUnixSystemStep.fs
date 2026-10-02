@@ -1904,13 +1904,13 @@ module TestUnixSystemStep =
         |> List.distinct
         |> shouldEqual [ UnixError.ENOENT ]
 
-    /// The boundary itself, as `PathArgument.parse` already states it for raw
+    /// The boundary itself, as `PathArgument.copyIn` already states it for raw
     /// bytes: a usable path is one byte shorter than PATH_MAX, because the
     /// limit counts the terminator. Short components throughout, so that a
     /// path within the limit is refused by the walk (ENOENT at its first
     /// name) and never by NAME_MAX.
     [<Test>]
-    let ``the resolution door's PATH_MAX boundary is PathArgument.parse's`` () : unit =
+    let ``the resolution door's PATH_MAX boundary is PathArgument.copyIn's`` () : unit =
         for flavour in [ linux ; darwin ] do
             let _, _, _, system = withTree flavour
             let limits = SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform
@@ -1930,12 +1930,11 @@ module TestUnixSystemStep =
                 | other -> failwith $"expected %O{expected} at %d{length} bytes, got %A{other}"
 
                 // The raw-bytes door draws the line at the same byte.
-                let viaBytes =
-                    PathArgument.parse limits (ImmutableArray.CreateRange (System.Text.Encoding.UTF8.GetBytes text))
+                let viaBytes = PathArgument.copyIn limits (PathArg.ofText text)
 
                 match viaBytes, expected with
-                | Ok (PathArgument.Failed error), UnixError.ENAMETOOLONG -> error |> shouldEqual UnixError.ENAMETOOLONG
-                | Ok (PathArgument.Parsed _), UnixError.ENOENT -> ()
+                | PathArgument.Failed error, UnixError.ENAMETOOLONG -> error |> shouldEqual UnixError.ENAMETOOLONG
+                | PathArgument.Parsed _, UnixError.ENOENT -> ()
                 | other -> failwith $"the two doors disagree at %d{length} bytes: %A{other}"
 
     [<Test>]
@@ -4909,10 +4908,7 @@ module TestUnixSystemStep =
 
     /// A pathname the guest passed, as bytes: what the syscall is actually
     /// handed, since where each is decoded is the kernel's business.
-    let private arg (path : string) : PathArgumentBytes =
-        UnixPathText.utf8.GetBytes path
-        |> ImmutableArray.CreateRange
-        |> PathArgumentBytes.Bytes
+    let private arg (path : string) : PathArgumentBytes = PathArg.ofText path
 
     /// A pathname argument whose copy-in fails, which `getname()` reports the
     /// same way whether the pointer was unreadable or the path over-long.
@@ -4922,10 +4918,7 @@ module TestUnixSystemStep =
         | UnixError.ENAMETOOLONG ->
             // Over PATH_MAX on either flavour, so the *kernel* produces the
             // errno rather than the test asserting it into existence.
-            String.replicate 5000 "z"
-            |> UnixPathText.utf8.GetBytes
-            |> ImmutableArray.CreateRange
-            |> PathArgumentBytes.Bytes
+            PathArg.ofText (String.replicate 5000 "z")
         | other -> failwith $"badArg: %O{other} is not a copy-in failure"
 
     /// Every row resolves its destination to "f/x", whose parent is a regular
@@ -5257,17 +5250,13 @@ module TestUnixSystemStep =
             |> shouldEqual (Error UnixError.ENAMETOOLONG)
 
     [<Test>]
-    let ``a pathname the syscall never copies in is never refused`` () : unit =
-        // Bytes holding a NUL are no pathname a kernel was ever handed, so
-        // they are a refusal rather than an errno. The refusal therefore has
-        // to happen where the *kernel* copies the pathname in: on Darwin the
-        // source is resolved to completion first, so a destination behind a
-        // failing source is never looked at, and refusing it would answer about
-        // a pathname `rename(2)` never read.
-        let unreadable =
-            [| 0x66uy ; 0x00uy ; 0x66uy |]
-            |> ImmutableArray.CreateRange
-            |> PathArgumentBytes.Bytes
+    let ``a pathname the syscall never copies in is never read`` () : unit =
+        // An unreadable pointer is EFAULT, which has to happen where the
+        // *kernel* copies the pathname in: on Darwin the source is resolved to
+        // completion first, so a destination behind a failing source is never
+        // looked at, and answering EFAULT for it would answer about a pathname
+        // `rename(2)` never read.
+        let unreadable = PathArgumentBytes.Unreadable
 
         // Darwin: the source's ENOENT is settled before the destination's
         // pathname is copied in at all.
@@ -5279,18 +5268,18 @@ module TestUnixSystemStep =
         UnixNamespace.rename (arg "nodir/kid") unreadable (withRenameTree linux)
         |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.ENOENT, withRenameTree linux))
 
-        // ...and when the syscall does reach it, the refusal is reported rather
-        // than swallowed — otherwise the two rows above would pass for a kernel
-        // that never copies anything in.
+        // ...and when the syscall does reach it, the EFAULT is reported rather
+        // than swallowed -- otherwise the two rows above would pass for a
+        // kernel that never copies anything in.
         UnixNamespace.rename (arg "f") unreadable (withRenameTree linux)
-        |> shouldEqual (Error (RenameRefusal.PathArgument (PathArgumentRefusal.InteriorNul 1)))
+        |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.EFAULT, withRenameTree linux))
 
         UnixNamespace.rename (arg "f") unreadable (withRenameTree darwin)
-        |> shouldEqual (Error (RenameRefusal.PathArgument (PathArgumentRefusal.InteriorNul 1)))
+        |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.EFAULT, withRenameTree darwin))
 
-        // A bad *source* is refused on both, being copied in first either way.
-        UnixNamespace.rename unreadable (arg "x") (withRenameTree linux)
-        |> shouldEqual (Error (RenameRefusal.PathArgument (PathArgumentRefusal.InteriorNul 1)))
+        // A bad *source* is EFAULT on both, being copied in first either way.
+        UnixNamespace.rename unreadable (arg "nope") (withRenameTree linux)
+        |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.EFAULT, withRenameTree linux))
 
     [<Test>]
     let ``a call the source phase finishes never asks for a destination`` () : unit =
@@ -5301,7 +5290,7 @@ module TestUnixSystemStep =
         // holding it has nothing to read.
         let ended (source : PathArgumentBytes) (system : UnixSystem<int, string>) : UnixError =
             match UnixNamespace.renameSourcePhase source system with
-            | Ok (RenameProgress.Answered (SyscallAnswer.Failed error, _)) -> error
+            | RenameProgress.Answered (SyscallAnswer.Failed error, _) -> error
             | other -> failwith $"expected the source phase to end the call, got %A{other}"
 
         // Darwin ends on a source that does not exist...
@@ -5326,13 +5315,13 @@ module TestUnixSystemStep =
         // for a kernel that never asks for a destination.
         for system in [ withRenameTree linux ; withRenameTree darwin ] do
             match UnixNamespace.renameSourcePhase (arg "f") system with
-            | Ok (RenameProgress.NeedsDestination _) -> ()
+            | RenameProgress.NeedsDestination _ -> ()
             | other -> failwith $"expected the kernel to want a destination, got %A{other}"
 
         // Linux gets that far even for a source whose final name is free, since
         // it has not looked it up yet — where Darwin has, and stopped.
         match UnixNamespace.renameSourcePhase (arg "nope") (withRenameTree linux) with
-        | Ok (RenameProgress.NeedsDestination _) -> ()
+        | RenameProgress.NeedsDestination _ -> ()
         | other -> failwith $"expected Linux to want a destination for a free source name, got %A{other}"
 
     // The `## walk` and `## orphan` sections of `docs/probes/rename/rename.py`,
