@@ -1076,7 +1076,8 @@ module UnixNamespace =
             Ok (ReadDirectoryAnswer.Failed (notADirectory readable true), system)
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Socket _
-        | OpenFileTarget.SocketEventPort _ -> Ok (ReadDirectoryAnswer.Failed (notADirectory true false), system)
+        | OpenFileTarget.Kqueue _
+        | OpenFileTarget.Epoll _ -> Ok (ReadDirectoryAnswer.Failed (notADirectory true false), system)
         | OpenFileTarget.Directory (inode, position) ->
 
         let withPosition (position : DirectoryPosition) (system : UnixSystem<'Task, 'Handler>) =

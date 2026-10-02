@@ -66,7 +66,8 @@ module UnixWait =
     /// queues wake none while any task parked on the same queue has been woken
     /// and has not yet finished its call (that is, is parked but not in
     /// `asleep`), since that task will take it. The end of a pipe closing
-    /// wakes every waiter on the other end, under either flavour.
+    /// wakes every waiter on the other end, under either flavour, and a close
+    /// that drains a kqueue wakes every waiter in `kevent` on it.
     ///
     /// A woken task is owed no success: several waiters for one lock all wake,
     /// and all but one find it taken again and re-park.
@@ -128,6 +129,13 @@ module UnixWait =
         // reader closing wakes every sleeper on the other end on both, as
         // Linux's `pipe_release` does.
         //
+        // Measured on Darwin 27.0.0 (`kqueue-kevent.c`, section E5): a close
+        // that drains a kqueue ends every `kevent` wait on it at once, whichever
+        // descriptor each was entered through. And the waiters on one kqueue
+        // showed no fixed order when an event arrived
+        // (`signal-interrupt-requeue.c`, section C), which is every sleeper
+        // waking to race; a kqueue here holds no registration to deliver one.
+        //
         // Waiters on an `flock` are the opposite, deliberately: a release
         // wakes every blocker and they race, as `flock(2)` does, and which of
         // them wins is not observable from userspace on any platform. Waking
@@ -169,6 +177,7 @@ module UnixWait =
             | WakePrimitive.PipeReadEndClosed _
             | WakePrimitive.PipeReadWhileNonBlocking _
             | WakePrimitive.FlockGrantable _
+            | WakePrimitive.KqueueDrained _
             | WakePrimitive.DescriptorReady _
             | WakePrimitive.DeadlinePassed _
             | WakePrimitive.SignalDeliverable -> None
@@ -195,6 +204,9 @@ module UnixWait =
                            } when linux -> pipeOf write.Writer |> Option.map ExclusiveWaitQueue.PipeWriters
                     | Some {
                                Syscall = ParkedSyscall.Flock _
+                           }
+                    | Some {
+                               Syscall = ParkedSyscall.Kevent _
                            }
                     | Some {
                                Syscall = ParkedSyscall.Poll _

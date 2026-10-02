@@ -1434,7 +1434,8 @@ module UnixConnection =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.Pipe _
-        | OpenFileTarget.SocketEventPort _ -> Ok (AcceptOutcome.Failed UnixError.ENOTSOCK, system)
+        | OpenFileTarget.Kqueue _
+        | OpenFileTarget.Epoll _ -> Ok (AcceptOutcome.Failed UnixError.ENOTSOCK, system)
         | OpenFileTarget.Socket socketId ->
 
         let socket = UnixMachineState.socket socketId system.Machine
@@ -1520,7 +1521,8 @@ module UnixConnection =
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
             | OpenFileTarget.Pipe _
-            | OpenFileTarget.SocketEventPort _ ->
+            | OpenFileTarget.Kqueue _
+            | OpenFileTarget.Epoll _ ->
                 failwith
                     $"UnixConnection.finishAccept: task %O{task}'s accept waits on open file description %O{parked.Listener}, which names %A{description.Target} rather than a socket. `accept` parks only on a listening socket (this is a bug in the caller that recorded the park)."
 

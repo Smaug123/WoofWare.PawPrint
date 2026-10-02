@@ -205,17 +205,16 @@ module ListenRefusal =
 
 /// What a change to a descriptor's `O_NONBLOCK` answered.
 ///
-/// Store and answer are separate because on one flavour they disagree: an event
-/// port's bit toggles and the call still reports a failure.
+/// Store and answer are separate because for a kqueue they disagree: its bit
+/// toggles and the call still reports a failure.
 [<RequireQualifiedAccess>]
 type SetNonBlockingAnswer =
     /// The flag is now what the caller asked for, and the call succeeded.
     | Set
     /// The call failed with this errno.
     ///
-    /// The system still comes back, and the flag may have changed with it: see
-    /// `SimulatedUnixPlatform.eventPortSetStatusFlagsError`, where the bit
-    /// toggles and the answer is a failure anyway.
+    /// The system still comes back, and the flag may have changed with it: on a
+    /// kqueue the bit toggles and the answer is `ENOTTY` anyway.
     | Failed of error : UnixError
 
 /// What `getsockname(2)` reports about a socket's own address.
@@ -532,7 +531,8 @@ module UnixSocket =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.Pipe _
-        | OpenFileTarget.SocketEventPort _ -> answered (UnixError.ENOTSOCK)
+        | OpenFileTarget.Kqueue _
+        | OpenFileTarget.Epoll _ -> answered (UnixError.ENOTSOCK)
         | OpenFileTarget.Socket socketId ->
 
         let socket = UnixMachineState.socket socketId system.Machine
@@ -959,8 +959,9 @@ module UnixSocket =
     /// Every target takes it. A socket's `accept` and `connect` consult it, and
     /// each transfer that lands must too. Both kernels give it no effect on a
     /// regular file, so an operation there that never looks is right not to. A
-    /// socket event port's waits block per their own timeout argument, never
-    /// per this flag.
+    /// wait on an epoll instance or a kqueue blocks per its own timeout
+    /// argument, never per this flag. On a kqueue the flag is set and the call
+    /// answers `ENOTTY` (see `SetNonBlockingAnswer.Failed`).
     let setNonBlocking<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (isNonBlocking : bool)
@@ -978,15 +979,15 @@ module UnixSocket =
 
         match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
         | None -> SetNonBlockingAnswer.Failed UnixError.EBADF, system
-        | Some (OpenFileTarget.SocketEventPort _) ->
-            // Store first, report second: measured, the platforms agree that the
-            // bit toggles and disagree on the answer -- Linux succeeds where
-            // Darwin reports a failure *with the bit toggled anyway*.
-            let system = stored system
-
-            match SimulatedUnixPlatform.eventPortSetStatusFlagsError system.Machine.UnixPlatform with
-            | None -> SetNonBlockingAnswer.Set, system
-            | Some error -> SetNonBlockingAnswer.Failed error, system
+        // Store, and then report: measured, the bit toggles on both, and the
+        // answers differ -- Linux succeeds on an epoll instance (6.18.5) where
+        // Darwin reports ENOTTY on a kqueue *with the bit toggled anyway*, in
+        // both directions (through the real shim's
+        // `SystemNative_FcntlSetIsNonBlocking`, macOS 26). Neither wait takes its
+        // blocking behaviour from the flag: `epoll_wait` and `kevent` block per
+        // their own timeout argument.
+        | Some (OpenFileTarget.Epoll _) -> SetNonBlockingAnswer.Set, stored system
+        | Some (OpenFileTarget.Kqueue _) -> SetNonBlockingAnswer.Failed UnixError.ENOTTY, stored system
         | Some (OpenFileTarget.Pipe _) ->
             // Measured on both ends, on both flavours (pipe-states.c and
             // `TestPipeAgainstHost`): `F_SETFL` answers 0 and
@@ -1245,7 +1246,8 @@ module UnixSocket =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.Pipe _
-        | OpenFileTarget.SocketEventPort _ -> Ok (ListenAnswer.Failed UnixError.ENOTSOCK, system)
+        | OpenFileTarget.Kqueue _
+        | OpenFileTarget.Epoll _ -> Ok (ListenAnswer.Failed UnixError.ENOTSOCK, system)
         | OpenFileTarget.Socket socketId ->
 
         let socket = UnixMachineState.socket socketId system.Machine
@@ -1381,7 +1383,8 @@ module UnixSocket =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.Pipe _
-        | OpenFileTarget.SocketEventPort _ -> Ok (GetSockNameAnswer.Failed (UnixError.ENOTSOCK, None))
+        | OpenFileTarget.Kqueue _
+        | OpenFileTarget.Epoll _ -> Ok (GetSockNameAnswer.Failed (UnixError.ENOTSOCK, None))
         | OpenFileTarget.Socket socketId ->
 
         let socket = UnixMachineState.socket socketId system.Machine
@@ -1474,7 +1477,8 @@ module UnixSocket =
         | Some (OpenFileTarget.File _)
         | Some (OpenFileTarget.Directory _)
         | Some (OpenFileTarget.Pipe _)
-        | Some (OpenFileTarget.SocketEventPort _) -> Error UnixError.ENOTSOCK
+        | Some (OpenFileTarget.Kqueue _)
+        | Some (OpenFileTarget.Epoll _) -> Error UnixError.ENOTSOCK
         | Some (OpenFileTarget.Socket socketId) -> Ok socketId
 
     /// Everything `setsockopt(2)` decides before the kernel copies the option's

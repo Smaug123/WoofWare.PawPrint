@@ -70,8 +70,8 @@ type FLockRefusal =
     | DarwinMalformedOperation of operation : int
     /// A pipe.
     | DarwinPipe of pipe : PipeId
-    /// A socket event port: an epoll descriptor on Linux, a kqueue on Darwin.
-    | DarwinSocketEventPort
+    /// A kqueue.
+    | DarwinKqueue
     | DarwinSocket of socket : SocketId
     /// An acquire by a description that already holds a lock. Only a conversion
     /// can expose the keep-versus-drop divergence, and only when it fails —
@@ -93,8 +93,8 @@ module FLockRefusal =
             $"operation %d{operation} is malformed (not exactly one of LOCK_SH/LOCK_EX/LOCK_UN, optionally with LOCK_NB), which Linux rejects with EINVAL unless LOCK_MAND (bit 32) is set, in which case it ignores the request and answers 0, and which Darwin does not treat uniformly -- measured, Darwin answers EBADF for 0, a bare LOCK_NB and unknown bits alone, but *succeeds* for LOCK_SH|LOCK_EX, LOCK_UN|LOCK_SH and LOCK_SH with an unknown bit."
         | FLockRefusal.DarwinPipe pipe ->
             $"the descriptor is an end of pipe %O{pipe}. Linux permits `flock` on a pipe, with both ends contending as one object; Darwin refuses it with ENOTSUP (raw 45, and note Darwin numbers ENOTSUP and EOPNOTSUPP differently, 45 against 102, while Linux gives both 95) on every pipe."
-        | FLockRefusal.DarwinSocketEventPort ->
-            "the descriptor is a socket event port. Linux permits `flock` on an epoll descriptor and returns 0; Darwin refuses it on a kqueue with ENOTSUP (raw 45), for every operation including LOCK_UN."
+        | FLockRefusal.DarwinKqueue ->
+            "the descriptor is a kqueue. Darwin refuses `flock` on one with ENOTSUP (raw 45), for every operation including LOCK_UN, where Linux permits it on an epoll descriptor and returns 0."
         | FLockRefusal.DarwinSocket socket ->
             $"the descriptor is socket %O{socket}. Linux permits `flock` on a socket and returns 0; Darwin refuses it with ENOTSUP (raw 45)."
         | FLockRefusal.DarwinConversion ->
@@ -155,12 +155,12 @@ module TruncationRefusal =
 /// Under Linux a sleeping call holds the description it sleeps on, so a close
 /// under it is served: the description outlives its last descriptor until the
 /// call returns. The Darwin cases are the flavour's own answers, which end or
-/// hold up the sleeping call in ways this kernel does not model.
+/// hold up the sleeping call in ways this kernel does not model. A `kevent`
+/// asleep on a kqueue is not among them: the close of the descriptor it was
+/// entered through drains the kqueue (`KqueueState.Drained`), which is
+/// modelled, so it is served.
 [<RequireQualifiedAccess>]
 type CloseRefusal<'Task> =
-    /// Any descriptor onto a socket event port that `task` is parked in a wait
-    /// on, under the Darwin flavour.
-    | DarwinPortDescriptorWithWaiter of port : OpenFileDescriptionId * task : 'Task
     /// Releasing the description destroys an object in a state this kernel
     /// has not measured.
     | Release of DescriptionReleaseRefusal
@@ -191,8 +191,6 @@ module CloseRefusal =
     /// number, and what it would have to build to lift the refusal.
     let describe (refusal : CloseRefusal<'Task>) : string =
         match refusal with
-        | CloseRefusal.DarwinPortDescriptorWithWaiter (port, task) ->
-            $"the descriptor names socket event port %O{port}, and task %O{task} is parked in a wait on it. Measured, Darwin's kevent *ends* such a wait with an error when the fd it was entered through closes -- but which error is not measured precisely, and what a close of a *different* descriptor onto the same kqueue does is not measured at all."
         | CloseRefusal.DarwinFlockedDescriptorWithWaiter (description, task) ->
             $"the descriptor names open file description %O{description}, and task %O{task} is parked on an `flock` of it. Measured on Darwin (open-file-references.c section D), closing the descriptor the flock was entered through does not return until the flock has, whether or not a dup keeps the description: the close blocks until the lock is granted or a signal ends the flock. This kernel models no close that sleeps, nor which descriptor a call was entered through."
         | CloseRefusal.PolledDescriptor (fd, task) ->
@@ -452,18 +450,14 @@ module UnixDescriptor =
                 // Not seekable: `lseek` on a pipe is ESPIPE on both platforms
                 // whichever end it is.
                 Some DescriptorFault.NotSeekable
-            | Some (OpenFileTarget.SocketEventPort _) ->
-                // The one target whose *seekability* depends on the platform,
-                // rather than merely the errno or the ordering. Measured: Darwin
-                // refuses `lseek` on a kqueue with ESPIPE, while Linux gives an
-                // epoll descriptor `noop_llseek`, which succeeds and reports 0
-                // without consulting the offset or moving anything. So Darwin
-                // has a descriptor fault here and Linux has none; the Linux
-                // success is served below, after the whence check the syscall
-                // still applies.
-                match flavour with
-                | SimulatedUnixFlavour.Darwin -> Some DescriptorFault.NotSeekable
-                | SimulatedUnixFlavour.Linux -> None
+            // Measured: Darwin refuses `lseek` on a kqueue with ESPIPE, while
+            // Linux gives an epoll descriptor `noop_llseek`, which succeeds and
+            // reports 0 without consulting the offset or moving anything. So a
+            // kqueue has a descriptor fault here and an epoll instance has none;
+            // the epoll success is served below, after the whence check the
+            // syscall still applies.
+            | Some (OpenFileTarget.Kqueue _) -> Some DescriptorFault.NotSeekable
+            | Some (OpenFileTarget.Epoll _) -> None
             | Some (OpenFileTarget.Socket _) ->
                 // Unseekable on both, unlike the port above: measured, both
                 // platforms answer ESPIPE for every whence in 0..4 and every
@@ -503,8 +497,8 @@ module UnixDescriptor =
         | Some error -> Ok (SyscallAnswer.Failed error, system)
         | None ->
 
-        // Linux's `noop_llseek`, reached only under the Linux flavour (Darwin
-        // answered ESPIPE above). It returns the file position unchanged, and an
+        // Linux's `noop_llseek`, for an epoll instance (a kqueue answered ESPIPE
+        // above). It returns the file position unchanged, and an
         // epoll descriptor's is always 0, so the answer is 0 for every input
         // that gets here — measured for `SEEK_SET` with offset -1 and with
         // INT64_MAX alike, and for whence 3 and 4.
@@ -515,9 +509,10 @@ module UnixDescriptor =
         // `whence <= SEEK_MAX` guard still applies and has already run, so
         // whence 5 and above were rejected as EINVAL.
         match target with
-        | Some (OpenFileTarget.SocketEventPort _) -> Ok (SyscallAnswer.Completed 0L, system)
+        | Some (OpenFileTarget.Epoll _) -> Ok (SyscallAnswer.Completed 0L, system)
         // Each of these answered EBADF or ESPIPE above.
         | None
+        | Some (OpenFileTarget.Kqueue _)
         | Some (OpenFileTarget.Pipe _)
         | Some (OpenFileTarget.Socket _) ->
             failwith
@@ -746,7 +741,8 @@ module UnixDescriptor =
 
         match description.Target with
         | OpenFileTarget.Pipe _
-        | OpenFileTarget.SocketEventPort _
+        | OpenFileTarget.Kqueue _
+        | OpenFileTarget.Epoll _
         | OpenFileTarget.Socket _ ->
             // EINVAL on both platforms for every object that is not a regular
             // file: measured on a pipe (either end), an INET socket, a UNIX
@@ -823,7 +819,8 @@ module UnixDescriptor =
             Ok (FileAdviceAnswer.Failed UnixError.ESPIPE)
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
-        | OpenFileTarget.SocketEventPort _
+        | OpenFileTarget.Kqueue _
+        | OpenFileTarget.Epoll _
         | OpenFileTarget.Socket _ ->
 
         // The generic path every non-pipe reaches screens the length and the
@@ -925,11 +922,15 @@ module UnixDescriptor =
             | SimulatedUnixFlavour.Linux, _
             | _, None -> None
             | SimulatedUnixFlavour.Darwin, Some description ->
-                match OpenFileDescription.object description with
-                | OpenFileObject.Pipe pipeId -> Some (FLockRefusal.DarwinPipe pipeId)
-                | OpenFileObject.AnonymousInode -> Some FLockRefusal.DarwinSocketEventPort
-                | OpenFileObject.Socket socketId -> Some (FLockRefusal.DarwinSocket socketId)
-                | OpenFileObject.File _ ->
+                match description.Target with
+                | OpenFileTarget.Pipe (pipeId, _) -> Some (FLockRefusal.DarwinPipe pipeId)
+                | OpenFileTarget.Kqueue _ -> Some FLockRefusal.DarwinKqueue
+                | OpenFileTarget.Epoll _ ->
+                    failwith
+                        "UnixDescriptor.flock: a Darwin-flavoured kernel holds an epoll instance, which only Linux has (this is a bug in the caller's state construction)."
+                | OpenFileTarget.Socket socketId -> Some (FLockRefusal.DarwinSocket socketId)
+                | OpenFileTarget.File _
+                | OpenFileTarget.Directory _ ->
                     match request, description.Flock with
                     | FlockRequest.Acquire _, Some _ -> Some FLockRefusal.DarwinConversion
                     | _, _ -> None
@@ -1025,8 +1026,8 @@ module UnixDescriptor =
     /// Most of what `flock` screens is not re-screened, because a screen over
     /// facts that cannot change is spent: the operation bits were validated
     /// before the park, and this signature makes a malformed resume
-    /// unrepresentable; the Darwin refusals for a pipe, a socket and a socket
-    /// event port are about the description's object kind, which never changes.
+    /// unrepresentable; the Darwin refusals for a pipe, a socket and a kqueue
+    /// are about the description's object kind, which never changes.
     /// `DarwinConversion` is the exception, because it screens *mutable* state —
     /// while this task held nothing, another through a `dup` of its descriptor
     /// could have taken a lock on this same description, which Darwin serves as
@@ -1043,6 +1044,9 @@ module UnixDescriptor =
             | Some (ParkedSyscall.SocketWait wait) ->
                 failwith
                     $"UnixDescriptor.flockAcquire: task %O{task} is parked in a socket wait on %O{wait.Port}, not in an flock, so there is no acquisition to finish (this is a bug in the client)."
+            | Some (ParkedSyscall.Kevent wait) ->
+                failwith
+                    $"UnixDescriptor.flockAcquire: task %O{task} is parked in a kevent on %O{wait.Kqueue}, not in an flock, so there is no acquisition to finish (this is a bug in the client)."
             | Some (ParkedSyscall.Poll poll) ->
                 failwith
                     $"UnixDescriptor.flockAcquire: task %O{task} is parked in a poll of %A{poll.Entries}, not in an flock, so there is no acquisition to finish (this is a bug in the client)."
@@ -1151,7 +1155,8 @@ module UnixDescriptor =
         | None -> Ok (BytesAvailableAnswer.Failed UnixError.EBADF)
         | Some (OpenFileTarget.File _)
         | Some (OpenFileTarget.Directory _)
-        | Some (OpenFileTarget.SocketEventPort _)
+        | Some (OpenFileTarget.Kqueue _)
+        | Some (OpenFileTarget.Epoll _)
         | Some (OpenFileTarget.Socket _) -> Error (BytesAvailableRefusal.UnmodelledTarget fd)
         | Some (OpenFileTarget.Pipe (pipeId, pipeEnd)) ->
 
@@ -1206,11 +1211,15 @@ module UnixDescriptor =
         | Some destinationDescription, Some sourceDescription ->
 
         let fileSystemOf (description : OpenFileDescription) : ObjectFileSystem =
-            match OpenFileDescription.object description with
-            | OpenFileObject.File _ -> ObjectFileSystem.Mounted
-            | OpenFileObject.Pipe _ -> ObjectFileSystem.Pseudo PseudoFileSystem.Pipe
-            | OpenFileObject.Socket _ -> ObjectFileSystem.Pseudo PseudoFileSystem.Socket
-            | OpenFileObject.AnonymousInode -> ObjectFileSystem.Pseudo PseudoFileSystem.AnonymousInode
+            match description.Target with
+            | OpenFileTarget.File _
+            | OpenFileTarget.Directory _ -> ObjectFileSystem.Mounted
+            | OpenFileTarget.Pipe _ -> ObjectFileSystem.Pseudo PseudoFileSystem.Pipe
+            | OpenFileTarget.Socket _ -> ObjectFileSystem.Pseudo PseudoFileSystem.Socket
+            | OpenFileTarget.Epoll _ -> ObjectFileSystem.Pseudo PseudoFileSystem.AnonymousInode
+            | OpenFileTarget.Kqueue _ ->
+                failwith
+                    "UnixDescriptor.fileClone: a Linux-flavoured kernel holds a kqueue, which only Darwin has (this is a bug in the caller's state construction)."
 
         let isDirectory (description : OpenFileDescription) : bool =
             match description.Target with
@@ -1218,7 +1227,8 @@ module UnixDescriptor =
             | OpenFileTarget.File _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Socket _
-            | OpenFileTarget.SocketEventPort _ -> false
+            | OpenFileTarget.Kqueue _
+            | OpenFileTarget.Epoll _ -> false
 
         let isRegularFile (description : OpenFileDescription) : bool =
             match description.Target with
@@ -1226,7 +1236,8 @@ module UnixDescriptor =
             | OpenFileTarget.Directory _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Socket _
-            | OpenFileTarget.SocketEventPort _ -> false
+            | OpenFileTarget.Kqueue _
+            | OpenFileTarget.Epoll _ -> false
 
         if fileSystemOf destinationDescription <> fileSystemOf sourceDescription then
             Ok UnixError.EXDEV
@@ -1273,10 +1284,8 @@ module UnixDescriptor =
             | Some (OpenFileTarget.File _)
             | Some (OpenFileTarget.Directory _)
             | Some (OpenFileTarget.Pipe _) -> UnixError.ENOTTY
-            | Some (OpenFileTarget.SocketEventPort _) ->
-                match flavour with
-                | SimulatedUnixFlavour.Linux -> UnixError.EINVAL
-                | SimulatedUnixFlavour.Darwin -> UnixError.ENOTTY
+            | Some (OpenFileTarget.Epoll _) -> UnixError.EINVAL
+            | Some (OpenFileTarget.Kqueue _) -> UnixError.ENOTTY
             | Some (OpenFileTarget.Socket socketId) ->
                 match flavour, (UnixMachineState.socket socketId system.Machine).Domain with
                 | SimulatedUnixFlavour.Linux, _ -> UnixError.ENOTTY
@@ -1297,7 +1306,10 @@ module UnixDescriptor =
     /// real kernel holds a file for a call that sleeps on it. So under Linux a
     /// close under a sleeping call is served, and the call sleeps on: the
     /// description goes when the call returns, which is when its finishing call
-    /// releases it.
+    /// releases it. Under Darwin a close of the descriptor a `kevent` sleeps
+    /// through is served too, and drains the kqueue (`KqueueState.Drained`),
+    /// which ends that wait and every other on the kqueue; the kqueue goes as
+    /// the last of them returns, if no descriptor names it by then.
     ///
     /// `FileDescriptorRegistry.dropDescriptor` cannot do this itself: the
     /// socket table is the machine's rather than the process's, whether an
@@ -1321,12 +1333,13 @@ module UnixDescriptor =
             |> List.choose (fun (task, state) -> state.Parked |> Option.map (fun park -> task, park.Syscall))
 
         // Under Darwin, a close of the descriptor a sleeping call was entered
-        // through ends the call (kevent, accept, a pipe transfer), or itself
-        // waits until the call has returned (flock), and the park does not
-        // record which descriptor that was, so any close onto the description
-        // refuses. Each is measured: `SocketEventWaitSurvivesCloseLinux.cs`'s
-        // macOS run, `blocking-accept.c` section C, `pipe-blocking.c` section K
-        // and `open-file-references.c` section D.
+        // through ends the call (accept, a pipe transfer), or itself waits
+        // until the call has returned (flock), and the park does not record
+        // which descriptor that was, so any close onto the description
+        // refuses. Each is measured: `blocking-accept.c` section C,
+        // `pipe-blocking.c` section K and `open-file-references.c` section D.
+        // A `kevent` is not among them: its park records the descriptor it was
+        // entered through, and the drain below is what the close does to it.
         //
         // Checked against the park record rather than a task's run state, so
         // the window between a wake and the woken task's re-entry is covered
@@ -1339,7 +1352,8 @@ module UnixDescriptor =
                 |> List.tryPick (fun (task, parked) ->
                     match parked with
                     | ParkedSyscall.SocketWait wait when wait.Port = closingId ->
-                        Some (CloseRefusal.DarwinPortDescriptorWithWaiter (closingId, task))
+                        failwith
+                            $"UnixDescriptor.close: task %O{task} is parked in an epoll_wait on %O{closingId} under the Darwin flavour, which has no epoll (this is a bug in the caller's state construction)."
                     | ParkedSyscall.Accept accept when accept.Listener = closingId ->
                         Some (CloseRefusal.DarwinListenerDescriptorWithAccepter (closingId, task))
                     | ParkedSyscall.PipeRead read when read.Reader = closingId ->
@@ -1349,6 +1363,7 @@ module UnixDescriptor =
                     | ParkedSyscall.Flock parked when parked.Requester = closingId ->
                         Some (CloseRefusal.DarwinFlockedDescriptorWithWaiter (closingId, task))
                     | ParkedSyscall.SocketWait _
+                    | ParkedSyscall.Kevent _
                     | ParkedSyscall.Accept _
                     | ParkedSyscall.PipeRead _
                     | ParkedSyscall.PipeWrite _
@@ -1382,6 +1397,7 @@ module UnixDescriptor =
                         None
                 | ParkedSyscall.Flock _
                 | ParkedSyscall.SocketWait _
+                | ParkedSyscall.Kevent _
                 | ParkedSyscall.Accept _
                 | ParkedSyscall.PipeRead _
                 | ParkedSyscall.PipeWrite _ -> None
@@ -1402,6 +1418,43 @@ module UnixDescriptor =
             | Error FileDescriptorCloseError.BadFd ->
                 failwith
                     $"UnixDescriptor.close: fd %d{fd} named open file description %O{closingId} (%A{closing.Target}) a moment ago, and the registry now calls it a bad descriptor (this is a bug in this library)."
+
+        // Measured on Darwin 27.0.0 (`kqueue-kevent.c`, sections E and F):
+        // closing a descriptor a task is asleep in `kevent` through drains the
+        // kqueue, which ends that wait and every other wait on the kqueue with
+        // EBADF, and leaves every later wait on it EBADF too. Closing one no
+        // waiter entered through changes nothing. A waiter holds the kqueue
+        // (`ParkedSyscall.descriptions`), so a close that drains it has not
+        // destroyed it, even when it closed the last descriptor: the kqueue
+        // goes as the last call holding it returns.
+        //
+        // Checked against the park records rather than a task's run state: a
+        // woken waiter has not left the call yet.
+        let registry =
+            match closing.Target with
+            | OpenFileTarget.Kqueue _ ->
+                let enteredHere =
+                    parks
+                    |> List.exists (fun (_, parked) ->
+                        match parked with
+                        | ParkedSyscall.Kevent wait -> wait.Kqueue = closingId && wait.Fd = fd
+                        | ParkedSyscall.SocketWait _
+                        | ParkedSyscall.Flock _
+                        | ParkedSyscall.Poll _
+                        | ParkedSyscall.Accept _
+                        | ParkedSyscall.PipeRead _
+                        | ParkedSyscall.PipeWrite _ -> false
+                    )
+
+                if enteredHere then
+                    FileDescriptorRegistry.drainKqueue closingId registry
+                else
+                    registry
+            | OpenFileTarget.Epoll _
+            | OpenFileTarget.File _
+            | OpenFileTarget.Directory _
+            | OpenFileTarget.Socket _
+            | OpenFileTarget.Pipe _ -> registry
 
         let closed =
             { system with

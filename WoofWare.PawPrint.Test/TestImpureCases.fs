@@ -2291,6 +2291,31 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // A Darwin process's socket event port, which is a kqueue, through
+                // the shim: a wait for no events, a wait through a non-kqueue, a
+                // close that drains the kqueue under a waiter while a dup keeps it
+                // open, the drain outliving the close, and the registration rows
+                // a kevent answers without applying a change. Every row measured
+                // on Darwin 27.0.0 by kqueue-kevent.c.
+                FileName = "KqueueWaitDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                // Compared: it asserts no descriptor number, only errnos, counts
+                // and whether a waiter has returned.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState =
+                    Some (fun state ->
+                        state.Kernel.Tasks
+                        |> Map.forall (fun _ task -> task.Parked.IsNone)
+                        |> shouldEqual true
+                    )
+            }
+            {
                 // The event-buffer stride under the epoll backend, seen through the
                 // count at which PawPrint can no longer address the block. Not
                 // differential: a real libc succeeds at every count here.

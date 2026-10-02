@@ -310,7 +310,8 @@ module UnixProcessState =
             | OpenFileTarget.File (inode, _)
             | OpenFileTarget.Directory (inode, _) -> Some inode
             | OpenFileTarget.Socket _
-            | OpenFileTarget.SocketEventPort _
+            | OpenFileTarget.Kqueue _
+            | OpenFileTarget.Epoll _
             | OpenFileTarget.Pipe _ -> None
         )
         |> Set.ofSeq

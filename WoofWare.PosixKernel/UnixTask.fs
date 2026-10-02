@@ -16,27 +16,21 @@ type CpuId =
         match this with
         | CpuId.CpuId i -> $"<cpu #%i{i}>"
 
-/// One thread's in-flight wait on a socket event port (`epoll_wait` or
-/// `kevent`): the state the syscall captured when it was entered, which
-/// outlives anything the process does to its arguments afterwards. The port is held by *description
-/// identity*, exactly as the real syscall holds a file reference: the fd the
-/// wait was called through is never consulted again, and the port lives at
-/// least as long as the wait (`ParkedSyscall.descriptions`). Under Darwin,
-/// whose `kevent` a close ends, `UnixDescriptor.close` refuses any close of a
-/// descriptor onto it instead.
+/// One thread's in-flight `epoll_wait`: the state the syscall captured when it
+/// was entered, which outlives anything the process does to its arguments
+/// afterwards. The epoll instance is held by *description identity*, exactly as
+/// the real syscall holds a file reference: the fd the wait was called through
+/// is never consulted again, and the instance lives at least as long as the
+/// wait (`ParkedSyscall.descriptions`).
 type ParkedSocketWait =
     {
         /// <summary>
-        /// The open file description of the port being waited on.
+        /// The open file description of the epoll instance being waited on.
         /// </summary>
         Port : OpenFileDescriptionId
         /// <summary>
-        /// The <c>*count</c> read at entry.
+        /// The <c>maxevents</c> the call was made with.
         /// </summary>
-        /// <remarks>
-        /// A real <c>epoll_wait</c> keeps using the maxevents it was passed,
-        /// even if the guest overwrites the cell mid-wait.
-        /// </remarks>
         MaxEvents : int
         /// The buffer the call was given to copy events out to, as the caller
         /// classified it when the call was entered.
@@ -44,6 +38,29 @@ type ParkedSocketWait =
         /// The instant, in nanoseconds since boot, at which the wait stops and
         /// returns no events; or `None` for a wait that lasts until an event is
         /// deliverable.
+        Deadline : int64 option
+    }
+
+/// One task's in-flight `kevent(2)` wait on a kqueue: the state the call
+/// captured when it was entered.
+type ParkedKevent =
+    {
+        /// The open file description of the kqueue being waited on.
+        ///
+        /// Held as the real call holds a file reference: the kqueue lives at
+        /// least as long as the wait (`ParkedSyscall.descriptions`), so a close
+        /// of `Fd` drains it rather than destroying it under the wait.
+        Kqueue : OpenFileDescriptionId
+        /// The descriptor the call was made through.
+        ///
+        /// Kept beside the description because a close of this descriptor, and
+        /// of no other, ends the wait (see `KqueueState.Drained`).
+        Fd : int
+        /// The `nevents` the call was made with: positive, since a call with
+        /// none to take returns at once.
+        MaxEvents : int
+        /// The instant, in nanoseconds since boot, at which the wait stops and
+        /// returns no events; or `None` for a wait with a null timeout.
         Deadline : int64 option
     }
 
@@ -195,6 +212,7 @@ type ParkedPipeWrite =
 [<RequireQualifiedAccess>]
 type ParkedSyscall =
     | SocketWait of ParkedSocketWait
+    | Kevent of ParkedKevent
     | Flock of ParkedFlock
     | Poll of ParkedPoll
     | Accept of ParkedAccept
@@ -212,6 +230,7 @@ module ParkedSyscall =
     let descriptions (parked : ParkedSyscall) : OpenFileDescriptionId list =
         match parked with
         | ParkedSyscall.SocketWait wait -> [ wait.Port ]
+        | ParkedSyscall.Kevent wait -> [ wait.Kqueue ]
         | ParkedSyscall.Flock parked -> [ parked.Requester ]
         | ParkedSyscall.Poll poll ->
             poll.Entries
@@ -407,6 +426,7 @@ module UnixTaskTable =
             | ParkedSyscall.Accept _ -> 3
             | ParkedSyscall.PipeRead _ -> 4
             | ParkedSyscall.PipeWrite _ -> 5
+            | ParkedSyscall.Kevent _ -> 6
 
         let sameSyscall =
             match existing.Parked with

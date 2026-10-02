@@ -384,6 +384,77 @@ module TestSocketEventsPal =
         |> shouldEqual true
 
     // ---------------------------------------------------------------------
+    // `TryChangeSocketEventRegistrationInner`, the kqueue build's: the
+    // changelist.
+    // ---------------------------------------------------------------------
+
+    let private keventChangeInnerBody () : string =
+        let source = File.ReadAllText (palPath "pal_networking.c")
+
+        let kqueueSection =
+            match source.IndexOf ("#elif HAVE_KQUEUE", StringComparison.Ordinal) with
+            | -1 -> failwith "TestSocketEventsPal: the pinned pal_networking.c has no `#elif HAVE_KQUEUE` section."
+            | start -> source.Substring start
+
+        functionBody kqueueSection "static int32_t TryChangeSocketEventRegistrationInner("
+
+    /// Upstream builds at most two changes, `EVFILT_READ` first when `SA_READ`
+    /// changed and then `EVFILT_WRITE` when `SA_WRITE` did, each an add or a
+    /// delete by whether the new mask has the bit, with `EV_RECEIPT` on both
+    /// wherever the header defines it, as Darwin's does. Read out of the body,
+    /// then checked against `keventChanges` for every pair of masks.
+    [<Test>]
+    let ``the kqueue changelist is upstream's`` () : unit =
+        let body = keventChangeInnerBody ()
+
+        let expect (pattern : string) =
+            if not (Regex.IsMatch (body, pattern)) then
+                failwith
+                    $"TestSocketEventsPal: the kqueue TryChangeSocketEventRegistrationInner no longer matches /%s{pattern}/. Read the body and teach this test.\n%s{body}"
+
+        expect
+            @"#ifdef EV_RECEIPT\s*const uint16_t AddFlags = EV_ADD \| EV_CLEAR \| EV_RECEIPT;\s*const uint16_t RemoveFlags = EV_DELETE \| EV_RECEIPT;"
+
+        expect @"int8_t readChanged = \(changes & SocketEvents_SA_READ\) != 0;"
+        expect @"int8_t writeChanged = \(changes & SocketEvents_SA_WRITE\) != 0;"
+        expect @"int32_t changes = currentEvents \^ newEvents;"
+
+        expect
+            @"if \(readChanged\)\s*\{\s*EV_SET\(&events\[i\+\+\],\s*\(uint64_t\)socket,\s*EVFILT_READ,\s*\(newEvents & SocketEvents_SA_READ\) == 0 \? RemoveFlags : AddFlags,\s*0,\s*0,\s*GetKeventUdata\(data\)\);"
+
+        expect
+            @"if \(writeChanged\)\s*\{\s*EV_SET\(&events\[i\+\+\],\s*\(uint64_t\)socket,\s*EVFILT_WRITE,\s*\(newEvents & SocketEvents_SA_WRITE\) == 0 \? RemoveFlags : AddFlags,\s*0,\s*0,\s*GetKeventUdata\(data\)\);"
+
+        expect @"kevent\(port, events, GetKeventNchanges\(i\), NULL, 0, NULL\)"
+
+        // Darwin 27.0.0's <sys/event.h>, measured: EVFILT_READ -1, EVFILT_WRITE -2,
+        // EV_ADD 0x1, EV_DELETE 0x2, EV_CLEAR 0x20, EV_RECEIPT 0x40.
+        let add = 0x0001us ||| 0x0020us ||| 0x0040us
+        let remove = 0x0002us ||| 0x0040us
+
+        for current in 0 .. SocketEventsPal.supported do
+            for next in 0 .. SocketEventsPal.supported do
+                let change (filter : int16) (bit : int) =
+                    {
+                        Ident = uint64 (int64 -7)
+                        Filter = filter
+                        Flags = if next &&& bit = 0 then remove else add
+                        FilterFlags = 0u
+                        Data = 0L
+                        UserData = 0xC0FFEEUL
+                    }
+
+                let expected =
+                    [
+                        if (current ^^^ next) &&& 0x01 <> 0 then
+                            change -1s 0x01
+                        if (current ^^^ next) &&& 0x02 <> 0 then
+                            change -2s 0x02
+                    ]
+
+                SocketEventsPal.keventChanges -7 current next 0xC0FFEEUL |> shouldEqual expected
+
+    // ---------------------------------------------------------------------
     // The composition `SystemNative_TryChangeSocketEventRegistration` and
     // `SystemNative_WaitForSocketEvents` answer with, against what they
     // answered when the library stored the shim's three-bit interest.
@@ -479,9 +550,9 @@ module TestSocketEventsPal =
         let system = linuxSystem
 
         let portA, registry =
-            FileDescriptorRegistry.createSocketEventPort system.Process.FileDescriptors
+            FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
 
-        let portB, registry = FileDescriptorRegistry.createSocketEventPort registry
+        let portB, registry = FileDescriptorRegistry.createEpoll registry
 
         let portCopy, registry =
             match FileDescriptorRegistry.dup portA registry with
@@ -606,12 +677,12 @@ module TestSocketEventsPal =
             | _ ->
 
             match portDescription.Target with
-            | OpenFileTarget.SocketEventPort _ when portId <> targetId ->
+            | OpenFileTarget.Epoll _ when portId <> targetId ->
                 let isAdd = current = 0
                 let isDel = not isAdd && next = 0
 
                 match targetDescription.Target with
-                | OpenFileTarget.SocketEventPort _ when isAdd -> "refused", model
+                | OpenFileTarget.Epoll _ when isAdd -> "refused", model
                 | _ ->
 
                 let table = Map.tryFind portId model.Tables |> Option.defaultValue Map.empty

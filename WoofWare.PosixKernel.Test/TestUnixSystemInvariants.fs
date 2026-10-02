@@ -223,7 +223,7 @@ module TestUnixSystemInvariants =
                                     [
                                         portId,
                                         {
-                                            Target = OpenFileTarget.SocketEventPort port
+                                            Target = OpenFileTarget.Epoll port
                                             AccessMode = FileAccessMode.ReadWrite
                                             NonBlocking = false
                                             Flock = None
@@ -495,7 +495,7 @@ module TestUnixSystemInvariants =
     [<Test>]
     let ``a task parked on a live port or file is sound`` () : unit =
         let portFd, registry =
-            FileDescriptorRegistry.createSocketEventPort system.Process.FileDescriptors
+            FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
 
         let port =
             match FileDescriptorRegistry.tryFindWithId portFd registry with

@@ -13,7 +13,7 @@ It includes:
 
 * the filesystem, including permissions, with every name a string of bytes exactly as the kernel stores it, never decoded as text
 * the file-descriptor table, and pipes
-* sockets and connections, `poll`, and Linux's epoll
+* sockets and connections, `poll`, Linux's epoll, and Darwin's kqueue
 * signals: sending them, their dispositions, delivery to a handler, and a process ended by one
 * the process's tasks (its threads), and the syscalls they block in
 * clock
@@ -97,6 +97,7 @@ It takes its arguments as the kernel does, raw where the kernel validates them, 
 | `UnixSocket` | `socket`, `bind`, `listen`, `getsockname`, `setsockopt`, `getsockopt`, and the `O_NONBLOCK` half of `fcntl` |
 | `UnixConnection` | `connect`, `accept` |
 | `UnixPoll` | `poll`, `epoll_create1`, `epoll_ctl`, `epoll_wait` |
+| `UnixKqueue` | `kqueue`, `kevent` |
 | `UnixSignal` | `kill`, `pthread_kill`, `sigaction`, `sigreturn`, and the signals a task takes as it returns to user mode |
 | `UnixClock` | `clock_gettime` |
 | `UnixEntropy` | `getrandom`, `getentropy` |

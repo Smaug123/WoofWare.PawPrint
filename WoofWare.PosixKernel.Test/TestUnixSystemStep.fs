@@ -859,8 +859,7 @@ module TestUnixSystemStep =
 
     /// A descriptor onto a socket event port.
     let private withSocketEventPort (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        let fd, registry =
-            FileDescriptorRegistry.createSocketEventPort system.Process.FileDescriptors
+        let fd, registry = FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
 
         fd,
         { system with
@@ -3377,18 +3376,18 @@ module TestUnixSystemStep =
             ignore<int> alias
         | other -> failwith $"expected the close to succeed, got %A{other}"
 
-    /// A socket event port, and the descriptor onto it.
+    /// The flavour's socket event port, an epoll instance or a kqueue, and the
+    /// descriptor onto it.
     let private withPort (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        let fd, registry =
-            FileDescriptorRegistry.createSocketEventPort system.Process.FileDescriptors
-
-        fd,
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
+        match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+        | SimulatedUnixFlavour.Linux ->
+            match UnixPoll.epollCreate1 0 system with
+            | Ok (Ok (fd, system)) -> fd, system
+            | other -> failwith $"expected an epoll instance, got %A{other}"
+        | SimulatedUnixFlavour.Darwin ->
+            match UnixKqueue.kqueue system with
+            | Ok (fd, system) -> fd, system
+            | Error refusal -> failwith $"expected a kqueue, got %A{refusal}"
 
     /// Task 7 parked in a socket wait on the port `fd` names.
     let private parkedOnPort (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
@@ -3455,12 +3454,11 @@ module TestUnixSystemStep =
         | other -> failwith $"expected the close to succeed, got %A{other}"
 
     [<Test>]
-    let ``any close of a descriptor onto a parked-on port is refused under Darwin`` () : unit =
-        // The measured flavour split: a Darwin `kevent` *ends* with an error when the descriptor
-        // it was entered through closes, so even a close that leaves the kqueue alive changes what
-        // the waiter sees — which error, and what closing a different descriptor onto the same
-        // kqueue does, are unmeasured. The alias is what makes this a different answer from
-        // Linux's rather than the same one reached twice.
+    let ``closing a descriptor onto a kqueue no waiter entered through is served, and wakes nobody`` () : unit =
+        // Darwin's counterpart of the alias row above, and the narrowness of the drain: closing
+        // the descriptor a `kevent` was entered through ends the wait (`TestKqueue`), and
+        // closing any other descriptor onto the same kqueue changes nothing (measured,
+        // `kqueue-kevent.c` rows E2 and E3).
         let fd, system = withPort darwin
 
         let alias, registry =
@@ -3469,21 +3467,25 @@ module TestUnixSystemStep =
             | Error error -> failwith $"expected the dup to succeed, got %O{error}"
 
         let system =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
-            }
+            withTask
+                7
+                { system with
+                    Process =
+                        { system.Process with
+                            FileDescriptors = registry
+                        }
+                }
 
-        let description = descriptionOf fd system
-        let parked = parkedOnPort fd system
+        let parked =
+            match UnixKqueue.kevent 7 fd 0 [] 8 UserBuffer.Mapped KeventTimeout.Null system with
+            | Ok (KeventOutcome.WouldBlock _, parked) -> parked
+            | other -> failwith $"expected the wait to park, got %A{other}"
 
         match UnixDescriptor.close alias parked with
-        | Error (CloseRefusal.DarwinPortDescriptorWithWaiter (refused, task)) ->
-            refused |> shouldEqual description
-            task |> shouldEqual 7
-        | other -> failwith $"expected the close to be refused, got %A{other}"
+        | Ok (SyscallAnswer.Completed 0L, closed) ->
+            UnixWait.wakes (Set.singleton 7) closed |> shouldEqual []
+            UnixSystem.checkInvariants closed |> shouldEqual []
+        | other -> failwith $"expected the close to succeed, got %A{other}"
 
     [<Test>]
     let ``closing a port nothing waits on is served`` () : unit =
@@ -3605,7 +3607,7 @@ module TestUnixSystemStep =
         let exn =
             Assert.Throws<exn> (fun () -> SocketEventPort.hasDeliverableEvent (descriptionOf 0 linux) linux |> ignore)
 
-        exn.Message |> shouldContainText "is not a socket event port"
+        exn.Message |> shouldContainText "is not an epoll instance"
 
     [<Test>]
     let ``draining nothing is refused`` () : unit =

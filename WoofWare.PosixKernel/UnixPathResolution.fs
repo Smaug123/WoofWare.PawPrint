@@ -624,7 +624,8 @@ module UnixPathResolution =
         =
         match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
         | None -> Ok (FileStatusAnswer.Failed UnixError.EBADF)
-        | Some (OpenFileTarget.SocketEventPort _) -> Error FStatRefusal.SocketEventPort
+        | Some (OpenFileTarget.Kqueue _)
+        | Some (OpenFileTarget.Epoll _) -> Error FStatRefusal.SocketEventPort
         | Some (OpenFileTarget.Socket socketId) -> Error (FStatRefusal.Socket socketId)
         | Some (OpenFileTarget.Pipe (pipeId, pipeEnd)) ->
             let pipe = UnixMachineState.pipe pipeId system.Machine
@@ -816,10 +817,9 @@ module UnixPathResolution =
         | Some (OpenFileObject.File inode) ->
             changeModeOf inode mode system
             |> Result.mapError FChModRefusal.UnmeasuredModeChange
-        | Some OpenFileObject.AnonymousInode ->
-            match flavour with
-            | SimulatedUnixFlavour.Linux -> Ok (SyscallAnswer.Failed UnixError.EOPNOTSUPP, system)
-            | SimulatedUnixFlavour.Darwin -> Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
+        // An epoll instance (Linux) and a kqueue (Darwin).
+        | Some OpenFileObject.AnonymousInode -> Ok (SyscallAnswer.Failed UnixError.EOPNOTSUPP, system)
+        | Some (OpenFileObject.Kqueue _) -> Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
         | Some (OpenFileObject.Socket socket) ->
             match flavour with
             | SimulatedUnixFlavour.Linux -> Error (FChModRefusal.Socket socket)
@@ -1061,10 +1061,9 @@ module UnixPathResolution =
         | Some (OpenFileObject.File inode) ->
             changeOwnerOf inode user group system
             |> Result.mapError FChOwnRefusal.UnmeasuredOwnerChange
-        | Some OpenFileObject.AnonymousInode ->
-            match flavour with
-            | SimulatedUnixFlavour.Linux -> Ok (SyscallAnswer.Failed UnixError.EOPNOTSUPP, system)
-            | SimulatedUnixFlavour.Darwin -> Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
+        // An epoll instance (Linux) and a kqueue (Darwin).
+        | Some OpenFileObject.AnonymousInode -> Ok (SyscallAnswer.Failed UnixError.EOPNOTSUPP, system)
+        | Some (OpenFileObject.Kqueue _) -> Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
         | Some (OpenFileObject.Socket socket) ->
             match flavour with
             | SimulatedUnixFlavour.Linux -> Error (FChOwnRefusal.Socket socket)
@@ -1159,6 +1158,7 @@ module UnixPathResolution =
         match FileDescriptorRegistry.tryFindObject fd system.Process.FileDescriptors with
         | None -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
         | Some (OpenFileObject.AnonymousInode as object)
+        | Some (OpenFileObject.Kqueue _ as object)
         | Some (OpenFileObject.Socket _ as object)
         | Some (OpenFileObject.Pipe _ as object) -> Error (FUTimensRefusal.UnmodelledObject object)
         | Some (OpenFileObject.File inode) ->
@@ -1596,7 +1596,8 @@ module UnixPathResolution =
             match description.Target with
             | OpenFileTarget.Directory (inode, _) -> Ok (Ok (Some (inode, true)))
             | OpenFileTarget.File (inode, _) -> Ok (Ok (Some (inode, false)))
-            | OpenFileTarget.SocketEventPort _
+            | OpenFileTarget.Kqueue _
+            | OpenFileTarget.Epoll _
             | OpenFileTarget.Socket _
             | OpenFileTarget.Pipe _ -> Error (AccessRefusal.UnmodelledDescriptor fd)
 

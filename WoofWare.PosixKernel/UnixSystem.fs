@@ -174,10 +174,33 @@ type UnixSystemDefect<'Task> =
     /// frees a file when its last reference goes, so this is a leak: a close,
     /// or the return of a call that held it, failed to release it.
     | UnreferencedDescription of description : OpenFileDescriptionId
-    /// A task is parked in a socket-event wait on a description that is not a
-    /// socket event port, which no wait could have produced and which
+    /// A task is parked in an `epoll_wait` on a description that is not an
+    /// epoll instance, which no wait could have produced and which
     /// `SocketEventPort.hasDeliverableEvent` crashes on.
     | ParkedSocketWaitOnNonPort of task : 'Task * description : OpenFileDescriptionId * target : OpenFileTarget
+    /// A task is parked in a `kevent` on a description that is not a kqueue,
+    /// which no wait could have produced and on which `WakeCondition.satisfied`
+    /// crashes.
+    | ParkedKeventOnNonKqueue of task : 'Task * description : OpenFileDescriptionId * target : OpenFileTarget
+    /// A task is parked in a `kevent` on a kqueue that has not been drained,
+    /// and the descriptor the call was made through no longer names that
+    /// kqueue (`current` is what it names now). Closing that descriptor drains
+    /// the kqueue, so this is a park recorded without `kevent` or a descriptor
+    /// closed around it.
+    | ParkedKeventDescriptorRebound of
+        task : 'Task *
+        fd : int *
+        kqueue : OpenFileDescriptionId *
+        current : OpenFileDescriptionId option
+    /// A task is parked in a `kevent` for `maxEvents` events, which is not
+    /// positive: such a call returns at once.
+    | ParkedKeventCountNotPositive of task : 'Task * maxEvents : int
+    /// An open file description names an object this flavour's kernel does
+    /// not have: an epoll instance under Darwin, or a kqueue under Linux.
+    | DescriptionNotOfFlavour of
+        description : OpenFileDescriptionId *
+        target : OpenFileTarget *
+        flavour : SimulatedUnixFlavour
     /// A task is parked in a `poll` watching a socket event port, which `poll`
     /// refuses before it parks and whose readiness is not modelled.
     | ParkedPollOnSocketEventPort of task : 'Task * description : OpenFileDescriptionId
@@ -546,7 +569,8 @@ module UnixSystem =
             |> Map.toList
             |> List.choose (fun (id, description) ->
                 match description.Target with
-                | OpenFileTarget.SocketEventPort _
+                | OpenFileTarget.Kqueue _
+                | OpenFileTarget.Epoll _
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Pipe _ -> None
@@ -577,6 +601,24 @@ module UnixSystem =
             |> List.filter (fun socketId -> socketId >= system.Machine.NextSocketId)
             |> List.map (fun socketId -> UnixSystemDefect.NextSocketIdNotFresh (system.Machine.NextSocketId, socketId))
 
+        let foreignObjects =
+            let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+
+            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+            |> Map.toList
+            |> List.choose (fun (id, description) ->
+                match description.Target, flavour with
+                | OpenFileTarget.Epoll _, SimulatedUnixFlavour.Darwin
+                | OpenFileTarget.Kqueue _, SimulatedUnixFlavour.Linux ->
+                    Some (UnixSystemDefect.DescriptionNotOfFlavour (id, description.Target, flavour))
+                | OpenFileTarget.Epoll _, SimulatedUnixFlavour.Linux
+                | OpenFileTarget.Kqueue _, SimulatedUnixFlavour.Darwin
+                | OpenFileTarget.File _, _
+                | OpenFileTarget.Directory _, _
+                | OpenFileTarget.Socket _, _
+                | OpenFileTarget.Pipe _, _ -> None
+            )
+
         let danglingInodes =
             system.Process.FileDescriptors
             |> FileDescriptorRegistry.descriptions
@@ -595,7 +637,8 @@ module UnixSystem =
                     | Some (InodeContent.Directory _) -> None
                     | Some (InodeContent.RegularFile _)
                     | Some (InodeContent.Symlink _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
-                | OpenFileTarget.SocketEventPort _
+                | OpenFileTarget.Kqueue _
+                | OpenFileTarget.Epoll _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.Pipe _ -> None
             )
@@ -692,8 +735,9 @@ module UnixSystem =
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
-                | OpenFileTarget.Pipe _ -> []
-                | OpenFileTarget.SocketEventPort portState ->
+                | OpenFileTarget.Pipe _
+                | OpenFileTarget.Kqueue _ -> []
+                | OpenFileTarget.Epoll portState ->
                     portState.Registrations
                     |> Map.toList
                     |> List.map (fun (_, registration) -> portId, registration.RegisteredAt)
@@ -739,7 +783,8 @@ module UnixSystem =
                     | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, wait.Port) ]
                     | Some description ->
                         match description.Target with
-                        | OpenFileTarget.SocketEventPort _ -> []
+                        | OpenFileTarget.Epoll _ -> []
+                        | OpenFileTarget.Kqueue _
                         | OpenFileTarget.File _
                         | OpenFileTarget.Directory _
                         | OpenFileTarget.Socket _
@@ -747,6 +792,41 @@ module UnixSystem =
                             [
                                 UnixSystemDefect.ParkedSocketWaitOnNonPort (task, wait.Port, description.Target)
                             ]
+                | Some (ParkedSyscall.Kevent wait) ->
+                    let count =
+                        if wait.MaxEvents > 0 then
+                            []
+                        else
+                            [ UnixSystemDefect.ParkedKeventCountNotPositive (task, wait.MaxEvents) ]
+
+                    let target =
+                        match Map.tryFind wait.Kqueue descriptions with
+                        | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, wait.Kqueue) ]
+                        | Some description ->
+                            match description.Target with
+                            | OpenFileTarget.Kqueue state ->
+                                match FileDescriptorRegistry.tryFindId wait.Fd system.Process.FileDescriptors with
+                                | Some current when current = wait.Kqueue -> []
+                                | _ when state.Drained -> []
+                                | current ->
+                                    [
+                                        UnixSystemDefect.ParkedKeventDescriptorRebound (
+                                            task,
+                                            wait.Fd,
+                                            wait.Kqueue,
+                                            current
+                                        )
+                                    ]
+                            | OpenFileTarget.Epoll _
+                            | OpenFileTarget.File _
+                            | OpenFileTarget.Directory _
+                            | OpenFileTarget.Socket _
+                            | OpenFileTarget.Pipe _ ->
+                                [
+                                    UnixSystemDefect.ParkedKeventOnNonKqueue (task, wait.Kqueue, description.Target)
+                                ]
+
+                    count @ target
                 | Some (ParkedSyscall.Poll parked) ->
                     parked.Entries
                     |> List.collect (fun entry ->
@@ -758,7 +838,8 @@ module UnixSystem =
                             | Some description ->
                                 let target =
                                     match description.Target with
-                                    | OpenFileTarget.SocketEventPort _ ->
+                                    | OpenFileTarget.Kqueue _
+                                    | OpenFileTarget.Epoll _ ->
                                         [ UnixSystemDefect.ParkedPollOnSocketEventPort (task, watched) ]
                                     | OpenFileTarget.File _
                                     | OpenFileTarget.Directory _
@@ -789,7 +870,8 @@ module UnixSystem =
                             | OpenFileTarget.File _
                             | OpenFileTarget.Directory _
                             | OpenFileTarget.Pipe _
-                            | OpenFileTarget.SocketEventPort _ -> false
+                            | OpenFileTarget.Kqueue _
+                            | OpenFileTarget.Epoll _ -> false
 
                         if listening then
                             []
@@ -1062,7 +1144,8 @@ module UnixSystem =
                 |> List.choose (fun (id, description) ->
                     match description.Target with
                     | OpenFileTarget.Pipe (pipeId, _) -> Some (id, pipeId)
-                    | OpenFileTarget.SocketEventPort _
+                    | OpenFileTarget.Kqueue _
+                    | OpenFileTarget.Epoll _
                     | OpenFileTarget.File _
                     | OpenFileTarget.Directory _
                     | OpenFileTarget.Socket _ -> None
@@ -1181,6 +1264,7 @@ module UnixSystem =
         dangling
         @ unreferenced
         @ freshness
+        @ foreignObjects
         @ danglingInodes
         @ currentDirectory
         @ danglingConnections
@@ -1818,7 +1902,8 @@ module UnixSystem =
                 match description.Target with
                 | OpenFileTarget.File (inode, _)
                 | OpenFileTarget.Directory (inode, _) -> Some $"description %O{id} onto %O{inode}"
-                | OpenFileTarget.SocketEventPort _
+                | OpenFileTarget.Kqueue _
+                | OpenFileTarget.Epoll _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.Pipe _ -> None
             )

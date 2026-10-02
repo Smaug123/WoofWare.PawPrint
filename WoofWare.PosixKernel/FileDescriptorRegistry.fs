@@ -270,7 +270,7 @@ type OpenFileObject =
     /// Not by path: renaming or deleting the path leaves this description
     /// naming the same file, which is what a real kernel does.
     | File of inode : InodeNumber
-    /// A file on Linux's `anon_inodefs` — today only a socket event port, but
+    /// A file on Linux's `anon_inodefs` — today only an epoll instance, but
     /// `eventfd`, `timerfd` and `signalfd` all live here too.
     ///
     /// **Payload-free on purpose, and it is a `flock` fact rather than an
@@ -291,6 +291,15 @@ type OpenFileObject =
     /// Not the answer for a socket: Linux puts those on `sockfs` with an inode
     /// each, not on `anon_inodefs`. See `Socket`.
     | AnonymousInode
+    /// One Darwin kqueue, identified by the open file description `kqueue()`
+    /// made for it: a kqueue is reached through that description and the
+    /// descriptors `dup(2)` makes for it, and through nothing else.
+    ///
+    /// Not `AnonymousInode`, which is a fact about Linux's `anon_inodefs`.
+    /// Nothing contends on this: measured, `flock` on a kqueue is ENOTSUP for
+    /// every operation, which `UnixDescriptor.flock` refuses to answer
+    /// (`FLockRefusal.DarwinKqueue`) ahead of any contention test.
+    | Kqueue of kqueue : OpenFileDescriptionId
     /// One socket. Carries an identity, and that is a `flock` fact rather than
     /// an aesthetic one — it is exactly where a socket differs from
     /// `AnonymousInode` above. Measured on Linux 6.18.5: two `socket(2)` calls
@@ -454,8 +463,8 @@ type EpollRegistration =
         RegisteredAt : int64
     }
 
-/// Everything one socket event port holds: its interest table, and the ready
-/// list `epoll_wait` drains.
+/// Everything one epoll instance holds: its interest table, and the ready list
+/// `epoll_wait` drains.
 type SocketEventPortState =
     {
         /// The interest table, keyed exactly as epoll keys a registration:
@@ -470,6 +479,23 @@ type SocketEventPortState =
         /// batch truncation spared. Always a subset of `Registrations`, with
         /// no duplicates (`checkInvariants` states both).
         Ready : (int * OpenFileDescriptionId) list
+    }
+
+/// Everything one Darwin kqueue holds.
+///
+/// It holds no filter registrations ("knotes"): `UnixKqueue.kevent` refuses
+/// every change, so a kqueue never has anything to report.
+type KqueueState =
+    {
+        /// Whether a `close(2)` has ended a `kevent` wait on this kqueue, which
+        /// Darwin calls draining it.
+        ///
+        /// Closing a descriptor while a task is asleep in `kevent` through that
+        /// same descriptor ends that task's wait, and every other task's wait on
+        /// the kqueue, with `EBADF`; and from then on every wait on the kqueue
+        /// through a descriptor that survived the close is `EBADF` at once.
+        /// Closing a descriptor no waiter entered through changes nothing.
+        Drained : bool
     }
 
 /// What an open file description refers to, together with the state that only
@@ -501,25 +527,29 @@ type OpenFileTarget =
     /// Always opened for reading only: a directory cannot be opened for writing
     /// on either kernel.
     | Directory of inode : InodeNumber * position : DirectoryPosition
-    /// An epoll instance (Linux) or kqueue (Darwin), handed out by
-    /// `FileDescriptorRegistry.createSocketEventPort` and destroyed when its
-    /// last reference goes, as any open file is, which is why the port is a
-    /// descriptor at all rather than a separate kernel table.
+    /// A Linux epoll instance, handed out by `UnixPoll.epollCreate1` and
+    /// destroyed when its last reference goes, as any open file is, which is
+    /// why the instance is a descriptor at all rather than a separate kernel
+    /// table.
     ///
-    /// No offset, because neither kernel maintains one for it: measured,
-    /// Linux's `lseek` on an epoll descriptor is `noop_llseek`, returning 0 for
-    /// any whence in 0..4 and any offset (`-1` and `INT64_MAX` alike), while
-    /// Darwin refuses with `ESPIPE`. So there is no position for a caller to
-    /// move or read.
+    /// No offset, because Linux maintains none for it: measured, its `lseek`
+    /// on an epoll descriptor is `noop_llseek`, returning 0 for any whence in
+    /// 0..4 and any offset (`-1` and `INT64_MAX` alike). So there is no
+    /// position for a caller to move or read.
     ///
-    /// Carries the port's interest table and ready list. The registration
+    /// Carries the instance's interest table and ready list. The registration
     /// key is the **(fd number, open file description) pair** of the target;
     /// both halves are measured — an ADD through a `dup` of a registered
     /// target succeeds and creates a second registration, while an ADD
-    /// through a `dup` of the *port* answers EEXIST for an already-registered
-    /// target, because the `dup` pair shares this description and so this
-    /// table.
-    | SocketEventPort of state : SocketEventPortState
+    /// through a `dup` of the *instance* answers EEXIST for an
+    /// already-registered target, because the `dup` pair shares this
+    /// description and so this table.
+    | Epoll of state : SocketEventPortState
+    /// A Darwin kqueue, handed out by `UnixKqueue.kqueue` and destroyed when
+    /// its last reference goes, as any open file is.
+    ///
+    /// No offset: measured, Darwin's `lseek` on a kqueue is `ESPIPE`.
+    | Kqueue of state : KqueueState
     /// A socket, handed out by `UnixSocket.socket`.
     ///
     /// No offset, because neither kernel maintains one: measured, `lseek` on a
@@ -628,22 +658,26 @@ type OpenFileDescription =
 
 [<RequireQualifiedAccess>]
 module OpenFileDescription =
-    /// Which kernel object this description names — its *identity*, with the
-    /// per-description position discarded.
+    /// Which kernel object the description `id` names — its *identity*, with
+    /// the per-description position discarded. `description` is what `id`
+    /// names in the table.
     ///
     /// `flock(2)` contention is decided on this: two descriptions contend
     /// exactly when they name the same object, whatever their offsets. Callers
     /// asking "are these the same file?" must compare these rather than the
     /// descriptions.
     ///
-    let object (description : OpenFileDescription) : OpenFileObject =
+    let object (id : OpenFileDescriptionId) (description : OpenFileDescription) : OpenFileObject =
         match description.Target with
         | OpenFileTarget.File (inode, _)
         | OpenFileTarget.Directory (inode, _) -> OpenFileObject.File inode
-        // Every socket event port collapses to one object, because on Linux
-        // every anon-inode file shares one inode and so they all contend under
+        // Every epoll instance collapses to one object, because on Linux every
+        // anon-inode file shares one inode and so they all contend under
         // `flock`. See `OpenFileObject.AnonymousInode`.
-        | OpenFileTarget.SocketEventPort _ -> OpenFileObject.AnonymousInode
+        | OpenFileTarget.Epoll _ -> OpenFileObject.AnonymousInode
+        // A kqueue is reached only through the description `kqueue()` made
+        // for it. See `OpenFileObject.Kqueue`.
+        | OpenFileTarget.Kqueue _ -> OpenFileObject.Kqueue id
         // Each socket is its own object, unlike the ports above: measured, two
         // sockets do not contend under `flock`. See `OpenFileObject.Socket`.
         | OpenFileTarget.Socket socketId -> OpenFileObject.Socket socketId
@@ -848,9 +882,9 @@ module FileDescriptorRegistry =
     /// The description `fd` names *and* its identity, if `fd` is live.
     ///
     /// For callers that need both, which is otherwise two lookups whose results
-    /// could not be shown to agree: `UnixPoll.admitSocketWait` keys the waiter
-    /// it parks on the identity, while which answer it gives at all depends on
-    /// the target.
+    /// could not be shown to agree: `UnixPoll.epollWait` keys the waiter it
+    /// parks on the identity, while which answer it gives at all depends on the
+    /// target.
     let tryFindWithId
         (fd : int)
         (registry : FileDescriptorRegistry)
@@ -875,7 +909,8 @@ module FileDescriptorRegistry =
     /// What `fd` refers to, if `fd` is live. Discards the offset, so it is the
     /// wrong lookup for `read(2)` and `lseek(2)`; they want `tryFindTarget`.
     let tryFindObject (fd : int) (registry : FileDescriptorRegistry) : OpenFileObject option =
-        tryFind fd registry |> Option.map OpenFileDescription.object
+        tryFindWithId fd registry
+        |> Option.map (fun (id, description) -> OpenFileDescription.object id description)
 
     /// What `fd` refers to and where in it, if `fd` is live. For the callers
     /// that move or consume the file offset.
@@ -922,30 +957,32 @@ module FileDescriptorRegistry =
                 }
             )
 
-    /// Remove `id` from the table, and from every socket event port's interest
+    /// Remove `id` from the table, and from every epoll instance's interest
     /// table. `id` must be live and no descriptor may name it.
     let private destroy (id : OpenFileDescriptionId) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =
-        // A destroyed description also vanishes from every socket event
-        // port's interest table, which is what Linux does at file-release
-        // time (`eventpoll_release`). No syscall can tell the difference —
-        // the dead pair's key can never be probed again, since no fd names
-        // the description — but the readiness wake must not deliver from a
-        // corpse, so the tables stay truthful now and `checkInvariants`
-        // states it.
+        // A destroyed description also vanishes from every epoll instance's
+        // interest table, which is what Linux does at file-release time
+        // (`eventpoll_release`). No syscall can tell the difference — the dead
+        // pair's key can never be probed again, since no fd names the
+        // description — but the readiness wake must not deliver from a corpse,
+        // so the tables stay truthful now and `checkInvariants` states it. A
+        // kqueue holds no registrations (`KqueueState`), so it has nothing to
+        // forget.
         let descriptions =
             Map.remove id registry.Descriptions
             |> Map.map (fun _ description ->
                 match description.Target with
-                | OpenFileTarget.SocketEventPort portState ->
+                | OpenFileTarget.Epoll portState ->
                     { description with
                         Target =
-                            OpenFileTarget.SocketEventPort
+                            OpenFileTarget.Epoll
                                 {
                                     Registrations =
                                         portState.Registrations |> Map.filter (fun (_, target) _ -> target <> id)
                                     Ready = portState.Ready |> List.filter (fun (_, target) -> target <> id)
                                 }
                     }
+                | OpenFileTarget.Kqueue _
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
@@ -1109,23 +1146,13 @@ module FileDescriptorRegistry =
             NextId = OpenFileDescriptionId (raw + 1L)
         }
 
-    /// Mirrors `epoll_create1(EPOLL_CLOEXEC)` (Linux) / `kqueue()` (Darwin):
-    /// allocate a fresh open file description naming a new, empty socket event
-    /// port, and the lowest non-negative descriptor not in use to point at it.
-    ///
-    /// Fresh, like `openFile` and unlike `dup`: two `epoll_create1` calls give
-    /// two instances, which is what makes them separately identifiable (see
-    /// `OpenFileObject.SocketEventPort`).
-    ///
-    /// The access mode is `ReadWrite`, and that is load-bearing rather than
-    /// cosmetic: `UnixReadWrite.read` checks `FileAccessMode.permitsRead` before
-    /// it looks at the target kind and answers `EBADF` if it fails, whereas a
-    /// real port answers `EINVAL` (Linux) or `ENXIO` (Darwin) — measured. Both
-    /// kernels open the underlying anonymous file `O_RDWR`.
-    ///
-    /// Total, like `openFile` and for the same reason: this library models no
-    /// descriptor limit, so there is no `EMFILE`/`ENFILE` to report.
-    let createSocketEventPort (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
+    /// A fresh, blocking, read-write open file description naming `target`,
+    /// and the lowest non-negative descriptor not in use to point at it.
+    let private createAnonymous
+        (target : OpenFileTarget)
+        (registry : FileDescriptorRegistry)
+        : int * FileDescriptorRegistry
+        =
         let id = registry.NextId
         let (OpenFileDescriptionId raw) = id
         let fd = lowestFree registry.Fds
@@ -1137,14 +1164,7 @@ module FileDescriptorRegistry =
                 Map.add
                     id
                     {
-                        // Fresh instance, empty interest table: nothing is
-                        // registered with a port at creation.
-                        Target =
-                            OpenFileTarget.SocketEventPort
-                                {
-                                    Registrations = Map.empty
-                                    Ready = []
-                                }
+                        Target = target
                         AccessMode = FileAccessMode.ReadWrite
                         NonBlocking = false
                         Flock = None
@@ -1152,6 +1172,48 @@ module FileDescriptorRegistry =
                     registry.Descriptions
             NextId = OpenFileDescriptionId (raw + 1L)
         }
+
+    /// Mirrors `epoll_create1(2)`: allocate a fresh open file description
+    /// naming a new epoll instance with nothing registered, and the lowest
+    /// non-negative descriptor not in use to point at it.
+    ///
+    /// Fresh, like `openFile` and unlike `dup`: two `epoll_create1` calls give
+    /// two instances, which is what makes them separately identifiable.
+    ///
+    /// The access mode is `ReadWrite`, and that is load-bearing rather than
+    /// cosmetic: `UnixReadWrite.read` checks `FileAccessMode.permitsRead` before
+    /// it looks at the target kind and answers `EBADF` if it fails, whereas a
+    /// real instance answers `EINVAL` — measured. Linux opens the underlying
+    /// anonymous file `O_RDWR`.
+    ///
+    /// Total, like `openFile` and for the same reason: this library models no
+    /// descriptor limit, so there is no `EMFILE`/`ENFILE` to report.
+    let createEpoll (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
+        createAnonymous
+            (OpenFileTarget.Epoll
+                {
+                    Registrations = Map.empty
+                    Ready = []
+                })
+            registry
+
+    /// Mirrors `kqueue(2)`: allocate a fresh open file description naming a
+    /// new kqueue, and the lowest non-negative descriptor not in use to point
+    /// at it.
+    ///
+    /// The access mode is `ReadWrite`, for the reason `createEpoll`'s is: a
+    /// real kqueue answers `ENXIO` to `read(2)` and `write(2)`, never `EBADF`
+    /// (measured). Measured, Darwin's kqueue is `O_RDWR`, not `O_NONBLOCK`, and
+    /// `FD_CLOEXEC`, a per-descriptor flag this library does not model.
+    ///
+    /// Total, like `createEpoll`.
+    let createKqueue (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
+        createAnonymous
+            (OpenFileTarget.Kqueue
+                {
+                    Drained = false
+                })
+            registry
 
     /// Allocate a fresh open file description naming the socket `socketId`,
     /// and the lowest non-negative descriptor not in use to point at it. The
@@ -1166,13 +1228,13 @@ module FileDescriptorRegistry =
     /// should call this.
     ///
     /// The access mode is `ReadWrite`, and that is load-bearing rather than
-    /// cosmetic, for the reason `createSocketEventPort`'s is:
+    /// cosmetic, for the reason `createEpoll`'s is:
     /// `UnixReadWrite.read` and `UnixReadWrite.write` test the access mode before
     /// they look at the target, so anything narrower would answer EBADF where a
     /// real socket gives its own answer instead (measured on one with no peer:
     /// ENOTCONN, EINVAL, EPIPE, EDESTADDRREQ, EAGAIN or a block, never EBADF).
     ///
-    /// Total, like `openFile` and `createSocketEventPort`: this library models no
+    /// Total, like `openFile` and `createEpoll`: this library models no
     /// descriptor limit, so there is no `EMFILE`/`ENFILE` to report, and no
     /// resource a socket could exhaust.
     let createSocket (socketId : SocketId) (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
@@ -1279,7 +1341,7 @@ module FileDescriptorRegistry =
             otherId <> requester
             // Identity, not the whole description: two descriptions on one
             // file contend however far apart their offsets are.
-            && OpenFileDescription.object other = object
+            && OpenFileDescription.object otherId other = object
             && (
                 match other.Flock with
                 | None -> false
@@ -1331,7 +1393,7 @@ module FileDescriptorRegistry =
         | FlockRequest.Acquire mode ->
 
         let blocked =
-            flockConflicts (OpenFileDescription.object description) id mode registry
+            flockConflicts (OpenFileDescription.object id description) id mode registry
 
         if blocked then
             // The old lock is gone either way — see the note on `flock`.
@@ -1421,9 +1483,12 @@ module FileDescriptorRegistry =
                     $"file descriptor %d{fd} names open file description %O{id}, which is not present in the table (this is a bug in this library: every descriptor names a description in the table)"
 
         match description.Target with
-        | OpenFileTarget.SocketEventPort _ ->
+        | OpenFileTarget.Epoll _ ->
             failwith
-                $"setOffset: fd %d{fd} names a socket event port, which holds no file offset on either platform — Linux's lseek on one is noop_llseek and Darwin's is ESPIPE (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have answered without moving a position)."
+                $"setOffset: fd %d{fd} names an epoll instance, which holds no file offset — Linux's lseek on one is noop_llseek (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have answered without moving a position)."
+        | OpenFileTarget.Kqueue _ ->
+            failwith
+                $"setOffset: fd %d{fd} names a kqueue, which holds no file offset — Darwin's lseek on one is ESPIPE (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have answered ESPIPE)."
         | OpenFileTarget.Socket socketId ->
             failwith
                 $"setOffset: fd %d{fd} names socket %O{socketId}, which holds no file offset on either platform — `lseek` on a socket is ESPIPE on both (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have answered ESPIPE)."
@@ -1483,7 +1548,8 @@ module FileDescriptorRegistry =
                         registry.Descriptions
             }
         | OpenFileTarget.File _
-        | OpenFileTarget.SocketEventPort _
+        | OpenFileTarget.Kqueue _
+        | OpenFileTarget.Epoll _
         | OpenFileTarget.Socket _
         | OpenFileTarget.Pipe _ ->
             failwith
@@ -1495,7 +1561,8 @@ module FileDescriptorRegistry =
     ///
     /// Like `setOffset`, *partial* in the descriptor: the caller
     /// (`UnixSocket.setNonBlocking`) has already answered `EBADF` for
-    /// a dead fd. Every target stores the flag, a socket event port included:
+    /// a dead fd. Every target stores the flag, an epoll instance and a kqueue
+    /// included:
     /// measured on both flavours, `F_SETFL` genuinely toggles the bit there
     /// (even on Darwin, where the call also reports ENOTTY — the caller's
     /// business, not this store's), and no modelled wait consults it, because
@@ -1525,10 +1592,35 @@ module FileDescriptorRegistry =
                     registry.Descriptions
         }
 
-    /// Rewrite the state of the socket event port `portId` names. Loudly
-    /// partial on a dead or non-port description: every caller resolved it as
-    /// a port moments ago, so either means it wrote against a different table
-    /// than the one it read. `operation` names the caller for that message.
+    /// Mark the kqueue the open file description `kqueue` names as drained
+    /// (see `KqueueState.Drained`). Loudly partial on a dead or non-kqueue
+    /// description: the caller has just resolved it as a kqueue.
+    let drainKqueue (kqueue : OpenFileDescriptionId) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =
+        match Map.tryFind kqueue registry.Descriptions with
+        | Some ({
+                    Target = OpenFileTarget.Kqueue state
+                } as description) ->
+            { registry with
+                Descriptions =
+                    Map.add
+                        kqueue
+                        { description with
+                            Target =
+                                OpenFileTarget.Kqueue
+                                    { state with
+                                        Drained = true
+                                    }
+                        }
+                        registry.Descriptions
+            }
+        | other ->
+            failwith
+                $"drainKqueue: %O{kqueue} names %A{other} rather than a live kqueue; the caller resolved it as one moments ago (this is a bug in the caller of FileDescriptorRegistry.drainKqueue)."
+
+    /// Rewrite the state of the epoll instance `portId` names. Loudly partial
+    /// on a dead or non-epoll description: every caller resolved it as an
+    /// epoll instance moments ago, so either means it wrote against a different
+    /// table than the one it read. `operation` names the caller for that message.
     let private mapSocketEventPort
         (operation : string)
         (portId : OpenFileDescriptionId)
@@ -1543,20 +1635,21 @@ module FileDescriptorRegistry =
         | Some description ->
 
         match description.Target with
+        | OpenFileTarget.Kqueue _
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.Socket _
         | OpenFileTarget.Pipe _ ->
             failwith
-                $"%s{operation}: %O{portId} is not a socket event port; the caller resolved it as one moments ago, so this is a bug in the caller of FileDescriptorRegistry.%s{operation}."
-        | OpenFileTarget.SocketEventPort portState ->
+                $"%s{operation}: %O{portId} is not an epoll instance; the caller resolved it as one moments ago, so this is a bug in the caller of FileDescriptorRegistry.%s{operation}."
+        | OpenFileTarget.Epoll portState ->
 
         { registry with
             Descriptions =
                 Map.add
                     portId
                     { description with
-                        Target = OpenFileTarget.SocketEventPort (f portState)
+                        Target = OpenFileTarget.Epoll (f portState)
                     }
                     registry.Descriptions
         }
@@ -1671,13 +1764,14 @@ module FileDescriptorRegistry =
         | Some description ->
 
         match description.Target with
+        | OpenFileTarget.Kqueue _
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.Socket _
         | OpenFileTarget.Pipe _ ->
             failwith
-                $"appendSocketEventReady: %O{portId} is not a socket event port; the caller resolved it as one moments ago, so this is a bug in the caller of FileDescriptorRegistry.appendSocketEventReady."
-        | OpenFileTarget.SocketEventPort portState ->
+                $"appendSocketEventReady: %O{portId} is not an epoll instance; the caller resolved it as one moments ago, so this is a bug in the caller of FileDescriptorRegistry.appendSocketEventReady."
+        | OpenFileTarget.Epoll portState ->
 
         if not (Map.containsKey key portState.Registrations) then
             failwith
@@ -1693,7 +1787,7 @@ module FileDescriptorRegistry =
                     portId
                     { description with
                         Target =
-                            OpenFileTarget.SocketEventPort
+                            OpenFileTarget.Epoll
                                 { portState with
                                     Ready = portState.Ready @ [ key ]
                                 }
@@ -1720,13 +1814,14 @@ module FileDescriptorRegistry =
         | Some description ->
 
         match description.Target with
+        | OpenFileTarget.Kqueue _
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.Socket _
         | OpenFileTarget.Pipe _ ->
             failwith
-                $"setSocketEventReady: %O{portId} is not a socket event port (this is a bug in the caller of FileDescriptorRegistry.setSocketEventReady, which derived the list from a different table)."
-        | OpenFileTarget.SocketEventPort portState ->
+                $"setSocketEventReady: %O{portId} is not an epoll instance (this is a bug in the caller of FileDescriptorRegistry.setSocketEventReady, which derived the list from a different table)."
+        | OpenFileTarget.Epoll portState ->
 
         for key in ready do
             if not (Map.containsKey key portState.Registrations) then
@@ -1743,7 +1838,7 @@ module FileDescriptorRegistry =
                     portId
                     { description with
                         Target =
-                            OpenFileTarget.SocketEventPort
+                            OpenFileTarget.Epoll
                                 { portState with
                                     Ready = ready
                                 }
@@ -1782,11 +1877,12 @@ module FileDescriptorRegistry =
             registry.Descriptions
             |> Map.map (fun _ description ->
                 match description.Target with
+                | OpenFileTarget.Kqueue _
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.Pipe _ -> description
-                | OpenFileTarget.SocketEventPort portState ->
+                | OpenFileTarget.Epoll portState ->
                     let entering =
                         portState.Registrations
                         |> Map.toList
@@ -1807,7 +1903,7 @@ module FileDescriptorRegistry =
                     | entering ->
                         { description with
                             Target =
-                                OpenFileTarget.SocketEventPort
+                                OpenFileTarget.Epoll
                                     { portState with
                                         Ready = portState.Ready @ entering
                                     }
@@ -1844,7 +1940,8 @@ module FileDescriptorRegistry =
             |> Map.toList
             |> List.choose (fun (id, description) ->
                 match description.Target with
-                | OpenFileTarget.SocketEventPort _
+                | OpenFileTarget.Kqueue _
+                | OpenFileTarget.Epoll _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.Pipe _ -> None
                 | OpenFileTarget.File (_, offset) ->
@@ -1868,7 +1965,8 @@ module FileDescriptorRegistry =
                 | OpenFileTarget.Directory _ when FileAccessMode.permitsWrite description.AccessMode ->
                     Some (FileDescriptorRegistryDefect.WritableDirectory id)
                 | OpenFileTarget.Directory _
-                | OpenFileTarget.SocketEventPort _
+                | OpenFileTarget.Kqueue _
+                | OpenFileTarget.Epoll _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.Pipe _
                 | OpenFileTarget.File _ -> None
@@ -1879,7 +1977,7 @@ module FileDescriptorRegistry =
             |> Map.toList
             |> List.choose (fun (id, description) ->
                 description.Flock
-                |> Option.map (fun mode -> id, OpenFileDescription.object description, mode)
+                |> Option.map (fun mode -> id, OpenFileDescription.object id description, mode)
             )
 
         // Every unordered pair of distinct locked descriptions naming one file.
@@ -1905,7 +2003,8 @@ module FileDescriptorRegistry =
             |> Map.toList
             |> List.choose (fun (id, description) ->
                 match description.Target with
-                | OpenFileTarget.SocketEventPort _
+                | OpenFileTarget.Kqueue _
+                | OpenFileTarget.Epoll _
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Pipe _ -> None
@@ -1932,11 +2031,12 @@ module FileDescriptorRegistry =
             |> Map.toList
             |> List.collect (fun (portId, description) ->
                 match description.Target with
+                | OpenFileTarget.Kqueue _
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.Pipe _ -> []
-                | OpenFileTarget.SocketEventPort portState ->
+                | OpenFileTarget.Epoll portState ->
                     portState.Registrations
                     |> Map.toList
                     |> List.choose (fun ((_, targetId), _) ->
@@ -1952,11 +2052,12 @@ module FileDescriptorRegistry =
             |> Map.toList
             |> List.collect (fun (portId, description) ->
                 match description.Target with
+                | OpenFileTarget.Kqueue _
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.Pipe _ -> []
-                | OpenFileTarget.SocketEventPort portState ->
+                | OpenFileTarget.Epoll portState ->
                     let unregistered =
                         portState.Ready
                         |> List.choose (fun (fd, targetId as key) ->

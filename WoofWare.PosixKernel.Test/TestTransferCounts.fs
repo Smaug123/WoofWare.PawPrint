@@ -665,7 +665,13 @@ module TestTransferCounts =
                     }
             }
         | "port" ->
-            let fd, registry = FileDescriptorRegistry.createSocketEventPort registry
+            // The flavour's own: an epoll instance, or a kqueue.
+            let create =
+                match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+                | SimulatedUnixFlavour.Linux -> FileDescriptorRegistry.createEpoll
+                | SimulatedUnixFlavour.Darwin -> FileDescriptorRegistry.createKqueue
+
+            let fd, registry = create registry
 
             fd,
             { system with

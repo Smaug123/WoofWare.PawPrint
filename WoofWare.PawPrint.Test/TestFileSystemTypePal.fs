@@ -113,6 +113,10 @@ module TestFileSystemTypePal =
             None
         ]
 
+    /// The objects only Darwin has, which a Linux machine is never asked about.
+    let private darwinOnlyTargets : OpenFileObject option list =
+        [ Some (OpenFileObject.Kqueue (OpenFileDescriptionId 3L)) ]
+
     /// What `SystemNative_GetFileSystemType` returns: the PAL's number, or 0 for
     /// any failure.
     let private shimAnswer (answer : FileSystemStatisticsAnswer) : uint32 =
@@ -167,9 +171,16 @@ module TestFileSystemTypePal =
             | Some (OpenFileObject.Pipe _), SimulatedUnixFlavour.Linux -> 0x50495045u
             | Some (OpenFileObject.Socket _), SimulatedUnixFlavour.Linux -> 0x534F434Bu
             | Some OpenFileObject.AnonymousInode, SimulatedUnixFlavour.Linux -> 0x09041934u
+            | Some (OpenFileObject.Kqueue _), SimulatedUnixFlavour.Linux ->
+                failwith "a Linux machine holds no kqueue, so none is asked about"
 
         for flavour, fsType in everyCoherentPair do
-            for target in everyTarget do
+            let targets =
+                match flavour with
+                | SimulatedUnixFlavour.Linux -> everyTarget
+                | SimulatedUnixFlavour.Darwin -> everyTarget @ darwinOnlyTargets
+
+            for target in targets do
                 modelAnswer flavour fsType target
                 |> shimAnswer
                 |> shouldEqual (expected flavour fsType target)

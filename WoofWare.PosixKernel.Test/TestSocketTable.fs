@@ -224,7 +224,7 @@ module TestSocketTable =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp initialSystem
 
         let port, registry =
-            FileDescriptorRegistry.createSocketEventPort kernel.Process.FileDescriptors
+            FileDescriptorRegistry.createEpoll kernel.Process.FileDescriptors
 
         let kernel =
             { kernel with
@@ -517,8 +517,7 @@ module TestSocketTable =
                             | Some (InodeContent.Symlink _)
                             | None -> ()
                 | 6 ->
-                    let _, registry =
-                        FileDescriptorRegistry.createSocketEventPort kernel.Process.FileDescriptors
+                    let _, registry = FileDescriptorRegistry.createEpoll kernel.Process.FileDescriptors
 
                     kernel <-
                         { kernel with
@@ -1048,7 +1047,7 @@ module TestSocketTable =
                     4, OpenFileDescriptionId 11L, OpenFileTarget.Socket (SocketId 1L)
                     9,
                     OpenFileDescriptionId 50L,
-                    OpenFileTarget.SocketEventPort
+                    OpenFileTarget.Epoll
                         {
                             Registrations = Map.ofList [ (3, OpenFileDescriptionId 10L), registration ]
                             Ready = []

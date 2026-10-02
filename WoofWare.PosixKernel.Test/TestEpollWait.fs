@@ -170,7 +170,7 @@ module TestEpollWait =
 
         let alreadyReady =
             match FileDescriptorRegistry.tryFindTarget port system.Process.FileDescriptors with
-            | Some (OpenFileTarget.SocketEventPort state) -> List.contains key state.Ready
+            | Some (OpenFileTarget.Epoll state) -> List.contains key state.Ready
             | other -> failwith $"expected the port, got %O{other}"
 
         if alreadyReady then
@@ -187,7 +187,7 @@ module TestEpollWait =
 
     let private pendingEntries (system : UnixSystem<int, string>) : int =
         match FileDescriptorRegistry.tryFindTarget port system.Process.FileDescriptors with
-        | Some (OpenFileTarget.SocketEventPort state) -> List.length state.Ready
+        | Some (OpenFileTarget.Epoll state) -> List.length state.Ready
         | other -> failwith $"expected the port, got %O{other}"
 
     let private after (nanoseconds : int64) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
@@ -263,7 +263,7 @@ module TestEpollWait =
     let private wild : UserBuffer = UserBuffer.Unmapped System.UInt64.MaxValue
 
     [<Test>]
-    let ``a non-negative count is screened exactly as the socket wait admission screens it`` () : unit =
+    let ``every count is screened by Linux's ladder: descriptor, count, buffer, kind`` () : unit =
         // The descriptors: stdin (not a port), the listener (a socket), the port, and one
         // that is not open.
         let descriptors = Gen.elements [ 0 ; listener ; port ; 99 ]
@@ -285,15 +285,28 @@ module TestEpollWait =
 
         let buffers = Gen.elements [ UserBuffer.Mapped ; wild ]
 
-        let property ((fd : int, maxEvents : int), (buffer : UserBuffer, milliseconds : int)) : unit =
-            let expected = UnixPoll.admitSocketWait fd maxEvents buffer idle
+        // Measured (`epoll-wait.c`, section G, and TestSocketWait's rows): EBADF for a
+        // descriptor that is not open, then EINVAL for a count outside 1..EP_MAX_EVENTS
+        // (178956970 on x86-64), then EFAULT for a range reaching the kernel half, then
+        // EINVAL for anything but an epoll instance.
+        let oracle (fd : int) (maxEvents : int) (buffer : UserBuffer) : UnixError option =
+            if fd = 99 then
+                Some UnixError.EBADF
+            elif maxEvents <= 0 || maxEvents > 178956970 then
+                Some UnixError.EINVAL
+            elif buffer = wild then
+                Some UnixError.EFAULT
+            elif fd <> port then
+                Some UnixError.EINVAL
+            else
+                None
 
-            match expected, UnixPoll.epollWait task fd maxEvents buffer milliseconds idle with
-            | Ok (SocketWaitAdmission.Failed error), actual ->
-                actual |> shouldEqual (Ok (EpollWaitOutcome.Failed error, idle))
-            | Ok (SocketWaitAdmission.DeliverOrWait _), Ok (EpollWaitOutcome.Failed error, _) ->
-                failwith $"the admission let the call through, and epollWait failed it with %O{error}"
-            | Ok (SocketWaitAdmission.DeliverOrWait _), Ok _ -> ()
+        let property ((fd : int, maxEvents : int), (buffer : UserBuffer, milliseconds : int)) : unit =
+            match oracle fd maxEvents buffer, UnixPoll.epollWait task fd maxEvents buffer milliseconds idle with
+            | Some error, actual -> actual |> shouldEqual (Ok (EpollWaitOutcome.Failed error, idle))
+            | None, Ok (EpollWaitOutcome.Failed error, _) ->
+                failwith $"the ladder let the call through, and epollWait failed it with %O{error}"
+            | None, Ok _ -> ()
             | other -> failwith $"unexpected pair %A{other}"
 
         Check.One (

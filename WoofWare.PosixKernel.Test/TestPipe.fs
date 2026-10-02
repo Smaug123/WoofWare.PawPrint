@@ -1291,8 +1291,9 @@ module TestPipe =
             | Ok (EpollCtlAnswer.Failed EpollCtlError.NotRegistered, _) -> ()
             | other -> failwith $"%A{other}"
 
-            UnixPoll.admitSocketWait fd 1 UserBuffer.Mapped system
-            |> shouldEqual (Ok (SocketWaitAdmission.Failed UnixError.EINVAL))
+            match UnixPoll.epollWait 1 fd 1 UserBuffer.Mapped 0 (Tasks.ensure 1 system) with
+            | Ok (EpollWaitOutcome.Failed UnixError.EINVAL, _) -> ()
+            | other -> failwith $"%A{other}"
 
     // --- the table ---
 

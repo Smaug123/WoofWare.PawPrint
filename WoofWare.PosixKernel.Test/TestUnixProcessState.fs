@@ -189,7 +189,7 @@ module TestUnixProcessState =
         let _sock, withSocket =
             FileDescriptorRegistry.createSocket (SocketId 1L) withDirectory
 
-        let _portFd, registry = FileDescriptorRegistry.createSocketEventPort withSocket
+        let _portFd, registry = FileDescriptorRegistry.createEpoll withSocket
 
         let proc =
             { empty with
@@ -208,7 +208,7 @@ module TestUnixProcessState =
             FileDescriptorRegistry.createSocket watched LaunchedStreams.registry
 
         let _otherFd, registry = FileDescriptorRegistry.createSocket other registry
-        let portFd, registry = FileDescriptorRegistry.createSocketEventPort registry
+        let portFd, registry = FileDescriptorRegistry.createEpoll registry
 
         let proc =
             { empty with
@@ -229,7 +229,7 @@ module TestUnixProcessState =
         let watchedFd, registry =
             FileDescriptorRegistry.createSocket watched LaunchedStreams.registry
 
-        let portFd, registry = FileDescriptorRegistry.createSocketEventPort registry
+        let portFd, registry = FileDescriptorRegistry.createEpoll registry
 
         let idOf (fd : int) : OpenFileDescriptionId =
             match FileDescriptorRegistry.tryFindId fd registry with
@@ -244,7 +244,7 @@ module TestUnixProcessState =
             |> Map.toSeq
             |> Seq.collect (fun (_, description) ->
                 match description.Target with
-                | OpenFileTarget.SocketEventPort portState -> portState.Ready
+                | OpenFileTarget.Epoll portState -> portState.Ready
                 | _ -> []
             )
             |> List.ofSeq

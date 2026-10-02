@@ -41,9 +41,9 @@ module TestUnixWait =
             UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let lockerFd, registry =
-            FileDescriptorRegistry.createSocketEventPort system.Process.FileDescriptors
+            FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
 
-        let blockedFd, registry = FileDescriptorRegistry.createSocketEventPort registry
+        let blockedFd, registry = FileDescriptorRegistry.createEpoll registry
 
         let registry =
             match FileDescriptorRegistry.flock lockerFd (FlockRequest.Acquire FlockMode.Exclusive) registry with
@@ -130,8 +130,7 @@ module TestUnixWait =
                 Machine = UnixMachineState.advanceClock nanoseconds system.Machine
             }
         | Op.CreatePort ->
-            let _, registry =
-                FileDescriptorRegistry.createSocketEventPort system.Process.FileDescriptors
+            let _, registry = FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
 
             withRegistry registry system
         | Op.Register task ->
