@@ -1,0 +1,153 @@
+base gid=20, w gid=0, egid=20, euid=501
+  MODE staff-dir src=0000 (asked 0000): EACCES
+  MODE staff-dir src=0001 (asked 0001): EACCES
+  MODE staff-dir src=0002 (asked 0002): EACCES
+  MODE staff-dir src=0003 (asked 0003): EACCES
+  MODE staff-dir keep-all mismatch src=2400 dst=0400
+  MODE staff-dir drop-suid mismatch src=2400 dst=0400
+  MODE staff-dir keep-all mismatch src=2401 dst=0401
+  MODE staff-dir drop-suid mismatch src=2401 dst=0401
+  MODE staff-dir keep-all mismatch src=2402 dst=0402
+  MODE staff-dir drop-suid mismatch src=2402 dst=0402
+  MODE staff-dir keep-all mismatch src=2403 dst=0403
+  MODE staff-dir drop-suid mismatch src=2403 dst=0403
+MODE staff-dir: 4096 sources, 2048 refused; mismatches: keep-all 1536, drop-S_ISUID 1024, drop-both 0
+  MODE wheel-dir src=0000 (asked 0000): EACCES
+  MODE wheel-dir src=0001 (asked 0001): EACCES
+  MODE wheel-dir src=0002 (asked 0002): EACCES
+  MODE wheel-dir src=0003 (asked 0003): EACCES
+  MODE wheel-dir keep-all mismatch src=4400 dst=0400
+  MODE wheel-dir keep-all mismatch src=4401 dst=0401
+  MODE wheel-dir keep-all mismatch src=4402 dst=0402
+  MODE wheel-dir keep-all mismatch src=4403 dst=0403
+MODE wheel-dir: 4096 sources, 2048 refused; mismatches: keep-all 1024, drop-S_ISUID 0, drop-both 0
+META same-group directory
+  src before: type=file mode=0640 uid=501 gid=20 nlink=1 size=5 a=1000000000.111111111 m=900000000.222222222 c=1790888797.123477349 b=900000000.222222222 ino=701246293
+  clonefile: ok
+  src after: type=file mode=0640 uid=501 gid=20 nlink=1 size=5 a=1000000000.111111111 m=900000000.222222222 c=1790888797.123477349 b=900000000.222222222 ino=701246293
+  dst: type=file mode=0640 uid=501 gid=20 nlink=1 size=5 a=1000000000.111111111 m=900000000.222222222 c=1790888798.128611467 b=900000000.222222222 ino=701246423
+META clone into a wheel directory of a staff-group source
+  clonefile: ok
+  dst: type=file mode=0640 uid=501 gid=0 nlink=1 size=5 a=1000000000.111111111 m=900000000.222222222 c=1790888798.128714884 b=900000000.222222222 ino=701246424
+META clone of a wheel-group source into a staff directory
+  src: type=file mode=0644 uid=501 gid=0 nlink=1 size=5 a=1790888798.128764843 m=1790888798.128801926 c=1790888798.128811551 b=1790888798.128764843 ino=701246425
+  clonefile: ok
+  dst: type=file mode=0644 uid=501 gid=20 nlink=1 size=5 a=1790888798.128764843 m=1790888798.128801926 c=1790888798.129102637 b=1790888798.128764843 ino=701246426
+META umask 0777
+  clonefile: ok
+  dst: type=file mode=0640 uid=501 gid=20 nlink=1 size=5 a=1000000000.111111111 m=900000000.222222222 c=1790888798.129175096 b=900000000.222222222 ino=701246427
+META empty source
+  clonefile: ok
+  src: type=file mode=0600 uid=501 gid=20 nlink=1 size=0 a=1790888798.129218721 m=1790888798.129218721 c=1790888798.129237179 b=1790888798.129218721 ino=701246428
+  dst: type=file mode=0600 uid=501 gid=20 nlink=1 size=0 a=1790888798.129218721 m=1790888798.129218721 c=1790888798.129273305 b=1790888798.129218721 ino=701246429
+FCOPYFILE onto an existing file
+  src: type=file mode=0640 uid=501 gid=20 nlink=1 size=5 a=1000000000.111111111 m=900000000.222222222 c=1790888798.129441223 b=900000000.222222222 ino=701246431
+  dst before: type=file mode=0606 uid=501 gid=0 nlink=1 size=24 a=1200000000.111111111 m=1300000000.222222222 c=1790888798.129516598 b=1300000000.222222222 ino=701246432
+  fcopyfile: r=0 ok errno-after=ok
+  offsets after: in=5 out=5
+  dst after: type=file mode=0640 uid=501 gid=20 nlink=1 size=5 a=1000000000.111111111 m=900000000.222222222 c=1790888798.129650891 b=900000000.222222222 ino=701246432
+  src: type=file mode=4755 uid=501 gid=20 nlink=1 size=5 a=1000000000.111111111 m=900000000.222222222 c=1790888798.129737683 b=900000000.222222222 ino=701246433
+  dst before: type=file mode=0606 uid=501 gid=0 nlink=1 size=24 a=1200000000.111111111 m=1300000000.222222222 c=1790888798.129811975 b=1300000000.222222222 ino=701246434
+  fcopyfile: r=0 ok errno-after=ok
+  offsets after: in=5 out=5
+  dst after: type=file mode=4755 uid=501 gid=20 nlink=1 size=5 a=1000000000.111111111 m=900000000.222222222 c=1790888798.129941643 b=900000000.222222222 ino=701246434
+  src: type=file mode=2750 uid=501 gid=20 nlink=1 size=5 a=1000000000.111111111 m=900000000.222222222 c=1790888798.130065852 b=900000000.222222222 ino=701246435
+  dst before: type=file mode=0606 uid=501 gid=0 nlink=1 size=24 a=1200000000.111111111 m=1300000000.222222222 c=1790888798.130141770 b=1300000000.222222222 ino=701246436
+  fcopyfile: r=0 ok errno-after=ok
+  offsets after: in=5 out=5
+  dst after: type=file mode=2750 uid=501 gid=20 nlink=1 size=5 a=1000000000.111111111 m=900000000.222222222 c=1790888798.130258354 b=900000000.222222222 ino=701246436
+FCOPYFILE onto a freshly created file
+  fcopyfile: r=0 ok
+  src: type=file mode=0640 uid=501 gid=20 nlink=1 size=5 a=1000000000.111111111 m=900000000.222222222 c=1790888798.130337396 b=900000000.222222222 ino=701246437
+  dst: type=file mode=0640 uid=501 gid=20 nlink=1 size=5 a=1000000000.111111111 m=900000000.222222222 c=1790888798.130434063 b=900000000.222222222 ino=701246438
+FCOPYFILE of an empty source
+  fcopyfile: r=0 ok
+  dst: type=file mode=0600 uid=501 gid=20 nlink=1 size=0 a=1790888798.130475855 m=1790888798.130475855 c=1790888798.130618940 b=1790888798.130475855 ino=701246440
+FCOPYFILE descriptor modes
+  out read-only: r=-1 EBADF
+  dst: type=file mode=0644 uid=501 gid=20 nlink=1 size=8 a=1790888798.130721982 m=1790888798.130737857 c=1790888798.130768899 b=1790888798.130721982 ino=701246442
+  in write-only: r=-1 EBADF
+  dst: type=file mode=0644 uid=501 gid=20 nlink=1 size=8 a=1790888798.130721982 m=1790888798.130737857 c=1790888798.132064742 b=1790888798.130721982 ino=701246442
+ERR new name                                         clonefile(f, new, 0x4) = ok
+  dst: type=file mode=0644 uid=501 gid=20 nlink=1 size=5 a=1790888798.132194201 m=1790888798.132240160 c=1790888798.134784054 b=1790888798.132194201 ino=701246462
+ERR dst exists (file)                                clonefile(f, g, 0x4) = EEXIST
+ERR dst exists (dir)                                 clonefile(f, e, 0x4) = EEXIST
+ERR dst exists (dir/)                                clonefile(f, e/, 0x4) = EEXIST
+ERR dst exists (link to file)                        clonefile(f, lf, 0x4) = EEXIST
+ERR dst exists (link to dir)                         clonefile(f, ld, 0x4) = EEXIST
+ERR dst exists (dangling link)                       clonefile(f, dang, 0x4) = ok
+  dst: type=link mode=0755 uid=501 gid=20 nlink=1 size=2 a=1790888798.240288082 m=1790888798.240288082 c=1790888798.240288082 b=1790888798.240288082 ino=701246569
+  nx: type=file mode=0644 uid=501 gid=20 nlink=1 size=5 a=1790888798.239819953 m=1790888798.239851578 c=1790888798.240698543 b=1790888798.239819953 ino=701246578
+  d/nx: ENOENT
+  dang: type=link mode=0755 uid=501 gid=20 nlink=1 size=2 a=1790888798.240288082 m=1790888798.240288082 c=1790888798.240288082 b=1790888798.240288082 ino=701246569
+ERR dst exists (dangling link into d)                clonefile(f, dangd, 0x4) = ok
+  dst: type=link mode=0755 uid=501 gid=20 nlink=1 size=4 a=1790888798.254119809 m=1790888798.254119809 c=1790888798.254119809 b=1790888798.254119809 ino=701246596
+  nx: ENOENT
+  d/nx: type=file mode=0644 uid=501 gid=20 nlink=1 size=5 a=1790888798.253674888 m=1790888798.253697055 c=1790888798.254486644 b=1790888798.253674888 ino=701246604
+  dang: type=link mode=0755 uid=501 gid=20 nlink=1 size=2 a=1790888798.254091475 m=1790888798.254091475 c=1790888798.254091475 b=1790888798.254091475 ino=701246595
+ERR dst exists (dangling link), NOFOLLOW             clonefile(f, dang, 0x5) = EEXIST
+  nx: ENOENT
+  d/nx: ENOENT
+  dang: type=link mode=0755 uid=501 gid=20 nlink=1 size=2 a=1790888798.268090661 m=1790888798.268090661 c=1790888798.268090661 b=1790888798.268090661 ino=701246615
+ERR dst exists (cyclic link)                         clonefile(f, cyc, 0x4) = ELOOP
+ERR dst is src                                       clonefile(f, f, 0x4) = EEXIST
+ERR dst is a hard link to src                        clonefile(f, hf, 0x4) = EEXIST
+ERR dst trailing slash, absent                       clonefile(f, new/, 0x4) = ENOENT
+ERR dst parent absent                                clonefile(f, nx/new, 0x4) = ENOENT
+ERR dst parent a file                                clonefile(f, f/new, 0x4) = ENOTDIR
+ERR dst parent a link to dir                         clonefile(f, ld/new, 0x4) = ok
+  dst: type=file mode=0644 uid=501 gid=20 nlink=1 size=5 a=1790888798.348936007 m=1790888798.348961799 c=1790888798.349805472 b=1790888798.348936007 ino=701246767
+ERR dst parent unwritable                            clonefile(f, ro/new, 0x4) = EACCES
+ERR dst existing in unwritable                       clonefile(f, ro/x, 0x4) = EEXIST
+ERR dst parent unsearchable                          clonefile(f, ns/new, 0x4) = EACCES
+ERR dst empty                                        clonefile(f, , 0x4) = ENOENT
+ERR dst name 299 bytes                               clonefile(f, nnnnnnnnnnnnnnnnnnnn..., 0x4) = ENAMETOOLONG
+ERR src absent                                       clonefile(nx, new, 0x4) = ENOENT
+ERR src absent, dst exists                           clonefile(nx, g, 0x4) = ENOENT
+ERR src absent, dst parent unwritable                clonefile(nx, ro/new, 0x4) = ENOENT
+ERR src empty                                        clonefile(, new, 0x4) = ENOENT
+ERR src trailing slash                               clonefile(f/, new, 0x4) = ENOTDIR
+ERR src through a file                               clonefile(f/x, new, 0x4) = ENOTDIR
+ERR src link to file                                 clonefile(lf, new, 0x4) = ok
+  dst: type=file mode=0644 uid=501 gid=20 nlink=1 size=5 a=1790888798.500537417 m=1790888798.500571875 c=1790888798.501465674 b=1790888798.500537417 ino=701247031
+ERR src link to file, NOFOLLOW                       clonefile(lf, new, 0x5) = ok
+  dst: type=link mode=0755 uid=501 gid=20 nlink=1 size=1 a=1790888798.514170059 m=1790888798.514170059 c=1790888798.514702688 b=1790888798.514170059 ino=701247051
+  new: type=link mode=0755 uid=501 gid=20 nlink=1 size=1 a=1790888798.514170059 m=1790888798.514170059 c=1790888798.514702688 b=1790888798.514170059 ino=701247051
+ERR src dangling link                                clonefile(dang, new, 0x4) = ENOENT
+ERR src dangling link, NOFOLLOW                      clonefile(dang, new, 0x5) = ok
+  dst: type=link mode=0755 uid=501 gid=20 nlink=1 size=2 a=1790888798.542295974 m=1790888798.542295974 c=1790888798.542832979 b=1790888798.542295974 ino=701247095
+  new: type=link mode=0755 uid=501 gid=20 nlink=1 size=2 a=1790888798.542295974 m=1790888798.542295974 c=1790888798.542832979 b=1790888798.542295974 ino=701247095
+ERR src cyclic link                                  clonefile(cyc, new, 0x4) = ELOOP
+ERR src directory                                    clonefile(d, new, 0x4) = ok
+  dst: type=dir mode=0755 uid=501 gid=20 nlink=3 size=96 a=1790888798.569908803 m=1790888798.570627517 c=1790888798.570627517 b=1790888798.569908803 ino=701247138
+ERR src link to directory                            clonefile(ld, new, 0x4) = ok
+  dst: type=dir mode=0755 uid=501 gid=20 nlink=3 size=96 a=1790888798.585517210 m=1790888798.586161923 c=1790888798.586161923 b=1790888798.585517210 ino=701247186
+ERR src unreadable (0000)                            clonefile(unr, new, 0x4) = EACCES
+ERR src write-only (0200)                            clonefile(wo, new, 0x4) = EACCES
+ERR src unreadable, dst exists                       clonefile(unr, g, 0x4) = EEXIST
+ERR src in unsearchable                              clonefile(ns/x, new, 0x4) = EACCES
+ERR src in unsearchable, dst exists                  clonefile(ns/x, g, 0x4) = EACCES
+ERR dst exists, dst parent unwritable, src absent    clonefile(nx, ro/x, 0x4) = ENOENT
+ERR src on another volume                            clonefile(/etc/hosts, new, 0x4) = ok
+  dst: type=file mode=0644 uid=501 gid=20 nlink=1 size=345743 a=1781447717.674143751 m=1767570556.539475799 c=1790888798.674544282 b=1767570556.538597226 ino=701247342
+ERR flags 0                                          clonefile(f, new, 0x0) = ok
+  dst: type=file mode=0644 uid=501 gid=20 nlink=1 size=5 a=1790888798.685903949 m=1790888798.685936991 c=1790888798.686922415 b=1790888798.685903949 ino=701247366
+ERR flags NOOWNERCOPY                                clonefile(f, new, 0x2) = ok
+  dst: type=file mode=0644 uid=501 gid=20 nlink=1 size=5 a=1790888798.697748703 m=1790888798.697777870 c=1790888798.698985712 b=1790888798.697748703 ino=701247389
+ERR flags bad bit, src absent                        clonefile(nx, new, 0x100000) = EINVAL
+ERR flags bad bit, dst exists                        clonefile(f, g, 0x100000) = EINVAL
+ERR dst name not UTF-8                               clonefile(f, ÿþ, 0x4) = errno92
+ERR dst name not UTF-8, parent unwritable            clonefile(f, ro/ÿþ, 0x4) = EACCES
+ERR dst name not UTF-8, src unreadable               clonefile(unr, ÿþ, 0x4) = EACCES
+ERR dst name 299 bytes, src unreadable               clonefile(unr, nnnnnnnnnnnnnnnnnnnn..., 0x4) = ENAMETOOLONG
+ERR dst parent absent, src unreadable                clonefile(unr, nx/new, 0x4) = ENOENT
+ERR dst parent unsearchable, src unreadable          clonefile(unr, ns/new, 0x4) = EACCES
+ERR dst cyclic link, src unreadable                  clonefile(unr, cyc, 0x4) = ELOOP
+ERR dst root                                         clonefile(f, /, 0x4) = EEXIST
+ERR dst dot                                          clonefile(f, ., 0x4) = EEXIST
+  parent e before: type=dir mode=0755 uid=501 gid=20 nlink=2 size=64 a=1000000000.000000000 m=1000000000.000000000 c=1790888798.845215248 b=1000000000.000000000 ino=701247640
+PARENT clonefile(f, e/new) = ok
+  parent e after: type=dir mode=0755 uid=501 gid=20 nlink=3 size=96 a=1000000000.000000000 m=1790888798.845299666 c=1790888798.845299666 b=1000000000.000000000 ino=701247640
+  src f after: type=file mode=0644 uid=501 gid=20 nlink=2 size=5 a=1790888798.844063781 m=1790888798.844096615 c=1790888798.844364659 b=1790888798.844063781 ino=701247634
+ORPHAN clonefile(abs f, new) from a removed cwd = ENOENT
+FLAGS: 0=ok 1=ok 2=ok 3=ok 4=ok 5=EINVAL 6=EINVAL 7=EINVAL 8=EINVAL 9=EINVAL 10=EINVAL 11=EINVAL 12=EINVAL 13=EINVAL 14=EINVAL 15=EINVAL 16=EINVAL 17=EINVAL 18=EINVAL 19=EINVAL 20=EINVAL 21=EINVAL 22=EINVAL 23=EINVAL 24=EINVAL 25=EINVAL 26=EINVAL 27=EINVAL 28=EINVAL 29=EINVAL 30=EINVAL 31=EINVAL

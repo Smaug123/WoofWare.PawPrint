@@ -175,6 +175,36 @@ module PWriteRefusal =
         | PWriteRefusal.UnmeasuredSetIdChange (inode, refusal) ->
             WriteRefusal.describeUnmeasuredSetIdChange inode refusal
 
+/// Why this kernel will not answer a `copy_file_range(2)`.
+[<RequireQualifiedAccess>]
+type CopyFileRangeRefusal =
+    /// This kernel is not Linux-flavoured, and only Linux has `copy_file_range`.
+    | UnmodelledFlavour of flavour : SimulatedUnixFlavour
+    /// Both descriptors name regular files on a mount of this type, whose
+    /// answer to a copy is unmeasured.
+    | UnmeasuredFileSystem of fileSystem : EmulatedFileSystemType
+    /// The copy would leave the destination longer than this kernel can
+    /// represent.
+    | ExceedsRepresentableLength of inode : InodeNumber * offset : int64 * count : int
+    /// What writing to the destination at `inode` would do to its set-ID bits
+    /// has not been measured for this writer.
+    | UnmeasuredSetIdChange of inode : InodeNumber * refusal : SetIdChangeRefusal
+
+[<RequireQualifiedAccess>]
+module CopyFileRangeRefusal =
+    /// What this kernel knows about why it cannot complete a copy. The client
+    /// supplies its own half: which entry point, and which descriptors.
+    let describe (refusal : CopyFileRangeRefusal) : string =
+        match refusal with
+        | CopyFileRangeRefusal.UnmodelledFlavour flavour ->
+            $"this kernel is %O{flavour}-flavoured, and copy_file_range exists on Linux only."
+        | CopyFileRangeRefusal.UnmeasuredFileSystem fileSystem ->
+            $"both descriptors name regular files on a %O{fileSystem} mount, where whether a copy is made by the server, by the filesystem or by the generic page-cache path, and so how much one call moves, has not been measured."
+        | CopyFileRangeRefusal.ExceedsRepresentableLength (inode, offset, count) ->
+            WriteRefusal.describeExceedsRepresentableLength inode offset count
+        | CopyFileRangeRefusal.UnmeasuredSetIdChange (inode, refusal) ->
+            WriteRefusal.describeUnmeasuredSetIdChange inode refusal
+
 /// What a `read` will operate on, once the descriptor's access mode has been
 /// checked and before its buffer is screened.
 ///
@@ -1654,3 +1684,170 @@ module UnixReadWrite =
                     }
             }
         )
+
+    /// `copy_file_range(inFd, NULL, outFd, NULL, length, flags)`: copy up to
+    /// `length` bytes from `inFd`'s offset to `outFd`'s, inside the kernel,
+    /// and advance both offsets by what moved.
+    ///
+    /// Only the form that copies at the descriptions' own offsets is
+    /// expressible. `length` is the `size_t` the caller asked for; it is
+    /// shortened to what remains of the source, and then to what one call
+    /// moves (see `TransferCountLimit`). The answer is the count copied, 0 at
+    /// the source's end.
+    ///
+    /// EBADF for a descriptor the process does not hold, then EINVAL for any
+    /// `flags`, EISDIR if either names a directory, EINVAL if either is not a
+    /// regular file, EBADF for a source not open for reading or a destination
+    /// not open for writing, EFBIG for a destination at offset `INT64_MAX`,
+    /// and EINVAL for a copy within one file whose two ranges overlap. A copy writes as `write(2)` does: the destination's
+    /// modification and status-change times move and its set-ID bits are
+    /// stripped as a write strips them. A copy of nothing changes nothing.
+    let copyFileRange<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (inFd : int)
+        (outFd : int)
+        (length : uint64)
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, CopyFileRangeRefusal>
+        =
+        // Measured on Linux 6.18.5 (`copy-file-syscalls.c`, tmpfs and ext4
+        // alike) over every pair of a file opened read-only, write-only and
+        // read-write, a directory, each end of a pipe, a socket, an epoll
+        // instance, a closed descriptor and 9999, at lengths 5 and 0 and with
+        // flags 1: the order of the refusals is the one stated above, and a
+        // length of 0 is answered only after all of them. Every flag bit alone
+        // is EINVAL. A 0-to-0 copy on one description, 0-to-3 and 2-to-0 of 5
+        // on two descriptions of one file, and a 0-to-0 copy between two hard
+        // links are EINVAL; 0-to-5 of 5 is not, nor is 8-to-0 of 5 from a
+        // 10-byte file, which copies 2. The overlap is judged on the count
+        // shortened to the source's end: 0-to-12 of 20 from a 10-byte file
+        // copies 10. Lengths SSIZE_MAX and SIZE_MAX copy what remains; a copy
+        // from past the source's end is 0 and moves nothing, timestamps
+        // included; a copy into an offset past the destination's end leaves a
+        // hole of zeroes. A copy moves the destination's mtime and ctime and
+        // nothing else of it, and strips the set-ID bits exactly as a write by
+        // the same caller does (uid 1000: 06755 to 0755, 06745 to 02745,
+        // 02644 kept; root keeps every bit). A destination at offset
+        // INT64_MAX is EFBIG on tmpfs for lengths 0, 1 and 5 from sources of 0,
+        // 1 and 5 bytes, the source's offset unmoved
+        // (`copy-file-range-max-offset.c`). One call moves a whole 3 MiB file;
+        // `copy-file-range-cap.c` shows a call moving at most 0x7ffff000 bytes.
+        match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+        | SimulatedUnixFlavour.Darwin -> Error (CopyFileRangeRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin)
+        | SimulatedUnixFlavour.Linux ->
+
+        let registry = system.Process.FileDescriptors
+
+        match FileDescriptorRegistry.tryFind inFd registry, FileDescriptorRegistry.tryFind outFd registry with
+        | None, _
+        | _, None -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
+        | Some source, Some destination ->
+
+        let failed (error : UnixError) = Ok (SyscallAnswer.Failed error, system)
+
+        let isDirectory (description : OpenFileDescription) : bool =
+            match description.Target with
+            | OpenFileTarget.Directory _ -> true
+            | OpenFileTarget.File _
+            | OpenFileTarget.Pipe _
+            | OpenFileTarget.Socket _
+            | OpenFileTarget.SocketEventPort _ -> false
+
+        if flags <> 0 then
+            failed UnixError.EINVAL
+        elif isDirectory source || isDirectory destination then
+            failed UnixError.EISDIR
+        else
+
+        match source.Target, destination.Target with
+        | OpenFileTarget.File (sourceInode, sourceOffset), OpenFileTarget.File (destinationInode, destinationOffset) ->
+            if
+                not (FileAccessMode.permitsRead source.AccessMode)
+                || not (FileAccessMode.permitsWrite destination.AccessMode)
+            then
+                failed UnixError.EBADF
+            else
+
+            match EmulatedMount.fileSystemType system.Machine.Mount with
+            | EmulatedFileSystemType.Apfs
+            | EmulatedFileSystemType.Nfs as fileSystem -> Error (CopyFileRangeRefusal.UnmeasuredFileSystem fileSystem)
+            | EmulatedFileSystemType.Tmpfs ->
+
+            // A destination already at tmpfs's largest file size, INT64_MAX,
+            // takes nothing: EFBIG, ahead of the length and of the source's
+            // end, so even a copy of nothing from an empty file is refused.
+            if destinationOffset = System.Int64.MaxValue then
+                failed UnixError.EFBIG
+            else
+
+            let contents =
+                match VirtualFileSystem.tryGetContent sourceInode system.Machine.FileSystem with
+                | Some (InodeContent.RegularFile (contents, _)) -> contents
+                | other ->
+                    failwith
+                        $"UnixReadWrite.copyFileRange: fd %d{inFd} is a file description naming inode %O{sourceInode}, which holds %A{other} rather than a regular file (this is a bug in this library)."
+
+            let remaining =
+                if sourceOffset >= int64 contents.Length then
+                    0UL
+                else
+                    uint64 (int64 contents.Length - sourceOffset)
+
+            let count = min length remaining
+
+            // [sourceOffset, +count) against [destinationOffset, +count),
+            // written so that nothing can overflow: the source's range ends
+            // inside the file, while the destination's offset can be anything
+            // up to INT64_MAX.
+            let overlaps =
+                sourceInode = destinationInode
+                && count > 0UL
+                && destinationOffset < sourceOffset + int64 count
+                && destinationOffset > sourceOffset - int64 count
+
+            if overlaps then
+                failed UnixError.EINVAL
+            elif count = 0UL then
+                Ok (SyscallAnswer.Completed 0L, system)
+            else
+
+            let count = oneCallsWorth system.Machine.UnixPlatform count
+            let bytes = ImmutableArray.Create (contents, int sourceOffset, count)
+            let now = UnixMachineState.realtime system.Machine
+            let rule = SimulatedUnixPlatform.setGroupIdOnWrite system.Machine.UnixPlatform
+
+            match
+                VirtualFileSystem.writeFile
+                    destinationInode
+                    destinationOffset
+                    bytes
+                    rule
+                    system.Process.Credentials
+                    now
+                    system.Machine.FileSystem
+            with
+            | Error (FileWriteRefusal.WouldExceedMaxLength (offset, count)) ->
+                Error (CopyFileRangeRefusal.ExceedsRepresentableLength (destinationInode, offset, count))
+            | Error (FileWriteRefusal.UnmeasuredSetIdChange refusal) ->
+                Error (CopyFileRangeRefusal.UnmeasuredSetIdChange (destinationInode, refusal))
+            | Ok filesystem ->
+
+            let registry =
+                registry
+                |> FileDescriptorRegistry.setOffset inFd (sourceOffset + int64 count)
+                |> FileDescriptorRegistry.setOffset outFd (destinationOffset + int64 count)
+
+            Ok (
+                SyscallAnswer.Completed (int64 count),
+                { system with
+                    Machine =
+                        { system.Machine with
+                            FileSystem = filesystem
+                        }
+                    Process =
+                        { system.Process with
+                            FileDescriptors = registry
+                        }
+                }
+            )
+        | _ -> failed UnixError.EINVAL

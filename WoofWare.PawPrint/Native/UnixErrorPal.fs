@@ -241,3 +241,36 @@ module UnixErrorPal =
         match UnixError.ofRawErrnoUnder reporting raw with
         | Some error -> toPal error
         | None -> palNonStandard
+
+    /// `ConvertErrorPalToPlatform` (pal_error_common.h), compiled for a kernel
+    /// reporting `reporting`'s numbering: the raw `<errno.h>` number of the
+    /// error whose `Interop.Error` value is `pal`.
+    ///
+    /// `SUCCESS` is 0, and the two pseudo-errors `EHOSTNOTFOUND` and
+    /// `ESOCKETERROR` are their own values negated. Anything else, which is
+    /// `ENONSTANDARD`, an error the platform's `<errno.h>` lacks (so its
+    /// `case` was compiled out), or a number that is no `Interop.Error` at all,
+    /// is -1.
+    let toRawErrnoUnder (reporting : RawErrnoNumbering) (pal : int) : int =
+        let hostNotFound = 0x20001
+        let socketError = 0x20002
+
+        if pal = palSuccess then
+            0
+        elif pal = hostNotFound || pal = socketError then
+            -pal
+        elif pal = palNonStandard then
+            -1
+        elif pal = toPal UnixError.ENOTSUP then
+            // One PAL value for two errors, which Darwin numbers apart (45 and
+            // 102): the switch's case for it returns `ENOTSUP`.
+            UnixError.toRawErrnoUnder reporting UnixError.ENOTSUP
+        else
+
+        // Every other PAL value names exactly one error.
+        match UnixError.all |> List.filter (fun error -> toPal error = pal) with
+        | [] -> -1
+        | [ error ] -> UnixError.tryToRawErrnoUnder reporting error |> Option.defaultValue -1
+        | errors ->
+            failwith
+                $"UnixErrorPal.toRawErrnoUnder: PAL 0x%X{pal} names %A{errors}, and only ENOTSUP's value is known to be shared; say which the shim's switch returns."
