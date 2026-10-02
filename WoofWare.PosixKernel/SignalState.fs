@@ -244,7 +244,7 @@ module SignalState =
     /// SIGKILL and SIGSTOP, for which the kernel holds no disposition but the
     /// default. Narrower than `Signal.isUncatchableUnder`, which adds the two
     /// numbers glibc's `sigaction` refuses on top of the kernel's refusal.
-    let private kernelHoldsOnlyDefault (numbering : SignalNumbering) (signal : Signal) : bool =
+    let internal kernelHoldsOnlyDefault (numbering : SignalNumbering) (signal : Signal) : bool =
         match Signal.toRawSignoUnder numbering signal, numbering with
         | 9, _
         | 19, SignalNumbering.Linux
@@ -343,7 +343,8 @@ module SignalState =
     /// `initial`.
     let numbering (state : SignalState<'Task, 'Handler>) : SignalNumbering = state.Numbering
 
-    /// What a delivery of `signal` would do now.
+    /// What a delivery of `signal` would do now. A client asks
+    /// `UnixSignal.sigaction`.
     let disposition (signal : Signal) (state : SignalState<'Task, 'Handler>) : SignalDisposition<'Handler> =
         match Map.tryFind (parse "disposition" state signal) state.Dispositions with
         | Some disposition -> disposition
@@ -354,7 +355,9 @@ module SignalState =
     let dispositions (state : SignalState<'Task, 'Handler>) : Map<Signal, SignalDisposition<'Handler>> =
         state.Dispositions
 
-    /// Set `signal`'s disposition, as `sigaction(2)` does.
+    /// Set `signal`'s disposition, as `sigaction(2)` does. A client calls
+    /// `UnixSignal.sigaction`, which refuses what the kernel refuses before
+    /// it gets here.
     ///
     /// A disposition that ignores the signal discards every instance of it
     /// already pending, for every thread and for the process: `SIG_IGN`, and
@@ -364,10 +367,7 @@ module SignalState =
     /// delivered under it.
     ///
     /// Fails loud on SIGKILL and SIGSTOP, for which the kernel refuses any
-    /// disposition: a client's own `sigaction` answers those with EINVAL
-    /// before any state changes. glibc's `sigaction` also refuses Linux's 32
-    /// and 33 (see `Signal.isUncatchableUnder`), which the kernel itself
-    /// accepts; a client modelling a call through glibc screens those first.
+    /// disposition, and `UnixSignal.sigaction` answers EINVAL.
     let setDisposition
         (signal : Signal)
         (disposition : SignalDisposition<'Handler>)
@@ -378,7 +378,7 @@ module SignalState =
 
         if kernelHoldsOnlyDefault state.Numbering signal then
             failwith
-                $"SignalState.setDisposition: no kernel disposition but the default can exist for %O{signal} under the %O{state.Numbering} numbering — sigaction(2) refuses it with EINVAL, and the client should have refused it there."
+                $"SignalState.setDisposition: no kernel disposition but the default can exist for %O{signal} under the %O{state.Numbering} numbering; UnixSignal.sigaction refuses it with EINVAL before it reaches here."
 
         let disposition =
             match disposition with
