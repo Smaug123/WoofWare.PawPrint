@@ -303,22 +303,34 @@ module EscapeAnalysis =
     let private corelibException (state : EscapeAnalysisState) (name : string) : ResolvedTypeIdentity =
         corelibType state "System" name
 
+    /// What binding a type reference in `assembly` finds.
+    let private bindTypeRef
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (typeRef : TypeRef)
+        : EscapeAnalysisState * TypeReferenceIdentity
+        =
+        let assemblies, identity =
+            TypeResolution.tryResolveTypeRefIdentity
+                state.LoggerFactory
+                state.RuntimeDirs
+                assembly
+                typeRef
+                state.TypeSystem._LoadedAssemblies
+
+        withAssemblies state assemblies, identity
+
+    /// The definition a type reference in `assembly` names, if it binds.
     let private resolveTypeRef
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
         (typeRef : TypeRef)
         : EscapeAnalysisState * ResolvedTypeIdentity option
         =
-        match
-            TypeResolution.resolveTypeRefIdentity
-                state.LoggerFactory
-                state.RuntimeDirs
-                assembly
-                typeRef
-                state.TypeSystem._LoadedAssemblies
-        with
-        | assemblies, Ok identity -> withAssemblies state assemblies, Some identity
-        | assemblies, Error _ -> withAssemblies state assemblies, None
+        match bindTypeRef state assembly typeRef with
+        | state, TypeReferenceIdentity.Resolved identity -> state, Some identity
+        | state, TypeReferenceIdentity.TypeAbsent _
+        | state, TypeReferenceIdentity.AssemblyUnavailable _ -> state, None
 
     /// The type definition a type spelling names, looking through custom modifiers and
     /// instantiations. `None` for a spelling that names no definition: a type variable, an array, a
@@ -768,54 +780,64 @@ module EscapeAnalysis =
         (faults |> List.map (fun fault -> ThrownType.Exactly (faultType state fault)))
         @ lowerBounds
 
-    /// Does every type reference in a spelling name a type? One that does not makes binding the
-    /// token that spells it throw `TypeLoadException`. Custom modifiers and function pointer
+    /// Why binding a type reference fails, which decides what the binding throws.
+    [<RequireQualifiedAccess>]
+    type private BindFailure =
+        /// Its assembly binds and declares no such type: `TypeLoadException`.
+        | TypeAbsent
+        /// No assembly is found for it: `FileNotFoundException`.
+        | AssemblyUnavailable
+
+    /// The exception binding fails with.
+    let private bindFailureRaises (state : EscapeAnalysisState) (failure : BindFailure) : OutsideBodyFact =
+        match failure with
+        | BindFailure.TypeAbsent ->
+            OutsideBodyFact.Raises (ThrownType.Exactly (corelibException state "TypeLoadException"))
+        | BindFailure.AssemblyUnavailable ->
+            OutsideBodyFact.Raises (ThrownType.Exactly (corelibType state "System.IO" "FileNotFoundException"))
+
+    /// The first type reference in a spelling that fails to bind, and why, which makes binding the
+    /// token that spells it throw; `None` if all of them bind. Custom modifiers and function pointer
     /// signatures are not bound.
-    let rec private spellingBinds
+    let rec private spellingBindFailure
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
         (spelling : TypeDefn)
-        : EscapeAnalysisState * bool
+        : EscapeAnalysisState * BindFailure option
         =
         match spelling with
         | TypeDefn.FromReference (typeRef, _) ->
-            match resolveTypeRef state assembly typeRef with
-            | state, Some _ -> state, true
-            | state, None -> state, false
+            match bindTypeRef state assembly typeRef with
+            | state, TypeReferenceIdentity.Resolved _ -> state, None
+            | state, TypeReferenceIdentity.TypeAbsent _ -> state, Some BindFailure.TypeAbsent
+            | state, TypeReferenceIdentity.AssemblyUnavailable _ -> state, Some BindFailure.AssemblyUnavailable
         | TypeDefn.GenericInstantiation (root, arguments) ->
-            ((state, true), Seq.append [ root ] arguments)
-            ||> Seq.fold (fun (state, soFar) spelling ->
-                if soFar then
-                    spellingBinds state assembly spelling
-                else
-                    state, false
-            )
+            firstBindFailure state assembly (Seq.append [ root ] arguments)
         | TypeDefn.Array (element, _)
         | TypeDefn.OneDimensionalArrayLowerBoundZero element
         | TypeDefn.Pointer element
         | TypeDefn.Byref element
-        | TypeDefn.Pinned element -> spellingBinds state assembly element
-        | TypeDefn.Modified modified -> spellingBinds state assembly modified.Unmodified
+        | TypeDefn.Pinned element -> spellingBindFailure state assembly element
+        | TypeDefn.Modified modified -> spellingBindFailure state assembly modified.Unmodified
         | TypeDefn.FromDefinition _
         | TypeDefn.PrimitiveType _
         | TypeDefn.GenericTypeParameter _
         | TypeDefn.GenericMethodParameter _
         | TypeDefn.FunctionPointer _
-        | TypeDefn.Void -> state, true
+        | TypeDefn.Void -> state, None
 
-    /// Does every type reference in each of `spellings` name a type?
-    let private allBind
+    /// The first type reference in `spellings`, in order, that fails to bind, and why.
+    and private firstBindFailure
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
         (spellings : TypeDefn seq)
-        : EscapeAnalysisState * bool
+        : EscapeAnalysisState * BindFailure option
         =
-        ((state, true), spellings)
-        ||> Seq.fold (fun (state, soFar) spelling ->
-            if soFar then
-                spellingBinds state assembly spelling
-            else
-                state, false
+        ((state, None), spellings)
+        ||> Seq.fold (fun (state, failure) spelling ->
+            match failure with
+            | Some _ -> state, failure
+            | None -> spellingBindFailure state assembly spelling
         )
 
     /// The types a method signature spells: its return type, if any, and its parameters'.
@@ -824,9 +846,9 @@ module EscapeAnalysis =
         | MethodReturnType.Void -> signature.ParameterTypes
         | MethodReturnType.Returns ty -> ty :: signature.ParameterTypes
 
-    /// Does every type reference that instantiating a spelling reads name a type? As `spellingBinds`,
-    /// and through a function pointer's signature as well, whose types TypeSystem instantiates
-    /// although the JIT binds none of them.
+    /// Does every type reference that instantiating a spelling reads name a type? As
+    /// `spellingBindFailure`, and through a function pointer's signature as well, whose types
+    /// TypeSystem instantiates although the JIT binds none of them.
     let rec private concretizable
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
@@ -856,7 +878,9 @@ module EscapeAnalysis =
         | TypeDefn.PrimitiveType _
         | TypeDefn.GenericTypeParameter _
         | TypeDefn.GenericMethodParameter _
-        | TypeDefn.Void -> spellingBinds state assembly spelling
+        | TypeDefn.Void ->
+            let state, failure = spellingBindFailure state assembly spelling
+            state, failure.IsNone
 
     /// The type definitions a spelling names that resolve, arguments included.
     let rec private namedIdentities
@@ -1011,15 +1035,19 @@ module EscapeAnalysis =
                 OutsideBodyFact.Raises (ThrownType.Exactly (corelibException state "TypeLoadException"))
             ]
 
+        let raisesOf (failure : BindFailure option) : OutsideBodyFact list =
+            failure |> Option.map (bindFailureRaises state) |> Option.toList
+
         let dependsOnInstantiation = OutsideBodyFact.Opaque Opacity.DependsOnInstantiation
 
         match token with
         | MetadataToken.MethodDef handle ->
             let state, target = callTarget state assembly token
 
-            match allBind state assembly (signatureTypes assembly.Methods.[handle].Signature) with
-            | state, true -> state, Some target, []
-            | state, false -> state, Some target, typeLoad ()
+            let state, failure =
+                firstBindFailure state assembly (signatureTypes assembly.Methods.[handle].Signature)
+
+            state, Some target, raisesOf failure
         | MetadataToken.MethodSpecification handle ->
             let spec = assembly.MethodSpecs.[handle]
             let state, _, failures = bindToken state assembly spec.Method
@@ -1027,30 +1055,24 @@ module EscapeAnalysis =
             let state, target = callTarget state assembly token
             let target = Some target
 
-            let state, argumentsBind =
-                ((state, true), spec.Signature)
-                ||> Seq.fold (fun (state, soFar) argument ->
-                    if soFar then
-                        spellingBinds state assembly argument
-                    else
-                        state, false
-                )
-
-            state, target, (if argumentsBind then failures else typeLoad () @ failures)
+            let state, argumentsFailure = firstBindFailure state assembly spec.Signature
+            state, target, raisesOf argumentsFailure @ failures
         | MetadataToken.MemberReference handle ->
             // Resolving the member reads only the parent's definition, but binding the reference
             // loads the parent type itself, with every type argument it spells.
-            let state, parentBinds =
+            let state, parentFailure =
                 match assembly.Members.[handle].Parent with
                 | MetadataToken.TypeSpecification parent ->
-                    spellingBinds state assembly assembly.TypeSpecs.[parent].Signature
-                | _ -> state, true
+                    spellingBindFailure state assembly assembly.TypeSpecs.[parent].Signature
+                | _ -> state, None
 
             let state, target, failures =
                 match assembly.Members.[handle].Signature with
                 | MemberSignature.Method signature ->
-                    let state, signatureBinds = allBind state assembly (signatureTypes signature)
-                    let signatureFailures = if signatureBinds then [] else typeLoad ()
+                    let state, signatureFailure =
+                        firstBindFailure state assembly (signatureTypes signature)
+
+                    let signatureFailures = raisesOf signatureFailure
 
                     match callTarget state assembly token with
                     | state, CallTarget.Missing ->
@@ -1085,15 +1107,20 @@ module EscapeAnalysis =
                     | FieldReferenceTarget.DependsOnInstantiation -> state, None, [ dependsOnInstantiation ]
                     | FieldReferenceTarget.Defined _ -> state, None, []
 
-            state, target, (if parentBinds then failures else typeLoad () @ failures)
+            state, target, raisesOf parentFailure @ failures
         | MetadataToken.TypeReference handle ->
-            match resolveTypeRef state assembly assembly.TypeRefs.[handle] with
-            | state, Some _ -> state, None, []
-            | state, None -> state, None, typeLoad ()
+            let state, failure =
+                spellingBindFailure
+                    state
+                    assembly
+                    (TypeDefn.FromReference (assembly.TypeRefs.[handle], SignatureTypeKind.Unknown))
+
+            state, None, raisesOf failure
         | MetadataToken.TypeSpecification handle ->
-            match spellingBinds state assembly assembly.TypeSpecs.[handle].Signature with
-            | state, true -> state, None, []
-            | state, false -> state, None, typeLoad ()
+            let state, failure =
+                spellingBindFailure state assembly assembly.TypeSpecs.[handle].Signature
+
+            state, None, raisesOf failure
         | MetadataToken.StandaloneSignature handle ->
             // A `calli`'s call-site signature.
             let signature =
@@ -1101,9 +1128,8 @@ module EscapeAnalysis =
                     .DecodeMethodSignature (TypeDefn.typeProvider assembly.Name, ())
                 |> TypeMethodSignature.make
 
-            match allBind state assembly (signatureTypes signature) with
-            | state, true -> state, None, []
-            | state, false -> state, None, typeLoad ()
+            let state, failure = firstBindFailure state assembly (signatureTypes signature)
+            state, None, raisesOf failure
         | _ -> state, None, []
 
     /// The static type of the value a call returns, as the call site's own signature spells it.
@@ -1552,13 +1578,9 @@ module EscapeAnalysis =
         let state, localFailures =
             ((state, Set.empty), Option.defaultValue ImmutableArray.Empty body.LocalVars)
             ||> Seq.fold (fun (state, failures) local ->
-                match spellingBinds state assembly local with
-                | state, true -> state, failures
-                | state, false ->
-                    state,
-                    Set.add
-                        (OutsideBodyFact.Raises (ThrownType.Exactly (corelibException state "TypeLoadException")))
-                        failures
+                match spellingBindFailure state assembly local with
+                | state, None -> state, failures
+                | state, Some failure -> state, Set.add (bindFailureRaises state failure) failures
             )
 
         let state, localFailures =

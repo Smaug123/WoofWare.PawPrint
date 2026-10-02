@@ -87,9 +87,11 @@ needs rebuilding (or, for a package, a different version). Other ways such a cha
 caller are not checked, and are not reported: a member made inaccessible to it
 (`FieldAccessException`, `MethodAccessException`), a generic instantiation it spells that a
 constraint added since now rejects, and a type it names whose own base type, interfaces or fields
-are no longer there (`TypeLoadException`). A reference to an assembly that is not there at all, as
-opposed to a type missing from one that is, stops the analysis wherever it reads that reference,
-rather than being reported as the `FileNotFoundException` the call would raise.
+are no longer there (`TypeLoadException`).
+
+An assembly that is not there at all, where a type was missing from one that is, is reported as
+`FileNotFoundException` where a token, a local or a `catch` clause names a type in it. A member
+reference whose parent type is in such an assembly stops the analysis instead.
 
 This package sees `WoofWare.PawPrint.Domain`, `WoofWare.PawPrint.Loader`,
 `WoofWare.PawPrint.TypeSystem` and `WoofWare.PawPrint.Semantics`, and never the interpreter.

@@ -23,6 +23,8 @@ What lives here:
   namespace-qualified name to its definition, using only what is loaded, and naming the assembly
   reference to bind when that is not enough. `TypeResolution` is the loop that binds it and asks
   again, and also makes sure a type's whole base chain is loaded, which `BaseChainLoading` walks.
+  `TypeResolution.tryResolveTypeRefIdentity` names the definition a `TypeRef` names without loading
+  any type, telling an assembly no runtime directory supplies from a type an assembly lacks.
 * `LoadedTypeInfo` — whether a type is a value type, an enum or byref-like, and how a signature
   encodes it, decided by walking its base chain across the loaded assemblies.
 * `SignatureComparison` — whether two method signatures from different assemblies denote the same
