@@ -903,8 +903,9 @@ module ConcreteVirtualDispatch =
                 Some (implementationHandle, occupant.Method, "Found interface implementation through the dispatch map")
 
         let findClassImplementation (state : TypeSystemState) : TypeSystemState * _ option =
-            // Resolution precedence: explicit MethodImpl entries, then method name/signature
-            // matches on the current type, then the base type walk when enabled.
+            // Resolution precedence: explicit MethodImpl entries, then, for an instance method,
+            // method name/signature matches on the current type, then the base type walk when
+            // enabled.
             let rec walkBase (state : TypeSystemState) (currentTypeHandle : ConcreteTypeHandle) =
                 if not walkBaseTypes then
                     state, None
@@ -944,6 +945,25 @@ module ConcreteVirtualDispatch =
                         // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
                         |> failwithf
                             "multiple MethodImpl bodies matched this virtual slot; overload/interface disambiguation is not implemented: %s"
+                    // CoreCLR finds a static virtual's implementation through MethodImpls alone
+                    // (`MethodTable::TryResolveVirtualStaticMethodOnThisType`): a static method of
+                    // the same name and signature implements it only where a MethodImpl says so.
+                    // Named as the type itself, the interface declaring it supplies its own body,
+                    // where it has one, at the instantiation named: on `IVariant<string>`,
+                    // called through `IVariant<object>`, the body runs as `IVariant<string>`'s.
+                    | [] when methodToCall.IsStatic ->
+                        let own =
+                            if currentTy.Identity = methodToCall.RequiredDeclaringType.Identity then
+                                currentTypeInfo.Methods
+                                |> List.tryFind (fun meth ->
+                                    MethodInfo.sameDeclaredMethod meth methodToCall && not meth.Body.IsAbstract
+                                )
+                            else
+                                None
+
+                        match own with
+                        | Some own -> state, Some (currentTypeHandle, own, "Found the static virtual's own body")
+                        | None -> walkBase state currentTypeHandle
                     | [] ->
                         let implementation, state =
                             (state, currentTypeInfo.Methods)
