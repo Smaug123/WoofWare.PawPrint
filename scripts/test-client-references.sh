@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Executable contract for check-pawprint-references.py.
+# Executable contract for check-client-references.py.
 #
 # Builds a throwaway library directory holding every shape the check has an
 # opinion about, and asserts the report names exactly the lines that name
@@ -11,7 +11,7 @@ set -euo pipefail
 
 # The checker is normally its sibling; the flake check passes it in from the
 # store, where the two have no directory in common.
-checker="${1:-$(cd "$(dirname "$0")" && pwd)/check-pawprint-references.py}"
+checker="${1:-$(cd "$(dirname "$0")" && pwd)/check-client-references.py}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -132,4 +132,4 @@ if [ "$fail" -ne 0 ]; then
   echo "$out" >&2
   exit 1
 fi
-echo "pawprint-references contract: ${#expected_hits[@]} references reported, silent shapes silent"
+echo "client-references contract: ${#expected_hits[@]} references reported, silent shapes silent"

@@ -30,7 +30,7 @@ What it does not see, accepted deliberately:
     `AssemblyInfo.fs`, whose repository URL names PawPrint. A flake check sees
     only tracked files anyway; this is for running it in a working tree.
 
-Usage:  check-pawprint-references.py <library-dir>
+Usage:  check-client-references.py <library-dir>
 """
 
 import re
