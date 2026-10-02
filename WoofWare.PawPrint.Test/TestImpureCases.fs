@@ -390,6 +390,27 @@ module TestImpureCases =
             // ordering, not anything about the current directory. `TestAbsoluteUnixPath` covers the UTF-8 encoding of
             // such a path directly in the meantime.
             currentDirectoryCase "/héllo/中文/🐶"
+            {
+                // Managed async connect, accept, send and receive over loopback on a
+                // Darwin kernel. Parked: the registrations and the accept's READ
+                // report work, but ConnectAsync completes through
+                // SocketPal.TryCompleteConnect, which polls the socket for POLLOUT
+                // before reading SO_ERROR, and stops at "SystemNative_Poll: this
+                // kernel is Darwin-flavoured, and `poll(2)` is modelled here for
+                // Linux only" (measured). Un-park when Darwin's poll is modelled;
+                // the send and receive behind it then need data transfer on a
+                // connection, which this kernel does not model either.
+                FileName = "SocketAsyncSendReceiveDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
         ]
 
     /// Is this the concrete handle for `System.Runtime.ExceptionServices.ExceptionDispatchInfo`?
@@ -2348,6 +2369,42 @@ module TestImpureCases =
                         |> Map.forall (fun _ task -> task.Parked.IsNone)
                         |> shouldEqual true
                     )
+            }
+            {
+                // Registrations on a Darwin process's kqueue through the shim:
+                // what a listener, a connected socket, a refused one and a peer's
+                // close report, converted to SocketEvents, and a removal of what
+                // is not registered. Every row measured on Darwin 27.0.0 by
+                // kevent-register.c.
+                FileName = "KqueueRegistrationDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                // Compared: it asserts no descriptor number or port, only results,
+                // counts, data and SocketEvents.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // Managed AcceptAsync over loopback on a Darwin kernel:
+                // SocketAsyncEngine registers the listener with its kqueue and waits
+                // for its READ to report each connection.
+                FileName = "SocketAsyncAcceptDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                // Compared: it asserts no port number, only that the two ends of
+                // each connection agree.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
             }
             {
                 // The event-buffer stride under the epoll backend, seen through the

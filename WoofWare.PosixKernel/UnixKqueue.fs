@@ -1,7 +1,8 @@
 namespace WoofWare.PosixKernel
 
 /// One Darwin `struct kevent`: an entry of the changelist `kevent(2)` reads, or
-/// of the eventlist it fills, each field in Darwin's own numbering.
+/// one it echoes back into the eventlist (`KeventOutcome.Echoed`), each field in
+/// Darwin's own numbering. An event the eventlist reports is a `KeventEvent`.
 type Kevent =
     {
         /// `ident`: what the filter watches. For `KeventFilter.Read` and

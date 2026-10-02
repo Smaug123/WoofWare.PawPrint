@@ -463,6 +463,51 @@ module TestSocketEventsPal =
 
                 SocketEventsPal.keventChanges -7 current next 0xC0FFEEUL |> shouldEqual expected
 
+    /// The kqueue build's `GetSocketEvents(int16_t filter, uint16_t flags)`, read out
+    /// of the pinned source: `EVFILT_READ` is `SA_READ` with `SA_READCLOSE` for
+    /// `EV_EOF`, `EVFILT_WRITE` is `SA_WRITE` with `SA_READ` for `EV_EOF`, and
+    /// `EV_ERROR` adds `SA_ERROR`; then checked against `ofKevent` for every flag word
+    /// of both filters.
+    [<Test>]
+    let ``ofKevent is upstream's kqueue GetSocketEvents`` () : unit =
+        let body =
+            functionBody
+                (File.ReadAllText (palPath "pal_networking.c"))
+                "static SocketEvents GetSocketEvents(int16_t filter, uint16_t flags)"
+
+        let expect (pattern : string) =
+            if not (Regex.IsMatch (body, pattern)) then
+                failwith
+                    $"TestSocketEventsPal: the kqueue GetSocketEvents no longer matches /%s{pattern}/. Read the body and teach this test.\n%s{body}"
+
+        expect
+            @"case EVFILT_READ:\s*events = SocketEvents_SA_READ;\s*if \(\(flags & EV_EOF\) != 0\)\s*\{\s*events \|= SocketEvents_SA_READCLOSE;\s*\}\s*break;"
+
+        expect
+            @"case EVFILT_WRITE:\s*events = SocketEvents_SA_WRITE;(\s*//[^\n]*)*\s*if \(\(flags & EV_EOF\) != 0\)\s*\{\s*events \|= SocketEvents_SA_READ;\s*\}\s*break;"
+
+        expect @"if \(\(flags & EV_ERROR\) != 0\)\s*\{\s*events \|= SocketEvents_SA_ERROR;\s*\}"
+
+        // Each `pinned` reads and parses the header, so resolve the four once
+        // rather than in every one of the 65536 iterations.
+        let read = pinned "SA_READ"
+        let readClose = pinned "SA_READCLOSE"
+        let write = pinned "SA_WRITE"
+        let errorBit = pinned "SA_ERROR"
+
+        // Darwin 27.0.0's <sys/event.h>, measured: EVFILT_READ -1, EVFILT_WRITE -2,
+        // EV_ERROR 0x4000, EV_EOF 0x8000.
+        for flags in 0..0xFFFF do
+            let flags = uint16 flags
+            let eof = flags &&& 0x8000us <> 0us
+            let error = if flags &&& 0x4000us <> 0us then errorBit else 0
+
+            SocketEventsPal.ofKevent -1s flags
+            |> shouldEqual (read ||| (if eof then readClose else 0) ||| error)
+
+            SocketEventsPal.ofKevent -2s flags
+            |> shouldEqual (write ||| (if eof then read else 0) ||| error)
+
     // ---------------------------------------------------------------------
     // The composition `SystemNative_TryChangeSocketEventRegistration` and
     // `SystemNative_WaitForSocketEvents` answer with, against what they
