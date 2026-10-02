@@ -1,6 +1,5 @@
 namespace WoofWare.PawPrint.Test
 
-open System.Collections.Immutable
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
@@ -15,10 +14,11 @@ open WoofWare.PosixKernel
 /// The kernel mints the id (`UnixTaskLifecycle.spawn`) and `OsThreadIdPal` projects
 /// it to the shim's two widths. Two things matter to a guest. No two live threads
 /// may share an id, because `Lock` reads a matching id as the same thread
-/// re-entering. And the numbers are exactly what PawPrint reported when it
-/// numbered threads itself, `pid + ThreadId`, since a guest can print them: the
-/// property `the kernel numbers threads as pid plus ThreadId` below is the oracle
-/// for that.
+/// re-entering. And the numbers are what a quiet Linux hands out, since a guest can
+/// print them: the pid for the entry thread, and then the ids after it in the order
+/// threads get their OS thread, which for a guest `Thread` is when it is started.
+/// The property `the kernel numbers threads in the order they get an OS thread`
+/// below is the oracle for that.
 ///
 /// `TestCpuPlacement` covers the sibling policy (`cpuForRotation`), which
 /// deliberately keys off a *different* cursor; the contrast is the subject of
@@ -27,61 +27,12 @@ open WoofWare.PosixKernel
 [<Parallelizable(ParallelScope.All)>]
 module TestOsThreadId =
 
-    let private corelib : DumpedAssembly =
-        let corelibPath = typeof<obj>.Assembly.Location
-        let _, loggerFactory = LoggerFactory.makeTest ()
-        Assembly.readFile loggerFactory corelibPath
-
-    let private baseClassTypes : BaseClassTypes<DumpedAssembly> =
-        BaseClassTypes.ofCorelib corelib
-
-    /// A frame on any concrete method, for `addThread` to start the entry thread on.
-    let private aFrame (state : IlMachineState) : IlMachineState * MethodState =
-        let _, loggerFactory = LoggerFactory.makeTest ()
-
-        let objectToString =
-            baseClassTypes.Object.Methods
-            |> List.find (fun method -> method.Name = "ToString" && (MethodInfo.arity method = 0))
-
-        let state, signature =
-            IlMachineState.concretizeMethodSignature
-                loggerFactory
-                baseClassTypes
-                state
-                corelib.DefinitionFullName
-                ImmutableArray.Empty
-                ImmutableArray.Empty
-                objectToString.Signature
-
-        let method =
-            objectToString
-            |> MethodInfo.mapTypeGenerics (fun _ -> failwith "System.Object::ToString is not type-generic")
-            |> MethodInfo.mapMethodGenerics (fun _ _ -> failwith "System.Object::ToString is not method-generic")
-            |> MethodInfo.setMethodVars (MethodBody.Il (MethodInstructions.onlyRet ())) signature
-
-        match
-            MethodState.Empty
-                state.TypeSystem.ConcreteTypes
-                baseClassTypes
-                state.TypeSystem._LoadedAssemblies
-                corelib
-                method
-                ImmutableArray.Empty
-                (ImmutableArray.Create (CliType.ObjectRef None))
-                None
-        with
-        | Ok methodState -> state, methodState
-        | Error missing -> failwith $"unexpected missing assembly references creating frame: %O{missing}"
-
     /// A machine on `config`'s kernel, as `Program` builds one, with its entry thread.
     let private machineOn (config : KernelConfig) : IlMachineState =
-        let _, loggerFactory = LoggerFactory.makeTest ()
-
         let state =
-            (IlMachineState.initial loggerFactory ImmutableArray.Empty corelib)
-                .MapKernel (fun _ -> KernelConfig.toKernel config)
+            (ThreadFixtures.bare ()).MapKernel (fun _ -> KernelConfig.toKernel config)
 
-        let state, frame = aFrame state
+        let state, frame = ThreadFixtures.aFrame state
         let state, entry = IlMachineState.addThread frame state
         entry |> shouldEqual (ThreadId 0)
         state
@@ -149,27 +100,32 @@ module TestOsThreadId =
 
         Check.One (Config.QuickThrowOnFailure.WithMaxTest 500, Prop.forAll (Arb.fromGen ids) property)
 
-    // --- Old numbering against new ---
+    // --- The numbering against a reference model ---
 
     /// What a run does to its threads, in order.
     [<RequireQualifiedAccess>]
     type private Op =
-        /// A guest constructs a `Thread`, on the `parent`th live thread.
-        | Construct of parent : int
-        /// The signal dispatcher is created, by the `parent`th live thread.
+        /// A guest constructs a `Thread`.
+        | Construct
+        /// The `starter`th thread with an OS thread starts the `thread`th
+        /// constructed thread that has not been started.
+        | Start of starter : int * thread : int
+        /// The signal dispatcher is created, by the `parent`th thread with an OS
+        /// thread.
         | Dispatcher of parent : int
-        /// The `thread`th live thread other than the entry thread terminates.
+        /// The `thread`th thread with an OS thread, other than the entry thread,
+        /// terminates.
         | Terminate of thread : int
 
     [<Test>]
-    let ``the kernel numbers threads as pid plus ThreadId, and the shim reports what it did`` () =
-        // The oracle: before the kernel minted ids, PawPrint gave `ThreadId i` of
-        // process `pid` the id `pid + i`, reported whole by both shim entry points.
-        // Registration order is creation order and no id comes back before
+    let ``the kernel numbers threads in the order they get an OS thread, and the shim reports what it did`` () =
+        // The oracle is a counter: the entry thread's id is the pid, and each thread
+        // that gets an OS thread afterwards, a guest thread when it is started and the
+        // dispatcher when it is created, takes the next id. No id comes back before
         // `pid_max`, so the kernel's counter must agree on Linux; and on Darwin the
         // counter starts at the pid by default, so it must agree there too. Runs are
-        // short enough, and the pid far enough below Linux's default `pid_max`,
-        // that no id wraps.
+        // short enough, and the pid far enough below Linux's default `pid_max`, that
+        // no id wraps.
         let run (platform : SimulatedUnixPlatform, pid : int32, ops : Op list) : unit =
             let state =
                 machineOn
@@ -178,45 +134,82 @@ module TestOsThreadId =
                         ProcessId = ProcessId.parseOrFail "test" pid
                     }
 
-            let live (state : IlMachineState) : ThreadId list =
-                state.Kernel.Tasks |> Map.keys |> List.ofSeq
+            let withOsThread (state : IlMachineState) : ThreadId list =
+                state.ThreadState
+                |> Map.filter (fun _ ts -> ThreadStatus.hasOsThread ts.Status)
+                |> Map.keys
+                |> List.ofSeq
 
-            let step (state : IlMachineState, address : int) (op : Op) =
+            let unstarted (state : IlMachineState) : ThreadId list =
+                state.ThreadState
+                |> Map.filter (fun _ ts ->
+                    match ts.Status with
+                    | ThreadStatus.NotStarted _ -> true
+                    | _ -> false
+                )
+                |> Map.keys
+                |> List.ofSeq
+
+            let step
+                (state : IlMachineState, address : int, expected : Map<ThreadId, uint64>, next : uint64)
+                (op : Op)
+                =
                 match op with
-                | Op.Construct parent ->
-                    let parents = live state
-                    let parent = parents.[parent % parents.Length]
+                | Op.Construct ->
+                    let state, _ =
+                        IlMachineState.allocateUnstartedThread (ManagedHeapAddress address) state
 
-                    IlMachineState.allocateUnstartedThread parent (ManagedHeapAddress address) state
-                    |> fst,
-                    address + 1
+                    state, address + 1, expected, next
+                | Op.Start (starter, thread) ->
+                    match unstarted state with
+                    | [] -> state, address, expected, next
+                    | waiting ->
+                        let starters = withOsThread state
+                        let starter = starters.[starter % starters.Length]
+                        let thread = waiting.[thread % waiting.Length]
+
+                        ThreadFixtures.start starter thread state, address, Map.add thread next expected, next + 1UL
                 | Op.Dispatcher parent ->
-                    let parents = live state
+                    let parents = withOsThread state
                     let parent = parents.[parent % parents.Length]
-                    IlMachineState.allocateParkedThread parent state |> fst, address
+                    let state, dispatcher = IlMachineState.allocateParkedThread parent state
+                    state, address, Map.add dispatcher next expected, next + 1UL
                 | Op.Terminate thread ->
-                    match live state |> List.filter (fun t -> t <> state.Kernel.Leader) with
-                    | [] -> state, address
-                    | others -> Scheduler.onThreadTerminated others.[thread % others.Length] state, address
+                    match withOsThread state |> List.filter (fun t -> t <> state.Kernel.Leader) with
+                    | [] -> state, address, expected, next
+                    | others ->
+                        let thread = others.[thread % others.Length]
+                        Scheduler.onThreadTerminated thread state, address, Map.remove thread expected, next
 
-            let check (state : IlMachineState) : unit =
-                for thread in live state do
-                    let (ThreadId i) = thread
-                    let old = uint32 pid + uint32 i
+            let check (state : IlMachineState, _ : int, expected : Map<ThreadId, uint64>, _ : uint64) : unit =
+                state.Kernel.Tasks
+                |> Map.keys
+                |> List.ofSeq
+                |> shouldEqual (Map.keys expected |> List.ofSeq)
+
+                for KeyValue (thread, expectedId) in expected do
                     let id = UnixTaskTable.osThreadIdOf thread state.Kernel.Tasks
 
-                    (thread, OsThreadIdPal.tryGetUInt32 id) |> shouldEqual (thread, old)
-                    (thread, OsThreadIdPal.getUInt64 id) |> shouldEqual (thread, uint64 old)
+                    (thread, OsThreadIdPal.tryGetUInt32 id)
+                    |> shouldEqual (thread, uint32 expectedId)
+
+                    (thread, OsThreadIdPal.getUInt64 id) |> shouldEqual (thread, expectedId)
+
+                EmulatedKernel.checkTaskInvariants (state.ThreadState |> Map.map (fun _ ts -> ts.Status)) state.Kernel
+                |> shouldEqual []
 
                 EmulatedKernel.checkInvariants state.Kernel |> shouldEqual []
 
-            check state
+            let initial =
+                state, 1, Map.ofList [ state.Kernel.Leader, uint64 pid ], uint64 pid + 1UL
 
-            ((state, 1), ops)
+            check initial
+
+            (initial, ops)
             ||> List.fold (fun acc op ->
-                let state, address = step acc op
-                check state
-                state, address
+                let acc = step acc op
+                check acc
+                acc
             )
             |> ignore
 
@@ -243,7 +236,8 @@ module TestOsThreadId =
                 let! ops =
                     Gen.frequency
                         [
-                            5, Gen.choose (0, 20) |> Gen.map Op.Construct
+                            4, Gen.constant Op.Construct
+                            4, Gen.zip (Gen.choose (0, 20)) (Gen.choose (0, 20)) |> Gen.map Op.Start
                             1, Gen.choose (0, 20) |> Gen.map Op.Dispatcher
                             3, Gen.choose (0, 20) |> Gen.map Op.Terminate
                         ]
@@ -257,18 +251,25 @@ module TestOsThreadId =
     // --- Wiring ---
 
     [<Test>]
-    let ``guest threads take the ids after the entry thread's`` () =
+    let ``guest threads take the ids after the entry thread's, in the order they are started`` () =
         let state = machine ()
         idOf (ThreadId 0) state |> shouldEqual 4242UL
 
+        let state, neverStarted =
+            IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1) state
+
         let state, first =
-            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1) state
+            IlMachineState.allocateUnstartedThread (ManagedHeapAddress 2) state
 
         let state, second =
-            IlMachineState.allocateUnstartedThread first (ManagedHeapAddress 2) state
+            IlMachineState.allocateUnstartedThread (ManagedHeapAddress 3) state
 
-        idOf first state |> shouldEqual 4243UL
-        idOf second state |> shouldEqual 4244UL
+        let state = ThreadFixtures.start (ThreadId 0) second state
+        let state = ThreadFixtures.start second first state
+
+        idOf second state |> shouldEqual 4243UL
+        idOf first state |> shouldEqual 4244UL
+        Map.containsKey neverStarted state.Kernel.Tasks |> shouldEqual false
 
     [<Test>]
     let ``a Darwin configuration can start the counter away from the pid`` () =
@@ -285,7 +286,7 @@ module TestOsThreadId =
         |> shouldEqual UnixSystem.defaultProcessId
 
         let state, first =
-            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1) state
+            ThreadFixtures.constructAndStart (ThreadId 0) (ManagedHeapAddress 1) state
 
         idOf first state |> shouldEqual 2897491UL
 
@@ -322,10 +323,10 @@ module TestOsThreadId =
                 }
 
         let state, first =
-            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1) state
+            ThreadFixtures.constructAndStart (ThreadId 0) (ManagedHeapAddress 1) state
 
         let state, second =
-            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 2) state
+            ThreadFixtures.constructAndStart (ThreadId 0) (ManagedHeapAddress 2) state
 
         (idOf first state, idOf second state) |> shouldEqual (999UL, 300UL)
 
@@ -338,7 +339,7 @@ module TestOsThreadId =
         //
         // The signal dispatcher is minted lazily, on the guest's first
         // `SystemNative_InitializeTerminalAndSignalHandling`, so a guest that
-        // touches Console before spawning a worker gives that worker a
+        // touches Console before starting a worker gives that worker a
         // different id from an otherwise identical guest that did not. That is
         // fine for an id and not for a core: an id is opaque (nothing may do
         // anything with it but compare it for equality, and
@@ -357,7 +358,7 @@ module TestOsThreadId =
             [ 1..5 ]
             |> List.map (fun i ->
                 let state', thread =
-                    IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress i) state
+                    ThreadFixtures.constructAndStart (ThreadId 0) (ManagedHeapAddress i) state
 
                 state <- state'
                 idOf thread state
@@ -383,7 +384,7 @@ module TestOsThreadId =
             [ 1..3 ]
             |> List.map (fun i ->
                 let state', thread =
-                    IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress i) state
+                    ThreadFixtures.constructAndStart (ThreadId 0) (ManagedHeapAddress i) state
 
                 state <- state'
                 idOf thread state

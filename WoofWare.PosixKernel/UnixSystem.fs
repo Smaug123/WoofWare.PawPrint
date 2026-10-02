@@ -240,6 +240,10 @@ type UnixSystemDefect<'Task> =
     /// A pipe the client drains holds bytes. The client reads every byte the
     /// moment it is written, so a write into such a pipe leaves it empty.
     | DrainedPipeHoldsBytes of pipe : PipeId * held : int
+    /// The client is asleep in a write into a pipe that has room for some of
+    /// what it has left. It writes whenever a read makes room, so a pipe it
+    /// supplies is always as full as it can make it.
+    | SuppliedPipeHasRoom of pipe : PipeId
     /// A pipe in the table has an identity at or above the next one to
     /// allocate, so a future `pipe2` would mint a duplicate.
     | NextPipeIdNotFresh of nextPipeId : PipeId * existing : PipeId
@@ -977,6 +981,12 @@ module UnixSystem =
                     | None -> None
                 )
 
+            let unsupplied =
+                system.Machine.Pipes
+                |> Map.toList
+                |> List.filter (fun (_, pipe) -> PipeState.clientWriteCouldProceed pipe)
+                |> List.map (fst >> UnixSystemDefect.SuppliedPipeHasRoom)
+
             let freshness =
                 system.Machine.Pipes
                 |> Map.toList
@@ -1045,6 +1055,7 @@ module UnixSystem =
             dangling
             @ unreferenced
             @ undrained
+            @ unsupplied
             @ freshness
             @ inodeFreshness
             @ inodeDuplicates
@@ -1241,7 +1252,9 @@ module UnixSystem =
     /// The launch table of a process started with each of its standard streams
     /// redirected to a pipe of its own, as a shell's `cmd < a | b 2> c` and
     /// most test harnesses do: descriptor 0 reads a pipe whose writer supplied
-    /// nothing, and descriptors 1 and 2 write to pipes the client drains.
+    /// nothing, and descriptors 1 and 2 write to pipes the client drains. A
+    /// client supplying bytes on standard input replaces entry 0 with
+    /// `LaunchDescriptor.Supplied` of them.
     ///
     /// Not the only shape a real process can inherit, and not the terminal one.
     /// Under a tty, descriptors 0, 1 and 2 are `dup`s of a single `O_RDWR`
@@ -1250,7 +1263,7 @@ module UnixSystem =
     let pipedStandardStreams : Map<int, LaunchDescriptor> =
         Map.ofList
             [
-                0, LaunchDescriptor.SuppliedNothing
+                0, LaunchDescriptor.Supplied ImmutableArray.Empty
                 1, LaunchDescriptor.Drained
                 2, LaunchDescriptor.Drained
             ]
@@ -1325,18 +1338,7 @@ module UnixSystem =
                         $"UnixSystem.initial: the launch table names descriptor %d{fd}, which is negative; no process has a descriptor below 0."
 
                 let pipeId = PipeId (int64 index)
-
-                let pipeEnd =
-                    match descriptor with
-                    | LaunchDescriptor.SuppliedNothing -> PipeEnd.Read
-                    | LaunchDescriptor.Drained -> PipeEnd.Write
-
-                let pipe =
-                    {
-                        Buffer = PipeBuffer.empty platform
-                        Origin = PipeOrigin.Launched (ExternalEndpoint fd, descriptor)
-                    }
-
+                let pipe, pipeEnd = PipeState.launch platform fd descriptor
                 fd, pipeId, pipeEnd, pipe
             )
 

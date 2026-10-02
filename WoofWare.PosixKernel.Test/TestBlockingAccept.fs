@@ -155,7 +155,9 @@ module TestBlockingAccept =
             match UnixConnection.accept task fd destination declaredLength system with
             | Ok (AcceptOutcome.WouldBlock condition, parked) ->
                 condition
-                |> shouldEqual (WakeCondition.Primitive (WakePrimitive.AcceptQueueNonEmpty listener))
+                |> shouldEqual (
+                    Interruptible.condition (WakeCondition.Primitive (WakePrimitive.AcceptQueueNonEmpty listener))
+                )
 
                 UnixTaskTable.parkOf task parked.Tasks
                 |> shouldEqual (
@@ -195,12 +197,12 @@ module TestBlockingAccept =
         let condition = WakeCondition.Primitive (WakePrimitive.AcceptQueueNonEmpty listener)
         let system = parkIn 1 fd system
 
-        WakeCondition.satisfied condition system |> shouldEqual Set.empty
+        WakeCondition.satisfied 1 condition system |> shouldEqual Set.empty
         UnixWait.wakes (Set.singleton 1) system |> shouldEqual []
 
         let system = connectTo 5000us system
 
-        WakeCondition.satisfied condition system
+        WakeCondition.satisfied 1 condition system
         |> shouldEqual (Set.singleton (WakePrimitive.AcceptQueueNonEmpty listener))
 
         UnixWait.wakes (Set.singleton 1) system
@@ -296,7 +298,9 @@ module TestBlockingAccept =
                 match finished with
                 | Ok (AcceptOutcome.WouldBlock condition, parkedAgain) ->
                     condition
-                    |> shouldEqual (WakeCondition.Primitive (WakePrimitive.AcceptQueueNonEmpty listener))
+                    |> shouldEqual (
+                        Interruptible.condition (WakeCondition.Primitive (WakePrimitive.AcceptQueueNonEmpty listener))
+                    )
 
                     UnixTaskTable.parkOf 1 parkedAgain.Tasks
                     |> shouldEqual (

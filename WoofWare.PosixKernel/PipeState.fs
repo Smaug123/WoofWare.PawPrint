@@ -76,15 +76,70 @@ type ExternalEndpoint =
 /// launch descriptors share a description or a pipe.
 [<RequireQualifiedAccess>]
 type LaunchDescriptor =
-    /// The read end of a pipe, opened `O_RDONLY`. The client held the write end,
-    /// wrote nothing into it, and closed it before the process started, so a
-    /// read answers end of file at once.
-    | SuppliedNothing
+    /// The read end of a pipe, opened `O_RDONLY`. The client holds the write end
+    /// and writes `bytes` into it with one blocking `write(2)`, then closes it.
+    ///
+    /// Bytes the pipe cannot hold yet go in as the process reads, so a read
+    /// finds the pipe as full as that sleeping write could have made it, and
+    /// end of file comes only once the process has read every one. With no
+    /// bytes, a read answers end of file at once.
+    ///
+    /// More bytes than one `write(2)` moves on the platform are refused.
+    | Supplied of bytes : ImmutableArray<byte>
     /// The write end of a pipe, opened `O_WRONLY`. The client holds the read end
     /// and reads every byte the moment it is written, so a blocking write is
     /// never short and never waits. What the client read is in
     /// `UnixMachineState.Delivered`.
     | Drained
+
+/// The bytes a client has still to write into a pipe, oldest first. Never
+/// none: a client with nothing left to write has closed its end.
+///
+/// Two are equal when they hold the same bytes.
+[<CustomEquality ; NoComparison>]
+type UnwrittenBytes =
+    private
+        {
+            /// Every byte the client's write was given.
+            All : ImmutableArray<byte>
+            /// How many of `All` are already in the pipe or read; less than
+            /// `All`'s length.
+            Written : int
+        }
+
+    /// How many bytes are still to be written.
+    member this.Length : int = this.All.Length - this.Written
+
+    /// The bytes still to be written, oldest first.
+    member this.ToImmutableArray () : ImmutableArray<byte> =
+        ImmutableArray.Create (this.All, this.Written, this.Length)
+
+    override this.Equals (other : obj) : bool =
+        match other with
+        | :? UnwrittenBytes as other ->
+            this.Length = other.Length
+            && System.MemoryExtensions.SequenceEqual (
+                this.All.AsSpan (this.Written, this.Length),
+                other.All.AsSpan (other.Written, other.Length)
+            )
+        | _ -> false
+
+    override this.GetHashCode () : int = this.Length
+
+/// The end of a launched pipe that the client holds, as it stands now.
+[<RequireQualifiedAccess>]
+type ClientEnd =
+    /// The read end, from which the client reads every byte the moment it is
+    /// written.
+    | Draining
+    /// The write end, the client asleep in its one write of the bytes it
+    /// supplied because the pipe has no room for `unwritten`, the rest of them.
+    /// It writes more each time a read makes room, and closes the end once the
+    /// last byte is in.
+    | Supplying of unwritten : UnwrittenBytes
+    /// Nothing: the client has closed the write end, either because every byte
+    /// it supplied went in, or because no reader was left to take the rest.
+    | WriteEndClosed
 
 /// Where a pipe came from, and so what is known about it besides its bytes.
 [<RequireQualifiedAccess>]
@@ -93,12 +148,13 @@ type PipeOrigin =
     /// `fstat(2)` reports about it.
     | Made of status : PipeStatus
     /// The launch table's entry for `endpoint`'s descriptor, before the process
-    /// started. The client holds the pipe's other end, as `descriptor` says.
+    /// started. The client holds the pipe's other end, and `client` is what it
+    /// is doing with it now.
     ///
     /// Its owner and timestamps are the launcher's, which the launch table does
     /// not state, so `fstat(2)`, and `fchmod(2)` where it would consult the
     /// owner, are refused rather than invented.
-    | Launched of endpoint : ExternalEndpoint * descriptor : LaunchDescriptor
+    | Launched of endpoint : ExternalEndpoint * client : ClientEnd
 
 /// A pipe, as the kernel's pipe table holds it: the bytes in flight between its
 /// ends, and where it came from.
@@ -116,25 +172,155 @@ type PipeState =
         Origin : PipeOrigin
     }
 
+/// What a client asleep in a write did when a read made room in its pipe.
+[<Struct>]
+type internal ClientWriteProgress =
+    {
+        /// It wrote bytes into a pipe the read had emptied, which wakes the
+        /// read end's waiters.
+        WroteIntoEmpty : bool
+        /// It wrote its last byte and closed its end, which wakes the read
+        /// end's waiters whatever they wait for.
+        Closed : bool
+    }
+
 [<RequireQualifiedAccess>]
 module PipeState =
     /// Whether the client holds `pipeEnd` of `pipe` open: the read end of a
-    /// pipe launched as `LaunchDescriptor.Drained`, and no other: the client
-    /// closed a `LaunchDescriptor.SuppliedNothing` pipe's write end before the
-    /// process started, and a pipe the process made has no end outside it.
+    /// pipe it drains, the write end of one it is still writing into, and no
+    /// other. A pipe the process made has no end outside it.
     let heldByClient (pipeEnd : PipeEnd) (pipe : PipeState) : bool =
         match pipe.Origin, pipeEnd with
-        | PipeOrigin.Launched (_, LaunchDescriptor.Drained), PipeEnd.Read -> true
-        | PipeOrigin.Launched (_, LaunchDescriptor.Drained), PipeEnd.Write
-        | PipeOrigin.Launched (_, LaunchDescriptor.SuppliedNothing), _
+        | PipeOrigin.Launched (_, ClientEnd.Draining), PipeEnd.Read
+        | PipeOrigin.Launched (_, ClientEnd.Supplying _), PipeEnd.Write -> true
+        | PipeOrigin.Launched (_, ClientEnd.Draining), PipeEnd.Write
+        | PipeOrigin.Launched (_, ClientEnd.Supplying _), PipeEnd.Read
+        | PipeOrigin.Launched (_, ClientEnd.WriteEndClosed), _
         | PipeOrigin.Made _, _ -> false
 
     /// The client that reads `pipe` as fast as it is written, if one does.
     let drainedBy (pipe : PipeState) : ExternalEndpoint option =
         match pipe.Origin with
-        | PipeOrigin.Launched (endpoint, LaunchDescriptor.Drained) -> Some endpoint
-        | PipeOrigin.Launched (_, LaunchDescriptor.SuppliedNothing)
+        | PipeOrigin.Launched (endpoint, ClientEnd.Draining) -> Some endpoint
+        | PipeOrigin.Launched (_, ClientEnd.Supplying _)
+        | PipeOrigin.Launched (_, ClientEnd.WriteEndClosed)
         | PipeOrigin.Made _ -> None
+
+    /// The pipe `descriptor` makes for launch descriptor `fd` on a machine of
+    /// `platform`, as it stands when the process starts, and which of its ends
+    /// the process is given.
+    ///
+    /// A pipe the client supplies holds what the client's write put in before
+    /// it slept: the whole of it if it fits.
+    let internal launch
+        (platform : SimulatedUnixPlatform)
+        (fd : int)
+        (descriptor : LaunchDescriptor)
+        : PipeState * PipeEnd
+        =
+        let endpoint = ExternalEndpoint fd
+        let empty = PipeBuffer.empty platform
+
+        match descriptor with
+        | LaunchDescriptor.Drained ->
+            {
+                Buffer = empty
+                Origin = PipeOrigin.Launched (endpoint, ClientEnd.Draining)
+            },
+            PipeEnd.Write
+        | LaunchDescriptor.Supplied bytes ->
+            if bytes.IsDefault then
+                failwith
+                    $"PipeState.launch: launch descriptor %d{fd} supplies the default ImmutableArray, whose underlying array is null. To supply nothing, pass ImmutableArray<byte>.Empty."
+
+            let maxTransfer =
+                TransferCountLimit.maxTransfer (SimulatedUnixPlatform.transferCountLimit platform)
+
+            if bytes.Length > maxTransfer then
+                failwith
+                    $"PipeState.launch: launch descriptor %d{fd} supplies %d{bytes.Length} bytes, more than the %d{maxTransfer} one write(2) moves on this platform. A supplied pipe is the client's one write of its bytes, so this many would take more than one."
+
+            // The client's write starts as any write into an empty pipe does.
+            let written, buffer = PipeBuffer.write bytes empty
+
+            let client =
+                if written = bytes.Length then
+                    ClientEnd.WriteEndClosed
+                else
+                    ClientEnd.Supplying
+                        {
+                            All = bytes
+                            Written = written
+                        }
+
+            {
+                Buffer = buffer
+                Origin = PipeOrigin.Launched (endpoint, client)
+            },
+            PipeEnd.Read
+
+    /// `pipe` once a client asleep in a write into it has written what the
+    /// pipe now has room for, and closed its end if that was the last; and what
+    /// it did. A pipe with no such client is returned as it is.
+    ///
+    /// For the read operation to call after taking bytes out of the pipe: the
+    /// client writes before the process's next call, as fast as a real writer
+    /// woken by that read could.
+    let internal afterRead (pipe : PipeState) : PipeState * ClientWriteProgress =
+        match pipe.Origin with
+        | PipeOrigin.Made _
+        | PipeOrigin.Launched (_, ClientEnd.Draining)
+        | PipeOrigin.Launched (_, ClientEnd.WriteEndClosed) ->
+            pipe,
+            {
+                WroteIntoEmpty = false
+                Closed = false
+            }
+        | PipeOrigin.Launched (endpoint, ClientEnd.Supplying unwritten) ->
+            let wasEmpty = PipeBuffer.held pipe.Buffer = 0
+            let taken, buffer = PipeBuffer.resume unwritten.All unwritten.Written pipe.Buffer
+            let written = unwritten.Written + taken
+            let closed = written = unwritten.All.Length
+
+            let client =
+                if closed then
+                    ClientEnd.WriteEndClosed
+                else
+                    ClientEnd.Supplying
+                        { unwritten with
+                            Written = written
+                        }
+
+            {
+                Buffer = buffer
+                Origin = PipeOrigin.Launched (endpoint, client)
+            },
+            {
+                WroteIntoEmpty = wasEmpty && taken > 0
+                Closed = closed
+            }
+
+    /// `pipe` once its read end has closed for good: a client asleep in a write
+    /// into it is woken with `EPIPE`, and closes its end.
+    let internal readEndClosed (pipe : PipeState) : PipeState =
+        match pipe.Origin with
+        | PipeOrigin.Launched (endpoint, ClientEnd.Supplying _) ->
+            { pipe with
+                Origin = PipeOrigin.Launched (endpoint, ClientEnd.WriteEndClosed)
+            }
+        | PipeOrigin.Made _
+        | PipeOrigin.Launched (_, ClientEnd.Draining)
+        | PipeOrigin.Launched (_, ClientEnd.WriteEndClosed) -> pipe
+
+    /// Whether a client asleep in a write into `pipe` could write now: if so,
+    /// it would not be asleep. False for a pipe with no such client.
+    let internal clientWriteCouldProceed (pipe : PipeState) : bool =
+        match pipe.Origin with
+        | PipeOrigin.Launched (_, ClientEnd.Supplying unwritten) ->
+            fst (PipeBuffer.resume unwritten.All unwritten.Written pipe.Buffer) > 0
+        | PipeOrigin.Made _
+        | PipeOrigin.Launched (_, ClientEnd.Draining)
+        | PipeOrigin.Launched (_, ClientEnd.WriteEndClosed) -> false
 
 /// The bytes one `write(2)` delivered to a client that drains a pipe: what the
 /// client read, in the order the process wrote it.

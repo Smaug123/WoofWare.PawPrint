@@ -59,11 +59,11 @@ module LSeekRefusal =
 
 /// Why this kernel will not answer an `flock`.
 ///
-/// Every case is a measured divergence between the two flavours that this
-/// library models Linux's side of. Darwin's `flock` is unmodelled not because
-/// its return codes are unknown — they are measured, and named in each case's
-/// description — but because what they leave the *lock state* as is not, which
-/// is what a model would have to commit to.
+/// Every case but `Interruption` is a measured divergence between the two
+/// flavours that this library models Linux's side of. Darwin's `flock` is
+/// unmodelled not because its return codes are unknown — they are measured,
+/// and named in each case's description — but because what they leave the
+/// *lock state* as is not, which is what a model would have to commit to.
 [<RequireQualifiedAccess>]
 type FLockRefusal =
     /// Not exactly one of LOCK_SH/LOCK_EX/LOCK_UN, optionally with LOCK_NB.
@@ -78,6 +78,9 @@ type FLockRefusal =
     /// refused on the request rather than on the outcome, so that the refusal is
     /// a property of what was asked rather than of who else held a lock.
     | DarwinConversion
+    /// The acquisition was asleep and a signal is pending for the task, and this
+    /// library will not say how the signal ends it.
+    | Interruption of SyscallInterruptionRefusal
 
 [<RequireQualifiedAccess>]
 module FLockRefusal =
@@ -96,6 +99,7 @@ module FLockRefusal =
             $"the descriptor is socket %O{socket}. Linux permits `flock` on a socket and returns 0; Darwin refuses it with ENOTSUP (raw 45)."
         | FLockRefusal.DarwinConversion ->
             "the descriptor is converting a lock it already holds. Should that conversion fail, Linux leaves the description holding *nothing* (`flock` removes the old lock before establishing the new one, and the two steps are not atomic) while Darwin leaves the old lock in place -- measured on both, and indistinguishable from the return code, which is EWOULDBLOCK either way."
+        | FLockRefusal.Interruption refusal -> SyscallInterruptionRefusal.describe refusal
 
 /// Why this kernel will not answer a `posix_fadvise(2)`.
 [<RequireQualifiedAccess>]
@@ -1092,6 +1096,12 @@ module UnixDescriptor =
     /// an edge one: a release wakes every waiter and they race, so all but one
     /// of them find it gone.
     ///
+    /// When the lock cannot be granted and a signal with a handler is pending
+    /// for the task, the signal ends the call: `Restarts` if every handler that
+    /// runs was installed with `SA_RESTART`, and `Answered (Failed EINTR)` if
+    /// none was. Either clears the park, and a conversion's old lock stays
+    /// dropped, as it is while the call sleeps.
+    ///
     /// Most of what `flock` screens is not re-screened, because a screen over
     /// facts that cannot change is spent: the operation bits were validated
     /// before the park, and this signature makes a malformed resume
@@ -1148,6 +1158,11 @@ module UnixDescriptor =
                     }
             }
 
+        let finished =
+            { advanced with
+                Tasks = UnixTaskTable.unpark task advanced.Tasks
+            }
+
         match error with
         | Some FlockError.BadFd ->
             // `flockOn` never resolves a descriptor, so it has no bad one to
@@ -1155,23 +1170,29 @@ module UnixDescriptor =
             failwith
                 $"UnixDescriptor.flockAcquire: acquiring on open file description %O{requester} reported EBADF, which only a descriptor lookup can produce (this is a bug in this library)."
         | Some FlockError.WouldBlock ->
-            // Beaten: the waiter sleeps again on the same record, re-queued behind
-            // every park already made, as a real kernel re-queues it.
-            let parked =
-                ParkedSyscall.Flock
-                    {
-                        ParkedFlock.Requester = requester
-                        Mode = mode
-                    }
+            match SyscallInterruption.ofPark task advanced with
+            | Error refusal -> Error (FLockRefusal.Interruption refusal)
+            | Ok (Some SyscallInterruption.Eintr) ->
+                Ok (SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.EINTR), finished)
+            | Ok (Some SyscallInterruption.Restart) -> Ok (SyscallOutcome.Restarts, finished)
+            | Ok None ->
+                // Beaten: the waiter sleeps again on the same record, re-queued behind
+                // every park already made, as a real kernel re-queues it.
+                let parked =
+                    ParkedSyscall.Flock
+                        {
+                            ParkedFlock.Requester = requester
+                            Mode = mode
+                        }
 
-            Ok (SyscallOutcome.WouldBlock (WakeCondition.ofPark parked), UnixWait.park task parked advanced)
+                Ok (SyscallOutcome.WouldBlock (WakeCondition.ofPark parked), UnixWait.park task parked advanced)
         | None ->
-            let granted =
-                { advanced with
-                    Tasks = UnixTaskTable.unpark task advanced.Tasks
-                }
-
-            Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), granted)
+            // Measured on Linux 6.18.5 (`signal-interrupt-requeue.c`, section
+            // D): a lock that can be granted beats a pending signal. Darwin
+            // answers whichever came first, which `beforeCompleting` refuses.
+            match SyscallInterruption.beforeCompleting task advanced with
+            | Error refusal -> Error (FLockRefusal.Interruption refusal)
+            | Ok () -> Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), finished)
 
     /// `ioctl(fd, FIONREAD, &count)`: how many bytes a read of the pipe end `fd`
     /// names could take now, written into the caller's `int` at `destination`.
@@ -1605,11 +1626,16 @@ module UnixDescriptor =
                 // onto both.
                 // An end the client holds stays open whatever the process
                 // closes, so a launched pipe the client drains outlives the
-                // process's last descriptor onto it.
+                // process's last descriptor onto it. A client asleep in a write
+                // does not: once no reader is left its write fails, and it
+                // closes its end.
                 let pipe = UnixMachineState.pipe pipeId closed.Machine
+                let readable = UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Read closed.Process
+
+                let pipe = if readable then pipe else PipeState.readEndClosed pipe
 
                 if
-                    UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Read closed.Process
+                    readable
                     || UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Write closed.Process
                 then
                     closed

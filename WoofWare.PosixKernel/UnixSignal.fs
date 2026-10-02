@@ -124,12 +124,29 @@ module UnixSignal =
     /// it is the process's leader, the process's too. Asked before `task` next
     /// runs its own code, including after `sigreturn`.
     ///
-    /// Fails loudly if `task` names no task, which is a bug in the client.
+    /// A task asleep in a syscall is not in user mode, and returns to it only
+    /// once the syscall has answered. A signal ends that sleep through the
+    /// syscall's finishing call instead (see `SyscallInterruption`), after which
+    /// the task returns to user mode here.
+    ///
+    /// Fails loudly if `task` names no task, or is asleep in a syscall, each of
+    /// which is a bug in the client.
     let onReturnToUser<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SignalDelivery<'Task, 'Handler> option * UnixSystem<'Task, 'Handler>, SignalReceiverRefusal>
         =
+        // Looked up rather than asked of `UnixTaskTable.parkedFor`, so that a
+        // name that is no task is left to `SignalState.onReturnToUser`'s own
+        // check.
+        match Map.tryFind task system.Tasks |> Option.bind (fun state -> state.Parked) with
+        | Some {
+                   Syscall = parked
+               } ->
+            failwith
+                $"UnixSignal.onReturnToUser: task %O{task} is asleep in %A{parked}, so it is not returning to user mode. A signal ends that sleep through the syscall's finishing call (this is a bug in the client)."
+        | None ->
+
         SignalState.onReturnToUser system.Process.CoreDumps system.Leader (tasksOf system) task system.Process.Signals
         |> Result.map (fun (delivery, signals) -> delivery, withSignals signals system)
 

@@ -123,7 +123,7 @@ module TestClassInitWaitChain =
             [
                 ThreadStatus.Runnable
                 ThreadStatus.Terminated
-                ThreadStatus.NotStarted
+                ThreadStatus.NotStarted (WoofWare.PosixKernel.CpuId 0)
                 ThreadStatus.BlockedOnSleep None
                 ThreadStatus.BlockedOnJoin (ThreadId 0, None)
                 ThreadStatus.BlockedInSyscall

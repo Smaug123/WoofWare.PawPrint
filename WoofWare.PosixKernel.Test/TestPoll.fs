@@ -79,6 +79,7 @@ module TestPoll =
             after |> shouldEqual system
             Ok (reported, count)
         | Ok (PollOutcome.WouldBlock condition, _) -> failwith $"expected an answer, got a park on %A{condition}"
+        | Ok (PollOutcome.Failed error, _) -> failwith $"expected an answer, got %A{error}"
 
     let private pollOrFail
         (entries : PollEntry list)

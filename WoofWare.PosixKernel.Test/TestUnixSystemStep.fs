@@ -22,9 +22,9 @@ module TestUnixSystemStep =
 
     let private rootInode : InodeNumber = InodeNumber 1L
 
-    /// Whether the syscall that parked on `condition` would get further now.
-    let private holds (condition : WakeCondition) (system : UnixSystem<int, string>) : bool =
-        not (Set.isEmpty (WakeCondition.satisfied condition system))
+    /// Whether the syscall `waiter` parked in on `condition` would get further now.
+    let private holds (waiter : int) (condition : WakeCondition) (system : UnixSystem<int, string>) : bool =
+        not (Set.isEmpty (WakeCondition.satisfied waiter condition system))
 
     /// A system with task `name` registered, since a park is recorded against a
     /// task and `UnixTaskTable` is loudly partial in names it has never minted.
@@ -128,6 +128,7 @@ module TestUnixSystemStep =
         match result with
         | Ok (SyscallOutcome.Answered answer, _) -> answer
         | Ok (SyscallOutcome.WouldBlock condition, _) -> failwith $"expected an answer, got a park on %O{condition}"
+        | Ok (SyscallOutcome.Restarts, _) -> failwith "expected an answer, got a restart"
         | Error e -> failwith $"expected an answer, got a refusal: %O{e}"
 
     /// A `step` result with its outcome unwrapped to the answer it carries, so
@@ -140,6 +141,7 @@ module TestUnixSystemStep =
         match result with
         | Ok (SyscallOutcome.Answered answer, system) -> Ok (answer, system)
         | Ok (SyscallOutcome.WouldBlock condition, _) -> failwith $"expected an answer, got a park on %O{condition}"
+        | Ok (SyscallOutcome.Restarts, _) -> failwith "expected an answer, got a restart"
         | Error e -> Error e
 
     // -------------------------------------------------------------------- read
@@ -2614,7 +2616,9 @@ module TestUnixSystemStep =
         // `second` waits on the same lock.
         condition
         |> shouldEqual (
-            WakeCondition.Primitive (WakePrimitive.FlockGrantable (descriptionOf second held, FlockMode.Exclusive))
+            Interruptible.condition (
+                WakeCondition.Primitive (WakePrimitive.FlockGrantable (descriptionOf second held, FlockMode.Exclusive))
+            )
         )
 
     [<Test>]
@@ -2634,7 +2638,7 @@ module TestUnixSystemStep =
             let condition, parkedIn =
                 UnixDescriptor.flock waiterTask second requester held |> parked
 
-            holds condition parkedIn |> shouldEqual false
+            holds waiterTask condition parkedIn |> shouldEqual false
 
         // ...and shared-on-shared is the control: it is granted, so there is no
         // condition for the predicate to be wrong about.
@@ -2652,7 +2656,7 @@ module TestUnixSystemStep =
 
         let released = UnixDescriptor.flock holderTask first 8 parkedIn |> granted
 
-        holds condition released |> shouldEqual true
+        holds waiterTask condition released |> shouldEqual true
 
     [<Test>]
     let ``a condition names the lock it wants, not the holder it is waiting out`` () : unit =
@@ -2672,7 +2676,7 @@ module TestUnixSystemStep =
         let third, opened = withAnotherDescription first released
         let contended = UnixDescriptor.flock thirdTask third 2 opened |> granted
 
-        holds condition contended |> shouldEqual false
+        holds waiterTask condition contended |> shouldEqual false
 
     [<Test>]
     let ``two holders must both release before the condition holds`` () : unit =
@@ -2688,10 +2692,10 @@ module TestUnixSystemStep =
         let condition, parkedIn = UnixDescriptor.flock thirdTask third 2 held |> parked
 
         let oneReleased = UnixDescriptor.flock holderTask first 8 parkedIn |> granted
-        holds condition oneReleased |> shouldEqual false
+        holds thirdTask condition oneReleased |> shouldEqual false
 
         let bothReleased = UnixDescriptor.flock waiterTask second 8 oneReleased |> granted
-        holds condition bothReleased |> shouldEqual true
+        holds thirdTask condition bothReleased |> shouldEqual true
 
     [<Test>]
     let ``a parked conversion is holding nothing`` () : unit =
@@ -2737,7 +2741,7 @@ module TestUnixSystemStep =
         let reacquired = UnixDescriptor.flock thirdTask first 1 parkedIn |> granted
         let released = UnixDescriptor.flock waiterTask second 8 reacquired |> granted
 
-        holds condition released |> shouldEqual true
+        holds holderTask condition released |> shouldEqual true
 
     [<Test>]
     let ``a descriptor number is not a stable name for what a waiter waits on`` () : unit =
@@ -2774,7 +2778,7 @@ module TestUnixSystemStep =
             | other -> failwith $"expected the close to succeed, got %A{other}"
 
         // The description survives the close, because the alias still names it.
-        holds condition closed |> shouldEqual false
+        holds waiterTask condition closed |> shouldEqual false
 
         // ...and the number it was waited on through is now free, so the next
         // open takes it and it names something the waiter never asked about.
@@ -2785,10 +2789,14 @@ module TestUnixSystemStep =
         // The condition is unmoved by all of that: it still names the
         // description, which is still what the release must satisfy.
         condition
-        |> shouldEqual (WakeCondition.Primitive (WakePrimitive.FlockGrantable (waitedOn, FlockMode.Exclusive)))
+        |> shouldEqual (
+            Interruptible.condition (
+                WakeCondition.Primitive (WakePrimitive.FlockGrantable (waitedOn, FlockMode.Exclusive))
+            )
+        )
 
         let released = UnixDescriptor.flock holderTask first 8 opened |> granted
-        holds condition released |> shouldEqual true
+        holds waiterTask condition released |> shouldEqual true
 
     [<Test>]
     let ``a condition whose description has gone gets no answer`` () : unit =
@@ -2814,7 +2822,7 @@ module TestUnixSystemStep =
                 }
             | other -> failwith $"expected the forged close to destroy the description, got %A{other}"
 
-        let exn = Assert.Throws<exn> (fun () -> holds condition closed |> ignore)
+        let exn = Assert.Throws<exn> (fun () -> holds waiterTask condition closed |> ignore)
 
         exn.Message |> shouldContainText "closed underneath it"
 
@@ -2880,7 +2888,7 @@ module TestUnixSystemStep =
         let requester = descriptionOf second parkedIn
         let released = UnixDescriptor.flock holderTask first 8 parkedIn |> granted
 
-        holds condition released |> shouldEqual true
+        holds waiterTask condition released |> shouldEqual true
 
         let finished = UnixDescriptor.flockAcquire waiterTask released |> granted
 
@@ -2973,7 +2981,11 @@ module TestUnixSystemStep =
 
         condition
         |> shouldEqual (
-            WakeCondition.Primitive (WakePrimitive.FlockGrantable (descriptionOf second parkedIn, FlockMode.Exclusive))
+            Interruptible.condition (
+                WakeCondition.Primitive (
+                    WakePrimitive.FlockGrantable (descriptionOf second parkedIn, FlockMode.Exclusive)
+                )
+            )
         )
 
         UnixTaskTable.parkedFor waiterTask parkedIn.Tasks
@@ -3118,7 +3130,7 @@ module TestUnixSystemStep =
         | other -> failwith $"expected the close to be refused, got %A{other}"
 
         // ...so the condition is still answerable.
-        holds condition parkedIn |> shouldEqual false
+        holds waiterTask condition parkedIn |> shouldEqual false
 
     [<Test>]
     let ``closing the last descriptor onto a parked lock is refused`` () : unit =
@@ -3164,7 +3176,7 @@ module TestUnixSystemStep =
         | Ok (SyscallAnswer.Completed 0L, closed) ->
             // ...and the condition is still answerable afterwards, which is the whole point of
             // refusing the other case.
-            holds condition closed |> shouldEqual false
+            holds waiterTask condition closed |> shouldEqual false
 
             ignore<int> alias
         | other -> failwith $"expected the close to succeed, got %A{other}"
@@ -3446,7 +3458,9 @@ module TestUnixSystemStep =
 
         WakeCondition.ofPark parked
         |> shouldEqual (
-            WakeCondition.Primitive (WakePrimitive.FlockGrantable (descriptionOf fd system, FlockMode.Shared))
+            Interruptible.condition (
+                WakeCondition.Primitive (WakePrimitive.FlockGrantable (descriptionOf fd system, FlockMode.Shared))
+            )
         )
 
     [<Test>]
@@ -3465,7 +3479,11 @@ module TestUnixSystemStep =
         // The event count is re-entry state for the finishing call, and no part of what is being
         // waited for: one deliverable event satisfies a wait for any number of them.
         WakeCondition.ofPark parked
-        |> shouldEqual (WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable (descriptionOf fd system)))
+        |> shouldEqual (
+            Interruptible.condition (
+                WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable (descriptionOf fd system))
+            )
+        )
 
     [<Test>]
     let ``a wait on a port with nothing pending is not satisfied, and a pending entry satisfies it`` () : unit =
@@ -3474,12 +3492,12 @@ module TestUnixSystemStep =
         // them.
         let quiet, system = withPort linux
 
-        holds (WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable (descriptionOf quiet system))) system
+        holds 0 (WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable (descriptionOf quiet system))) system
         |> shouldEqual false
 
         let ready, system = withPendingPort linux
 
-        holds (WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable (descriptionOf ready system))) system
+        holds 0 (WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable (descriptionOf ready system))) system
         |> shouldEqual true
 
     /// `waiters` parked, in this order, in a socket wait on the port `fd` names.

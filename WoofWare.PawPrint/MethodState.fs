@@ -132,6 +132,23 @@ type ExceptionEscape =
     /// never have shown it to.
     | SwallowedByRuntime of runtimeCaller : string
 
+/// What a C function in the runtime's native shim, which PawPrint implements, read from
+/// guest memory once, before a loop that makes a syscall again: the values a call made
+/// again must use, where reading the guest's memory afresh would see whatever another
+/// thread has written there since.
+[<RequireQualifiedAccess>]
+type NativeLocals =
+    /// `SystemNative_Accept`'s `socklen_t addrLen`, read from `*socketAddressLen` before
+    /// its `accept4` loop.
+    | AcceptAddressLength of int
+    /// `Common_Poll`'s `struct pollfd` array, converted from the caller's `PollEvent`s
+    /// before its `poll` loop.
+    | PollEntries of WoofWare.PosixKernel.PollEntry list
+    /// `SystemNative_WaitForSocketEvents` is inside `WaitForSocketEventsInner`'s loop,
+    /// past the wrapper's screens, which a call made again does not run: `*count` is
+    /// read again, by the syscall alone.
+    | SocketEventWaitLoop
+
 type MethodReturnState =
     {
         /// Handle to the caller's frame
@@ -194,6 +211,17 @@ and MethodState =
         /// parks the thread on another thread's initialisation, this frame is re-entered with the
         /// field still set and asks again.
         PendingTypeInit : ConcreteTypeHandle option
+        /// For a P/Invoke frame, whether the forward stub has zeroed the thread's system
+        /// error before the call, as it does for an import declaring `SetLastError`
+        /// (`NativeDispatch.clearLastError`). The stub does that once per call, so a
+        /// re-entry of the same frame finds whatever the call has written since: a C
+        /// wrapper that calls again after `EINTR` has left errno at `EINTR`.
+        ///
+        /// Meaningless for any other frame.
+        LastErrorCleared : bool
+        /// For a native frame whose call a signal interrupted, what the C function kept in
+        /// its own locals for the call it makes again. `None` for every other frame.
+        NativeLocals : NativeLocals option
     }
 
     member this.IlOpIndex = this._IlOpIndex
@@ -301,6 +329,19 @@ and MethodState =
     static member clearPendingTypeInit (state : MethodState) : MethodState =
         { state with
             PendingTypeInit = None
+        }
+
+    /// The forward P/Invoke stub has zeroed the thread's system error for this call. See
+    /// `LastErrorCleared`.
+    static member markLastErrorCleared (state : MethodState) : MethodState =
+        { state with
+            LastErrorCleared = true
+        }
+
+    /// Keep `locals` for the call this native frame makes again. See `NativeLocals`.
+    static member withNativeLocals (locals : NativeLocals option) (state : MethodState) : MethodState =
+        { state with
+            NativeLocals = locals
         }
 
     /// Clear any pending prefix opcodes. Must be called whenever the PC is set to a
@@ -443,5 +484,7 @@ and MethodState =
             CatchExceptions = Map.empty
             PendingPrefix = PrefixState.empty
             PendingTypeInit = None
+            LastErrorCleared = false
+            NativeLocals = None
         }
         |> Ok
