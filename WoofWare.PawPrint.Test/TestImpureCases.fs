@@ -3646,6 +3646,25 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // The same entry point under the Darwin flavour, whose libc has
+                // no `sched_getcpu`: the shim answers -1, and CoreLib falls back
+                // to the managed thread id. Four processors, as above, so that a
+                // placement leaking through is a processor index the guest can
+                // tell apart from a managed thread id. Compared against the real
+                // runtime on a Darwin host, which asserts the fallback too.
+                FileName = "SchedGetCpuDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        ProcessorCount = 4
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The monotonic clock the guest observes through `Stopwatch`
                 // boots at zero, and is the same clock `Environment.TickCount64`
                 // reads. It moves in whole milliseconds at the current
