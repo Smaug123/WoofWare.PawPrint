@@ -2993,3 +2993,25 @@ public static class Holder<T> where T : IProbe
         if not escapes.Unknown then
             failwith
                 $"Run.Call: %A{Set.toList (render analysis escapes)}, expected unknown: the receiver's class decides what runs"
+
+    [<Test>]
+    let ``a constrained call with two equally specific default bodies raises the ambiguity`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let assembly =
+            Assembly.read
+                loggerFactory
+                (Some "Diamond.dll")
+                (new MemoryStream (TestAmbiguousDefaultInterfaceDispatch.fabricate ()))
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes (analysisOver [ assembly ] id) (methodNamed assembly "Run" "Call")
+
+        let shown = render analysis escapes
+
+        if
+            escapes.Unknown
+            || not (shown.Contains "=System.Runtime.AmbiguousImplementationException")
+        then
+            failwith
+                $"Run.Call: %A{Set.toList shown}, unknown %b{escapes.Unknown}; expected AmbiguousImplementationException, and nothing unknown"

@@ -151,11 +151,23 @@ type internal MethodInstance =
         Arguments : Instantiation
     }
 
+/// What a `constrained.` call does in one instance of the method making it.
+[<RequireQualifiedAccess>]
+type internal ConstrainedOutcome =
+    /// It calls this instance.
+    | Reaches of MethodInstance
+    /// It throws this instead of calling anything.
+    | Raises of ThrownType
+    /// The type the prefix names does not decide what runs.
+    | Undecided
+
 /// What one instance of a method calls, each at the IL offset of the call: the instances it
-/// reaches, and the calls whose target the instance does not decide.
+/// reaches, what calls raise instead of reaching anything, and the calls whose target the instance
+/// does not decide.
 type internal InstanceCalls =
     {
         Callees : (int * MethodInstance) list
+        Raises : (int * ThrownType) list
         Undecided : (int * Opacity) list
     }
 
@@ -1816,17 +1828,17 @@ module EscapeAnalysis =
 
                 state, instanceOf state callee.Callee calleeTypeArguments calleeMethodArguments
 
-    /// The instance a `constrained.` call reaches, when the body of `assembly` making it runs as
-    /// `caller`, if the type the prefix names decides it, which it does for a value type and for a
-    /// sealed class (ECMA-335 III.2.1). `None` where an instance of a derived class may receive the
-    /// call, or the type is not known.
+    /// What a `constrained.` call does, when the body of `assembly` making it runs as `caller`, if
+    /// the type the prefix names decides it, which it does for a value type and for a sealed class
+    /// (ECMA-335 III.2.1). Undecided where an instance of a derived class may receive the call, or
+    /// the type is not known.
     let private constrainedInstance
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
         (caller : Instantiation)
         (constrainedType : MetadataToken)
         (callee : Callee)
-        : EscapeAnalysisState * MethodInstance option
+        : EscapeAnalysisState * ConstrainedOutcome
         =
         let state, named = calleeInstance state assembly caller callee
 
@@ -1855,7 +1867,7 @@ module EscapeAnalysis =
 
         match named.Arguments, context with
         | Instantiation.Open, _
-        | _, None -> state, None
+        | _, None -> state, ConstrainedOutcome.Undecided
         | Instantiation.Closed (namedTypeArguments, namedMethodArguments), Some (typeArguments, methodArguments) ->
 
         let state, receiver =
@@ -1886,10 +1898,10 @@ module EscapeAnalysis =
 
         // What `callvirt` runs on a receiver of exactly the type `receiver`: an override, or else
         // the method the call names.
-        let dispatchedOn (typeSystem : TypeSystemState) =
+        let dispatchedOn (typeSystem : TypeSystemState) : TypeSystemState * VirtualImplementation =
             match implementationOn true typeSystem with
-            | typeSystem, Some implementation -> typeSystem, Some implementation
-            | typeSystem, None -> typeSystem, Some concretized
+            | typeSystem, VirtualImplementation.NotOverridden -> typeSystem, VirtualImplementation.Found concretized
+            | decided -> decided
 
         // A type that is not one the method's declaring type admits leaves what runs to the
         // receiver's class: one implementing `IDynamicInterfaceCastable` is asked for it.
@@ -1902,6 +1914,7 @@ module EscapeAnalysis =
                 receiver
                 declaringType
 
+        // `None` where the type does not decide what runs.
         let typeSystem, runs =
             match TypeSystemState.tryGetConcreteTypeInfo typeSystem receiver with
             | _ when not admitted -> typeSystem, None
@@ -1910,18 +1923,20 @@ module EscapeAnalysis =
             | Some (_, receiverType) ->
                 if LoadedTypeInfo.isValueType state.BaseTypes typeSystem._LoadedAssemblies receiverType then
                     match implementationOn false typeSystem with
-                    | typeSystem, Some implementation -> typeSystem, Some implementation
-                    | typeSystem, None ->
+                    | typeSystem, VirtualImplementation.NotOverridden ->
                         // A value type that does not implement the method itself is boxed, and the
                         // call dispatched on the box (ECMA-335 III.2.1): to a method it inherits from
                         // Object, ValueType or Enum, or to an interface's default body. A boxed
                         // Nullable is its underlying value or null, not a Nullable.
                         if receiverType.Identity <> state.BaseTypes.Nullable.Identity then
-                            dispatchedOn typeSystem
+                            let typeSystem, decided = dispatchedOn typeSystem
+                            typeSystem, Some decided
                         else
                             typeSystem, None
+                    | typeSystem, decided -> typeSystem, Some decided
                 elif receiverType.TypeAttributes.HasFlag TypeAttributes.Sealed then
-                    dispatchedOn typeSystem
+                    let typeSystem, decided = dispatchedOn typeSystem
+                    typeSystem, Some decided
                 else
                     typeSystem, None
 
@@ -1931,15 +1946,24 @@ module EscapeAnalysis =
             }
 
         match runs with
-        | None -> state, None
-        | Some runs ->
+        | None
+        | Some VirtualImplementation.NotOverridden -> state, ConstrainedOutcome.Undecided
+        | Some (VirtualImplementation.Ambiguous _) ->
+            state,
+            ConstrainedOutcome.Raises (
+                ThrownType.Exactly (corelibType state "System.Runtime" "AmbiguousImplementationException")
+            )
+        | Some (VirtualImplementation.Found runs) ->
             match runs.TryMetadata with
-            | None -> state, None
+            | None -> state, ConstrainedOutcome.Undecided
             | Some facts ->
                 let key =
                     MethodKey.make (assemblyOf state runs.DeclaringAssemblyFullName) facts.Handle
 
-                state, Some (instanceOf state key (List.ofSeq runs.DeclaringTypeGenerics) (List.ofSeq runs.Generics))
+                state,
+                ConstrainedOutcome.Reaches (
+                    instanceOf state key (List.ofSeq runs.DeclaringTypeGenerics) (List.ofSeq runs.Generics)
+                )
 
     /// What `instance` calls, from the facts of its definition.
     let private callsOf
@@ -1950,22 +1974,26 @@ module EscapeAnalysis =
         =
         let assembly = assemblyOf state instance.Definition.AssemblyFullName
 
-        let state, callees, undecided =
-            ((state, [], []), facts.Calls)
-            ||> List.fold (fun (state, callees, undecided) (offset, site) ->
+        let state, callees, raises, undecided =
+            ((state, [], [], []), facts.Calls)
+            ||> List.fold (fun (state, callees, raises, undecided) (offset, site) ->
                 match site with
                 | CallSite.Direct callee ->
                     let state, reached = calleeInstance state assembly instance.Arguments callee
-                    state, (offset, reached) :: callees, undecided
+                    state, (offset, reached) :: callees, raises, undecided
                 | CallSite.Constrained (constrainedType, callee) ->
                     match constrainedInstance state assembly instance.Arguments constrainedType callee with
-                    | state, Some reached -> state, (offset, reached) :: callees, undecided
-                    | state, None -> state, callees, (offset, Opacity.VirtualCall) :: undecided
+                    | state, ConstrainedOutcome.Reaches reached ->
+                        state, (offset, reached) :: callees, raises, undecided
+                    | state, ConstrainedOutcome.Raises thrown -> state, callees, (offset, thrown) :: raises, undecided
+                    | state, ConstrainedOutcome.Undecided ->
+                        state, callees, raises, (offset, Opacity.VirtualCall) :: undecided
             )
 
         state,
         {
             Callees = List.rev callees
+            Raises = List.rev raises
             Undecided = List.rev undecided
         }
 
@@ -2071,7 +2099,7 @@ module EscapeAnalysis =
 
                         let raised =
                             [
-                                for at, thrown in facts.Raises do
+                                for at, thrown in facts.Raises @ calls.Raises do
                                     if inside at then
                                         yield at, Some thrown
                                 for at, _ in facts.Opaque @ calls.Undecided do
@@ -2146,7 +2174,7 @@ module EscapeAnalysis =
                 )
 
             let state, types =
-                ((state, outside), facts.Raises)
+                ((state, outside), facts.Raises @ calls.Raises)
                 ||> List.fold (fun (state, types) (offset, thrown) ->
                     match escapesAt state key offset (Some thrown) with
                     | state, true -> state, Set.add thrown types

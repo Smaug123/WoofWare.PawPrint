@@ -21,7 +21,7 @@ open WoofWare.PawPrint
 module TestAmbiguousDefaultInterfaceDispatch =
 
     /// The image, with `Run.Call()` making `constrained. Both callvirt IBase::M` on a default `Both`.
-    let private fabricate () : byte[] =
+    let fabricate () : byte[] =
         let builder =
             PersistedAssemblyBuilder (AssemblyName "Diamond", typeof<obj>.Assembly)
 

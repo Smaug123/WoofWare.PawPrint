@@ -36,7 +36,8 @@ method) may add more:
   what only the other way reaches;
 * a `constrained.` call on a value type or a sealed class runs that type's own implementation,
   which the analysis finds with `WoofWare.PawPrint.TypeSystem`'s `ConcreteVirtualDispatch`, the
-  dispatch the interpreter runs. A generic method's IL is read once, and its summary computed for
+  dispatch the interpreter runs, or raises `AmbiguousImplementationException` where two default
+  interface bodies are equally specific. A generic method's IL is read once, and its summary computed for
   each closed instantiation a call reaches, which decides what a `constrained.` call on one of its
   type variables runs. Asked about by itself, a generic definition stands for every instantiation,
   so such a call is opaque in it, as is one on a class that may be derived from, whose instance may
