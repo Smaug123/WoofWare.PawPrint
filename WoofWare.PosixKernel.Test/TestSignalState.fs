@@ -1749,12 +1749,18 @@ module TestSignalState =
         | Terminated of Signal * coreDumped : bool
         | Stopped of Signal * ReferenceState
         | Refused of Signal
+        /// Darwin's numbering, and the signal would be left pending beside an
+        /// instance in the set Darwin holds as the same one.
+        | RefusedAsMerged of Signal
 
     /// What generating `entry` (canonical) does at once, and the state after.
     /// A default-disposition signal some task could receive takes its default
     /// here: terminate, stop, or be discarded if the default ignores it; an
     /// ignored one some task could receive is discarded. A caught one for the
-    /// process that only a non-leader could receive is refused.
+    /// process that only a non-leader could receive is refused, and so, under
+    /// Darwin's numbering, is one left pending beside an instance in the set
+    /// Darwin holds as the same: it keeps a signal sent to the process in the
+    /// leader's own set.
     let private referenceGenerate
         (numbering : SignalNumbering)
         (coreDumps : CoreDumps)
@@ -1768,19 +1774,38 @@ module TestSignalState =
         | Some r ->
             let receiver = referenceReceiver tasks r entry
 
+            let darwinSet (target : TestTask voption) : TestTask =
+                match target with
+                | ValueNone -> referenceLeader
+                | ValueSome task -> task
+
+            let pend () : ReferenceGeneration =
+                let mergedOnDarwin =
+                    numbering = SignalNumbering.Darwin
+                    && r.Pending
+                       |> List.exists (fun p ->
+                           p.Signal = entry.Signal
+                           && p.Target <> entry.Target
+                           && darwinSet p.Target = darwinSet entry.Target
+                       )
+
+                if mergedOnDarwin then
+                    ReferenceGeneration.RefusedAsMerged entry.Signal
+                else
+                    ReferenceGeneration.Continues (referenceAdmit numbering entry r)
+
             match
                 receiver, referenceDisposition r entry.Signal, Signal.defaultDispositionUnder numbering entry.Signal
             with
-            | ReferenceReceiver.Nobody, _, _ -> ReferenceGeneration.Continues (referenceAdmit numbering entry r)
+            | ReferenceReceiver.Nobody, _, _ -> pend ()
             | ReferenceReceiver.BeyondLeader, SignalDisposition.Catch _, _ -> ReferenceGeneration.Refused entry.Signal
-            | _, SignalDisposition.Catch _, _ -> ReferenceGeneration.Continues (referenceAdmit numbering entry r)
+            | _, SignalDisposition.Catch _, _ -> pend ()
             | _, SignalDisposition.Ignore, _ -> ReferenceGeneration.Continues r
             | _, SignalDisposition.Default, DefaultDisposition.Terminate ->
                 ReferenceGeneration.Terminated (entry.Signal, referenceCore numbering coreDumps entry.Signal)
             | _, SignalDisposition.Default, DefaultDisposition.Stop -> ReferenceGeneration.Stopped (entry.Signal, r)
             | _, SignalDisposition.Default, DefaultDisposition.Ignore -> ReferenceGeneration.Continues r
-            | _, SignalDisposition.Default, DefaultDisposition.Continue ->
-                ReferenceGeneration.Continues (referenceAdmit numbering entry r)
+            | _, SignalDisposition.Default, DefaultDisposition.Continue -> pend ()
 
     /// The reference's return to user mode: after every action, start again
     /// from the head of the task's candidates and take the first it can, where
@@ -1957,6 +1982,10 @@ module TestSignalState =
                 ->
                 s, r, tasks
             | Error (SignalReceiverRefusal.LeaderBlocks a), ReferenceGeneration.Refused b when a = b -> s, r, tasks
+            | Error (SignalReceiverRefusal.PendingForProcessAndLeader a), ReferenceGeneration.RefusedAsMerged b when
+                a = b
+                ->
+                s, r, tasks
             | _ -> failwith $"generate disagreed: actual=%A{actual}, reference=%A{expected}"
         | Op.Deliver (coreDumps, task) ->
             let actual = SignalState.onReturnToUser coreDumps referenceLeader tasks task s
@@ -2163,6 +2192,7 @@ module TestSignalState =
         let mutable observedResetHands = 0
         let mutable observedHeldByFrame = 0
         let mutable observedGenerationDrops = 0
+        let mutable observedMergeRefusals = 0
         let mutable observedCoalescedEnqueues = 0
         let mutable observedQueuedRealTimeDuplicates = 0
         let mutable observedGeneratedTerminations = 0
@@ -2283,6 +2313,7 @@ module TestSignalState =
                             observedCoreDumps <- observedCoreDumps + 1
                     | ReferenceGeneration.Stopped _ -> observedGeneratedStops <- observedGeneratedStops + 1
                     | ReferenceGeneration.Refused _ -> observedGenerationRefusals <- observedGenerationRefusals + 1
+                    | ReferenceGeneration.RefusedAsMerged _ -> observedMergeRefusals <- observedMergeRefusals + 1
                     | ReferenceGeneration.Continues r' ->
                         observedGeneratedQueued <- observedGeneratedQueued + 1
 
@@ -2396,6 +2427,13 @@ module TestSignalState =
             observedIgnoredDiscards |> shouldBeGreaterThan 20
             observedGenerationDrops |> shouldEqual 0
         | SignalNumbering.Darwin -> observedGenerationDrops |> shouldBeGreaterThan 20
+
+        // Only Darwin holds a signal pending on the process and one pending on
+        // the leader as one, which this library refuses to leave pending
+        // (8 to 17 times in each of 10 runs).
+        match numbering with
+        | SignalNumbering.Linux -> observedMergeRefusals |> shouldEqual 0
+        | SignalNumbering.Darwin -> observedMergeRefusals |> shouldBeGreaterThan 0
 
         // Only Linux numbering has real-time signals in the pool (`Other 40`),
         // so only there can the walk exercise the queue-not-coalesce arm.
