@@ -21,7 +21,7 @@ type MemberResolutionKey =
         MethodGenerics : ConcreteTypeHandle list
     }
 
-/// What a MemberRef row resolves to: `IlMachineMemberResolution.resolveMember`'s answer, kept
+/// What a MemberRef row resolves to: `MemberReferenceInstantiation.resolveMember`'s answer, kept
 /// so the row need not be resolved again on the next instruction that names it.
 type ResolvedMemberReference =
     {
@@ -105,7 +105,7 @@ type TypeSystemState =
         ///
         /// Add through `WithInterfaceDispatchMap`, never by assignment.
         _InterfaceDispatchMaps : Map<ConcreteTypeHandle, InterfaceDispatchMap>
-        /// Memo of `IlMachineMemberResolution.resolveMember`, keyed on the row and the generic
+        /// Memo of `MemberReferenceInstantiation.resolveMember`, keyed on the row and the generic
         /// context it is read in.
         ///
         /// Every `ldfld`, `stfld`, `call` and `callvirt` whose token is a MemberRef resolves it
@@ -479,6 +479,52 @@ module TypeSystemState =
                 referencedInAssembly
                 target
                 typeGenericArgs
+                state._LoadedAssemblies
+
+        { state with
+            _LoadedAssemblies = assemblies
+        },
+        resolvedAssy,
+        typeInfo
+
+    let resolveType
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (ty : TypeReferenceHandle)
+        (genericArgs : ImmutableArray<TypeDefn>)
+        (assy : DumpedAssembly)
+        (state : TypeSystemState)
+        : TypeSystemState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        =
+        let assemblies, resolvedAssy, typeInfo =
+            TypeResolution.resolveType loggerFactory dotnetRuntimeDirs ty genericArgs assy state._LoadedAssemblies
+
+        { state with
+            _LoadedAssemblies = assemblies
+        },
+        resolvedAssy,
+        typeInfo
+
+    let resolveTypeFromSpec
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (ty : TypeSpecificationHandle)
+        (assy : DumpedAssembly)
+        (typeGenericArgs : TypeDefn ImmutableArray)
+        (methodGenericArgs : TypeDefn ImmutableArray)
+        (state : TypeSystemState)
+        : TypeSystemState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        =
+        let assemblies, resolvedAssy, typeInfo =
+            TypeResolution.resolveTypeFromSpec
+                loggerFactory
+                dotnetRuntimeDirs
+                baseClassTypes
+                ty
+                assy
+                typeGenericArgs
+                methodGenericArgs
                 state._LoadedAssemblies
 
         { state with
