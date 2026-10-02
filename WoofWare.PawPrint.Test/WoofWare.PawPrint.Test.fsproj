@@ -142,6 +142,7 @@
     <Compile Include="TestElementOffsetOverflow.fs" />
     <Compile Include="TestSzArrayInterfaceDispatch.fs" />
     <Compile Include="TestAmbiguousDefaultInterfaceDispatch.fs" />
+    <Compile Include="TestDispatchReadsNoBody.fs" />
     <Compile Include="TestArrayInterfaceMap.fs" />
     <Compile Include="TestCrossAssemblyTypeInitialisation.fs" />
     <Compile Include="TestCrossAssemblyAssemblyLoadEvent.fs" />

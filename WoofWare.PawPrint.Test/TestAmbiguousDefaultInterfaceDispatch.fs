@@ -295,7 +295,8 @@ public static class Run
 
         match resolved with
         | VirtualImplementation.Found found when
-            found.RequiredDeclaringType.Name = "L" || found.RequiredDeclaringType.Name = "R"
+            found.Definition.RequiredDeclaringType.Name = "L"
+            || found.Definition.RequiredDeclaringType.Name = "R"
             ->
             ()
         | VirtualImplementation.Unmodelled _ -> ()
