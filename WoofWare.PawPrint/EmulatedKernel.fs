@@ -1590,7 +1590,7 @@ module EmulatedKernel =
     let connectSocket
         (socketId : SocketId)
         (nonBlocking : bool)
-        (declaredLength : int)
+        (declaredLength : uint32)
         (family : int option)
         (destination : InternetEndpoint option)
         (kernel : EmulatedKernel)
