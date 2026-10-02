@@ -50,6 +50,7 @@ module TestSignalTermination =
 
         try
             Program.run loggerFactory (Some sourceFileName) peImage config
+            |> ExpectRun.ended
         with _ ->
             for message in messages () do
                 System.Console.Error.WriteLine $"{message}"
@@ -112,6 +113,7 @@ class Program
                         Argv = argv
                     }
             }
+        |> ExpectRun.ended
 
     let private signalTerminatedBy (outcome : RunOutcome) : Signal =
         match outcome with

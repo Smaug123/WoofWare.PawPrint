@@ -134,7 +134,7 @@ module CrossAssemblyHarness =
             FrameworkUnderTest.assertOutcomeServes outcome
 
             let terminalState =
-                match outcome with
+                match ExpectRun.ended outcome with
                 | RunOutcome.GuestUnhandledException (finalState, _, exn, _) ->
                     failwith $"Guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
                 | RunOutcome.Aborted (_, _, fatal, _) ->

@@ -108,6 +108,7 @@ module TestClockJitterFindsBugs =
             }
 
         BoundedRun.run loggerFactory guest.SourceName (Some guest.SourceName) peImage hostConfig
+        |> ExpectRun.ended
         |> endingOfOutcome
 
     // ------------------------------------------------------------------

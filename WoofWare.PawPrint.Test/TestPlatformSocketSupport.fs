@@ -104,6 +104,7 @@ class Program
                             }
                     }
             }
+        |> ExpectRun.ended
         |> exitCodeOf
 
     /// Both columns, from the interpreter rather than from the model directly:

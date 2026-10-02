@@ -360,7 +360,7 @@ public class TestBulkMoveCellAccessSweep
 
                 reraise ()
 
-        match outcome with
+        match ExpectRun.ended outcome with
         | RunOutcome.NormalExit (terminalState, _, _)
         | RunOutcome.ProcessExit (terminalState, _, _) -> terminalState.LatchedExitCode
         | RunOutcome.GuestUnhandledException (finalState, _, exn, _) ->

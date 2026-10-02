@@ -28,7 +28,9 @@ module TestForegroundThreadsAtExit =
         let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
+
         BoundedRun.run loggerFactory name (Some name) peImage (HostConfig.Default dotnetRuntimes)
+        |> ExpectRun.ended
 
     let private stdoutOf (state : IlMachineState) : string =
         OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog

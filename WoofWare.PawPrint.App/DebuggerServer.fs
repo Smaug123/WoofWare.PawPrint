@@ -520,7 +520,7 @@ module DebuggerServer =
                 }
         with
         | Program.ProgramStartResult.Ready prepared -> SessionState.Running (prepared, 0L)
-        | Program.ProgramStartResult.CompletedBeforeMain outcome -> SessionState.Finished (outcome, 0L)
+        | Program.ProgramStartResult.CompletedBeforeMain (RunEnd.Ended outcome) -> SessionState.Finished (outcome, 0L)
 
     let private eventOfStepOutcome (stepNumber : int64) (outcome : Program.ProgramStepOutcome) : DebugEvent =
         match outcome with

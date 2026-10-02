@@ -208,6 +208,7 @@ class Program
                         Argv = argv
                     }
             }
+        |> ExpectRun.ended
 
     let private runSource (source : string) (platform : SimulatedUnixPlatform) (signo : int) : RunOutcome =
         runSourceWith source platform [ string<int> signo ]

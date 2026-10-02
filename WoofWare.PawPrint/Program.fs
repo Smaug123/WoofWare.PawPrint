@@ -58,7 +58,7 @@ module Program =
 
     type ProgramStartResult =
         | Ready of PreparedProgram
-        | CompletedBeforeMain of RunOutcome
+        | CompletedBeforeMain of RunEnd
 
     type ProgramStepOutcome =
         /// `effect` is the step's `StepEffect`, forwarded verbatim from
@@ -1063,9 +1063,9 @@ module Program =
             failwith
                 "Program.stepPrepared: the entry thread's startup call returned, which ends a phase of startup; a program still starting up is stepped by stepStartup"
 
-    let rec pumpPrepared (loggerFactory : ILoggerFactory) (logger : ILogger) (prepared : PreparedProgram) : RunOutcome =
+    let rec pumpPrepared (loggerFactory : ILoggerFactory) (logger : ILogger) (prepared : PreparedProgram) : RunEnd =
         match stepPrepared loggerFactory logger prepared with
-        | ProgramStepOutcome.Completed outcome -> outcome
+        | ProgramStepOutcome.Completed outcome -> RunEnd.Ended outcome
         | ProgramStepOutcome.Deadlocked (_, stuck) ->
             failwith $"Deadlock: no runnable threads and the process has not exited. Stuck: {stuck}"
         | ProgramStepOutcome.InstructionStepped (prepared, _, _, _)
@@ -1680,7 +1680,7 @@ module Program =
             // tear the process down; propagate rather than collapsing to a host `failwith`
             // that would mask the guest-level diagnostic, and rather than pressing on into
             // Main.
-            StartupStepOutcome.Completed (ProgramStartResult.CompletedBeforeMain outcome)
+            StartupStepOutcome.Completed (ProgramStartResult.CompletedBeforeMain (RunEnd.Ended outcome))
 
     /// Reads the guest assembly and performs the one-time setup needed before Main is ready to
     /// schedule, running startup to completion.
@@ -1721,12 +1721,12 @@ module Program =
         (originalPath : string option)
         (fileStream : Stream)
         (hostConfig : HostConfig)
-        : RunOutcome
+        : RunEnd
         =
         let logger = loggerFactory.CreateLogger "Program"
 
         match prepare loggerFactory originalPath fileStream hostConfig with
-        | ProgramStartResult.CompletedBeforeMain outcome -> outcome
+        | ProgramStartResult.CompletedBeforeMain runEnd -> runEnd
         | ProgramStartResult.Ready prepared -> pumpPrepared loggerFactory logger prepared
 
     /// A machine state sitting at a scheduler tick *boundary* whose next decision is contended:
@@ -1786,7 +1786,7 @@ module Program =
         /// answered by this one run. (Its state's `Scheduling` is the `RoundRobin` the prefix ran
         /// under, where a from-scratch `Pct s` run would carry `Pct (ofSeed s)`; nothing
         /// guest-visible depends on the difference, but do not compare that field.)
-        | NeverForked of RunOutcome
+        | NeverForked of RunEnd
         /// Every thread blocked before any choice arose. Like `NeverForked`, seed-independent.
         | DeadlockedBeforeFork of stuckThreads : string
         /// A class initialiser started a thread, so the first contended decision happens during
@@ -1852,7 +1852,7 @@ module Program =
         : PrefixOutcome
         =
         match annotating prepared.State (fun () -> advanceToDecision prepared) with
-        | Advanced.Ended outcome -> PrefixOutcome.NeverForked outcome
+        | Advanced.Ended outcome -> PrefixOutcome.NeverForked (RunEnd.Ended outcome)
         | Advanced.Decide advanced ->
 
         match Scheduler.tryContenders advanced.State with
@@ -1868,7 +1868,7 @@ module Program =
         | Tick.StartupCallReturned _ ->
             failwith
                 "Program.runToNextFork: the entry thread's startup call returned, but a fork snapshot is taken only once Main is installed"
-        | Tick.Stepped (ProgramStepOutcome.Completed outcome) -> PrefixOutcome.NeverForked outcome
+        | Tick.Stepped (ProgramStepOutcome.Completed outcome) -> PrefixOutcome.NeverForked (RunEnd.Ended outcome)
         | Tick.Stepped (ProgramStepOutcome.Deadlocked (_, stuck)) -> PrefixOutcome.DeadlockedBeforeFork stuck
         | Tick.Stepped (ProgramStepOutcome.WorkerTerminated (next, _)) -> runToNextFork loggerFactory logger next
         | Tick.Stepped (ProgramStepOutcome.InstructionStepped (next, ran, whatWeDid, _)) ->

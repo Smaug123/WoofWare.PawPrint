@@ -69,12 +69,12 @@ module FabricatedGuest =
 
     /// PawPrint's outcome for a run, with every failure caught, and the captured log written to
     /// stderr when there is one.
-    let private onPawPrint (messages : unit -> 'message list) (run : unit -> RunOutcome) : FabricatedOutcome =
+    let private onPawPrint (messages : unit -> 'message list) (run : unit -> RunEnd) : FabricatedOutcome =
         try
             let outcome = run ()
             FrameworkUnderTest.assertOutcomeServes outcome
 
-            match outcome with
+            match ExpectRun.ended outcome with
             | RunOutcome.NormalExit (state, _, _)
             | RunOutcome.ProcessExit (state, _, _) -> FabricatedOutcome.Exited state.LatchedExitCode
             | RunOutcome.GuestUnhandledException (finalState, _, exn, _) ->

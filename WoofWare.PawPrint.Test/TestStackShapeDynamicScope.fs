@@ -42,7 +42,7 @@ module TestStackShapeDynamicScope =
         use _loggerFactoryResource = loggerFactory
 
         let terminalState =
-            match BoundedRun.run loggerFactory sourceName None peImage hostConfig with
+            match ExpectRun.ended (BoundedRun.run loggerFactory sourceName None peImage hostConfig) with
             | RunOutcome.NormalExit (state, _, _) -> state
             | RunOutcome.ProcessExit (state, _, _) -> state
             | RunOutcome.GuestUnhandledException (finalState, _, exn, _) ->

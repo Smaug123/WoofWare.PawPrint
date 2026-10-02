@@ -471,7 +471,7 @@ module TestPureCases =
         (sourceName : string)
         (kernelConfig : KernelConfig)
         (image : byte array)
-        : RunOutcome
+        : RunEnd
         =
         let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
@@ -493,7 +493,7 @@ module TestPureCases =
         (sourceName : string)
         (source : string)
         (kernelConfig : KernelConfig)
-        (assertResult : byte array -> RunOutcome -> unit)
+        (assertResult : byte array -> RunEnd -> unit)
         : unit
         =
         let image = Roslyn.compile [ source ]
@@ -512,7 +512,7 @@ module TestPureCases =
         (source : string)
         (kernelConfig : KernelConfig)
         (oracle : byte array -> RealRuntimeResult)
-        (assertResult : RealRuntimeResult -> RunOutcome -> unit)
+        (assertResult : RealRuntimeResult -> RunEnd -> unit)
         : unit
         =
         let image = Roslyn.compile [ source ]
@@ -532,14 +532,8 @@ module TestPureCases =
     /// terminated, and for no other. A thread's exit is where the kernel is told it has gone,
     /// so this is what catches a thread that ended without telling it, across every guest that
     /// starts and ends threads, rather than only in fixtures written to look.
-    let private assertTasksMatchThreads (outcome : RunOutcome) : unit =
-        let state =
-            match outcome with
-            | RunOutcome.NormalExit (state, _, _)
-            | RunOutcome.ProcessExit (state, _, _)
-            | RunOutcome.Aborted (state, _, _, _)
-            | RunOutcome.SignalTerminated (state, _, _)
-            | RunOutcome.GuestUnhandledException (state, _, _, _) -> state
+    let private assertTasksMatchThreads (runEnd : RunEnd) : unit =
+        let state = RunEnd.state runEnd
 
         EmulatedKernel.checkTaskInvariants (state.ThreadState |> Map.map (fun _ ts -> ts.Status)) state.Kernel
         |> shouldEqual []
@@ -618,7 +612,7 @@ public class Program
             source
             KernelConfig.Default
             (fun _image pawPrintResult ->
-                match pawPrintResult with
+                match ExpectRun.ended pawPrintResult with
                 | RunOutcome.NormalExit (terminalState, _, _) -> terminalState.LatchedExitCode |> shouldEqual 0
                 | outcome ->
                     failwith
@@ -1108,7 +1102,7 @@ class Program
             source
             KernelConfig.Default
             (fun _image pawPrintResult ->
-                match pawPrintResult with
+                match ExpectRun.ended pawPrintResult with
                 | RunOutcome.GuestUnhandledException (_, _, exn, _) ->
                     match exn.StackTrace with
                     | firstFrame :: _ -> firstFrame.Method.Name |> shouldEqual "Blow"
@@ -1136,7 +1130,7 @@ class Program
             source
             KernelConfig.Default
             (fun _image pawPrintResult ->
-                match pawPrintResult with
+                match ExpectRun.ended pawPrintResult with
                 | RunOutcome.NormalExit (terminalState, _, _) -> terminalState.LatchedExitCode |> shouldEqual 0
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
                 | RunOutcome.Aborted (_, _, fatal, _) ->
@@ -1197,7 +1191,7 @@ class Program
                 Environment = [ "PAWPRINT_TEST_VARIABLE=configured" ]
             }
             (fun _image pawPrintResult ->
-                match pawPrintResult with
+                match ExpectRun.ended pawPrintResult with
                 | RunOutcome.NormalExit (terminalState, _, _) -> terminalState.LatchedExitCode |> shouldEqual 0
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
                 | RunOutcome.Aborted (_, _, fatal, _) ->
@@ -1252,7 +1246,7 @@ class Program
                 Environment = [ "PaWpRiNt_MiXeD_CaSe_KeY=found" ]
             }
             (fun _image pawPrintResult ->
-                match pawPrintResult with
+                match ExpectRun.ended pawPrintResult with
                 | RunOutcome.NormalExit (terminalState, _, _) -> terminalState.LatchedExitCode |> shouldEqual 0
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
                 | RunOutcome.Aborted (_, _, fatal, _) ->
@@ -1294,7 +1288,7 @@ class Program
             source
             KernelConfig.Default
             (fun _image pawPrintResult ->
-                match pawPrintResult with
+                match ExpectRun.ended pawPrintResult with
                 | RunOutcome.NormalExit (terminalState, _, _) -> terminalState.LatchedExitCode |> shouldEqual 0
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
                 | RunOutcome.Aborted (_, _, fatal, _) ->
@@ -1327,7 +1321,7 @@ class Program
             source
             KernelConfig.Default
             (fun _image pawPrintResult ->
-                match pawPrintResult with
+                match ExpectRun.ended pawPrintResult with
                 | RunOutcome.Aborted (_, _, fatal, _) ->
                     fatal.Code |> shouldEqual FatalErrorCode.FailFast
                     fatal.Message |> shouldEqual (Some "boom")
@@ -1458,8 +1452,8 @@ class Program
     /// that the guest ran to completion and returned the exit code it promised.
     /// Its own assertions are the interesting part, so a wrong code is reported
     /// with the code the guest actually chose.
-    let private expectExitCode (expected : int) (outcome : RunOutcome) : IlMachineState =
-        match outcome with
+    let private expectExitCode (expected : int) (runEnd : RunEnd) : IlMachineState =
+        match ExpectRun.ended runEnd with
         | RunOutcome.NormalExit (terminalState, _, _) ->
             terminalState.LatchedExitCode |> shouldEqual expected
             terminalState

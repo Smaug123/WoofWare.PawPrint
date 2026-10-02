@@ -142,6 +142,7 @@ class Program
                         Kernel = seed
                     }
             }
+        |> ExpectRun.ended
 
     /// Transfers that exactly fill their buffer, for every storage kind a buffer
     /// can name. An extent computed a byte short would fail the last iteration

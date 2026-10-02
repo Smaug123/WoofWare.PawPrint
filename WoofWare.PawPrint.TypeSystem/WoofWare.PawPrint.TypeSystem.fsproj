@@ -26,6 +26,7 @@
         <Compile Include="MethodTableLayout.fs" />
         <Compile Include="MethodReferenceResolution.fs" />
         <Compile Include="TypeSystemState.fs" />
+        <Compile Include="MethodConcretisation.fs" />
         <Compile Include="TypeAssignability.fs" />
         <Compile Include="ConcreteMethodTable.fs" />
         <Compile Include="ConcreteInterfaceDispatch.fs" />

@@ -97,6 +97,7 @@ class Program
                         Kernel = seed
                     }
             }
+        |> ExpectRun.ended
 
     /// Every other argument valid — a live descriptor on a real file, a dereferenceable buffer, a
     /// non-negative offset — so the refusal is provably the negative size and not an earlier guard
@@ -241,6 +242,7 @@ class Program
                             Kernel = kernel
                         }
                 }
+            |> ExpectRun.ended
 
         /// The three rows that distinguish the orders. Darwin resolves the descriptor and its
         /// seekability first, so a negative offset on a bad or unseekable descriptor reports the
