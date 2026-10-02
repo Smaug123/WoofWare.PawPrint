@@ -1272,6 +1272,9 @@ module EscapeAnalysis =
         // Whether a `TypeInitializationException` from this instruction is impossible: the type it
         // touches has no initializer to fail, or is the one this body is initializing. A
         // `callvirt` names where dispatch starts rather than where it lands, so it is never pruned.
+        // Nor does a call of a static virtual name the type it lands on, but that type's
+        // initializer is the call site's to account for: `callsOf` does, for each instance whose
+        // dispatch it decides, and a call it does not decide is opaque.
         let typeInitializationImpossible
             (state : EscapeAnalysisState)
             (op : IlOp)
@@ -1299,6 +1302,10 @@ module EscapeAnalysis =
                         | _ -> state, None
                     | _ -> state, None
                 | _ -> state, None
+
+            match methodTarget with
+            | Some (CallTarget.Method callee) when isStaticVirtual state callee.Callee -> state, true
+            | _ ->
 
             match owner state with
             | state, Some owner -> state, (Some owner = initializing || not (hasTypeInitializer state owner))
@@ -2170,6 +2177,18 @@ module EscapeAnalysis =
                 | CallSite.Constrained (constrainedType, callee) ->
                     match constrainedInstance state assembly instance.Arguments constrainedType callee with
                     | state, ConstrainedOutcome.Reaches reached ->
+                        // A static method's call runs its declaring type's initializer, which may
+                        // fail; the facts leave that to the type dispatch lands on.
+                        let raises =
+                            if
+                                isStaticVirtual state callee.Callee
+                                && hasTypeInitializer state (declaringTypeOf state reached.Definition)
+                            then
+                                (offset, ThrownType.Exactly (corelibException state "TypeInitializationException"))
+                                :: raises
+                            else
+                                raises
+
                         state, (offset, reached) :: callees, raises, undecided
                     | state, ConstrainedOutcome.Raises thrown -> state, callees, (offset, thrown) :: raises, undecided
                     | state, ConstrainedOutcome.Undecided ->

@@ -3412,6 +3412,58 @@ public static class Runners
         | [] -> ()
         | failures -> failures |> String.concat Environment.NewLine |> failwith
 
+    [<Test>]
+    let ``a constrained call of a static virtual runs the initializer of the type it lands on`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let source =
+            """
+using System;
+
+namespace StaticInit;
+
+public interface IStatic { static abstract int Probe(int a, int b); }
+
+// The interface has no initializer; the implementing type's fails.
+public class FailsInit : IStatic
+{
+    static readonly int Zero;
+    static FailsInit() { Zero = 1 / Zero; }
+    public static int Probe(int a, int b) => unchecked(a + b);
+}
+
+public static class Shapes
+{
+    public static int Direct<T>(int a, int b) where T : IStatic => T.Probe(a, b);
+}
+
+public static class Runners
+{
+    public static int Direct_FailsInit(int a, int b) => Shapes.Direct<FailsInit>(a, b);
+}
+"""
+
+        let image =
+            Roslyn.compileAssembly "StaticInit" OutputKind.DynamicallyLinkedLibrary [] [ source ]
+
+        let fixture =
+            Assembly.read loggerFactory (Some "StaticInit.dll") (new MemoryStream (image))
+
+        let initialization = "System.TypeInitializationException"
+
+        dispatchOnRealRuntime "StaticInit" image [ "Direct_FailsInit" ]
+        |> shouldEqual (Map.ofList [ "Direct_FailsInit", Set.singleton initialization ])
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes
+                (analysisOver [ fixture ] id)
+                (methodNamed fixture "StaticInit.Runners" "Direct_FailsInit")
+
+        let shown = render analysis escapes
+
+        if not escapes.Unknown && not (shown.Contains ("=" + initialization)) then
+            failwith $"Direct_FailsInit: %A{Set.toList shown}, unknown false; lacks %s{initialization}"
+
     /// `Run.Call(int, int)`, a non-generic method whose `constrained. Dyn callvirt IProbe::Probe`
     /// names a sealed class that does not implement `IProbe`, though `IProbe` gives `Probe` a
     /// default body. `Dyn` implements `IDynamicInterfaceCastable`, whose `GetInterfaceImplementation`
