@@ -51,7 +51,8 @@
 //       and a DELETE answer which way (k * 2^32 + low, six highs by five lows);
 //       EV_DELETE of nothing on every kind of descriptor; a failing change
 //       after the receipts have filled the eventlist; the flags an event
-//       reports after a re-ADD that adds EV_RECEIPT.
+//       reports after a re-ADD that adds EV_RECEIPT; an EV_DELETE whose
+//       ident's low 32 bits name a registered descriptor.
 //   Y   a kqueue drained under a sleeper, with registrations; a sleeper woken
 //       by an ADD from another thread; a changelist whose second entry is
 //       unreadable (the array ends at a PROT_NONE page).
@@ -1410,6 +1411,17 @@ static void section_x(void)
         struct kevent ch[1] = { change(s.l, EVFILT_READ, AC | R, 2) };
         apply("X\tX7 re-ADD|CLEAR|RECEIPT", s.kq, ch, 1, 8);
         show("X\tX7 poll", s.kq);
+        scene_free(s);
+    }
+    // EV_DELETE of an ident whose low 32 bits name a registered descriptor and
+    // whose high ones do not: does it reach the registration?
+    {
+        struct scene s = scene_new();
+        reg(s.kq, s.l, EVFILT_READ, AC, 1);
+        struct kevent k;
+        EV_SET(&k, (uintptr_t)(((uint64_t)1 << 32) | (uint64_t)s.l), EVFILT_READ, EV_DELETE | R, 0, 0, NULL);
+        apply("X\tX9 DELETE of 2^32+L with L registered, room for 8", s.kq, &k, 1, 8);
+        show("X\tX9 poll", s.kq);
         scene_free(s);
     }
     // A waiter asleep in kevent with an empty kqueue, woken by an ADD from

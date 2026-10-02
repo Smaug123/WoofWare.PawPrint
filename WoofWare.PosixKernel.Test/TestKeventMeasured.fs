@@ -883,6 +883,23 @@ module TestKeventMeasured =
         do
             let s, l, _, kq = scene ()
             s.Register kq l read addClear 1UL
+
+            s.Kevent
+                (x "X9 DELETE of 2^32+L with L registered, room for 8")
+                kq
+                [
+                    { change l read (delete ||| receipt) 0UL with
+                        Ident = (1UL <<< 32) ||| uint64 l
+                    }
+                ]
+                8
+
+            s.Show (x "X9 poll") kq
+            rows.AddRange s.Rows
+
+        do
+            let s, l, _, kq = scene ()
+            s.Register kq l read addClear 1UL
             s.Show (x "X7 ADD|CLEAR") kq
             s.Kevent (x "X7 re-ADD|CLEAR|RECEIPT") kq [ change l read (addClear ||| receipt) 2UL ] 8
             s.Show (x "X7 poll") kq
@@ -1026,7 +1043,7 @@ module TestKeventMeasured =
 
     [<Test>]
     let ``deletes, full eventlists and re-ADDs answer as on Darwin`` () : unit =
-        sectionX () |> compare |> shouldEqual 23
+        sectionX () |> compare |> shouldEqual 25
 
     [<Test>]
     let ``a drained kqueue and an unreadable change answer as on Darwin`` () : unit =

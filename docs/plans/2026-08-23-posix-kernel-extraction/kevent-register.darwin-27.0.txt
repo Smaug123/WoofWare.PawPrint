@@ -385,6 +385,8 @@ X	X6 receipt with a NULL timeout and something queued	rv=1	-
 X	X7 ADD|CLEAR	rv=1	-	[L:READ flags=0x21 fflags=0 data=1 udata=0x1]
 X	X7 re-ADD|CLEAR|RECEIPT	rv=1	-	[L:READ flags=0x4061 fflags=0 data=0 udata=0x2]
 X	X7 poll	rv=1	-	[L:READ flags=0x21 fflags=0 data=1 udata=0x2]
+X	X9 DELETE of 2^32+L with L registered, room for 8	rv=1	-	[ident4294967299:READ flags=0x4042 fflags=0 data=2 udata=0x0]
+X	X9 poll	rv=1	-	[L:READ flags=0x21 fflags=0 data=1 udata=0x1]
 X	X8 ADD of a ready listener with a NULL timeout	rv=1	[L:READ flags=0x21 fflags=0 data=1 udata=0x1]
 Y	Y1 trial 0: sleeper through K, K closed	rv=-1	EBADF
 Y	Y1 then L ready; a {0,0} wait through D	rv=-1	EBADF	[]
