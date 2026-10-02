@@ -478,6 +478,32 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> false
         | SimulatedUnixFlavour.Darwin -> true
 
+    /// Whether this platform's `stat(2)` has an `st_flags` field, holding the
+    /// BSD file flags `chflags(2)` sets.
+    ///
+    /// Darwin's does, and Linux's `struct stat` has no such field.
+    let reportsFileFlags (platform : SimulatedUnixPlatform) : bool =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> false
+        | SimulatedUnixFlavour.Darwin -> true
+
+    /// The largest `st_nlink` this platform's `stat(2)` reports, or `None`
+    /// where no count this kernel can hold reaches the field's limit.
+    ///
+    /// Darwin's `nlink_t` is 16 bits wide, and a larger count is reported as
+    /// 65535 rather than wrapped. Linux's is at least 32 bits wide, as wide as
+    /// the count the kernel keeps.
+    let linkCountCeiling (platform : SimulatedUnixPlatform) : int64 option =
+        match flavour platform with
+        // Measured 2026-10-02 by `stat-nlink-limit.c` on Linux 6.18.5: a tmpfs
+        // directory with 70000 subdirectories reports 70002.
+        | SimulatedUnixFlavour.Linux -> None
+        // Measured 2026-10-02 by `stat-nlink-limit.c` on Darwin 27.0: an APFS
+        // directory reports 2 plus its names up to 65535, and 65535 from
+        // there to 70000 names. A directory is the only kind whose count this
+        // kernel lets grow that far.
+        | SimulatedUnixFlavour.Darwin -> Some 65535L
+
     /// Whether this platform's libc provides <c>posix_fadvise(2)</c> at all.
     ///
     /// Measured, not read from a feature test: macOS 26.6's libc exports no such

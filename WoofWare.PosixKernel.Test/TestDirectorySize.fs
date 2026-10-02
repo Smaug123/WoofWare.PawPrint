@@ -43,7 +43,7 @@ type DirectorySizeOp =
 /// The model tests below check the library against the rule measured on a real
 /// kernel of each filesystem type; the host test checks the same histories
 /// against the kernel this test runs on, where that kernel's filesystem is one
-/// the library models.
+/// the library models, and checks the directory's `st_nlink` there too.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestDirectorySize =
@@ -627,45 +627,18 @@ module TestDirectorySize =
             | Some error -> Error error
             | None -> failwith $"host lseek failed with errno %d{errno}, which has no portable name"
 
-    /// A directory on this host whose filesystem is the one the library
-    /// defaults to for `flavour`, or `None` if this host has none: `/dev/shm`
-    /// for tmpfs on Linux, and the temporary directory for APFS on macOS.
-    let private hostDirectoryFor (flavour : SimulatedUnixFlavour) : string option =
-        let candidate =
-            match flavour with
-            | SimulatedUnixFlavour.Linux -> "/dev/shm"
-            | SimulatedUnixFlavour.Darwin -> Path.GetTempPath ()
-
-        let wanted =
-            EmulatedFileSystemType.defaultFor flavour
-            |> EmulatedFileSystemType.fieldsFor flavour
-            |> Ok
-
-        if not (Directory.Exists candidate) then
-            None
-        else
-
-        let fd = hostOpen (candidate, 0, 0)
-
-        if fd < 0 then
-            None
-        else
-
-        try
-            if HostFileSystemType.typeFieldsFor flavour fd = wanted then
-                Some candidate
-            else
-                None
-        finally
-            hostClose fd |> ignore<int>
+    let private modelLinkCount (system : UnixSystem<int, string>) : int64 =
+        match UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofPath (rooted "d")) system with
+        | Ok (FileStatusAnswer.Reported status) -> status.LinkCount
+        | other -> failwith $"stat d: %A{other}"
 
     [<Test>]
-    let ``a directory's size and SEEK_END agree with this host's through any history`` () : unit =
+    let ``a directory's size, link count and SEEK_END agree with this host's through any history`` () : unit =
         HostPlatform.onUnixHost (fun flavour ->
             let fsType = EmulatedFileSystemType.defaultFor flavour
 
             let hostBase =
-                match hostDirectoryFor flavour with
+                match HostFileSystemType.directoryOfDefaultType flavour with
                 | Some directory -> directory
                 | None ->
                     Assert.Ignore $"this %O{flavour} host has no %O{fsType} directory to measure"
@@ -696,6 +669,16 @@ module TestDirectorySize =
                             if host <> model then
                                 failwith
                                     $"after %A{op}, this %O{flavour} host's %O{fsType} reports /d as %d{host} bytes, but the model says %d{model}"
+
+                            // Only where this host's `struct stat` layout is
+                            // known; the size and the seek need none.
+                            if HostStat.isMeasured flavour then
+                                let host = (HostStat.lstat flavour (Path.Combine (root, "d"))).LinkCount
+                                let model = modelLinkCount system
+
+                                if host <> model then
+                                    failwith
+                                        $"after %A{op}, this %O{flavour} host's %O{fsType} reports /d's st_nlink as %d{host}, but the model says %d{model}"
 
                             let host = hostSeekEnd hostFd
                             let model = modelSeekEnd modelFd 0L system
