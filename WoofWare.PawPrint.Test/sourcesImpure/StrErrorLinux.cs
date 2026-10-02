@@ -40,6 +40,8 @@ class StrErrorLinux
         if (Fails(Marshal.GetPInvokeErrorMessage(0) == "Success")) return check;
         if (Fails(Marshal.GetPInvokeErrorMessage(1) == "Operation not permitted")) return check;
         if (Fails(Marshal.GetPInvokeErrorMessage(2) == "No such file or directory")) return check;
+        // EBUSY is 16 on both, but its words are not.
+        if (Fails(Marshal.GetPInvokeErrorMessage(16) == "Device or resource busy")) return check;
         if (Fails(Marshal.GetPInvokeErrorMessage(11) == "Resource temporarily unavailable")) return check;
         if (Fails(Marshal.GetPInvokeErrorMessage(35) == "Resource deadlock avoided")) return check;
         if (Fails(Marshal.GetPInvokeErrorMessage(39) == "Directory not empty")) return check;

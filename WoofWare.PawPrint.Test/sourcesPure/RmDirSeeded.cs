@@ -18,8 +18,8 @@ using System.Runtime.InteropServices;
 // of those numbers names a different error on the other kernel.
 //
 // Everything is hand-rolled `DllImport`, for the reason
-// sourcesPure/UnlinkSeeded.cs gives: `Directory.Delete` builds its failures
-// through `SystemNative_StrErrorR`, which PawPrint does not implement.
+// sourcesPure/UnlinkSeeded.cs gives: `Directory.Delete` reports its failures
+// as exception types several errnos share.
 //
 // No permission row here, and deliberately: a run as root would answer
 // differently on the two sides, since PawPrint's uid is `KernelConfig`'s

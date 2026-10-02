@@ -5,9 +5,7 @@ using System.IO;
 // times it is given, and which exception each refusal throws.
 //
 // Only what holds on both flavours is asked, and no row that throws
-// UnauthorizedAccessException: CoreLib builds that exception's inner
-// IOException from SystemNative_StrErrorR, which PawPrint does not answer yet
-// (CopyFileUnauthorized.cs is parked on it). A Linux System.Native copies the
+// UnauthorizedAccessException: those are CopyFileUnauthorized.cs's. A Linux System.Native copies the
 // bytes, then sets the destination's access and modification times and its
 // permission bits from the source's; a Darwin CoreLib clones the file, which
 // carries the same, and its birth time too. Neither applies the umask to the

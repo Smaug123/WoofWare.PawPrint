@@ -40,6 +40,8 @@ class StrErrorDarwin
         if (Fails(Marshal.GetPInvokeErrorMessage(0) == "Undefined error: 0")) return check;
         if (Fails(Marshal.GetPInvokeErrorMessage(1) == "Operation not permitted")) return check;
         if (Fails(Marshal.GetPInvokeErrorMessage(2) == "No such file or directory")) return check;
+        // EBUSY is 16 on both, but its words are not.
+        if (Fails(Marshal.GetPInvokeErrorMessage(16) == "Resource busy")) return check;
         if (Fails(Marshal.GetPInvokeErrorMessage(11) == "Resource deadlock avoided")) return check;
         if (Fails(Marshal.GetPInvokeErrorMessage(35) == "Resource temporarily unavailable")) return check;
         if (Fails(Marshal.GetPInvokeErrorMessage(39) == "Destination address required")) return check;

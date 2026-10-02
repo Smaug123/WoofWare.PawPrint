@@ -16,9 +16,9 @@ using System.Runtime.InteropServices;
 // The unit tests hand the walk its privilege directly, so only a guest can see
 // that `resolveGuestPathFull` reads `Kernel.UserId` at all.
 //
-// Errnos come from the raw shim rather than from a caught exception: building
-// the BCL's IOException needs `SystemNative_StrErrorR`, which does not exist, so
-// a managed row that throws would abort the run rather than fail it.
+// Errnos come from the raw shim rather than from a caught exception, so that
+// each row asserts the errno itself rather than the exception type the BCL
+// makes of it, which several errnos share.
 //
 // The exit code is the index of the first check that failed; 0 means all
 // passed. Kept below 128, since an exit code is eight bits.

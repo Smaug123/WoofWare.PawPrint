@@ -21,11 +21,9 @@ using System.Runtime.InteropServices;
 // on Linux and the name's byte length on Darwin; it lives in
 // sourcesImpure/EnumerateWiring{Linux,Darwin}Seeded.cs.
 //
-// ENOENT is raised through the BCL, but ENOTDIR and EACCES are not: their arms
-// of `GetExceptionForIoErrno` build a message through `SystemNative_StrErrorR`,
-// which PawPrint does not implement, so a managed row for either would abort the
-// run rather than fail it. Those go through the raw shim, exactly as
-// sourcesPure/RmDirSeeded.cs and UnlinkSeeded.cs do.
+// ENOENT is raised through the BCL, but ENOTDIR and EACCES go through the raw
+// shim, exactly as sourcesPure/RmDirSeeded.cs and UnlinkSeeded.cs do, so that
+// those rows assert the errno rather than the exception type made of it.
 //
 // No permission row here, and deliberately: a run as root answers differently on
 // the two sides, since PawPrint's uid is `KernelConfig`'s whatever the host's is.

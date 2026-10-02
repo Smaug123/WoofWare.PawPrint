@@ -1139,9 +1139,8 @@ module TestVirtualFileSystemAgainstHost =
         // and about one whose final component carries a trailing separator, so
         // the model is instantiated at *this* host's flavour and macOS locally
         // and Linux in CI each falsify their own column. It also carries every
-        // EEXIST row, which a managed guest cannot reach at all: building the
-        // exception for EEXIST needs SystemNative_ConvertErrorPalToPlatform and
-        // SystemNative_StrErrorR, neither of which exists.
+        // EEXIST row at the errno level, where sourcesPure/CreateSeeded.cs sees
+        // only the exception CoreLib makes of some of them.
         let mismatches =
             [
                 for exclusive in [ false ; true ] do
