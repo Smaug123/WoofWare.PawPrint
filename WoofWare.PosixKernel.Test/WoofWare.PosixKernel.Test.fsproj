@@ -121,6 +121,7 @@
     <Compile Include="TestSockOptAgainstHost.fs" />
     <Compile Include="TestSocketErrorOption.fs" />
     <Compile Include="TestSocketErrorAgainstHost.fs" />
+    <Compile Include="TestUnconnectedSocketTransfer.fs" />
     <Compile Include="TestSocketBinding.fs" />
     <Compile Include="TestEphemeralPorts.fs" />
     <Compile Include="TestListen.fs" />
@@ -203,6 +204,16 @@
          output is embedded from beside it rather than copied.
          `TestCopyFileSyscalls` replays both matrices. -->
     <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\copy-file-syscalls.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.copyFileSyscalls.linux.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- What `read(2)` and `write(2)` answered on a socket with no peer, for
+         every domain, kind and unconnected phase, measured per flavour by
+         docs/plans/2026-08-23-posix-kernel-extraction/socket-unconnected-transfer.c,
+         whose output is embedded from beside it. `TestUnconnectedSocketTransfer`
+         holds the rules and the kernel to every row. -->
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\socket-unconnected-transfer.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.socketUnconnectedTransfer.linux.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\socket-unconnected-transfer.darwin-27.0-uid501.txt" LogicalName="WoofWare.PosixKernel.Test.socketUnconnectedTransfer.darwin.txt" />
   </ItemGroup>
 
   <ItemGroup>

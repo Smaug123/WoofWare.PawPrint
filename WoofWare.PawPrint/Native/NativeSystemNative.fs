@@ -4094,11 +4094,12 @@ module NativeSystemNative =
                 =
                 match outcome with
                 | Error (ReadRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
-                | Error (ReadRefusal.SocketConnectionState _ as refusal) ->
+                | Error (ReadRefusal.UnmodelledSocketPhase _ as refusal)
+                | Error (ReadRefusal.DatagramSleep _ as refusal) ->
                     // The library says what it measured; PawPrint says which managed
                     // caller could have reached it, which is a fact about CoreLib.
                     failwith
-                        $"%s{operation}: fd %d{fd}: %s{ReadRefusal.describe refusal} Nothing in the BCL waits on this — CoreLib reaches a socket through `SystemNative_Receive`, `SafeSocketHandle` not being a `SafeFileHandle` — so this is a hand-rolled P/Invoke. Model the connection state (issue #956) before answering it."
+                        $"%s{operation}: fd %d{fd}: %s{ReadRefusal.describe refusal} Nothing in the BCL reaches this: CoreLib reads a socket through `SystemNative_Receive`, `SafeSocketHandle` not being a `SafeFileHandle`, so this is a hand-rolled P/Invoke."
                 | Error (ReadRefusal.ScannedDirectoryPosition _ as refusal) ->
                     failwith
                         $"%s{operation}: fd %d{fd}: %s{ReadRefusal.describe refusal} CoreLib never reads a directory through `SystemNative_Read` (it enumerates with `SystemNative_OpenDir` and `SystemNative_ReadDir`, whose descriptor it never sees), so this is a hand-rolled P/Invoke reading a directory it has partly enumerated. Rewind it with `lseek(fd, 0, SEEK_SET)`, or read before enumerating."
@@ -6589,13 +6590,13 @@ module NativeSystemNative =
             // A blocking write into a pipe with no room for the rest of it
             // sleeps, and the kernel finishes it on a later re-entry; a signal
             // can end that sleep with EINTR, which the C retries, or with the
-            // count already written. A guest depending on EAGAIN or a partial
-            // write from a non-blocking socket would need connection state
-            // PawPrint does not model, which `UnixReadWrite.write` refuses
-            // rather than guesses. A write into a pipe with no reader answers
-            // EPIPE and raises SIGPIPE, which PawPrint's startup ignores, as
-            // CoreCLR's does, so the guest sees the EPIPE alone unless it has
-            // given the signal a disposition of its own.
+            // count already written. A socket with no peer answers its own
+            // errno; one with a peer moves bytes, which the kernel does not
+            // model and `UnixReadWrite.write` refuses rather than guesses. A
+            // write into a pipe with no reader, or into a Linux stream socket
+            // with no peer, answers EPIPE and raises SIGPIPE, which PawPrint's
+            // startup ignores, as CoreCLR's does, so the guest sees the EPIPE
+            // alone unless it has given the signal a disposition of its own.
             let operation = "SystemNative_Write"
             let fd = fdArgument operation instruction.Arguments.[0]
             let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
@@ -6605,8 +6606,11 @@ module NativeSystemNative =
                 // managed caller could have reached it.
                 let reachability =
                     match refusal with
-                    | WriteRefusal.SocketConnectionState _ ->
-                        "Nothing in the BCL waits on this: CoreLib reaches a socket through `SystemNative_Send`, `SafeSocketHandle` not being a `SafeFileHandle`, so this is a hand-rolled P/Invoke. Model the connection state (issue #956) before answering it."
+                    | WriteRefusal.UnmodelledSocketPhase _
+                    | WriteRefusal.SendBuffer _
+                    | WriteRefusal.Inet6Binding _
+                    | WriteRefusal.EphemeralPortsExhausted _ ->
+                        "Nothing in the BCL reaches this: CoreLib writes to a socket through `SystemNative_Send`, `SafeSocketHandle` not being a `SafeFileHandle`, so this is a hand-rolled P/Invoke."
                     | WriteRefusal.ExceedsRepresentableLength _ ->
                         "Write less, or raise the model's file-length limit (issue #956)."
                     | WriteRefusal.Interruption _ ->
