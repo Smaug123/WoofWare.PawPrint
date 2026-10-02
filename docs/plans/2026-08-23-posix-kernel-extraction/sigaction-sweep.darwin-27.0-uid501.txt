@@ -1,0 +1,84 @@
+# Darwin 27.0.0 arm64, uid 501
+# flavour darwin NSIG 32
+libc sig=-1 q0=-1/22/- h=-1/22/- q1=-1/22/- i=-1/22/- d=-1/22/- q2=-1/22/- end=exit0
+libc sig=0 q0=-1/22/- h=-1/22/- q1=-1/22/- i=-1/22/- d=-1/22/- q2=-1/22/- end=exit0
+libc sig=1 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=2 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=3 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=4 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=5 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=6 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=7 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=8 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=9 q0=-1/22/- h=-1/22/- q1=-1/22/- i=-1/22/- d=-1/22/- q2=-1/22/- end=exit0
+libc sig=10 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=11 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=12 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=13 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=14 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=15 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=16 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=17 q0=-1/22/- h=-1/22/- q1=-1/22/- i=-1/22/- d=-1/22/- q2=-1/22/- end=exit0
+libc sig=18 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=19 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=20 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=21 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=22 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=23 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=24 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=25 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=26 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=27 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=28 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=29 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=30 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=31 q0=0/0/DFL h=0/0/DFL q1=0/0/H mask(KILL,STOP,32,33)=00-1-1 i=0/0/H mask(KILL,STOP,32,33)=00-1-1 d=0/0/IGN q2=0/0/DFL end=exit0
+libc sig=32 q0=-1/22/- h=-1/22/- q1=-1/22/- i=-1/22/- d=-1/22/- q2=-1/22/- end=exit0
+libc sig=33 q0=-1/22/- h=-1/22/- q1=-1/22/- i=-1/22/- d=-1/22/- q2=-1/22/- end=exit0
+libc sig=65 q0=-1/22/- h=-1/22/- q1=-1/22/- i=-1/22/- d=-1/22/- q2=-1/22/- end=exit0
+libc sig=66 q0=-1/22/- h=-1/22/- q1=-1/22/- i=-1/22/- d=-1/22/- q2=-1/22/- end=exit0
+libc sig=128 q0=-1/22/- h=-1/22/- q1=-1/22/- i=-1/22/- d=-1/22/- q2=-1/22/- end=exit0
+libc sig=1000 q0=-1/22/- h=-1/22/- q1=-1/22/- i=-1/22/- d=-1/22/- q2=-1/22/- end=exit0
+libc sig=-2147483648 q0=-1/22/- h=-1/22/- q1=-1/22/- i=-1/22/- d=-1/22/- q2=-1/22/- end=exit0
+libc sig=2147483647 q0=-1/22/- h=-1/22/- q1=-1/22/- i=-1/22/- d=-1/22/- q2=-1/22/- end=exit0
+raw sig=-1 q0=-1/22/- q1=-1/22/- q2=-1/22/- end=exit0
+raw sig=0 q0=-1/22/- q1=-1/22/- q2=-1/22/- end=exit0
+raw sig=1 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=2 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=3 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=4 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=5 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=6 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=7 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=8 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=9 q0=-1/22/- q1=-1/22/- q2=-1/22/- end=exit0
+raw sig=10 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=11 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=12 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=13 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=14 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=15 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=16 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=17 q0=-1/22/- q1=-1/22/- q2=-1/22/- end=exit0
+raw sig=18 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=19 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=20 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=21 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=22 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=23 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=24 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=25 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=26 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=27 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=28 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=29 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=30 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=31 q0=0/0/DFL q1=0/0/DFL q2=0/0/DFL end=exit0
+raw sig=32 q0=-1/22/- q1=-1/22/- q2=-1/22/- end=exit0
+raw sig=33 q0=-1/22/- q1=-1/22/- q2=-1/22/- end=exit0
+raw sig=65 q0=-1/22/- q1=-1/22/- q2=-1/22/- end=exit0
+raw sig=66 q0=-1/22/- q1=-1/22/- q2=-1/22/- end=exit0
+raw sig=128 q0=-1/22/- q1=-1/22/- q2=-1/22/- end=exit0
+raw sig=1000 q0=-1/22/- q1=-1/22/- q2=-1/22/- end=exit0
+raw sig=-2147483648 q0=-1/22/- q1=-1/22/- q2=-1/22/- end=exit0
+raw sig=2147483647 q0=-1/22/- q1=-1/22/- q2=-1/22/- end=exit0

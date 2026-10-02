@@ -372,31 +372,35 @@ module NativeSystemNative =
             //
             // `sigaction` refuses the restore for SIGKILL, SIGSTOP and glibc's
             // 32 and 33, which the shim does not check: it re-raises the signal
-            // under whatever disposition it has.
+            // under whatever disposition it has. The errno the refusal leaves
+            // is never read: of those, SIGKILL and Linux's 32 kill the process
+            // below, the stop signals were refused above, and glibc's 33 is
+            // refused below.
             let restored =
-                if Signal.isUncatchableUnder numbering signal then
-                    state
-                else
-                    state.MapKernel (fun kernel ->
-                        let signals, shim =
-                            PosixSignalShim.restoreHandler numbering signal kernel.Signals kernel.PosixSignalShim
+                state.MapKernel (fun kernel ->
+                    let system, shim, _ =
+                        PosixSignalShim.restoreHandler
+                            numbering
+                            signal
+                            (EmulatedKernel.unix kernel)
+                            kernel.PosixSignalShim
 
-                        { kernel with
-                            Process =
-                                { kernel.Process with
-                                    Signals = signals
-                                }
-                            PosixSignalShim = shim
-                        }
-                    )
+                    { EmulatedKernel.withUnix system kernel with
+                        PosixSignalShim = shim
+                    }
+                )
 
-            match SignalState.disposition signal restored.Kernel.Signals with
-            | SignalDisposition.Catch action ->
+            // Asked of the kernel rather than through the C library, which will
+            // not report Linux's 33.
+            match UnixSignal.sigactionSyscall signo None (EmulatedKernel.unix restored.Kernel) with
+            | Ok (SignalDisposition.Catch action, _) ->
                 // Linux's 33, whose handler is glibc's own.
                 failwith
                     $"%s{operation}: re-raising %O{signal} under the %O{numbering} numbering would run its handler (%O{action.Handler}), native code PawPrint does not model."
-            | SignalDisposition.Default
-            | SignalDisposition.Ignore -> ()
+            | Ok (SignalDisposition.Default, _)
+            | Ok (SignalDisposition.Ignore, _)
+            // Darwin will not report SIGKILL, which nothing can catch.
+            | Error _ -> ()
 
             let system = EmulatedKernel.unix restored.Kernel
 
@@ -466,7 +470,7 @@ module NativeSystemNative =
             { kernel with
                 PosixSignalShim =
                     kernel.PosixSignalShim
-                    |> PosixSignalShim.saveConsoleSignals numbering kernel.Signals
+                    |> PosixSignalShim.saveConsoleSignals numbering (EmulatedKernel.unix kernel)
                     |> PosixSignalShim.markInitialized
                         dispatcher
                         {
@@ -940,60 +944,6 @@ module NativeSystemNative =
             (ImmutableArray.CreateRange bytes)
             state
 
-    /// Turn the NUL-terminated bytes a guest passed as a pathname into a
-    /// `UnixPath`, applying the length rule a kernel applies at *its* boundary.
-    ///
-    /// Takes bytes rather than machine state, so the boundary — the one part of
-    /// the length rules that the resolver can never see — is testable without a
-    /// heap. `readGuestPathBytes` is the half that needs a machine.
-    ///
-    /// The rules themselves, and the order they run in, are
-    /// `PathArgument.parse`'s.
-    let internal parseGuestPathBytes
-        (operation : string)
-        (limits : PathLimits)
-        (bytes : byte[])
-        : Result<UnixPath, UnixError>
-        =
-        match PathArgument.parse limits (ImmutableArray.CreateRange bytes) with
-        | Ok (PathArgument.Parsed path) -> Ok path
-        | Ok (PathArgument.Failed error) -> Error error
-        | Error (PathArgumentRefusal.InteriorNul offset) ->
-            // The bytes come from reading the guest's C string up to its NUL,
-            // so a NUL among them means that read went wrong.
-            failwith
-                $"%s{operation}: the bytes read for the guest's path hold a NUL at offset %d{offset}, which a C string cannot: the read ran past the string's end (this is an interpreter bug)."
-
-    /// The resolution of a guest path, or the errno the lookup owes the guest.
-    ///
-    /// A relative path resolves against `EmulatedKernel.CurrentDirectoryInode`,
-    /// the directory the simulated process holds open — so this function cannot
-    /// fail for a reason that is the *host's* fault. Whether the configured
-    /// current directory names anything is settled once, when the kernel is
-    /// built, which is where the crash for a host that misconfigured it lives.
-    ///
-    /// `trailingSeparatorPolicy` is the caller's, not the path's: a *creating*
-    /// open refuses a trailing separator on Linux where every lookup merely
-    /// records the demand. See `TrailingSeparatorPolicy`.
-    let private resolveGuestPathFull
-        (policy : SymlinkPolicy)
-        (trailingSeparatorPolicy : TrailingSeparatorPolicy)
-        (kernel : EmulatedKernel)
-        (path : UnixPath)
-        : Result<Resolution, UnixError>
-        =
-        UnixPathResolution.resolvePathFull policy trailingSeparatorPolicy path (EmulatedKernel.unix kernel)
-
-    /// The inode a path names, or the errno the lookup owes the guest — what
-    /// every non-creating caller wants.
-    let private resolveGuestPath
-        (policy : SymlinkPolicy)
-        (kernel : EmulatedKernel)
-        (path : UnixPath)
-        : Result<InodeNumber, UnixError>
-        =
-        UnixPathResolution.resolvePath policy path (EmulatedKernel.unix kernel)
-
     /// How big the `d_name` buffer inside one directory stream is.
     ///
     /// Fixed for the stream's life, because its address *is* the `DIR*` the
@@ -1237,73 +1187,20 @@ module NativeSystemNative =
 
         $"%s{operation}: fd %d{fd}: %s{FStatRefusal.describe refusal} %s{reachability}"
 
-    /// The one shape `SystemNative_MkDir`, `SystemNative_Unlink` and
-    /// `SystemNative_RmDir` share: decode a NUL-terminated path out of guest
-    /// memory, hand it to the kernel, and turn the answer into the zero or the
-    /// -1-with-errno the C returns.
+    /// One pathname argument's *bytes*: the pointer and the scan up to its NUL,
+    /// and no more than that.
     ///
-    /// The guest-memory half is PawPrint's — the pointer, the `PATH_MAX`-bounded
-    /// scan, the byte-to-`UnixPath` parse — and the syscall itself is the
-    /// kernel's; `call` is the whole of what distinguishes the three.
-    let private pathSyscall
-        (ctx : NativeCallContext)
-        (operation : string)
-        (call :
-            UnixPath
-                -> UnixSystem<ThreadId, NativeSignalHandler>
-                -> Result<SyscallAnswer * UnixSystem<ThreadId, NativeSignalHandler>, string>)
-        (state : IlMachineState)
-        : NativeHandlerResult option
-        =
-        let fail (error : UnixError) : NativeHandlerResult option =
-            withErrnoOnly ctx error state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
-            |> NativeHandlerResult.completed
-            |> Some
-
-        match
-            bufferPointerArgument operation "path" ctx.Instruction.Arguments.[0]
-            |> BufferPointer.dereferenceable
-        with
-        | None -> fail UnixError.EFAULT
-        | Some pathPtr ->
-
-        let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
-
-        let bytes =
-            NativeCall.readNullTerminatedBytesWithin
-                operation
-                ctx.BaseClassTypes
-                state
-                pathPtr
-                (PathLimits.pathMaxBytes limits)
-
-        match parseGuestPathBytes operation limits bytes with
-        | Error error -> fail error
-        | Ok path ->
-
-        match call path (EmulatedKernel.unix state.Kernel) with
-        | Error described -> failwith $"%s{operation}: %s{described}"
-        | Ok (SyscallAnswer.Failed error, system) ->
-            withErrno ctx error system state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
-            |> NativeHandlerResult.completed
-            |> Some
-        | Ok (SyscallAnswer.Completed _, system) ->
-            withAnswered system state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
-            |> NativeHandlerResult.completed
-            |> Some
-
-    /// One pathname argument's *bytes*: the pointer and the `PATH_MAX`-bounded
-    /// scan, and no more than that.
+    /// Every rule about a pathname -- EFAULT for an unreadable pointer,
+    /// ENAMETOOLONG, the empty path, and where each falls among the call's other
+    /// checks -- is the kernel's, applied when it copies the argument in. The
+    /// scan stops at `PATH_MAX` bytes, the bound the kernel's copy-in states
+    /// (`PathArgumentBytes.Bytes`), so an unterminated buffer is handed over as
+    /// that many bytes for the kernel to refuse rather than scanned off the end
+    /// of the guest's allocation.
     ///
-    /// Deliberately not decoded here. A syscall taking two pathnames copies them
-    /// in at points the kernel chooses and may never reach the second, so the
-    /// decode — which can refuse a pathname outright — belongs where the kernel
-    /// performs it. Reading the bytes early costs nothing, being a pure read of
-    /// guest memory; refusing early would answer about a pathname the syscall
-    /// never looked at.
+    /// A pointer this interpreter cannot dereference at all (a symbolic one)
+    /// refuses here, so a handler whose kernel screens another argument first
+    /// reads the path only once the kernel asks for it.
     let internal pathArgumentBytes
         (ctx : NativeCallContext)
         (operation : string)
@@ -1321,14 +1218,55 @@ module NativeSystemNative =
 
         let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
 
-        NativeCall.readNullTerminatedBytesWithin
-            operation
-            ctx.BaseClassTypes
-            state
-            pointer
-            (PathLimits.pathMaxBytes limits)
-        |> ImmutableArray.CreateRange
-        |> PathArgumentBytes.Bytes
+        let bytes =
+            NativeCall.readNullTerminatedBytesWithin
+                operation
+                ctx.BaseClassTypes
+                state
+                pointer
+                (PathLimits.pathMaxBytes limits)
+
+        match UnixByteString.ofBytes (ImmutableArray.CreateRange bytes) with
+        | Ok bytes -> PathArgumentBytes.Bytes bytes
+        | Error (UnixByteStringDefect.ContainsNul offset) ->
+            // The bytes come from reading the guest's C string up to its NUL,
+            // so a NUL among them means that read went wrong.
+            failwith
+                $"%s{operation}: the bytes read for the guest's `%s{parameter}` hold a NUL at offset %d{offset}, which a C string cannot: the read ran past the string's end (this is an interpreter bug)."
+
+    /// The one shape `SystemNative_MkDir`, `SystemNative_Unlink` and
+    /// `SystemNative_RmDir` share: read a NUL-terminated path out of guest
+    /// memory, hand its bytes to the kernel, and turn the answer into the zero
+    /// or the -1-with-errno the C returns.
+    ///
+    /// The guest-memory read is PawPrint's, and everything about the path --
+    /// including EFAULT and ENAMETOOLONG -- is the kernel's; `call` is the whole
+    /// of what distinguishes the three.
+    let private pathSyscall
+        (ctx : NativeCallContext)
+        (operation : string)
+        (call :
+            PathArgumentBytes
+                -> UnixSystem<ThreadId, NativeSignalHandler>
+                -> Result<SyscallAnswer * UnixSystem<ThreadId, NativeSignalHandler>, string>)
+        (state : IlMachineState)
+        : NativeHandlerResult option
+        =
+        let path =
+            pathArgumentBytes ctx operation "path" ctx.Instruction.Arguments.[0] state
+
+        match call path (EmulatedKernel.unix state.Kernel) with
+        | Error described -> failwith $"%s{operation}: %s{described}"
+        | Ok (SyscallAnswer.Failed error, system) ->
+            withErrno ctx error system state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+        | Ok (SyscallAnswer.Completed _, system) ->
+            withAnswered system state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
 
     /// `SystemNative_Rename`: the only syscall here that takes two pathnames,
     /// and so the only one where *when* each is read out of guest memory is
@@ -1348,9 +1286,6 @@ module NativeSystemNative =
             | Error (RenameRefusal.Sticky refusal) ->
                 failwith
                     $"%s{operation}: RenameRefusal.Sticky: %s{StickyRefusal.describe refusal} %s{unmeasuredDarwinRow}"
-            | Error (RenameRefusal.PathArgument (PathArgumentRefusal.InteriorNul offset)) ->
-                failwith
-                    $"%s{operation}: the bytes read for one of the guest's paths hold a NUL at offset %d{offset}, which a C string cannot: the read ran past the string's end (this is an interpreter bug)."
             | Ok (SyscallAnswer.Failed error, system) ->
                 withErrno ctx error system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
@@ -1366,9 +1301,8 @@ module NativeSystemNative =
             pathArgumentBytes ctx operation "oldPath" ctx.Instruction.Arguments.[0] state
 
         match UnixNamespace.renameSourcePhase source (EmulatedKernel.unix state.Kernel) with
-        | Error refusal -> answer (Error (RenameRefusal.PathArgument refusal))
-        | Ok (RenameProgress.Answered (syscallAnswer, system)) -> answer (Ok (syscallAnswer, system))
-        | Ok (RenameProgress.NeedsDestination paused) ->
+        | RenameProgress.Answered (syscallAnswer, system) -> answer (Ok (syscallAnswer, system))
+        | RenameProgress.NeedsDestination paused ->
             pathArgumentBytes ctx operation "newPath" ctx.Instruction.Arguments.[1] state
             |> fun destination -> UnixNamespace.renameWithDestination destination paused
             |> answer
@@ -1688,34 +1622,9 @@ module NativeSystemNative =
             |> Some
 
         // Both pointers are dereferenced by the C on the success path, and
-        // neither is inspected before the lookup — but the path is read first,
-        // so an unmapped `path` is EFAULT whatever the output pointer is.
-        match
-            bufferPointerArgument operation "path" instruction.Arguments.[0]
-            |> BufferPointer.dereferenceable
-        with
-        | None -> fail UnixError.EFAULT
-        | Some pathPtr ->
-
-        let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
-
-        // Bounded by PATH_MAX, because that is where a real kernel stops
-        // looking: an unterminated buffer must be ENAMETOOLONG rather than a
-        // scan that walks off the end of the guest's allocation. On overrun this
-        // hands back exactly `pathMaxBytes` bytes, which `parseGuestPathBytes`
-        // then refuses by its ordinary length rule — so "too long" is still
-        // decided in exactly one place.
-        let bytes =
-            NativeCall.readNullTerminatedBytesWithin
-                operation
-                ctx.BaseClassTypes
-                state
-                pathPtr
-                (PathLimits.pathMaxBytes limits)
-
-        match parseGuestPathBytes operation limits bytes with
-        | Error error -> fail error
-        | Ok path ->
+        // neither is inspected before the lookup — but the path is copied in
+        // first, so an unmapped `path` is EFAULT whatever the output pointer is.
+        let path = pathArgumentBytes ctx operation "path" instruction.Arguments.[0] state
 
         match UnixPathResolution.stat policy path (EmulatedKernel.unix state.Kernel) with
         | Error refusal ->
@@ -3242,26 +3151,7 @@ module NativeSystemNative =
                     Directory = false
                 }
 
-            match
-                bufferPointerArgument operation "path" instruction.Arguments.[0]
-                |> BufferPointer.dereferenceable
-            with
-            | None -> fail UnixError.EFAULT
-            | Some pathPtr ->
-
-            let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
-
-            let bytes =
-                NativeCall.readNullTerminatedBytesWithin
-                    operation
-                    ctx.BaseClassTypes
-                    state
-                    pathPtr
-                    (PathLimits.pathMaxBytes limits)
-
-            match parseGuestPathBytes operation limits bytes with
-            | Error error -> fail error
-            | Ok path ->
+            let path = pathArgumentBytes ctx operation "path" instruction.Arguments.[0] state
 
             // The `mode` argument crosses raw and unvalidated; see
             // `UnixNamespace.openPath` for why refusing a nonzero one without
@@ -3406,8 +3296,6 @@ module NativeSystemNative =
                         "Configure a user other than root (KernelConfig.UserId), or the Linux platform, to run this guest."
                     | AccessRefusal.ExtendedRights _ ->
                         "Only a guest calling the shim by hand can ask for Darwin's extended rights; model them before answering."
-                    | AccessRefusal.PathArgument _ ->
-                        "The bytes were read up to the guest's NUL, so this is an interpreter bug."
                     | AccessRefusal.UnmodelledFlags _
                     | AccessRefusal.UnmodelledDescriptor _ ->
                         "access(2) takes no flags and no dirfd, so this is a bug in the kernel library."
@@ -3452,26 +3340,7 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
-            match
-                bufferPointerArgument operation "path" instruction.Arguments.[0]
-                |> BufferPointer.dereferenceable
-            with
-            | None -> fail UnixError.EFAULT
-            | Some pathPtr ->
-
-            let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
-
-            let bytes =
-                NativeCall.readNullTerminatedBytesWithin
-                    operation
-                    ctx.BaseClassTypes
-                    state
-                    pathPtr
-                    (PathLimits.pathMaxBytes limits)
-
-            match parseGuestPathBytes operation limits bytes with
-            | Error error -> fail error
-            | Ok path ->
+            let path = pathArgumentBytes ctx operation "path" instruction.Arguments.[0] state
 
             // `Follow`, and a trailing separator that merely records its demand:
             // measured on both kernels, `opendir` follows a final symlink and a
@@ -4488,29 +4357,9 @@ module NativeSystemNative =
                 fail UnixError.EINVAL
             else
 
-            // Read before anything else looks at it, because a real kernel
-            // copies the pathname in before it resolves anything: a path that
-            // addresses nothing is EFAULT whatever the buffer is.
-            match
-                bufferPointerArgument operation "path" instruction.Arguments.[0]
-                |> BufferPointer.dereferenceable
-            with
-            | None -> fail UnixError.EFAULT
-            | Some pathPtr ->
-
-            let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
-
-            let bytes =
-                NativeCall.readNullTerminatedBytesWithin
-                    operation
-                    ctx.BaseClassTypes
-                    state
-                    pathPtr
-                    (PathLimits.pathMaxBytes limits)
-
-            match parseGuestPathBytes operation limits bytes with
-            | Error error -> fail error
-            | Ok path ->
+            // The kernel copies the pathname in before it looks at the buffer,
+            // so a path that addresses nothing is EFAULT whatever the buffer is.
+            let path = pathArgumentBytes ctx operation "path" instruction.Arguments.[0] state
 
             // The whole ordering below `bufferSize` and the pathname is the
             // library's, including the composition `NoFollowFinal` plus "and
@@ -6857,9 +6706,9 @@ module NativeSystemNative =
                         ctx.Thread
                         state.Kernel.Leader
                         state.Kernel.PosixSignalShim
-                        state.Kernel.Signals
+                        (EmulatedKernel.unix state.Kernel)
                         raised
-                        after.Process.Signals
+                        after
                 with
                 | Some refusal ->
                     failwith
@@ -7190,31 +7039,38 @@ module NativeSystemNative =
             // for SIGKILL and SIGSTOP, and — in glibc's wrapper rather than
             // the kernel — for the 32 and 33 glibc reserves for itself.
             // `InstallSignalHandler` then returns false and the shim
-            // propagates 0 with `errno = EINVAL`, which
+            // propagates 0 with that errno, which
             // `PosixSignalRegistration.Register` reads via
             // `Marshal.GetLastSystemError` to throw an `IOException`. We
             // mirror exactly that: leave the disposition alone, set errno,
             // push 0. Not a loud failure — this is a documented
             // BCL-observable failure mode, not a simulator bug.
-            let refused () : NativeHandlerResult option =
-                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EINVAL))
+            let refused (error : UnixError) (state : IlMachineState) : NativeHandlerResult option =
+                withErrnoOnly ctx error state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
 
             match signalWithinShimRange operation numbering signo with
-            | ValueNone -> refused ()
-            | ValueSome signal when Signal.isUncatchableUnder numbering signal -> refused ()
+            // Darwin's 32, which `sigaction` refuses as it refuses any number
+            // that is no signal.
+            | ValueNone -> refused UnixError.EINVAL state
             | ValueSome signal ->
-                state.MapKernel (fun kernel ->
-                    let signals, shim =
-                        PosixSignalShim.enable numbering signal kernel.Signals kernel.PosixSignalShim
 
+            let installed, shim =
+                PosixSignalShim.enable numbering signal (EmulatedKernel.unix state.Kernel) state.Kernel.PosixSignalShim
+
+            match installed with
+            | Error error ->
+                state.MapKernel (fun kernel ->
                     { kernel with
-                        Process =
-                            { kernel.Process with
-                                Signals = signals
-                            }
+                        PosixSignalShim = shim
+                    }
+                )
+                |> refused error
+            | Ok system ->
+                state.MapKernel (fun kernel ->
+                    { EmulatedKernel.withUnix system kernel with
                         PosixSignalShim = shim
                     }
                 )
@@ -7293,26 +7149,24 @@ module NativeSystemNative =
                 withErrnoOnly ctx UnixError.EINVAL state
                 |> NativeHandlerResult.completed
                 |> Some
-            | ValueSome signal when Signal.isUncatchableUnder numbering signal ->
-                // SIGKILL and SIGSTOP, and glibc's reserved 32 and 33: the
-                // same refusals `EnablePosixSignalHandling` met, so nothing
-                // can have enabled these either.
-                withErrnoOnly ctx UnixError.EINVAL state
-                |> NativeHandlerResult.completed
-                |> Some
             | ValueSome signal ->
-                state.MapKernel (fun kernel ->
-                    let signals, shim =
-                        PosixSignalShim.disable numbering signal kernel.Signals kernel.PosixSignalShim
+                let system, shim, refused =
+                    PosixSignalShim.disable
+                        numbering
+                        signal
+                        (EmulatedKernel.unix state.Kernel)
+                        state.Kernel.PosixSignalShim
 
-                    { kernel with
-                        Process =
-                            { kernel.Process with
-                                Signals = signals
-                            }
-                        PosixSignalShim = shim
-                    }
-                )
+                let state =
+                    state.MapKernel (fun kernel ->
+                        { EmulatedKernel.withUnix system kernel with
+                            PosixSignalShim = shim
+                        }
+                    )
+
+                match refused with
+                | None -> state
+                | Some error -> withErrnoOnly ctx error state
                 |> NativeHandlerResult.completed
                 |> Some
         | _ -> None

@@ -301,7 +301,7 @@ module TestModeChange =
     /// What `chmod` did, stated as the probe printed it: the errno or success,
     /// and the mode the inode then has.
     let private chmodAnswer (p : string) (requested : int) (system : UnixSystem<int, string>) =
-        match UnixPathResolution.chmod (path p) requested system with
+        match UnixPathResolution.chmod (PathArg.ofPath (path p)) requested system with
         | Ok (answer, after) -> answer, after
         | Error refusal -> failwith $"chmod(%s{p}, 0o%o{requested}) was refused: %s{ChModRefusal.describe refusal}"
 
@@ -398,7 +398,7 @@ module TestModeChange =
             let system = systemOn SimulatedUnixPlatform.macOsArm64 Owners.root (tree by)
             let standing = Standing.toward Owners.root by
 
-            UnixPathResolution.chmod (path "/t/f") 0o644 system
+            UnixPathResolution.chmod (PathArg.ofPath (path "/t/f")) 0o644 system
             |> shouldEqual (
                 Error (
                     ChModRefusal.UnmeasuredModeChange (
@@ -791,11 +791,11 @@ module TestModeChange =
 
         // A success, so the comparison covers the state the call moves, and a
         // failure.
-        UnixSystem.step 1 (Syscall.ChMod (path "/p/lf", 0o640)) system
+        UnixSystem.step 1 (Syscall.ChMod (PathArg.ofPath (path "/p/lf"), 0o640)) system
         |> answered
         |> shouldEqual (chmodAnswer "/p/lf" 0o640 system)
 
-        UnixSystem.step 1 (Syscall.ChMod (path "/p/dang", 0o640)) system
+        UnixSystem.step 1 (Syscall.ChMod (PathArg.ofPath (path "/p/dang"), 0o640)) system
         |> answered
         |> shouldEqual (chmodAnswer "/p/dang" 0o640 system)
 
@@ -809,10 +809,13 @@ module TestModeChange =
 
         let fd, withFd = opened "/t/f" FileAccessMode.ReadOnly darwin
 
-        match UnixSystem.step 1 (Syscall.ChMod (path "/t/f", 0o644)) darwin with
+        match UnixSystem.step 1 (Syscall.ChMod (PathArg.ofPath (path "/t/f"), 0o644)) darwin with
         | Error (SyscallRefusal.ChMod refusal) ->
             Error refusal
-            |> shouldEqual (UnixPathResolution.chmod (path "/t/f") 0o644 darwin |> Result.map ignore)
+            |> shouldEqual (
+                UnixPathResolution.chmod (PathArg.ofPath (path "/t/f")) 0o644 darwin
+                |> Result.map ignore
+            )
         | other -> failwith $"step chmod as Darwin root: %A{other}"
 
         match UnixSystem.step 1 (Syscall.FChMod (fd, 0o644)) withFd with

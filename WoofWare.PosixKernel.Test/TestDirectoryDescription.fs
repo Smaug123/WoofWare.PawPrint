@@ -89,7 +89,7 @@ module TestDirectoryDescription =
         closeFd (int fd) system
 
     let private makeDirectory (path : string) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        UnixNamespace.mkdir (rooted path) 0o755 system
+        UnixNamespace.mkdir (PathArg.ofPath (rooted path)) 0o755 system
         |> completed $"mkdir %s{path}"
         |> snd
 
@@ -146,7 +146,7 @@ module TestDirectoryDescription =
         openAt directoryReading "d" system
 
     let private inodeOf (path : string) (system : UnixSystem<int, string>) : InodeNumber =
-        match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (rooted path) system with
+        match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (PathArg.ofPath (rooted path)) system with
         | Ok (FileStatusAnswer.Reported status) -> status.Inode
         | other -> failwith $"stat %s{path}: %A{other}"
 

@@ -284,8 +284,7 @@ module TestDirectorySize =
     let private rooted (relative : string) : UnixPath =
         UnixPath.parseOrFail context $"/%s{relative}"
 
-    let private argument (relative : string) : PathArgumentBytes =
-        PathArgumentBytes.Bytes (ImmutableArray.CreateRange (Text.Encoding.UTF8.GetBytes $"/%s{relative}"))
+    let private argument (relative : string) : PathArgumentBytes = PathArg.ofText $"/%s{relative}"
 
     let private completed
         (what : string)
@@ -311,7 +310,7 @@ module TestDirectorySize =
 
             closeFd (int fd) system
         | DirectorySizeOp.MakeDirectory path ->
-            UnixNamespace.mkdir (rooted path) 0o755 system
+            UnixNamespace.mkdir (PathArg.ofPath (rooted path)) 0o755 system
             |> completed $"mkdir %s{path}"
             |> snd
         | DirectorySizeOp.Unlink path -> Answered.unlink (rooted path) system |> completed $"unlink %s{path}" |> snd
@@ -348,7 +347,7 @@ module TestDirectorySize =
         int fd, system
 
     let private modelSize (system : UnixSystem<int, string>) : int64 =
-        match UnixPathResolution.stat SymlinkPolicy.Follow (rooted "d") system with
+        match UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofPath (rooted "d")) system with
         | Ok (FileStatusAnswer.Reported status) -> status.Size
         | Ok (FileStatusAnswer.Failed error) -> failwith $"stat d failed with %O{error}"
         | Error refusal -> failwith $"stat d was refused: %s{StatRefusal.describe refusal}"
@@ -531,7 +530,7 @@ module TestDirectorySize =
             // The root is a directory on the same mount, so it is refused too.
             for path in [ "/d" ; "/" ; "/o" ] do
                 for policy in [ SymlinkPolicy.Follow ; SymlinkPolicy.NoFollowFinal ] do
-                    UnixPathResolution.stat policy (UnixPath.parseOrFail context path) system
+                    UnixPathResolution.stat policy (PathArg.ofPath (UnixPath.parseOrFail context path)) system
                     |> shouldEqual (Error (StatRefusal.NfsDirectorySize (inodeOf path)))
 
             UnixPathResolution.fstat fd system
@@ -561,7 +560,7 @@ module TestDirectorySize =
             let _, system = modelWith platform EmulatedFileSystemType.Nfs
             let system = applyToModel (DirectorySizeOp.Create "d/f") system
 
-            match UnixPathResolution.stat SymlinkPolicy.Follow (rooted "d/f") system with
+            match UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofPath (rooted "d/f")) system with
             | Ok (FileStatusAnswer.Reported status) -> status.Size |> shouldEqual 0L
             | other -> failwith $"stat d/f: %A{other}"
 

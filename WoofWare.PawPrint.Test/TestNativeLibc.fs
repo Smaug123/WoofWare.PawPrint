@@ -18,8 +18,68 @@ module TestNativeLibc =
     let private everyNumbering : SignalNumbering list =
         [ SignalNumbering.Linux ; SignalNumbering.Darwin ]
 
-    let private initial (numbering : SignalNumbering) : SignalState<int, NativeSignalHandler> =
-        StartupSignalDispositions.initial numbering Set.empty
+    /// The main thread, which receives every signal sent to the process.
+    let private leader : int = 0
+
+    let private platformOf (numbering : SignalNumbering) : SimulatedUnixPlatform =
+        match numbering with
+        | SignalNumbering.Linux -> SimulatedUnixPlatform.linuxX64
+        | SignalNumbering.Darwin -> SimulatedUnixPlatform.macOsArm64
+
+    /// A process whose launcher left `inheritedIgnores` ignored, as it stands
+    /// at Main.
+    let private launched
+        (numbering : SignalNumbering)
+        (inheritedIgnores : Set<Signal>)
+        : UnixSystem<int, NativeSignalHandler>
+        =
+        UnixSystem.initial (platformOf numbering) UnixSystem.pipedStandardStreams leader (CpuId 0)
+        |> StartupSignalDispositions.install "test" numbering inheritedIgnores
+
+    let private initial (numbering : SignalNumbering) : UnixSystem<int, NativeSignalHandler> =
+        launched numbering Set.empty
+
+    let private numberingOf (system : UnixSystem<int, NativeSignalHandler>) : SignalNumbering =
+        SimulatedUnixPlatform.signalNumbering system.Machine.UnixPlatform
+
+    /// `system` with `entry` pending, as though it had been generated while
+    /// every task that could take it blocked it.
+    let private enqueue
+        (entry : PendingSignal<int>)
+        (system : UnixSystem<int, NativeSignalHandler>)
+        : UnixSystem<int, NativeSignalHandler>
+        =
+        { system with
+            Process =
+                { system.Process with
+                    Signals = SignalState.enqueue entry system.Process.Signals
+                }
+        }
+
+    /// `system` once `entry` has been generated among the tasks `leader` and
+    /// `worker`, failing the test unless the process carries on.
+    let private generateAmong
+        (worker : int)
+        (entry : PendingSignal<int>)
+        (system : UnixSystem<int, NativeSignalHandler>)
+        : UnixSystem<int, NativeSignalHandler>
+        =
+        match
+            SignalState.generate
+                CoreDumps.Suppressed
+                leader
+                (Set.ofList [ leader ; worker ])
+                entry
+                system.Process.Signals
+        with
+        | Ok (SignalGeneration.ProcessContinues signals) ->
+            { system with
+                Process =
+                    { system.Process with
+                        Signals = signals
+                    }
+            }
+        | other -> failwith $"generating %A{entry}: %A{other}"
 
     let private signal (numbering : SignalNumbering) (signo : int) : Signal =
         match Signal.ofRawSignoUnder numbering signo with
@@ -32,27 +92,26 @@ module TestNativeLibc =
             Target = ValueNone
         }
 
-    /// `SystemNative_EnablePosixSignalHandling`'s effect on the two halves.
+    /// `InstallSignalHandler`'s effect on the two halves.
     let private register
         (numbering : SignalNumbering)
         (sent : Signal)
-        (signals : SignalState<int, NativeSignalHandler>, shim : PosixSignalShim)
-        : SignalState<int, NativeSignalHandler> * PosixSignalShim
+        (system : UnixSystem<int, NativeSignalHandler>, shim : PosixSignalShim)
+        : UnixSystem<int, NativeSignalHandler> * PosixSignalShim
         =
-        PosixSignalShim.installHandler numbering sent signals shim
-
-    /// The main thread, which receives every signal sent to the process.
-    let private leader : int = 0
+        match PosixSignalShim.installHandler numbering sent system shim with
+        | Ok installed -> installed
+        | Error errno -> failwith $"installing System.Native's handler for %O{sent} failed with %O{errno}"
 
     /// `screenSelfSignal` for a signal `sender` sends, on `platform`.
     let private screenOn
         (platform : SimulatedUnixPlatform)
         (sender : int)
-        (signals : SignalState<int, NativeSignalHandler>, shim : PosixSignalShim)
+        (system : UnixSystem<int, NativeSignalHandler>, shim : PosixSignalShim)
         (sent : Signal)
         : UnmodelledSelfSignal option
         =
-        NativeLibc.screenSelfSignal platform sender leader shim signals sent
+        NativeLibc.screenSelfSignal platform sender leader shim system sent
 
     let private everyPlatform : SimulatedUnixPlatform list =
         [
@@ -64,18 +123,13 @@ module TestNativeLibc =
     /// `screenOn` for a signal the main thread sends, on a platform whose
     /// signals are numbered as `signals`' are.
     let private screen
-        (signals : SignalState<int, NativeSignalHandler>, shim : PosixSignalShim)
+        (system : UnixSystem<int, NativeSignalHandler>, shim : PosixSignalShim)
         (sent : Signal)
         : UnmodelledSelfSignal option
         =
-        let platform =
-            match SignalState.numbering signals with
-            | SignalNumbering.Linux -> SimulatedUnixPlatform.linuxX64
-            | SignalNumbering.Darwin -> SimulatedUnixPlatform.macOsArm64
+        screenOn (platformOf (numberingOf system)) leader (system, shim) sent
 
-        screenOn platform leader (signals, shim) sent
-
-    let private fresh (numbering : SignalNumbering) : SignalState<int, NativeSignalHandler> * PosixSignalShim =
+    let private fresh (numbering : SignalNumbering) : UnixSystem<int, NativeSignalHandler> * PosixSignalShim =
         initial numbering, PosixSignalShim.initial
 
     let private faultHandler : NativeSignalHandler =
@@ -116,7 +170,7 @@ module TestNativeLibc =
             // Which handler catches each signal is measured; the handlers' own
             // masks and flags are the PAL's source, pinned below.
             let actual =
-                SignalState.dispositions (initial numbering)
+                KernelSignals.dispositions (initial numbering)
                 |> Map.toSeq
                 |> Seq.map (fun (signal, disposition) ->
                     let handlerOnly =
@@ -141,7 +195,7 @@ module TestNativeLibc =
         // the activation signal (34). glibc's SIGSETXID handler's flags were
         // read back as SA_SIGINFO | SA_RESTART | SA_RESTORER.
         for numbering in everyNumbering do
-            for KeyValue (signal, disposition) in SignalState.dispositions (initial numbering) do
+            for KeyValue (signal, disposition) in KernelSignals.dispositions (initial numbering) do
                 match disposition with
                 | SignalDisposition.Catch action ->
                     action.Restart |> shouldEqual true
@@ -168,8 +222,8 @@ module TestNativeLibc =
                 |> List.map (signal numbering)
                 |> List.filter (fun s -> not (Signal.isUncatchableUnder numbering s) && s <> Signal.SIGTERM)
 
-            let state : SignalState<int, NativeSignalHandler> =
-                StartupSignalDispositions.initial numbering (Set.ofList ignorable)
+            let state : UnixSystem<int, NativeSignalHandler> =
+                launched numbering (Set.ofList ignorable)
 
             for s in ignorable do
                 // The fault handler saves the ignore it replaced.
@@ -184,7 +238,7 @@ module TestNativeLibc =
                     | None -> SignalDisposition.Ignore
 
                 let actual =
-                    match SignalState.disposition s state with
+                    match KernelSignals.disposition s state with
                     | SignalDisposition.Catch action -> SignalDisposition.Catch (SignalCatch.ofHandler action.Handler)
                     | other -> other
 
@@ -213,8 +267,8 @@ module TestNativeLibc =
                 |> shouldEqual true
 
                 Assert.Throws (fun () ->
-                    StartupSignalDispositions.initial numbering (Set.singleton s)
-                    |> ignore<SignalState<int, NativeSignalHandler>>
+                    launched numbering (Set.singleton s)
+                    |> ignore<UnixSystem<int, NativeSignalHandler>>
                 )
                 |> ignore<exn>
 
@@ -291,8 +345,8 @@ module TestNativeLibc =
             let numbering = SimulatedUnixPlatform.signalNumbering platform
             let signos = faultSignos numbering
 
-            let ignored : SignalState<int, NativeSignalHandler> =
-                StartupSignalDispositions.initial numbering (signos |> List.map (signal numbering) |> Set.ofList)
+            let ignored : UnixSystem<int, NativeSignalHandler> =
+                launched numbering (signos |> List.map (signal numbering) |> Set.ofList)
 
             for signo in signos do
                 (platform, signo, screenOn platform leader (ignored, PosixSignalShim.initial) (Signal.Other signo))
@@ -320,7 +374,7 @@ module TestNativeLibc =
                     if not (Signal.isUncatchableUnder numbering sent) then
                         let signals, shim = register numbering (Signal.Other signo) (fresh numbering)
 
-                        match SignalState.disposition sent signals with
+                        match KernelSignals.disposition sent signals with
                         | SignalDisposition.Catch action ->
                             action.Handler |> shouldEqual NativeSignalHandler.SystemNative
                             // Over the runtime's handler, System.Native keeps its
@@ -328,7 +382,7 @@ module TestNativeLibc =
                             action.Restart |> shouldEqual true
                         | other -> failwith $"expected System.Native's handler, got %A{other}"
 
-                        let registered = SignalState.enqueue (processDirected sent) signals, shim
+                        let registered = enqueue (processDirected sent) signals, shim
 
                         screen registered (Signal.Other signo)
                         |> shouldEqual (Some (UnmodelledSelfSignal.NativeHandler (sent, handler)))
@@ -342,15 +396,19 @@ module TestNativeLibc =
 
             let signals, shim = register numbering Signal.SIGPIPE (fresh numbering)
 
-            SignalState.disposition Signal.SIGPIPE signals
+            KernelSignals.disposition Signal.SIGPIPE signals
             |> shouldEqual SignalDisposition.Ignore
 
             screen (signals, shim) Signal.SIGPIPE |> shouldEqual None
 
             // Unregistering restores the ignore the shim saved.
-            PosixSignalShim.restoreHandler numbering Signal.SIGPIPE signals shim
-            |> fst
-            |> SignalState.disposition Signal.SIGPIPE
+            let restored, _, refused =
+                PosixSignalShim.restoreHandler numbering Signal.SIGPIPE signals shim
+
+            refused |> shouldEqual None
+
+            restored
+            |> KernelSignals.disposition Signal.SIGPIPE
             |> shouldEqual SignalDisposition.Ignore
 
     /// A write into a pipe with no reader raises SIGPIPE at the writer on
@@ -374,7 +432,7 @@ module TestNativeLibc =
             for disposition in dispositions do
                 for sender in [ leader ; worker ] do
                     let before =
-                        initial numbering |> SignalState.setDisposition Signal.SIGPIPE disposition
+                        initial numbering |> KernelSignals.setDisposition Signal.SIGPIPE disposition
 
                     let raised : PendingSignal<int> =
                         {
@@ -385,17 +443,7 @@ module TestNativeLibc =
                                 | SimulatedUnixFlavour.Darwin -> ValueNone
                         }
 
-                    let after =
-                        match
-                            SignalState.generate
-                                CoreDumps.Suppressed
-                                leader
-                                (Set.ofList [ leader ; worker ])
-                                raised
-                                before
-                        with
-                        | Ok (SignalGeneration.ProcessContinues after) -> after
-                        | other -> failwith $"%O{platform}: generating %A{raised}: %A{other}"
+                    let after = generateAmong worker raised before
 
                     let expected =
                         match disposition, raised.Target with
@@ -428,12 +476,7 @@ module TestNativeLibc =
                         Target = ValueSome raiser
                     }
 
-                let after =
-                    match
-                        SignalState.generate CoreDumps.Suppressed leader (Set.ofList [ leader ; worker ]) raised before
-                    with
-                    | Ok (SignalGeneration.ProcessContinues after) -> after
-                    | other -> failwith $"%O{platform}: generating %A{raised}: %A{other}"
+                let after = generateAmong worker raised before
 
                 let expected =
                     if raiser = leader then
@@ -460,21 +503,23 @@ module TestNativeLibc =
             let signals, shim = register numbering sigill (fresh numbering)
 
             let restoredByRuntime =
-                SignalState.setDisposition sigill SignalDisposition.Default signals
+                KernelSignals.setDisposition sigill SignalDisposition.Default signals
 
             let again, shimAgain = register numbering sigill (restoredByRuntime, shim)
 
-            SignalState.disposition sigill again |> shouldEqual SignalDisposition.Default
+            KernelSignals.disposition sigill again |> shouldEqual SignalDisposition.Default
             shimAgain |> shouldEqual shim
 
-            let restored, shimRestored =
+            let restored, shimRestored, refused =
                 PosixSignalShim.restoreHandler numbering sigill restoredByRuntime shim
 
-            match SignalState.disposition sigill restored with
+            refused |> shouldEqual None
+
+            match KernelSignals.disposition sigill restored with
             | SignalDisposition.Catch action -> action.Handler |> shouldEqual faultHandler
             | other -> failwith $"expected the runtime's handler back, got %A{other}"
 
-            match SignalState.disposition sigill (fst (register numbering sigill (restored, shimRestored))) with
+            match KernelSignals.disposition sigill (fst (register numbering sigill (restored, shimRestored))) with
             | SignalDisposition.Catch action -> action.Handler |> shouldEqual NativeSignalHandler.SystemNative
             | other -> failwith $"expected System.Native's handler installed afresh, got %A{other}"
 
@@ -500,8 +545,8 @@ module TestNativeLibc =
             screen (register numbering Signal.SIGCONT (fresh numbering)) Signal.SIGCONT
             |> shouldEqual None
 
-            let ignored : SignalState<int, NativeSignalHandler> =
-                StartupSignalDispositions.initial numbering (Set.singleton Signal.SIGCONT)
+            let ignored : UnixSystem<int, NativeSignalHandler> =
+                launched numbering (Set.singleton Signal.SIGCONT)
 
             screen (ignored, PosixSignalShim.initial) Signal.SIGCONT |> shouldEqual None
 
@@ -541,7 +586,7 @@ module TestNativeLibc =
                     let signal =
                         candidates.[((index % candidates.Length) + candidates.Length) % candidates.Length]
 
-                    SignalState.enqueue
+                    enqueue
                         {
                             Signal = signal
                             Target = if aimedAtThread then ValueSome 3 else ValueNone
@@ -571,33 +616,32 @@ module TestNativeLibc =
         // The same signal, pending while registered, spelt either way.
         for numbering in everyNumbering do
             let signals, shim = register numbering Signal.SIGTERM (fresh numbering)
-            let pending = SignalState.enqueue (processDirected Signal.SIGTERM) signals, shim
+            let pending = enqueue (processDirected Signal.SIGTERM) signals, shim
             screen pending Signal.SIGTERM |> shouldEqual None
             screen pending (Signal.Other 15) |> shouldEqual None
 
     [<Test>]
-    let ``inherited ignores are set only on a fresh process`` () : unit =
-        let kernel = EmulatedKernel.initial
-
-        kernel
-        |> EmulatedKernel.withInheritedSignalIgnores "test" (Set.singleton Signal.SIGHUP)
-        |> fun k -> SignalState.disposition Signal.SIGHUP k.Signals
+    let ``inherited ignores are set as the process is created`` () : unit =
+        EmulatedKernel.createInheritingSignalIgnores
+            "test"
+            (Set.singleton Signal.SIGHUP)
+            SimulatedUnixPlatform.linuxX64
+            StandardStreamsConfig.piped
+        |> EmulatedKernel.unix
+        |> KernelSignals.disposition Signal.SIGHUP
         |> shouldEqual SignalDisposition.Ignore
 
-        let touched =
-            EmulatedKernel.mapProcess
-                (fun proc ->
-                    { proc with
-                        Signals = SignalState.setDisposition Signal.SIGUSR2 SignalDisposition.Ignore proc.Signals
-                    }
-                )
-                kernel
+        let exn =
+            Assert.Throws (fun () ->
+                EmulatedKernel.createInheritingSignalIgnores
+                    "the context"
+                    (Set.singleton Signal.SIGTERM)
+                    SimulatedUnixPlatform.linuxX64
+                    StandardStreamsConfig.piped
+                |> ignore<EmulatedKernel>
+            )
 
-        Assert.Throws (fun () ->
-            EmulatedKernel.withInheritedSignalIgnores "test" (Set.singleton Signal.SIGHUP) touched
-            |> ignore<EmulatedKernel>
-        )
-        |> ignore<exn>
+        exn.Message |> shouldContainText "the context"
 
     [<Test>]
     let ``gettid answers the task's id on Linux, and binds to nothing on Darwin`` () : unit =

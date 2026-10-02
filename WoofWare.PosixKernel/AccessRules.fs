@@ -90,8 +90,6 @@ type AccessArguments =
 /// Why this kernel will not answer an `access(2)` or `faccessat(2)`.
 [<RequireQualifiedAccess>]
 type AccessRefusal =
-    /// The path argument's bytes are not a C string; see `PathArgumentRefusal`.
-    | PathArgument of refusal : PathArgumentRefusal
     /// The flag word carries flags this kernel accepts but whose meaning this
     /// library does not model: Darwin's `AT_SYMLINK_NOFOLLOW_ANY` (0x800),
     /// `AT_RESOLVE_BENEATH` (0x2000) and `AT_UNIQUE` (0x8000). `flags` is the
@@ -113,8 +111,6 @@ module AccessRefusal =
     /// entry point asked, and with which path.
     let describe (refusal : AccessRefusal) : string =
         match refusal with
-        | AccessRefusal.PathArgument (PathArgumentRefusal.InteriorNul offset) ->
-            $"the path argument's bytes hold a NUL at offset %d{offset}, so they are not a C string any kernel was handed (this is a bug in the caller)."
         | AccessRefusal.UnmodelledFlags flags ->
             $"the flag word 0x%x{flags} carries a flag Darwin accepts and this library does not model: AT_SYMLINK_NOFOLLOW_ANY (0x800), AT_RESOLVE_BENEATH (0x2000) or AT_UNIQUE (0x8000). Each changes how the path is walked; model the walk before answering."
         | AccessRefusal.ExtendedRights (inode, rights) ->

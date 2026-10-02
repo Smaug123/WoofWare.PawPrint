@@ -145,32 +145,70 @@ module StartupSignalDispositions =
                 None
         )
 
-    /// The disposition table of a real CoreCLR process at Main, whose launcher
-    /// left `inheritedIgnores` ignored (read under `numbering`).
+    /// `system`, a process its launcher started with `inheritedIgnores`
+    /// ignored (read under `numbering`), as it stands once a real CoreCLR
+    /// process has reached Main: with the dispositions the runtime and the C
+    /// library install before then, each installed through `sigaction` as they
+    /// install it. `system` must be one no code has run in yet.
     ///
     /// The runtime ignores SIGPIPE, and catches the hardware-fault signals
     /// and its thread-activation signal with handlers of its own whatever
     /// they were before; on Linux, glibc's own handler catches its reserved
     /// 33. Every other signal is ignored if the launcher left it so, and at
     /// its default otherwise. The runtime's handlers for SIGINT, SIGQUIT and
-    /// SIGTERM are not in the table: each restores the disposition it
-    /// replaced and re-sends the signal, so the process does exactly what
-    /// that disposition says.
+    /// SIGTERM are not installed: each restores the disposition it replaced
+    /// and re-sends the signal, so the process does exactly what that
+    /// disposition says.
     ///
-    /// Fails loud on inherited ignores `refusal` refuses.
-    let initial<'Task when 'Task : comparison>
+    /// Fails loud, prefixed by `context`, on inherited ignores `refusal`
+    /// refuses.
+    let install<'Task when 'Task : comparison>
+        (context : string)
         (numbering : SignalNumbering)
         (inheritedIgnores : Set<Signal>)
-        : SignalState<'Task, NativeSignalHandler>
+        (system : UnixSystem<'Task, NativeSignalHandler>)
+        : UnixSystem<'Task, NativeSignalHandler>
         =
         match refusal numbering inheritedIgnores with
-        | Some reason -> failwith $"StartupSignalDispositions.initial: cannot start a process with %s{reason}."
+        | Some reason -> failwith $"%s{context}: cannot start a process with %s{reason}."
         | None ->
 
         let signal (signo : int) : Signal =
             match Signal.ofRawSignoUnder numbering signo with
             | ValueSome signal -> signal
             | ValueNone -> failwith $"StartupSignalDispositions: %d{signo} is not a signal under %O{numbering}"
+
+        // `sigaction` as `call` makes it, which every signal installed here
+        // accepts.
+        let sigactionWith
+            (call :
+                int
+                    -> SignalDisposition<NativeSignalHandler> option
+                    -> UnixSystem<'Task, NativeSignalHandler>
+                    -> Result<SignalDisposition<NativeSignalHandler> * UnixSystem<'Task, NativeSignalHandler>, UnixError>)
+            (signo : int)
+            (action : SignalDisposition<NativeSignalHandler> option)
+            (system : UnixSystem<'Task, NativeSignalHandler>)
+            : SignalDisposition<NativeSignalHandler> * UnixSystem<'Task, NativeSignalHandler>
+            =
+            match call signo action system with
+            | Ok answer -> answer
+            | Error (errno : UnixError) ->
+                failwith
+                    $"StartupSignalDispositions.install: sigaction(%d{signo}, %O{action}) under %O{numbering} was refused (%O{errno})"
+
+        // A launcher such as `nohup` or a shell's `trap ''` ignores a signal
+        // through the C library, and the ignore survives `execve`.
+        let launched =
+            (system, inheritedIgnores)
+            ||> Set.fold (fun system ignored ->
+                sigactionWith
+                    UnixSignal.sigaction
+                    (Signal.toRawSignoUnder numbering ignored)
+                    (Some SignalDisposition.Ignore)
+                    system
+                |> snd
+            )
 
         // The PAL's `handle_signal` installs every handler with `SA_RESTART`
         // and an empty `sa_mask`, except that on Linux SIGSEGV's runs on the
@@ -179,51 +217,64 @@ module StartupSignalDispositions =
         // handler with `SA_RESTART` (measured with the flags read back,
         // startup-signal-handler-owners.cs); its mask was not read, and
         // PawPrint refuses to send the signal it catches.
-        let palCatch (handler : NativeSignalHandler) (signo : int) : SignalCatch<NativeSignalHandler> =
-            {
-                Handler = handler
-                Mask =
-                    match numbering, signo with
-                    | SignalNumbering.Linux, 11 -> Set.singleton (signal 34)
-                    | _ -> Set.empty
-                NoDefer = false
-                ResetHand = false
-                Restart = true
-            }
+        let palCatch (handler : NativeSignalHandler) (signo : int) : SignalDisposition<NativeSignalHandler> =
+            SignalDisposition.Catch
+                {
+                    Handler = handler
+                    Mask =
+                        match numbering, signo with
+                        | SignalNumbering.Linux, 11 -> Set.singleton (signal 34)
+                        | _ -> Set.empty
+                    NoDefer = false
+                    ResetHand = false
+                    Restart = true
+                }
 
-        // What the launcher left, before the runtime installs anything.
-        let launched = SignalState.initial numbering inheritedIgnores
+        let installPal
+            (signo : int)
+            (handler : NativeSignalHandler)
+            (system : UnixSystem<'Task, NativeSignalHandler>)
+            : UnixSystem<'Task, NativeSignalHandler>
+            =
+            sigactionWith UnixSignal.sigaction signo (Some (palCatch handler signo)) system
+            |> snd
 
-        let caught =
-            [
-                for signo in runtimeFaultSignos numbering do
-                    // The PAL saves the disposition it replaces.
-                    let replaced =
-                        match SignalState.disposition (signal signo) launched with
-                        | SignalDisposition.Default -> PalReplacedDisposition.Default
-                        | SignalDisposition.Ignore -> PalReplacedDisposition.Ignore
-                        | SignalDisposition.Catch action ->
-                            failwith
-                                $"StartupSignalDispositions.initial: signal %d{signo} is caught by %O{action.Handler} before the runtime starts; a launcher can leave a signal only ignored or at its default."
+        let withFaultHandlers =
+            (launched, runtimeFaultSignos numbering)
+            ||> List.fold (fun system signo ->
+                // The PAL saves the disposition it replaces.
+                let replaced =
+                    match sigactionWith UnixSignal.sigaction signo None system |> fst with
+                    | SignalDisposition.Default -> PalReplacedDisposition.Default
+                    | SignalDisposition.Ignore -> PalReplacedDisposition.Ignore
+                    | SignalDisposition.Catch action ->
+                        failwith
+                            $"StartupSignalDispositions.install: signal %d{signo} is caught by %O{action.Handler} before the runtime starts; a launcher can leave a signal only ignored or at its default."
 
-                    signo, SignalDisposition.Catch (palCatch (NativeSignalHandler.CoreClrPalFault replaced) signo)
+                installPal signo (NativeSignalHandler.CoreClrPalFault replaced) system
+            )
 
-                let activation = runtimeActivationSigno numbering
-                activation, SignalDisposition.Catch (palCatch NativeSignalHandler.CoreClrPalActivation activation)
+        let withActivation =
+            installPal (runtimeActivationSigno numbering) NativeSignalHandler.CoreClrPalActivation withFaultHandlers
 
-                match numbering with
-                | SignalNumbering.Linux ->
-                    5, SignalDisposition.Catch (palCatch NativeSignalHandler.CoreClrPalTrap 5)
+        let withPlatformHandlers =
+            match numbering with
+            | SignalNumbering.Linux ->
+                withActivation
+                |> installPal 5 NativeSignalHandler.CoreClrPalTrap
+                // glibc installs its own handler below its `sigaction` wrapper,
+                // which refuses 33 to everyone else.
+                |> sigactionWith
+                    UnixSignal.sigactionSyscall
+                    33
+                    (Some (
+                        SignalDisposition.Catch
+                            { SignalCatch.ofHandler NativeSignalHandler.GlibcSetXid with
+                                Restart = true
+                            }
+                    ))
+                |> snd
+            | SignalNumbering.Darwin -> withActivation
 
-                    33,
-                    SignalDisposition.Catch
-                        { SignalCatch.ofHandler NativeSignalHandler.GlibcSetXid with
-                            Restart = true
-                        }
-                | SignalNumbering.Darwin -> ()
-
-                13, SignalDisposition.Ignore
-            ]
-
-        (launched, caught)
-        ||> List.fold (fun state (signo, disposition) -> SignalState.setDisposition (signal signo) disposition state)
+        sigactionWith UnixSignal.sigaction 13 (Some SignalDisposition.Ignore) withPlatformHandlers
+        |> snd
