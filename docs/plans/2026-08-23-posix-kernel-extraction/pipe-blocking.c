@@ -79,7 +79,13 @@
 //      pipe started ~200 ms in and given room ~1200 ms in, and the write
 //      end's mtime and ctime before and after; a read of an empty pipe
 //      started ~200 ms in and given 3 bytes ~1200 ms in, and the read end's
-//      atime before and after. In ms from the start of each case.
+//      atime before and after. In ms from the start of each case. L2 what
+//      fstat shows ~500 ms into a sleep, and after the call ends some other
+//      way: a signal (no SA_RESTART) to a read, to a 1-byte write into a full
+//      pipe and to a 200000-byte write into an empty one (65536 in); the read
+//      end closing under the two writes; the write end closing under a read.
+//      L3 a read and a 1-byte write restarted under SA_RESTART ~1200 ms in,
+//      fstat ~1450 ms in, then given data or room ~1700 ms in.
 //
 // Build and run, from this directory:
 //   Darwin: nix develop -c clang -Wall -pthread -o /tmp/pb pipe-blocking.c && /tmp/pb
@@ -139,10 +145,15 @@
 //      Darwin (once): closing a dup changed nothing, but closing the
 //      descriptor the call sleeps through woke it at once, the reader with 0
 //      (end of file) and the writer with EPIPE.
-//   L  Darwin (twice): the writer's mtime and ctime, and the reader's atime,
-//      ended at the moment the call finished (1204-1208 ms), not the moment
-//      it went to sleep. Not run on Linux, whose pipe timestamps never move
-//      (pipe-syscalls.c).
+//   L  Darwin (twice each): the writer's mtime and ctime, and the reader's
+//      atime, ended at the moment the call finished (1204-1215 ms), not the
+//      moment it went to sleep; L2 nothing moved while the call slept, even
+//      for the write that had put 65536 bytes in, and every ending moved them
+//      as it happened: EINTR, the count, EPIPE once the reader closed (which
+//      a write that answers EPIPE without sleeping does not, pipe-epipe-sweep.c),
+//      and end of file; L3 a restart moved them (1203-1208 ms), and the
+//      completion moved them again (1707-1718 ms). Not run on Linux, whose
+//      pipe timestamps never move (pipe-syscalls.c).
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
@@ -1249,6 +1260,116 @@ static void section_l(void)
         fstat(fds[0], &after);
         printf("L reader (asleep at ~200 ms, data at ~1200 ms): rv=%zd atime %.0f -> %.0f ms\n", r.rv,
                ts_ms(before.ATIM, base), ts_ms(after.ATIM, base));
+        close(fds[0]);
+        close(fds[1]);
+    }
+    // L2: what fstat shows while the call sleeps, and after it ends some
+    // other way than by data or room: a signal (no SA_RESTART), or the other
+    // end closing. 0 a read signalled, 1 a 1-byte write into a full pipe
+    // signalled, 2 a 200000-byte write into an empty pipe (65536 in)
+    // signalled, 3 the same with the read end closed, 4 a read with the
+    // write end closed.
+    install_usr1(0);
+    const char *shapes[] = { "read, signalled", "write of 1 into full, signalled", "write of 200000, signalled",
+                             "write of 200000, reader closes", "read, writer closes", "write of 1 into full, reader closes" };
+    for (int shape = 0; shape < 6; shape++)
+    {
+        clock_gettime(CLOCK_REALTIME, &base);
+        int fds[2];
+        pipe(fds);
+        int writing = (shape >= 1 && shape <= 3) || shape == 5;
+        if (shape == 1 || shape == 5) fill(fds[0], fds[1]);
+        int fd = writing ? fds[1] : fds[0];
+        struct stat st0, st1, st2;
+        fstat(fd, &st0);
+        struct reader r;
+        struct writer w;
+        unsigned char c = 'l';
+        memset(&r, 0, sizeof r);
+        memset(&w, 0, sizeof w);
+        pthread_t t;
+        sleep_ms(200);
+        if (writing)
+        {
+            w.fd = fds[1];
+            w.buf = shape == 1 || shape == 5 ? (const void *)&c : (const void *)big;
+            w.count = shape == 1 || shape == 5 ? 1 : 200000;
+            pthread_create(&t, NULL, writer_main, &w);
+        }
+        else
+        {
+            r.fd = fds[0];
+            r.count = 8;
+            pthread_create(&t, NULL, reader_main, &r);
+        }
+        sleep_ms(500);
+        fstat(fd, &st1);
+        sleep_ms(500);
+        if (shape == 3 || shape == 5) close(fds[0]);
+        else if (shape == 4) close(fds[1]);
+        else pthread_kill(t, SIGUSR1);
+        pthread_join(t, NULL);
+        fstat(fd, &st2);
+        printf("L2 %s (asleep ~200, fstat ~700, ended ~1200): rv=%zd errno=%d atime %.0f/%.0f/%.0f mtime %.0f/%.0f/%.0f ctime %.0f/%.0f/%.0f\n",
+               shapes[shape], writing ? w.rv : r.rv, writing ? w.error : r.error, ts_ms(st0.ATIM, base),
+               ts_ms(st1.ATIM, base), ts_ms(st2.ATIM, base), ts_ms(st0.MTIM, base), ts_ms(st1.MTIM, base),
+               ts_ms(st2.MTIM, base), ts_ms(st0.CTIM, base), ts_ms(st1.CTIM, base), ts_ms(st2.CTIM, base));
+        if (shape != 3 && shape != 5) close(fds[0]);
+        if (shape != 4) close(fds[1]);
+    }
+    // L3: a read restarted by SA_RESTART: signalled ~1200, fstat ~1450, data
+    // ~1700.
+    install_usr1(1);
+    {
+        clock_gettime(CLOCK_REALTIME, &base);
+        int fds[2];
+        pipe(fds);
+        struct stat st1, st2;
+        struct reader r;
+        memset(&r, 0, sizeof r);
+        r.fd = fds[0];
+        r.count = 8;
+        pthread_t t;
+        sleep_ms(200);
+        pthread_create(&t, NULL, reader_main, &r);
+        sleep_ms(1000);
+        pthread_kill(t, SIGUSR1);
+        sleep_ms(250);
+        fstat(fds[0], &st1);
+        sleep_ms(250);
+        write(fds[1], "abc", 3);
+        pthread_join(t, NULL);
+        fstat(fds[0], &st2);
+        printf("L3 read restarted (asleep ~200, signalled ~1200, fstat ~1450, data ~1700): rv=%zd atime %.0f/%.0f\n",
+               r.rv, ts_ms(st1.ATIM, base), ts_ms(st2.ATIM, base));
+        close(fds[0]);
+        close(fds[1]);
+    }
+    {
+        clock_gettime(CLOCK_REALTIME, &base);
+        int fds[2];
+        pipe(fds);
+        fill(fds[0], fds[1]);
+        struct stat st1, st2;
+        unsigned char c = 'r';
+        struct writer w;
+        memset(&w, 0, sizeof w);
+        w.fd = fds[1];
+        w.buf = &c;
+        w.count = 1;
+        pthread_t t;
+        sleep_ms(200);
+        pthread_create(&t, NULL, writer_main, &w);
+        sleep_ms(1000);
+        pthread_kill(t, SIGUSR1);
+        sleep_ms(250);
+        fstat(fds[1], &st1);
+        sleep_ms(250);
+        make_room(fds[0], 1);
+        pthread_join(t, NULL);
+        fstat(fds[1], &st2);
+        printf("L3 write restarted (asleep ~200, signalled ~1200, fstat ~1450, room ~1700): rv=%zd mtime %.0f/%.0f\n",
+               w.rv, ts_ms(st1.MTIM, base), ts_ms(st2.MTIM, base));
         close(fds[0]);
         close(fds[1]);
     }

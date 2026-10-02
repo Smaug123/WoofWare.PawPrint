@@ -366,6 +366,8 @@ module TestPipeAgainstHost =
                                     | Ok (WriteOutcome.WouldBlock _) -> Ok None
                                     | Ok (WriteOutcome.Returns (answer, after)) -> Ok (Some (answer, after))
                                     | Ok other -> failwith $"%s{where}: model %A{other}"
+                                // The host would sleep with part of it in.
+                                | Ok (WriteOutcome.Returns (WriteAdmission.TransferThenSleep _, _)) -> Ok None
                                 | Ok other -> failwith $"%s{where}: model %A{other}"
 
                             let hostCall () =

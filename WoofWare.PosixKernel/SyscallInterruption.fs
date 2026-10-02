@@ -126,6 +126,19 @@ module SyscallInterruption =
         | Ok (_ :: _)
         | Error _ -> true
 
+    /// Whether a signal with a handler ends the sleep of `task` now, whatever
+    /// the handlers' flags: for a syscall that, interrupted, returns what it
+    /// has done so far rather than failing or restarting, as a write that has
+    /// put bytes into a pipe does. `Error` where this library will not say what
+    /// the task takes as it returns to user mode, or where it is a signal's
+    /// default action.
+    let interrupts<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<bool, SyscallInterruptionRefusal>
+        =
+        framesOnReturn task system |> Result.map (List.isEmpty >> not)
+
     /// Whether the syscall `task` is asleep in may give its own answer, now that
     /// it has one: a finishing call asks this before it answers, and refuses
     /// what this refuses.

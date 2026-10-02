@@ -111,6 +111,7 @@ module TestPipe =
             match WriteOutcomes.write fd (ImmutableArray.Create (bytes, 0, count)) admitted with
             | Error refusal -> failwith $"write refused: %A{refusal}"
             | Ok result -> result
+        | Ok (WriteAdmission.TransferThenSleep _ as admission, _) -> failwith $"the write would sleep: %A{admission}"
 
     let private readOrFail
         (fd : int)
@@ -362,7 +363,13 @@ module TestPipe =
                         | Ok (WriteOutcome.Returns (WriteAdmission.Transfer n, admitted)) ->
                             transferred <- Some n
                             UnixReadWrite.write system.Leader fd (payload reference.Offered n) admitted
-                        | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Transfer _, _, _)) as other ->
+                        | Ok (WriteOutcome.Returns (WriteAdmission.TransferThenSleep (n, total), admitted)) ->
+                            transferred <- Some n
+                            total |> shouldEqual count
+
+                            UnixReadWrite.writeThenSleep system.Leader fd total (payload reference.Offered n) admitted
+                        | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Transfer _, _, _))
+                        | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.TransferThenSleep _, _, _)) as other ->
                             failwith $"%s{where}: an admission that raised a signal asked for bytes: %A{other}"
 
                     match Map.tryFind fd reference.Fds with
@@ -454,9 +461,9 @@ module TestPipe =
 
                         let pipe = UnixMachineState.pipe (pipeOf fd system) after.Machine
                         PipeBuffer.held pipe.Buffer |> shouldEqual (modelHeld reference.Buffer + takes)
-                        // A write that sleeps reads its bytes only once it can
-                        // put them in.
-                        transferred |> shouldEqual (if takes = 0 then None else Some count)
+                        // A write that sleeps reads only the bytes it puts in,
+                        // and the rest only once it can put them in.
+                        transferred |> shouldEqual (if takes = 0 then None else Some takes)
                     | Ok (answer, _), Ok (WriteOutcome.Returns (actualAnswer, after)) when answer = actualAnswer ->
                         match answer with
                         | WriteAnswer.Completed n when n > 0L ->
@@ -1100,7 +1107,7 @@ module TestPipe =
             |> shouldEqual (Ok (ReadAnswer.Failed tie))
 
             match UnixReadWrite.admitPWrite r UserBuffer.Mapped 1UL 0L system with
-            | Ok (WriteAdmission.Answered (WriteAnswer.Failed error)) -> error |> shouldEqual tie
+            | Ok (PWriteAdmission.Answered (WriteAnswer.Failed error)) -> error |> shouldEqual tie
             | other -> failwith $"%O{platform}: %A{other}"
 
             match flavour with

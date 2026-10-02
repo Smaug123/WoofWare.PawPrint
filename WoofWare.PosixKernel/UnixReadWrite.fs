@@ -105,9 +105,14 @@ type WriteAdmission =
     /// more (see `TransferCountLimit`), so it is never more than
     /// `Int32.MaxValue`; or, for a non-blocking write into a pipe with room for
     /// only part of it, the part the pipe takes, which is all `write` then
-    /// answers. A blocking write into a pipe with room for part of it is given
-    /// the whole count: `write` puts in what fits and sleeps for the rest.
+    /// answers.
     | Transfer of count : int
+    /// A blocking write of `total` bytes into a pipe with room for part of it:
+    /// extract the first `count` of them, which the pipe takes now, and pass
+    /// them to `UnixReadWrite.writeThenSleep`, which puts them in and sleeps
+    /// for the rest. The rest is read from the caller's buffer only as room
+    /// appears, as a real kernel copies it.
+    | TransferThenSleep of count : int * total : int
 
 /// Whether a blocking `write` into a pipe, asleep because the pipe had no room
 /// for the rest of it, reaches the point at which it reads more of the caller's
@@ -211,6 +216,20 @@ type WriteOutcome<'Answer, 'Task, 'Handler when 'Task : comparison and 'Handler 
     ///
     /// Only `admitFinishWrite` answers this.
     | Restarts of system : UnixSystem<'Task, 'Handler>
+
+/// Whether a `pwrite` reaches the point at which it reads the caller's buffer,
+/// as `WriteAdmission` is for `write`.
+///
+/// `WriteAdmission` without its sleeping write, rather than the same type: a
+/// `pwrite` needs a seekable object, so it never reaches a pipe, the one object
+/// whose write sleeps here.
+[<RequireQualifiedAccess>]
+type PWriteAdmission =
+    /// Answered without the buffer being read at all.
+    | Answered of answer : WriteAnswer
+    /// The copy is reached: extract exactly `count` bytes and pass them to
+    /// `pwrite`.
+    | Transfer of count : int
 
 /// Why this kernel will not answer a `pwrite`.
 ///
@@ -1055,9 +1074,12 @@ module UnixReadWrite =
                 answered (ReadAnswer.Failed UnixError.EISDIR) system
         | ReadTarget.Pipe (pipeId, descriptionId, nonBlocking) ->
             // On Darwin every read that reaches the pipe moves the read end's
-            // atime, whatever it answers: measured (pipe-syscalls.c), a read
-            // of 0 bytes, one answering EAGAIN, one answering EFAULT, one at
-            // end of file and one that moves bytes all do. Linux moves none.
+            // atime as it returns, whatever it answers: measured
+            // (pipe-syscalls.c), a read of 0 bytes, one answering EAGAIN, one
+            // answering EFAULT, one at end of file and one that moves bytes all
+            // do. A read that sleeps moves it only once it ends
+            // (pipe-blocking.c section L). Linux moves none.
+            let asleep = system
             let system = touchedByRead pipeId system
             let pipe = UnixMachineState.pipe pipeId system.Machine
 
@@ -1096,7 +1118,7 @@ module UnixReadWrite =
                                 Count = count
                             }
 
-                    Ok (ReadOutcome.WouldBlock (WakeCondition.ofPark parked), UnixWait.park task parked system)
+                    Ok (ReadOutcome.WouldBlock (WakeCondition.ofPark parked), UnixWait.park task parked asleep)
             else
 
             match buffer with
@@ -1206,10 +1228,14 @@ module UnixReadWrite =
         let pipeId = parkedPipe "finishRead" task parked.Reader PipeEnd.Read system
         let pipe = UnixMachineState.pipe pipeId system.Machine
 
+        // Measured on Darwin (pipe-blocking.c section L): the read end's atime
+        // moves when the sleeping call ends, however it ends (bytes, end of
+        // file, EINTR, or a restart), and not while it sleeps.
         let finished =
             { system with
                 Tasks = UnixTaskTable.unpark task system.Tasks
             }
+            |> touchedByRead pipeId
 
         let held = PipeBuffer.held pipe.Buffer
 
@@ -1224,10 +1250,6 @@ module UnixReadWrite =
             match SyscallInterruption.beforeCompleting task system with
             | Error refusal -> Error (ReadRefusal.Interruption refusal)
             | Ok () ->
-
-            // Measured on Darwin (pipe-blocking.c section L): the read end's
-            // atime is the moment the call finished, not the one it slept.
-            let finished = touchedByRead pipeId finished
 
             if held = 0 then
                 Ok (ReadOutcome.Answered (ReadAnswer.Completed ImmutableArray.Empty), finished)
@@ -1586,8 +1608,10 @@ module UnixReadWrite =
                         touchedByWrite pipeId (leftUntaken pipeId count system)
                     )
                 )
+            // A write that sleeps moves no timestamp until it ends, measured on
+            // Darwin (pipe-blocking.c section L).
             | PipeWriteStep.Sleeps ->
-                touchedByWrite pipeId (leftUntaken pipeId count system)
+                leftUntaken pipeId count system
                 |> parkWrite task descriptionId buffer count 0
                 |> Ok
             // Only the bytes the pipe will take: a short write never reads the
@@ -1595,8 +1619,8 @@ module UnixReadWrite =
             // all of it and leaves the pipe as the whole would have.
             | PipeWriteStep.Takes taken ->
                 Ok (WriteOutcome.Returns (WriteAdmission.Transfer taken, touchedByWrite pipeId system))
-            | PipeWriteStep.TakesThenSleeps _ ->
-                Ok (WriteOutcome.Returns (WriteAdmission.Transfer count, touchedByWrite pipeId system))
+            | PipeWriteStep.TakesThenSleeps taken ->
+                Ok (WriteOutcome.Returns (WriteAdmission.TransferThenSleep (taken, count), system))
         | WriteTarget.File (_, offset) ->
 
         // Ahead of the zero-length no-op below: Darwin's EFBIG at INT64_MAX
@@ -1684,7 +1708,7 @@ module UnixReadWrite =
             | PipeWriteStep.TakesNothing answer ->
                 returns answer (touchedByWrite pipeId (leftUntaken pipeId bytes.Length system))
             | PipeWriteStep.Sleeps ->
-                touchedByWrite pipeId (leftUntaken pipeId bytes.Length system)
+                leftUntaken pipeId bytes.Length system
                 |> parkWrite task descriptionId UserBuffer.Mapped bytes.Length 0
                 |> Ok
             | PipeWriteStep.TakesThenSleeps taken ->
@@ -1701,7 +1725,6 @@ module UnixReadWrite =
                         Buffer = buffer
                     }
                     system
-                |> touchedByWrite pipeId
                 |> parkWrite task descriptionId UserBuffer.Mapped bytes.Length written
                 |> Ok
             | PipeWriteStep.Takes taken ->
@@ -1857,31 +1880,32 @@ module UnixReadWrite =
 
         parked, parkedPipe syscall task parked.Writer PipeEnd.Write system
 
-    /// After a resumed write has put bytes in, and its whole count is not yet
-    /// in: what the call does next, with `system` the one it is in by now and
-    /// `parked` its progress.
-    let private afterResumedWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// After a sleeping write has put bytes in, its count `parked.Count` not
+    /// all in yet: whether it sleeps on, or a signal ends it with the count it
+    /// has put in, with `system` the one it is in by now.
+    ///
+    /// Measured on both (pipe-blocking.c sections D and H): a write asleep
+    /// with bytes in returns their count when signalled, under SA_RESTART or
+    /// not, so the handlers' flags are not asked.
+    let private afterPartWritten<'Task, 'Handler, 'Answer when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
+        (pipeId : PipeId)
         (parked : ParkedPipeWrite)
+        (answered : WriteAnswer -> 'Answer)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<WriteOutcome<WriteAnswer, 'Task, 'Handler>, WriteRefusal>
+        : Result<WriteOutcome<'Answer, 'Task, 'Handler>, WriteRefusal>
         =
-        let finished =
-            { system with
-                Tasks = UnixTaskTable.unpark task system.Tasks
-            }
+        match SyscallInterruption.interrupts task system with
+        | Error refusal -> Error (WriteRefusal.Interruption refusal)
+        | Ok true ->
+            let finished =
+                { system with
+                    Tasks = UnixTaskTable.unpark task system.Tasks
+                }
+                |> touchedByWrite pipeId
 
-        if parked.Written = parked.Count then
-            Ok (WriteOutcome.Returns (WriteAnswer.Completed (int64 parked.Count), finished))
-        else
-            // Measured on Linux 6.18.5 (pipe-blocking.c section H2, H3): a
-            // writer given room and a signal fills the room, then returns its
-            // count rather than sleeping again. Under Darwin a signal and room
-            // at once are refused before the room is filled.
-            match SyscallInterruption.ofPark task system with
-            | Error refusal -> Error (WriteRefusal.Interruption refusal)
-            | Ok (Some _) -> Ok (WriteOutcome.Returns (WriteAnswer.Completed (int64 parked.Written), finished))
-            | Ok None -> Ok (parkWrite task parked.Writer parked.Buffer parked.Count parked.Written system)
+            Ok (WriteOutcome.Returns (answered (WriteAnswer.Completed (int64 parked.Written)), finished))
+        | Ok false -> Ok (parkWrite task parked.Writer parked.Buffer parked.Count parked.Written system)
 
     /// Every answer the `write` `task` is asleep in gives *without* reading more
     /// of the caller's buffer, and otherwise which of its bytes to extract next.
@@ -1891,15 +1915,14 @@ module UnixReadWrite =
     ///
     /// - **No reader is left.** On Linux the call answers the count it had put
     ///   in, or `EPIPE` if none; on Darwin, `EPIPE` whatever it had put in.
-    ///   Either way it raises `SIGPIPE`, as `admitWrite` describes, and moves
-    ///   no timestamp.
+    ///   Either way it raises `SIGPIPE`, as `admitWrite` describes.
     /// - **There is room** for the rest, or (for a write of more than
     ///   `PIPE_BUF` bytes) for some of it: `WriteResumption.Transfer` names the
     ///   bytes to pass to `finishWrite`. A buffer naming no storage answers
     ///   `EFAULT`, the write having put nothing in.
     /// - **Neither**, and a signal with a handler is pending for the task: a
     ///   write that had put bytes in returns their count, whatever the
-    ///   handler's flags; one that had not ends as `read` does, `Restarts` or
+    ///   handlers' flags; one that had not ends as `read` does, `Restarts` or
     ///   `Failed EINTR`.
     /// - **Neither, and no signal**: the task sleeps again, behind every other
     ///   park.
@@ -1907,7 +1930,9 @@ module UnixReadWrite =
     /// Under Linux the first two beat a pending signal, whose handlers run as
     /// the call returns; under Darwin a kernel answers whichever reached the
     /// sleeper first, which this library does not record, so either beside a
-    /// signal is refused. An answer, `Restarts` included, clears the park.
+    /// signal is refused. An answer, `Restarts` included, clears the park, and
+    /// on Darwin moves the pipe's timestamps, which do not move while the call
+    /// sleeps.
     ///
     /// `task` must be asleep in a `write`.
     let admitFinishWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -1918,10 +1943,16 @@ module UnixReadWrite =
         let parked, pipeId = parkedWrite "admitFinishWrite" task system
         let pipe = UnixMachineState.pipe pipeId system.Machine
 
+        // Measured on Darwin (pipe-blocking.c section L): a sleeping write
+        // moves the write end's mtime and ctime when it ends, however it ends
+        // (bytes in, EINTR, a count, EPIPE once the reader has gone, a
+        // restart), and not while it sleeps. A write that answers EPIPE
+        // without sleeping moves none (pipe-epipe-sweep.c).
         let finished =
             { system with
                 Tasks = UnixTaskTable.unpark task system.Tasks
             }
+            |> touchedByWrite pipeId
 
         let answered (answer : WriteAnswer) (system : UnixSystem<'Task, 'Handler>) =
             Ok (WriteOutcome.Returns (WriteResumption.Answered answer, system))
@@ -1961,19 +1992,18 @@ module UnixReadWrite =
                 // answers EFAULT and puts nothing in. Only a write that had put
                 // nothing in can be holding such a buffer: putting bytes in
                 // reads them.
-                answered (WriteAnswer.Failed UnixError.EFAULT) (touchedByWrite pipeId finished)
+                answered (WriteAnswer.Failed UnixError.EFAULT) finished
             | UserBuffer.Opaque -> Error (WriteRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
             | UserBuffer.Addressless -> Error (WriteRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
             | UserBuffer.Mapped -> Ok (WriteOutcome.Returns (WriteResumption.Transfer (parked.Written, taking), system))
+        elif parked.Written > 0 then
+            afterPartWritten task pipeId parked WriteResumption.Answered system
         else
 
         // Measured on both (pipe-blocking.c section D): a write asleep with
-        // bytes in returned their count when signalled, under SA_RESTART or
-        // not; one with nothing in returned EINTR without it and slept on with
-        // it.
+        // nothing in returned EINTR without SA_RESTART and slept on with it.
         match SyscallInterruption.ofPark task system with
         | Error refusal -> Error (WriteRefusal.Interruption refusal)
-        | Ok (Some _) when parked.Written > 0 -> answered (WriteAnswer.Completed (int64 parked.Written)) finished
         | Ok (Some SyscallInterruption.Eintr) -> answered (WriteAnswer.Failed UnixError.EINTR) finished
         | Ok (Some SyscallInterruption.Restart) -> Ok (WriteOutcome.Restarts finished)
         | Ok None ->
@@ -2010,8 +2040,6 @@ module UnixReadWrite =
             failwith
                 $"UnixReadWrite.finishWrite: task %O{task}'s write into pipe %O{pipeId} takes %d{taking} bytes now and was given %d{bytes.Length}. Pass the bytes `admitFinishWrite` named, against the system it answered with (this is a bug in the caller)."
 
-        // Measured on Darwin (pipe-blocking.c section L): the write end's mtime
-        // and ctime are the moment the call finished, not the one it slept.
         let system =
             withPipe
                 pipeId
@@ -2019,14 +2047,69 @@ module UnixReadWrite =
                     Buffer = PipeBuffer.resumeWith parked.Count parked.Written bytes pipe.Buffer
                 }
                 system
-            |> touchedByWrite pipeId
 
-        afterResumedWrite
-            task
+        let parked =
             { parked with
                 Written = parked.Written + taking
             }
-            system
+
+        if parked.Written = parked.Count then
+            let finished =
+                { system with
+                    Tasks = UnixTaskTable.unpark task system.Tasks
+                }
+                |> touchedByWrite pipeId
+
+            Ok (WriteOutcome.Returns (WriteAnswer.Completed (int64 parked.Count), finished))
+        else
+            // Measured on Linux 6.18.5 (pipe-blocking.c sections H2, H3): a
+            // writer given room and a signal fills the room, then returns its
+            // count rather than sleeping again. Under Darwin a signal and room
+            // at once were refused before the room was filled.
+            afterPartWritten task pipeId parked id system
+
+    /// A blocking `write` of `total` bytes by `task`, given the first of them
+    /// that `WriteAdmission.TransferThenSleep` named: they go into the pipe, and
+    /// the call sleeps for the rest (`WriteOutcome.WouldBlock`), to be finished
+    /// with `admitFinishWrite` and `finishWrite`.
+    ///
+    /// `bytes` must be exactly the ones the admission named, and the system the
+    /// one it came with: anything else is the caller's mistake, and fails
+    /// loudly.
+    let writeThenSleep<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (fd : int)
+        (total : int)
+        (bytes : ImmutableArray<byte>)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<WriteOutcome<WriteAnswer, 'Task, 'Handler>, WriteRefusal>
+        =
+        if bytes.IsDefault then
+            failwith
+                "UnixReadWrite.writeThenSleep: bytes is the default ImmutableArray, whose underlying array is null. That is not an empty write; pass ImmutableArray<byte>.Empty."
+
+        checkIssuer "writeThenSleep" task system
+
+        let mismatch (what : string) : 'a =
+            failwith
+                $"UnixReadWrite.writeThenSleep: fd %d{fd}, given %d{bytes.Length} of %d{total} bytes, %s{what}. Pass the bytes `admitWrite`'s `TransferThenSleep` named, against the system it answered with (this is a bug in the caller)."
+
+        match writeTarget fd system with
+        | Ok (WriteTarget.Pipe (pipeId, descriptionId, nonBlocking)) ->
+            match pipeWriteStep pipeId nonBlocking total UserBuffer.Mapped system with
+            | PipeWriteStep.TakesThenSleeps taken when taken = bytes.Length ->
+                let pipe = UnixMachineState.pipe pipeId system.Machine
+
+                withPipe
+                    pipeId
+                    { pipe with
+                        Buffer = PipeBuffer.writeWith total bytes pipe.Buffer
+                    }
+                    system
+                |> parkWrite task descriptionId UserBuffer.Mapped total taken
+                |> Ok
+            | step -> mismatch $"is not the blocking write that puts in part of it and sleeps (%A{step})"
+        | other -> mismatch $"names %A{other} rather than the write end of a pipe"
 
     /// The inode a `pwrite` will write into, once every question that precedes
     /// the buffer screen has been settled.
@@ -2146,16 +2229,16 @@ module UnixReadWrite =
         (count : uint64)
         (offset : int64)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<WriteAdmission, PWriteRefusal>
+        : Result<PWriteAdmission, PWriteRefusal>
         =
         let platform = system.Machine.UnixPlatform
 
         if countRefused platform count then
-            Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EINVAL))
+            Ok (PWriteAdmission.Answered (WriteAnswer.Failed UnixError.EINVAL))
         else
 
         match pwriteTarget fd offset system with
-        | Error error -> Ok (WriteAdmission.Answered (WriteAnswer.Failed error))
+        | Error error -> Ok (PWriteAdmission.Answered (WriteAnswer.Failed error))
         | Ok _ ->
 
         // `vfs_write` screens the buffer between the access mode above and the
@@ -2166,13 +2249,13 @@ module UnixReadWrite =
             UserBufferCheck.faultsBeforeOperationFor (UnixMachineState.userBufferCheck system.Machine) buffer count
         with
         | Error refusal -> Error (PWriteRefusal.Buffer refusal)
-        | Ok true -> Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EFAULT))
+        | Ok true -> Ok (PWriteAdmission.Answered (WriteAnswer.Failed UnixError.EFAULT))
         | Ok false ->
 
         // Ahead of the zero-length no-op below: Darwin's EFBIG at INT64_MAX
         // answers a count of zero too, measured.
         match writeFailedByPosition (positionCheck platform offset count) with
-        | Some error -> Ok (WriteAdmission.Answered (WriteAnswer.Failed error))
+        | Some error -> Ok (PWriteAdmission.Answered (WriteAnswer.Failed error))
         | None ->
 
         let count = oneCallsWorth platform count
@@ -2185,7 +2268,7 @@ module UnixReadWrite =
             // nothing is read through it — a null pointer is an ordinary user
             // address, so it reaches here rather than being screened above, and
             // `pwrite(f, NULL, 0, 0)` is 0 on both.
-            Ok (WriteAdmission.Answered (WriteAnswer.Completed 0L))
+            Ok (PWriteAdmission.Answered (WriteAnswer.Completed 0L))
         else
 
         match buffer with
@@ -2194,10 +2277,10 @@ module UnixReadWrite =
             // address, null included, having performed no I/O: measured,
             // `pwrite(f, NULL, 4, 0)` is EFAULT on both, where the same pointer
             // at length 0 is a no-op.
-            Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EFAULT))
+            Ok (PWriteAdmission.Answered (WriteAnswer.Failed UnixError.EFAULT))
         | UserBuffer.Opaque -> Error (PWriteRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
         | UserBuffer.Addressless -> Error (PWriteRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
-        | UserBuffer.Mapped -> Ok (WriteAdmission.Transfer count)
+        | UserBuffer.Mapped -> Ok (PWriteAdmission.Transfer count)
 
     /// `pwrite(2)`, given the bytes the caller extracted after `admitPWrite` said
     /// to: place them at `offset` without consulting or moving the description's
@@ -2213,7 +2296,7 @@ module UnixReadWrite =
     /// file's contents and timestamps do.
     ///
     /// `bytes` is at most one call's worth, as the admission's
-    /// `WriteAdmission.Transfer` says; a longer array is refused as the
+    /// `PWriteAdmission.Transfer` says; a longer array is refused as the
     /// caller's mistake.
     ///
     /// Never short and never `EINTR`: this kernel has nothing that could push

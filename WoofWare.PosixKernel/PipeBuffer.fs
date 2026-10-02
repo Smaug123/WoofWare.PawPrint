@@ -364,25 +364,11 @@ module PipeBuffer =
             else
                 buffer
 
-    /// A non-blocking write of `bytes`: how many of them, from the start, the
-    /// buffer takes now, and the buffer after taking them.
-    ///
-    /// Zero means nothing fits, which a caller answers with `EAGAIN` or by
-    /// waiting; a count below `bytes.Length` is a short write. A write of at most
-    /// `atomicWriteLimit` bytes is never short. A write of no bytes takes none
-    /// and changes nothing.
-    ///
-    /// `bytes` is what reaches the pipe, after the kernel's limit on one call's
-    /// transfer. On Linux that limit is `INT_MAX` rounded down to a page, and a
-    /// longer count is the caller's to shorten first: the pipe takes a
-    /// different amount from a clamped count than from the unclamped one.
-    let write (bytes : ImmutableArray<byte>) (buffer : PipeBuffer) : int * PipeBuffer =
-        if bytes.IsDefault then
-            failwith
-                "PipeBuffer.write: bytes is the default ImmutableArray, whose underlying array is null. That is not an empty write; pass ImmutableArray<byte>.Empty."
-
-        let n = bytes.Length
-
+    // A write of `n` bytes, the ones it takes being the start of `bytes`:
+    // all of them for `write`, and exactly the ones taken for `writeWith`.
+    // Which bytes it takes depends on `n` (Linux merges `n mod page`), so the
+    // count and the bytes are separate.
+    let private writeOf (n : int) (bytes : ImmutableArray<byte>) (buffer : PipeBuffer) : int * PipeBuffer =
         if n = 0 then
             0, buffer
         else
@@ -468,6 +454,42 @@ module PipeBuffer =
                     Size = size
                     Bytes = ByteQueue.append (ImmutableArray.Create (bytes, 0, taken)) darwin.Bytes
                 }
+
+    /// A non-blocking write of `bytes`: how many of them, from the start, the
+    /// buffer takes now, and the buffer after taking them.
+    ///
+    /// Zero means nothing fits, which a caller answers with `EAGAIN` or by
+    /// waiting; a count below `bytes.Length` is a short write. A write of at most
+    /// `atomicWriteLimit` bytes is never short. A write of no bytes takes none
+    /// and changes nothing.
+    ///
+    /// `bytes` is what reaches the pipe, after the kernel's limit on one call's
+    /// transfer. On Linux that limit is `INT_MAX` rounded down to a page, and a
+    /// longer count is the caller's to shorten first: the pipe takes a
+    /// different amount from a clamped count than from the unclamped one.
+    let write (bytes : ImmutableArray<byte>) (buffer : PipeBuffer) : int * PipeBuffer =
+        if bytes.IsDefault then
+            failwith
+                "PipeBuffer.write: bytes is the default ImmutableArray, whose underlying array is null. That is not an empty write; pass ImmutableArray<byte>.Empty."
+
+        writeOf bytes.Length bytes buffer
+
+    /// The buffer once a write of `count` bytes has put in `taken`: exactly
+    /// the `wouldTake count buffer` bytes it starts with.
+    ///
+    /// For a caller that must say how many bytes it wants before it has them,
+    /// such as one whose bytes are in a process's memory and whose write
+    /// sleeps for the rest.
+    let writeWith (count : int) (taken : ImmutableArray<byte>) (buffer : PipeBuffer) : PipeBuffer =
+        if taken.IsDefault then
+            failwith
+                "PipeBuffer.writeWith: taken is the default ImmutableArray, whose underlying array is null. That is not an empty write; pass ImmutableArray<byte>.Empty."
+
+        if taken.Length <> wouldTake count buffer then
+            failwith
+                $"PipeBuffer.writeWith: given %d{taken.Length} bytes for a write of %d{count} that takes %d{wouldTake count buffer} (this is a bug in the caller of PipeBuffer.writeWith)."
+
+        snd (writeOf count taken buffer)
 
     /// How many bytes a blocking write of `count` bytes, which has put the
     /// first `written` of them in and slept because the rest did not fit, takes

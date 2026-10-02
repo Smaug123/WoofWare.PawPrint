@@ -49,7 +49,13 @@ module WriteOutcomes =
                 failwith $"admitWrite asked for %d{count} of %d{bytes.Length} bytes"
 
             UnixReadWrite.write task fd (ImmutableArray.Create (bytes, 0, count)) admitted
-        | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Transfer count, signal, _)) ->
+        | Ok (WriteOutcome.Returns (WriteAdmission.TransferThenSleep (count, total), admitted)) ->
+            if total <> bytes.Length || count > bytes.Length then
+                failwith $"admitWrite asked for %d{count} of %d{total} bytes, given %d{bytes.Length}"
+
+            UnixReadWrite.writeThenSleep task fd total (ImmutableArray.Create (bytes, 0, count)) admitted
+        | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Transfer count, signal, _))
+        | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.TransferThenSleep (count, _), signal, _)) ->
             failwith $"admitWrite raised %A{signal} and still asked for %d{count} bytes"
 
     /// `UnixReadWrite.admitWrite` by the leader, through `returned`.

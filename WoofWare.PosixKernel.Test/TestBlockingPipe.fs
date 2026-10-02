@@ -492,6 +492,9 @@ module TestBlockingPipe =
         | Error refusal -> Error refusal
         | Ok (WriteOutcome.Returns (WriteAdmission.Transfer n, admitted)) ->
             UnixReadWrite.write task fd (ImmutableArray.CreateRange (List.take n bytes)) admitted
+        | Ok (WriteOutcome.Returns (WriteAdmission.TransferThenSleep (n, total), admitted)) ->
+            total |> shouldEqual (List.length bytes)
+            UnixReadWrite.writeThenSleep task fd total (ImmutableArray.CreateRange (List.take n bytes)) admitted
         | Ok (WriteOutcome.Returns (WriteAdmission.Answered answer, after)) -> Ok (WriteOutcome.Returns (answer, after))
         | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Answered answer, signal, after)) ->
             Ok (WriteOutcome.ReturnsRaising (answer, signal, after))
@@ -1393,9 +1396,10 @@ module TestBlockingPipe =
             | other -> failwith $"%O{platform}: closing a dup: %A{other}"
 
     [<Test>]
-    let ``a sleeping transfer moves Darwin's timestamps when it finishes`` () : unit =
+    let ``a sleeping transfer moves Darwin's timestamps when it ends, and not while it sleeps`` () : unit =
         // Section L: the write end's mtime and ctime, and the read end's
-        // atime, are the moment the call finished.
+        // atime, stay put while the call sleeps, even once a write has put
+        // bytes in, and are the moment the call ends, however it ends.
         let later (system : UnixSystem<int, string>) =
             { system with
                 Machine = UnixMachineState.advanceClock 1_000_000_000L system.Machine
@@ -1403,22 +1407,130 @@ module TestBlockingPipe =
 
         let times (fd : int) (system : UnixSystem<int, string>) =
             match UnixPathResolution.fstat fd system with
-            | Ok (FileStatusAnswer.Reported status) -> status.AccessTime, status.ModificationTime
+            | Ok (FileStatusAnswer.Reported status) ->
+                status.AccessTime, status.ModificationTime, status.StatusChangeTime
             | other -> failwith $"%A{other}"
 
         let platform = SimulatedUnixPlatform.macOsArm64
-        let system = pipeHolding platform false 65536 |> writerAsleep 1 |> later
-        let system = leaderReads 4096 system |> later
-        let now = UnixMachineState.realtime system.Machine
 
-        match libraryFinishWrite sleeper [ 7uy ] system with
-        | Ok (WriteOutcome.Returns (WriteAnswer.Completed 1L, system)) -> snd (times 4 system) |> shouldEqual now
-        | other -> failwith $"%A{other}"
+        // Each sleeper, how it is made to end, the descriptor whose times it
+        // moves, and whether the change itself moves them first.
+        let cases
+            : (string *
+              bool *
+              (UnixSystem<int, string> -> UnixSystem<int, string>) *
+              (UnixSystem<int, string> -> UnixSystem<int, string>) *
+              int *
+              byte list option) list =
+            [
+                "a read given bytes", false, readerAsleep, leaderWrites 3, 3, None
+                "a read signalled", false, readerAsleep, signalled, 3, None
+                "a read restarted", true, readerAsleep, signalled, 3, None
+                "a read at end of file", false, readerAsleep, closed 4, 3, None
+                "a write given room", false, writerAsleep 1, leaderReads 4096, 4, Some (payload 7 1)
+                "a write signalled", false, writerAsleep 1, signalled, 4, Some (payload 7 1)
+                "a write restarted", true, writerAsleep 1, signalled, 4, Some (payload 7 1)
+                "a write whose reader goes", false, writerAsleep 1, closed 3, 4, Some (payload 7 1)
+                "a part-written write signalled", false, writerAsleep 70000, signalled, 4, Some (payload 7 70000)
+                "a part-written write whose reader goes", false, writerAsleep 70000, closed 3, 4, Some (payload 7 70000)
+            ]
 
-        let system = pipeHolding platform false 0 |> readerAsleep |> later
-        let system = leaderWrites 3 system |> later
-        let now = UnixMachineState.realtime system.Machine
+        for name, restart, sleep, ending, fd, writing in cases do
+            let prefill =
+                match writing with
+                | Some [ _ ] -> 65536
+                | _ -> 0
 
-        match UnixReadWrite.finishRead sleeper system with
-        | Ok (ReadOutcome.Answered (ReadAnswer.Completed _), system) -> fst (times 3 system) |> shouldEqual now
-        | other -> failwith $"%A{other}"
+            let before = pipeHolding platform restart prefill |> later
+            let atStart = times fd before
+            let asleep = sleep before |> later
+            // Nothing moved while it slept.
+            times fd asleep |> shouldEqual atStart
+            let ended = ending asleep |> later
+            let now = UnixMachineState.realtime ended.Machine
+
+            let after =
+                match writing with
+                | None ->
+                    match UnixReadWrite.finishRead sleeper ended with
+                    | Ok (ReadOutcome.WouldBlock _, _) -> failwith $"%s{name}: slept again"
+                    | Ok (_, after) -> after
+                    | other -> failwith $"%s{name}: %A{other}"
+                | Some payload ->
+                    match libraryFinishWrite sleeper payload ended with
+                    | Ok (WriteOutcome.WouldBlock _) -> failwith $"%s{name}: slept again"
+                    | Ok (WriteOutcome.Returns (_, after))
+                    | Ok (WriteOutcome.ReturnsRaising (_, _, after))
+                    | Ok (WriteOutcome.Restarts after) -> after
+                    | other -> failwith $"%s{name}: %A{other}"
+
+            let access, modification, change = times fd after
+
+            match writing with
+            | None -> access |> shouldEqual now
+            | Some _ -> (modification, change) |> shouldEqual (now, now)
+
+    [<Test>]
+    let ``a write admitted with room for part of it reads only that part before it sleeps`` () : unit =
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            let system = pipeHolding platform false 0
+
+            match UnixReadWrite.admitWrite sleeper 4 UserBuffer.Mapped 200000UL system with
+            | Ok (WriteOutcome.Returns (WriteAdmission.TransferThenSleep (65536, 200000), admitted)) ->
+                match
+                    UnixReadWrite.writeThenSleep
+                        sleeper
+                        4
+                        200000
+                        (ImmutableArray.CreateRange (payload 7 65536))
+                        admitted
+                with
+                | Ok (WriteOutcome.WouldBlock (_, asleep)) ->
+                    match UnixTaskTable.parkedFor sleeper asleep.Tasks with
+                    | Some (ParkedSyscall.PipeWrite parked) ->
+                        (parked.Count, parked.Written) |> shouldEqual (200000, 65536)
+                    | other -> failwith $"%O{platform}: %A{other}"
+                | other -> failwith $"%O{platform}: %A{other}"
+            | other -> failwith $"%O{platform}: %A{other}"
+
+    [<Test>]
+    let ``a write with bytes in returns their count whatever its signals' handlers' flags`` () : unit =
+        // Section D: a part-written write returns its count with or without
+        // SA_RESTART, so handlers that disagree about it do not matter; one
+        // with nothing in is where they would.
+        let bothSignals (system : UnixSystem<int, string>) =
+            { system with
+                Process =
+                    { system.Process with
+                        Signals =
+                            system.Process.Signals
+                            |> SignalState.setDisposition
+                                Signal.SIGUSR2
+                                (SignalDisposition.Catch (SignalCatch.ofHandler "h2"))
+                            |> SignalState.enqueue
+                                {
+                                    Signal = Signal.SIGUSR2
+                                    Target = ValueSome sleeper
+                                }
+                    }
+            }
+            |> signalled
+
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            let system = pipeHolding platform true 0 |> writerAsleep 70000 |> bothSignals
+            finished (Some (payload 7 70000)) system |> shouldEqual (Seen.Wrote 65536L)
+
+            let system = pipeHolding platform true 65536 |> writerAsleep 1 |> bothSignals
+
+            match UnixReadWrite.admitFinishWrite sleeper system with
+            | Error (WriteRefusal.Interruption (SyscallInterruptionRefusal.MixedRestartFlags _)) -> ()
+            | other -> failwith $"%O{platform}: %A{other}"
+
+        // Linux: room as well, which the write fills before it returns.
+        let system =
+            pipeHolding SimulatedUnixPlatform.linuxX64 true 0
+            |> writerAsleep 70000
+            |> leaderReads 4096
+            |> bothSignals
+
+        finished (Some (payload 7 70000)) system |> shouldEqual (Seen.Wrote 69632L)

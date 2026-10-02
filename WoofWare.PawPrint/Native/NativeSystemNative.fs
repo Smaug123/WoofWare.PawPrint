@@ -4198,12 +4198,12 @@ module NativeSystemNative =
                     (EmulatedKernel.unix state.Kernel)
             with
             | Error refusal -> refused refusal
-            | Ok (WriteAdmission.Answered (WriteAnswer.Failed error)) ->
+            | Ok (PWriteAdmission.Answered (WriteAnswer.Failed error)) ->
                 withErrnoOnly ctx error state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-            | Ok (WriteAdmission.Answered (WriteAnswer.Completed written)) ->
+            | Ok (PWriteAdmission.Answered (WriteAnswer.Completed written)) ->
                 // The zero-length no-op, which changes nothing at all — so there
                 // is no system to write back, and the buffer was never resolved.
                 let written = shimTransferCount operation bufferSize written
@@ -4212,7 +4212,7 @@ module NativeSystemNative =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim written)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-            | Ok (WriteAdmission.Transfer count) ->
+            | Ok (PWriteAdmission.Transfer count) ->
 
             // Only now are the guest's bytes extracted: the admission answered
             // every question a `pwrite` settles without reading the buffer, so
@@ -6994,9 +6994,16 @@ module NativeSystemNative =
             | Ok (WriteOutcome.Restarts _ as outcome) ->
                 failwith
                     $"%s{operation}: fd %d{fd}: a write that never slept answered %A{outcome}; only a finishing call restarts (this is a bug in the kernel library)."
-            | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Transfer count, raised, _)) ->
+            | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Transfer count, raised, _))
+            | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.TransferThenSleep (count, _), raised, _)) ->
                 failwith
                     $"%s{operation}: fd %d{fd}: the kernel raised %O{raised.Signal} and still asked for %d{count} bytes; a write that raises a signal takes none (this is a bug in the kernel library)."
+            // A blocking write into a pipe with room for part of it: the part is
+            // read now, and the rest only as the pipe takes it.
+            | Ok (WriteOutcome.Returns (WriteAdmission.TransferThenSleep (count, total), admitted)) ->
+                match UnixReadWrite.writeThenSleep ctx.Thread fd total (extract buffer 0 count) admitted with
+                | Error refusal -> refused refusal
+                | Ok outcome -> finish outcome noEffect
             | Ok (WriteOutcome.Returns (WriteAdmission.Transfer count, admitted)) ->
 
             match UnixReadWrite.write ctx.Thread fd (extract buffer 0 count) admitted with

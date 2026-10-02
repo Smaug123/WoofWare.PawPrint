@@ -507,8 +507,11 @@ module TestTransferCounts =
                     snd (expectedAdmission platform limit offset case.Buffer case.Count)
 
             let actual =
+                // A pwrite's admission says what a write's does, but for the
+                // sleeping write, which a file never makes.
                 match UnixReadWrite.admitPWrite fd case.Buffer case.Count offset system with
-                | Ok admission -> Ok admission
+                | Ok (PWriteAdmission.Answered answer) -> Ok (WriteAdmission.Answered answer)
+                | Ok (PWriteAdmission.Transfer count) -> Ok (WriteAdmission.Transfer count)
                 | Error (PWriteRefusal.Buffer refusal) -> Error refusal
                 | Error other ->
                     failwith $"a regular file's pwrite was refused for something other than its buffer: %O{other}"
@@ -759,12 +762,14 @@ module TestTransferCounts =
             | Ok (WriteAdmission.Answered (WriteAnswer.Failed error)) -> Seen.Errno error
             | Ok (WriteAdmission.Answered (WriteAnswer.Completed written)) -> Seen.Moved (int written)
             | Ok (WriteAdmission.Transfer count) -> Seen.Moved count
+            | Ok (WriteAdmission.TransferThenSleep _ as admission) ->
+                failwith $"a write of a descriptor here would sleep: %A{admission}"
             | Error _ -> Seen.Refused
         | "pwrite" ->
             match UnixReadWrite.admitPWrite fd buffer count 0L system with
-            | Ok (WriteAdmission.Answered (WriteAnswer.Failed error)) -> Seen.Errno error
-            | Ok (WriteAdmission.Answered (WriteAnswer.Completed written)) -> Seen.Moved (int written)
-            | Ok (WriteAdmission.Transfer count) -> Seen.Moved count
+            | Ok (PWriteAdmission.Answered (WriteAnswer.Failed error)) -> Seen.Errno error
+            | Ok (PWriteAdmission.Answered (WriteAnswer.Completed written)) -> Seen.Moved (int written)
+            | Ok (PWriteAdmission.Transfer count) -> Seen.Moved count
             | Error _ -> Seen.Refused
         | other -> failwith $"no op %s{other}"
 

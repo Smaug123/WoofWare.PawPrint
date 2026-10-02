@@ -1054,13 +1054,13 @@ module TestUnixSystemStep =
 
     // ------------------------------------------------------------------ pwrite
 
-    let private pwriteAdmitted (result : Result<WriteAdmission, PWriteRefusal>) : WriteAdmission =
+    let private pwriteAdmitted (result : Result<PWriteAdmission, PWriteRefusal>) : PWriteAdmission =
         match result with
         | Ok admission -> admission
         | Error refusal -> failwith $"expected an admission, got %A{refusal}"
 
-    let private pwriteFailed (error : UnixError) : Result<WriteAdmission, PWriteRefusal> =
-        Ok (WriteAdmission.Answered (WriteAnswer.Failed error))
+    let private pwriteFailed (error : UnixError) : Result<PWriteAdmission, PWriteRefusal> =
+        Ok (PWriteAdmission.Answered (WriteAnswer.Failed error))
 
     [<Test>]
     let ``pwrite writes at the offset it is given and leaves the description alone`` () : unit =
@@ -1271,7 +1271,7 @@ module TestUnixSystemStep =
         |> shouldEqual (pwriteFailed UnixError.EFAULT)
 
         UnixReadWrite.admitPWrite darwinFd wild 0UL 0L darwinSystem
-        |> shouldEqual (Ok (WriteAdmission.Answered (WriteAnswer.Completed 0L)))
+        |> shouldEqual (Ok (PWriteAdmission.Answered (WriteAnswer.Completed 0L)))
 
         // A *null* pointer passes the screen on both — it is an ordinary user
         // address — so it reaches the no-op at length 0 and faults at the copy
@@ -1279,7 +1279,7 @@ module TestUnixSystemStep =
         // `pwrite(f, NULL, 4, 0)` is EFAULT, on both.
         for descriptor, holding in [ fd, system ; darwinFd, darwinSystem ] do
             UnixReadWrite.admitPWrite descriptor (UserBuffer.Unmapped 0UL) 0UL 0L holding
-            |> shouldEqual (Ok (WriteAdmission.Answered (WriteAnswer.Completed 0L)))
+            |> shouldEqual (Ok (PWriteAdmission.Answered (WriteAnswer.Completed 0L)))
 
             UnixReadWrite.admitPWrite descriptor (UserBuffer.Unmapped 0UL) 4UL 0L holding
             |> shouldEqual (pwriteFailed UnixError.EFAULT)
@@ -1305,7 +1305,7 @@ module TestUnixSystemStep =
 
         UnixReadWrite.admitPWrite fd UserBuffer.Mapped 3UL 9L system
         |> pwriteAdmitted
-        |> shouldEqual (WriteAdmission.Transfer 3)
+        |> shouldEqual (PWriteAdmission.Transfer 3)
 
     [<Test>]
     let ``admitting a pwrite changes nothing`` () : unit =
@@ -1321,11 +1321,11 @@ module TestUnixSystemStep =
                 UserBuffer.Mapped, 0UL
             ] do
             UnixReadWrite.admitPWrite fd buffer count 0L system
-            |> ignore<Result<WriteAdmission, PWriteRefusal>>
+            |> ignore<Result<PWriteAdmission, PWriteRefusal>>
 
         UnixReadWrite.admitPWrite fd UserBuffer.Mapped 3UL 0L system
         |> pwriteAdmitted
-        |> shouldEqual (WriteAdmission.Transfer 3)
+        |> shouldEqual (PWriteAdmission.Transfer 3)
 
     [<Test>]
     let ``pwrite answers the descriptor questions itself`` () : unit =
