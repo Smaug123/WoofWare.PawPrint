@@ -33,7 +33,9 @@ type VirtualImplementation =
     | Ambiguous of WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list
     /// The receiver's default interface bodies conflict in a way this does not model, for the
     /// reason given: through a variant interface, CoreCLR's variance pass takes the first candidate
-    /// in an order this does not reproduce, rather than throwing.
+    /// in an order this does not reproduce, rather than throwing; or the conflict is at the variant
+    /// interface's exact instantiation, where whether CoreCLR throws depends on how the JIT
+    /// compiled the call.
     | Unmodelled of reason : string
 
 /// Which method a virtual or interface call runs on a receiver of a known concrete type, as
@@ -343,33 +345,6 @@ module ConcreteVirtualDispatch =
             | MethodReturnType.Void, MethodReturnType.Returns _
             | MethodReturnType.Returns _, MethodReturnType.Void -> state, false
 
-        // When dispatching through a variant interface (ECMA-335 §I.8.7), the MethodImpl's
-        // declaration may name a variance-compatible — not identical — instantiation of the
-        // call target's interface. The candidate's signature has been substituted with the
-        // declaration's view (e.g. `IContravariant<object>.Set(object)`) while methodToCall
-        // holds the dispatch view (`IContravariant<string>.Set(string)`), so a literal
-        // parameter-type comparison would wrongly reject the override.
-        //
-        // Instead of relaxing the signature comparison — which can match the wrong overload
-        // when an interface has overloads with assignable parameters (e.g. both `M(object)`
-        // and `M(string)`) — identify the slot by its underlying MethodDefinitionHandle.
-        // Both `meth.Handle` and `methodToCall.Handle` resolve to the same MethodDef in the
-        // interface's assembly when they name the same virtual slot under variance
-        // substitution, regardless of how the surrounding type generics differ.
-        let methodReferenceMatchesTarget
-            (varianceInPlay : bool)
-            (candidateTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
-            (meth : WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>)
-            (state : TypeSystemState)
-            : TypeSystemState * bool
-            =
-            if meth.Name <> methodToCall.Name then
-                state, false
-            elif varianceInPlay then
-                state, MethodInfo.sameDeclaredMethod meth methodToCall
-            else
-                signatureMatchesTarget meth.DeclaringAssemblyFullName candidateTypeGenerics meth.Signature state
-
         let methodMatches
             (candidateTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
             (allowImplicitInterfaceImplementation : bool)
@@ -525,6 +500,8 @@ module ConcreteVirtualDispatch =
                 | MemberSignature.Field _ -> false
             | _ -> false
 
+        /// The bodies of `currentTy`'s MethodImpls whose declaration is the target, at the target's own
+        /// instantiation.
         let findMatchingMethodImplBodies
             (currentTy : ConcreteType<ConcreteTypeHandle>)
             (currentTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
@@ -558,88 +535,24 @@ module ConcreteVirtualDispatch =
                     // Declaration: ECMA-335 II.22.27 keys the slot on (declaring type, member).
                     // Name + signature alone is not enough — two unrelated interfaces can share
                     // a shape (e.g. `IReader.Read()` and `IScanner.Read()`), so we also require
-                    // the declaration's declaring type to match the dispatch target.
-                    //
-                    // For variant interfaces (ECMA-335 §I.8.7) a MethodImpl on `IFoo<X>` also
-                    // satisfies dispatch through `IFoo<Y>` when `IFoo<X>` is variance-assignable
-                    // to `IFoo<Y>` (e.g. `ICovariant<string>` satisfies `ICovariant<object>`),
-                    // so we defer same-TypeDef generic comparisons to the assignability walk
-                    // rather than insisting on exact-argument equality.
-                    //
-                    // The declaration's declaring-type instantiation may not yet be in the
-                    // ConcreteTypes registry (e.g. `ICovariant<object> obj = new CovariantImpl();
-                    // obj.Get()` only concretizes the call target `ICovariant<object>`, not the
-                    // body's declared interface `ICovariant<string>`). Register it on demand so
-                    // the variance check is not silently skipped.
-                    let ensureRegistered
-                        (state : TypeSystemState)
-                        (identity : ResolvedTypeIdentity)
-                        (ns : string)
-                        (name : string)
-                        (generics : ImmutableArray<ConcreteTypeHandle>)
-                        : TypeSystemState * ConcreteTypeHandle
-                        =
-                        match AllConcreteTypes.findExistingConcreteType state.ConcreteTypes identity generics with
-                        | Some handle -> state, handle
-                        | None ->
-                            let ct = ConcreteType.makeFromIdentity identity ns name generics
-
-                            let handle, newConcreteTypes = AllConcreteTypes.add ct state.ConcreteTypes
-
-                            { state with
-                                ConcreteTypes = newConcreteTypes
-                            },
-                            handle
-
-                    // declarationTypeMatches is true when the MethodImpl's declared interface
-                    // matches the dispatch target; varianceInPlay tracks whether the match
-                    // relied on generic variance (vs identical instantiations), so we know to
-                    // relax the parameter check accordingly.
-                    let state, declarationTypeMatches, varianceInPlay =
-                        if
-                            declaration.RequiredDeclaringType.Identity
-                            <> methodToCall.RequiredDeclaringType.Identity
-                        then
-                            state, false, false
-                        elif declarationTypeGenerics = methodToCall.DeclaringTypeGenerics then
-                            state, true, false
-                        else
-                            let state, fromH =
-                                ensureRegistered
-                                    state
-                                    declaration.RequiredDeclaringType.Identity
-                                    declaration.RequiredDeclaringType.Namespace
-                                    declaration.RequiredDeclaringType.Name
-                                    declarationTypeGenerics
-
-                            let state, toH =
-                                ensureRegistered
-                                    state
-                                    methodToCall.RequiredDeclaringType.Identity
-                                    methodToCall.RequiredDeclaringType.Namespace
-                                    methodToCall.RequiredDeclaringType.Name
-                                    methodToCall.DeclaringTypeGenerics
-
-                            let state, matches =
-                                TypeAssignability.isConcreteTypeAssignableTo
-                                    loggerFactory
-                                    dotnetRuntimeDirs
-                                    baseClassTypes
-                                    state
-                                    fromH
-                                    toH
-
-                            state, matches, matches
-
-                    if not declarationTypeMatches then
+                    // the declaration's declaring type to be the dispatch target's, at the same
+                    // instantiation. A declaration naming a variance-compatible instantiation is
+                    // reached by retargeting the call onto it (`variantInterfaceMapRetargets`).
+                    if
+                        declaration.RequiredDeclaringType.Identity
+                        <> methodToCall.RequiredDeclaringType.Identity
+                        || declarationTypeGenerics <> methodToCall.DeclaringTypeGenerics
+                        || declaration.Name <> methodToCall.Name
+                    then
                         state, acc
                     else
 
-                    let matches, state =
-                        let state, matches =
-                            methodReferenceMatchesTarget varianceInPlay declarationTypeGenerics declaration state
-
-                        matches, state
+                    let state, matches =
+                        signatureMatchesTarget
+                            declaration.DeclaringAssemblyFullName
+                            declarationTypeGenerics
+                            declaration.Signature
+                            state
 
                     if not matches then
                         state, acc
@@ -999,6 +912,15 @@ module ConcreteVirtualDispatch =
             | MethodBody.RuntimeProvided _
             | MethodBody.Abstract -> false
 
+        /// The default body `currentTy`, an interface in the receiver's interface map, supplies for the
+        /// target at the target's exact instantiation (`TryGetCandidateImplementation` in
+        /// methodtable.cpp, searching without variance). On the target's own interface definition, at
+        /// the target's instantiation, that is the target itself. On any other interface it is only a
+        /// body a MethodImpl names the target for: a method of the same name and signature there is a
+        /// different method, as a `new` method of a derived interface is.
+        ///
+        /// The search allowing variance, which CoreCLR runs only once this one has found nothing, is
+        /// `variantInterfaceMapRetargets`.
         let findInterfaceImplementationOnType
             (currentTypeHandle : ConcreteTypeHandle)
             (currentTy : ConcreteType<ConcreteTypeHandle>)
@@ -1023,25 +945,21 @@ module ConcreteVirtualDispatch =
                 |> failwithf
                     "multiple interface MethodImpl bodies matched this virtual slot on %O; overload/interface disambiguation is not implemented: %s"
                     currentTypeHandle
+            | [] when
+                currentTy.Identity <> methodToCall.RequiredDeclaringType.Identity
+                || currentTy.Generics <> methodToCall.DeclaringTypeGenerics
+                ->
+                state, None
             | [] ->
-                let implementation, state =
-                    (state, currentTypeInfo.Methods)
-                    ||> List.mapFold (fun state meth -> methodMatches currentTy.Generics true meth state)
-
-                let implementation =
-                    implementation |> List.choose id |> List.map fst |> List.filter hasCallableBody
-
-                match implementation with
-                | [ impl ] -> state, Some impl
-                | _ :: _ ->
-                    implementation
-                    |> List.map (fun m -> m.Name)
-                    |> String.concat ", "
-                    // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
-                    |> failwithf
-                        "multiple default interface methods matched this virtual slot on %O; overload/interface disambiguation is not implemented: %s"
-                        currentTypeHandle
-                | [] -> state, None
+                match
+                    currentTypeInfo.Methods
+                    |> List.tryFind (fun meth -> meth.IdentityKey = methodToCall.IdentityKey)
+                with
+                | None ->
+                    failwith
+                        $"default interface body search: %s{methodToCall.Name} is not among the methods of %O{currentTypeHandle}, which is its own declaring type"
+                | Some own when hasCallableBody own -> state, Some own
+                | Some _ -> state, None
 
         let rec collectInterfaceCandidates
             (state : TypeSystemState)
@@ -1219,10 +1137,12 @@ module ConcreteVirtualDispatch =
 
             state, VirtualImplementation.Found (dispatchedOn implementationTypeHandle meth state)
         | _ ->
-            // Candidates are matched allowing variance, so through a variant interface they may
-            // all be variance-compatible ones, among which CoreCLR's variance pass picks rather
-            // than throwing. Only through an invariant interface is the conflict CoreCLR's
-            // exact-pass one.
+            // Every candidate is at the target's exact instantiation, where CoreCLR's search reports
+            // a conflict. Through a variant interface, though, whether the call throws depends on
+            // the JIT: measured on an instance method, unoptimised code throws
+            // AmbiguousImplementationException from the stub resolver, while optimised code
+            // devirtualises with `throwOnConflict` false, so the conflict falls through to the
+            // variant search, which runs the first candidate.
             let candidates = mostSpecificInterfaceMethods |> List.map snd
 
             let throughVariantInterface =
@@ -1237,7 +1157,7 @@ module ConcreteVirtualDispatch =
 
                 state,
                 VirtualImplementation.Unmodelled
-                    $"more than one most-specific default body of %s{methodToCall.Name} through a variant interface, which CoreCLR's variance pass chooses between in an order not modelled: %s{described}"
+                    $"more than one most-specific default body of %s{methodToCall.Name} at a variant interface's exact instantiation, where CoreCLR throws or runs the first depending on how the JIT compiled the call: %s{described}"
             else
                 state, VirtualImplementation.Ambiguous candidates
 
@@ -1564,8 +1484,8 @@ module ConcreteVirtualDispatch =
     /// `walkBaseTypes` false means "exact-type dispatch": the `constrained.` value-type probe,
     /// which asks whether `T` itself supplies the method rather than inheriting it.
     ///
-    /// `Unmodelled` where default bodies conflict through variance, among which CoreCLR's variance
-    /// pass takes the first candidate in an order that is not modelled.
+    /// `Unmodelled` where default bodies conflict through a variant interface: see
+    /// `VirtualImplementation.Unmodelled`.
     ///
     /// `methodToCall` must be an instance method: a static virtual is `StaticVirtualDispatch`'s.
     let tryResolveVirtualImplementation
