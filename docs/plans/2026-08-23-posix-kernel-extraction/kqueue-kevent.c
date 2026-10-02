@@ -304,10 +304,13 @@ static void section_d(void)
 
 // ---- E ------------------------------------------------------------------
 
+// The result fields are written by the sleeper before it sets `done`, and read
+// by another thread only once it has seen `done` set or joined the sleeper.
 struct sleeper {
     int fd;
     const struct timespec *ts;
     atomic_int started;
+    atomic_int done;
     int rv, err;
     int64_t elapsed;
 };
@@ -322,6 +325,7 @@ static void *sleep_in_kevent(void *p)
     s->rv = kevent(s->fd, NULL, 0, out, 1, s->ts);
     s->err = s->rv < 0 ? errno : 0;
     s->elapsed = now_us() - start;
+    atomic_store(&s->done, 1);
     return NULL;
 }
 
@@ -368,8 +372,8 @@ static void section_e(void)
         pthread_create(&tc, NULL, close_it, &c);
 
         int64_t deadline = now_us() + 1000000;
-        while (now_us() < deadline && (s1.elapsed == 0 || (row == 5 && s2.elapsed == 0))) sleep_ms(5);
-        int rescued1 = s1.elapsed == 0, rescued2 = row == 5 && s2.elapsed == 0;
+        while (now_us() < deadline && (!atomic_load(&s1.done) || (row == 5 && !atomic_load(&s2.done)))) sleep_ms(5);
+        int rescued1 = !atomic_load(&s1.done), rescued2 = row == 5 && !atomic_load(&s2.done);
         if (rescued1) pthread_kill(t1, SIGUSR1);
         if (rescued2) pthread_kill(t2, SIGUSR1);
         pthread_join(t1, NULL);
