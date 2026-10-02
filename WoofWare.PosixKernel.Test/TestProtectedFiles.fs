@@ -464,7 +464,7 @@ module TestProtectedFiles =
         (system : UnixSystem<int, string>)
         : string * UnixSystem<int, string>
         =
-        match UnixNamespace.openPath flags (PathArg.ofPath (path p)) 0o644 system with
+        match OpenFlagWords.openPath flags (PathArg.ofPath (path p)) 0o644 system with
         | Ok (answer, after) -> answerText answer, after
         | Error refusal -> failwith $"open(%s{p}) was refused: %A{refusal}"
 
