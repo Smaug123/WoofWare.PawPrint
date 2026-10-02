@@ -12,9 +12,9 @@ open WoofWare.PawPrint
 [<RequireQualifiedAccess>]
 type Opacity =
     /// A <c>callvirt</c> to a method that may be overridden: the method named may not be the one
-    /// that runs. That includes a <c>constrained.</c> call whose type does not decide it: a class
-    /// that may be derived from, or a type variable of a definition analysed for every instantiation
-    /// at once.
+    /// that runs. That includes a <c>constrained.</c> call whose type does not decide it: an
+    /// instance method's on a class that may be derived from, or a type variable of a definition
+    /// analysed for every instantiation at once.
     | VirtualCall
     /// <c>calli</c>, or a call through a dynamic method's scope: no metadata names the target.
     | IndirectCall
@@ -73,8 +73,9 @@ type internal Callee =
 type internal CallSite =
     /// A call of this method.
     | Direct of Callee
-    /// A `callvirt` of a method a derived type may override, which a `constrained.` prefix naming
-    /// this type, a token of the calling body's assembly, directs: the type decides what runs.
+    /// A call of a static virtual method, or a `callvirt` of a method a derived type may override,
+    /// which a `constrained.` prefix naming this type, a token of the calling body's assembly,
+    /// directs: the type decides what runs.
     | Constrained of constrainedType : MetadataToken * Callee
 
 /// What one method body does by itself: the exceptions it raises, the places it cannot see
@@ -223,7 +224,8 @@ type EscapeAnalysisState =
 /// A generic method's IL is read once, since every instantiation runs the same IL, but its summary
 /// is computed for each closed instantiation a call reaches. An instantiation decides what a
 /// <c>constrained.</c> call on one of the method's type variables runs when it makes that a value
-/// type or a sealed class. Asked about by itself, a generic definition stands for every
+/// type or a sealed class, or the method called is a static virtual, which no derived class's
+/// instance can receive. Asked about by itself, a generic definition stands for every
 /// instantiation at once, so such a call is opaque in it. An instantiation whose type arguments nest
 /// more than eight deep is analysed as its definition instead, so that a method calling itself at
 /// ever deeper instantiations reaches finitely many.
@@ -1547,10 +1549,12 @@ module EscapeAnalysis =
                             state, raises, (offset, Opacity.IntrinsicExpansion) :: opaque, calls
                     | MetadataOperand.FromMetadata _, Some (CallTarget.Method callee), _ ->
                         // A static virtual is dispatched on the type a `constrained.` prefix names,
-                        // which is how the only legal call to one is written.
-                        if isStaticVirtual state callee.Callee then
-                            state, raises, (offset, Opacity.VirtualCall) :: opaque, calls
-                        elif call = UnaryMetadataTokenIlOp.Callvirt && isOverridable state callee.Callee then
+                        // which is how the only legal call to one is written; an overridable
+                        // method, on that type where the prefix is there.
+                        if
+                            isStaticVirtual state callee.Callee
+                            || (call = UnaryMetadataTokenIlOp.Callvirt && isOverridable state callee.Callee)
+                        then
                             match constrainedPrefix index with
                             | Some (prefix, constrainedType) when not (unbound.Contains prefix) ->
                                 state, raises, opaque, (offset, CallSite.Constrained (constrainedType, callee)) :: calls
@@ -2096,7 +2100,13 @@ module EscapeAnalysis =
             // An array may be of a covariant derived element type.
             | None -> typeSystem, None
             | Some (_, receiverType) ->
-                if LoadedTypeInfo.isValueType state.BaseTypes typeSystem._LoadedAssemblies receiverType then
+                if definition.IsStatic then
+                    // No object receives the call, so the type decides it, however it is derived
+                    // from (`MethodTable::ResolveVirtualStaticMethod`).
+                    match dispatchedOn typeSystem with
+                    | typeSystem, VirtualImplementation.Found runs when not runs.Definition.IsStatic -> typeSystem, None
+                    | typeSystem, decided -> typeSystem, Some decided
+                elif LoadedTypeInfo.isValueType state.BaseTypes typeSystem._LoadedAssemblies receiverType then
                     match implementationOn false typeSystem with
                     | typeSystem, VirtualImplementation.NotOverridden ->
                         // A value type that does not implement the method itself is boxed, and the

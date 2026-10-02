@@ -35,13 +35,14 @@ method) may add more:
   which reports more than the JIT does: it folds such a branch, even under MinOpts, and never binds
   what only the other way reaches;
 * a `constrained.` call on a value type or a sealed class runs that type's own implementation,
-  which the analysis finds with `WoofWare.PawPrint.TypeSystem`'s `ConcreteVirtualDispatch`, the
+  and one of a static virtual method runs the implementation the type supplies, whatever derives
+  from it; the analysis finds either with `WoofWare.PawPrint.TypeSystem`'s `ConcreteVirtualDispatch`, the
   dispatch the interpreter runs, or raises `AmbiguousImplementationException` where two default
   interface bodies are equally specific. A generic method's IL is read once, and its summary computed for
   each closed instantiation a call reaches, which decides what a `constrained.` call on one of its
   type variables runs. Asked about by itself, a generic definition stands for every instantiation,
-  so such a call is opaque in it, as is one on a class that may be derived from, whose instance may
-  be of a class that overrides the method, one whose default bodies conflict through a variant
+  so such a call is opaque in it, as is one of an instance method on a class that may be derived
+  from, whose instance may be of a class that overrides the method, one whose default bodies conflict through a variant
   interface, one on a type whose base types or interfaces, or the signature of a method of any of
   them, name a type that is not there, and one naming a method whose own body has a local of such a
   type. An instantiation nested more than eight deep is analysed as its definition, so that a
