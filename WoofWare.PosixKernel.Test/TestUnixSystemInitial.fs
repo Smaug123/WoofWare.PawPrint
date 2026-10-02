@@ -272,7 +272,7 @@ module TestUnixSystemInitial =
         |> shouldEqual None
 
         system.Machine.Pipes |> Map.count |> shouldEqual 3
-        system.Machine.Delivered.IsEmpty |> shouldEqual true
+        DeliveryLog.count system.Machine.Delivered |> shouldEqual 0
         UnixSystem.checkInvariants system |> shouldEqual []
 
     /// A launch table of any shape: the descriptors it names and no others,

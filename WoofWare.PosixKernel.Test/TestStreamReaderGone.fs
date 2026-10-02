@@ -152,12 +152,11 @@ module TestStreamReaderGone =
 
                 assertSound where system
 
-                system.Machine.Delivered
-                |> Seq.map (fun delivery ->
+                DeliveryLog.toList system.Machine.Delivered
+                |> List.map (fun delivery ->
                     let (ExternalEndpoint fd) = delivery.Endpoint
                     fd, List.ofSeq delivery.Bytes
                 )
-                |> Seq.toList
                 |> shouldEqual (List.rev delivered)
 
         let gen =

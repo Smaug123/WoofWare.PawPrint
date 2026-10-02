@@ -130,10 +130,11 @@ module StandardStreams =
     /// `delivered`, each delivery labelled with the standard stream it reached:
     /// what the guest wrote to its output streams, one entry per write, in the
     /// order it wrote them.
-    let outputLog (delivered : ImmutableArray<Delivery>) : ImmutableArray<OutputLogEntry> =
-        let builder = ImmutableArray.CreateBuilder<OutputLogEntry> delivered.Length
+    let outputLog (delivered : DeliveryLog) : ImmutableArray<OutputLogEntry> =
+        let builder =
+            ImmutableArray.CreateBuilder<OutputLogEntry> (DeliveryLog.count delivered)
 
-        for delivery in delivered do
+        for delivery in DeliveryLog.toList delivered do
             builder.Add
                 {
                     Role = roleOf delivery.Endpoint
