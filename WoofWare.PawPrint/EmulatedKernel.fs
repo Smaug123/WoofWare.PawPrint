@@ -597,31 +597,15 @@ type EmulatedKernel =
         /// frame and is reclaimed at frame exit), native-heap blocks outlive
         /// the frames that allocate them.
         NativeMemoryPool : NativeMemoryPool
-        /// State of the C library's own non-cryptographic generator, which
-        /// `SystemNative_GetNonCryptographicallySecureRandomBytes` draws from.
-        /// Userspace state rather than kernel state: CoreCLR's shim answers that
-        /// entry point with `arc4random_buf` where libc has it, a generator
-        /// private to the process, so the stream is not the kernel's entropy
-        /// pool in `Machine`. It is splitmix64, advanced by
-        /// `NonCryptoRandom.drawBytes` and seeded from
-        /// `NonCryptoRandom.initialState`.
-        ///
-        /// A seeded generator rather than a constant because CoreLib's consumers
-        /// need real-looking bytes: `new Random()` retries until its seed is
-        /// non-zero, so an all-zero answer would hang at construction.
-        ///
-        /// A separate stream from the kernel pool, which is what backs
-        /// `Guid.NewGuid`, so that a guest's `new Random()`, `HashCode` seed or
-        /// Marvin seed never shifts the GUIDs a recorded run observed. That is
-        /// why the shim's other path is not modelled: where libc lacks
-        /// `arc4random_buf` it XORs `lrand48` over bytes read from the kernel,
-        /// which here would mean drawing from the pool. Seeded distinctly from
-        /// the pool too, so a fresh process's two streams do not start with the
-        /// same bytes.
-        NonCryptoRandomState : uint64
+        /// What the process's C runtime keeps for random bytes, which the
+        /// two `SystemNative_Get*RandomBytes` entry points draw on: see
+        /// `ProcessRandom`. Userspace state rather than kernel state, like
+        /// `PosixSignalShim`; what it reads from, a descriptor or
+        /// `getentropy(2)`, is the kernel's.
+        ProcessRandom : ProcessRandom
         /// System.Native's own signal state: see `PosixSignalShim`. Userspace
-        /// state rather than kernel state, like `NonCryptoRandomState`: the
-        /// shim keeps it in its own globals, and no syscall reports it.
+        /// state rather than kernel state, like `ProcessRandom`: the shim keeps
+        /// it in its own globals, and no syscall reports it.
         PosixSignalShim : PosixSignalShim
         /// System.Native's cached answer to whether it may use
         /// `copy_file_range(2)`: see `CopyFileRangeSupport`. Userspace state,
@@ -1063,12 +1047,27 @@ module EmulatedKernel =
                 (SimulatedUnixPlatform.signalNumbering platform)
                 inheritedIgnores
 
+        // What the C runtime has before `main`. Darwin's `libSystem_initializer`
+        // seeds its generator with one `getentropy(32)` (measured, by
+        // interposing `getentropy` in a process that asked for no random
+        // bytes); Linux's minipal opens nothing until it is first asked.
+        let processRandom, system =
+            match SimulatedUnixPlatform.flavour platform with
+            | SimulatedUnixFlavour.Linux -> ProcessRandom.Minipal (MinipalUrandom.Unopened, None), system
+            | SimulatedUnixFlavour.Darwin ->
+                match UnixEntropy.getEntropy UserBuffer.Mapped 32UL system with
+                | Ok (GetEntropyAnswer.Completed draw, system) ->
+                    ProcessRandom.LibSystem (LibSystemRandom.ofSeed (EntropyDraw.bytes draw)), system
+                | other ->
+                    failwith
+                        $"%s{context}: libSystem's getentropy(32) into storage it owns did not answer 32 bytes: %A{other} (this is a bug in the kernel library)."
+
         {
             InstructionCostTicks = defaultInstructionCostTicks
             LastPInvokeError = Map.empty
             LastSystemError = Map.empty
             NativeMemoryPool = NativeMemoryPool.empty
-            NonCryptoRandomState = NonCryptoRandom.initialState
+            ProcessRandom = processRandom
             PosixSignalShim = PosixSignalShim.initial
             CopyFileRangeSupport = CopyFileRangeSupport.Unprobed
             DirectoryStreamFds = Map.empty

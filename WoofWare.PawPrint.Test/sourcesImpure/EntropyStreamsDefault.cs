@@ -2,15 +2,17 @@ using System;
 using System.Runtime.InteropServices;
 
 // Writes to stdout what a default run hands the guest from its two random
-// streams, so that the F# registration can pin the exact bytes: PawPrint's
-// replay contract says every `Guid.NewGuid` and every `new Random()` sequence
-// is a fixed function of the configuration, and nothing else pins that.
+// entry points, so that the F# registration can pin the exact bytes:
+// PawPrint's replay contract says every `Guid.NewGuid` and every `new Random()`
+// sequence is a fixed function of the configuration, and nothing else pins
+// that.
 //
-// Both streams are read through CoreLib's own consumers and through the raw
-// entry points, interleaved so that a stream which drew from the other's
-// state would shift every later row. The raw draws are 24 bytes: not a
-// multiple of eight, so a generator that unpacked its 64-bit outputs
-// differently would show in the last block.
+// Both entry points are read through CoreLib's own consumers and through the
+// raw P/Invokes, interleaved. On Linux both read the kernel's pool through
+// minipal's /dev/urandom descriptor, and the non-secure one XORs glibc's
+// lrand48 over its bytes, so each row moves the pool for every later one. The
+// raw draws are 24 bytes: not a multiple of eight, so a generator that
+// unpacked its 64-bit outputs differently would show in the last block.
 //
 // PawPrint-only: on a real runtime every byte here is fresh entropy.
 class Program

@@ -1661,14 +1661,13 @@ module NativeSystemNative =
     /// The destination of `SystemNative_GetNonCryptographicallySecureRandomBytes`
     /// or `SystemNative_GetCryptographicallySecureRandomBytes`, which declare
     /// the identical `(byte* buffer, int32 bufferLength)` argument list and
-    /// differ only in which stream fills the buffer. `None` when the call asks
-    /// for no bytes, in which case it must touch neither the buffer nor the
-    /// stream.
-    let private randomBytesDestination
-        (ctx : NativeCallContext)
-        (operation : string)
-        : (ManagedPointerSource * int) option
-        =
+    /// differ only in which of minipal's paths fills the buffer.
+    ///
+    /// A length of zero is still a call: on Linux minipal opens its descriptor
+    /// and reads nothing from it, and its non-secure path seeds `lrand48`. The
+    /// buffer is not touched then, so CoreLib may pass a null pointer for an
+    /// empty span.
+    let private randomBytesDestination (ctx : NativeCallContext) (operation : string) : ManagedPointerSource * int =
         let buffer =
             NativeCall.managedPointerOfPointerArgument operation "buffer" ctx.Instruction.Arguments.[0]
 
@@ -1681,18 +1680,27 @@ module NativeSystemNative =
             // so seeing one here means a guest bug we want to surface
             // rather than a silently truncated buffer.
             failwith $"%s{operation}: bufferLength %d{length} is negative"
-        elif length = 0 then
-            // Match the C behaviour of `arc4random_buf(buf, 0)` /
-            // `read(fd, buf, 0)`: no-op, do not even dereference
-            // `buffer` (which CoreLib may pass as a null pointer
-            // for an empty span), and do not advance the stream.
-            None
+
+        match buffer with
+        | ManagedPointerSource.Null when length > 0 ->
+            failwith
+                $"%s{operation}: refused to fill %d{length} bytes through null buffer pointer (CoreLib should not invoke this entry point with a null destination for a non-zero length)"
+        | _ -> buffer, length
+
+    /// `bytes` written through `buffer`, unless there are none, when the buffer
+    /// is not touched at all.
+    let private writeRandomBytes
+        (ctx : NativeCallContext)
+        (operation : string)
+        (buffer : ManagedPointerSource)
+        (bytes : ImmutableArray<byte>)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        if bytes.IsEmpty then
+            state
         else
-            match buffer with
-            | ManagedPointerSource.Null ->
-                failwith
-                    $"%s{operation}: refused to fill %d{length} bytes through null buffer pointer (CoreLib should not invoke this entry point with a null destination for a non-zero length)"
-            | _ -> Some (buffer, length)
+            writeBytesThrough ctx operation buffer bytes state
 
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
@@ -6921,26 +6929,38 @@ module NativeSystemNative =
           [ ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
             ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
-            // The C library's stream, not the kernel's pool: see
-            // `EmulatedKernel.NonCryptoRandomState`.
+            // minipal's non-secure path: see `MinipalRandom`.
             let operation = "SystemNative_GetNonCryptographicallySecureRandomBytes"
 
-            match randomBytesDestination ctx operation with
-            | None -> state
-            | Some (buffer, length) ->
-                let bytes, prngState =
-                    NonCryptoRandom.drawBytes length state.Kernel.NonCryptoRandomState
+            let state =
+                let buffer, length = randomBytesDestination ctx operation
 
-                let state =
-                    writeBytesThrough ctx operation buffer (ImmutableArray.CreateRange bytes) state
+                let fill, kernel =
+                    MinipalRandom.systemNativeNonSecureRandomBytes operation ctx.Thread length state.Kernel
 
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        NonCryptoRandomState = prngState
-                    }
-                )
-            |> NativeHandlerResult.completed
-            |> Some
+                let state = state.MapKernel (fun _ -> kernel)
+
+                match fill with
+                | NonSecureRandomFill.Filled bytes -> writeRandomBytes ctx operation buffer bytes state
+                | NonSecureRandomFill.OverExisting (written, mask, error) ->
+                    // The secure read failed partway, and the shim XORs over what
+                    // the buffer then holds: the bytes it read, and the guest's own
+                    // past them.
+                    let existing =
+                        if length = 0 then
+                            ImmutableArray.Empty
+                        else
+                            readBytesThrough ctx operation buffer length state
+
+                    let bytes =
+                        Seq.init
+                            length
+                            (fun i -> (if i < written.Length then written.[i] else existing.[i]) ^^^ mask.[i])
+                        |> ImmutableArray.CreateRange
+
+                    writeRandomBytes ctx operation buffer bytes state |> withErrnoOnly ctx error
+
+            state |> NativeHandlerResult.completed |> Some
         | Some "SystemNative_GetCryptographicallySecureRandomBytes",
           [ ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
             ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
@@ -6956,24 +6976,30 @@ module NativeSystemNative =
             // Unlike its non-crypto sibling this entry point reports status:
             // `Interop.GetCryptographicallySecureRandomBytes` branches on the
             // result with `brfalse` and throws `CryptographicException` for
-            // anything non-zero. `MinipalRandom` never fails, so this always
-            // reports success. Malformed arguments abort loudly inside
+            // anything non-zero. On Linux minipal's read fails when a guest has
+            // closed or replaced its descriptor, and this then reports -1 with
+            // the read's errno, as the shim does. Malformed arguments abort loudly inside
             // `randomBytesDestination` rather than being reported as entropy
             // failure, because a negative length or a null destination is a
             // guest/interpreter bug, not the condition `CryptographicException`
             // is meant to describe.
             let operation = "SystemNative_GetCryptographicallySecureRandomBytes"
 
-            let state =
-                match randomBytesDestination ctx operation with
-                | None -> state
-                | Some (buffer, length) ->
-                    let bytes, kernel = MinipalRandom.secureRandomBytes operation length state.Kernel
-                    let state = state.MapKernel (fun _ -> kernel)
-                    writeBytesThrough ctx operation buffer bytes state
+            let state, result =
+                let buffer, length = randomBytesDestination ctx operation
+
+                let fill, kernel =
+                    MinipalRandom.systemNativeSecureRandomBytes operation ctx.Thread length state.Kernel
+
+                let state = state.MapKernel (fun _ -> kernel)
+
+                match fill with
+                | SecureRandomFill.Filled bytes -> writeRandomBytes ctx operation buffer bytes state, 0
+                | SecureRandomFill.Failed (written, error) ->
+                    writeRandomBytes ctx operation buffer written state |> withErrnoOnly ctx error, -1
 
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_Free", [ ConcretePointer _ ], MethodReturnType.Void ->
