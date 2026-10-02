@@ -48,15 +48,17 @@ type SignalPoll =
 /// the managed handler: so the leader is the task asked, and the dispatcher,
 /// which is never the leader, never receives a signal itself. Only the leader
 /// is asked, because nothing PawPrint answers leaves a signal pending on any
-/// other thread: `kill(2)` aims at the whole process, and the SIGPIPE a write
-/// into a pipe with no reader raises, which Linux aims at the writing thread,
-/// is refused by `SystemNative_Write` when it would stay pending on a thread
-/// other than the leader.
+/// other thread: `kill(2)` aims at the whole process; and `raise(3)`, which
+/// aims at the raising thread, and the SIGPIPE a write into a pipe with no
+/// reader raises, which Linux aims at the writing thread, are refused by
+/// `NativeLibc.raiseSignal` and `SystemNative_Write` when the signal would
+/// stay pending on a thread other than the leader.
 ///
 /// The `SignalDelivery.Default*` cases are refused loudly: a default that
 /// terminates or stops is applied when the signal is generated (see
-/// `NativeLibc.kill`), so one reaches this poll only by becoming receivable
-/// later, as a handler frame's mask is popped, and no frame survives a poll.
+/// `NativeLibc.kill` and `NativeLibc.raiseSignal`), so one reaches this poll
+/// only by becoming receivable later, as a handler frame's mask is popped, and
+/// no frame survives a poll.
 [<RequireQualifiedAccess>]
 module SignalDispatch =
 
@@ -339,8 +341,9 @@ module SignalDispatch =
                 | NativeSignalHandler.CoreClrPalTrap
                 | NativeSignalHandler.CoreClrPalActivation
                 | NativeSignalHandler.GlibcSetXid ->
-                    // `NativeLibc.kill` refuses to generate these, so this is a
-                    // test driving the queue by hand.
+                    // `NativeLibc.kill` and `NativeLibc.raiseSignal` refuse to
+                    // generate these, so this is a test driving the queue by
+                    // hand.
                     failwith
                         $"SignalDispatch.poll: %O{frame.Entry.Signal} is caught by a native handler the runtime or libc installed before Main (%O{frame.Action.Handler}), which PawPrint does not model."
 

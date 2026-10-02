@@ -365,6 +365,7 @@
     <Compile Include="TestImpureCases.fs" />
     <Compile Include="TestSignalTerminatedCases.fs" />
     <Compile Include="TestLibcKillRefusals.fs" />
+    <Compile Include="TestLibcRaise.fs" />
     <Compile Include="TestProcessTerminationWiring.fs" />
     <Compile Include="TestAppExitCode.fs" />
     <Compile Include="TestEmulatedKernelAbort.fs" />
