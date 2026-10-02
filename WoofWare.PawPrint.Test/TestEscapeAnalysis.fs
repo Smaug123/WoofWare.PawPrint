@@ -1246,6 +1246,41 @@ public static class Uses
             if not (unbound.Contains failure) then
                 failwith $"%s{methodName} against the provider lacking what it uses: %A{Set.toList unbound}"
 
+        // With no provider at all, binding a token naming it fails to find the assembly, and the
+        // real runtime raises `FileNotFoundException`. A member reference whose parent is in the
+        // missing assembly (`Read`, `CallGone`, `CaughtCallGone`, `UseGoneType`, `ListOfGone`,
+        // `PassGoneAsVararg`) stops the analysis instead.
+        let againstNone =
+            let mutable analysis = analysisOver [ clientAssembly ] id
+
+            fun methodName ->
+                let next, escapes =
+                    EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Uses" methodName)
+
+                analysis <- next
+                render analysis escapes
+
+        let unmet =
+            [
+                "IsGone"
+                "LocalOfGone"
+                "CaughtLocalOfGone"
+                "CatchGone"
+                "PassGone"
+                "CallGoneIndirectly"
+            ]
+            |> List.choose (fun methodName ->
+                let shown = againstNone methodName
+
+                if shown.Contains "=System.IO.FileNotFoundException" then
+                    None
+                else
+                    Some $"%s{methodName} with no provider: %A{Set.toList shown}"
+            )
+
+        if not unmet.IsEmpty then
+            failwith (String.concat "\n" unmet)
+
     [<Test>]
     let ``a catch absorbs an exception however deep its base chain`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()

@@ -48,6 +48,26 @@ type ExportChainArrival =
     /// As <see cref="ExportedTypeResolution.TypeAbsent" />.
     | TypeAbsent of TypeResolutionMiss
 
+/// <summary>
+/// The definition a type reference names, found without loading any type.
+/// </summary>
+/// <remarks>
+/// The two failure cases are distinct, as for <see cref="ExportedTypeResolution" />: binding a
+/// reference to an assembly nobody supplies is what the real runtime reports as
+/// <c>FileNotFoundException</c>, and a type missing from an assembly that binds as
+/// <c>TypeLoadException</c>.
+/// </remarks>
+[<RequireQualifiedAccess>]
+type TypeReferenceIdentity =
+    /// The reference names this definition.
+    | Resolved of ResolvedTypeIdentity
+
+    /// A reference on the way names an assembly no runtime directory supplies.
+    | AssemblyUnavailable of WoofWare.PawPrint.AssemblyReference
+
+    /// Every assembly on the way bound, and the last one does not declare the name.
+    | TypeAbsent of TypeResolutionMiss
+
 /// Functions for resolving type metadata (TypeRefs, TypeDefs, TypeSpecs) to concrete TypeInfo values.
 /// Operates on the loaded-assemblies dictionary directly, without requiring IlMachineState.
 [<RequireQualifiedAccess>]
@@ -371,11 +391,37 @@ module TypeResolution =
     /// would otherwise make an unrelated assembly's availability decide whether it succeeds.
     /// CoreCLR draws the same line: <c>ClassLoader::ResolveTokenToTypeDefThrowing</c>, which its
     /// signature comparison uses, reads metadata and loads no types.
-    ///
-    /// <c>Error</c> is a plain absence: every assembly on the way was bound, and the last one does
-    /// not declare the name. An assembly that cannot be bound fails loudly instead.
     /// </remarks>
-    let rec resolveTypeRefIdentity
+    let rec tryResolveTypeRefIdentity
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (referencedInAssembly : DumpedAssembly)
+        (target : TypeRef)
+        (assemblies : LoadedAssemblies)
+        : LoadedAssemblies * TypeReferenceIdentity
+        =
+        match LoadedTypeResolution.resolveTypeRef assemblies referencedInAssembly ImmutableArray.Empty target with
+        | TypeResolutionResult.Resolved (_, identity, _) -> assemblies, TypeReferenceIdentity.Resolved identity
+        | TypeResolutionResult.NotFound miss -> assemblies, TypeReferenceIdentity.TypeAbsent miss
+        | TypeResolutionResult.FirstLoadAssy loadFirst ->
+            let referencing = assemblies.[snd loadFirst.Handle]
+
+            match tryLoadAssembly loggerFactory dotnetRuntimeDirs referencing (fst loadFirst.Handle) assemblies with
+            | None ->
+                assemblies,
+                TypeReferenceIdentity.AssemblyUnavailable referencing.AssemblyReferences.[fst loadFirst.Handle]
+            | Some (assemblies, _, _) ->
+                let assemblies =
+                    LoadedAssemblies.assertReferenceBound $"type reference %s{target.Name}" loadFirst assemblies
+
+                tryResolveTypeRefIdentity loggerFactory dotnetRuntimeDirs referencedInAssembly target assemblies
+
+    /// <summary>
+    /// As <see cref="tryResolveTypeRefIdentity" />, for callers that must terminate on a reference to
+    /// an assembly that cannot be bound. <c>Error</c> is a plain absence: every assembly on the way
+    /// was bound, and the last one does not declare the name.
+    /// </summary>
+    let resolveTypeRefIdentity
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (referencedInAssembly : DumpedAssembly)
@@ -383,22 +429,11 @@ module TypeResolution =
         (assemblies : LoadedAssemblies)
         : LoadedAssemblies * Result<ResolvedTypeIdentity, TypeResolutionMiss>
         =
-        match LoadedTypeResolution.resolveTypeRef assemblies referencedInAssembly ImmutableArray.Empty target with
-        | TypeResolutionResult.Resolved (_, identity, _) -> assemblies, Ok identity
-        | TypeResolutionResult.NotFound miss -> assemblies, Error miss
-        | TypeResolutionResult.FirstLoadAssy loadFirst ->
-            let assemblies, _, _ =
-                loadAssembly
-                    loggerFactory
-                    dotnetRuntimeDirs
-                    assemblies.[snd loadFirst.Handle]
-                    (fst loadFirst.Handle)
-                    assemblies
-
-            let assemblies =
-                LoadedAssemblies.assertReferenceBound $"type reference %s{target.Name}" loadFirst assemblies
-
-            resolveTypeRefIdentity loggerFactory dotnetRuntimeDirs referencedInAssembly target assemblies
+        match tryResolveTypeRefIdentity loggerFactory dotnetRuntimeDirs referencedInAssembly target assemblies with
+        | assemblies, TypeReferenceIdentity.Resolved identity -> assemblies, Ok identity
+        | assemblies, TypeReferenceIdentity.TypeAbsent miss -> assemblies, Error miss
+        | _, TypeReferenceIdentity.AssemblyUnavailable reference ->
+            failwith $"Could not find a readable DLL in any runtime dir with name %s{reference.Name.Name}.dll"
 
     let internal resolveType
         (loggerFactory : ILoggerFactory)
