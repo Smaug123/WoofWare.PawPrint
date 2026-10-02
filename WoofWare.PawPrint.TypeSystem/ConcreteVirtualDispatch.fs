@@ -259,13 +259,6 @@ module ConcreteVirtualDispatch =
         let methodDeclaringType =
             declaringAssy.TypeDefs.[methodToCall.RequiredDeclaringType.Definition.Get]
 
-        let interfaceExplicitNamedMethod =
-            if methodDeclaringType.IsInterface then
-                Some
-                    $"{TypeInfo.fullName (fun h -> declaringAssy.TypeDefs.[h]) methodDeclaringType}.{methodToCall.Name}"
-            else
-                None
-
         let signatureMatchesTarget
             (candidateAssemblyFullName : string)
             (candidateTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
@@ -345,12 +338,13 @@ module ConcreteVirtualDispatch =
             | MethodReturnType.Void, MethodReturnType.Returns _
             | MethodReturnType.Returns _, MethodReturnType.Void -> state, false
 
+        /// Whether `meth`, a method of a class on the receiver's chain, overrides the target, a class's
+        /// virtual method, by name and signature.
         let methodMatches
             (candidateTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
-            (allowImplicitInterfaceImplementation : bool)
             (meth : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
             (state : TypeSystemState)
-            : (WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> * bool) option *
+            : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> option *
               TypeSystemState
             =
             if
@@ -360,36 +354,11 @@ module ConcreteVirtualDispatch =
                    <> methodToCall.Signature.RequiredParameterCount
             then
                 None, state
-            elif
-                meth.Name <> methodToCall.Name
-                && (not allowImplicitInterfaceImplementation
-                    || Some meth.Name <> interfaceExplicitNamedMethod)
-            then
+            elif meth.Name <> methodToCall.Name then
                 None, state
             elif
-                not allowImplicitInterfaceImplementation
-                && (not meth.IsVirtual
-                    || (meth.IsNewSlot && not (MethodInfo.sameDeclaredMethod meth methodToCall)))
-            then
-                None, state
-            elif
-                // A static method can never stand in for an instance slot, nor an instance
-                // method for a static one. Without this, a same-signature `static` shadow of an
-                // interface method is dispatched as though it were the implementation, and the
-                // missing `this` desynchronises the evaluation stack — the failure surfaces far
-                // away, as "method returned with more than one evaluation stack value".
-                meth.IsStatic <> methodToCall.IsStatic
-            then
-                None, state
-            elif
-                // Implicit implementation of an interface slot requires a *public* method
-                // (ECMA-335 II.12.2): a private same-signature method is an ordinary member that
-                // happens to collide, and leaves the slot to a default body or a base. Matching
-                // by the explicit `Namespace.IFoo.Method` name is exempt, because that *is* the
-                // explicit-implementation form and is private by construction.
-                allowImplicitInterfaceImplementation
-                && Some meth.Name <> interfaceExplicitNamedMethod
-                && not meth.IsPublic
+                not meth.IsVirtual
+                || (meth.IsNewSlot && not (MethodInfo.sameDeclaredMethod meth methodToCall))
             then
                 None, state
             else
@@ -397,10 +366,7 @@ module ConcreteVirtualDispatch =
             let state, matches =
                 signatureMatchesTarget meth.DeclaringAssemblyFullName candidateTypeGenerics meth.Signature state
 
-            if matches then
-                Some (meth, Some meth.Name = interfaceExplicitNamedMethod), state
-            else
-                None, state
+            if matches then Some meth, state else None, state
 
         let concretizeTypeArgs
             (declaringAssemblyFullName : string)
@@ -856,25 +822,19 @@ module ConcreteVirtualDispatch =
                         // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
                         |> failwithf
                             "multiple MethodImpl bodies matched this virtual slot; overload/interface disambiguation is not implemented: %s"
+                    | [] when methodDeclaringType.IsInterface ->
+                        failwith
+                            $"virtual dispatch of %s{methodToCall.Name}: an instance interface method reached the class walk, though its implementation is found through the dispatch map"
                     | [] ->
                         let implementation, state =
                             (state, currentTypeInfo.Methods)
-                            ||> List.mapFold (fun state meth ->
-                                methodMatches currentTy.Generics methodDeclaringType.IsInterface meth state
-                            )
+                            ||> List.mapFold (fun state meth -> methodMatches currentTy.Generics meth state)
 
-                        let implementation =
+                        match implementation |> List.choose id with
+                        | [ impl ] -> state, Some (currentTypeHandle, impl, "Found concrete implementation")
+                        | _ :: _ as implementation ->
                             implementation
-                            |> List.choose id
-                            |> List.sortBy (fun (_, isInterface) -> if isInterface then -1 else 0)
-
-                        match implementation with
-                        | (impl, true) :: l when (l |> List.forall (fun (_, b) -> not b)) ->
-                            state, Some (currentTypeHandle, impl, "Found concrete implementation from an interface")
-                        | [ impl, false ] -> state, Some (currentTypeHandle, impl, "Found concrete implementation")
-                        | _ :: _ ->
-                            implementation
-                            |> List.map (fun (m, _) -> m.Name)
+                            |> List.map (fun m -> m.Name)
                             |> String.concat ", "
                             |> failwithf "multiple options: %s"
                         | [] -> walkBase state currentTypeHandle
