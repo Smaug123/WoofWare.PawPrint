@@ -1,6 +1,88 @@
 namespace WoofWare.PosixKernel
 
+open System
 open System.Collections.Immutable
+
+/// The names one directory binds, sorted as `DirectoryContent.Entries` sorts
+/// them, in a tree that finds the least name above a given one by descending
+/// rather than by walking every name below it.
+///
+/// Equal and ordered by the names alone, so that two sets holding the same
+/// names are indistinguishable however they were assembled.
+[<CustomEquality>]
+[<CustomComparison>]
+type internal SortedEntryNames =
+    private
+        {
+            Names : ImmutableSortedSet<DirectoryEntryName>
+        }
+
+    override this.Equals (other : obj) : bool =
+        match other with
+        | :? SortedEntryNames as other -> this.Names.Count = other.Names.Count && Seq.forall2 (=) this.Names other.Names
+        | _ -> false
+
+    // Folded by hand rather than with `HashCode.Combine`, whose seed differs
+    // from one process to the next.
+    override this.GetHashCode () : int =
+        this.Names |> Seq.fold (fun acc name -> acc * 31 + hash name) this.Names.Count
+
+    interface IComparable with
+        member this.CompareTo (other : obj) : int =
+            match other with
+            | :? SortedEntryNames as other -> Seq.compareWith compare this.Names other.Names
+            | _ -> invalidArg "other" $"SortedEntryNames: cannot compare with %O{other}"
+
+[<RequireQualifiedAccess>]
+module internal SortedEntryNames =
+    // The order `Map<DirectoryEntryName, _>` keeps its keys in, which is what
+    // makes these names agree with a walk of the map.
+    let private order : System.Collections.Generic.IComparer<DirectoryEntryName> =
+        ComparisonIdentity.Structural<DirectoryEntryName>
+
+    let empty : SortedEntryNames =
+        {
+            Names = ImmutableSortedSet.Create<DirectoryEntryName> order
+        }
+
+    let ofSeq (names : DirectoryEntryName seq) : SortedEntryNames =
+        {
+            Names = ImmutableSortedSet.CreateRange<DirectoryEntryName> (order, names)
+        }
+
+    let isEmpty (names : SortedEntryNames) : bool = names.Names.IsEmpty
+
+    let contains (name : DirectoryEntryName) (names : SortedEntryNames) : bool = names.Names.Contains name
+
+    let toList (names : SortedEntryNames) : DirectoryEntryName list = List.ofSeq names.Names
+
+    let add (name : DirectoryEntryName) (names : SortedEntryNames) : SortedEntryNames =
+        {
+            Names = names.Names.Add name
+        }
+
+    let remove (name : DirectoryEntryName) (names : SortedEntryNames) : SortedEntryNames =
+        {
+            Names = names.Names.Remove name
+        }
+
+    /// The least name strictly greater than `lower`, or the least of all when
+    /// there is no lower bound; `lower` need not be one of the names.
+    /// Logarithmic in the number of names.
+    let leastAbove (lower : DirectoryEntryName option) (names : SortedEntryNames) : DirectoryEntryName option =
+        let next =
+            match lower with
+            | None -> 0
+            | Some lower ->
+                // The index of `lower` if present, and otherwise the bitwise
+                // complement of the index of the least name above it.
+                let index = names.Names.IndexOf lower
+                if index >= 0 then index + 1 else ~~~index
+
+        if next < names.Names.Count then
+            Some names.Names.[next]
+        else
+            None
 
 /// <summary>
 /// A whole emulated filesystem: an inode graph rooted at a single directory.
@@ -29,6 +111,14 @@ type VirtualFileSystem =
             /// zeros is what makes the map a function of the entries alone,
             /// so that two filesystems with the same graph compare equal.
             BindingCounts : Map<InodeNumber, int>
+            /// The names each directory binds, sorted for `nextDirectoryEntry`
+            /// to seek in, holding only the directories that bind at least one
+            /// name: a directory absent from the map binds nothing. Kept so that
+            /// finding the next name is not a walk of the directory;
+            /// `checkInvariants` holds it to the entries. Holding no empty sets
+            /// is what makes the map a function of the entries alone, so that
+            /// two filesystems with the same graph compare equal.
+            SortedNames : Map<InodeNumber, SortedEntryNames>
         }
 
 /// A way in which a `VirtualFileSystem` fails to describe a filesystem any
@@ -77,6 +167,18 @@ type VirtualFileSystemDefect =
     /// reads as zero. A stored `Some 0` is reported even though it agrees in
     /// value, because only non-zero counts are stored.
     | BindingCountMismatch of inode : InodeNumber * stored : int option * counted : int
+    /// The names `VirtualFileSystem.nextDirectoryEntry` seeks in for
+    /// `directory` disagree with the names its entries bind.
+    ///
+    /// `stored` is `None` where none are stored, which the filesystem reads as
+    /// binding nothing. A stored `Some []` is reported even though it agrees
+    /// in content, because names are stored only for a directory that binds
+    /// some. `bound` is empty for an inode that is not a directory, or that
+    /// the graph does not contain.
+    | SortedNamesMismatch of
+        directory : InodeNumber *
+        stored : DirectoryEntryName list option *
+        bound : DirectoryEntryName list
 
 /// What losing a name does to the inode that had it, which is not the same for
 /// every caller of `unbind`.
@@ -324,6 +426,7 @@ module VirtualFileSystem =
             Root = firstInode
             NextInode = InodeNumber 2L
             BindingCounts = Map.empty
+            SortedNames = Map.empty
         }
 
     let root (vfs : VirtualFileSystem) : InodeNumber = vfs.Root
@@ -634,6 +737,46 @@ module VirtualFileSystem =
         else
             Map.add inode updated counts
 
+    /// `sortedNames` with `name` added to the names stored for `directory`,
+    /// which must not already hold it.
+    let private addSortedName
+        (directory : InodeNumber)
+        (name : DirectoryEntryName)
+        (sortedNames : Map<InodeNumber, SortedEntryNames>)
+        : Map<InodeNumber, SortedEntryNames>
+        =
+        let current =
+            Map.tryFind directory sortedNames |> Option.defaultValue SortedEntryNames.empty
+
+        if SortedEntryNames.contains name current then
+            failwith
+                $"VirtualFileSystem: \"%s{DirectoryEntryName.toEscaped name}\" is already among the names stored for directory inode %O{directory}, which did not bind it. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
+
+        Map.add directory (SortedEntryNames.add name current) sortedNames
+
+    /// `sortedNames` with `name` removed from the names stored for
+    /// `directory`, which must hold it, dropping the directory from the map
+    /// when it is left binding nothing.
+    let private removeSortedName
+        (directory : InodeNumber)
+        (name : DirectoryEntryName)
+        (sortedNames : Map<InodeNumber, SortedEntryNames>)
+        : Map<InodeNumber, SortedEntryNames>
+        =
+        let current =
+            Map.tryFind directory sortedNames |> Option.defaultValue SortedEntryNames.empty
+
+        if not (SortedEntryNames.contains name current) then
+            failwith
+                $"VirtualFileSystem: \"%s{DirectoryEntryName.toEscaped name}\" is not among the names stored for directory inode %O{directory}, which bound it. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
+
+        let updated = SortedEntryNames.remove name current
+
+        if SortedEntryNames.isEmpty updated then
+            Map.remove directory sortedNames
+        else
+            Map.add directory updated sortedNames
+
     /// Whether `name` could be bound in `directory` right now, with the errno
     /// the attempt would otherwise fail with.
     ///
@@ -713,6 +856,7 @@ module VirtualFileSystem =
                 { vfs with
                     Inodes = Map.add directory updated vfs.Inodes
                     BindingCounts = adjustBindingCount inode 1 vfs.BindingCounts
+                    SortedNames = addSortedName directory name vfs.SortedNames
                 }
 
     /// Create an empty subdirectory owned by `owner`. Mirrors `mkdir(2)`: EEXIST
@@ -997,6 +1141,7 @@ module VirtualFileSystem =
             { vfs with
                 Inodes = inodes
                 BindingCounts = adjustBindingCount target -1 vfs.BindingCounts
+                SortedNames = removeSortedName directory name vfs.SortedNames
             }
         )
 
@@ -1312,6 +1457,15 @@ module VirtualFileSystem =
             | None -> vfs.BindingCounts
             | Some displaced -> adjustBindingCount displaced -1 vfs.BindingCounts
 
+        // A displaced inode leaves its name bound, now to the moved inode, so
+        // the destination's names gain one only when nothing was displaced.
+        let sortedNames =
+            let withoutSource = removeSortedName sourceDirectory sourceName vfs.SortedNames
+
+            match displaced with
+            | None -> addSortedName destinationDirectory destinationName withoutSource
+            | Some _ -> withoutSource
+
         Ok (
             {
                 Displaced = displaced
@@ -1319,6 +1473,7 @@ module VirtualFileSystem =
             { vfs with
                 Inodes = inodes
                 BindingCounts = counts
+                SortedNames = sortedNames
             }
         )
 
@@ -1340,6 +1495,10 @@ module VirtualFileSystem =
     ///
     /// No caller may compare an enumeration order against a host: the order
     /// among the names is the map's, which matches no kernel at all.
+    ///
+    /// Each call costs time logarithmic in the number of names the directory
+    /// binds, whatever the cursor, so a whole enumeration of `n` names costs
+    /// `n log n`.
     ///
     /// A stream over a directory `rmdir` has since removed is at end-of-stream
     /// at once, `.` and `..` included, from every cursor position. That is the
@@ -1370,18 +1529,22 @@ module VirtualFileSystem =
         else
 
         /// The least name this directory binds that is strictly greater than
-        /// `lower`, or the least of all when there is no lower bound. A scan
-        /// rather than a seek: `Map` offers no "least key above" query, and the
-        /// cost (quadratic across a whole enumeration) is stated on the caller.
+        /// `lower`, or the least of all when there is no lower bound. Sought in
+        /// the names kept sorted beside the graph, because `Map` offers no
+        /// "least key above" query.
         let leastAbove (lower : DirectoryEntryName option) : (DirectoryEntryName * InodeNumber) option =
-            content.Entries
-            |> Map.toSeq
-            |> Seq.filter (fun (name, _) ->
-                match lower with
-                | None -> true
-                | Some lower -> name > lower
-            )
-            |> Seq.tryHead
+            let names =
+                Map.tryFind directory vfs.SortedNames
+                |> Option.defaultValue SortedEntryNames.empty
+
+            match SortedEntryNames.leastAbove lower names with
+            | None -> None
+            | Some name ->
+                match Map.tryFind name content.Entries with
+                | Some inode -> Some (name, inode)
+                | None ->
+                    failwith
+                        $"VirtualFileSystem.nextDirectoryEntry: \"%s{DirectoryEntryName.toEscaped name}\" is among the names stored for directory inode %O{directory}, which binds no such name. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
 
         /// The next entry when the stream is still among the names: the least
         /// name above `lower`, or — once they are exhausted — `..`, which is
@@ -1737,6 +1900,22 @@ module VirtualFileSystem =
             | InodeContent.Symlink _ -> []
         )
 
+    /// The names each directory in `inodes` binds, holding only directories
+    /// that bind at least one, which is the form
+    /// `VirtualFileSystem.SortedNames` is kept in.
+    let private boundNames (inodes : Map<InodeNumber, Inode>) : Map<InodeNumber, DirectoryEntryName list> =
+        inodes
+        |> Map.toSeq
+        |> Seq.choose (fun (inode, entry) ->
+            match entry.Content with
+            | InodeContent.Directory directory when not (Map.isEmpty directory.Entries) ->
+                Some (inode, directory.Entries |> Map.keys |> List.ofSeq)
+            | InodeContent.Directory _
+            | InodeContent.RegularFile _
+            | InodeContent.Symlink _ -> None
+        )
+        |> Map.ofSeq
+
     /// How many of `bindings` name each target, holding only non-zero counts,
     /// which is the form `VirtualFileSystem.BindingCounts` is kept in.
     let private countBindings
@@ -1977,6 +2156,21 @@ module VirtualFileSystem =
                     Some (VirtualFileSystemDefect.BindingCountMismatch (inode, stored, counted))
             )
 
+        let sortedNames =
+            let bound = boundNames vfs.Inodes
+
+            Set.union (Map.keys bound |> Set.ofSeq) (Map.keys vfs.SortedNames |> Set.ofSeq)
+            |> Set.toList
+            |> List.choose (fun inode ->
+                let stored = Map.tryFind inode vfs.SortedNames |> Option.map SortedEntryNames.toList
+                let bound = Map.tryFind inode bound
+
+                if stored = bound then
+                    None
+                else
+                    Some (VirtualFileSystemDefect.SortedNamesMismatch (inode, stored, bound |> Option.defaultValue []))
+            )
+
         rootDefects
         @ rootLinks
         @ danglingEntries
@@ -1984,6 +2178,7 @@ module VirtualFileSystem =
         @ unreachable
         @ freshness
         @ bindingCounts
+        @ sortedNames
 
     /// Fail loudly if `vfs` is not sound, naming `context`. For the operations
     /// that build a filesystem from host configuration, where a defect is a
@@ -2072,9 +2267,10 @@ module VirtualFileSystem =
     /// in review — nothing outside tests should.
     [<RequireQualifiedAccess>]
     module Unchecked =
-        /// The filesystem with exactly these parts. The binding counts are
-        /// computed from the entries, so a graph forged to exhibit some other
-        /// defect does not also exhibit `BindingCountMismatch`.
+        /// The filesystem with exactly these parts. The binding counts and the
+        /// sorted names are computed from the entries, so a graph forged to
+        /// exhibit some other defect does not also exhibit
+        /// `BindingCountMismatch` or `SortedNamesMismatch`.
         let ofParts
             (inodes : Map<InodeNumber, Inode>)
             (root : InodeNumber)
@@ -2087,6 +2283,7 @@ module VirtualFileSystem =
                     Root = root
                     NextInode = nextInode
                     BindingCounts = Map.empty
+                    SortedNames = boundNames inodes |> Map.map (fun _ names -> SortedEntryNames.ofSeq names)
                 }
 
             { vfs with
@@ -2101,4 +2298,20 @@ module VirtualFileSystem =
                     match count with
                     | None -> Map.remove inode vfs.BindingCounts
                     | Some count -> Map.add inode count vfs.BindingCounts
+            }
+
+        /// `vfs` with the names `nextDirectoryEntry` seeks in for `directory`
+        /// replaced by `names`, `None` storing nothing, and the graph
+        /// untouched. `Some []` stores an empty set.
+        let setSortedNames
+            (directory : InodeNumber)
+            (names : DirectoryEntryName list option)
+            (vfs : VirtualFileSystem)
+            : VirtualFileSystem
+            =
+            { vfs with
+                SortedNames =
+                    match names with
+                    | None -> Map.remove directory vfs.SortedNames
+                    | Some names -> Map.add directory (SortedEntryNames.ofSeq names) vfs.SortedNames
             }
