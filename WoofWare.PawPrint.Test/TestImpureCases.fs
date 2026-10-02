@@ -808,7 +808,7 @@ module TestImpureCases =
     let private assertClosedFdLeftNoOrphan (state : IlMachineState) : unit =
         state.Kernel.DirectoryStreamFds |> shouldEqual Map.empty
 
-        VirtualFileSystem.checkInvariants Set.empty state.Kernel.FileSystem
+        VirtualFileSystem.checkInvariants Set.empty state.Kernel.Machine.FileSystem
         |> shouldEqual []
 
         EmulatedKernel.checkInvariants state.Kernel |> shouldEqual []
@@ -894,7 +894,7 @@ module TestImpureCases =
     /// called `UnixDescriptor.forgetIfUnheld` would pass every other assertion
     /// in this slice.
     let private assertRmDirLeftNoOrphan (state : IlMachineState) : unit =
-        VirtualFileSystem.checkInvariants Set.empty state.Kernel.FileSystem
+        VirtualFileSystem.checkInvariants Set.empty state.Kernel.Machine.FileSystem
         |> shouldEqual []
 
         EmulatedKernel.checkInvariants state.Kernel |> shouldEqual []
@@ -924,7 +924,9 @@ module TestImpureCases =
         NativeMemoryPool.liveBlockCount kernel.NativeMemoryPool
         |> shouldBeSmallerThan 20
 
-        VirtualFileSystem.checkInvariants Set.empty kernel.FileSystem |> shouldEqual []
+        VirtualFileSystem.checkInvariants Set.empty kernel.Machine.FileSystem
+        |> shouldEqual []
+
         EmulatedKernel.checkInvariants kernel |> shouldEqual []
 
     /// Two nested directories, the inner of which the orphan guests stand in and
@@ -952,7 +954,7 @@ module TestImpureCases =
     /// `DirectoryContent.Parent` naming an inode the graph no longer contains.
     let private assertRmDirOrphanChainSurvives (state : IlMachineState) : unit =
         let kernel = state.Kernel
-        let filesystem = kernel.FileSystem
+        let filesystem = kernel.Machine.FileSystem
         let root = VirtualFileSystem.root filesystem
         let pinned = UnixDescriptor.pinnedInodes (EmulatedKernel.unix kernel)
 
@@ -973,7 +975,7 @@ module TestImpureCases =
             failwith
                 $"expected exactly two orphaned inodes to survive -- the removed current directory and its removed parent -- but %d{other.Length} did: %A{other}. Freeing the parent would leave the orphan's \"..\" dangling; freeing neither means the cascade never fires."
 
-        List.contains kernel.CurrentDirectoryInode orphaned |> shouldEqual true
+        List.contains kernel.Process.CurrentDirectoryInode orphaned |> shouldEqual true
 
         for inode in orphaned do
             Set.contains inode pinned |> shouldEqual true
@@ -1023,7 +1025,7 @@ module TestImpureCases =
     /// bound.
     let private assertUnlinkReapedExactlyOne (state : IlMachineState) : unit =
         let kernel = state.Kernel
-        let filesystem = kernel.FileSystem
+        let filesystem = kernel.Machine.FileSystem
         let pinned = UnixDescriptor.pinnedInodes (EmulatedKernel.unix kernel)
 
         let survivors =

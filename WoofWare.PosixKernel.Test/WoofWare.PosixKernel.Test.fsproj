@@ -48,6 +48,7 @@
     <Compile Include="TestProcessTerminationAgainstHost.fs" />
     <Compile Include="TestUnixProcessState.fs" />
     <Compile Include="TestClock.fs" />
+    <Compile Include="TestStateQueries.fs" />
     <Compile Include="TestClockAgainstHost.fs" />
         <Compile Include="TestUnixSystemStep.fs" />
     <Compile Include="TestUnixSystemInitial.fs" />

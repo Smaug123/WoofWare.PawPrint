@@ -263,8 +263,8 @@ module SignalDispatch =
                 // standard output streams, is guest-visible output, which only
                 // a step's effect streams; this poll has no step to carry one.
                 if
-                    DeliveryLog.count written.Machine.Delivered
-                    <> DeliveryLog.count system.Machine.Delivered
+                    DeliveryLog.count (UnixMachineState.delivered written.Machine)
+                    <> DeliveryLog.count (UnixMachineState.delivered system.Machine)
                 then
                     failwith
                         $"SignalDispatch.poll: System.Native's handler for %O{signal} writes to descriptor %d{pipe.WriteEnd}, which the guest has replaced with one of the standard output streams the host drains; PawPrint would record the byte as output without streaming it."
@@ -320,7 +320,7 @@ module SignalDispatch =
             // discarding a receivable ignored signal is a state change with no
             // delivery, and dropping it would replay the discard every tick.
             let state =
-                if systemAfter.Process.Signals = state.Kernel.Signals then
+                if UnixProcessState.signals systemAfter.Process = state.Kernel.Signals then
                     state
                 else
                     state.MapKernel (EmulatedKernel.withUnix systemAfter)

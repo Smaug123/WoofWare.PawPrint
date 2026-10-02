@@ -277,6 +277,14 @@ type UnixTaskState =
         Parked : TaskPark option
     }
 
+/// Reading one task.
+[<RequireQualifiedAccess>]
+module UnixTaskState =
+
+    /// The syscall `task` is blocked in, and where that park stands in park
+    /// order, if it is blocked in one. See `UnixTaskState.Parked`.
+    let park (task : UnixTaskState) : TaskPark option = task.Parked
+
 /// The tasks a simulated process owns, by whatever a client uses to name one.
 ///
 /// Generic in the task name for the same reason `SignalState` is: the identity
