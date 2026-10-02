@@ -199,19 +199,32 @@ module PosixSignalShim =
         | SignalDisposition.Default
         | SignalDisposition.Ignore -> None
 
+    /// `sigaction(signal, newAction)` through the C library, as the shim calls
+    /// it.
+    let private sigaction<'Task when 'Task : comparison>
+        (numbering : SignalNumbering)
+        (signal : Signal)
+        (newAction : SignalDisposition<NativeSignalHandler> option)
+        (system : UnixSystem<'Task, NativeSignalHandler>)
+        : Result<SignalDisposition<NativeSignalHandler> * UnixSystem<'Task, NativeSignalHandler>, UnixError>
+        =
+        UnixSignal.sigaction (Signal.toRawSignoUnder numbering signal) newAction system
+
     /// `InstallSignalHandler`: install System.Native's handler for `signal`,
     /// saving the disposition it replaces. The shim respects an ignored
     /// signal, and leaves it ignored (saving that too); and it installs its
     /// handler only once, so a signal it has handled since it last restored
     /// it is left alone, whatever its disposition now.
     ///
-    /// `signal` must be one `sigaction` accepts; the caller screens it.
+    /// `Error` is the errno `sigaction` refused the signal with, for SIGKILL
+    /// and SIGSTOP and for a number the C library keeps for itself; the shim
+    /// then records nothing.
     let installHandler<'Task when 'Task : comparison>
         (numbering : SignalNumbering)
         (signal : Signal)
-        (signals : SignalState<'Task, NativeSignalHandler>)
+        (system : UnixSystem<'Task, NativeSignalHandler>)
         (state : PosixSignalShim)
-        : SignalState<'Task, NativeSignalHandler> * PosixSignalShim
+        : Result<UnixSystem<'Task, NativeSignalHandler> * PosixSignalShim, UnixError>
         =
         let signal = Signal.canonicalUnder numbering signal
 
@@ -232,17 +245,23 @@ module PosixSignalShim =
                 }
 
         if Set.contains signal state.Installed then
-            signals, state
+            Ok (system, state)
         else
 
-        match SignalState.disposition signal signals with
+        // `sigaction(sig, NULL, orig)` first, to respect an ignore.
+        match sigaction numbering signal None system with
+        | Error errno -> Error errno
+        | Ok (current, _) ->
+
+        match current with
         | SignalDisposition.Catch {
                                       Handler = NativeSignalHandler.SystemNative
                                   } ->
             failwith
                 $"PosixSignalShim.installHandler: %O{signal} is caught by System.Native's handler, which only this function installs, but the shim does not record installing it."
-        | SignalDisposition.Ignore -> signals, save SignalDisposition.Ignore
-        | current ->
+        | SignalDisposition.Ignore -> Ok (system, save SignalDisposition.Ignore)
+        | SignalDisposition.Default
+        | SignalDisposition.Catch _ ->
             // `InstallSignalHandler` takes `SA_RESTART | SA_SIGINFO` and an
             // empty `sa_mask` over `SIG_DFL`; over a handler it keeps that
             // handler's mask and flags, less `SA_RESTART` and `SA_RESETHAND`,
@@ -261,7 +280,9 @@ module PosixSignalShim =
                         Restart = true
                     }
 
-            SignalState.setDisposition signal (SignalDisposition.Catch action) signals, save current
+            match sigaction numbering signal (Some (SignalDisposition.Catch action)) system with
+            | Error errno -> Error errno
+            | Ok (replaced, system) -> Ok (system, save replaced)
 
     /// What `InitializeSignalHandlingCore` does to the shim's saved
     /// dispositions: it installs System.Native's handler for SIGINT, SIGQUIT
@@ -276,13 +297,20 @@ module PosixSignalShim =
     /// only once; call this on its first initialisation.
     let saveConsoleSignals<'Task when 'Task : comparison>
         (numbering : SignalNumbering)
-        (signals : SignalState<'Task, NativeSignalHandler>)
+        (system : UnixSystem<'Task, NativeSignalHandler>)
         (state : PosixSignalShim)
         : PosixSignalShim
         =
         (state, [ Signal.SIGINT ; Signal.SIGQUIT ; Signal.SIGCONT ])
         ||> List.fold (fun state signal ->
-            match SignalState.disposition signal signals with
+            let disposition =
+                match sigaction numbering signal None system with
+                | Ok (disposition, _) -> disposition
+                | Error errno ->
+                    failwith
+                        $"PosixSignalShim.saveConsoleSignals: sigaction will not report %O{signal}'s disposition (%O{errno}), though every flavour has the signal and lets it be caught."
+
+            match disposition with
             | SignalDisposition.Default ->
                 { state with
                     Originals = Map.remove (Signal.canonicalUnder numbering signal) state.Originals
@@ -292,7 +320,8 @@ module PosixSignalShim =
                                       } ->
                 failwith
                     $"PosixSignalShim.saveConsoleSignals: %O{signal} is already caught by System.Native's handler before the shim is initialised."
-            | disposition ->
+            | SignalDisposition.Ignore
+            | SignalDisposition.Catch _ ->
                 { state with
                     Originals = Map.add (Signal.canonicalUnder numbering signal) disposition state.Originals
                 }
@@ -303,55 +332,71 @@ module PosixSignalShim =
     /// and forget that it installed one, so that `installHandler` installs it
     /// afresh.
     ///
-    /// `signal` must be one `sigaction` accepts; the caller screens it.
+    /// The shim does not check its `sigaction`: where that is refused (SIGKILL
+    /// and SIGSTOP, and a number the C library keeps for itself) the
+    /// disposition stays as it was, the shim forgets the installation all the
+    /// same, and `Some errno` is the errno the refusal leaves behind.
     let restoreHandler<'Task when 'Task : comparison>
         (numbering : SignalNumbering)
         (signal : Signal)
-        (signals : SignalState<'Task, NativeSignalHandler>)
+        (system : UnixSystem<'Task, NativeSignalHandler>)
         (state : PosixSignalShim)
-        : SignalState<'Task, NativeSignalHandler> * PosixSignalShim
+        : UnixSystem<'Task, NativeSignalHandler> * PosixSignalShim * UnixError option
         =
-        SignalState.setDisposition signal (original numbering signal state) signals,
-        { state with
-            Installed = Set.remove (Signal.canonicalUnder numbering signal) state.Installed
-        }
+        let state =
+            { state with
+                Installed = Set.remove (Signal.canonicalUnder numbering signal) state.Installed
+            }
+
+        match sigaction numbering signal (Some (original numbering signal state)) system with
+        | Ok (_, system) -> system, state, None
+        | Error errno -> system, state, Some errno
 
     /// Whether `signal` has a managed registration: whether the dispatcher
     /// hands it to the callback (`g_hasPosixSignalRegistrations`).
     let isRegistered (numbering : SignalNumbering) (signal : Signal) (state : PosixSignalShim) : bool =
         Set.contains (Signal.canonicalUnder numbering signal) state.Registered
 
-    /// `SystemNative_EnablePosixSignalHandling` for a signal `sigaction`
-    /// accepts: `installHandler`, and then the registration.
+    /// `SystemNative_EnablePosixSignalHandling`: `installHandler`, and then the
+    /// registration, which is set if the handler was installed and cleared if
+    /// it was not. `Error` is the errno `installHandler` failed with.
     let enable<'Task when 'Task : comparison>
         (numbering : SignalNumbering)
         (signal : Signal)
-        (signals : SignalState<'Task, NativeSignalHandler>)
+        (system : UnixSystem<'Task, NativeSignalHandler>)
         (state : PosixSignalShim)
-        : SignalState<'Task, NativeSignalHandler> * PosixSignalShim
+        : Result<UnixSystem<'Task, NativeSignalHandler>, UnixError> * PosixSignalShim
         =
-        let signals, state = installHandler numbering signal signals state
+        let signal = Signal.canonicalUnder numbering signal
 
-        signals,
-        { state with
-            Registered = Set.add (Signal.canonicalUnder numbering signal) state.Registered
-        }
+        match installHandler numbering signal system state with
+        | Ok (system, state) ->
+            Ok system,
+            { state with
+                Registered = Set.add signal state.Registered
+            }
+        | Error errno ->
+            Error errno,
+            { state with
+                Registered = Set.remove signal state.Registered
+            }
 
-    /// `SystemNative_DisablePosixSignalHandling` for a signal `sigaction`
-    /// accepts: the registration goes, and then `restoreHandler`.
+    /// `SystemNative_DisablePosixSignalHandling`: the registration goes, and
+    /// then `restoreHandler`, whose unchecked failure this passes on.
     let disable<'Task when 'Task : comparison>
         (numbering : SignalNumbering)
         (signal : Signal)
-        (signals : SignalState<'Task, NativeSignalHandler>)
+        (system : UnixSystem<'Task, NativeSignalHandler>)
         (state : PosixSignalShim)
-        : SignalState<'Task, NativeSignalHandler> * PosixSignalShim
+        : UnixSystem<'Task, NativeSignalHandler> * PosixSignalShim * UnixError option
         =
-        let signals, state = restoreHandler numbering signal signals state
-
-        signals,
-        { state with
-            Registered = Set.remove (Signal.canonicalUnder numbering signal) state.Registered
-        }
+        restoreHandler
+            numbering
+            signal
+            system
+            { state with
+                Registered = Set.remove (Signal.canonicalUnder numbering signal) state.Registered
+            }
 
     /// Record that the dispatcher is calling the managed callback for
     /// `signo`. Fails if it already is: the loop calls it for one signal at a

@@ -345,14 +345,14 @@ module SignalState =
 
     /// What a delivery of `signal` would do now. A client asks
     /// `UnixSignal.sigaction`.
-    let disposition (signal : Signal) (state : SignalState<'Task, 'Handler>) : SignalDisposition<'Handler> =
+    let internal disposition (signal : Signal) (state : SignalState<'Task, 'Handler>) : SignalDisposition<'Handler> =
         match Map.tryFind (parse "disposition" state signal) state.Dispositions with
         | Some disposition -> disposition
         | None -> SignalDisposition.Default
 
     /// Every signal whose disposition is not the default, keyed by its
     /// canonical spelling.
-    let dispositions (state : SignalState<'Task, 'Handler>) : Map<Signal, SignalDisposition<'Handler>> =
+    let internal dispositions (state : SignalState<'Task, 'Handler>) : Map<Signal, SignalDisposition<'Handler>> =
         state.Dispositions
 
     /// Set `signal`'s disposition, as `sigaction(2)` does. A client calls
@@ -368,7 +368,7 @@ module SignalState =
     ///
     /// Fails loud on SIGKILL and SIGSTOP, for which the kernel refuses any
     /// disposition, and `UnixSignal.sigaction` answers EINVAL.
-    let setDisposition
+    let internal setDisposition
         (signal : Signal)
         (disposition : SignalDisposition<'Handler>)
         (state : SignalState<'Task, 'Handler>)

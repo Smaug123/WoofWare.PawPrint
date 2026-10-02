@@ -100,7 +100,7 @@ module NativeLibc =
         | SimulatedUnixFlavour.Linux, _ -> false
 
     /// Whether PawPrint's kernel model can answer a signal that `sender` sends
-    /// within its own process, on `platform`, given the signal state and
+    /// within its own process, on `platform`, given the system and
     /// System.Native's state before it is sent. `None` if it can. `receiver` is
     /// the thread that takes it: the process's main thread for a signal sent
     /// to the process, and the target of one sent to a thread.
@@ -113,11 +113,11 @@ module NativeLibc =
         (sender : 'Task)
         (receiver : 'Task)
         (shim : PosixSignalShim)
-        (signals : SignalState<'Task, NativeSignalHandler>)
+        (system : UnixSystem<'Task, NativeSignalHandler>)
         (signal : Signal)
         : UnmodelledSelfSignal option
         =
-        let numbering = SignalState.numbering signals
+        let numbering = SimulatedUnixPlatform.signalNumbering platform
         let signal = Signal.canonicalUnder numbering signal
 
         // The PAL's fault handler, run for a signal a thread sent and takes
@@ -137,7 +137,15 @@ module NativeLibc =
                     else
                         None
 
-        match SignalState.disposition signal signals with
+        // Asked of the kernel rather than through the C library, which will not
+        // report Linux's 33, whose handler is glibc's own.
+        match UnixSignal.sigactionSyscall (Signal.toRawSignoUnder numbering signal) None system with
+        // Darwin will not report SIGKILL or SIGSTOP, which nothing can catch,
+        // so no native code runs for either.
+        | Error _ -> None
+        | Ok (disposition, _) ->
+
+        match disposition with
         | SignalDisposition.Catch {
                                       Handler = NativeSignalHandler.SystemNative
                                   } ->
@@ -160,9 +168,9 @@ module NativeLibc =
         | SignalDisposition.Ignore -> None
 
     /// Whether PawPrint's kernel model can carry on after a syscall made by
-    /// `sender` raised `raised`, given the signal state and System.Native's
-    /// state before the call, and `after`, the signal state once the kernel
-    /// generated it. `None` if it can. `leader` is the process's main thread.
+    /// `sender` raised `raised`, given the system and System.Native's state
+    /// before the call, and `after`, the system once the kernel generated it.
+    /// `None` if it can. `leader` is the process's main thread.
     ///
     /// The signal is taken by the thread it is pending on, or by `leader` if
     /// it is pending on the process, and screened as `screenSelfSignal` screens
@@ -173,9 +181,9 @@ module NativeLibc =
         (sender : 'Task)
         (leader : 'Task)
         (shim : PosixSignalShim)
-        (signals : SignalState<'Task, NativeSignalHandler>)
+        (before : UnixSystem<'Task, NativeSignalHandler>)
         (raised : PendingSignal<'Task>)
-        (after : SignalState<'Task, NativeSignalHandler>)
+        (after : UnixSystem<'Task, NativeSignalHandler>)
         : UnmodelledSelfSignal option
         =
         let receiver =
@@ -183,12 +191,15 @@ module NativeLibc =
             | ValueSome target -> target
             | ValueNone -> leader
 
-        match screenSelfSignal platform sender receiver shim signals raised.Signal with
+        match screenSelfSignal platform sender receiver shim before raised.Signal with
         | Some refusal -> Some refusal
         | None ->
 
         match raised.Target with
-        | ValueSome target when target <> leader && List.contains raised (SignalState.pending after) ->
+        | ValueSome target when
+            target <> leader
+            && List.contains raised (SignalState.pending after.Process.Signals)
+            ->
             Some (UnmodelledSelfSignal.PendingOnOtherThread raised.Signal)
         | ValueSome _
         | ValueNone -> None
@@ -221,14 +232,14 @@ module NativeLibc =
         | Ok (Ok outcome) ->
 
         let refusal =
-            Signal.ofRawSignoUnder (SignalState.numbering system.Process.Signals) signo
+            Signal.ofRawSignoUnder (SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform) signo
             |> ValueOption.bind (fun sent ->
                 screenSelfSignal
                     state.Kernel.UnixPlatform
                     ctx.Thread
                     state.Kernel.Leader
                     state.Kernel.PosixSignalShim
-                    system.Process.Signals
+                    system
                     sent
                 |> ValueOption.ofOption
             )
@@ -282,26 +293,28 @@ module NativeLibc =
         | Ok (Ok outcome) ->
 
         let refusal =
-            match Signal.ofRawSignoUnder (SignalState.numbering system.Process.Signals) signo, outcome with
+            match
+                Signal.ofRawSignoUnder (SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform) signo, outcome
+            with
             | ValueSome sent, KillOutcome.ProcessContinues after ->
                 screenRaisedSignal
                     state.Kernel.UnixPlatform
                     ctx.Thread
                     state.Kernel.Leader
                     state.Kernel.PosixSignalShim
-                    system.Process.Signals
+                    system
                     {
                         Signal = sent
                         Target = ValueSome ctx.Thread
                     }
-                    after.Process.Signals
+                    after
             | ValueSome sent, _ ->
                 screenSelfSignal
                     state.Kernel.UnixPlatform
                     ctx.Thread
                     ctx.Thread
                     state.Kernel.PosixSignalShim
-                    system.Process.Signals
+                    system
                     sent
             | ValueNone, _ -> None
 

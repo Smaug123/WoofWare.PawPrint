@@ -458,7 +458,7 @@ module TestImpureCases =
 
     /// The signals whose disposition is System.Native's handler.
     let private caughtBySystemNative (state : IlMachineState) : Set<Signal> =
-        SignalState.dispositions state.Kernel.Signals
+        KernelSignals.dispositions (EmulatedKernel.unix state.Kernel)
         |> Map.filter (fun _ disposition ->
             match disposition with
             | SignalDisposition.Catch action -> action.Handler = NativeSignalHandler.SystemNative

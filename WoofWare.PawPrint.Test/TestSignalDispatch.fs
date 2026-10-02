@@ -115,13 +115,14 @@ module TestSignalDispatch =
     let private preparedStateOn (platform : SimulatedUnixPlatform) : IlMachineState * ThreadId * SignalHandler =
         let state = baseState ()
 
-        // The platform is fixed at construction, so the fresh state's machine,
-        // untouched so far, is swapped for one of `platform`'s before anything
-        // is made in it.
+        // The platform is fixed at construction, so the fresh state's POSIX
+        // half, untouched so far, is swapped for one made on `platform` before
+        // anything is made in it: the machine, and the process whose signals
+        // are numbered as that machine's are.
         let state =
             state.MapKernel (
-                EmulatedKernel.mapMachine (fun _ ->
-                    (EmulatedKernel.create platform StandardStreamsConfig.piped).Machine
+                EmulatedKernel.withUnix (
+                    EmulatedKernel.unix (EmulatedKernel.create platform StandardStreamsConfig.piped)
                 )
             )
 
@@ -167,31 +168,40 @@ module TestSignalDispatch =
     /// handler installed, and the registration set.
     let private register (signal : Signal) (state : IlMachineState) : IlMachineState =
         state.MapKernel (fun kernel ->
-            let signals, shim =
-                PosixSignalShim.enable (numberingOf state) signal kernel.Signals kernel.PosixSignalShim
-
-            { kernel with
-                PosixSignalShim = shim
-                Process =
-                    { kernel.Process with
-                        Signals = signals
-                    }
-            }
+            match
+                PosixSignalShim.enable (numberingOf state) signal (EmulatedKernel.unix kernel) kernel.PosixSignalShim
+            with
+            | Ok system, shim ->
+                { EmulatedKernel.withUnix system kernel with
+                    PosixSignalShim = shim
+                }
+            | Error errno, _ -> failwith $"registering %O{signal} failed with %O{errno}"
         )
 
     /// `SystemNative_DisablePosixSignalHandling` for `signal`.
     let private unregister (signal : Signal) (state : IlMachineState) : IlMachineState =
         state.MapKernel (fun kernel ->
-            let signals, shim =
-                PosixSignalShim.disable (numberingOf state) signal kernel.Signals kernel.PosixSignalShim
+            match
+                PosixSignalShim.disable (numberingOf state) signal (EmulatedKernel.unix kernel) kernel.PosixSignalShim
+            with
+            | system, shim, None ->
+                { EmulatedKernel.withUnix system kernel with
+                    PosixSignalShim = shim
+                }
+            | _, _, Some errno -> failwith $"unregistering %O{signal} failed with %O{errno}"
+        )
 
-            { kernel with
-                PosixSignalShim = shim
-                Process =
-                    { kernel.Process with
-                        Signals = signals
-                    }
-            }
+    /// `state` once `sigaction` has installed `disposition` for `signal`.
+    let private setDisposition
+        (signal : Signal)
+        (disposition : SignalDisposition<NativeSignalHandler>)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        state.MapKernel (fun kernel ->
+            EmulatedKernel.withUnix
+                (KernelSignals.setDisposition signal disposition (EmulatedKernel.unix kernel))
+                kernel
         )
 
     let private mapSignals
@@ -955,11 +965,9 @@ module TestSignalDispatch =
 
         let state =
             state
-            |> mapSignals (
-                SignalState.setDisposition
-                    Signal.SIGINT
-                    (SignalDisposition.Catch (SignalCatch.ofHandler NativeSignalHandler.SystemNative))
-            )
+            |> setDisposition
+                Signal.SIGINT
+                (SignalDisposition.Catch (SignalCatch.ofHandler NativeSignalHandler.SystemNative))
             |> sendToProcess Signal.SIGINT
 
         let exn = Assert.Throws (fun () -> poll state |> ignore<IlMachineState>)
@@ -1095,7 +1103,7 @@ module TestSignalDispatch =
 
         let state' = state |> sendToProcess sigill |> poll
 
-        SignalState.disposition sigill state'.Kernel.Signals
+        KernelSignals.disposition sigill (EmulatedKernel.unix state'.Kernel)
         |> shouldEqual SignalDisposition.Default
 
         state'.Kernel.Signals |> SignalState.pending |> shouldEqual []
@@ -1115,7 +1123,7 @@ module TestSignalDispatch =
 
         let state' = state |> register sigill |> sendToProcess sigill |> poll
 
-        SignalState.disposition sigill state'.Kernel.Signals
+        KernelSignals.disposition sigill (EmulatedKernel.unix state'.Kernel)
         |> shouldEqual SignalDisposition.Default
 
         callbackArguments dispatcher state' |> shouldEqual [ int32Arg 4 ; int32Arg 0 ]
@@ -1129,13 +1137,11 @@ module TestSignalDispatch =
 
         let state =
             state
-            |> mapSignals (
-                SignalState.setDisposition
-                    sigill
-                    (SignalDisposition.Catch (
-                        SignalCatch.ofHandler (NativeSignalHandler.CoreClrPalFault PalReplacedDisposition.Ignore)
-                    ))
-            )
+            |> setDisposition
+                sigill
+                (SignalDisposition.Catch (
+                    SignalCatch.ofHandler (NativeSignalHandler.CoreClrPalFault PalReplacedDisposition.Ignore)
+                ))
             |> sendToProcess sigill
 
         match SignalDispatch.poll baseClassTypes state with
