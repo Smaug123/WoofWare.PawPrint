@@ -552,8 +552,7 @@ module TestUnixSystemStep =
         | Ok (WriteAnswer.Completed written, after) ->
             written |> shouldEqual 2L
 
-            after.Machine.Delivered
-            |> List.ofSeq
+            DeliveryLog.toList after.Machine.Delivered
             |> shouldEqual
                 [
                     {

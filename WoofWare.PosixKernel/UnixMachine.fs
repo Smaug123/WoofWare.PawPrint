@@ -100,7 +100,7 @@ type UnixMachineState =
         /// its output, then its error stream, then its output again is read
         /// back in that order. It grows without bound: a process that writes
         /// gigabytes costs that much memory.
-        Delivered : ImmutableArray<Delivery>
+        Delivered : DeliveryLog
         /// The inode number the next pipe end will be given, as `fstat(2)`
         /// reports it. Monotonic and never reused: a process can compare the
         /// numbers two descriptors report to decide whether they name one pipe,

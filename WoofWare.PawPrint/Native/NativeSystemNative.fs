@@ -6877,16 +6877,14 @@ module NativeSystemNative =
             // what makes it appear on a console. One write delivers at most
             // once, and exactly the bytes it moved.
             let effectOf (system : UnixSystem<ThreadId, NativeSignalHandler>) : StepEffect =
-                let before = admitted.Machine.Delivered.Length
+                let before = DeliveryLog.count admitted.Machine.Delivered
 
-                match system.Machine.Delivered.Length - before with
-                | 0 -> StepEffect.NoEffect
-                | 1 ->
-                    let delivery = system.Machine.Delivered.[before]
-                    StepEffect.WroteToFd (StandardStreams.roleOf delivery.Endpoint, delivery.Bytes)
+                match DeliveryLog.since before system.Machine.Delivered with
+                | [] -> StepEffect.NoEffect
+                | [ delivery ] -> StepEffect.WroteToFd (StandardStreams.roleOf delivery.Endpoint, delivery.Bytes)
                 | delivered ->
                     failwith
-                        $"%s{operation}: fd %d{fd}: one write delivered %d{delivered} times to the pipes PawPrint drains; a write delivers once or not at all (this is an interpreter bug)."
+                        $"%s{operation}: fd %d{fd}: one write delivered %d{delivered.Length} times to the pipes PawPrint drains; a write delivers once or not at all (this is an interpreter bug)."
 
             finish outcome effectOf
         | Some "SystemNative_GetNonCryptographicallySecureRandomBytes",
