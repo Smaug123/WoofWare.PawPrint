@@ -339,11 +339,13 @@ module TestPipeAgainstHost =
 
                             let bytes = payload offered count
 
+                            // `None` for a write that sleeps.
                             let model =
                                 match UnixReadWrite.admitWrite system.Leader modelFd buffer (uint64 count) system with
                                 | Error refusal -> Error refusal
+                                | Ok (WriteOutcome.WouldBlock _) -> Ok None
                                 | Ok (WriteOutcome.Returns (WriteAdmission.Answered answer, after)) ->
-                                    Ok (answer, after)
+                                    Ok (Some (answer, after))
                                 | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Answered answer, raised, after)) ->
                                     // The one signal a write raises, discarded
                                     // as the ignored signal it is.
@@ -351,12 +353,19 @@ module TestPipeAgainstHost =
                                     |> shouldEqual (WriteAnswer.Failed UnixError.EPIPE, Signal.SIGPIPE)
 
                                     after.Process.Signals |> shouldEqual system.Process.Signals
-                                    Ok (answer, after)
+                                    Ok (Some (answer, after))
                                 | Ok (WriteOutcome.Returns (WriteAdmission.Transfer n, admitted)) ->
-                                    WriteOutcomes.write
-                                        modelFd
-                                        (ImmutableArray.Create<byte> (Array.sub bytes 0 n))
-                                        admitted
+                                    match
+                                        UnixReadWrite.write
+                                            system.Leader
+                                            modelFd
+                                            (ImmutableArray.Create<byte> (Array.sub bytes 0 n))
+                                            admitted
+                                    with
+                                    | Error refusal -> Error refusal
+                                    | Ok (WriteOutcome.WouldBlock _) -> Ok None
+                                    | Ok (WriteOutcome.Returns (answer, after)) -> Ok (Some (answer, after))
+                                    | Ok other -> failwith $"%s{where}: model %A{other}"
                                 | Ok other -> failwith $"%s{where}: model %A{other}"
 
                             let hostCall () =
@@ -366,13 +375,13 @@ module TestPipeAgainstHost =
                                     hostWriteAt (hostFd, 8n, unativeint count)
 
                             match model with
-                            | Error (WriteRefusal.PipeWouldBlock _) ->
+                            | Ok None ->
                                 // The host would sleep; a partial write through a
                                 // temporary O_NONBLOCK would leave it holding
                                 // what the model does not, so it is not asked.
                                 ()
                             | Error refusal -> failwith $"%s{where}: model refused %A{refusal}"
-                            | Ok (answer, after) ->
+                            | Ok (Some (answer, after)) ->
                                 let host =
                                     hostAnswer
                                         numbering
@@ -403,16 +412,17 @@ module TestPipeAgainstHost =
                                 else
                                     hostReadAt (hostFd, 8n, unativeint count)
 
-                            match UnixReadWrite.read modelFd buffer (uint64 count) system with
-                            | Error (ReadRefusal.PipeWouldBlock _) ->
+                            match UnixReadWrite.read system.Leader modelFd buffer (uint64 count) system with
+                            | Ok (ReadOutcome.WouldBlock _, _) ->
                                 // The host would sleep: asked without blocking,
                                 // it must find nothing to take.
                                 hostAnswer numbering (withNonBlockingForOneCall hostFd false hostCall)
                                 |> shouldEqual (Error UnixError.EAGAIN)
 
                                 substituted <- true
+                            | Ok (ReadOutcome.Restarts, _) -> failwith $"%s{where}: a read that never slept restarted"
                             | Error refusal -> failwith $"%s{where}: model refused %A{refusal}"
-                            | Ok (answer, after) ->
+                            | Ok (ReadOutcome.Answered answer, after) ->
                                 let host =
                                     hostAnswer
                                         numbering

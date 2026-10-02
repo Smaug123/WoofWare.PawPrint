@@ -1,0 +1,1424 @@
+namespace WoofWare.PosixKernel.Test
+
+open System.Collections.Immutable
+open FsCheck
+open FsCheck.FSharp
+open FsUnitTyped
+open NUnit.Framework
+open WoofWare.PosixKernel
+
+/// One step of the blocking-pipe property: a call by a task, a descriptor
+/// operation, or a step of the client's scheduler.
+///
+/// A task is named by its index, modulo their number, among the tasks the step
+/// can be taken by: those making no call, for a call; those asleep or woken,
+/// for a signal; those woken, for a finish.
+[<RequireQualifiedAccess>]
+type BlockingPipeOp =
+    /// A task reads up to `count` bytes through descriptor `fd`.
+    | Read of task : int * fd : int * count : int * mapped : bool
+    /// A task writes `count` bytes through descriptor `fd`.
+    | Write of task : int * fd : int * count : int * mapped : bool
+    | Close of fd : int
+    | Dup of fd : int
+    | SetNonBlocking of fd : int * value : bool
+    /// A caught `SIGUSR1` is sent to a task in a call.
+    | Signal of task : int
+    /// The client asks which sleepers the system wakes.
+    | Wake
+    /// The client finishes the call of a woken task.
+    | Finish of task : int
+
+/// Blocking `read(2)` and `write(2)` on a pipe, by several tasks: what parks,
+/// who a change wakes, and how each woken call finishes.
+///
+/// The property holds the library to a reference written out again from the
+/// measurements in `pipe-blocking.c`, over the buffer rules
+/// `PipeBufferReference` states: a blocking transfer that would wait sleeps,
+/// having put in what fits; on Linux bytes and room wake one sleeper, the
+/// first to park, while on Darwin they wake every one; an end closing wakes
+/// every sleeper on the other; a woken call finishes as section D, E, G and H
+/// measured, or sleeps again at the back.
+[<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
+module TestBlockingPipe =
+
+    let private platforms : SimulatedUnixPlatform list =
+        [
+            SimulatedUnixPlatform.linuxX64
+            SimulatedUnixPlatform.linuxArm64
+            SimulatedUnixPlatform.macOsArm64
+        ]
+
+    let private tasks : int list = [ 0 ; 1 ; 2 ; 3 ]
+
+    /// What a call came to, in a shape both the library and the reference can
+    /// produce.
+    [<RequireQualifiedAccess>]
+    type private Seen =
+        | ReadBytes of byte list
+        | Wrote of int64
+        | Failed of UnixError
+        | Sleeps
+        | Restarts
+        /// The library will not say whether the call's own answer or a signal
+        /// ends it.
+        | Refused
+
+    // --- the reference ---
+
+    /// A pipe's buffer under either flavour's reference rule.
+    type private Buffer =
+        | Linux of PipeBufferReference.Linux
+        | Darwin of PipeBufferReference.Darwin
+
+    let private held (buffer : Buffer) : int =
+        match buffer with
+        | Buffer.Linux s -> List.length s.Bytes
+        | Buffer.Darwin s -> List.length s.Bytes
+
+    let private bufferWrite (bytes : byte list) (buffer : Buffer) : int * Buffer =
+        match buffer with
+        | Buffer.Linux s ->
+            let n, s = PipeBufferReference.linuxWrite bytes s
+            n, Buffer.Linux s
+        | Buffer.Darwin s ->
+            let n, s = PipeBufferReference.darwinWrite bytes s
+            n, Buffer.Darwin s
+
+    let private bufferRead (count : int) (buffer : Buffer) : byte list * Buffer =
+        match buffer with
+        | Buffer.Linux s ->
+            let b, s = PipeBufferReference.linuxRead count s
+            b, Buffer.Linux s
+        | Buffer.Darwin s ->
+            let b, s = PipeBufferReference.darwinRead count s
+            b, Buffer.Darwin s
+
+    /// `buffer` as a write that took nothing leaves it: on Darwin, grown as
+    /// the write would have grown it.
+    let private untaken (bytes : byte list) (buffer : Buffer) : Buffer =
+        match bufferWrite bytes buffer, buffer with
+        | (_, Buffer.Darwin grown), Buffer.Darwin s ->
+            Buffer.Darwin
+                { s with
+                    Size = grown.Size
+                }
+        | _, buffer -> buffer
+
+    /// How many of `rest` a sleeping write of `count` bytes in all puts in as
+    /// it resumes: a page into each free slot on Linux; on Darwin what the
+    /// room holds, all or nothing for a write of at most 512 bytes.
+    let private resumes (count : int) (rest : byte list) (buffer : Buffer) : int * Buffer =
+        match buffer with
+        | Buffer.Linux s ->
+            let mutable taken = 0
+            let mutable slots = s.Slots
+            let n = List.length rest
+
+            while taken < n && List.length slots < 16 do
+                let c = min s.Page (n - taken)
+                slots <- slots @ [ 0, c ]
+                taken <- taken + c
+
+            taken,
+            Buffer.Linux
+                { s with
+                    Slots = slots
+                    Bytes = s.Bytes @ List.take taken rest
+                }
+        | Buffer.Darwin s ->
+            if s.Size <> 65536 then
+                failwith $"reference: a Darwin write sleeping with its buffer at %d{s.Size}"
+
+            let free = s.Size - List.length s.Bytes
+            let n = List.length rest
+
+            let taken =
+                if count <= 512 then
+                    (if free >= n then n else 0)
+                else
+                    min n free
+
+            taken,
+            Buffer.Darwin
+                { s with
+                    Bytes = s.Bytes @ List.take taken rest
+                }
+
+    /// A call a task is in while the client holds it asleep or has woken it.
+    type private Call =
+        | Reading of description : int * count : int * mapped : bool
+        | Writing of description : int * payload : byte list * written : int * mapped : bool
+
+    type private Park =
+        {
+            Call : Call
+            Ordinal : int
+            /// The client has woken it, and not yet finished it.
+            Woken : bool
+        }
+
+    type private Reference =
+        {
+            Linux : bool
+            Restart : bool
+            Buffer : Buffer
+            /// Open descriptor to (end, description).
+            Fds : Map<int, PipeEnd * int>
+            NonBlocking : Map<int, bool>
+            NextDescription : int
+            Parks : Map<int, Park>
+            NextOrdinal : int
+            Signalled : Set<int>
+            Writes : int
+        }
+
+    let private endOpen (pipeEnd : PipeEnd) (r : Reference) : bool =
+        r.Fds |> Map.exists (fun _ (e, _) -> e = pipeEnd)
+
+    let private payload (index : int) (count : int) : byte list =
+        List.init count (fun i -> byte ((index * 37 + i) % 251))
+
+    let private descriptionOf (call : Call) : int =
+        match call with
+        | Call.Reading (description, _, _)
+        | Call.Writing (description, _, _, _) -> description
+
+    let private park (task : int) (call : Call) (r : Reference) : Reference =
+        { r with
+            Parks =
+                Map.add
+                    task
+                    {
+                        Call = call
+                        Ordinal = r.NextOrdinal
+                        Woken = false
+                    }
+                    r.Parks
+            NextOrdinal = r.NextOrdinal + 1
+        }
+
+    /// The task's call answered: the signal it had pending is taken as it
+    /// returns.
+    let private answered (task : int) (r : Reference) : Reference =
+        { r with
+            Parks = Map.remove task r.Parks
+            Signalled = Set.remove task r.Signalled
+        }
+
+    let private referenceRead (task : int) (fd : int) (count : int) (mapped : bool) (r : Reference) : Seen * Reference =
+        match Map.tryFind fd r.Fds with
+        | None
+        | Some (PipeEnd.Write, _) -> Seen.Failed UnixError.EBADF, r
+        | Some (PipeEnd.Read, description) ->
+            if count = 0 then
+                Seen.ReadBytes [], r
+            elif held r.Buffer > 0 then
+                if mapped then
+                    let bytes, buffer = bufferRead count r.Buffer
+
+                    Seen.ReadBytes bytes,
+                    { r with
+                        Buffer = buffer
+                    }
+                else
+                    Seen.Failed UnixError.EFAULT, r
+            elif not (endOpen PipeEnd.Write r) then
+                Seen.ReadBytes [], r
+            elif r.NonBlocking.[description] then
+                Seen.Failed UnixError.EAGAIN, r
+            else
+                Seen.Sleeps, park task (Call.Reading (description, count, mapped)) r
+
+    let private referenceWrite
+        (task : int)
+        (fd : int)
+        (count : int)
+        (mapped : bool)
+        (r : Reference)
+        : Seen * Reference
+        =
+        match Map.tryFind fd r.Fds with
+        | None
+        | Some (PipeEnd.Read, _) -> Seen.Failed UnixError.EBADF, r
+        | Some (PipeEnd.Write, description) ->
+            let bytes = payload r.Writes count
+
+            let r =
+                { r with
+                    Writes = r.Writes + 1
+                }
+
+            if r.Linux && count = 0 then
+                Seen.Wrote 0L, r
+            elif not (endOpen PipeEnd.Read r) then
+                // SIGPIPE is ignored here, so discarded as it is raised.
+                Seen.Failed UnixError.EPIPE, r
+            elif count = 0 then
+                Seen.Wrote 0L, r
+            else
+
+            let takes, grown = bufferWrite bytes r.Buffer
+            let nonBlocking = r.NonBlocking.[description]
+
+            if takes = 0 then
+                let r =
+                    { r with
+                        Buffer = untaken bytes r.Buffer
+                    }
+
+                if nonBlocking then
+                    Seen.Failed UnixError.EAGAIN, r
+                else
+                    Seen.Sleeps, park task (Call.Writing (description, bytes, 0, mapped)) r
+            elif not mapped then
+                Seen.Failed UnixError.EFAULT,
+                { r with
+                    Buffer = untaken bytes r.Buffer
+                }
+            elif takes < count && not nonBlocking then
+                Seen.Sleeps,
+                park
+                    task
+                    (Call.Writing (description, bytes, takes, mapped))
+                    { r with
+                        Buffer = grown
+                    }
+            else
+                Seen.Wrote (int64 takes),
+                { r with
+                    Buffer = grown
+                }
+
+    /// How many bytes a sleeping write would put in now.
+    let private wouldResume (payload : byte list) (written : int) (r : Reference) : int =
+        fst (resumes (List.length payload) (List.skip written payload) r.Buffer)
+
+    /// The sleepers the client holds asleep that the reference wakes, in the
+    /// order they parked.
+    let private referenceWakes (r : Reference) : int list =
+        let asleep = r.Parks |> Map.toList |> List.filter (fun (_, park) -> not park.Woken)
+
+        let readerWoken =
+            r.Parks
+            |> Map.exists (fun _ park ->
+                match park.Call with
+                | Call.Reading _ -> park.Woken
+                | Call.Writing _ -> false
+            )
+
+        let writerWoken =
+            r.Parks
+            |> Map.exists (fun _ park ->
+                match park.Call with
+                | Call.Writing _ -> park.Woken
+                | Call.Reading _ -> false
+            )
+
+        // On Linux the one sleeper that bytes or room wake: the first to park
+        // of those it would satisfy, unless one of its kind is woken already.
+        let first (wants : Call -> bool) (blocked : bool) : int option =
+            if blocked || not r.Linux then
+                None
+            else
+                asleep
+                |> List.filter (fun (_, park) -> wants park.Call)
+                |> List.sortBy (fun (_, park) -> park.Ordinal)
+                |> List.tryHead
+                |> Option.map fst
+
+        let hasBytes (call : Call) =
+            match call with
+            | Call.Reading _ -> held r.Buffer > 0
+            | Call.Writing _ -> false
+
+        let hasRoom (call : Call) =
+            match call with
+            | Call.Writing (_, payload, written, _) -> wouldResume payload written r > 0
+            | Call.Reading _ -> false
+
+        let firstReader = first hasBytes readerWoken
+        let firstWriter = first hasRoom writerWoken
+
+        asleep
+        |> List.filter (fun (task, park) ->
+            Set.contains task r.Signalled
+            || (
+                match park.Call with
+                | Call.Reading _ -> not (endOpen PipeEnd.Write r)
+                | Call.Writing _ -> not (endOpen PipeEnd.Read r)
+            )
+            || (hasBytes park.Call && (not r.Linux || firstReader = Some task))
+            || (hasRoom park.Call && (not r.Linux || firstWriter = Some task))
+        )
+        |> List.sortBy (fun (_, park) -> park.Ordinal)
+        |> List.map fst
+
+    let private interrupted (r : Reference) : Seen =
+        if r.Restart then
+            Seen.Restarts
+        else
+            Seen.Failed UnixError.EINTR
+
+    /// The woken task's call, finished.
+    let private referenceFinish (task : int) (r : Reference) : Seen * Reference =
+        let park = r.Parks.[task]
+        let signalled = Set.contains task r.Signalled
+
+        let reparked =
+            { r with
+                Parks =
+                    Map.add
+                        task
+                        { park with
+                            Woken = false
+                            Ordinal = r.NextOrdinal
+                        }
+                        r.Parks
+                NextOrdinal = r.NextOrdinal + 1
+            }
+
+        match park.Call with
+        | Call.Reading (_, count, mapped) ->
+            if held r.Buffer > 0 || not (endOpen PipeEnd.Write r) then
+                if signalled && not r.Linux then
+                    Seen.Refused, r
+                elif held r.Buffer = 0 then
+                    Seen.ReadBytes [], answered task r
+                elif not mapped then
+                    Seen.Failed UnixError.EFAULT, answered task r
+                else
+                    let bytes, buffer = bufferRead count r.Buffer
+
+                    Seen.ReadBytes bytes,
+                    answered
+                        task
+                        { r with
+                            Buffer = buffer
+                        }
+            elif signalled then
+                interrupted r, answered task r
+            else
+                Seen.Sleeps, reparked
+        | Call.Writing (description, payload, written, mapped) ->
+            let count = List.length payload
+
+            if not (endOpen PipeEnd.Read r) then
+                if signalled && not r.Linux then
+                    Seen.Refused, r
+                elif r.Linux && written > 0 then
+                    Seen.Wrote (int64 written), answered task r
+                else
+                    Seen.Failed UnixError.EPIPE, answered task r
+            elif wouldResume payload written r > 0 then
+                if signalled && not r.Linux then
+                    Seen.Refused, r
+                elif not mapped then
+                    Seen.Failed UnixError.EFAULT, answered task r
+                else
+                    let taken, buffer = resumes count (List.skip written payload) r.Buffer
+                    let written = written + taken
+
+                    let r =
+                        { r with
+                            Buffer = buffer
+                        }
+
+                    if written = count then
+                        Seen.Wrote (int64 count), answered task r
+                    elif signalled then
+                        Seen.Wrote (int64 written), answered task r
+                    else
+                        Seen.Sleeps,
+                        { r with
+                            Parks =
+                                Map.add
+                                    task
+                                    {
+                                        Call = Call.Writing (description, payload, written, mapped)
+                                        Woken = false
+                                        Ordinal = r.NextOrdinal
+                                    }
+                                    r.Parks
+                            NextOrdinal = r.NextOrdinal + 1
+                        }
+            elif signalled then
+                if written > 0 then
+                    Seen.Wrote (int64 written), answered task r
+                else
+                    interrupted r, answered task r
+            else
+                Seen.Sleeps, reparked
+
+    // --- the library, driven as a client drives it ---
+
+    let private fromRead (outcome : Result<ReadOutcome * UnixSystem<int, string>, ReadRefusal>) =
+        match outcome with
+        | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), after) -> Seen.ReadBytes (List.ofSeq bytes), Some after
+        | Ok (ReadOutcome.Answered (ReadAnswer.Failed error), after) -> Seen.Failed error, Some after
+        | Ok (ReadOutcome.WouldBlock _, after) -> Seen.Sleeps, Some after
+        | Ok (ReadOutcome.Restarts, after) -> Seen.Restarts, Some after
+        | Error (ReadRefusal.Interruption _) -> Seen.Refused, None
+        | Error refusal -> failwith $"read refused: %A{refusal}"
+
+    let private fromWrite (outcome : Result<WriteOutcome<WriteAnswer, int, string>, WriteRefusal>) =
+        match outcome with
+        | Ok (WriteOutcome.Returns (WriteAnswer.Completed n, after))
+        | Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Completed n, _, after)) -> Seen.Wrote n, Some after
+        | Ok (WriteOutcome.Returns (WriteAnswer.Failed error, after))
+        | Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed error, _, after)) -> Seen.Failed error, Some after
+        | Ok (WriteOutcome.WouldBlock (_, after)) -> Seen.Sleeps, Some after
+        | Ok (WriteOutcome.Restarts after) -> Seen.Restarts, Some after
+        | Ok (WriteOutcome.ProcessEnded _ as outcome) -> failwith $"a write ended the process: %A{outcome}"
+        | Error (WriteRefusal.Interruption _) -> Seen.Refused, None
+        | Error refusal -> failwith $"write refused: %A{refusal}"
+
+    /// A write by `task`, admitted and then given the bytes it asks for.
+    let private libraryWrite
+        (task : int)
+        (fd : int)
+        (bytes : byte list)
+        (mapped : bool)
+        (system : UnixSystem<int, string>)
+        =
+        let buffer =
+            if mapped then
+                UserBuffer.Mapped
+            else
+                UserBuffer.Unmapped 8UL
+
+        match UnixReadWrite.admitWrite task fd buffer (uint64 (List.length bytes)) system with
+        | Error refusal -> Error refusal
+        | Ok (WriteOutcome.Returns (WriteAdmission.Transfer n, admitted)) ->
+            UnixReadWrite.write task fd (ImmutableArray.CreateRange (List.take n bytes)) admitted
+        | Ok (WriteOutcome.Returns (WriteAdmission.Answered answer, after)) -> Ok (WriteOutcome.Returns (answer, after))
+        | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Answered answer, signal, after)) ->
+            Ok (WriteOutcome.ReturnsRaising (answer, signal, after))
+        | Ok (WriteOutcome.WouldBlock (condition, after)) -> Ok (WriteOutcome.WouldBlock (condition, after))
+        | Ok other -> failwith $"admitWrite: %A{other}"
+
+    /// The woken write of `task`, finished: admitted, and given the bytes of
+    /// `payload` it asks for.
+    let private libraryFinishWrite (task : int) (payload : byte list) (system : UnixSystem<int, string>) =
+        match UnixReadWrite.admitFinishWrite task system with
+        | Error refusal -> Error refusal
+        | Ok (WriteOutcome.Returns (WriteResumption.Transfer (offset, count), admitted)) ->
+            let bytes = payload |> List.skip offset |> List.take count
+            UnixReadWrite.finishWrite task (ImmutableArray.CreateRange bytes) admitted
+        | Ok (WriteOutcome.Returns (WriteResumption.Answered answer, after)) ->
+            Ok (WriteOutcome.Returns (answer, after))
+        | Ok (WriteOutcome.ReturnsRaising (WriteResumption.Answered answer, signal, after)) ->
+            Ok (WriteOutcome.ReturnsRaising (answer, signal, after))
+        | Ok (WriteOutcome.WouldBlock (condition, after)) -> Ok (WriteOutcome.WouldBlock (condition, after))
+        | Ok (WriteOutcome.Restarts after) -> Ok (WriteOutcome.Restarts after)
+        | Ok other -> failwith $"admitFinishWrite: %A{other}"
+
+    /// `task` returns to user mode: every handler it takes runs and returns.
+    let rec private returnToUser (task : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        match UnixSignal.onReturnToUser task system with
+        | Ok (None, system) -> system
+        | Ok (Some (SignalDelivery.RunHandlers frames), system) ->
+            (system, frames)
+            ||> List.fold (fun system frame -> UnixSignal.sigreturn task frame.Id system)
+            |> returnToUser task
+        | other -> failwith $"returning task %d{task} to user mode: %A{other}"
+
+    let private opGen : Gen<BlockingPipeOp> =
+        let task = Gen.elements tasks
+        let fd = Gen.choose (0, 4)
+
+        let count =
+            Gen.frequency
+                [
+                    2, Gen.choose (0, 20)
+                    5,
+                    Gen.elements
+                        [
+                            1
+                            100
+                            511
+                            512
+                            513
+                            4095
+                            4096
+                            4097
+                            8192
+                            65535
+                            65536
+                            65537
+                            70000
+                            140000
+                        ]
+                ]
+
+        let mapped = Gen.frequency [ 9, Gen.constant true ; 1, Gen.constant false ]
+
+        Gen.frequency
+            [
+                5,
+                gen {
+                    let! t = task
+                    let! fd = fd
+                    let! c = count
+                    let! m = mapped
+                    return BlockingPipeOp.Read (t, fd, c, m)
+                }
+                5,
+                gen {
+                    let! t = task
+                    let! fd = fd
+                    let! c = count
+                    let! m = mapped
+                    return BlockingPipeOp.Write (t, fd, c, m)
+                }
+                1, Gen.map BlockingPipeOp.Close fd
+                1, Gen.map BlockingPipeOp.Dup fd
+                1, Gen.map2 (fun fd v -> BlockingPipeOp.SetNonBlocking (fd, v)) fd (Gen.elements [ true ; false ])
+                2, Gen.map BlockingPipeOp.Signal task
+                6, Gen.constant BlockingPipeOp.Wake
+                8, Gen.map BlockingPipeOp.Finish task
+            ]
+
+    /// The label `covered` records for a call that came to `seen`.
+    let private label (flavour : string) (what : string) (seen : Seen) : string =
+        let kind =
+            match seen with
+            | Seen.ReadBytes [] -> "end of file"
+            | Seen.ReadBytes _ -> "bytes"
+            | Seen.Wrote _ -> "wrote"
+            | Seen.Failed error -> $"%O{error}"
+            | Seen.Sleeps -> "sleeps"
+            | Seen.Restarts -> "restarts"
+            | Seen.Refused -> "refused"
+
+        $"%s{flavour} %s{what}: %s{kind}"
+
+    [<Test>]
+    let ``blocking transfers park, wake and finish as the reference says`` () : unit =
+        let covered = System.Collections.Concurrent.ConcurrentDictionary<string, int> ()
+
+        let cover (label : string) =
+            covered.AddOrUpdate (label, 1, (fun _ n -> n + 1)) |> ignore
+
+        let property (platform : SimulatedUnixPlatform, restart : bool, ops : BlockingPipeOp list) : unit =
+            let linux = SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Linux
+
+            let bare =
+                (UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0), [ 0 ; 1 ; 2 ])
+                ||> List.fold (fun system fd ->
+                    match UnixDescriptor.close fd system with
+                    | Ok (_, system) -> system
+                    | Error refusal -> failwith $"%A{refusal}"
+                )
+
+            let bare =
+                (bare, List.tail tasks)
+                ||> List.fold (fun system task -> Tasks.spawn task system)
+
+            let bare =
+                { bare with
+                    Process =
+                        { bare.Process with
+                            Signals =
+                                bare.Process.Signals
+                                |> SignalState.setDisposition Signal.SIGPIPE SignalDisposition.Ignore
+                                |> SignalState.setDisposition
+                                    Signal.SIGUSR1
+                                    (SignalDisposition.Catch
+                                        { SignalCatch.ofHandler "h" with
+                                            Restart = restart
+                                        })
+                        }
+                }
+
+            let mutable system =
+                match UnixPipe.pipe2 0 UserBuffer.Mapped bare with
+                | Ok (Pipe2Answer.Created (0, 1), system) -> system
+                | other -> failwith $"pipe2: %A{other}"
+
+            let pipeId =
+                match FileDescriptorRegistry.tryFindTarget 0 system.Process.FileDescriptors with
+                | Some (OpenFileTarget.Pipe (pipeId, PipeEnd.Read)) -> pipeId
+                | other -> failwith $"fd 0 is %A{other}"
+
+            let mutable reference =
+                {
+                    Linux = linux
+                    Restart = restart
+                    Buffer =
+                        if linux then
+                            Buffer.Linux (
+                                PipeBufferReference.linuxEmpty (
+                                    SimulatedPageSize.bytes (SimulatedUnixPlatform.pageSize platform)
+                                )
+                            )
+                        else
+                            Buffer.Darwin PipeBufferReference.darwinEmpty
+                    Fds = Map.ofList [ 0, (PipeEnd.Read, 0) ; 1, (PipeEnd.Write, 1) ]
+                    NonBlocking = Map.ofList [ 0, false ; 1, false ]
+                    NextDescription = 2
+                    Parks = Map.empty
+                    NextOrdinal = 0
+                    Signalled = Set.empty
+                    Writes = 0
+                }
+
+            let mutable stopped = false
+
+            let flavourName = if linux then "Linux" else "Darwin"
+
+            let compare (where : string) (expected : Seen) (actual : Seen) =
+                if expected <> actual then
+                    failwith $"%s{where}: expected %A{expected}, got %A{actual}"
+
+            // After an answer the task returns to user mode, taking its signal.
+            let settle (task : int) (seen : Seen) (after : UnixSystem<int, string>) =
+                match seen with
+                | Seen.Sleeps -> after
+                | Seen.ReadBytes _
+                | Seen.Wrote _
+                | Seen.Failed _
+                | Seen.Restarts -> returnToUser task after
+                | Seen.Refused -> failwith "a refusal leaves no system"
+
+            for i, op in List.indexed ops |> Seq.takeWhile (fun _ -> not stopped) do
+                let pick (eligible : int -> bool) (index : int) : int option =
+                    match List.filter eligible tasks with
+                    | [] -> None
+                    | candidates -> Some candidates.[index % List.length candidates]
+
+                let idle (task : int) =
+                    not (Map.containsKey task reference.Parks)
+
+                let inCall (task : int) = Map.containsKey task reference.Parks
+
+                let woken (task : int) =
+                    Map.tryFind task reference.Parks |> Option.exists (fun park -> park.Woken)
+
+                // The op with its task resolved, or `None` where no task can
+                // take it.
+                let resolved =
+                    match op with
+                    | BlockingPipeOp.Read (index, fd, count, mapped) ->
+                        pick idle index
+                        |> Option.map (fun t -> BlockingPipeOp.Read (t, fd, count, mapped))
+                    | BlockingPipeOp.Write (index, fd, count, mapped) ->
+                        pick idle index
+                        |> Option.map (fun t -> BlockingPipeOp.Write (t, fd, count, mapped))
+                    | BlockingPipeOp.Signal index -> pick inCall index |> Option.map BlockingPipeOp.Signal
+                    | BlockingPipeOp.Finish index -> pick woken index |> Option.map BlockingPipeOp.Finish
+                    | BlockingPipeOp.Close _
+                    | BlockingPipeOp.Dup _
+                    | BlockingPipeOp.SetNonBlocking _
+                    | BlockingPipeOp.Wake -> Some op
+
+                match resolved with
+                | None -> ()
+                | Some op ->
+
+                let where = $"%O{platform}, restart %b{restart}, op %d{i} (%A{op})"
+
+                match op with
+                | BlockingPipeOp.Read (task, fd, count, mapped) ->
+                    let expected, after = referenceRead task fd count mapped reference
+
+                    let buffer =
+                        if mapped then
+                            UserBuffer.Mapped
+                        else
+                            UserBuffer.Unmapped 8UL
+
+                    let seen, actual =
+                        fromRead (UnixReadWrite.read task fd buffer (uint64 count) system)
+
+                    compare where expected seen
+                    cover (label flavourName "read" seen)
+                    system <- settle task seen (Option.get actual)
+                    reference <- after
+                | BlockingPipeOp.Write (task, fd, count, mapped) ->
+                    let bytes = payload reference.Writes count
+                    let expected, after = referenceWrite task fd count mapped reference
+                    let seen, actual = fromWrite (libraryWrite task fd bytes mapped system)
+                    compare where expected seen
+
+                    match seen, after.Parks |> Map.tryFind task with
+                    | Seen.Sleeps,
+                      Some {
+                               Call = Call.Writing (_, _, written, _)
+                           } when written > 0 -> cover $"%s{flavourName} write: sleeps having put some in"
+                    | _ -> cover (label flavourName "write" seen)
+
+                    system <- settle task seen (Option.get actual)
+                    reference <- after
+                | BlockingPipeOp.Close fd ->
+                    let holder =
+                        Map.tryFind fd reference.Fds
+                        |> Option.bind (fun (_, description) ->
+                            reference.Parks
+                            |> Map.tryFindKey (fun _ park -> descriptionOf park.Call = description)
+                            |> Option.map (fun task -> description, task)
+                        )
+
+                    let refused =
+                        match holder with
+                        | None -> false
+                        | Some (description, _) ->
+                            not linux
+                            || reference.Fds |> Map.filter (fun _ (_, d) -> d = description) |> Map.count = 1
+
+                    match UnixDescriptor.close fd system with
+                    | Error (CloseRefusal.LinuxLastPipeDescriptorWithTransfer (_, task))
+                    | Error (CloseRefusal.DarwinPipeDescriptorWithTransfer (_, task)) when refused ->
+                        Some task |> shouldEqual (holder |> Option.map snd)
+                    | Ok (answer, after) when not refused ->
+                        answer
+                        |> shouldEqual (
+                            if Map.containsKey fd reference.Fds then
+                                SyscallAnswer.Completed 0L
+                            else
+                                SyscallAnswer.Failed UnixError.EBADF
+                        )
+
+                        system <- after
+
+                        reference <-
+                            { reference with
+                                Fds = Map.remove fd reference.Fds
+                            }
+                    | other -> failwith $"%s{where}: close expected refused=%b{refused}, got %A{other}"
+                | BlockingPipeOp.Dup fd ->
+                    let answer, after = UnixDescriptor.dup fd system
+
+                    match Map.tryFind fd reference.Fds with
+                    | None -> answer |> shouldEqual (SyscallAnswer.Failed UnixError.EBADF)
+                    | Some named ->
+                        let lowest =
+                            Seq.initInfinite id |> Seq.find (fun n -> not (Map.containsKey n reference.Fds))
+
+                        answer |> shouldEqual (SyscallAnswer.Completed (int64 lowest))
+
+                        reference <-
+                            { reference with
+                                Fds = Map.add lowest named reference.Fds
+                            }
+
+                    system <- after
+                | BlockingPipeOp.SetNonBlocking (fd, value) ->
+                    let _, after = UnixSocket.setNonBlocking fd value system
+                    system <- after
+
+                    match Map.tryFind fd reference.Fds with
+                    | None -> ()
+                    | Some (_, description) ->
+                        reference <-
+                            { reference with
+                                NonBlocking = Map.add description value reference.NonBlocking
+                            }
+                | BlockingPipeOp.Signal task ->
+                    system <-
+                        { system with
+                            Process =
+                                { system.Process with
+                                    Signals =
+                                        SignalState.enqueue
+                                            {
+                                                Signal = Signal.SIGUSR1
+                                                Target = ValueSome task
+                                            }
+                                            system.Process.Signals
+                                }
+                        }
+
+                    reference <-
+                        { reference with
+                            Signalled = Set.add task reference.Signalled
+                        }
+                | BlockingPipeOp.Wake ->
+                    let asleep =
+                        reference.Parks
+                        |> Map.filter (fun _ park -> not park.Woken)
+                        |> Map.keys
+                        |> Set.ofSeq
+
+                    let woken = UnixWait.wakes asleep system |> List.map fst
+
+                    if woken <> referenceWakes reference then
+                        failwith $"%s{where}: woke %A{woken}, expected %A{referenceWakes reference}"
+
+                    if List.length woken > 1 then
+                        cover $"%s{flavourName} wake: several"
+
+                    // Bytes or room that would satisfy several sleepers.
+                    let satisfiable =
+                        asleep
+                        |> Set.filter (fun task ->
+                            match reference.Parks.[task].Call with
+                            | Call.Reading _ -> held reference.Buffer > 0
+                            | Call.Writing (_, payload, written, _) -> wouldResume payload written reference > 0
+                        )
+
+                    if Set.count satisfiable > 1 && List.length woken < Set.count satisfiable then
+                        cover $"%s{flavourName} wake: fewer than could proceed"
+
+                    reference <-
+                        { reference with
+                            Parks =
+                                (reference.Parks, woken)
+                                ||> List.fold (fun parks task ->
+                                    Map.add
+                                        task
+                                        { parks.[task] with
+                                            Woken = true
+                                        }
+                                        parks
+                                )
+                        }
+                | BlockingPipeOp.Finish task ->
+                    let call = reference.Parks.[task].Call
+                    let expected, after = referenceFinish task reference
+
+                    let seen, actual =
+                        match call with
+                        | Call.Reading _ -> fromRead (UnixReadWrite.finishRead task system)
+                        | Call.Writing (_, payload, _, _) -> fromWrite (libraryFinishWrite task payload system)
+
+                    compare where expected seen
+
+                    let what =
+                        match call, seen with
+                        | Call.Writing (_, payload, written, _), Seen.Wrote n when
+                            int n < List.length payload && int n = written
+                            ->
+                            "finish write, with the count already in"
+                        | Call.Writing (_, payload, _, _), Seen.Wrote n when int n < List.length payload ->
+                            "finish write, short"
+                        | Call.Writing _, _ -> "finish write"
+                        | Call.Reading _, _ -> "finish read"
+
+                    cover (label flavourName what seen)
+
+                    match actual with
+                    | None -> stopped <- true
+                    | Some actual -> system <- settle task seen actual
+
+                    reference <- after
+
+                if not stopped then
+                    match UnixSystem.checkInvariants system with
+                    | [] -> ()
+                    | defects -> failwith $"%s{where}: %A{defects}"
+
+                    // Every park agrees with the reference's, by progress.
+                    for task in tasks do
+                        let expected =
+                            Map.tryFind task reference.Parks
+                            |> Option.map (fun park ->
+                                match park.Call with
+                                | Call.Reading (_, count, _) -> 0, count, 0
+                                | Call.Writing (_, payload, written, _) -> 1, List.length payload, written
+                            )
+
+                        let actual =
+                            UnixTaskTable.parkedFor task system.Tasks
+                            |> Option.map (fun parked ->
+                                match parked with
+                                | ParkedSyscall.PipeRead read -> 0, read.Count, 0
+                                | ParkedSyscall.PipeWrite write -> 1, write.Count, write.Written
+                                | other -> failwith $"%s{where}: task %d{task} parked in %A{other}"
+                            )
+
+                        if expected <> actual then
+                            failwith $"%s{where}: task %d{task} parked as %A{actual}, expected %A{expected}"
+
+                    // Gone once no descriptor names either end.
+                    match Map.tryFind pipeId system.Machine.Pipes with
+                    | Some pipe -> PipeBuffer.held pipe.Buffer |> shouldEqual (held reference.Buffer)
+                    | None -> Map.isEmpty reference.Fds |> shouldEqual true
+
+        let gen =
+            gen {
+                let! platform = Gen.elements platforms
+                let! restart = ArbMap.defaults |> ArbMap.generate<bool>
+                let! length = Gen.choose (0, 80)
+                let! ops = Gen.listOfLength length opGen
+                return platform, restart, ops
+            }
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 1000, Prop.forAll (Arb.fromGen gen) property)
+
+        // The outcomes a run of this size reaches dozens of times over. The
+        // rarer endings of a sleeping call, which need a particular state
+        // and signal at once, are enumerated by the table test below.
+        let required =
+            [
+                for flavour in [ "Linux" ; "Darwin" ] do
+                    $"%s{flavour} read: sleeps"
+                    $"%s{flavour} write: sleeps"
+                    $"%s{flavour} write: sleeps having put some in"
+                    $"%s{flavour} wake: several"
+                    $"%s{flavour} finish read: bytes"
+                    $"%s{flavour} finish read: EINTR"
+                    $"%s{flavour} finish read: restarts"
+                    $"%s{flavour} finish write, with the count already in: wrote"
+                "Linux finish read: end of file"
+                "Linux finish write: wrote"
+                "Linux wake: fewer than could proceed"
+                "Darwin finish read: refused"
+                "Darwin finish write: refused"
+            ]
+
+        let missing = required |> List.filter (fun label -> not (covered.ContainsKey label))
+
+        if not (List.isEmpty missing) then
+            failwith $"the property never reached %A{missing}; it reached %A{List.ofSeq covered.Keys |> List.sort}"
+
+    // --- the measured rows, one at a time ---
+
+    /// The task that sleeps in the tests below; the leader makes every change.
+    let private sleeper : int = 1
+
+    /// A blocking pipe, its read end on fd 3 and its write end on fd 4, holding
+    /// `prefill` bytes, with `sleeper` a task and `SIGUSR1` caught, with
+    /// `SA_RESTART` if `restart`, and `SIGPIPE` ignored.
+    let private pipeHolding
+        (platform : SimulatedUnixPlatform)
+        (restart : bool)
+        (prefill : int)
+        : UnixSystem<int, string>
+        =
+        let system =
+            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> Tasks.spawn sleeper
+
+        let system =
+            { system with
+                Process =
+                    { system.Process with
+                        Signals =
+                            system.Process.Signals
+                            |> SignalState.setDisposition Signal.SIGPIPE SignalDisposition.Ignore
+                            |> SignalState.setDisposition
+                                Signal.SIGUSR1
+                                (SignalDisposition.Catch
+                                    { SignalCatch.ofHandler "h" with
+                                        Restart = restart
+                                    })
+                    }
+            }
+
+        let system =
+            match UnixPipe.pipe2 0 UserBuffer.Mapped system with
+            | Ok (Pipe2Answer.Created (3, 4), system) -> system
+            | other -> failwith $"pipe2: %A{other}"
+
+        // Filled by non-blocking writes, as the probe fills it.
+        let _, system = UnixSocket.setNonBlocking 4 true system
+
+        let rec fill (remaining : int) (system : UnixSystem<int, string>) =
+            if remaining = 0 then
+                system
+            else
+                match
+                    WriteOutcomes.admitThenWrite
+                        system.Leader
+                        4
+                        UserBuffer.Mapped
+                        (ImmutableArray.CreateRange (payload 99 (min remaining 4096)))
+                        system
+                with
+                | Ok (WriteOutcome.Returns (WriteAnswer.Completed n, system)) -> fill (remaining - int n) system
+                | other -> failwith $"filling: %A{other}"
+
+        let system = fill prefill system
+        let _, system = UnixSocket.setNonBlocking 4 false system
+        system
+
+    let private readerAsleep (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        match UnixReadWrite.read sleeper 3 UserBuffer.Mapped 16UL system with
+        | Ok (ReadOutcome.WouldBlock _, system) -> system
+        | other -> failwith $"expected the read to sleep, got %A{other}"
+
+    let private writerAsleep (count : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        match libraryWrite sleeper 4 (payload 7 count) true system with
+        | Ok (WriteOutcome.WouldBlock (_, system)) -> system
+        | other -> failwith $"expected the write of %d{count} to sleep, got %A{other}"
+
+    let private leaderReads (count : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        match ReadOutcomes.read 3 UserBuffer.Mapped (uint64 count) system with
+        | Ok (ReadAnswer.Completed bytes, system) when bytes.Length = count -> system
+        | other -> failwith $"expected to read %d{count}, got %A{other}"
+
+    let private leaderWrites (count : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        match
+            WriteOutcomes.admitThenWrite
+                system.Leader
+                4
+                UserBuffer.Mapped
+                (ImmutableArray.CreateRange (payload 3 count))
+                system
+        with
+        | Ok (WriteOutcome.Returns (WriteAnswer.Completed n, system)) when int n = count -> system
+        | other -> failwith $"expected to write %d{count}, got %A{other}"
+
+    let private closed (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        match UnixDescriptor.close fd system with
+        | Ok (SyscallAnswer.Completed 0L, system) -> system
+        | other -> failwith $"closing %d{fd}: %A{other}"
+
+    let private signalled (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        { system with
+            Process =
+                { system.Process with
+                    Signals =
+                        SignalState.enqueue
+                            {
+                                Signal = Signal.SIGUSR1
+                                Target = ValueSome sleeper
+                            }
+                            system.Process.Signals
+                }
+        }
+
+    /// The sleeper's call, finished.
+    let private finished (payloadOfWrite : byte list option) (system : UnixSystem<int, string>) : Seen =
+        match payloadOfWrite with
+        | None -> fst (fromRead (UnixReadWrite.finishRead sleeper system))
+        | Some payload -> fst (fromWrite (libraryFinishWrite sleeper payload system))
+
+    /// What the sleeper sleeps in, in the table test.
+    [<RequireQualifiedAccess>]
+    type private Sleep =
+        /// A read of up to 16 bytes from an empty pipe.
+        | Reads
+        /// A write of `count` bytes into a full pipe.
+        | WritesIntoFull of count : int
+        /// A write of 70000 bytes into an empty pipe, which puts 65536 in.
+        | WritesPartly
+
+    /// What then happens to the pipe.
+    [<RequireQualifiedAccess>]
+    type private Change =
+        | Nothing
+        /// The leader writes 3 bytes, or reads 4096.
+        | Ready
+        /// The leader reads 65536 bytes, room for the whole of any write here.
+        | RoomForAll
+        /// The leader closes the other end.
+        | OtherEndCloses
+
+    /// How the sleeper's call ends, from the measured rows alone
+    /// (`pipe-blocking.c`).
+    let private measured (linux : bool) (sleep : Sleep) (change : Change) (signal : bool option) : Seen =
+        let signalled = signal.IsSome
+
+        let interrupted =
+            match signal with
+            | Some true -> Seen.Restarts
+            | Some false
+            | None -> Seen.Failed UnixError.EINTR
+
+        // Darwin answers whichever reached the sleeper first (section J).
+        if signalled && change <> Change.Nothing && not linux then
+            Seen.Refused
+        else
+
+        match sleep, change with
+        | Sleep.Reads, Change.Ready -> Seen.ReadBytes (payload 3 3)
+        | Sleep.Reads, Change.OtherEndCloses -> Seen.ReadBytes []
+        | Sleep.Reads, _ -> if signalled then interrupted else Seen.Sleeps
+        | Sleep.WritesIntoFull _, Change.OtherEndCloses -> Seen.Failed UnixError.EPIPE
+        | Sleep.WritesIntoFull count, Change.Ready ->
+            // Section F: 4096 bytes freed, a slot on Linux. A write of more
+            // takes 4096 and then ends with that count if a signal is
+            // pending (section H2), and sleeps on otherwise.
+            if count <= 4096 then Seen.Wrote (int64 count)
+            elif signalled then Seen.Wrote 4096L
+            else Seen.Sleeps
+        | Sleep.WritesIntoFull count, Change.RoomForAll -> Seen.Wrote (int64 count)
+        | Sleep.WritesIntoFull _, Change.Nothing -> if signalled then interrupted else Seen.Sleeps
+        // Section E: Linux the count put in, Darwin EPIPE.
+        | Sleep.WritesPartly, Change.OtherEndCloses ->
+            if linux then
+                Seen.Wrote 65536L
+            else
+                Seen.Failed UnixError.EPIPE
+        | Sleep.WritesPartly, Change.Ready -> if signalled then Seen.Wrote 69632L else Seen.Sleeps
+        | Sleep.WritesPartly, Change.RoomForAll -> Seen.Wrote 70000L
+        // Section D: a write with bytes in returns their count, restart or
+        // not.
+        | Sleep.WritesPartly, Change.Nothing -> if signalled then Seen.Wrote 65536L else Seen.Sleeps
+
+    [<Test>]
+    let ``a sleeping transfer ends as the measured rows say`` () : unit =
+        let sleeps =
+            [
+                Sleep.Reads
+                Sleep.WritesIntoFull 1
+                Sleep.WritesIntoFull 512
+                Sleep.WritesIntoFull 600
+                Sleep.WritesIntoFull 4096
+                Sleep.WritesIntoFull 8192
+                Sleep.WritesPartly
+            ]
+
+        let changes =
+            [ Change.Nothing ; Change.Ready ; Change.RoomForAll ; Change.OtherEndCloses ]
+
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            let linux = SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Linux
+
+            for sleep in sleeps do
+                for change in changes do
+                    for signal in [ None ; Some false ; Some true ] do
+                        let applicable =
+                            match sleep, change with
+                            | Sleep.Reads, Change.RoomForAll -> false
+                            | _ -> true
+
+                        if applicable then
+                            let where = $"%O{platform}, %A{sleep}, %A{change}, signal %A{signal}"
+                            let restart = signal = Some true
+
+                            let system, writing =
+                                match sleep with
+                                | Sleep.Reads -> pipeHolding platform restart 0 |> readerAsleep, None
+                                | Sleep.WritesIntoFull count ->
+                                    pipeHolding platform restart 65536 |> writerAsleep count, Some (payload 7 count)
+                                | Sleep.WritesPartly ->
+                                    pipeHolding platform restart 0 |> writerAsleep 70000, Some (payload 7 70000)
+
+                            let system =
+                                match change, writing with
+                                | Change.Nothing, _ -> system
+                                | Change.Ready, None -> leaderWrites 3 system
+                                | Change.Ready, Some _ -> leaderReads 4096 system
+                                | Change.RoomForAll, _ -> leaderReads 65536 system
+                                | Change.OtherEndCloses, None -> closed 4 system
+                                | Change.OtherEndCloses, Some _ -> closed 3 system
+
+                            let system = if signal.IsSome then signalled system else system
+
+                            // Woken by any change, or by the signal.
+                            UnixWait.wakes (Set.singleton sleeper) system
+                            |> List.map fst
+                            |> shouldEqual (
+                                if change <> Change.Nothing || signal.IsSome then
+                                    [ sleeper ]
+                                else
+                                    []
+                            )
+
+                            let expected = measured linux sleep change signal
+                            let actual = finished writing system
+
+                            if actual <> expected then
+                                failwith $"%s{where}: expected %A{expected}, got %A{actual}"
+
+    [<Test>]
+    let ``bytes and room wake the first sleeper to park on Linux, and every sleeper on Darwin`` () : unit =
+        // Sections A1 and B1: three sleepers parked in each order.
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            let linux = SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Linux
+
+            for order in [ [ 1 ; 2 ; 3 ] ; [ 3 ; 1 ; 2 ] ; [ 2 ; 3 ; 1 ] ] do
+                for writing in [ false ; true ] do
+                    let system =
+                        pipeHolding platform false (if writing then 65536 else 0)
+                        |> Tasks.spawn 2
+                        |> Tasks.spawn 3
+
+                    let system =
+                        (system, order)
+                        ||> List.fold (fun system task ->
+                            if writing then
+                                match libraryWrite task 4 [ byte task ] true system with
+                                | Ok (WriteOutcome.WouldBlock (_, system)) -> system
+                                | other -> failwith $"%A{other}"
+                            else
+                                match UnixReadWrite.read task 3 UserBuffer.Mapped 1UL system with
+                                | Ok (ReadOutcome.WouldBlock _, system) -> system
+                                | other -> failwith $"%A{other}"
+                        )
+
+                    let asleep = Set.ofList order
+                    UnixWait.wakes asleep system |> shouldEqual []
+
+                    // One byte, or (Linux) one slot or (Darwin) one byte of room.
+                    let system =
+                        if writing then
+                            leaderReads (if linux then 4096 else 1) system
+                        else
+                            leaderWrites 1 system
+
+                    let woken = UnixWait.wakes asleep system |> List.map fst
+                    woken |> shouldEqual (if linux then [ List.head order ] else order)
+
+                    // A woken sleeper not yet finished stops the next waking.
+                    let rest = Set.remove (List.head order) asleep
+
+                    let system =
+                        if writing then
+                            leaderReads (if linux then 4096 else 1) system
+                        else
+                            leaderWrites 1 system
+
+                    UnixWait.wakes rest system
+                    |> List.map fst
+                    |> shouldEqual (if linux then [] else List.tail order)
+
+    [<Test>]
+    let ``a sleeper that finds nothing to take sleeps again behind the others`` () : unit =
+        // Section A3: two readers, the first woken; another read takes the
+        // byte first.
+        let system = pipeHolding SimulatedUnixPlatform.linuxX64 false 0 |> Tasks.spawn 2
+
+        let system =
+            match UnixReadWrite.read 2 3 UserBuffer.Mapped 1UL (readerAsleep system) with
+            | Ok (ReadOutcome.WouldBlock _, system) -> system
+            | other -> failwith $"%A{other}"
+
+        let system = leaderWrites 1 system
+
+        UnixWait.wakes (Set.ofList [ sleeper ; 2 ]) system
+        |> List.map fst
+        |> shouldEqual [ sleeper ]
+
+        let system = leaderReads 1 system
+
+        match UnixReadWrite.finishRead sleeper system with
+        | Ok (ReadOutcome.WouldBlock _, system) ->
+            let system = leaderWrites 1 system
+
+            UnixWait.wakes (Set.ofList [ sleeper ; 2 ]) system
+            |> List.map fst
+            |> shouldEqual [ 2 ]
+        | other -> failwith $"%A{other}"
+
+    [<Test>]
+    let ``a sleeping write of at most PIPE_BUF bytes waits for room for all of it`` () : unit =
+        // Section F.
+        let linux =
+            pipeHolding SimulatedUnixPlatform.linuxX64 false 65536 |> writerAsleep 4096
+
+        let linux = leaderReads 100 linux
+        UnixWait.wakes (Set.singleton sleeper) linux |> shouldEqual []
+        let linux = leaderReads 3996 linux
+
+        UnixWait.wakes (Set.singleton sleeper) linux
+        |> List.map fst
+        |> shouldEqual [ sleeper ]
+
+        finished (Some (payload 7 4096)) linux |> shouldEqual (Seen.Wrote 4096L)
+
+        let darwin =
+            pipeHolding SimulatedUnixPlatform.macOsArm64 false 65536 |> writerAsleep 512
+
+        let darwin = leaderReads 100 darwin
+        UnixWait.wakes (Set.singleton sleeper) darwin |> shouldEqual []
+        let darwin = leaderReads 411 darwin
+        UnixWait.wakes (Set.singleton sleeper) darwin |> shouldEqual []
+        let darwin = leaderReads 1 darwin
+
+        UnixWait.wakes (Set.singleton sleeper) darwin
+        |> List.map fst
+        |> shouldEqual [ sleeper ]
+
+        finished (Some (payload 7 512)) darwin |> shouldEqual (Seen.Wrote 512L)
+
+        // A write of more than 512 bytes takes what room there is.
+        let darwin =
+            pipeHolding SimulatedUnixPlatform.macOsArm64 false 65536 |> writerAsleep 600
+
+        let darwin = leaderReads 100 darwin
+        finished (Some (payload 7 600)) darwin |> shouldEqual Seen.Sleeps
+
+    [<Test>]
+    let ``a sleeping transfer through a buffer naming no storage faults once there is something to move`` () : unit =
+        // Section G.
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            let system = pipeHolding platform false 0
+
+            let system =
+                match UnixReadWrite.read sleeper 3 (UserBuffer.Unmapped 1UL) 8UL system with
+                | Ok (ReadOutcome.WouldBlock _, system) -> leaderWrites 3 system
+                | other -> failwith $"%A{other}"
+
+            match UnixReadWrite.finishRead sleeper system with
+            | Ok (ReadOutcome.Answered (ReadAnswer.Failed UnixError.EFAULT), system) ->
+                PipeBuffer.held (UnixMachineState.pipe (PipeId 3L) system.Machine).Buffer
+                |> shouldEqual 3
+            | other -> failwith $"%O{platform}: %A{other}"
+
+            let system = pipeHolding platform false 65536
+
+            let system =
+                match UnixReadWrite.admitWrite sleeper 4 (UserBuffer.Unmapped 1UL) 100UL system with
+                | Ok (WriteOutcome.WouldBlock (_, system)) -> leaderReads 4096 system
+                | other -> failwith $"%A{other}"
+
+            match UnixReadWrite.admitFinishWrite sleeper system with
+            | Ok (WriteOutcome.Returns (WriteResumption.Answered (WriteAnswer.Failed UnixError.EFAULT), system)) ->
+                PipeBuffer.held (UnixMachineState.pipe (PipeId 3L) system.Machine).Buffer
+                |> shouldEqual 61440
+            | other -> failwith $"%O{platform}: %A{other}"
+
+    [<Test>]
+    let ``closing the descriptor a transfer sleeps through is refused where the model cannot follow it`` () : unit =
+        // Section K: Linux holds the description while the call sleeps, so
+        // only its last descriptor is refused; Darwin ends the call on a close
+        // of the descriptor it sleeps through, so every close is refused.
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            let linux = SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Linux
+            let system = pipeHolding platform false 0 |> readerAsleep
+
+            let reader =
+                FileDescriptorRegistry.tryFindId 3 system.Process.FileDescriptors |> Option.get
+
+            match UnixDescriptor.close 3 system with
+            | Error (CloseRefusal.LinuxLastPipeDescriptorWithTransfer (description, task)) when linux ->
+                (description, task) |> shouldEqual (reader, sleeper)
+            | Error (CloseRefusal.DarwinPipeDescriptorWithTransfer (description, task)) when not linux ->
+                (description, task) |> shouldEqual (reader, sleeper)
+            | other -> failwith $"%O{platform}: %A{other}"
+
+            let duplicate, system =
+                match UnixDescriptor.dup 3 system with
+                | SyscallAnswer.Completed fd, system -> int fd, system
+                | other -> failwith $"%A{other}"
+
+            match UnixDescriptor.close duplicate system with
+            | Ok (SyscallAnswer.Completed 0L, _) when linux -> ()
+            | Error (CloseRefusal.DarwinPipeDescriptorWithTransfer _) when not linux -> ()
+            | other -> failwith $"%O{platform}: closing a dup: %A{other}"
+
+    [<Test>]
+    let ``a sleeping transfer moves Darwin's timestamps when it finishes`` () : unit =
+        // Section L: the write end's mtime and ctime, and the read end's
+        // atime, are the moment the call finished.
+        let later (system : UnixSystem<int, string>) =
+            { system with
+                Machine = UnixMachineState.advanceClock 1_000_000_000L system.Machine
+            }
+
+        let times (fd : int) (system : UnixSystem<int, string>) =
+            match UnixPathResolution.fstat fd system with
+            | Ok (FileStatusAnswer.Reported status) -> status.AccessTime, status.ModificationTime
+            | other -> failwith $"%A{other}"
+
+        let platform = SimulatedUnixPlatform.macOsArm64
+        let system = pipeHolding platform false 65536 |> writerAsleep 1 |> later
+        let system = leaderReads 4096 system |> later
+        let now = UnixMachineState.realtime system.Machine
+
+        match libraryFinishWrite sleeper [ 7uy ] system with
+        | Ok (WriteOutcome.Returns (WriteAnswer.Completed 1L, system)) -> snd (times 4 system) |> shouldEqual now
+        | other -> failwith $"%A{other}"
+
+        let system = pipeHolding platform false 0 |> readerAsleep |> later
+        let system = leaderWrites 3 system |> later
+        let now = UnixMachineState.realtime system.Machine
+
+        match UnixReadWrite.finishRead sleeper system with
+        | Ok (ReadOutcome.Answered (ReadAnswer.Completed _), system) -> fst (times 3 system) |> shouldEqual now
+        | other -> failwith $"%A{other}"

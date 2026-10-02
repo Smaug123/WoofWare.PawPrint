@@ -336,7 +336,7 @@ module TestNonBlocking =
             let flagged = set 0 true clear
 
             let answerOf (system : UnixSystem<int, string>) =
-                match UnixReadWrite.read 0 buffer (uint64 count) system with
+                match ReadOutcomes.read 0 buffer (uint64 count) system with
                 | Ok (answer, after) ->
                     after |> shouldEqual system
                     Ok answer
@@ -361,7 +361,7 @@ module TestNonBlocking =
                     UserBuffer.Unmapped 0UL, 16UL
                     UserBuffer.Mapped, 0UL
                 ] do
-                match UnixReadWrite.read 0 buffer count flagged with
+                match ReadOutcomes.read 0 buffer count flagged with
                 | Ok (ReadAnswer.Completed bytes, _) -> bytes.IsEmpty |> shouldEqual true
                 | other -> failwith $"%O{platform}: read(0, %A{buffer}, %d{count}) answered %A{other}"
 

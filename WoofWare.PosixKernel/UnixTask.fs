@@ -128,6 +128,51 @@ type ParkedAccept =
         DeclaredLength : int
     }
 
+/// One task's in-flight blocking `read(2)` of a pipe that held nothing while a
+/// write end was open.
+type ParkedPipeRead =
+    {
+        /// The open file description of the pipe's read end the call was made
+        /// through.
+        ///
+        /// Held by description rather than by descriptor: the sleeping call
+        /// holds the file, and a `dup` of the descriptor names the same one.
+        Reader : OpenFileDescriptionId
+        /// Where the bytes are to be copied out to, as the caller classified it
+        /// when the call was entered. Nothing is copied before the call sleeps,
+        /// so a buffer naming no storage faults only once there is something to
+        /// copy.
+        Buffer : UserBuffer
+        /// The most bytes the call takes: its count, after the platform's limit
+        /// on one call's transfer. Never zero, since a read of nothing returns
+        /// at once.
+        Count : int
+    }
+
+/// One task's in-flight blocking `write(2)` into a pipe that had no room for all
+/// of it.
+///
+/// Holds no bytes. A sleeping write copies from the caller's buffer as room
+/// appears, so bytes a process writes into its buffer while the call sleeps
+/// are the bytes that reach the pipe; the call that finishes the write asks
+/// the caller for them then.
+type ParkedPipeWrite =
+    {
+        /// The open file description of the pipe's write end the call was made
+        /// through, held by description for the reason `ParkedPipeRead.Reader`
+        /// is.
+        Writer : OpenFileDescriptionId
+        /// Where the bytes come from, as the caller classified it when the call
+        /// was entered.
+        Buffer : UserBuffer
+        /// How many bytes the call writes in all: its count, after the
+        /// platform's limit on one call's transfer.
+        Count : int
+        /// How many of them, from the start, are already in the pipe: less than
+        /// `Count`.
+        Written : int
+    }
+
 /// <summary>
 /// The syscall a task is blocked in, if it is blocked in one.
 /// </summary>
@@ -146,6 +191,8 @@ type ParkedSyscall =
     | Flock of ParkedFlock
     | Poll of ParkedPoll
     | Accept of ParkedAccept
+    | PipeRead of ParkedPipeRead
+    | PipeWrite of ParkedPipeWrite
 
 /// Where one park stands in the order every park on this machine was made in.
 ///
@@ -314,18 +361,20 @@ module UnixTaskTable =
         =
         let existing = get name tasks
 
+        // Which syscall a park is of, and nothing else about it.
+        let kind (parked : ParkedSyscall) : int =
+            match parked with
+            | ParkedSyscall.SocketWait _ -> 0
+            | ParkedSyscall.Flock _ -> 1
+            | ParkedSyscall.Poll _ -> 2
+            | ParkedSyscall.Accept _ -> 3
+            | ParkedSyscall.PipeRead _ -> 4
+            | ParkedSyscall.PipeWrite _ -> 5
+
         let sameSyscall =
-            match existing.Parked |> Option.map (fun park -> park.Syscall), park.Syscall with
-            | None, _
-            | Some (ParkedSyscall.SocketWait _), ParkedSyscall.SocketWait _
-            | Some (ParkedSyscall.Flock _), ParkedSyscall.Flock _
-            | Some (ParkedSyscall.Poll _), ParkedSyscall.Poll _
-            | Some (ParkedSyscall.Accept _), ParkedSyscall.Accept _ -> true
-            | Some (ParkedSyscall.SocketWait _), (ParkedSyscall.Flock _ | ParkedSyscall.Poll _ | ParkedSyscall.Accept _)
-            | Some (ParkedSyscall.Flock _), (ParkedSyscall.SocketWait _ | ParkedSyscall.Poll _ | ParkedSyscall.Accept _)
-            | Some (ParkedSyscall.Poll _), (ParkedSyscall.SocketWait _ | ParkedSyscall.Flock _ | ParkedSyscall.Accept _)
-            | Some (ParkedSyscall.Accept _), (ParkedSyscall.SocketWait _ | ParkedSyscall.Flock _ | ParkedSyscall.Poll _) ->
-                false
+            match existing.Parked with
+            | None -> true
+            | Some existing -> kind existing.Syscall = kind park.Syscall
 
         if not sameSyscall then
             failwith

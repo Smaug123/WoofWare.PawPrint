@@ -469,76 +469,113 @@ module PipeBuffer =
                     Bytes = ByteQueue.append (ImmutableArray.Create (bytes, 0, taken)) darwin.Bytes
                 }
 
-    /// A blocking write that has already put some of its bytes in, and slept
-    /// because the rest did not fit, resuming: how many of `bytes`, from
-    /// `offset` on, the buffer takes now, and the buffer after taking them.
+    /// How many bytes a blocking write of `count` bytes, which has put the
+    /// first `written` of them in and slept because the rest did not fit, takes
+    /// when it resumes against `buffer`: the count `resume` answers, without the
+    /// bytes themselves. Zero means the write sleeps on.
     ///
-    /// Not `write` again with what is left. On Linux the writer fills each free
-    /// slot with a page of its bytes and never merges into the newest slot, as
-    /// a write does only when it starts; on Darwin it takes as much as there is
-    /// room for, never all-or-nothing, since the write it continues was longer
-    /// than `atomicWriteLimit`, and the buffer does not grow.
+    /// Not what a fresh write of the rest would take. On Linux the writer fills
+    /// each free slot with a page of its bytes and never merges into the newest
+    /// slot, as a write does only when it starts. On Darwin it takes as much as
+    /// there is room for, unless the whole write is at most `atomicWriteLimit`
+    /// bytes, which it takes whole or not at all; and the buffer does not grow.
+    /// On Linux a write of at most `atomicWriteLimit` bytes needs one free slot,
+    /// which holds the whole of it.
     ///
     /// Only a Darwin buffer that has grown to its largest size is resumed: a
     /// write that had to sleep grew the buffer when it started, and how one that
     /// slept with a smaller buffer resumes is not measured, so that is refused.
+    let resumeTakes (count : int) (written : int) (buffer : PipeBuffer) : int =
+        if written < 0 || written > count then
+            failwith
+                $"PipeBuffer.resumeTakes: %d{written} of %d{count} bytes written is not where a write could have got to (this is a bug in the caller of PipeBuffer.resumeTakes)."
+
+        let rest = count - written
+
+        match buffer with
+        | PipeBuffer.Linux linux ->
+            // Measured (supplied-pipe-refill.c, and pipe-blocking.c section F),
+            // a writer blocked on a full pipe writes again as soon as a read
+            // frees a slot, and only then: a page of its bytes into each free
+            // slot. A sleeping write of 100 bytes took a fresh slot rather than
+            // merging.
+            let freeSlots = LinuxSlots - List.length linux.Slots
+            int (min (int64 rest) (int64 freeSlots * int64 linux.PageSize))
+        | PipeBuffer.Darwin darwin ->
+            if darwin.Size <> DarwinPipeBufferSize.B65536 then
+                failwith
+                    $"PipeBuffer.resumeTakes: a Darwin buffer of %d{DarwinPipeBufferSize.bytes darwin.Size} bytes, below its largest size. A write sleeps only once the buffer has grown as far as it goes, and how one resumes into a smaller buffer is not measured."
+
+            // Measured (supplied-pipe-refill.c), a writer blocked on a full pipe
+            // writes again after every read, taking all the room the read
+            // made: a read of 50 from a full pipe whose writer had 300 bytes
+            // left is followed by a write of 50. Measured too (pipe-blocking.c
+            // section F), a sleeping write of 512 or 100 bytes stays asleep
+            // until there is room for all of it, while one of 600 takes the
+            // 100 bytes a read frees.
+            let free = DarwinPipeBufferSize.bytes darwin.Size - ByteQueue.length darwin.Bytes
+
+            if count <= DarwinPipeBuf then
+                (if free >= rest then rest else 0)
+            else
+                min rest free
+
+    /// The buffer once a resumed write of `count` bytes, which had put `written`
+    /// of them in, has put in `next`: exactly `resumeTakes count written buffer`
+    /// bytes, the ones following the first `written`.
+    ///
+    /// For a caller that must say how many bytes it wants before it has them,
+    /// such as one whose bytes are in a process's memory.
+    let resumeWith (count : int) (written : int) (next : ImmutableArray<byte>) (buffer : PipeBuffer) : PipeBuffer =
+        if next.IsDefault then
+            failwith
+                "PipeBuffer.resumeWith: next is the default ImmutableArray, whose underlying array is null. That is not an empty write; pass ImmutableArray<byte>.Empty."
+
+        let taking = resumeTakes count written buffer
+
+        if next.Length <> taking then
+            failwith
+                $"PipeBuffer.resumeWith: given %d{next.Length} bytes for a resumed write that takes %d{taking} (this is a bug in the caller of PipeBuffer.resumeWith)."
+
+        match buffer with
+        | PipeBuffer.Linux linux ->
+            let page = linux.PageSize
+
+            let rec fill (taken : int) (slots : LinuxPipeSlot list) =
+                if taken = taking then
+                    slots
+                else
+                    let length = min page (taking - taken)
+
+                    let slot =
+                        {
+                            Offset = 0
+                            Bytes = ByteQueue.append (ImmutableArray.Create (next, taken, length)) ByteQueue.empty
+                        }
+
+                    fill (taken + length) (slots @ [ slot ])
+
+            PipeBuffer.Linux
+                { linux with
+                    Slots = fill 0 linux.Slots
+                }
+        | PipeBuffer.Darwin darwin ->
+            PipeBuffer.Darwin
+                { darwin with
+                    Bytes = ByteQueue.append next darwin.Bytes
+                }
+
+    /// A blocking write of `bytes` that has already put the first `offset` of
+    /// them in, and slept because the rest did not fit, resuming: how many of
+    /// `bytes`, from `offset` on, the buffer takes now (see `resumeTakes`), and
+    /// the buffer after taking them.
     let resume (bytes : ImmutableArray<byte>) (offset : int) (buffer : PipeBuffer) : int * PipeBuffer =
         if bytes.IsDefault then
             failwith
                 "PipeBuffer.resume: bytes is the default ImmutableArray, whose underlying array is null. That is not an empty write; pass ImmutableArray<byte>.Empty."
 
-        if offset < 0 || offset > bytes.Length then
-            failwith
-                $"PipeBuffer.resume: an offset of %d{offset} into %d{bytes.Length} bytes is not where a write could have got to (this is a bug in the caller of PipeBuffer.resume)."
-
-        let n = bytes.Length - offset
-
-        match buffer with
-        | PipeBuffer.Linux linux ->
-            // Measured (supplied-pipe-refill.c), a writer blocked on a full pipe
-            // writes again as soon as a read frees a slot, and only then: a
-            // page of its bytes into each free slot.
-            let page = linux.PageSize
-
-            let rec fill (taken : int) (slots : LinuxPipeSlot list) (count : int) =
-                if taken = n || count = LinuxSlots then
-                    taken, slots
-                else
-                    let length = min page (n - taken)
-
-                    let slot =
-                        {
-                            Offset = 0
-                            Bytes =
-                                ByteQueue.append (ImmutableArray.Create (bytes, offset + taken, length)) ByteQueue.empty
-                        }
-
-                    fill (taken + length) (slots @ [ slot ]) (count + 1)
-
-            let taken, slots = fill 0 linux.Slots (List.length linux.Slots)
-
-            taken,
-            PipeBuffer.Linux
-                { linux with
-                    Slots = slots
-                }
-        | PipeBuffer.Darwin darwin ->
-            if darwin.Size <> DarwinPipeBufferSize.B65536 then
-                failwith
-                    $"PipeBuffer.resume: a Darwin buffer of %d{DarwinPipeBufferSize.bytes darwin.Size} bytes, below its largest size. A write sleeps only once the buffer has grown as far as it goes, and how one resumes into a smaller buffer is not measured."
-
-            // Measured (supplied-pipe-refill.c), a writer blocked on a full pipe
-            // writes again after every read, taking all the room the read
-            // made: a read of 50 from a full pipe whose writer had 300 bytes
-            // left is followed by a write of 50.
-            let taken =
-                min n (DarwinPipeBufferSize.bytes darwin.Size - ByteQueue.length darwin.Bytes)
-
-            taken,
-            PipeBuffer.Darwin
-                { darwin with
-                    Bytes = ByteQueue.append (ImmutableArray.Create (bytes, offset, taken)) darwin.Bytes
-                }
+        let taken = resumeTakes bytes.Length offset buffer
+        taken, resumeWith bytes.Length offset (ImmutableArray.Create (bytes, offset, taken)) buffer
 
     /// A read of up to `count` bytes: the oldest `min count (held buffer)` bytes,
     /// and the buffer without them. Returns no bytes when the buffer is empty,

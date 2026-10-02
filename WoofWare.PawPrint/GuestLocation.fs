@@ -335,6 +335,12 @@ module GuestLocation =
                             Some $"for a lock on open file description %O{parked.Requester}, %O{parked.Mode}"
                         | Some (ParkedSyscall.Accept parked) ->
                             Some $"for a connection on the listener of open file description %O{parked.Listener}"
+                        | Some (ParkedSyscall.PipeRead parked) ->
+                            Some
+                                $"for up to %d{parked.Count} bytes from the pipe end of open file description %O{parked.Reader}"
+                        | Some (ParkedSyscall.PipeWrite parked) ->
+                            Some
+                                $"for room for %d{parked.Count - parked.Written} more of %d{parked.Count} bytes in the pipe end of open file description %O{parked.Writer}"
                         | Some (ParkedSyscall.Poll parked) ->
                             let watched =
                                 parked.Entries

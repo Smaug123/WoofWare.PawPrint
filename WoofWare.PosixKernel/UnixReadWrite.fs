@@ -32,11 +32,9 @@ type ReadRefusal =
     /// if position + count passes `INT64_MAX`; on Darwin, 0 if the position is
     /// `INT64_MAX`; EISDIR otherwise.
     | ScannedDirectoryPosition of inode : InodeNumber * fileSystem : EmulatedFileSystemType
-    /// The read end of a pipe that holds nothing while a write end is still
-    /// open, through a description without `O_NONBLOCK`. A real kernel sleeps
-    /// until bytes arrive or the last write end closes; this kernel does not
-    /// yet park a read.
-    | PipeWouldBlock of pipe : PipeId
+    /// A read asleep on a pipe has an answer, and the library will not say
+    /// whether that or a signal ends it.
+    | Interruption of SyscallInterruptionRefusal
 
 [<RequireQualifiedAccess>]
 module ReadRefusal =
@@ -50,8 +48,27 @@ module ReadRefusal =
             $"the descriptor is socket %O{socket} (%O{domain}, %O{kind}). This kernel models no socket connection state, and `read(2)` on a socket is an answer about exactly that: measured on an unconnected socket it is ENOTCONN for a TCP socket, EINVAL on Linux against ENOTCONN on Darwin for a Unix-domain stream socket, and a block with no wake source for a datagram socket. Any constant here would become a lie the moment connection state is modelled."
         | ReadRefusal.ScannedDirectoryPosition (inode, fileSystem) ->
             $"the descriptor is directory %O{inode} on %O{fileSystem}, which this description has read part of the way through. Ahead of a directory's EISDIR, Linux answers EINVAL when position + count passes INT64_MAX and Darwin answers 0 when the position is INT64_MAX, and the position after a partial scan is %O{fileSystem}'s own cookie (on an NFS mount, whatever the server chose, up to INT64_MAX), which is not a number this kernel's position corresponds to. So whether this read is EISDIR or the position's answer is unknown here."
-        | ReadRefusal.PipeWouldBlock pipe ->
-            $"the descriptor is the read end of pipe %O{pipe}, which holds nothing while a write end is still open, and the description does not carry O_NONBLOCK. A real kernel puts the reader to sleep until bytes arrive or the last write end closes (measured on both flavours: a read sleeping on an empty pipe returns the 3 bytes a writer sends 200 ms later, or 0 when the writer closes instead). This kernel does not yet park a read, so it refuses rather than answer EAGAIN, which only a non-blocking read earns."
+        | ReadRefusal.Interruption refusal ->
+            $"the read was asleep on a pipe: %s{SyscallInterruptionRefusal.describe refusal}"
+
+/// What became of a `read(2)` this kernel could answer, where "answer" may be
+/// "the calling task sleeps".
+[<RequireQualifiedAccess>]
+type ReadOutcome =
+    /// The entry point returned.
+    | Answered of ReadAnswer
+    /// The call did not return: it is a blocking read of a pipe that holds
+    /// nothing while a write end is open. The calling task is parked, and
+    /// sleeps until `UnixWait.wakes` wakes it; then `UnixReadWrite.finishRead`
+    /// finishes the call.
+    | WouldBlock of WakeCondition
+    /// The call was asleep, a signal with a handler interrupted it, and the call
+    /// restarts (`SyscallInterruption.Restart`): it never returns. The task is
+    /// no longer parked. Once the handlers have run, the client issues the
+    /// `read` again with the arguments it was first made with.
+    ///
+    /// Only `finishRead` answers this.
+    | Restarts
 
 /// What `write(2)` did, for a request this kernel could answer.
 [<RequireQualifiedAccess>]
@@ -59,10 +76,11 @@ type WriteAnswer =
     /// How many bytes moved, which the entry point returns: every one asked
     /// for, unless that was more than the platform moves in one call (see
     /// `TransferCountLimit` and `WriteAdmission.Transfer`), or the write was a
-    /// non-blocking one into a pipe with room for only some of them. Nothing
-    /// else makes a write short here: this kernel's filesystem cannot run out of
-    /// space, and a pipe the client drains has room for the whole of a blocking
-    /// write.
+    /// non-blocking one into a pipe with room for only some of them, or a
+    /// blocking one into a pipe that a signal or (on Linux) the reader leaving
+    /// ended after some of it had gone in. Nothing else makes a write short
+    /// here: this kernel's filesystem cannot run out of space, and a pipe the
+    /// client drains has room for the whole of a blocking write.
     | Completed of written : int64
     /// The entry point returns -1 and the caller stores `error` wherever its
     /// libc keeps errno.
@@ -87,8 +105,22 @@ type WriteAdmission =
     /// more (see `TransferCountLimit`), so it is never more than
     /// `Int32.MaxValue`; or, for a non-blocking write into a pipe with room for
     /// only part of it, the part the pipe takes, which is all `write` then
-    /// answers.
+    /// answers. A blocking write into a pipe with room for part of it is given
+    /// the whole count: `write` puts in what fits and sleeps for the rest.
     | Transfer of count : int
+
+/// Whether a blocking `write` into a pipe, asleep because the pipe had no room
+/// for the rest of it, reaches the point at which it reads more of the caller's
+/// buffer. `UnixReadWrite.admitFinishWrite` answers it, for the reason
+/// `WriteAdmission` exists.
+[<RequireQualifiedAccess>]
+type WriteResumption =
+    /// Answered without the buffer being read: what the call returns.
+    | Answered of answer : WriteAnswer
+    /// The pipe has room: extract the `count` bytes of the caller's buffer that
+    /// start `offset` bytes in, and pass them to `UnixReadWrite.finishWrite`.
+    /// The bytes before `offset` are in the pipe already.
+    | Transfer of offset : int * count : int
 
 /// Why this kernel will not answer a `write`.
 [<RequireQualifiedAccess>]
@@ -105,11 +137,9 @@ type WriteRefusal =
     /// What writing to the file at `inode` would do to its set-ID bits has not
     /// been measured for this writer.
     | UnmeasuredSetIdChange of inode : InodeNumber * refusal : SetIdChangeRefusal
-    /// A write of `count` bytes into a pipe that has room for only `taken` of
-    /// them, through a description without `O_NONBLOCK`. A real kernel
-    /// sleeps until the rest fit (having written the first `taken` already, on
-    /// Linux); this kernel does not yet park a write.
-    | PipeWouldBlock of pipe : PipeId * count : int * taken : int
+    /// A write asleep in a pipe has an answer, and the library will not say
+    /// whether that or a signal ends it.
+    | Interruption of SyscallInterruptionRefusal
     /// A write into a pipe with no reader, which answers `EPIPE` and raises
     /// `SIGPIPE`, when which task would receive the signal is not modelled.
     | SignalReceiver of pipe : PipeId * refusal : SignalReceiverRefusal
@@ -139,8 +169,8 @@ module WriteRefusal =
             $"the descriptor is socket %O{socket} (%O{domain}, %O{kind}). This kernel models no socket connection state, and `write(2)` on a socket is an answer about exactly that: measured on an unconnected socket it is EPIPE on Linux against ENOTCONN on Darwin for a TCP socket, ENOTCONN on both for a Unix-domain stream socket, and EDESTADDRREQ for a datagram socket. The Linux TCP row also raises SIGPIPE, though a runtime that ignores that signal process-wide sees only the errno."
         | WriteRefusal.ExceedsRepresentableLength (inode, offset, count) ->
             describeExceedsRepresentableLength inode offset count
-        | WriteRefusal.PipeWouldBlock (pipe, count, taken) ->
-            $"the descriptor is the write end of pipe %O{pipe}, the description does not carry O_NONBLOCK, and the pipe has room for %d{taken} of the %d{count} bytes. A real kernel puts the writer to sleep until a reader makes room for the rest (on Linux, having already written what fitted; on Darwin, answering EPIPE for the whole call if the reader closes meanwhile). This kernel does not yet park a write, so it refuses rather than answer a short count, which only a non-blocking write earns."
+        | WriteRefusal.Interruption refusal ->
+            $"the write was asleep in a pipe: %s{SyscallInterruptionRefusal.describe refusal}"
         | WriteRefusal.InitProcess pipe ->
             $"the descriptor is the write end of pipe %O{pipe}, which has no reader, so the write raises SIGPIPE; but the process is process ID 1, and what an init process does with a signal it has no handler for is not modelled."
         | WriteRefusal.SignalReceiver (pipe, refusal) ->
@@ -149,8 +179,9 @@ module WriteRefusal =
 
 /// What a `write(2)` this kernel answered did to the process that made it,
 /// besides answering: `'Answer` is what the call answered, a `WriteAdmission`
-/// from `UnixReadWrite.admitWrite` or a `WriteAnswer` from
-/// `UnixReadWrite.write`.
+/// from `UnixReadWrite.admitWrite`, a `WriteResumption` from
+/// `UnixReadWrite.admitFinishWrite`, or a `WriteAnswer` from
+/// `UnixReadWrite.write` and `UnixReadWrite.finishWrite`.
 [<RequireQualifiedAccess>]
 type WriteOutcome<'Answer, 'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
     /// The call answers `answer`, having raised no signal, and the process
@@ -167,6 +198,19 @@ type WriteOutcome<'Answer, 'Task, 'Handler when 'Task : comparison and 'Handler 
     /// which never returns from it. `EndedProcess.Termination` names the
     /// signal.
     | ProcessEnded of EndedProcess<'Task, 'Handler>
+    /// The call did not return: it is a blocking write into a pipe with no room
+    /// for the rest of it. The calling task is parked in `system`, and sleeps
+    /// until `UnixWait.wakes` wakes it; then `UnixReadWrite.admitFinishWrite`
+    /// and `UnixReadWrite.finishWrite` finish the call.
+    | WouldBlock of condition : WakeCondition * system : UnixSystem<'Task, 'Handler>
+    /// The call was asleep with nothing written, a signal with a handler
+    /// interrupted it, and the call restarts (`SyscallInterruption.Restart`):
+    /// it never returns. The task is no longer parked in `system`. Once the
+    /// handlers have run, the client issues the `write` again with the
+    /// arguments it was first made with.
+    ///
+    /// Only `admitFinishWrite` answers this.
+    | Restarts of system : UnixSystem<'Task, 'Handler>
 
 /// Why this kernel will not answer a `pwrite`.
 ///
@@ -240,9 +284,9 @@ module CopyFileRangeRefusal =
 /// `vfs_read` does — has no unreachable arm left to write.
 [<RequireQualifiedAccess>]
 type private ReadTarget =
-    /// The read end of a pipe, and whether its description carries
-    /// `O_NONBLOCK`.
-    | Pipe of pipe : PipeId * nonBlocking : bool
+    /// The read end of a pipe, the open file description it was reached
+    /// through, and whether that description carries `O_NONBLOCK`.
+    | Pipe of pipe : PipeId * description : OpenFileDescriptionId * nonBlocking : bool
     /// A file, at the offset its open file description currently holds.
     | File of inode : InodeNumber * offset : int64
     /// A socket, which is refused rather than answered.
@@ -261,9 +305,9 @@ type private WriteTarget =
     /// A socket, which is refused rather than answered — but only once the
     /// buffer screen has had its say, which on one flavour answers first.
     | Socket of socket : SocketId
-    /// The write end of a pipe, and whether its description carries
-    /// `O_NONBLOCK`.
-    | Pipe of pipe : PipeId * nonBlocking : bool
+    /// The write end of a pipe, the open file description it was reached
+    /// through, and whether that description carries `O_NONBLOCK`.
+    | Pipe of pipe : PipeId * description : OpenFileDescriptionId * nonBlocking : bool
 
 /// How far a write into a pipe gets before it needs the caller's bytes.
 [<RequireQualifiedAccess>]
@@ -277,8 +321,15 @@ type private PipeWriteStep =
     /// The pipe has no reader: the write answers `EPIPE` and raises `SIGPIPE`,
     /// takes nothing, and leaves the pipe and its timestamps alone.
     | Broken
-    /// The write takes `taken` of the bytes offered, from the start.
+    /// The write takes `taken` of the bytes offered, from the start, and
+    /// answers that count.
     | Takes of taken : int
+    /// A blocking write that takes nothing now, without reading the bytes, and
+    /// sleeps; it leaves the buffer as `PipeBuffer.withoutTaking` says.
+    | Sleeps
+    /// A blocking write that takes `taken` of the bytes offered, from the
+    /// start, fewer than all of them, and sleeps for the rest.
+    | TakesThenSleeps of taken : int
 
 [<RequireQualifiedAccess>]
 module UnixReadWrite =
@@ -565,8 +616,8 @@ module UnixReadWrite =
     /// holds the bytes.
     ///
     /// Changes nothing: `touchedByWrite` is the caller's to apply, to every
-    /// outcome but a refusal and `Broken`, `leftUntaken` to `TakesNothing`,
-    /// and `brokenPipe` to `Broken`.
+    /// outcome but a refusal and `Broken`, `leftUntaken` to `TakesNothing` and
+    /// `Sleeps`, and `brokenPipe` to `Broken`.
     let private pipeWriteStep<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (pipeId : PipeId)
         (nonBlocking : bool)
@@ -618,11 +669,12 @@ module UnixReadWrite =
         if taken = 0 then
             // Nothing fits, so nothing is copied and the buffer is never looked
             // at: measured on both, a non-blocking write through a bad pointer
-            // into a full pipe is EAGAIN, not EFAULT.
+            // into a full pipe is EAGAIN, not EFAULT, and a blocking one sleeps
+            // (pipe-blocking.c section G2), faulting only once there is room.
             if nonBlocking then
                 PipeWriteStep.TakesNothing (WriteAnswer.Failed UnixError.EAGAIN)
             else
-                PipeWriteStep.Refused (WriteRefusal.PipeWouldBlock (pipeId, count, 0))
+                PipeWriteStep.Sleeps
         else
 
         match buffer with
@@ -636,7 +688,9 @@ module UnixReadWrite =
         | UserBuffer.Mapped ->
 
         if taken < count && not nonBlocking then
-            PipeWriteStep.Refused (WriteRefusal.PipeWouldBlock (pipeId, count, taken))
+            // Measured on both (pipe-blocking.c section D): a blocking write
+            // puts in what fits and sleeps for the rest.
+            PipeWriteStep.TakesThenSleeps taken
         else
             // A non-blocking write takes what fits and answers that count:
             // `PipeBuffer.write` is the measured rule.
@@ -702,17 +756,88 @@ module UnixReadWrite =
             failwith
                 $"UnixReadWrite: generating %O{signal} for a write into pipe %O{pipeId} stopped the process, but SIGPIPE's default is to terminate on every flavour (this is a bug in this library)."
 
-    /// Fails loudly unless `task` is one of `system`'s tasks: a write is made
-    /// by one, and the signal a write can raise may be aimed at it.
-    let private checkWriter<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// Fails loudly unless `task` is one of `system`'s tasks and is not
+    /// already asleep in a syscall: a task makes one call at a time, and a
+    /// call that sleeps is finished, not issued again.
+    let private checkIssuer<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (syscall : string)
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : unit
         =
-        if not (Map.containsKey task system.Tasks) then
+        match Map.tryFind task system.Tasks with
+        | None ->
             failwith
-                $"UnixReadWrite.%s{syscall}: task %O{task} is not one of the process's tasks, so it cannot be making a write (this is a bug in the client)."
+                $"UnixReadWrite.%s{syscall}: task %O{task} is not one of the process's tasks, so it cannot be making the call (this is a bug in the client)."
+        | Some {
+                   Parked = Some park
+               } ->
+            failwith
+                $"UnixReadWrite.%s{syscall}: task %O{task} is asleep in %A{park.Syscall}, and is issuing a %s{syscall}. A task blocks in one syscall at a time, and a sleeping one is finished rather than issued again (this is a bug in the client)."
+        | Some _ -> ()
+
+    /// A read of up to `count` bytes taking them from `pipeId`, which holds
+    /// some: the bytes, and the system after the read and whatever it set off.
+    let private takeFromPipe<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (pipeId : PipeId)
+        (count : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : ImmutableArray<byte> * UnixSystem<'Task, 'Handler>
+        =
+        let pipe = UnixMachineState.pipe pipeId system.Machine
+
+        // What the pipe holds, up to the count, without waiting for more:
+        // measured on both, three 5-byte writes read back as one 15-byte
+        // read, and a read of 3 from 10 held leaves 7.
+        let bytes, remaining = PipeBuffer.read count pipe.Buffer
+
+        // A client asleep in its write wakes into the room this read made,
+        // and has written before the process's next call: the fastest a
+        // real writer can be, and what a real one is measured to do given a
+        // moment (supplied-pipe-refill.c: a reader that waits 20 ms after
+        // each read finds the pipe exactly as full as this, on both
+        // flavours, over 120 runs each). A reader on Linux sees it so even
+        // without waiting; on Darwin, one that reads again at once can
+        // find less, which a slower reader never does.
+        let pipe, progress =
+            PipeState.afterRead
+                { pipe with
+                    Buffer = remaining
+                }
+
+        // Measured on Linux 6.18.5 (supplied-pipe-epoll.c): the client's
+        // write wakes an edge-triggered registration on the read end
+        // exactly when it writes into a pipe the read had emptied, with
+        // `EPOLLIN | EPOLLRDNORM`; and its close wakes the registration
+        // whatever it waits for, reporting `EPOLLHUP` even to an
+        // `EPOLLOUT`-only one, so the close's wake is unkeyed.
+        let registry =
+            let readers =
+                UnixProcessState.descriptionsNamingPipeEnd pipeId PipeEnd.Read system.Process
+
+            let registry = system.Process.FileDescriptors
+
+            let registry =
+                if progress.WroteIntoEmpty then
+                    FileDescriptorRegistry.signalSocketEventPorts
+                        readers
+                        (Some (EpollEvents.In ||| EpollEvents.RdNorm))
+                        registry
+                else
+                    registry
+
+            if progress.Closed then
+                FileDescriptorRegistry.signalSocketEventPorts readers None registry
+            else
+                registry
+
+        bytes,
+        { withPipe pipeId pipe system with
+            Process =
+                { system.Process with
+                    FileDescriptors = registry
+                }
+        }
 
     /// The object's own read operation on a regular file, which `read` and
     /// `pread` reach identically: the transfer window, the shortcut that touches
@@ -786,17 +911,30 @@ module UnixReadWrite =
     ///
     /// The buffer is consulted at three points and *not* consulted at three
     /// others, and both sets are measured; see the comments inline.
+    ///
+    /// A read by `task` of a pipe that holds nothing while a write end is open,
+    /// through a description without `O_NONBLOCK`, sleeps (`ReadOutcome.WouldBlock`)
+    /// without looking at the buffer, and `finishRead` finishes it. Setting
+    /// `O_NONBLOCK` on the description while it sleeps does not wake it.
+    ///
+    /// Fails loudly if `task` is not one of the process's tasks, or is already
+    /// asleep in a syscall.
     let read<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
         (fd : int)
         (buffer : UserBuffer)
         (count : uint64)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<ReadAnswer * UnixSystem<'Task, 'Handler>, ReadRefusal>
+        : Result<ReadOutcome * UnixSystem<'Task, 'Handler>, ReadRefusal>
         =
+        checkIssuer "read" task system
         let platform = system.Machine.UnixPlatform
 
+        let answered (answer : ReadAnswer) (system : UnixSystem<'Task, 'Handler>) =
+            Ok (ReadOutcome.Answered answer, system)
+
         if countRefused platform count then
-            Ok (ReadAnswer.Failed UnixError.EINVAL, system)
+            answered (ReadAnswer.Failed UnixError.EINVAL) system
         else
 
         // The descriptor's access mode, which Linux's `vfs_read` decides before
@@ -804,9 +942,9 @@ module UnixReadWrite =
         // `read(wronlyFd, (void*)-1, 4)` is EBADF rather than EFAULT, and even
         // `read(wronlyFd, buf, 0)` is EBADF rather than a no-op.
         let target : Result<ReadTarget, UnixError> =
-            match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors with
             | None -> Error UnixError.EBADF
-            | Some description ->
+            | Some (descriptionId, description) ->
 
             if not (FileAccessMode.permitsRead description.AccessMode) then
                 // A regular file opened `O_WRONLY` and a pipe's write end alike:
@@ -837,13 +975,14 @@ module UnixReadWrite =
             | OpenFileTarget.Socket socketId -> Ok (ReadTarget.Socket socketId)
             | OpenFileTarget.File (inode, offset) -> Ok (ReadTarget.File (inode, offset))
             | OpenFileTarget.Directory (inode, position) -> Ok (ReadTarget.Directory (inode, position))
-            | OpenFileTarget.Pipe (pipeId, PipeEnd.Read) -> Ok (ReadTarget.Pipe (pipeId, description.NonBlocking))
+            | OpenFileTarget.Pipe (pipeId, PipeEnd.Read) ->
+                Ok (ReadTarget.Pipe (pipeId, descriptionId, description.NonBlocking))
             | OpenFileTarget.Pipe (pipeId, PipeEnd.Write) ->
                 failwith
                     $"UnixReadWrite.read: fd %d{fd} names the write end of pipe %O{pipeId}, whose access mode permits reading. `pipe(2)` opens the write end O_WRONLY and nothing reopens it (this is a bug in this library)."
 
         match target with
-        | Error error -> Ok (ReadAnswer.Failed error, system)
+        | Error error -> answered (ReadAnswer.Failed error) system
         | Ok target ->
 
         // Everything below this point is the object's own read operation, which
@@ -855,7 +994,7 @@ module UnixReadWrite =
             UserBufferCheck.faultsBeforeOperationFor (UnixMachineState.userBufferCheck system.Machine) buffer count
         with
         | Error refusal -> Error (ReadRefusal.Buffer refusal)
-        | Ok true -> Ok (ReadAnswer.Failed UnixError.EFAULT, system)
+        | Ok true -> answered (ReadAnswer.Failed UnixError.EFAULT) system
         | Ok false ->
 
         match target with
@@ -891,7 +1030,7 @@ module UnixReadWrite =
             // and is answered above: measured, `read(port, buf, 0)` is EINVAL on
             // Linux like every other length.
             match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform, count with
-            | SimulatedUnixFlavour.Linux, 0UL -> Ok (ReadAnswer.Completed ImmutableArray.Empty, system)
+            | SimulatedUnixFlavour.Linux, 0UL -> answered (ReadAnswer.Completed ImmutableArray.Empty) system
             | SimulatedUnixFlavour.Linux, _
             | SimulatedUnixFlavour.Darwin, _ ->
                 let socket = UnixMachineState.socket socketId system.Machine
@@ -906,15 +1045,15 @@ module UnixReadWrite =
             | Ok check ->
 
             match readAnsweredByPosition check with
-            | Some answer -> Ok (answer, system)
+            | Some answer -> answered answer system
             | None ->
                 // EISDIR on both, and behind the buffer screen rather than ahead
                 // of it: measured, `read(dir, NULL, 5)` is EISDIR while
                 // `read(dir, (void*)-1, 5)` is EFAULT under a screening flavour.
                 // The same answer `pread` reaches through the directory's
                 // content.
-                Ok (ReadAnswer.Failed UnixError.EISDIR, system)
-        | ReadTarget.Pipe (pipeId, nonBlocking) ->
+                answered (ReadAnswer.Failed UnixError.EISDIR) system
+        | ReadTarget.Pipe (pipeId, descriptionId, nonBlocking) ->
             // On Darwin every read that reaches the pipe moves the read end's
             // atime, whatever it answers: measured (pipe-syscalls.c), a read
             // of 0 bytes, one answering EAGAIN, one answering EFAULT, one at
@@ -929,7 +1068,7 @@ module UnixReadWrite =
             let count = oneCallsWorth platform count
 
             if count = 0 then
-                Ok (ReadAnswer.Completed ImmutableArray.Empty, system)
+                answered (ReadAnswer.Completed ImmutableArray.Empty) system
             elif PipeBuffer.held pipe.Buffer = 0 then
                 // Nothing held, so the buffer is not consulted: measured on
                 // both, `read(fd, NULL, 10)` of an empty pipe is EAGAIN while
@@ -941,79 +1080,39 @@ module UnixReadWrite =
                 // `O_NONBLOCK` or not. A pipe whose launcher is still writing
                 // is never empty, so never here.
                 if not (UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Write system.Process) then
-                    Ok (ReadAnswer.Completed ImmutableArray.Empty, system)
+                    answered (ReadAnswer.Completed ImmutableArray.Empty) system
                 elif nonBlocking then
-                    Ok (ReadAnswer.Failed UnixError.EAGAIN, system)
+                    answered (ReadAnswer.Failed UnixError.EAGAIN) system
                 else
-                    Error (ReadRefusal.PipeWouldBlock pipeId)
+                    // Measured on both (pipe-states.c, and pipe-blocking.c
+                    // section G1): the read sleeps until bytes arrive or the
+                    // last writer closes, and a buffer naming no storage faults
+                    // only once there are bytes to copy.
+                    let parked =
+                        ParkedSyscall.PipeRead
+                            {
+                                Reader = descriptionId
+                                Buffer = buffer
+                                Count = count
+                            }
+
+                    Ok (ReadOutcome.WouldBlock (WakeCondition.ofPark parked), UnixWait.park task parked system)
             else
 
             match buffer with
             | UserBuffer.Unmapped _ ->
                 // Measured on both: EFAULT, and the bytes stay in the pipe.
-                Ok (ReadAnswer.Failed UnixError.EFAULT, system)
+                answered (ReadAnswer.Failed UnixError.EFAULT) system
             | UserBuffer.Opaque -> Error (ReadRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
             | UserBuffer.Addressless -> Error (ReadRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
             | UserBuffer.Mapped ->
 
-            // What the pipe holds, up to the count, without waiting for more:
-            // measured on both, three 5-byte writes read back as one 15-byte
-            // read, and a read of 3 from 10 held leaves 7.
-            let bytes, remaining = PipeBuffer.read count pipe.Buffer
-
-            // A client asleep in its write wakes into the room this read made,
-            // and has written before the process's next call: the fastest a
-            // real writer can be, and what a real one is measured to do given a
-            // moment (supplied-pipe-refill.c: a reader that waits 20 ms after
-            // each read finds the pipe exactly as full as this, on both
-            // flavours, over 120 runs each). A reader on Linux sees it so even
-            // without waiting; on Darwin, one that reads again at once can
-            // find less, which a slower reader never does.
-            let pipe, progress =
-                PipeState.afterRead
-                    { pipe with
-                        Buffer = remaining
-                    }
-
-            // Measured on Linux 6.18.5 (supplied-pipe-epoll.c): the client's
-            // write wakes an edge-triggered registration on the read end
-            // exactly when it writes into a pipe the read had emptied, with
-            // `EPOLLIN | EPOLLRDNORM`; and its close wakes the registration
-            // whatever it waits for, reporting `EPOLLHUP` even to an
-            // `EPOLLOUT`-only one, so the close's wake is unkeyed.
-            let registry =
-                let readers =
-                    UnixProcessState.descriptionsNamingPipeEnd pipeId PipeEnd.Read system.Process
-
-                let registry = system.Process.FileDescriptors
-
-                let registry =
-                    if progress.WroteIntoEmpty then
-                        FileDescriptorRegistry.signalSocketEventPorts
-                            readers
-                            (Some (EpollEvents.In ||| EpollEvents.RdNorm))
-                            registry
-                    else
-                        registry
-
-                if progress.Closed then
-                    FileDescriptorRegistry.signalSocketEventPorts readers None registry
-                else
-                    registry
-
-            Ok (
-                ReadAnswer.Completed bytes,
-                { withPipe pipeId pipe system with
-                    Process =
-                        { system.Process with
-                            FileDescriptors = registry
-                        }
-                }
-            )
+            let bytes, system = takeFromPipe pipeId count system
+            answered (ReadAnswer.Completed bytes) system
         | ReadTarget.File (inode, offset) ->
 
         match readAnsweredByPosition (positionCheck platform offset count) with
-        | Some answer -> Ok (answer, system)
+        | Some answer -> answered answer system
         | None ->
 
         // The window is computed from the description's own offset, which is the
@@ -1021,21 +1120,21 @@ module UnixReadWrite =
         // same operation, so the two share it.
         match readFileAt "read" fd inode offset buffer (oneCallsWorth platform count) system with
         | Error refusal -> Error (ReadRefusal.Buffer refusal)
-        | Ok (ReadAnswer.Failed error) -> Ok (ReadAnswer.Failed error, system)
+        | Ok (ReadAnswer.Failed error) -> answered (ReadAnswer.Failed error) system
         | Ok (ReadAnswer.Completed bytes) ->
 
         if bytes.IsEmpty then
             // Nothing moved, so the offset stays exactly where it was rather
             // than being clamped to the file's length or rewritten to itself.
-            Ok (ReadAnswer.Completed bytes, system)
+            answered (ReadAnswer.Completed bytes) system
         else
 
         // Advanced by what actually moved, not by what was asked for: a short
         // read at the end of a file leaves the offset at the end rather than
         // past it, which is what makes a subsequent read return 0 instead of a
         // second short read.
-        Ok (
-            ReadAnswer.Completed bytes,
+        answered
+            (ReadAnswer.Completed bytes)
             { system with
                 Process =
                     { system.Process with
@@ -1046,7 +1145,117 @@ module UnixReadWrite =
                                 system.Process.FileDescriptors
                     }
             }
-        )
+
+    /// The pipe the open file description `description`, which a task parked in
+    /// `syscall` holds, names `pipeEnd` of.
+    let private parkedPipe<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (syscall : string)
+        (task : 'Task)
+        (description : OpenFileDescriptionId)
+        (pipeEnd : PipeEnd)
+        (system : UnixSystem<'Task, 'Handler>)
+        : PipeId
+        =
+        match
+            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+            |> Map.tryFind description
+        with
+        | None ->
+            failwith
+                $"UnixReadWrite.%s{syscall}: task %O{task} sleeps on open file description %O{description}, which is not in the table, so it was closed underneath the call. `close` refuses such a close (this is a bug in this library, or in a caller that destroyed the description without UnixDescriptor.close)."
+        | Some found ->
+            match found.Target with
+            | OpenFileTarget.Pipe (pipeId, named) when named = pipeEnd -> pipeId
+            | target ->
+                failwith
+                    $"UnixReadWrite.%s{syscall}: task %O{task} sleeps on open file description %O{description}, which names %A{target} rather than the %A{pipeEnd} end of a pipe (this is a bug in the caller that recorded the park)."
+
+    /// Finish the `read` `task` is asleep in: look at the pipe again, as a woken
+    /// real read does, and answer.
+    ///
+    /// Bytes in the pipe are read, up to the count the call was made with, into
+    /// the buffer it was made with: a buffer naming no storage answers `EFAULT`
+    /// and leaves them there. A pipe still empty with no write end open is end
+    /// of file. Under Linux either beats a signal pending for the task, whose
+    /// handlers run as the call returns; under Darwin, a kernel answers
+    /// whichever reached the sleeper first, which this library does not
+    /// record, so both at once is refused.
+    ///
+    /// A pipe still empty with a write end open, and a signal with a handler
+    /// pending, ends the call: `Restarts` if every handler that runs was
+    /// installed with `SA_RESTART`, and `Failed EINTR` if none was. With no such
+    /// signal, the task sleeps again, behind every other park. An answer,
+    /// `Restarts` included, clears the park.
+    ///
+    /// `task` must be asleep in a `read`.
+    let finishRead<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<ReadOutcome * UnixSystem<'Task, 'Handler>, ReadRefusal>
+        =
+        let parked =
+            match UnixTaskTable.parkedFor task system.Tasks with
+            | Some (ParkedSyscall.PipeRead parked) -> parked
+            | Some other ->
+                failwith
+                    $"UnixReadWrite.finishRead: task %O{task} is parked in %A{other}, not in a read, so there is no read to finish (this is a bug in the client)."
+            | None ->
+                failwith
+                    $"UnixReadWrite.finishRead: task %O{task} is not parked, so there is no read to finish. Only a task `read` answered `WouldBlock` finishes here (this is a bug in the client)."
+
+        let pipeId = parkedPipe "finishRead" task parked.Reader PipeEnd.Read system
+        let pipe = UnixMachineState.pipe pipeId system.Machine
+
+        let finished =
+            { system with
+                Tasks = UnixTaskTable.unpark task system.Tasks
+            }
+
+        let held = PipeBuffer.held pipe.Buffer
+
+        if
+            held > 0
+            || not (UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Write system.Process)
+        then
+            // Measured on Linux 6.18.5 (pipe-blocking.c section H1): a reader
+            // with a byte to read and a signal pending answered the byte,
+            // whichever came first. Darwin answered whichever reached the
+            // sleeper first (section J), which `beforeCompleting` refuses.
+            match SyscallInterruption.beforeCompleting task system with
+            | Error refusal -> Error (ReadRefusal.Interruption refusal)
+            | Ok () ->
+
+            // Measured on Darwin (pipe-blocking.c section L): the read end's
+            // atime is the moment the call finished, not the one it slept.
+            let finished = touchedByRead pipeId finished
+
+            if held = 0 then
+                Ok (ReadOutcome.Answered (ReadAnswer.Completed ImmutableArray.Empty), finished)
+            else
+
+            match parked.Buffer with
+            | UserBuffer.Unmapped _ ->
+                // Measured on both (pipe-blocking.c section G1): the woken read
+                // answers EFAULT, and the bytes stay in the pipe.
+                Ok (ReadOutcome.Answered (ReadAnswer.Failed UnixError.EFAULT), finished)
+            | UserBuffer.Opaque -> Error (ReadRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+            | UserBuffer.Addressless -> Error (ReadRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
+            | UserBuffer.Mapped ->
+
+            let bytes, finished = takeFromPipe pipeId parked.Count finished
+            Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), finished)
+        else
+
+        match SyscallInterruption.ofPark task system with
+        | Error refusal -> Error (ReadRefusal.Interruption refusal)
+        | Ok (Some SyscallInterruption.Eintr) -> Ok (ReadOutcome.Answered (ReadAnswer.Failed UnixError.EINTR), finished)
+        | Ok (Some SyscallInterruption.Restart) -> Ok (ReadOutcome.Restarts, finished)
+        | Ok None ->
+            // Measured on both (pipe-blocking.c sections A3 and I): a reader that
+            // finds the pipe empty again sleeps at the back of the queue, and
+            // `O_NONBLOCK` set meanwhile changes nothing.
+            let parkedAgain = ParkedSyscall.PipeRead parked
+            Ok (ReadOutcome.WouldBlock (WakeCondition.ofPark parkedAgain), UnixWait.park task parkedAgain system)
 
     /// `pread(2)`: move up to `count` bytes from `offset` in the file `fd` names
     /// into the caller's buffer, without consulting or moving the description's
@@ -1220,9 +1429,9 @@ module UnixReadWrite =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<WriteTarget, UnixError>
         =
-        match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors with
         | None -> Error UnixError.EBADF
-        | Some description ->
+        | Some (descriptionId, description) ->
 
         if not (FileAccessMode.permitsWrite description.AccessMode) then
             // `write(2)` on a descriptor not open for writing is EBADF on both
@@ -1250,13 +1459,36 @@ module UnixReadWrite =
             | SimulatedUnixFlavour.Darwin -> Error UnixError.ENXIO
         | OpenFileTarget.Socket socketId -> Ok (WriteTarget.Socket socketId)
         | OpenFileTarget.File (inode, offset) -> Ok (WriteTarget.File (inode, offset))
-        | OpenFileTarget.Pipe (pipeId, PipeEnd.Write) -> Ok (WriteTarget.Pipe (pipeId, description.NonBlocking))
+        | OpenFileTarget.Pipe (pipeId, PipeEnd.Write) ->
+            Ok (WriteTarget.Pipe (pipeId, descriptionId, description.NonBlocking))
         | OpenFileTarget.Pipe (pipeId, PipeEnd.Read) ->
             failwith
                 $"UnixReadWrite.write: fd %d{fd} names the read end of pipe %O{pipeId}, whose access mode permits writing. `pipe(2)` opens the read end O_RDONLY and nothing reopens it (this is a bug in this library)."
         | OpenFileTarget.Directory (inode, _) ->
             failwith
                 $"UnixReadWrite.write: fd %d{fd} names directory %O{inode} with an access mode that permits writing. A directory can only be opened for reading (open answers EISDIR otherwise), so FileDescriptorRegistry.checkInvariants reports this as WritableDirectory (this is a bug in this library)."
+
+    /// `task` asleep in a write of `count` bytes through `writer`, the first
+    /// `written` of them in already.
+    let private parkWrite<'Answer, 'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (writer : OpenFileDescriptionId)
+        (buffer : UserBuffer)
+        (count : int)
+        (written : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : WriteOutcome<'Answer, 'Task, 'Handler>
+        =
+        let parked =
+            ParkedSyscall.PipeWrite
+                {
+                    Writer = writer
+                    Buffer = buffer
+                    Count = count
+                    Written = written
+                }
+
+        WriteOutcome.WouldBlock (WakeCondition.ofPark parked, UnixWait.park task parked system)
 
     /// Every answer `write(2)` by `task` gives *without* reading the caller's
     /// buffer, and otherwise how many bytes to extract. See `WriteAdmission`
@@ -1278,7 +1510,14 @@ module UnixReadWrite =
     /// `SignalState.generate`'s to say, and if its disposition is the
     /// default, it ends the process.
     ///
-    /// Fails loudly if `task` is not one of the process's tasks.
+    /// A blocking write into a pipe with no room for any of it sleeps
+    /// (`WriteOutcome.WouldBlock`) without reading the buffer; one with room
+    /// for part of it is given the whole count to transfer, and `write` puts in
+    /// what fits and sleeps for the rest. `admitFinishWrite` and `finishWrite`
+    /// finish a sleeping write.
+    ///
+    /// Fails loudly if `task` is not one of the process's tasks, or is already
+    /// asleep in a syscall.
     let admitWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
@@ -1287,7 +1526,7 @@ module UnixReadWrite =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<WriteOutcome<WriteAdmission, 'Task, 'Handler>, WriteRefusal>
         =
-        checkWriter "admitWrite" task system
+        checkIssuer "admitWrite" task system
 
         let platform = system.Machine.UnixPlatform
 
@@ -1329,7 +1568,7 @@ module UnixReadWrite =
         | WriteTarget.Socket socketId ->
             let socket = UnixMachineState.socket socketId system.Machine
             Error (WriteRefusal.SocketConnectionState (socketId, socket.Domain, socket.Kind))
-        | WriteTarget.Pipe (pipeId, nonBlocking) ->
+        | WriteTarget.Pipe (pipeId, descriptionId, nonBlocking) ->
             // A pipe has no position, and its own write decides the zero-length
             // case, which it answers differently from a file.
             let count = oneCallsWorth platform count
@@ -1347,11 +1586,17 @@ module UnixReadWrite =
                         touchedByWrite pipeId (leftUntaken pipeId count system)
                     )
                 )
+            | PipeWriteStep.Sleeps ->
+                touchedByWrite pipeId (leftUntaken pipeId count system)
+                |> parkWrite task descriptionId buffer count 0
+                |> Ok
             // Only the bytes the pipe will take: a short write never reads the
             // rest of the caller's buffer, and `write` offered this prefix takes
             // all of it and leaves the pipe as the whole would have.
             | PipeWriteStep.Takes taken ->
                 Ok (WriteOutcome.Returns (WriteAdmission.Transfer taken, touchedByWrite pipeId system))
+            | PipeWriteStep.TakesThenSleeps _ ->
+                Ok (WriteOutcome.Returns (WriteAdmission.Transfer count, touchedByWrite pipeId system))
         | WriteTarget.File (_, offset) ->
 
         // Ahead of the zero-length no-op below: Darwin's EFBIG at INT64_MAX
@@ -1393,15 +1638,17 @@ module UnixReadWrite =
     /// caller's mistake.
     ///
     /// Short only for a non-blocking write into a pipe with room for part of
-    /// it, and never `EINTR`: this kernel's filesystem cannot run out of space,
-    /// and a write that would sleep is refused.
+    /// it: this kernel's filesystem cannot run out of space. A blocking write
+    /// into a pipe with room for part of it puts that part in and sleeps for
+    /// the rest (`WriteOutcome.WouldBlock`), as one with room for none does.
     ///
     /// A write into a pipe the client drains is read by the client as it is
     /// written, and recorded in `UnixMachineState.Delivered`. A write into a
     /// pipe with no reader answers `EPIPE` and raises `SIGPIPE`, as
     /// `admitWrite` describes.
     ///
-    /// Fails loudly if `task` is not one of the process's tasks.
+    /// Fails loudly if `task` is not one of the process's tasks, or is already
+    /// asleep in a syscall.
     let write<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
@@ -1413,7 +1660,7 @@ module UnixReadWrite =
             failwith
                 "UnixReadWrite.write: bytes is the default ImmutableArray, whose underlying array is null. That is not an empty write; pass ImmutableArray<byte>.Empty."
 
-        checkWriter "write" task system
+        checkIssuer "write" task system
         assertOneCallsWorth "write" system.Machine.UnixPlatform bytes
 
         let returns (answer : WriteAnswer) (system : UnixSystem<'Task, 'Handler>) =
@@ -1429,13 +1676,34 @@ module UnixReadWrite =
             // first.
             let socket = UnixMachineState.socket socketId system.Machine
             Error (WriteRefusal.SocketConnectionState (socketId, socket.Domain, socket.Kind))
-        | Ok (WriteTarget.Pipe (pipeId, nonBlocking)) ->
+        | Ok (WriteTarget.Pipe (pipeId, descriptionId, nonBlocking)) ->
             match pipeWriteStep pipeId nonBlocking bytes.Length UserBuffer.Mapped system with
             | PipeWriteStep.Refused refusal -> Error refusal
             | PipeWriteStep.Broken -> brokenPipe (WriteAnswer.Failed UnixError.EPIPE) task pipeId system
             | PipeWriteStep.Answered answer -> returns answer (touchedByWrite pipeId system)
             | PipeWriteStep.TakesNothing answer ->
                 returns answer (touchedByWrite pipeId (leftUntaken pipeId bytes.Length system))
+            | PipeWriteStep.Sleeps ->
+                touchedByWrite pipeId (leftUntaken pipeId bytes.Length system)
+                |> parkWrite task descriptionId UserBuffer.Mapped bytes.Length 0
+                |> Ok
+            | PipeWriteStep.TakesThenSleeps taken ->
+                let pipe = UnixMachineState.pipe pipeId system.Machine
+                let written, buffer = PipeBuffer.write bytes pipe.Buffer
+
+                if written <> taken then
+                    failwith
+                        $"UnixReadWrite.write: pipe %O{pipeId} was to take %d{taken} of %d{bytes.Length} bytes and took %d{written}; PipeBuffer.wouldTake and PipeBuffer.write disagree (this is a bug in this library)."
+
+                withPipe
+                    pipeId
+                    { pipe with
+                        Buffer = buffer
+                    }
+                    system
+                |> touchedByWrite pipeId
+                |> parkWrite task descriptionId UserBuffer.Mapped bytes.Length written
+                |> Ok
             | PipeWriteStep.Takes taken ->
                 let pipe = UnixMachineState.pipe pipeId system.Machine
 
@@ -1569,6 +1837,196 @@ module UnixReadWrite =
                                 system.Process.FileDescriptors
                     }
             }
+
+    /// The write `task` is asleep in, and the pipe it writes into.
+    let private parkedWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (syscall : string)
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : ParkedPipeWrite * PipeId
+        =
+        let parked =
+            match UnixTaskTable.parkedFor task system.Tasks with
+            | Some (ParkedSyscall.PipeWrite parked) -> parked
+            | Some other ->
+                failwith
+                    $"UnixReadWrite.%s{syscall}: task %O{task} is parked in %A{other}, not in a write, so there is no write to finish (this is a bug in the client)."
+            | None ->
+                failwith
+                    $"UnixReadWrite.%s{syscall}: task %O{task} is not parked, so there is no write to finish. Only a task a write answered `WouldBlock` finishes here (this is a bug in the client)."
+
+        parked, parkedPipe syscall task parked.Writer PipeEnd.Write system
+
+    /// After a resumed write has put bytes in, and its whole count is not yet
+    /// in: what the call does next, with `system` the one it is in by now and
+    /// `parked` its progress.
+    let private afterResumedWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (parked : ParkedPipeWrite)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<WriteOutcome<WriteAnswer, 'Task, 'Handler>, WriteRefusal>
+        =
+        let finished =
+            { system with
+                Tasks = UnixTaskTable.unpark task system.Tasks
+            }
+
+        if parked.Written = parked.Count then
+            Ok (WriteOutcome.Returns (WriteAnswer.Completed (int64 parked.Count), finished))
+        else
+            // Measured on Linux 6.18.5 (pipe-blocking.c section H2, H3): a
+            // writer given room and a signal fills the room, then returns its
+            // count rather than sleeping again. Under Darwin a signal and room
+            // at once are refused before the room is filled.
+            match SyscallInterruption.ofPark task system with
+            | Error refusal -> Error (WriteRefusal.Interruption refusal)
+            | Ok (Some _) -> Ok (WriteOutcome.Returns (WriteAnswer.Completed (int64 parked.Written), finished))
+            | Ok None -> Ok (parkWrite task parked.Writer parked.Buffer parked.Count parked.Written system)
+
+    /// Every answer the `write` `task` is asleep in gives *without* reading more
+    /// of the caller's buffer, and otherwise which of its bytes to extract next.
+    /// See `WriteAdmission` for why that is a separate call.
+    ///
+    /// The pipe is looked at again, as a woken real write does:
+    ///
+    /// - **No reader is left.** On Linux the call answers the count it had put
+    ///   in, or `EPIPE` if none; on Darwin, `EPIPE` whatever it had put in.
+    ///   Either way it raises `SIGPIPE`, as `admitWrite` describes, and moves
+    ///   no timestamp.
+    /// - **There is room** for the rest, or (for a write of more than
+    ///   `PIPE_BUF` bytes) for some of it: `WriteResumption.Transfer` names the
+    ///   bytes to pass to `finishWrite`. A buffer naming no storage answers
+    ///   `EFAULT`, the write having put nothing in.
+    /// - **Neither**, and a signal with a handler is pending for the task: a
+    ///   write that had put bytes in returns their count, whatever the
+    ///   handler's flags; one that had not ends as `read` does, `Restarts` or
+    ///   `Failed EINTR`.
+    /// - **Neither, and no signal**: the task sleeps again, behind every other
+    ///   park.
+    ///
+    /// Under Linux the first two beat a pending signal, whose handlers run as
+    /// the call returns; under Darwin a kernel answers whichever reached the
+    /// sleeper first, which this library does not record, so either beside a
+    /// signal is refused. An answer, `Restarts` included, clears the park.
+    ///
+    /// `task` must be asleep in a `write`.
+    let admitFinishWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<WriteOutcome<WriteResumption, 'Task, 'Handler>, WriteRefusal>
+        =
+        let parked, pipeId = parkedWrite "admitFinishWrite" task system
+        let pipe = UnixMachineState.pipe pipeId system.Machine
+
+        let finished =
+            { system with
+                Tasks = UnixTaskTable.unpark task system.Tasks
+            }
+
+        let answered (answer : WriteAnswer) (system : UnixSystem<'Task, 'Handler>) =
+            Ok (WriteOutcome.Returns (WriteResumption.Answered answer, system))
+
+        if not (UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Read system.Process) then
+            // Measured (pipe-blocking.c section E): the reader leaving answered
+            // EPIPE if the write had put nothing in, on both, and on Linux the
+            // count it had put in otherwise, where Darwin answered EPIPE; SIGPIPE
+            // ran on the writing thread on Linux and the main thread on Darwin,
+            // in every case. Linux's `pipe_write` checks for a reader before it
+            // checks for a signal; Darwin's sleeper takes whichever reached it
+            // first (section J).
+            match SyscallInterruption.beforeCompleting task system with
+            | Error refusal -> Error (WriteRefusal.Interruption refusal)
+            | Ok () ->
+
+            let answer =
+                match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+                | SimulatedUnixFlavour.Linux when parked.Written > 0 ->
+                    WriteResumption.Answered (WriteAnswer.Completed (int64 parked.Written))
+                | SimulatedUnixFlavour.Linux
+                | SimulatedUnixFlavour.Darwin -> WriteResumption.Answered (WriteAnswer.Failed UnixError.EPIPE)
+
+            brokenPipe answer task pipeId finished
+        else
+
+        let taking = PipeBuffer.resumeTakes parked.Count parked.Written pipe.Buffer
+
+        if taking > 0 then
+            match SyscallInterruption.beforeCompleting task system with
+            | Error refusal -> Error (WriteRefusal.Interruption refusal)
+            | Ok () ->
+
+            match parked.Buffer with
+            | UserBuffer.Unmapped _ ->
+                // Measured on both (pipe-blocking.c section G2): the woken write
+                // answers EFAULT and puts nothing in. Only a write that had put
+                // nothing in can be holding such a buffer: putting bytes in
+                // reads them.
+                answered (WriteAnswer.Failed UnixError.EFAULT) (touchedByWrite pipeId finished)
+            | UserBuffer.Opaque -> Error (WriteRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+            | UserBuffer.Addressless -> Error (WriteRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
+            | UserBuffer.Mapped -> Ok (WriteOutcome.Returns (WriteResumption.Transfer (parked.Written, taking), system))
+        else
+
+        // Measured on both (pipe-blocking.c section D): a write asleep with
+        // bytes in returned their count when signalled, under SA_RESTART or
+        // not; one with nothing in returned EINTR without it and slept on with
+        // it.
+        match SyscallInterruption.ofPark task system with
+        | Error refusal -> Error (WriteRefusal.Interruption refusal)
+        | Ok (Some _) when parked.Written > 0 -> answered (WriteAnswer.Completed (int64 parked.Written)) finished
+        | Ok (Some SyscallInterruption.Eintr) -> answered (WriteAnswer.Failed UnixError.EINTR) finished
+        | Ok (Some SyscallInterruption.Restart) -> Ok (WriteOutcome.Restarts finished)
+        | Ok None ->
+            // Measured on both (pipe-blocking.c sections B and I): a writer that
+            // finds no room again sleeps at the back of the queue, and
+            // `O_NONBLOCK` set meanwhile changes nothing.
+            Ok (parkWrite task parked.Writer parked.Buffer parked.Count parked.Written system)
+
+    /// The `write` `task` is asleep in, given the bytes the caller extracted
+    /// after `admitFinishWrite` said to: they go into the pipe, and the call
+    /// returns its whole count if that was the last of it.
+    ///
+    /// Otherwise a signal with a handler pending for the task ends it with the
+    /// count it has put in by now, and with none, it sleeps again for the rest.
+    ///
+    /// `bytes` must be exactly the ones `WriteResumption.Transfer` named, and
+    /// the system the one it came with: anything else is the caller's mistake,
+    /// and fails loudly.
+    let finishWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (bytes : ImmutableArray<byte>)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<WriteOutcome<WriteAnswer, 'Task, 'Handler>, WriteRefusal>
+        =
+        if bytes.IsDefault then
+            failwith
+                "UnixReadWrite.finishWrite: bytes is the default ImmutableArray, whose underlying array is null. That is not an empty write; pass ImmutableArray<byte>.Empty."
+
+        let parked, pipeId = parkedWrite "finishWrite" task system
+        let pipe = UnixMachineState.pipe pipeId system.Machine
+        let taking = PipeBuffer.resumeTakes parked.Count parked.Written pipe.Buffer
+
+        if taking = 0 || bytes.Length <> taking then
+            failwith
+                $"UnixReadWrite.finishWrite: task %O{task}'s write into pipe %O{pipeId} takes %d{taking} bytes now and was given %d{bytes.Length}. Pass the bytes `admitFinishWrite` named, against the system it answered with (this is a bug in the caller)."
+
+        // Measured on Darwin (pipe-blocking.c section L): the write end's mtime
+        // and ctime are the moment the call finished, not the one it slept.
+        let system =
+            withPipe
+                pipeId
+                { pipe with
+                    Buffer = PipeBuffer.resumeWith parked.Count parked.Written bytes pipe.Buffer
+                }
+                system
+            |> touchedByWrite pipeId
+
+        afterResumedWrite
+            task
+            { parked with
+                Written = parked.Written + taking
+            }
+            system
 
     /// The inode a `pwrite` will write into, once every question that precedes
     /// the buffer screen has been settled.

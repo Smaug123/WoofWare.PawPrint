@@ -253,6 +253,8 @@ module SignalDispatch =
             | WriteOutcome.Returns (answer, _) -> $"%O{answer}"
             | WriteOutcome.ReturnsRaising (answer, raised, _) -> $"%O{answer}, raising %O{raised.Signal}"
             | WriteOutcome.ProcessEnded ended -> $"the end of the process (%O{ended.Termination})"
+            | WriteOutcome.WouldBlock _ -> "that the write sleeps, the pipe being full"
+            | WriteOutcome.Restarts _ -> "a restart"
 
         match UnixReadWrite.admitWrite leader pipe.WriteEnd UserBuffer.Mapped 1UL system with
         | Error refusal -> refuse (WriteRefusal.describe refusal)
@@ -525,13 +527,16 @@ module SignalDispatch =
         | None
         | Some (OpenFileTarget.Pipe (_, PipeEnd.Read)) ->
 
-        match UnixReadWrite.read pipe.ReadEnd UserBuffer.Mapped 1UL (EmulatedKernel.unix state.Kernel) with
+        match UnixReadWrite.read dispatcher pipe.ReadEnd UserBuffer.Mapped 1UL (EmulatedKernel.unix state.Kernel) with
         // Empty, with the write end open: the read sleeps, and so does the
-        // dispatcher.
-        | Error (ReadRefusal.PipeWouldBlock _) -> SignalPoll.Continues state
+        // dispatcher. The loop is PawPrint's own thread rather than one the
+        // kernel parks, so the park is not kept: this runs again between the
+        // next two instructions.
+        | Ok (ReadOutcome.WouldBlock _, _) -> SignalPoll.Continues state
+        | Ok (ReadOutcome.Restarts, _) -> refuse "restarts, which only a read that slept can"
         | Error refusal -> refuse (ReadRefusal.describe refusal)
-        | Ok (ReadAnswer.Failed error, _) -> refuse $"fails with %O{error}"
-        | Ok (ReadAnswer.Completed bytes, system) ->
+        | Ok (ReadOutcome.Answered (ReadAnswer.Failed error), _) -> refuse $"fails with %O{error}"
+        | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), system) ->
 
         if bytes.Length <> 1 then
             refuse $"reads %d{bytes.Length} bytes rather than one"

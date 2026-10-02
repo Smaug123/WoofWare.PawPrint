@@ -50,6 +50,29 @@ type WakePrimitive =
     /// rather than the socket, as for the other primitives: it is what the call
     /// holds, and what `close` refuses to destroy under it.
     | AcceptQueueNonEmpty of listener : OpenFileDescriptionId
+    /// The pipe whose read end the open file description `reader` names holds
+    /// bytes.
+    ///
+    /// What a blocking `read(2)` of an empty pipe waits for, beside
+    /// `PipeWriteEndClosed`. Two primitives rather than one because a kernel
+    /// wakes its sleeping readers differently for the two: bytes arriving wake
+    /// one of them on Linux, and the last writer closing wakes them all.
+    | PipeHasBytes of reader : OpenFileDescriptionId
+    /// The pipe whose read end the open file description `reader` names has no
+    /// write end open, so a read of it answers end of file.
+    | PipeWriteEndClosed of reader : OpenFileDescriptionId
+    /// The pipe whose write end the open file description `writer` names has
+    /// room for a sleeping write of `count` bytes, the first `written` of them
+    /// already in, to put more in (`PipeBuffer.resumeTakes`).
+    ///
+    /// What a blocking `write(2)` into a pipe with no room for the rest of it
+    /// waits for, beside `PipeReadEndClosed`. Carries the write's progress
+    /// because whether a write of at most `PIPE_BUF` bytes can resume depends on
+    /// how many it has to put in, which it takes whole or not at all.
+    | PipeHasRoom of writer : OpenFileDescriptionId * count : int * written : int
+    /// The pipe whose write end the open file description `writer` names has
+    /// no read end open, so a write into it answers `EPIPE`.
+    | PipeReadEndClosed of writer : OpenFileDescriptionId
     /// The machine's monotonic clock (`UnixMachineState.NanosecondsSinceBoot`)
     /// has reached `nanosecondsSinceBoot`.
     ///
@@ -89,6 +112,31 @@ type WakeCondition =
 
 [<RequireQualifiedAccess>]
 module WakeCondition =
+
+    /// The pipe the open file description `description` names `pipeEnd` of, and
+    /// that pipe; fails loudly, naming the waiter's `primitive`, for a
+    /// description that is gone or names something else.
+    let private pipeOfWaiter<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (primitive : WakePrimitive)
+        (description : OpenFileDescriptionId)
+        (pipeEnd : PipeEnd)
+        (system : UnixSystem<'Task, 'Handler>)
+        : PipeId * PipeState
+        =
+        match
+            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+            |> Map.tryFind description
+        with
+        | None ->
+            failwith
+                $"WakeCondition.satisfied: open file description %O{description} is not in the table, so a task waiting on it (%A{primitive}) has had it closed underneath it. This library's table models no reference from a waiter to what it waits on, so a client that parks must refuse such a close (as `close` does for a pipe end a parked transfer holds)."
+        | Some found ->
+            match found.Target with
+            | OpenFileTarget.Pipe (pipeId, named) when named = pipeEnd ->
+                pipeId, UnixMachineState.pipe pipeId system.Machine
+            | target ->
+                failwith
+                    $"WakeCondition.satisfied: a task waits on open file description %O{description} for %A{primitive}, but the description names %A{target} rather than the %A{pipeEnd} end of a pipe (this is a bug in the caller that recorded the park)."
 
     // A primitive that names a description no longer in the table has had its
     // wait broken underneath it: see `satisfied`.
@@ -144,6 +192,18 @@ module WakeCondition =
             | OpenFileTarget.SocketEventPort _ ->
                 failwith
                     $"WakeCondition.satisfied: a task is parked in an accept on open file description %O{listener}, which names %A{description.Target} rather than a socket (this is a bug in the caller that recorded it)."
+        | WakePrimitive.PipeHasBytes reader ->
+            let _, pipe = pipeOfWaiter primitive reader PipeEnd.Read system
+            PipeBuffer.held pipe.Buffer > 0
+        | WakePrimitive.PipeWriteEndClosed reader ->
+            let pipeId, pipe = pipeOfWaiter primitive reader PipeEnd.Read system
+            not (UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Write system.Process)
+        | WakePrimitive.PipeHasRoom (writer, count, written) ->
+            let _, pipe = pipeOfWaiter primitive writer PipeEnd.Write system
+            PipeBuffer.resumeTakes count written pipe.Buffer > 0
+        | WakePrimitive.PipeReadEndClosed writer ->
+            let pipeId, pipe = pipeOfWaiter primitive writer PipeEnd.Write system
+            not (UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Read system.Process)
         | WakePrimitive.DeadlinePassed deadline -> system.Machine.NanosecondsSinceBoot >= deadline
         | WakePrimitive.SignalDeliverable -> SyscallInterruption.wakes task system
 
@@ -200,6 +260,10 @@ module WakeCondition =
         | WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable _)
         | WakeCondition.Primitive (WakePrimitive.DescriptorReady _)
         | WakeCondition.Primitive (WakePrimitive.AcceptQueueNonEmpty _)
+        | WakeCondition.Primitive (WakePrimitive.PipeHasBytes _)
+        | WakeCondition.Primitive (WakePrimitive.PipeWriteEndClosed _)
+        | WakeCondition.Primitive (WakePrimitive.PipeHasRoom _)
+        | WakeCondition.Primitive (WakePrimitive.PipeReadEndClosed _)
         | WakeCondition.Primitive WakePrimitive.SignalDeliverable -> []
         | WakeCondition.AnyOf (first, rest) -> deadlines first @ List.collect deadlines rest
 
@@ -258,6 +322,16 @@ module WakeCondition =
                 // No deadline: `SO_RCVTIMEO`, which bounds a Linux accept, is an
                 // option `setsockopt` refuses to set.
                 [ WakeCondition.Primitive (WakePrimitive.AcceptQueueNonEmpty accept.Listener) ]
+            | ParkedSyscall.PipeRead read ->
+                [
+                    WakeCondition.Primitive (WakePrimitive.PipeHasBytes read.Reader)
+                    WakeCondition.Primitive (WakePrimitive.PipeWriteEndClosed read.Reader)
+                ]
+            | ParkedSyscall.PipeWrite write ->
+                [
+                    WakeCondition.Primitive (WakePrimitive.PipeHasRoom (write.Writer, write.Count, write.Written))
+                    WakeCondition.Primitive (WakePrimitive.PipeReadEndClosed write.Writer)
+                ]
 
         let signal = WakeCondition.Primitive WakePrimitive.SignalDeliverable
 

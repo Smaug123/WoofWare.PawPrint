@@ -7,6 +7,10 @@ type internal ExclusiveWaitQueue =
     | SocketEventPort of OpenFileDescriptionId
     /// The waiters in `accept` on the listening socket this description names.
     | Listener of OpenFileDescriptionId
+    /// The waiters in `read` for bytes from this pipe.
+    | PipeReaders of PipeId
+    /// The waiters in `write` for room in this pipe.
+    | PipeWriters of PipeId
 
 /// Parking a task in a syscall, and deciding which parked tasks a system wakes.
 ///
@@ -56,10 +60,13 @@ module UnixWait =
     /// deliverable wakes, whoever else is waiting for the same thing. Waiters on a socket event port, and waiters in `accept`
     /// on a listener, queue exclusively: something to take wakes one of them,
     /// the one that parked *last* on a socket event port and the one that
-    /// parked *first* on a listener. It wakes none of them while any task
-    /// parked on the same port or listener has been woken and has not yet
-    /// finished its call (that is, is parked but not in `asleep`), since that
-    /// task will take it.
+    /// parked *first* on a listener. Under Linux, so do the waiters in `read`
+    /// for a pipe's bytes and those in `write` for its room, the one that
+    /// parked first waking; under Darwin every one of them wakes. Exclusive
+    /// queues wake none while any task parked on the same queue has been woken
+    /// and has not yet finished its call (that is, is parked but not in
+    /// `asleep`), since that task will take it. The end of a pipe closing
+    /// wakes every waiter on the other end, under either flavour.
     ///
     /// A woken task is owed no success: several waiters for one lock all wake,
     /// and all but one find it taken again and re-park.
@@ -110,6 +117,17 @@ module UnixWait =
         // the first one ran first. Every answer is one a real kernel gives, and
         // the schedules in which the second waiter runs first are not reached.
         //
+        // Measured on Linux 6.18.5 and Darwin 27.0.0 (`pipe-blocking.c`,
+        // sections A and B): on Linux each 1-byte write woke exactly one of
+        // three readers asleep on an empty pipe, the one that parked *first*,
+        // in 60 trials of 60, and a reader that read again went to the back;
+        // writers asleep on a full pipe likewise, a freed slot at a time. On
+        // Darwin exactly one returned per write too, but not by park order (the
+        // first-parked won 6 to 10 of each 10): every sleeper wakes and they
+        // race, which is the client scheduler's to decide. The last writer or
+        // reader closing wakes every sleeper on the other end on both, as
+        // Linux's `pipe_release` does.
+        //
         // Waiters on an `flock` are the opposite, deliberately: a release
         // wakes every blocker and they race, as `flock(2)` does, and which of
         // them wins is not observable from userspace on any platform. Waking
@@ -118,10 +136,37 @@ module UnixWait =
         // watches non-exclusively, so every poller of a description that
         // becomes ready wakes; and a deadline, like a signal, is each waiter's
         // own.
+        let linux =
+            match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+            | SimulatedUnixFlavour.Linux -> true
+            | SimulatedUnixFlavour.Darwin -> false
+
+        // The pipe a parked transfer's description names. `WakeCondition.satisfied`
+        // has already failed loudly for a description that is gone or names
+        // something else, for every task asked about; a task woken and not yet
+        // finished is not asked, so is looked up leniently here.
+        let pipeOf (description : OpenFileDescriptionId) : PipeId option =
+            match
+                FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+                |> Map.tryFind description
+            with
+            | Some {
+                       Target = OpenFileTarget.Pipe (pipeId, _)
+                   } -> Some pipeId
+            | Some _
+            | None -> None
+
         let exclusiveQueueOf (primitive : WakePrimitive) : ExclusiveWaitQueue option =
             match primitive with
             | WakePrimitive.SocketEventDeliverable port -> Some (ExclusiveWaitQueue.SocketEventPort port)
             | WakePrimitive.AcceptQueueNonEmpty listener -> Some (ExclusiveWaitQueue.Listener listener)
+            | WakePrimitive.PipeHasBytes reader when linux -> pipeOf reader |> Option.map ExclusiveWaitQueue.PipeReaders
+            | WakePrimitive.PipeHasRoom (writer, _, _) when linux ->
+                pipeOf writer |> Option.map ExclusiveWaitQueue.PipeWriters
+            | WakePrimitive.PipeHasBytes _
+            | WakePrimitive.PipeHasRoom _
+            | WakePrimitive.PipeWriteEndClosed _
+            | WakePrimitive.PipeReadEndClosed _
             | WakePrimitive.FlockGrantable _
             | WakePrimitive.DescriptorReady _
             | WakePrimitive.DeadlinePassed _
@@ -142,7 +187,22 @@ module UnixWait =
                                Syscall = ParkedSyscall.Accept accept
                            } -> Some (ExclusiveWaitQueue.Listener accept.Listener)
                     | Some {
-                               Syscall = ParkedSyscall.Flock _ | ParkedSyscall.Poll _
+                               Syscall = ParkedSyscall.PipeRead read
+                           } when linux -> pipeOf read.Reader |> Option.map ExclusiveWaitQueue.PipeReaders
+                    | Some {
+                               Syscall = ParkedSyscall.PipeWrite write
+                           } when linux -> pipeOf write.Writer |> Option.map ExclusiveWaitQueue.PipeWriters
+                    | Some {
+                               Syscall = ParkedSyscall.Flock _
+                           }
+                    | Some {
+                               Syscall = ParkedSyscall.Poll _
+                           }
+                    | Some {
+                               Syscall = ParkedSyscall.PipeRead _
+                           }
+                    | Some {
+                               Syscall = ParkedSyscall.PipeWrite _
                            }
                     | None -> None
             )
@@ -167,7 +227,9 @@ module UnixWait =
                     let _, woken =
                         match queue with
                         | ExclusiveWaitQueue.SocketEventPort _ -> List.maxBy fst waiters
-                        | ExclusiveWaitQueue.Listener _ -> List.minBy fst waiters
+                        | ExclusiveWaitQueue.Listener _
+                        | ExclusiveWaitQueue.PipeReaders _
+                        | ExclusiveWaitQueue.PipeWriters _ -> List.minBy fst waiters
 
                     Some (queue, woken)
             )

@@ -77,9 +77,18 @@ module SyscallInterruption =
         // EINTR, Darwin restarts), and Linux's accept answers EINTR under a
         // timeout for the same reason (`sock_intr_errno`). A parked accept never
         // has one: `setsockopt` refuses to set `SO_RCVTIMEO`.
+        //
+        // Measured on Linux 6.18.5 and Darwin 27.0.0 (`pipe-blocking.c`,
+        // sections C and D): a `read` of an empty pipe, and a `write` into a
+        // full one that had put nothing in, returned EINTR without SA_RESTART
+        // and went on sleeping with it. A write that had put bytes in returns
+        // their count either way, which its finishing call answers before it
+        // asks this.
         match parked with
         | ParkedSyscall.Flock _
-        | ParkedSyscall.Accept _ -> SignalRestartRule.RestartsUnderSaRestart
+        | ParkedSyscall.Accept _
+        | ParkedSyscall.PipeRead _
+        | ParkedSyscall.PipeWrite _ -> SignalRestartRule.RestartsUnderSaRestart
         | ParkedSyscall.SocketWait _
         | ParkedSyscall.Poll _ -> SignalRestartRule.FailsWithEintr
 

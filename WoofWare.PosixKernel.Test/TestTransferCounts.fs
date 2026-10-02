@@ -385,7 +385,7 @@ module TestTransferCounts =
         let fd, system =
             withFile (ImmutableArray.CreateRange case.Content) case.Position (systemOn case.Machine)
 
-        match UnixReadWrite.read fd case.Buffer case.Count system with
+        match ReadOutcomes.read fd case.Buffer case.Count system with
         | Ok (answer, after) -> Ok (answer, positionOf fd after)
         | Error (ReadRefusal.Buffer refusal) -> Error refusal
         | Error other -> failwith $"a regular file's read was refused for something other than its buffer: %O{other}"
@@ -745,7 +745,7 @@ module TestTransferCounts =
 
         match op with
         | "read" ->
-            match UnixReadWrite.read fd buffer count system with
+            match ReadOutcomes.read fd buffer count system with
             | Ok (ReadAnswer.Failed error, _) -> Seen.Errno error
             | Ok (ReadAnswer.Completed bytes, _) -> Seen.Moved bytes.Length
             | Error _ -> Seen.Refused
@@ -894,7 +894,7 @@ module TestTransferCounts =
                         }
                 }
 
-            match UnixReadWrite.read fd UserBuffer.Mapped count system with
+            match ReadOutcomes.read fd UserBuffer.Mapped count system with
             | Ok (ReadAnswer.Failed error, _) -> Seen.Errno error
             | Ok (ReadAnswer.Completed bytes, _) -> Seen.Moved bytes.Length
             | Error (ReadRefusal.ScannedDirectoryPosition _) -> Seen.Refused
@@ -1058,7 +1058,7 @@ module TestTransferCountsLarge =
                 TestTransferCounts.withFile content 0L (TestTransferCounts.systemOn machine)
 
             let moved =
-                match UnixReadWrite.read fd UserBuffer.Mapped count system with
+                match ReadOutcomes.read fd UserBuffer.Mapped count system with
                 | Ok (ReadAnswer.Completed bytes, after) ->
                     TestTransferCounts.positionOf fd after |> shouldEqual (int64 bytes.Length)
                     bytes.Length
