@@ -336,6 +336,12 @@ module TestKeventRegistration =
         | Connect
         /// A new non-blocking socket connecting to a port nothing listens on.
         | ConnectRefused
+        /// A new non-blocking socket, left idle, so that it can be registered before
+        /// it connects.
+        | Socket
+        /// A connect of one of the idle sockets, to the listener or to a port nothing
+        /// listens on.
+        | ConnectIdle of pick : int * refused : bool
         /// An accept on the listener, when it holds a connection.
         | Accept
         /// A close of one of the open sockets other than the listener.
@@ -360,6 +366,8 @@ module TestKeventRegistration =
             [
                 3, Gen.constant Op.Connect
                 1, Gen.constant Op.ConnectRefused
+                2, Gen.constant Op.Socket
+                2, Gen.map2 (fun pick refused -> Op.ConnectIdle (pick, refused)) pick (Gen.elements [ false ; true ])
                 2, Gen.constant Op.Accept
                 2, Gen.map Op.Close pick
                 1, Gen.map Op.Dup pick
@@ -462,6 +470,30 @@ module TestKeventRegistration =
 
                     after,
                     activate after (Option.get (socketOf fd after)) [ KqueueFilter.Write ; KqueueFilter.Read ] model
+                | Op.Socket -> KeventWorld.stream true system |> snd, model
+                | Op.ConnectIdle (pick, refused) ->
+                    let idle =
+                        open'
+                        |> List.filter (fun fd ->
+                            (UnixMachineState.socket (Option.get (socketOf fd system)) system.Machine).Phase = SocketPhase.Idle
+                        )
+
+                    match idle with
+                    | [] -> system, model
+                    | _ when not refused && queued >= 8 -> system, model
+                    | idle ->
+                        let fd = List.item (pick % List.length idle) idle
+                        let socketId = Option.get (socketOf fd system)
+
+                        let after =
+                            KeventWorld.connect fd (if refused then 6000us else 5000us) system |> snd
+
+                        let model = activate after socketId [ KqueueFilter.Write ; KqueueFilter.Read ] model
+
+                        if refused then
+                            after, model
+                        else
+                            after, activate after listenerSocket [ KqueueFilter.Read ] model
                 | Op.Accept when queued > 0 -> KeventWorld.accept listener system |> snd, model
                 | Op.Accept -> system, model
                 | Op.Close pick ->
