@@ -76,6 +76,7 @@ module ObjectLifetime =
                 // defect (`UnixSystemDefect.DanglingOpenInode`) rather than
                 // something to climb from.
                 | Some (InodeContent.RegularFile _)
+                | Some (InodeContent.CharacterDevice _)
                 | Some (InodeContent.Symlink _)
                 | None -> climb rest seen
 
@@ -123,6 +124,7 @@ module ObjectLifetime =
             match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
             | Some (InodeContent.Directory directory) -> Some directory.Parent
             | Some (InodeContent.RegularFile _)
+            | Some (InodeContent.CharacterDevice _)
             | Some (InodeContent.Symlink _)
             | None -> None
 

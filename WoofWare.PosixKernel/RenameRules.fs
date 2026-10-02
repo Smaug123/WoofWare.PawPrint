@@ -469,8 +469,10 @@ module RenameRules =
             // So EXDEV is the mount boundary talking, and where it stays quiet
             // the root answers exactly what any other directory answers.
             //
-            // This library has one filesystem and no mounts, so nothing here can
-            // produce EXDEV and the EINVAL readings are the applicable ones.
+            // A rename out of the one mounted filesystem this library has, the
+            // device filesystem, is EXDEV before this verdict is asked, and
+            // nothing inside it can be renamed, so the EINVAL readings are the
+            // applicable ones.
             | FinalNavigation.Current
             | FinalNavigation.Parent -> Ok (RenameVerdict.Refuse UnixError.EINVAL)
         | ResolvedTarget.Entry (sourceDirectory, sourceName, sourceExisting) ->

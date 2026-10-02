@@ -1035,6 +1035,9 @@ module UnixReadWrite =
             // it: measured, `read(dir, NULL, 5)` is EISDIR while
             // `read(dir, (void*)-1, 5)` is EFAULT under a screening flavour.
             Ok (ReadAnswer.Failed UnixError.EISDIR)
+        | InodeContent.CharacterDevice _ ->
+            failwith
+                $"UnixSystem.%s{syscall}: fd %d{fd} names inode %O{inode}, which is a character device. This kernel opens no description of a device as a file (this is a bug in this library)."
         | InodeContent.Symlink _ ->
             failwith
                 $"UnixSystem.%s{syscall}: fd %d{fd} names inode %O{inode}, which is a symbolic link. `open` resolves symlinks, so no descriptor should name one; if this is reachable, decide what reading a link through a descriptor means (this is a bug in this library)."
@@ -1226,7 +1229,7 @@ module UnixReadWrite =
         | ReadTarget.Directory (inode, position) ->
             // A directory has a position too, and each flavour's position rule
             // answers ahead of EISDIR, exactly as for a file.
-            let fileSystem = EmulatedMount.fileSystemType system.Machine.Mount
+            let fileSystem = UnixMachineState.fileSystemTypeOf inode system.Machine
 
             match directoryPositionCheck platform fileSystem position count with
             | Error () -> Error (ReadRefusal.ScannedDirectoryPosition (inode, fileSystem))

@@ -140,6 +140,15 @@ type DirectoryContent =
         Permissions : PermissionBits
     }
 
+/// A character device this kernel has a driver for, which an inode of kind
+/// `InodeContent.CharacterDevice` stands for.
+[<RequireQualifiedAccess>]
+type CharacterDevice =
+    /// `/dev/null`.
+    | Null
+    /// `/dev/urandom`.
+    | URandom
+
 /// <summary>
 /// What lives at an inode.
 /// </summary>
@@ -166,11 +175,14 @@ type InodeContent =
     /// when it was made.
     /// </remarks>
     | Symlink of target : SymlinkTarget
+    /// A character special file: what `stat(2)` reports as `S_IFCHR`, standing
+    /// for `device` rather than holding any contents of its own.
+    | CharacterDevice of device : CharacterDevice * permissions : PermissionBits
 
 [<RequireQualifiedAccess>]
 module InodeContent =
     /// <summary>
-    /// The <c>S_IFMT</c> band of <c>st_mode</c>, indicating which kind of thing (directory, regular file, symlink)
+    /// The <c>S_IFMT</c> band of <c>st_mode</c>, indicating which kind of thing (directory, regular file, symlink, character device)
     /// lives at an inode.
     /// </summary>
     let fileTypeBits (content : InodeContent) : int =
@@ -178,6 +190,7 @@ module InodeContent =
         | InodeContent.RegularFile _ -> 0o100000
         | InodeContent.Directory _ -> 0o40000
         | InodeContent.Symlink _ -> 0o120000
+        | InodeContent.CharacterDevice _ -> 0o020000
 
 /// Who owns an inode: the `st_uid` and `st_gid` that `stat(2)` reports for it.
 [<Struct>]
@@ -289,7 +302,7 @@ type Inode =
 [<RequireQualifiedAccess>]
 type InodePermissions =
     /// <summary>
-    /// A regular file's or directory's stored, <c>chmod</c>-able bits.
+    /// A regular file's, directory's or device node's stored, <c>chmod</c>-able bits.
     /// </summary>
     | Stored of bits : PermissionBits
     /// <summary>
@@ -313,3 +326,4 @@ module Inode =
         | InodeContent.RegularFile (_, permissions) -> InodePermissions.Stored permissions
         | InodeContent.Directory directory -> InodePermissions.Stored directory.Permissions
         | InodeContent.Symlink _ -> InodePermissions.PlatformSymlinkDefault
+        | InodeContent.CharacterDevice (_, permissions) -> InodePermissions.Stored permissions

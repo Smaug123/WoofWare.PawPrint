@@ -109,7 +109,7 @@ module TestFileSystemSeed =
             SymlinkPolicy.Follow
             (path "/etc/passwd")
             vfs
-        |> shouldEqual (Error UnixError.ENOENT)
+        |> shouldEqual (Error (PathFailure.Errno UnixError.ENOENT))
 
     [<Test>]
     let ``a seeded directory's parent is the directory that holds it`` () : unit =

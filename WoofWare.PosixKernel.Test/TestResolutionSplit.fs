@@ -45,6 +45,7 @@ module TestResolutionSplit =
         match VirtualFileSystem.tryGetContent inode vfs with
         | Some (InodeContent.Directory content) -> Some content
         | Some (InodeContent.RegularFile _)
+        | Some (InodeContent.CharacterDevice _)
         | Some (InodeContent.Symlink _)
         | None -> None
 
@@ -75,6 +76,7 @@ module TestResolutionSplit =
             | None -> Error UnixError.ENOENT
             | Some (InodeContent.Directory _) -> Ok startDirectory
             | Some (InodeContent.RegularFile _)
+            | Some (InodeContent.CharacterDevice _)
             | Some (InodeContent.Symlink _) -> Error UnixError.ENOTDIR
 
         match start with
@@ -204,7 +206,8 @@ module TestResolutionSplit =
                     finish (ResolvedTarget.Entry (directory, name, Some target))
                 else
                     walk target rest trailing finalSymlinkFollowed lastNavigation symlinks
-            | InodeContent.RegularFile _ ->
+            | InodeContent.RegularFile _
+            | InodeContent.CharacterDevice _ ->
                 if isFinal then
                     if trailingActsOnFinal then
                         Error UnixError.ENOTDIR
@@ -273,10 +276,10 @@ module TestResolutionSplit =
             buildTime
             vfs
 
-    let private orFail (result : Result<'a, UnixError>) : 'a =
+    let private orFail<'a, 'error> (result : Result<'a, 'error>) : 'a =
         match result with
         | Ok value -> value
-        | Error error -> failwith $"building the corpus failed with %O{error}"
+        | Error error -> failwith $"building the corpus failed with %A{error}"
 
     /// One filesystem holding a specimen of everything the walk dispatches on:
     /// a directory it may search and one it may not, a regular file, links that
@@ -489,7 +492,7 @@ module TestResolutionSplit =
                                         (path p)
                                         corpus
 
-                                if actual <> expected then
+                                if actual <> (expected |> Result.mapError PathFailure.Errno) then
                                     failwith
                                         $"resolving \"%s{p}\" from %O{start} under %O{policy}/%O{trailing}/%O{privilege} gave %O{actual}, where the pre-split walk gave %O{expected}"
 
@@ -573,6 +576,7 @@ module TestResolutionSplit =
                 match entry.Content with
                 | InodeContent.Directory _ -> true
                 | InodeContent.RegularFile _
+                | InodeContent.CharacterDevice _
                 | InodeContent.Symlink _ -> false
             )
             |> List.map fst
@@ -707,7 +711,7 @@ module TestResolutionSplit =
                     case.Path
                     case.FileSystem
 
-            actual |> shouldEqual expected
+            actual |> shouldEqual (expected |> Result.mapError PathFailure.Errno)
 
         Check.One (config, Prop.forAll (Arb.fromGen caseGen) property)
 
@@ -729,10 +733,12 @@ module TestResolutionSplit =
 
     /// What a paused resolution cannot answer: `PausedResolution` has no
     /// equality, on purpose, so a refusal is compared as the error alone.
-    let private refusal (outcome : Result<PausedResolution, UnixError>) : UnixError option =
+    let private refusal (outcome : Result<PausedResolution, PathFailure>) : UnixError option =
         match outcome with
         | Ok _ -> None
-        | Error error -> Some error
+        | Error (PathFailure.Errno error) -> Some error
+        | Error (PathFailure.Refused refusal) ->
+            failwith $"expected the parent walk to answer, but it was refused: %s{PathRefusal.describe refusal}"
 
     /// The whole point of the split, and the two rows that fix where it falls.
     /// Linux's `rename` walks both parents before it looks either final name
@@ -764,7 +770,9 @@ module TestResolutionSplit =
         | Error error ->
             failwith
                 $"resolveParent refused an over-long *final* name with %O{error}; it is the lookup's job to refuse it"
-        | Ok paused -> PathWalk.completeResolution paused |> shouldEqual (Error UnixError.ENAMETOOLONG)
+        | Ok paused ->
+            PathWalk.completeResolution paused
+            |> shouldEqual (Error (PathFailure.Errno UnixError.ENAMETOOLONG))
 
     [<Test>]
     let ``the parent walk does measure a non-final name's length`` () : unit =
@@ -793,6 +801,7 @@ module TestResolutionSplit =
         let exn =
             Assert.Throws<exn> (fun () ->
                 PathWalk.completeResolution Unchecked.defaultof<PausedResolution>
+                |> Answered.errno
                 |> ignore<Result<Resolution, UnixError>>
             )
 

@@ -60,7 +60,7 @@ let path (text : string) : PathArgumentBytes =
     | Error defect -> failwith $"not a path: %O{defect}"
 
 // A process on a Linux x86-64 machine, before anything has happened to it:
-// an empty filesystem, and descriptors 0, 1 and 2 as pipes. It has one task,
+// a filesystem holding nothing but /dev, and descriptors 0, 1 and 2 as pipes. It has one task,
 // which this client names 0, on logical processor 0.
 let system : UnixSystem<int, unit> =
     UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
@@ -140,6 +140,10 @@ Only the combinations that have been measured can be built: Linux on x86-64 and 
 `SimulatedUnixPlatform.linuxX64`, `linuxArm64` and `macOsArm64` are the presets.
 Where the flavours disagree, the platform says which answer applies, down to whose numbering an errno or a signal is reported in.
 The filesystem type is chosen separately (currently tmpfs, APFS or NFS), from those its flavour has been seen to report.
+
+The kernel mounts a device filesystem over `/dev` at boot, as a real one does.
+On Linux it is a devtmpfs holding a node for each device the kernel has a driver for (`/dev/null` and `/dev/urandom`); since a real devtmpfs holds hundreds, any other name in it is refused rather than answered ENOENT, and so are listing it and adding or removing a name in it.
+On Darwin it is devfs, which is not modelled, so any path that reaches `/dev` is refused.
 
 WoofWare.PosixKernel is intended to be fully POSIX-compliant eventually.
 A design goal of WoofWare.PosixKernel is that the library refuses rather than providing an answer which has not been measured on the platform it's been told to simulate.

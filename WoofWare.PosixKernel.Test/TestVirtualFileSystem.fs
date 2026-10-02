@@ -31,10 +31,10 @@ module TestVirtualFileSystem =
     let private limits : PathLimits =
         SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.linuxX64
 
-    let private ok (result : Result<'a, UnixError>) : 'a =
+    let private ok<'a, 'error> (result : Result<'a, 'error>) : 'a =
         match result with
         | Ok value -> value
-        | Error error -> failwith $"expected success, got %O{error}"
+        | Error error -> failwith $"expected success, got %A{error}"
 
     let private noBytes : ImmutableArray<byte> = ImmutableArray<byte>.Empty
 
@@ -120,7 +120,7 @@ module TestVirtualFileSystem =
             SymlinkPolicy.Follow
             UnixPath.empty
             emptyFs
-        |> shouldEqual (Error UnixError.ENOENT)
+        |> shouldEqual (Error (PathFailure.Errno UnixError.ENOENT))
 
     [<Test>]
     let ``a relative path starting from a non-directory is ENOTDIR`` () : unit =
@@ -138,14 +138,14 @@ module TestVirtualFileSystem =
             |> ok
 
         PathWalk.resolve limits Owners.root SymlinkProtection.Off file SymlinkPolicy.Follow (path "a") vfs
-        |> shouldEqual (Error UnixError.ENOTDIR)
+        |> shouldEqual (Error (PathFailure.Errno UnixError.ENOTDIR))
 
     [<Test>]
     let ``a path cannot continue through a regular file`` () : unit =
         let vfs = build [ mkfile (rootOf emptyFs) "f" ]
 
         PathWalk.resolve limits Owners.root SymlinkProtection.Off (rootOf vfs) SymlinkPolicy.Follow (path "/f/x") vfs
-        |> shouldEqual (Error UnixError.ENOTDIR)
+        |> shouldEqual (Error (PathFailure.Errno UnixError.ENOTDIR))
 
     [<Test>]
     let ``a free name in the final position is not an error`` () : unit =
@@ -164,11 +164,11 @@ module TestVirtualFileSystem =
             SymlinkPolicy.Follow
             (path "/nx")
             vfs
-        |> shouldEqual (Error UnixError.ENOENT)
+        |> shouldEqual (Error (PathFailure.Errno UnixError.ENOENT))
 
         // ...but a free name part-way along is ENOENT even so.
         PathWalk.resolve limits Owners.root SymlinkProtection.Off (rootOf vfs) SymlinkPolicy.Follow (path "/nx/y") vfs
-        |> shouldEqual (Error UnixError.ENOENT)
+        |> shouldEqual (Error (PathFailure.Errno UnixError.ENOENT))
 
     // --------------------------------------------------- the trailing separator
 
@@ -210,7 +210,7 @@ module TestVirtualFileSystem =
                 (path "/nx/.")
                 vfs
 
-        withDot |> shouldEqual (Error UnixError.ENOENT)
+        withDot |> shouldEqual (Error (PathFailure.Errno UnixError.ENOENT))
 
     [<Test>]
     let ``a trailing separator on an existing non-directory is ENOTDIR`` () : unit =
@@ -218,7 +218,7 @@ module TestVirtualFileSystem =
         let vfs = build [ mkfile (rootOf emptyFs) "f" ]
 
         PathWalk.resolve limits Owners.root SymlinkProtection.Off (rootOf vfs) SymlinkPolicy.Follow (path "/f/") vfs
-        |> shouldEqual (Error UnixError.ENOTDIR)
+        |> shouldEqual (Error (PathFailure.Errno UnixError.ENOTDIR))
 
         // Without the separator the same path is perfectly fine.
         PathWalk.resolve limits Owners.root SymlinkProtection.Off (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
@@ -303,7 +303,7 @@ module TestVirtualFileSystem =
         // "lf" expands to "f/", whose trailing separator now demands that f be
         // a directory. It is not.
         PathWalk.resolve limits Owners.root SymlinkProtection.Off (rootOf vfs) SymlinkPolicy.Follow (path "/lf") vfs
-        |> shouldEqual (Error UnixError.ENOTDIR)
+        |> shouldEqual (Error (PathFailure.Errno UnixError.ENOTDIR))
 
     // ------------------------------------------------------------- symlinks
 
@@ -321,7 +321,7 @@ module TestVirtualFileSystem =
         let vfs = build [ mklink (rootOf emptyFs) "deep" "nx1/nx2" ]
 
         PathWalk.resolve limits Owners.root SymlinkProtection.Off (rootOf vfs) SymlinkPolicy.Follow (path "/deep") vfs
-        |> shouldEqual (Error UnixError.ENOENT)
+        |> shouldEqual (Error (PathFailure.Errno UnixError.ENOENT))
 
     [<Test>]
     let ``a rooted symlink target restarts at the root`` () : unit =
@@ -405,6 +405,7 @@ module TestVirtualFileSystem =
                     SymlinkPolicy.Follow
                     (path "/l")
                     vfs
+                |> Answered.errno
                 |> ignore<Result<InodeNumber, UnixError>>
             )
 
@@ -421,6 +422,7 @@ module TestVirtualFileSystem =
                 SymlinkPolicy.Follow
                 (path "/f")
                 vfs
+            |> Answered.errno
             |> ignore<Result<InodeNumber, UnixError>>
         )
         |> ignore<Exception>
@@ -483,6 +485,7 @@ module TestVirtualFileSystem =
             TrailingSeparatorPolicy.RefuseIsDirectory
             (path candidate)
             separatorFs
+        |> Answered.errno
 
     let private demand (candidate : string) : Result<Resolution, UnixError> =
         PathWalk.resolveFull
@@ -494,6 +497,7 @@ module TestVirtualFileSystem =
             TrailingSeparatorPolicy.Demand
             (path candidate)
             separatorFs
+        |> Answered.errno
 
     [<Test>]
     let ``RefuseIsDirectory answers EISDIR for every final-component shape`` () : unit =
@@ -588,6 +592,7 @@ module TestVirtualFileSystem =
             SymlinkPolicy.Follow
             (path ("/" + candidate))
             emptyFs
+        |> Answered.errno
 
     [<Test>]
     let ``a name of 255 ASCII characters is permitted and 256 is not, on both`` () : unit =
@@ -658,7 +663,7 @@ module TestVirtualFileSystem =
             SymlinkPolicy.Follow
             (path ("/nxdir/" + tooLong))
             emptyFs
-        |> shouldEqual (Error UnixError.ENOENT)
+        |> shouldEqual (Error (PathFailure.Errno UnixError.ENOENT))
 
         // ...whereas with the long component *first*, it is reached and refused.
         PathWalk.resolveExisting
@@ -669,7 +674,7 @@ module TestVirtualFileSystem =
             SymlinkPolicy.Follow
             (path ("/" + tooLong + "/x"))
             emptyFs
-        |> shouldEqual (Error UnixError.ENAMETOOLONG)
+        |> shouldEqual (Error (PathFailure.Errno UnixError.ENAMETOOLONG))
 
     [<Test>]
     let ``NAME_MAX applies to a component spliced in from a symlink target`` () : unit =
@@ -688,7 +693,7 @@ module TestVirtualFileSystem =
             SymlinkPolicy.Follow
             (path "/l")
             vfs
-        |> shouldEqual (Error UnixError.ENAMETOOLONG)
+        |> shouldEqual (Error (PathFailure.Errno UnixError.ENAMETOOLONG))
 
     [<Test>]
     let ``a symlink chain exactly at a platform's limit resolves`` () : unit =
@@ -721,7 +726,7 @@ module TestVirtualFileSystem =
                 SymlinkPolicy.Follow
                 (path "/s1")
                 vfs
-            |> shouldEqual (Error UnixError.ELOOP)
+            |> shouldEqual (Error (PathFailure.Errno UnixError.ELOOP))
 
     [<Test>]
     let ``the band the two platforms disagree about is answered, each its own way`` () : unit =
@@ -743,7 +748,7 @@ module TestVirtualFileSystem =
             SymlinkPolicy.Follow
             (path "/s1")
             vfs
-        |> shouldEqual (Error UnixError.ELOOP)
+        |> shouldEqual (Error (PathFailure.Errno UnixError.ELOOP))
 
         PathWalk.resolveExisting
             linux
@@ -789,7 +794,7 @@ module TestVirtualFileSystem =
             SymlinkPolicy.Follow
             (path "/s1")
             vfs
-        |> shouldEqual (Error UnixError.ELOOP)
+        |> shouldEqual (Error (PathFailure.Errno UnixError.ELOOP))
 
         PathWalk.resolveExisting
             linux
@@ -799,7 +804,7 @@ module TestVirtualFileSystem =
             SymlinkPolicy.Follow
             (path "/s1")
             vfs
-        |> shouldEqual (Error UnixError.ENOENT)
+        |> shouldEqual (Error (PathFailure.Errno UnixError.ENOENT))
 
     [<Test>]
     let ``a self-extending symlink terminates rather than growing forever`` () : unit =
@@ -816,7 +821,7 @@ module TestVirtualFileSystem =
             SymlinkPolicy.Follow
             (path "/l")
             vfs
-        |> shouldEqual (Error UnixError.ELOOP)
+        |> shouldEqual (Error (PathFailure.Errno UnixError.ELOOP))
 
     [<Test>]
     let ``a symlink cycle is ELOOP rather than a crash`` () : unit =
@@ -834,7 +839,7 @@ module TestVirtualFileSystem =
             SymlinkPolicy.Follow
             (path "/a")
             vfs
-        |> shouldEqual (Error UnixError.ELOOP)
+        |> shouldEqual (Error (PathFailure.Errno UnixError.ELOOP))
 
     [<Test>]
     let ``a symlink target is stored verbatim`` () : unit =
@@ -1046,6 +1051,7 @@ module TestVirtualFileSystem =
                         vfs
                     |> shouldEqual (Ok inode)
             | InodeContent.RegularFile _
+            | InodeContent.CharacterDevice _
             | InodeContent.Symlink _ ->
                 // Not a directory, so deliberately unanswerable: a hard-linked
                 // file has no single path.
@@ -1460,7 +1466,7 @@ module TestVirtualFileSystem =
                     TrailingSeparatorPolicy.Demand
                     (path candidate)
                     vfs
-                |> ignore<Result<Resolution, UnixError>>
+                |> ignore<Result<Resolution, PathFailure>>
 
         Check.One (config, Prop.forAll (Arb.fromGen (Gen.zip filesystemGen pathGen)) property)
 
@@ -1492,7 +1498,8 @@ module TestVirtualFileSystem =
             match full, existing with
             | Ok (ResolvedTarget.Directory (a, _)), Ok b -> b |> shouldEqual a
             | Ok (ResolvedTarget.Entry (_, _, Some a)), Ok b -> b |> shouldEqual a
-            | Ok (ResolvedTarget.Entry (_, _, None)), Error error -> error |> shouldEqual UnixError.ENOENT
+            | Ok (ResolvedTarget.Entry (_, _, None)), Error error ->
+                error |> shouldEqual (PathFailure.Errno UnixError.ENOENT)
             | Error a, Error b -> b |> shouldEqual a
             | a, b -> failwith $"resolve gave %A{a} but resolveExisting gave %A{b}"
 
@@ -2304,7 +2311,7 @@ module TestVirtualFileSystem =
             SymlinkPolicy.Follow
             (path "/d/f")
             after
-        |> shouldEqual (Error UnixError.ENOENT)
+        |> shouldEqual (Error (PathFailure.Errno UnixError.ENOENT))
 
         // ...and the inode is not. Removing the last name is not what frees an
         // inode; see `VirtualFileSystem.forget`.
@@ -2728,6 +2735,7 @@ module TestVirtualFileSystem =
             SymlinkPolicy.Follow
             (path ("/L" + suffix))
             vfs
+        |> Answered.errno
 
     [<Test>]
     let ``the spliced path must still fit in PATH_MAX, on Darwin only`` () : unit =
@@ -2823,6 +2831,7 @@ module TestVirtualFileSystem =
                 SymlinkPolicy.Follow
                 (path "/c1/a")
                 vfs
+            |> Answered.errno
 
         // Darwin's MAXSYMLINKS is 32. At 32 traversals the budget is intact and
         // the last link's over-long target is what decides.
@@ -2861,6 +2870,7 @@ module TestVirtualFileSystem =
                 SymlinkPolicy.Follow
                 (path "/a/a")
                 vfs
+            |> Answered.errno
 
         resolve SimulatedUnixPlatform.macOsArm64
         |> shouldEqual (Error UnixError.ENAMETOOLONG)
@@ -2905,6 +2915,7 @@ module TestVirtualFileSystem =
                 SymlinkPolicy.Follow
                 (path "/L")
                 vfs
+            |> Answered.errno
 
         resolve SimulatedUnixPlatform.macOsArm64
         |> shouldEqual (Error UnixError.ENAMETOOLONG)
@@ -2945,6 +2956,7 @@ module TestVirtualFileSystem =
                 SymlinkPolicy.Follow
                 (path argument)
                 vfs
+            |> Answered.errno
 
         resolve SimulatedUnixPlatform.linuxX64 |> shouldEqual (Error UnixError.ENOENT)
 
@@ -3581,6 +3593,7 @@ module TestVirtualFileSystem =
                     | true, None
                     | false, Some _ -> ()
                 | InodeContent.RegularFile _
+                | InodeContent.CharacterDevice _
                 | InodeContent.Symlink _ -> ()
 
         let property (vfs : VirtualFileSystem, _ : Set<InodeNumber>, case : RenameCase) : unit =
@@ -3667,6 +3680,7 @@ module TestVirtualFileSystem =
             | Some (InodeContent.Directory _)
             | None -> ()
             | Some (InodeContent.RegularFile _)
+            | Some (InodeContent.CharacterDevice _)
             | Some (InodeContent.Symlink _) ->
 
             let displaced =
@@ -4451,6 +4465,7 @@ module TestCreatingOpenRules =
                 rules.TrailingSeparator
                 (path candidate)
                 vfs
+            |> Answered.errno
         with
         | Error error -> CreatingOpenVerdict.Refuse error
         // Every name these rows bind is ASCII, which both flavours' rule admits;
@@ -4789,6 +4804,7 @@ module TestMkDirRules =
                 rules.TrailingSeparator
                 (path candidate)
                 vfs
+            |> Answered.errno
         with
         | Error error -> MkDirVerdict.Refuse error
         // Every name these rows bind is ASCII, which both flavours' rule admits;
@@ -5117,6 +5133,7 @@ module TestWalkSearchPermission =
             SymlinkPolicy.Follow
             (path candidate)
             vfs
+        |> Answered.errno
 
     let private refuses (bits : int) (candidate : string) : unit =
         match resolveAs CallerPrivilege.Unprivileged (mode bits) candidate with

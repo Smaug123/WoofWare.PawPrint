@@ -306,7 +306,7 @@ module TestUmask =
                         failwith
                             $"%O{platform}: umask(0o%04o{mask}), open(0o%04o{requested}) created 0o%04o{opened}, measured 0o%04o{expectedOpen}"
 
-                    match UnixNamespace.mkdir (PathArg.ofPath target) requested system with
+                    match Answered.mkdir (PathArg.ofPath target) requested system with
                     | SyscallAnswer.Completed _, afterMkdir ->
                         let made = created "/e" afterMkdir
                         let expectedMkdir = requested &&& mkdirMask platform &&& ~~~stored

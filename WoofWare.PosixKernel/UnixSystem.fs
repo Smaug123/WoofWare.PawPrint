@@ -71,8 +71,10 @@ type SyscallRefusal<'Task> =
     | LSeek of LSeekRefusal
     | FLock of FLockRefusal
     | FTruncate of TruncationRefusal
-    | Unlink of StickyRefusal
-    | RmDir of StickyRefusal
+    | MkDir of PathRefusal
+    | Unlink of RemovalRefusal
+    | RmDir of RemovalRefusal
+    | ChDir of PathRefusal
     | ChMod of ChModRefusal
     | FChMod of FChModRefusal
     /// `chown(2)` and `lchown(2)` alike.
@@ -368,9 +370,51 @@ type CurrentDirectoryFault =
     /// Darwin, a name that is not valid UTF-8. No kernel of that flavour could
     /// have created it, and a guest there could not create it either.
     | SeedNameNotBindable of name : DirectoryEntryName * flavour : SimulatedUnixFlavour
+    /// The seed binds `dev` at its root to something other than an empty
+    /// directory. The kernel mounts its device filesystem there at boot, and a
+    /// mount over a populated directory would hide what it holds.
+    | SeedCoversDeviceFileSystem of name : DirectoryEntryName
+    /// This kernel will not resolve the path.
+    | Path of PathRefusal
 
 [<RequireQualifiedAccess>]
 module UnixSystem =
+
+    /// Mount `mount` over the root's `dev`, as the kernel does at boot, with a
+    /// node for each device it has a driver for, all made at `bootTime` and
+    /// owned by root.
+    ///
+    /// The directory and its nodes have the modes a measured devtmpfs and devfs
+    /// report: 0755 and 0555 respectively for the directory, 0666 for each
+    /// node.
+    let private mountDeviceFileSystem
+        (mount : DeviceFileSystemMount)
+        (bootTime : UnixTimestamp)
+        (filesystem : VirtualFileSystem)
+        : Result<VirtualFileSystem, MountFault>
+        =
+        let root =
+            {
+                User = UserId.root
+                Group = GroupId.parseOrFail "UnixSystem.mountDeviceFileSystem" 0u
+            }
+
+        let permissions, devices =
+            match mount with
+            | DeviceFileSystemMount.Devtmpfs _ ->
+                PermissionBits 0o755,
+                CharacterDevice.all
+                |> List.map (fun device -> CharacterDevice.name device, device, CharacterDevice.permissions device)
+            | DeviceFileSystemMount.Devfs -> PermissionBits 0o555, []
+
+        VirtualFileSystem.mountAtRoot
+            (DeviceFileSystemMount.mounted mount)
+            (DirectoryEntryName.parseOrFail "UnixSystem.mountDeviceFileSystem" "dev")
+            permissions
+            root
+            devices
+            bootTime
+            filesystem
 
     /// The process ID, as `getpid(2)` reports it.
     ///
@@ -482,7 +526,10 @@ module UnixSystem =
             UnixDescriptor.close fd system
             |> answered
             |> Result.mapError SyscallRefusal.Close
-        | Syscall.MkDir (path, mode) -> Ok (UnixNamespace.mkdir path mode system) |> answered
+        | Syscall.MkDir (path, mode) ->
+            UnixNamespace.mkdir path mode system
+            |> answered
+            |> Result.mapError SyscallRefusal.MkDir
         | Syscall.Unlink path ->
             UnixNamespace.unlink path system
             |> answered
@@ -491,7 +538,10 @@ module UnixSystem =
             UnixNamespace.rmdir path system
             |> answered
             |> Result.mapError SyscallRefusal.RmDir
-        | Syscall.ChDir path -> Ok (UnixPathResolution.chdir path system) |> answered
+        | Syscall.ChDir path ->
+            UnixPathResolution.chdir path system
+            |> answered
+            |> Result.mapError SyscallRefusal.ChDir
         | Syscall.ChMod (path, mode) ->
             UnixPathResolution.chmod path mode system
             |> answered
@@ -628,7 +678,9 @@ module UnixSystem =
                 | OpenFileTarget.File (inode, _) ->
                     match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
                     | None -> Some (UnixSystemDefect.DanglingOpenInode (id, inode))
-                    | Some (InodeContent.Directory _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
+                    | Some (InodeContent.Directory _)
+                    | Some (InodeContent.CharacterDevice _) ->
+                        Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
                     | Some (InodeContent.RegularFile _)
                     | Some (InodeContent.Symlink _) -> None
                 | OpenFileTarget.Directory (inode, _) ->
@@ -636,6 +688,7 @@ module UnixSystem =
                     | None -> Some (UnixSystemDefect.DanglingOpenInode (id, inode))
                     | Some (InodeContent.Directory _) -> None
                     | Some (InodeContent.RegularFile _)
+                    | Some (InodeContent.CharacterDevice _)
                     | Some (InodeContent.Symlink _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
                 | OpenFileTarget.Kqueue _
                 | OpenFileTarget.Epoll _
@@ -647,6 +700,7 @@ module UnixSystem =
             match VirtualFileSystem.tryGetContent system.Process.CurrentDirectoryInode system.Machine.FileSystem with
             | Some (InodeContent.Directory _) -> []
             | Some (InodeContent.RegularFile _)
+            | Some (InodeContent.CharacterDevice _)
             | Some (InodeContent.Symlink _)
             | None ->
                 [
@@ -1517,12 +1571,21 @@ module UnixSystem =
         let platform = SimulatedUnixPlatform.assertValid "UnixSystem.initial" platform
         let flavour = SimulatedUnixPlatform.flavour platform
 
+        let deviceMount = DeviceFileSystemMount.defaultFor flavour
+
         // Bound once so that `CurrentDirectoryInode` is the root of *this*
         // filesystem rather than of a second one that merely looks like it.
         let filesystem =
-            VirtualFileSystem.empty
-                (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
-                (InodeOwner.ofProcess (defaultCredentials flavour))
+            let bootTime = UnixTimestamp.ofMillisecondsSinceEpoch 0L
+
+            match
+                VirtualFileSystem.empty bootTime (InodeOwner.ofProcess (defaultCredentials flavour))
+                |> mountDeviceFileSystem deviceMount bootTime
+            with
+            | Ok filesystem -> filesystem
+            | Error fault ->
+                failwith
+                    $"UnixSystem.initial: mounting the device filesystem over an empty root failed with %A{fault} (this is a bug in this library)."
 
         let leaderThreadId, threadIds =
             match flavour with
@@ -1576,6 +1639,7 @@ module UnixSystem =
                     UnixPlatform = platform
                     FileSystem = filesystem
                     Mount = EmulatedMount.defaultFor flavour
+                    DeviceMount = deviceMount
                     ProtectedFiles = ProtectedFiles.off
                 }
             Process =
@@ -1950,7 +2014,14 @@ module UnixSystem =
         | Some fault -> Error fault
         | None ->
 
-        let filesystem = VirtualFileSystem.ofFileSystemSeed createdAt defaultOwner seed
+        match
+            VirtualFileSystem.ofFileSystemSeed createdAt defaultOwner seed
+            |> mountDeviceFileSystem system.Machine.DeviceMount createdAt
+        with
+        | Error (MountFault.CoveredEntryNotAnEmptyDirectory name) ->
+            Error (CurrentDirectoryFault.SeedCoversDeviceFileSystem name)
+        | Ok filesystem ->
+
         let root = VirtualFileSystem.root filesystem
 
         let located =
@@ -1985,7 +2056,8 @@ module UnixSystem =
                     | None ->
                         failwith
                             $"UnixSystem.withFileSystemAndCurrentDirectory: \"%s{AbsoluteUnixPath.toEscaped directory}\" resolved to inode %O{inode}, but no path from the root reaches it. This is a bug in this library."
-                | Some (InodeContent.RegularFile _) -> Error CurrentDirectoryFault.NotADirectory
+                | Some (InodeContent.RegularFile _)
+                | Some (InodeContent.CharacterDevice _) -> Error CurrentDirectoryFault.NotADirectory
                 | Some (InodeContent.Symlink _) ->
                     // `SymlinkPolicy.Follow` never finishes on one; `chdir` says
                     // the same of the same walk.
@@ -1994,9 +2066,10 @@ module UnixSystem =
                 | None ->
                     failwith
                         $"UnixSystem.withFileSystemAndCurrentDirectory: resolving \"%s{AbsoluteUnixPath.toEscaped directory}\" gave inode %O{inode}, which the filesystem does not contain. This is a bug in this library; run VirtualFileSystem.checkInvariants."
-            | Error UnixError.ENAMETOOLONG ->
+            | Error (PathFailure.Errno UnixError.ENAMETOOLONG) ->
                 Error (CurrentDirectoryFault.TooLong (SimulatedUnixPlatform.flavour platform))
-            | Error error -> Error (CurrentDirectoryFault.DoesNotResolve error)
+            | Error (PathFailure.Errno error) -> Error (CurrentDirectoryFault.DoesNotResolve error)
+            | Error (PathFailure.Refused refusal) -> Error (CurrentDirectoryFault.Path refusal)
 
         located
         |> Result.map (fun inode ->

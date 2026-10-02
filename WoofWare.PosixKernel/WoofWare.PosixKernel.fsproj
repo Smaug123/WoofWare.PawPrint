@@ -41,6 +41,7 @@
         <Compile Include="SimulatedUnixArchitecture.fs" />
         <Compile Include="OpenFlagNumbering.fs" />
         <Compile Include="EmulatedFileSystemType.fs" />
+        <Compile Include="DeviceFileSystem.fs" />
         <Compile Include="UserBuffer.fs" />
         <Compile Include="ProcessId.fs" />
         <Compile Include="OsThreadId.fs" />

@@ -132,6 +132,7 @@ module CreatingOpenRules =
             match VirtualFileSystem.tryGetContent inode vfs with
             | Some (InodeContent.Directory _) -> true
             | Some (InodeContent.RegularFile _)
+            | Some (InodeContent.CharacterDevice _)
             | Some (InodeContent.Symlink _)
             | None -> false
 

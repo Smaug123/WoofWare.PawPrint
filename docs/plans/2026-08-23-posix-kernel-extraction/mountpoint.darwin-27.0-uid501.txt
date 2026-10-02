@@ -1,0 +1,11 @@
+MP euid=501 stat(/dev) dev=18446744072792331407 ino=335; stat(/) dev=16777234 ino=2; stat(/dev/..) dev=16777234 ino=2
+MP readdir(/) dev: d_ino=1152921500312607380 d_type=4
+MP readdir(/dev) .: d_ino=335
+MP readdir(/dev) ..: d_ino=335
+MP rmdir(/dev) -1 Resource busy
+MP rename(/dev, /devx) -1 Cross-device link
+MP unlink(/dev) -1 Resource busy
+MP chmod(/dev, mode unchanged) -1 Operation not permitted
+MP mkdir(/dev) -1 File exists
+MP rmdir(/dev/.) -1 Resource busy
+MP chdir(/dev) 0 getcwd=/dev chdir(..) 0 getcwd=/

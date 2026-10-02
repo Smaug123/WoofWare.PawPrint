@@ -566,6 +566,7 @@ module TestVirtualFileSystemAgainstHost =
                 SymlinkPolicy.NoFollowFinal
                 (UnixPath.parseOrFail "test" relative)
                 vfs
+            |> Answered.errno
         with
         | Error error -> Outcome.Failed (hostErrno error)
         | Ok inode ->
@@ -845,6 +846,7 @@ module TestVirtualFileSystemAgainstHost =
                                     SymlinkPolicy.Follow
                                     (UnixPath.parseOrFail "test" ("/" + linkName + suffix))
                                     vfs
+                                |> Answered.errno
                             with
                             | Ok _ -> Ok ()
                             | Error error -> Error (hostErrno error)
@@ -1087,6 +1089,7 @@ module TestVirtualFileSystemAgainstHost =
                 rules.TrailingSeparator
                 (UnixPath.parseOrFail "test" relative)
                 vfs
+            |> Answered.errno
         with
         | Error error -> CreatingOutcome.Failed (hostErrno error)
         | Ok resolution ->
@@ -1586,6 +1589,7 @@ module TestVirtualFileSystemAgainstHost =
                 rules.TrailingSeparator
                 (UnixPath.parseOrFail "test" relative)
                 vfs
+            |> Answered.errno
         with
         | Error error -> MkDirOutcome.Failed (hostErrno error)
         | Ok resolution ->
@@ -1873,6 +1877,7 @@ module TestVirtualFileSystemAgainstHost =
                     relative :: walk relative child
                 )
             | Some (InodeContent.RegularFile _)
+            | Some (InodeContent.CharacterDevice _)
             | Some (InodeContent.Symlink _)
             | None -> []
 
@@ -1917,6 +1922,7 @@ module TestVirtualFileSystemAgainstHost =
                 rules.TrailingSeparator
                 (UnixPath.parseOrFail "test" relative)
                 vfs
+            |> Answered.errno
         with
         | Error error -> UnlinkOutcome.Failed (hostErrno error)
         | Ok resolution ->
@@ -2129,6 +2135,7 @@ module TestVirtualFileSystemAgainstHost =
                 rules.TrailingSeparator
                 (UnixPath.parseOrFail "test" relative)
                 vfs
+            |> Answered.errno
         with
         | Error error -> UnlinkOutcome.Failed (hostErrno error)
         | Ok resolution ->
@@ -2366,6 +2373,7 @@ module TestVirtualFileSystemAgainstHost =
                 TrailingSeparatorPolicy.Demand
                 (UnixPath.parseOrFail "test" relative)
                 vfs
+            |> Answered.errno
         with
         | Error error -> OpenDirOutcome.Failed (hostErrno error)
         | Ok resolution ->
@@ -2486,6 +2494,7 @@ module TestVirtualFileSystemAgainstHost =
                     TrailingSeparatorPolicy.Demand
                     (UnixPath.parseOrFail "test" relative)
                     vfs
+                |> Answered.errno
                 |> Result.bind (fun resolution -> PathWalk.existingOf resolution.Target)
             with
             | Ok inode -> inode
@@ -3202,7 +3211,7 @@ module TestVirtualFileSystemAgainstHost =
                     (GroupId.parseOrFail "chdir model" userId)
                     [])
 
-        match UnixPathResolution.chdir (PathArg.ofPath (UnixPath.parseOrFail "test" relative)) system with
+        match Answered.chdir (PathArg.ofPath (UnixPath.parseOrFail "test" relative)) system with
         | SyscallAnswer.Completed 0L, moved ->
             match UnixPathResolution.currentDirectoryPath moved with
             | Some path -> ChDirOutcome.Entered (PathText.ofAbsolute path)

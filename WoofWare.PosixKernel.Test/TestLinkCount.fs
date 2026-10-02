@@ -92,7 +92,7 @@ module TestLinkCount =
         match step with
         | LinkCountStep.MakeDirectory path ->
             let _, system =
-                UnixNamespace.mkdir (PathArg.ofPath (rooted path)) 0o755 system
+                Answered.mkdir (PathArg.ofPath (rooted path)) 0o755 system
                 |> completed $"mkdir %s{path}"
 
             held, system
@@ -235,7 +235,9 @@ module TestLinkCount =
     [<Test>]
     let ``a fresh filesystem's root counts as any directory does`` () : unit =
         // Measured on a freshly mounted tmpfs and a fresh APFS disk image: the
-        // root's count follows the same rule as any other directory's.
+        // root's count follows the same rule as any other directory's. Besides
+        // what the steps make, the root holds `dev`, the directory the kernel
+        // mounts its device filesystem on at boot.
         for platform in [ linux ; darwin ] do
             let _, system =
                 [
@@ -250,8 +252,8 @@ module TestLinkCount =
                 |> reported "stat /"
 
             match SimulatedUnixPlatform.flavour platform with
-            | SimulatedUnixFlavour.Linux -> root.LinkCount |> shouldEqual 4L
-            | SimulatedUnixFlavour.Darwin -> root.LinkCount |> shouldEqual 5L
+            | SimulatedUnixFlavour.Linux -> root.LinkCount |> shouldEqual 5L
+            | SimulatedUnixFlavour.Darwin -> root.LinkCount |> shouldEqual 6L
 
     [<Test>]
     let ``a directory removed while it is the current directory counts as removed`` () : unit =
@@ -259,8 +261,7 @@ module TestLinkCount =
             let _, system =
                 List.fold applyToModel (Map.empty, systemOn platform) [ LinkCountStep.MakeDirectory "c" ]
 
-            let _, system =
-                UnixPathResolution.chdir (PathArg.ofText "/c") system |> completed "chdir"
+            let _, system = Answered.chdir (PathArg.ofText "/c") system |> completed "chdir"
 
             let _, system = Answered.rmdir (rooted "c") system |> completed "rmdir"
 

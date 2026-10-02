@@ -282,8 +282,8 @@ module ApfsMount =
                         $"ApfsMount.defaults: the device name is not a Unix string (%O{defect}) (this is a bug in this library)"
         }
 
-/// The one filesystem a machine has mounted, with what its type lets a caller
-/// of `statfs(2)` configure about it.
+/// The filesystem a machine has mounted at its root, with what its type lets
+/// a caller of `statfs(2)` configure about it.
 [<RequireQualifiedAccess>]
 type EmulatedMount =
     /// A tmpfs; see `TmpfsMount`.

@@ -559,16 +559,29 @@ module TestPermissionStanding =
         | Answered of error : UnixError option
         | Refused of refusal : StickyRefusal
 
+    /// A removal's answer, or the sticky refusal these rows can reach; any other
+    /// refusal fails the test.
+    let private sticky
+        (result : Result<SyscallAnswer * UnixSystem<int, string>, RemovalRefusal>)
+        : Result<SyscallAnswer * UnixSystem<int, string>, StickyRefusal>
+        =
+        match result with
+        | Ok answer -> Ok answer
+        | Error (RemovalRefusal.Sticky refusal) -> Error refusal
+        | Error other -> failwith $"expected an answer or a sticky refusal, got %s{RemovalRefusal.describe other}"
+
     /// Run `call`, reporting what it came to and the system after it.
     let private run (call : Call) (system : UnixSystem<int, string>) : Outcome * UnixSystem<int, string> =
         let result =
             match call with
-            | Call.Unlink p -> UnixNamespace.unlink (PathArg.ofPath (path p)) system
-            | Call.RmDir p -> UnixNamespace.rmdir (PathArg.ofPath (path p)) system
+            | Call.Unlink p -> sticky (UnixNamespace.unlink (PathArg.ofPath (path p)) system)
+            | Call.RmDir p -> sticky (UnixNamespace.rmdir (PathArg.ofPath (path p)) system)
             | Call.Rename (source, destination) ->
                 match UnixNamespace.rename (argument source) (argument destination) system with
                 | Ok answer -> Ok answer
                 | Error (RenameRefusal.Sticky refusal) -> Error refusal
+                | Error other ->
+                    failwith $"rename was refused other than by the sticky rule: %s{RenameRefusal.describe other}"
 
         match result with
         | Error refusal -> Outcome.Refused refusal, system
@@ -1019,7 +1032,7 @@ module TestPermissionStanding =
         openFor FileAccessMode.ReadOnly "/hosts" |> shouldEqual true
         openFor FileAccessMode.WriteOnly "/hosts" |> shouldEqual false
 
-        UnixNamespace.mkdir (PathArg.ofPath (path "/wheel0755/x")) 0o755 system
+        Answered.mkdir (PathArg.ofPath (path "/wheel0755/x")) 0o755 system
         |> fst
         |> shouldEqual (SyscallAnswer.Failed UnixError.EACCES)
 
@@ -1172,10 +1185,12 @@ module TestPermissionStanding =
         |> shouldEqual (
             Error (
                 SyscallRefusal.Unlink (
-                    StickyRefusal.DarwinPrivilegedCaller (
-                        directory,
-                        inodeAt tree "/tmp/base/own-sticky/theirs",
-                        standing
+                    RemovalRefusal.Sticky (
+                        StickyRefusal.DarwinPrivilegedCaller (
+                            directory,
+                            inodeAt tree "/tmp/base/own-sticky/theirs",
+                            standing
+                        )
                     )
                 )
             )
@@ -1186,10 +1201,12 @@ module TestPermissionStanding =
         |> shouldEqual (
             Error (
                 SyscallRefusal.RmDir (
-                    StickyRefusal.DarwinPrivilegedCaller (
-                        directory,
-                        inodeAt tree "/tmp/base/own-sticky/theirdir",
-                        standing
+                    RemovalRefusal.Sticky (
+                        StickyRefusal.DarwinPrivilegedCaller (
+                            directory,
+                            inodeAt tree "/tmp/base/own-sticky/theirdir",
+                            standing
+                        )
                     )
                 )
             )
@@ -1284,7 +1301,7 @@ module TestPermissionStanding =
                     | Ok (FileStatusAnswer.Reported _) -> true
                     | Ok (FileStatusAnswer.Failed UnixError.EACCES) -> false
                     | other -> failwith $"stat: %A{other}"
-                "chdir /d", fun system -> UnixPathResolution.chdir (PathArg.ofPath (path "/d")) system |> succeeds
+                "chdir /d", fun system -> Answered.chdir (PathArg.ofPath (path "/d")) system |> succeeds
                 "opendir /d",
                 fun system ->
                     Answered.openPath
@@ -1297,8 +1314,7 @@ module TestPermissionStanding =
                     |> succeeds
                 "open(O_CREAT) /d/new",
                 fun system -> Answered.openPath creating (path "/d/new") 0o600 system |> succeeds
-                "mkdir /d/new",
-                fun system -> UnixNamespace.mkdir (PathArg.ofPath (path "/d/new")) 0o755 system |> succeeds
+                "mkdir /d/new", fun system -> Answered.mkdir (PathArg.ofPath (path "/d/new")) 0o755 system |> succeeds
                 "unlink /d/f", fun system -> Answered.unlink (path "/d/f") system |> succeeds
                 "rmdir /d/e", fun system -> Answered.rmdir (path "/d/e") system |> succeeds
                 "rename /d/f out of /d", renamed "/d/f" "/o/f"

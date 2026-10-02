@@ -1887,7 +1887,7 @@ module TestUnixSystemStep =
         |> shouldEqual (Ok target)
 
         UnixPathResolution.resolvePath SymlinkPolicy.Follow (statPath "t") (at rootInode)
-        |> shouldEqual (Error UnixError.ENOENT)
+        |> shouldEqual (Error (PathFailure.Errno UnixError.ENOENT))
 
         // ...and a rooted path ignores it, which is what says the branch above is
         // a branch. Asked with the current directory at `inner` rather than at
@@ -1906,7 +1906,7 @@ module TestUnixSystemStep =
         let inner, target, _, system = withTree linux
 
         UnixPathResolution.resolvePath SymlinkPolicy.Follow (statPath "/d/inner/t/") system
-        |> shouldEqual (Error UnixError.ENOTDIR)
+        |> shouldEqual (Error (PathFailure.Errno UnixError.ENOTDIR))
 
         UnixPathResolution.resolvePath SymlinkPolicy.Follow (statPath "/d/inner/") system
         |> shouldEqual (Ok inner)
@@ -1921,7 +1921,7 @@ module TestUnixSystemStep =
         let _, _, _, system = withTreeUnder (PermissionBits.parseOrFail context 0o600) linux
 
         UnixPathResolution.resolvePath SymlinkPolicy.Follow (statPath "/d/inner/t") system
-        |> shouldEqual (Error UnixError.EACCES)
+        |> shouldEqual (Error (PathFailure.Errno UnixError.EACCES))
 
         // uid 0 is exempt, which is what says the rule is being read from the
         // process rather than hardcoded.
@@ -1966,10 +1966,10 @@ module TestUnixSystemStep =
                 (match UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofPath path) system with
                  | Ok (FileStatusAnswer.Failed error) -> error
                  | other -> failwith $"expected a failure, got %A{other}")
-                UnixNamespace.mkdir (PathArg.ofPath path) 0o777 system |> answer
+                Answered.mkdir (PathArg.ofPath path) 0o777 system |> answer
                 Answered.unlink path system |> answer
                 Answered.rmdir path system |> answer
-                UnixPathResolution.chdir (PathArg.ofPath path) system |> answer
+                Answered.chdir (PathArg.ofPath path) system |> answer
                 Answered.openPath
                     {
                         Access = FileAccessMode.ReadOnly
@@ -2052,7 +2052,7 @@ module TestUnixSystemStep =
             }
 
         let after =
-            UnixNamespace.mkdir (PathArg.ofPath (statPath "/d")) 0o777 system |> completed
+            Answered.mkdir (PathArg.ofPath (statPath "/d")) 0o777 system |> completed
 
         match UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofPath (statPath "/d")) after with
         | Ok (FileStatusAnswer.Reported status) -> status.Mode |> shouldEqual 0o40750
@@ -2062,17 +2062,17 @@ module TestUnixSystemStep =
     let ``mkdir over a name something already holds is EEXIST`` () : unit =
         let _, _, _, system = withTree linux
 
-        UnixNamespace.mkdir (PathArg.ofPath (statPath "/d")) 0o777 system
+        Answered.mkdir (PathArg.ofPath (statPath "/d")) 0o777 system
         |> failedAs UnixError.EEXIST
 
         // Including a symbolic link, which `mkdir` never dereferences — and a
         // *dangling* one is the case that says so: following it would find a free
         // name and bind a directory at the target, where the measured answer is
         // EEXIST at the link itself.
-        UnixNamespace.mkdir (PathArg.ofPath (statPath "/l")) 0o777 system
+        Answered.mkdir (PathArg.ofPath (statPath "/l")) 0o777 system
         |> failedAs UnixError.EEXIST
 
-        UnixNamespace.mkdir (PathArg.ofPath (statPath "/dangling")) 0o777 system
+        Answered.mkdir (PathArg.ofPath (statPath "/dangling")) 0o777 system
         |> failedAs UnixError.EEXIST
 
         UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (PathArg.ofPath (statPath "/d/inner/gone")) system
@@ -2196,7 +2196,7 @@ module TestUnixSystemStep =
                 // as 0o777: with umask 0o022 both 0o755 and 0o777 become 0o755,
                 // so a dispatcher that dropped the mode would agree.
                 Syscall.MkDir (PathArg.ofPath (statPath "/new"), 0o700),
-                UnixNamespace.mkdir (PathArg.ofPath (statPath "/new")) 0o700 system
+                Answered.mkdir (PathArg.ofPath (statPath "/new")) 0o700 system
                 Syscall.Unlink (PathArg.ofPath (statPath "/d/inner/t")), Answered.unlink (statPath "/d/inner/t") system
                 Syscall.RmDir (PathArg.ofPath (statPath "/d")), Answered.rmdir (statPath "/d") system
                 // A *successful* chdir, so the comparison covers the state it
@@ -2205,7 +2205,7 @@ module TestUnixSystemStep =
                 // that returned the untouched system would still match on a row
                 // that failed.
                 Syscall.ChDir (PathArg.ofPath (statPath "/d/inner")),
-                UnixPathResolution.chdir (PathArg.ofPath (statPath "/d/inner")) system
+                Answered.chdir (PathArg.ofPath (statPath "/d/inner")) system
             ] do
             UnixSystem.step holderTask call system
             |> stepAnswered
@@ -4361,7 +4361,7 @@ module TestUnixSystemStep =
             // Nothing was created under either rule, which is the half an errno
             // alone does not assert.
             UnixPathResolution.resolvePath SymlinkPolicy.Follow (statPath "/new") after
-            |> shouldEqual (Error UnixError.ENOENT)
+            |> shouldEqual (Error (PathFailure.Errno UnixError.ENOENT))
 
             // The same name *without* the separator creates, so the row above is
             // about the separator rather than about the name being unreachable.
@@ -4447,7 +4447,8 @@ module TestUnixSystemStep =
         // A directory holding one of each, so a `readdir` that reported the
         // *directory's* kind for every entry — or the first entry's for all of
         // them — is distinguishable. `/l` is a symbolic link and is reported as
-        // one: `readdir` does not follow it.
+        // one: `readdir` does not follow it. `dev` is the directory the kernel
+        // mounts its device filesystem on at boot.
         for flavour in [ linux ; darwin ] do
             let _, _, _, system = withTree flavour
             let id, system = openedStream system "/"
@@ -4460,6 +4461,7 @@ module TestUnixSystemStep =
                 [
                     "d", DirectoryEntryKind.Directory
                     "dangling", DirectoryEntryKind.Symlink
+                    "dev", DirectoryEntryKind.Directory
                     "l", DirectoryEntryKind.Symlink
                 ]
 
@@ -4592,12 +4594,12 @@ module TestUnixSystemStep =
 
     // ---- `readlink` --------------------------------------------------------
 
-    let private readLinkBytes (answer : Result<ReadLinkAnswer, BufferRefusal>) : byte list =
+    let private readLinkBytes (answer : Result<ReadLinkAnswer, ReadLinkRefusal>) : byte list =
         match answer with
         | Ok (ReadLinkAnswer.Reported bytes) -> List.ofSeq bytes
         | other -> failwith $"expected a target, got %O{other}"
 
-    let private readLinkFailed (answer : Result<ReadLinkAnswer, BufferRefusal>) : UnixError =
+    let private readLinkFailed (answer : Result<ReadLinkAnswer, ReadLinkRefusal>) : UnixError =
         match answer with
         | Ok (ReadLinkAnswer.Failed error) -> error
         | other -> failwith $"expected a failure, got %O{other}"
@@ -4768,12 +4770,12 @@ module TestUnixSystemStep =
             |> shouldEqual UnixError.EFAULT
 
             UnixNamespace.readlink (PathArg.ofPath (statPath "/l")) UserBuffer.Opaque 16 system
-            |> shouldEqual (Error BufferRefusal.OpaqueAtTransfer)
+            |> shouldEqual (Error (ReadLinkRefusal.Buffer BufferRefusal.OpaqueAtTransfer))
 
             // At the transfer rather than at a screen: neither flavour checks
             // the destination's address up front.
             UnixNamespace.readlink (PathArg.ofPath (statPath "/l")) UserBuffer.Addressless 16 system
-            |> shouldEqual (Error BufferRefusal.AddresslessAtTransfer)
+            |> shouldEqual (Error (ReadLinkRefusal.Buffer BufferRefusal.AddresslessAtTransfer))
 
     [<Test>]
     let ``readlink does not step through the final link`` () : unit =
@@ -5392,7 +5394,7 @@ module TestUnixSystemStep =
         let system = withRenameTree system
 
         let inode, created =
-            match UnixNamespace.mkdir (PathArg.ofPath (statPath "/gone")) 0o755 system with
+            match Answered.mkdir (PathArg.ofPath (statPath "/gone")) 0o755 system with
             | SyscallAnswer.Completed 0L, created ->
                 match UnixPathResolution.resolvePath SymlinkPolicy.Follow (statPath "/gone") created with
                 | Ok inode -> inode, created
@@ -5477,7 +5479,7 @@ module TestUnixSystemStep =
         // holding it has nothing to read.
         let ended (source : PathArgumentBytes) (system : UnixSystem<int, string>) : UnixError =
             match UnixNamespace.renameSourcePhase source system with
-            | RenameProgress.Answered (SyscallAnswer.Failed error, _) -> error
+            | Ok (RenameProgress.Answered (SyscallAnswer.Failed error, _)) -> error
             | other -> failwith $"expected the source phase to end the call, got %A{other}"
 
         // Darwin ends on a source that does not exist...
@@ -5502,13 +5504,13 @@ module TestUnixSystemStep =
         // for a kernel that never asks for a destination.
         for system in [ withRenameTree linux ; withRenameTree darwin ] do
             match UnixNamespace.renameSourcePhase (arg "f") system with
-            | RenameProgress.NeedsDestination _ -> ()
+            | Ok (RenameProgress.NeedsDestination _) -> ()
             | other -> failwith $"expected the kernel to want a destination, got %A{other}"
 
         // Linux gets that far even for a source whose final name is free, since
         // it has not looked it up yet — where Darwin has, and stopped.
         match UnixNamespace.renameSourcePhase (arg "nope") (withRenameTree linux) with
-        | RenameProgress.NeedsDestination _ -> ()
+        | Ok (RenameProgress.NeedsDestination _) -> ()
         | other -> failwith $"expected Linux to want a destination for a free source name, got %A{other}"
 
     // The `## walk` and `## orphan` sections of `docs/probes/rename/rename.py`,
@@ -5683,7 +5685,7 @@ module TestUnixSystemStep =
     /// directory no path reaches, which the probe writes as
     /// `ok, ... getcwd failed ENOENT`.
     let private changedTo (path : string) (system : UnixSystem<int, string>) : Result<string option, UnixError> =
-        match UnixPathResolution.chdir (PathArg.ofPath (statPath path)) system with
+        match Answered.chdir (PathArg.ofPath (statPath path)) system with
         | SyscallAnswer.Completed 0L, moved ->
             UnixPathResolution.currentDirectoryPath moved
             |> Option.map PathText.ofAbsolute
@@ -5744,7 +5746,7 @@ module TestUnixSystemStep =
         let system = withChDirTree linux
 
         let moved =
-            match UnixPathResolution.chdir (PathArg.ofPath (statPath "/d/sub")) system with
+            match Answered.chdir (PathArg.ofPath (statPath "/d/sub")) system with
             | SyscallAnswer.Completed 0L, moved -> moved
             | other -> failwith $"expected a success, got %A{other}"
 
@@ -5759,7 +5761,7 @@ module TestUnixSystemStep =
         UnixPathResolution.statOf held removed |> shouldNotEqual None
 
         let left =
-            match UnixPathResolution.chdir (PathArg.ofPath (statPath "/")) removed with
+            match Answered.chdir (PathArg.ofPath (statPath "/")) removed with
             | SyscallAnswer.Completed 0L, left -> left
             | other -> failwith $"expected a success, got %A{other}"
 
@@ -5782,7 +5784,7 @@ module TestUnixSystemStep =
         let system = withChDirTree linux
 
         let inSub =
-            match UnixPathResolution.chdir (PathArg.ofPath (statPath "/d/sub")) system with
+            match Answered.chdir (PathArg.ofPath (statPath "/d/sub")) system with
             | SyscallAnswer.Completed 0L, moved -> moved
             | other -> failwith $"expected a success, got %A{other}"
 

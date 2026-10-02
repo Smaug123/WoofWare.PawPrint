@@ -344,6 +344,7 @@ module TestPathCursor =
             | None -> Error UnixError.ENOENT
             | Some (InodeContent.Directory _) -> Ok startDirectory
             | Some (InodeContent.RegularFile _)
+            | Some (InodeContent.CharacterDevice _)
             | Some (InodeContent.Symlink _) -> Error UnixError.ENOTDIR
 
         match start with
@@ -442,7 +443,8 @@ module TestPathCursor =
                     finish (ResolvedTarget.Entry (directory, entryName, Some found))
                 else
                     walk found rest trailing finalSymlinkFollowed lastNavigation symlinks
-            | InodeContent.RegularFile _ ->
+            | InodeContent.RegularFile _
+            | InodeContent.CharacterDevice _ ->
                 if isFinal then
                     if trailing then
                         Error UnixError.ENOTDIR
@@ -609,7 +611,10 @@ module TestPathCursor =
                 TrailingSeparatorPolicy.Demand
                 parsed
                 vfs
-            |> shouldEqual (referenceResolveFull limits start policy parsed vfs)
+            |> shouldEqual (
+                referenceResolveFull limits start policy parsed vfs
+                |> Result.mapError PathFailure.Errno
+            )
 
         let generator =
             gen {

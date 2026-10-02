@@ -109,6 +109,38 @@ type FinalNavigation =
     /// itself, which is EBUSY.
     | Parent
 
+/// Why this kernel will not say what a path resolves to.
+[<RequireQualifiedAccess>]
+type PathRefusal =
+    /// The walk reached `mountRoot`, the root of a filesystem this kernel does
+    /// not model: Darwin's devfs.
+    | UnmodelledFileSystem of mountRoot : InodeNumber * fileSystem : MountedFileSystem
+    /// The walk looked `name` up in `directory`, which is on a device
+    /// filesystem and does not bind it. This kernel's device filesystem holds
+    /// a node for each device it has a driver for and nothing else, where a
+    /// real one holds many more, so whether a real one binds `name` is unknown.
+    | UnmodelledDeviceName of directory : InodeNumber * name : DirectoryEntryName
+
+[<RequireQualifiedAccess>]
+module PathRefusal =
+    /// What this kernel knows about why it cannot answer, for a client
+    /// composing a diagnostic.
+    let describe (refusal : PathRefusal) : string =
+        match refusal with
+        | PathRefusal.UnmodelledFileSystem (mountRoot, fileSystem) ->
+            $"the path reaches the root of the %O{fileSystem} mounted at inode %O{mountRoot}, which this kernel does not model."
+        | PathRefusal.UnmodelledDeviceName (directory, name) ->
+            $"the path looks up \"%s{DirectoryEntryName.toEscaped name}\" in inode %O{directory}, on the device filesystem. This kernel's device filesystem holds a node only for each device it has a driver for, and a real one holds many more, so whether that name exists is unknown."
+
+/// How a path resolution failed: with the errno a real kernel answers, or with
+/// a refusal of this one's.
+[<RequireQualifiedAccess>]
+type PathFailure =
+    /// The syscall answers this errno.
+    | Errno of UnixError
+    /// This kernel will not answer.
+    | Refused of PathRefusal
+
 /// Where a path resolution ended up.
 [<RequireQualifiedAccess>]
 type ResolvedTarget =
@@ -220,10 +252,49 @@ type PausedResolution =
             FinalSymlinkFollowed : bool
             LastNavigation : FinalNavigation
             SymlinksTraversed : int
+            /// The directory the last "." or ".." was consumed from, which is
+            /// the directory a kernel's parent walk stops in for a path whose
+            /// last component is one of them.
+            NavigatedFrom : InodeNumber
         }
 
 [<RequireQualifiedAccess>]
 module PathWalk =
+
+    /// The refusal owed for looking `name` up in `directory` and finding
+    /// nothing, if the directory is on a device filesystem, whose names this
+    /// kernel knows only some of.
+    let private absentNameRefusal
+        (vfs : VirtualFileSystem)
+        (directory : InodeNumber)
+        (name : DirectoryEntryName)
+        : PathRefusal option
+        =
+        match VirtualFileSystem.mountedRootOf directory vfs with
+        | None -> None
+        | Some root ->
+            match VirtualFileSystem.mountOf root vfs with
+            | Some {
+                       FileSystem = MountedFileSystem.Devtmpfs
+                   }
+            | Some {
+                       FileSystem = MountedFileSystem.Devfs
+                   } -> Some (PathRefusal.UnmodelledDeviceName (directory, name))
+            | None ->
+                failwith
+                    $"PathWalk: inode %O{directory} is recorded as on the filesystem mounted at inode %O{root}, which is not a mounted root. Run VirtualFileSystem.checkInvariants."
+
+    /// The refusal owed for reaching `inode`, if it is the root of a mounted
+    /// filesystem this kernel does not model.
+    let private unmodelledMountRefusal (vfs : VirtualFileSystem) (inode : InodeNumber) : PathRefusal option =
+        match VirtualFileSystem.mountOf inode vfs with
+        | Some {
+                   FileSystem = MountedFileSystem.Devfs
+               } -> Some (PathRefusal.UnmodelledFileSystem (inode, MountedFileSystem.Devfs))
+        | Some {
+                   FileSystem = MountedFileSystem.Devtmpfs
+               }
+        | None -> None
 
     /// Expand a symbolic link into the walk's pathname buffer: the directory the
     /// expansion resumes from, and the buffer that replaces the one being
@@ -313,7 +384,8 @@ module PathWalk =
         (finalSymlinkFollowed : bool)
         (lastNavigation : FinalNavigation)
         (symlinks : int)
-        : Result<PausedResolution, UnixError>
+        (navigatedFrom : InodeNumber)
+        : Result<PausedResolution, PathFailure>
         =
         let paused (final : (DirectoryEntryName * PathCursor) option) : PausedResolution =
             {
@@ -329,6 +401,7 @@ module PathWalk =
                 FinalSymlinkFollowed = finalSymlinkFollowed
                 LastNavigation = lastNavigation
                 SymlinksTraversed = symlinks
+                NavigatedFrom = navigatedFrom
             }
 
         match PathCursor.next remaining with
@@ -381,7 +454,7 @@ module PathWalk =
                 AccessRequest.SearchDirectory
                 directoryContent.Permissions
         then
-            Error UnixError.EACCES
+            Error (PathFailure.Errno UnixError.EACCES)
         else
 
         match nextComponent with
@@ -399,6 +472,7 @@ module PathWalk =
                 finalSymlinkFollowed
                 FinalNavigation.Current
                 symlinks
+                directory
         | PathComponent.Parent ->
             walkFrom
                 limits
@@ -413,6 +487,7 @@ module PathWalk =
                 finalSymlinkFollowed
                 FinalNavigation.Parent
                 symlinks
+                directory
         | PathComponent.Name name ->
 
         // The final name's length is checked by `completeResolution` rather
@@ -428,12 +503,19 @@ module PathWalk =
 
             not (PathLimits.nameWithinLimit limits name)
         then
-            Error UnixError.ENAMETOOLONG
+            Error (PathFailure.Errno UnixError.ENAMETOOLONG)
         else
 
         match Map.tryFind name directoryContent.Entries with
-        | None -> Error UnixError.ENOENT
+        | None ->
+            match absentNameRefusal vfs directory name with
+            | Some refusal -> Error (PathFailure.Refused refusal)
+            | None -> Error (PathFailure.Errno UnixError.ENOENT)
         | Some target ->
+
+        match unmodelledMountRefusal vfs target with
+        | Some refusal -> Error (PathFailure.Refused refusal)
+        | None ->
 
         let content =
             match VirtualFileSystem.tryGetContent target vfs with
@@ -449,7 +531,7 @@ module PathWalk =
             // component alone, and no kernel offers a walk that stops at an
             // interior link.
             match traverse limits vfs directory linkTarget rest symlinks with
-            | Error error -> Error error
+            | Error error -> Error (PathFailure.Errno error)
             | Ok (next, spliced) ->
 
             walkFrom
@@ -470,6 +552,7 @@ module PathWalk =
                 // here.
                 lastNavigation
                 (symlinks + 1)
+                next
         | InodeContent.Directory _ ->
             walkFrom
                 limits
@@ -484,8 +567,10 @@ module PathWalk =
                 finalSymlinkFollowed
                 lastNavigation
                 symlinks
-        // A path cannot continue through a regular file.
-        | InodeContent.RegularFile _ -> Error UnixError.ENOTDIR
+                target
+        // A path cannot continue through a regular file or a device.
+        | InodeContent.RegularFile _
+        | InodeContent.CharacterDevice _ -> Error (PathFailure.Errno UnixError.ENOTDIR)
 
     /// Whether the directory this paused resolution would look its final name up
     /// in has lost its own last name — so no path reaches it, though whatever
@@ -508,6 +593,27 @@ module PathWalk =
         match paused.Final with
         | None -> false
         | Some _ -> VirtualFileSystem.isOrphanedDirectory paused.Directory paused.FileSystem
+
+    /// The root of the mounted filesystem a kernel's parent walk of this path
+    /// stops on, or `None` for the root filesystem: the directory the final
+    /// name would be looked up in, or, for a path ending in "." or "..", the
+    /// directory that component was taken from. Two paths whose parents answer
+    /// differently are on different filesystems, which is the question
+    /// `rename(2)` asks before either final name is looked up.
+    let pausedMountedRoot (paused : PausedResolution) : InodeNumber option =
+        match box paused with
+        | null ->
+            failwith
+                "PathWalk.pausedMountedRoot: this paused resolution is null, which it can only be if it came from `Unchecked.defaultof` or C# `default`; obtain one from PathWalk.resolveParent instead."
+        | _ ->
+
+        // For a path ending in "." or "..", the parent walk stops in the
+        // directory that component was consumed from, not in the one it
+        // reached: Linux's `filename_parentat` hands back the path before the
+        // last component, so "/dev/.." is on the device filesystem.
+        match paused.Final with
+        | Some _ -> VirtualFileSystem.mountedRootOf paused.Directory paused.FileSystem
+        | None -> VirtualFileSystem.mountedRootOf paused.NavigatedFrom paused.FileSystem
 
     /// What `paused.SymlinkProtection` says about following the link `link`
     /// found in `directory`: `None` to follow it.
@@ -575,7 +681,7 @@ module PathWalk =
     /// symlink, the lookup can splice a target into the pathname buffer and
     /// send the walk on to a different directory, so this re-enters the parent
     /// walk and finishes again.
-    let rec completeResolution (paused : PausedResolution) : Result<Resolution, UnixError> =
+    let rec completeResolution (paused : PausedResolution) : Result<Resolution, PathFailure> =
         // The record is a reference type, so `Unchecked.defaultof` and C#
         // `default` give null rather than a record of zeroed fields — and a
         // field access on that reports a NullReferenceException from inside the
@@ -591,7 +697,7 @@ module PathWalk =
         let directory = paused.Directory
         let trailing = paused.Trailing
 
-        let finish (target : ResolvedTarget) : Result<Resolution, UnixError> =
+        let finish (target : ResolvedTarget) : Result<Resolution, PathFailure> =
             Ok
                 {
                     Target = target
@@ -615,7 +721,7 @@ module PathWalk =
         // `RefuseIsDirectory`; see its docstring for the rows that pin the
         // position.
         match paused.TrailingSeparator with
-        | TrailingSeparatorPolicy.RefuseIsDirectory when trailing -> Error UnixError.EISDIR
+        | TrailingSeparatorPolicy.RefuseIsDirectory when trailing -> Error (PathFailure.Errno UnixError.EISDIR)
         | TrailingSeparatorPolicy.RefuseIsDirectory
         | TrailingSeparatorPolicy.Demand
         | TrailingSeparatorPolicy.Ignore ->
@@ -632,7 +738,7 @@ module PathWalk =
         // This is also the only place that sees components spliced in from a
         // symlink target, which a check at the syscall boundary could not.
         if not (PathLimits.nameWithinLimit limits name) then
-            Error UnixError.ENAMETOOLONG
+            Error (PathFailure.Errno UnixError.ENAMETOOLONG)
         else
 
         match Map.tryFind name directoryContent.Entries with
@@ -641,8 +747,14 @@ module PathWalk =
             // ENOENT (`stat`) or the point of the call (`mkdir`). A
             // trailing separator does not change that — `mkdir("nx/")`
             // creates on both platforms.
-            finish (ResolvedTarget.Entry (directory, name, None))
+            match absentNameRefusal vfs directory name with
+            | Some refusal -> Error (PathFailure.Refused refusal)
+            | None -> finish (ResolvedTarget.Entry (directory, name, None))
         | Some target ->
+
+        match unmodelledMountRefusal vfs target with
+        | Some refusal -> Error (PathFailure.Refused refusal)
+        | None ->
 
         let content =
             match VirtualFileSystem.tryGetContent target vfs with
@@ -671,7 +783,7 @@ module PathWalk =
         match content with
         | InodeContent.Symlink linkTarget when followFinal ->
             match traverse limits vfs directory linkTarget rest paused.SymlinksTraversed with
-            | Error error -> Error error
+            | Error error -> Error (PathFailure.Errno error)
             | Ok (next, spliced) ->
 
             // Only a link in the final position is screened, since only there
@@ -684,7 +796,7 @@ module PathWalk =
             // After the traversal budget, which Linux spends on the link first:
             // a protected link that is the 41st traversal is ELOOP to everyone.
             match linkProtectionRefusal paused directory target with
-            | Some error -> Error error
+            | Some error -> Error (PathFailure.Errno error)
             | None ->
 
             // The link's own trailing separator only takes effect when
@@ -730,6 +842,7 @@ module PathWalk =
                 true
                 lastNavigation
                 (paused.SymlinksTraversed + 1)
+                next
             |> Result.bind completeResolution
         | InodeContent.Symlink _ ->
             // Final position under NoFollowFinal with no trailing
@@ -737,14 +850,15 @@ module PathWalk =
             // `lstat` and `readlink` need.
             finish (ResolvedTarget.Entry (directory, name, Some target))
         | InodeContent.Directory _ -> finish (ResolvedTarget.Entry (directory, name, Some target))
-        | InodeContent.RegularFile _ ->
+        | InodeContent.RegularFile _
+        | InodeContent.CharacterDevice _ ->
             // "p/" where p exists and is not a directory is ENOTDIR --
             // for every lookup, on both platforms, and for Darwin's
             // `mkdir`. Linux's `mkdir` is the exception and answers
             // EEXIST, which is what `Ignore` selects: it never asks what
             // the final component was.
             if trailingActsOnFinal then
-                Error UnixError.ENOTDIR
+                Error (PathFailure.Errno UnixError.ENOTDIR)
             else
                 finish (ResolvedTarget.Entry (directory, name, Some target))
 
@@ -785,7 +899,7 @@ module PathWalk =
         (trailingSeparatorPolicy : TrailingSeparatorPolicy)
         (path : UnixPath)
         (vfs : VirtualFileSystem)
-        : Result<PausedResolution, UnixError>
+        : Result<PausedResolution, PathFailure>
         =
         // Checked here rather than trusted, because this is the boundary a
         // forged value crosses: `create` refuses a zero limit, but a struct's
@@ -796,7 +910,7 @@ module PathWalk =
         // components would instead silently answer "the directory I started
         // from".
         if UnixPath.isEmpty path then
-            Error UnixError.ENOENT
+            Error (PathFailure.Errno UnixError.ENOENT)
         else
 
         let start =
@@ -805,10 +919,11 @@ module PathWalk =
             else
 
             match VirtualFileSystem.tryGetContent startDirectory vfs with
-            | None -> Error UnixError.ENOENT
+            | None -> Error (PathFailure.Errno UnixError.ENOENT)
             | Some (InodeContent.Directory _) -> Ok startDirectory
             | Some (InodeContent.RegularFile _)
-            | Some (InodeContent.Symlink _) -> Error UnixError.ENOTDIR
+            | Some (InodeContent.CharacterDevice _)
+            | Some (InodeContent.Symlink _) -> Error (PathFailure.Errno UnixError.ENOTDIR)
 
         match start with
         | Error error -> Error error
@@ -827,6 +942,7 @@ module PathWalk =
             false
             FinalNavigation.Root
             0
+            start
 
     /// Resolve `path` all the way: `resolveParent` followed by
     /// `completeResolution`, which is what every caller resolving a single path
@@ -840,7 +956,7 @@ module PathWalk =
         (trailingSeparatorPolicy : TrailingSeparatorPolicy)
         (path : UnixPath)
         (vfs : VirtualFileSystem)
-        : Result<Resolution, UnixError>
+        : Result<Resolution, PathFailure>
         =
         resolveParent limits credentials symlinkProtection startDirectory policy trailingSeparatorPolicy path vfs
         |> Result.bind completeResolution
@@ -856,7 +972,7 @@ module PathWalk =
         (policy : SymlinkPolicy)
         (path : UnixPath)
         (vfs : VirtualFileSystem)
-        : Result<ResolvedTarget, UnixError>
+        : Result<ResolvedTarget, PathFailure>
         =
         resolveFull limits credentials symlinkProtection startDirectory policy TrailingSeparatorPolicy.Demand path vfs
         |> Result.map (fun resolution -> resolution.Target)
@@ -881,9 +997,9 @@ module PathWalk =
         (policy : SymlinkPolicy)
         (path : UnixPath)
         (vfs : VirtualFileSystem)
-        : Result<InodeNumber, UnixError>
+        : Result<InodeNumber, PathFailure>
         =
         resolve limits credentials symlinkProtection startDirectory policy path vfs
-        |> Result.bind existingOf
+        |> Result.bind (existingOf >> Result.mapError PathFailure.Errno)
 
 // ------------------------------------------------------------ inspection

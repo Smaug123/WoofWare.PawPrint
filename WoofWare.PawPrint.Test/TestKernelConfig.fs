@@ -257,8 +257,11 @@ module TestKernelConfig =
                         FileSystem = seed
                     }
 
+            // The device filesystem the kernel mounts at boot is root's, and is
+            // not the seed's.
             kernel.Machine.FileSystem
             |> VirtualFileSystem.inodes
+            |> Map.filter (fun number _ -> (VirtualFileSystem.mountedRootOf number kernel.Machine.FileSystem).IsNone)
             |> Map.iter (fun _ inode -> inode.Owner |> shouldEqual configured)
 
             // An owner that is the configured one is not foreign, so it is taken.
@@ -399,8 +402,13 @@ module TestKernelConfig =
                 for path, owner in paths do
                     (path, ownerAt kernel path) |> shouldEqual (path, owner)
 
-                // Nothing but the root and the seed's own entries.
+                // Nothing on the root filesystem but the root and the seed's own
+                // entries; the device filesystem the kernel mounts at boot is
+                // not the seed's.
                 VirtualFileSystem.inodes kernel.Machine.FileSystem
+                |> Map.filter (fun number _ ->
+                    (VirtualFileSystem.mountedRootOf number kernel.Machine.FileSystem).IsNone
+                )
                 |> Map.count
                 |> shouldEqual (List.length paths + 1)
 

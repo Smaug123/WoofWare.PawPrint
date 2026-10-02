@@ -124,6 +124,7 @@ module ProtectedFiles =
         let governing =
             match existing.Content with
             | InodeContent.RegularFile _ -> Some protection.RegularFiles
+            | InodeContent.CharacterDevice _
             | InodeContent.Symlink _
             | InodeContent.Directory _ -> None
 

@@ -393,6 +393,17 @@ module TestWithFileSystemAndCurrentDirectory =
                     SimulatedUnixPlatform.macOsArm64
                     (Map.ofList [ nameOfBytes [ 0xFFuy ], SeedEntry.file noBytes ])
                     "/"
+                // A seed whose `dev` the device filesystem would hide.
+                startAt
+                    SimulatedUnixPlatform.linuxX64
+                    (Map.ofList
+                        [
+                            name "dev", SeedEntry.directory (Map.ofList [ name "x", SeedEntry.file noBytes ])
+                        ])
+                    "/"
+                // A directory in the device filesystem, whose names this kernel
+                // knows only some of.
+                startAt SimulatedUnixPlatform.linuxX64 seed "/dev/pts"
             ]
             |> List.choose (fun result ->
                 match result with

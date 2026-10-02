@@ -54,9 +54,9 @@ module TestUnixPathBytes =
 
         let system =
             linux
-            |> UnixNamespace.mkdir (PathArg.ofPath (pathOf directory)) 0o777
+            |> Answered.mkdir (PathArg.ofPath (pathOf directory)) 0o777
             |> completed
-            |> UnixPathResolution.chdir (PathArg.ofPath (pathOf directory))
+            |> Answered.chdir (PathArg.ofPath (pathOf directory))
             |> completed
 
         match UnixPathResolution.getcwd UserBuffer.Mapped 4096UL system with
@@ -74,10 +74,10 @@ module TestUnixPathBytes =
             names
             |> List.fold
                 (fun system name ->
-                    UnixNamespace.mkdir (PathArg.ofPath (pathOf (parent @ [ slash ] @ name))) 0o777 system
+                    Answered.mkdir (PathArg.ofPath (pathOf (parent @ [ slash ] @ name))) 0o777 system
                     |> completed
                 )
-                (UnixNamespace.mkdir (PathArg.ofPath (pathOf parent)) 0o777 linux |> completed)
+                (Answered.mkdir (PathArg.ofPath (pathOf parent)) 0o777 linux |> completed)
 
         let fd, system =
             match DirectoryReading.openDirectory (pathOf parent) system with
@@ -207,9 +207,9 @@ module TestUnixPathBytes =
         // cannot give its own process.
         let orphaned =
             seeded (Map.toList BindingProbes.tree) darwin
-            |> UnixNamespace.mkdir (PathArg.ofPath (pathOf (text "/gone"))) 0o777
+            |> Answered.mkdir (PathArg.ofPath (pathOf (text "/gone"))) 0o777
             |> completed
-            |> UnixPathResolution.chdir (PathArg.ofPath (pathOf (text "/gone")))
+            |> Answered.chdir (PathArg.ofPath (pathOf (text "/gone")))
             |> completed
             |> Answered.rmdir (pathOf (text "../gone"))
             |> completed
@@ -227,7 +227,7 @@ module TestUnixPathBytes =
             }
 
         for name in [ text "g" ; [ 0xFFuy ] ] do
-            fst (UnixNamespace.mkdir (PathArg.ofPath (pathOf name)) 0o777 orphaned)
+            fst (Answered.mkdir (PathArg.ofPath (pathOf name)) 0o777 orphaned)
             |> shouldEqual (SyscallAnswer.Failed UnixError.ENOENT)
 
             fst (Answered.openPath creating (pathOf name) 0o666 orphaned)

@@ -104,6 +104,8 @@ type AccessRefusal =
     /// The `dirfd` names something other than a directory or a regular file,
     /// and the call would start from it.
     | UnmodelledDescriptor of fd : int
+    /// This kernel will not resolve the path.
+    | Path of PathRefusal
 
 [<RequireQualifiedAccess>]
 module AccessRefusal =
@@ -119,6 +121,7 @@ module AccessRefusal =
             $"executing inode %O{inode}: %s{ExecutionRefusal.describe refusal}"
         | AccessRefusal.UnmodelledDescriptor fd ->
             $"fd %d{fd} names neither a directory nor a regular file, and the call would start from it. What a kernel answers for a pipe (the standard streams among them), a socket or a socket event port there has not been measured."
+        | AccessRefusal.Path refusal -> PathRefusal.describe refusal
 
 /// What screening `faccessat(2)`'s mode word and flag word came to.
 [<RequireQualifiedAccess>]
@@ -273,6 +276,7 @@ module AccessRules =
             match content with
             | InodeContent.Directory _ -> Ok (PermissionBits.deniedTo standing AccessRequest.SearchDirectory bits)
             | InodeContent.RegularFile _
+            | InodeContent.CharacterDevice _
             | InodeContent.Symlink _ -> PermissionBits.executionDenied rule standing bits
 
         match execute with

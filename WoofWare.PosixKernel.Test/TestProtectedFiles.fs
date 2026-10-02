@@ -480,7 +480,7 @@ module TestProtectedFiles =
                 system.Machine.FileSystem
         with
         | Ok _ -> true
-        | Error UnixError.ENOENT -> false
+        | Error (PathFailure.Errno UnixError.ENOENT) -> false
         | Error error -> failwith $"%s{p}: %O{error}"
 
     let private contentsOf (p : string) (system : UnixSystem<int, string>) : int =
@@ -576,10 +576,7 @@ module TestProtectedFiles =
             "dir-slash", stat "/s/ld/"
             "dir-dot", stat "/s/ld/."
             "dir-child", stat "/s/ld/x"
-            "chdir",
-            UnixPathResolution.chdir (PathArg.ofPath (path "/s/ld")) system
-            |> fst
-            |> answerText
+            "chdir", Answered.chdir (PathArg.ofPath (path "/s/ld")) system |> fst |> answerText
             "opendir",
             fst (
                 openText

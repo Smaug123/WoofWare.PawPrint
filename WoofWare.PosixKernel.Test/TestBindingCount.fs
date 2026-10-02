@@ -56,6 +56,7 @@ module TestBindingCount =
                 |> Seq.filter (fun (_, target) -> target = inode)
                 |> Seq.length
             | InodeContent.RegularFile _
+            | InodeContent.CharacterDevice _
             | InodeContent.Symlink _ -> 0
         )
 
@@ -107,6 +108,7 @@ module TestBindingCount =
         match VirtualFileSystem.tryGetContent inode vfs with
         | None -> failwith $"test bug: inode %O{inode} is not in the graph"
         | Some (InodeContent.RegularFile _)
+        | Some (InodeContent.CharacterDevice _)
         | Some (InodeContent.Symlink _) -> Some (int64 (scannedBindingCount inode vfs))
         | Some (InodeContent.Directory _) ->
             match fsType with
@@ -327,6 +329,7 @@ module TestBindingCount =
             match node.Content with
             | InodeContent.Directory content -> Some (inode, content)
             | InodeContent.RegularFile _
+            | InodeContent.CharacterDevice _
             | InodeContent.Symlink _ -> None
         )
 
@@ -410,6 +413,7 @@ module TestBindingCount =
             match content with
             | InodeContent.Directory directory -> go true directory.Parent vfs
             | InodeContent.RegularFile _
+            | InodeContent.CharacterDevice _
             | InodeContent.Symlink _ -> vfs
 
         go false inode vfs
@@ -535,6 +539,7 @@ module TestBindingCount =
                         match content with
                         | InodeContent.Directory content -> Map.tryFind destinationName content.Entries
                         | InodeContent.RegularFile _
+                        | InodeContent.CharacterDevice _
                         | InodeContent.Symlink _ -> None
                     )
 
@@ -600,6 +605,7 @@ module TestBindingCount =
                     match node.Content with
                     | InodeContent.Symlink _ -> None
                     | InodeContent.RegularFile _
+                    | InodeContent.CharacterDevice _
                     | InodeContent.Directory _ -> Some inode
                 )
 

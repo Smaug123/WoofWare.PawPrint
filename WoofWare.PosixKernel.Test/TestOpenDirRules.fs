@@ -124,6 +124,7 @@ module TestOpenDirRules =
                 TrailingSeparatorPolicy.Demand
                 (path candidate)
                 tree
+            |> Answered.errno
         with
         | Error error -> OpenDirVerdict.Refuse error
         | Ok resolution -> OpenDirRules.verdict (Owners.caller privilege) resolution tree

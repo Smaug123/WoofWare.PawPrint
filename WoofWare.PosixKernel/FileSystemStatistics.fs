@@ -34,6 +34,10 @@ type CapacityRefusal =
     | Apfs
     /// The filesystem is an NFS mount, whose counts are the server's.
     | Nfs
+    /// The filesystem is the device filesystem, whose file count counts every
+    /// node a real one holds, and whose block counts are a share of the
+    /// machine's memory.
+    | DeviceFileSystem
 
 [<RequireQualifiedAccess>]
 module CapacityRefusal =
@@ -44,6 +48,8 @@ module CapacityRefusal =
             "the filesystem is an APFS volume, whose block and file counts are those of the whole container, shared with every other volume in it and moved by every process's writes. Measured, they are not even deterministic on a container nothing else writes to, so no configured value could be one a real volume reports while the process writes."
         | CapacityRefusal.Nfs ->
             "the filesystem is an NFS mount, whose block and file counts are the server's, which nothing in this machine determines."
+        | CapacityRefusal.DeviceFileSystem ->
+            "the filesystem is the device filesystem. Its free-file count is its inode limit less every node a real one holds, and this kernel's holds only the nodes of the devices it has drivers for; its block counts are a share of the machine's memory, which this machine does not describe."
 
 /// Why this kernel does not state a filesystem's `f_fsid`.
 [<RequireQualifiedAccess>]
@@ -340,6 +346,46 @@ module FileSystemStatistics =
             failwith
                 $"FileSystemStatistics.ofMount: the type fields for a %O{mount} mount are not %O{flavour}'s, which EmulatedFileSystemType.fieldsFor should have refused (this is a bug in this library)"
 
+    /// What `statfs(2)` reports for anything on the device filesystem `mount`,
+    /// under a kernel of this platform.
+    ///
+    /// Refuses a device filesystem this platform cannot mount, and Darwin's
+    /// devfs, which this kernel does not model and no path reaches.
+    let ofDeviceMount (platform : SimulatedUnixPlatform) (mount : DeviceFileSystemMount) : FileSystemStatistics =
+        let flavour = SimulatedUnixPlatform.flavour platform
+
+        match mount with
+        | DeviceFileSystemMount.Devfs ->
+            failwith
+                "FileSystemStatistics.ofDeviceMount: asked what Darwin's devfs reports, which this kernel does not model and which no path or descriptor reaches (this is a bug in the caller)."
+        | DeviceFileSystemMount.Devtmpfs devtmpfs ->
+
+        if not (DeviceFileSystemMount.isMountableUnder flavour mount) then
+            failwith
+                $"FileSystemStatistics.ofDeviceMount: a %O{flavour} kernel cannot mount a devtmpfs (this is a bug in the caller)."
+
+        let pageSize =
+            int64 (SimulatedPageSize.bytes (SimulatedUnixPlatform.pageSize platform))
+
+        // Measured 2026-10-02 on `/dev` in a Linux 6.18.5 aarch64 VM
+        // (`devices.c`, STATFS rows): devtmpfs is tmpfs underneath and reports
+        // tmpfs's magic, the page size as both block sizes, and a 255-byte name
+        // limit, through a node and through `/dev` alike.
+        FileSystemStatistics.Linux
+            {
+                Type = 0x01021994L
+                Geometry =
+                    Ok
+                        {
+                            BlockSize = pageSize
+                            FragmentSize = pageSize
+                            NameLengthLimit = 255L
+                        }
+                Capacity = Error CapacityRefusal.DeviceFileSystem
+                FileSystemId = Ok devtmpfs.FileSystemId
+                Flags = Ok devtmpfs.Flags
+            }
+
     /// Throws unless a kernel of this platform could have this mount (see
     /// `EmulatedFileSystemType.isReportableUnder`), naming `context` as the
     /// caller that was handed the pair.
@@ -355,7 +401,11 @@ module FileSystemStatistics =
                 $"%s{context}: asked what a %O{flavour} kernel reports on a %O{fsType} mount, which %O{flavour} cannot have. The flavour and the mount have come apart; they constrain each other (see EmulatedFileSystemType.isReportableUnder) and must be chosen together rather than set one at a time."
 
     /// What `fstatfs(2)` reports for a descriptor naming `target`, under a
-    /// kernel of this platform whose one mount is `mount`.
+    /// kernel of this platform whose root filesystem is `mount`.
+    ///
+    /// A file or directory gets the root filesystem's answer: `target` does not
+    /// say which filesystem its inode is on, so one on the device filesystem is
+    /// `ofDeviceMount`'s to answer.
     ///
     /// Refuses a platform and mount that do not describe one machine (see
     /// `EmulatedFileSystemType.isReportableUnder`), whatever the object.
@@ -408,7 +458,8 @@ module FileSystemStatistics =
                 |> FileSystemStatisticsAnswer.Reported
 
         match target with
-        // Regular files and directories alike: one mount has one answer.
+        // Regular files and directories alike: the root filesystem has one
+        // answer.
         | OpenFileObject.File _ -> FileSystemStatisticsAnswer.Reported (ofMount platform mount)
         | OpenFileObject.Pipe _ -> pseudoFileSystem PseudoFileSystem.Pipe
         | OpenFileObject.Socket _ -> pseudoFileSystem PseudoFileSystem.Socket

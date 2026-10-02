@@ -296,11 +296,11 @@ module TestFileSystemType =
             UnixPathResolution.fstatfs fileFd system
             UnixPathResolution.fstatfs dirFd system
             UnixPathResolution.fstatfs rootFd system
-            UnixPathResolution.statfs (PathArg.ofPath (UnixPath.parseOrFail context "/f")) system
-            UnixPathResolution.statfs (PathArg.ofPath (UnixPath.parseOrFail context "/d")) system
-            UnixPathResolution.statfs (PathArg.ofPath (UnixPath.parseOrFail context "/")) system
-            UnixPathResolution.statfs (PathArg.ofPath (UnixPath.parseOrFail context "ld")) system
-            UnixPathResolution.statfs (PathArg.ofPath (UnixPath.parseOrFail context "d/")) system
+            Answered.statfs (PathArg.ofPath (UnixPath.parseOrFail context "/f")) system
+            Answered.statfs (PathArg.ofPath (UnixPath.parseOrFail context "/d")) system
+            Answered.statfs (PathArg.ofPath (UnixPath.parseOrFail context "/")) system
+            Answered.statfs (PathArg.ofPath (UnixPath.parseOrFail context "ld")) system
+            Answered.statfs (PathArg.ofPath (UnixPath.parseOrFail context "d/")) system
         ]
 
     // ----------------------------------------------------------- type fields
@@ -615,7 +615,7 @@ module TestFileSystemType =
 
                 for path, expected in measuredPathRows do
                     let answer =
-                        UnixPathResolution.statfs (PathArg.ofPath (UnixPath.parseOrFail context path)) system
+                        Answered.statfs (PathArg.ofPath (UnixPath.parseOrFail context path)) system
 
                     match expected, answer with
                     | Some error, FileSystemStatisticsAnswer.Failed actual when actual = error -> ()
@@ -659,7 +659,7 @@ module TestFileSystemType =
                     | Error refusal -> failwith $"test bug: stat refused: %s{StatRefusal.describe refusal}"
 
                 let viaStatfs =
-                    match UnixPathResolution.statfs (PathArg.ofPath parsed) system with
+                    match Answered.statfs (PathArg.ofPath parsed) system with
                     | FileSystemStatisticsAnswer.Failed error -> Some error
                     | FileSystemStatisticsAnswer.Reported _ -> None
 
@@ -704,9 +704,7 @@ module TestFileSystemType =
                     PathArgumentBytes.Unreadable
                     PathArg.ofText (String.replicate 5000 "a")
                 ] do
-                Assert.Throws (fun () ->
-                    UnixPathResolution.statfs path incoherent |> ignore<FileSystemStatisticsAnswer>
-                )
+                Assert.Throws (fun () -> Answered.statfs path incoherent |> ignore<FileSystemStatisticsAnswer>)
                 |> ignore<exn>
 
             for target in
