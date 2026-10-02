@@ -796,7 +796,7 @@ module FileDescriptorRegistry =
     /// of those descriptors onto a pipe of its own; `UnixSystem.initial` is the
     /// caller, and mints the pipes. It is the only way to build a table with
     /// descriptors at chosen numbers, which no syscall can do.
-    let ofLaunchedPipes (ends : Map<int, PipeId * PipeEnd>) : FileDescriptorRegistry =
+    let internal ofLaunchedPipes (ends : Map<int, PipeId * PipeEnd>) : FileDescriptorRegistry =
         let empty =
             {
                 Fds = Map.empty
@@ -941,7 +941,7 @@ module FileDescriptorRegistry =
     /// last reference to a *kernel object* whose lifetime is decided elsewhere —
     /// `UnixMachineState.Sockets` is the one that exists today — and this registry
     /// cannot reach that state to clean it up itself.
-    let dropDescriptor
+    let internal dropDescriptor
         (fd : int)
         (registry : FileDescriptorRegistry)
         : Result<FileDescriptorRegistry * OpenFileDescription option, FileDescriptorCloseError>
@@ -1058,7 +1058,11 @@ module FileDescriptorRegistry =
     ///
     /// Total, for the reasons `openFile` is; whether `inode` is a directory the
     /// process may read is decided before this is reached.
-    let openDirectory (inode : InodeNumber) (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
+    let internal openDirectory
+        (inode : InodeNumber)
+        (registry : FileDescriptorRegistry)
+        : int * FileDescriptorRegistry
+        =
         let id = registry.NextId
         let (OpenFileDescriptionId raw) = id
         let fd = lowestFree registry.Fds
@@ -1182,7 +1186,7 @@ module FileDescriptorRegistry =
     /// pipe table rather than here; `UnixPipe.pipe2` is the one caller.
     ///
     /// Total, like `openFile`: this library models no descriptor limit.
-    let createPipe
+    let internal createPipe
         (pipeId : PipeId)
         (nonBlocking : bool)
         (registry : FileDescriptorRegistry)
@@ -1272,7 +1276,7 @@ module FileDescriptorRegistry =
     /// Loudly partial in `id`, which is not a guest-reachable failure: a
     /// description a client still holds an identity for is one it must not have
     /// let `close` destroy.
-    let flockOn
+    let internal flockOn
         (id : OpenFileDescriptionId)
         (request : FlockRequest)
         (registry : FileDescriptorRegistry)
@@ -1348,7 +1352,7 @@ module FileDescriptorRegistry =
     /// this uses.
     ///
     /// `Release` succeeds whether or not a lock was held.
-    let flock
+    let internal flock
         (fd : int)
         (request : FlockRequest)
         (registry : FileDescriptorRegistry)
@@ -1372,7 +1376,7 @@ module FileDescriptorRegistry =
     /// arithmetic needs the file's size, which lives in the filesystem, and its
     /// error vocabulary differs by platform. `VirtualFileSystem.seekTarget`
     /// computes the target and this stores it.
-    let setOffset (fd : int) (offset : int64) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =
+    let internal setOffset (fd : int) (offset : int64) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =
         if offset < 0L then
             failwith
                 $"setOffset: fd %d{fd} was asked to move to offset %d{offset}, which is negative. No kernel permits a negative file offset; the caller must reject this as EINVAL before storing it (this is a bug in the caller of FileDescriptorRegistry.setOffset)."
@@ -1421,7 +1425,7 @@ module FileDescriptorRegistry =
     /// Partial in the descriptor, like `setOffset`: the caller has already
     /// answered EBADF for a dead fd, and has established that `fd` names a
     /// directory.
-    let setDirectoryPosition
+    let internal setDirectoryPosition
         (fd : int)
         (position : DirectoryPosition)
         (registry : FileDescriptorRegistry)
@@ -1471,7 +1475,7 @@ module FileDescriptorRegistry =
     /// business, not this store's), and no modelled wait consults it, because
     /// `epoll_wait` and `kevent` block per their own timeout argument rather
     /// than per the descriptor's flags.
-    let setNonBlocking (fd : int) (value : bool) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =
+    let internal setNonBlocking (fd : int) (value : bool) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =
         match Map.tryFind fd registry.Fds with
         | None ->
             failwith
@@ -1538,7 +1542,7 @@ module FileDescriptorRegistry =
     /// pair. Loudly partial on a key already registered, which `epoll_ctl`
     /// answers `EEXIST` for before it reaches the table; that answer is the
     /// caller's (`UnixPoll.epollCtl`).
-    let addEpollRegistration
+    let internal addEpollRegistration
         (portId : OpenFileDescriptionId)
         (key : int * OpenFileDescriptionId)
         (registration : EpollRegistration)
@@ -1566,7 +1570,7 @@ module FileDescriptorRegistry =
     ///
     /// Loudly partial on a key not registered, which `epoll_ctl` answers
     /// `ENOENT` for before it reaches the table.
-    let modifyEpollRegistration
+    let internal modifyEpollRegistration
         (portId : OpenFileDescriptionId)
         (key : int * OpenFileDescriptionId)
         (events : uint32)
@@ -1601,7 +1605,7 @@ module FileDescriptorRegistry =
     ///
     /// Loudly partial on a key not registered, which `epoll_ctl` answers
     /// `ENOENT` for before it reaches the table.
-    let removeEpollRegistration
+    let internal removeEpollRegistration
         (portId : OpenFileDescriptionId)
         (key : int * OpenFileDescriptionId)
         (registry : FileDescriptorRegistry)
@@ -1628,7 +1632,7 @@ module FileDescriptorRegistry =
     /// loudly partial on a key that is not registered or is already pending —
     /// both would mean the caller's decision was made against a different
     /// table than the one being written.
-    let appendSocketEventReady
+    let internal appendSocketEventReady
         (portId : OpenFileDescriptionId)
         (key : int * OpenFileDescriptionId)
         (registry : FileDescriptorRegistry)
@@ -1677,7 +1681,7 @@ module FileDescriptorRegistry =
     /// register, and on a duplicate: the caller derived `ready` from the
     /// port's own state moments ago, so any of those means it wrote against
     /// a different table than the one it read.
-    let setSocketEventReady
+    let internal setSocketEventReady
         (portId : OpenFileDescriptionId)
         (ready : (int * OpenFileDescriptionId) list)
         (registry : FileDescriptorRegistry)
@@ -1742,7 +1746,7 @@ module FileDescriptorRegistry =
     /// newest-registered first — the socket's wait queue is LIFO (measured,
     /// `order4.c`) — and a registration already pending keeps its place
     /// (`order2.c` row H).
-    let signalSocketEventPorts
+    let internal signalSocketEventPorts
         (naming : Set<OpenFileDescriptionId>)
         (wakeKey : uint32 option)
         (registry : FileDescriptorRegistry)

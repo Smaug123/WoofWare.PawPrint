@@ -913,7 +913,9 @@ module TestImpureCases =
         kernel.DirectoryStreamFds |> shouldEqual Map.empty
 
         // The three inherited standard streams and nothing else.
-        FileDescriptorRegistry.fds kernel.FileDescriptors |> Map.count |> shouldEqual 3
+        FileDescriptorRegistry.fds kernel.Process.FileDescriptors
+        |> Map.count
+        |> shouldEqual 3
 
         // Bounded rather than exact: CoreLib's own startup holds a handful of
         // native blocks (four, as this suite stands) and this assertion is not

@@ -276,8 +276,10 @@ type ThreadStatus =
     /// dispatcher thread spawned by `SystemNative_InitializeTerminalAndSignalHandling`
     /// is the current (and only) inhabitant: it mirrors real CoreCLR's
     /// `SignalHandlerLoop` pthread, which sits blocked in a native `read` until
-    /// a signal arrives. `SignalDispatch` moves it to `Runnable` onto a handler
-    /// frame and back to `Parked` when that frame returns.
+    /// a signal arrives; its task sleeps in that read in the kernel, which
+    /// `SignalDispatch` makes and finishes for it. `SignalDispatch` moves it to
+    /// `Runnable` onto a handler frame and back to `Parked` when that frame
+    /// returns.
     ///
     /// The difference from `NotStarted` is that no `Thread.Start` call will ever
     /// fire to flip it to `Runnable`. A managed `Thread` object need not back it,
