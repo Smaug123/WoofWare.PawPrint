@@ -8,8 +8,18 @@
 // `ldelem.*`/`stelem.*`, and with a `ulong` by `conv.ovf.i.un`, so those are the two spellings
 // that put a native int in front of the opcode. The int32 spelling is covered alongside them,
 // since a native-int check that lost the int32 one would be no improvement.
+//
+// The token forms `ldelem <T>`, `stelem <T>` and `ldelema <T>` take the same index operand, and
+// Roslyn reaches them with a native int the same way: `conv.ovf.i` in front of `ldelem !!T` for a
+// generic `T[]`, or of `ldelem Pair` for an array of a user-defined struct.
 
 using System;
+
+public struct Pair
+{
+    public int A;
+    public int B;
+}
 
 public class Program
 {
@@ -308,6 +318,189 @@ public class Program
         return 0;
     }
 
+    private static T Load<T>(T[] arr, long i)
+    {
+        return arr[i];
+    }
+
+    private static T Load<T>(T[] arr, ulong i)
+    {
+        return arr[i];
+    }
+
+    private static void Store<T>(T[] arr, long i, T v)
+    {
+        arr[i] = v;
+    }
+
+    private static ref T Address<T>(T[] arr, long i)
+    {
+        return ref arr[i];
+    }
+
+    // `ldelem !!T`, `stelem !!T` and `ldelema !!T` with a native-int index.
+    private static int TokenForms()
+    {
+        int[] a = { 10, 20, 30 };
+        string[] s = { "a", "b", "c" };
+
+        // Low 32 bits are 1, so a 32-bit truncation would name element 1.
+        try
+        {
+            int x = Load(a, Opaque(0x1_0000_0001L));
+            return 1;
+        }
+        catch (IndexOutOfRangeException)
+        {
+        }
+
+        try
+        {
+            string x = Load(s, Opaque(0x1_0000_0001L));
+            return 2;
+        }
+        catch (IndexOutOfRangeException)
+        {
+        }
+
+        try
+        {
+            int x = Load(a, Opaque(0x1_0000_0001UL));
+            return 3;
+        }
+        catch (IndexOutOfRangeException)
+        {
+        }
+
+        try
+        {
+            int x = Load(a, Opaque(-1L));
+            return 4;
+        }
+        catch (IndexOutOfRangeException)
+        {
+        }
+
+        try
+        {
+            Store(a, Opaque(0x1_0000_0001L), 99);
+            return 5;
+        }
+        catch (IndexOutOfRangeException)
+        {
+        }
+
+        try
+        {
+            Store(a, Opaque(-1L), 99);
+            return 6;
+        }
+        catch (IndexOutOfRangeException)
+        {
+        }
+
+        try
+        {
+            ref int x = ref Address(a, Opaque(0x1_0000_0001L));
+            return 7;
+        }
+        catch (IndexOutOfRangeException)
+        {
+        }
+
+        try
+        {
+            ref int x = ref Address(a, Opaque(3L));
+            return 8;
+        }
+        catch (IndexOutOfRangeException)
+        {
+        }
+
+        if (a[0] != 10 || a[1] != 20 || a[2] != 30)
+        {
+            return 9;
+        }
+
+        // A native int that is in range names the element it says.
+        if (Load(a, Opaque(2L)) != 30 || Load(s, Opaque(1L)) != "b" || Load(a, Opaque(0UL)) != 10)
+        {
+            return 10;
+        }
+
+        Store(a, Opaque(1L), 21);
+        Address(a, Opaque(2L)) = 31;
+        if (a[0] != 10 || a[1] != 21 || a[2] != 31)
+        {
+            return 11;
+        }
+
+        // The null check comes before the index is looked at, whatever its width.
+        try
+        {
+            int x = Load<int>(null, Opaque(0x1_0000_0001L));
+            return 12;
+        }
+        catch (NullReferenceException)
+        {
+        }
+
+        return 0;
+    }
+
+    // A user-defined struct element puts a TypeDef token on the opcodes rather than a TypeSpec.
+    private static int StructTokenForms()
+    {
+        Pair[] ps = new Pair[3];
+        ps[1].A = 5;
+
+        try
+        {
+            Pair p = ps[Opaque(0x1_0000_0001L)];
+            return 1;
+        }
+        catch (IndexOutOfRangeException)
+        {
+        }
+
+        try
+        {
+            ps[Opaque(0x1_0000_0001L)] = new Pair { A = 99 };
+            return 2;
+        }
+        catch (IndexOutOfRangeException)
+        {
+        }
+
+        try
+        {
+            int x = ps[Opaque(-1L)].A;
+            return 3;
+        }
+        catch (IndexOutOfRangeException)
+        {
+        }
+
+        if (ps[0].A != 0 || ps[1].A != 5 || ps[2].A != 0)
+        {
+            return 4;
+        }
+
+        if (ps[Opaque(1L)].A != 5)
+        {
+            return 5;
+        }
+
+        ps[Opaque(2L)] = new Pair { A = 7 };
+        ps[Opaque(0L)].B = 8;
+        if (ps[2].A != 7 || ps[0].B != 8)
+        {
+            return 6;
+        }
+
+        return 0;
+    }
+
     public static int Main(string[] args)
     {
         int result;
@@ -346,6 +539,18 @@ public class Program
         if (result != 0)
         {
             return 60 + result;
+        }
+
+        result = TokenForms();
+        if (result != 0)
+        {
+            return 70 + result;
+        }
+
+        result = StructTokenForms();
+        if (result != 0)
+        {
+            return 90 + result;
         }
 
         return 0;
