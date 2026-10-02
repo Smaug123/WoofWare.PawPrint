@@ -1139,8 +1139,8 @@ module FileDescriptorRegistry =
     /// cosmetic, for the reason `createSocketEventPort`'s is:
     /// `UnixReadWrite.read` and `UnixReadWrite.write` test the access mode before
     /// they look at the target, so anything narrower would answer EBADF where a
-    /// real socket answers about its connection state instead (measured:
-    /// ENOTCONN, EINVAL, or a block, never EBADF).
+    /// real socket gives its own answer instead (measured on one with no peer:
+    /// ENOTCONN, EINVAL, EPIPE, EDESTADDRREQ, EAGAIN or a block, never EBADF).
     ///
     /// Total, like `openFile` and `createSocketEventPort`: this library models no
     /// descriptor limit, so there is no `EMFILE`/`ENFILE` to report, and no

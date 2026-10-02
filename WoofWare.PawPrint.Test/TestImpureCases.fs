@@ -1176,6 +1176,28 @@ module TestImpureCases =
     /// 0 on Linux, 100 (EPIPE) on Darwin. The assertion here is that none of
     /// the SIGPIPEs its writes raised was left pending, the runtime ignoring
     /// it, and that the pipe was freed.
+    /// `SocketUnconnectedTransfer.cs` under `platform`: 0 for Linux's answers
+    /// and 100 for Darwin's. Compared against the real runtime on a host of the
+    /// same flavour, since the guest asserts nothing but errnos.
+    let private socketUnconnectedTransferCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
+        {
+            FileName = "SocketUnconnectedTransfer.cs"
+            ExpectedReturnCode =
+                match SimulatedUnixPlatform.flavour platform with
+                | SimulatedUnixFlavour.Linux -> 0
+                | SimulatedUnixFlavour.Darwin -> 100
+            KernelConfig =
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+            ExpectsUnhandledException = false
+            // Linux's TCP writes raised SIGPIPE, which the runtime's startup
+            // ignores, so none is left pending.
+            AssertTerminalState = Some (fun state -> SignalState.pending state.Kernel.Signals |> shouldEqual [])
+        }
+
     let private pipeBrokenRawCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
         {
             FileName = "PipeBrokenRaw.cs"
@@ -1385,6 +1407,8 @@ module TestImpureCases =
             pipeRawCase SimulatedUnixPlatform.macOsArm64
             pipeBrokenRawCase SimulatedUnixPlatform.linuxX64
             pipeBrokenRawCase SimulatedUnixPlatform.macOsArm64
+            socketUnconnectedTransferCase SimulatedUnixPlatform.linuxX64
+            socketUnconnectedTransferCase SimulatedUnixPlatform.macOsArm64
             pipeReaderLeavesCase SimulatedUnixPlatform.linuxX64
             pipeReaderLeavesCase SimulatedUnixPlatform.macOsArm64
             processIdCase None

@@ -312,27 +312,61 @@ module TestUnixSystemStep =
                 }
         }
 
-    let private socketRefused : Result<ReadAnswer * UnixSystem<int, string>, ReadRefusal> =
-        Error (ReadRefusal.SocketConnectionState (socketZero, SocketDomain.Inet, SocketKind.Stream))
+    let private notConnected
+        (system : UnixSystem<int, string>)
+        : Result<ReadAnswer * UnixSystem<int, string>, ReadRefusal>
+        =
+        Ok (ReadAnswer.Failed UnixError.ENOTCONN, system)
+
+    /// `withSocket`, with the socket in `phase`.
+    let private withSocketIn (phase : SocketPhase) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+        let fd, system = withSocket system
+
+        fd,
+        { system with
+            Machine =
+                { system.Machine with
+                    Sockets =
+                        Map.ofList
+                            [
+                                socketZero,
+                                { socketDescription with
+                                    Phase = phase
+                                }
+                            ]
+                }
+        }
 
     [<Test>]
-    let ``a socket is refused, and the refusal names it`` () : unit =
-        // `read(2)` on a socket is an answer about connection state, which this
-        // kernel does not model; a constant here would become a lie the moment
-        // it did. The refusal carries the socket's domain and kind because the
-        // measured answers differ by both, and only the library can see them.
-        let fd, system = withSocket linux
+    let ``a socket with a peer is refused, and the refusal names it`` () : unit =
+        // A connected socket's read moves bytes, which this kernel does not
+        // model. The refusal carries the socket's domain, kind and phase,
+        // because only the library can see them. One with no peer is answered
+        // (`TestUnconnectedSocketTransfer` holds those rows to the measured
+        // ones): ENOTCONN for an INET stream socket on both flavours.
+        for platform in [ linux ; darwin ] do
+            let established = SocketPhase.Established (ConnectionId 0L)
+            let fd, system = withSocketIn established platform
 
-        ReadOutcomes.read fd UserBuffer.Mapped 5UL system |> shouldEqual socketRefused
+            ReadOutcomes.read fd UserBuffer.Mapped 5UL system
+            |> shouldEqual (
+                Error (
+                    ReadRefusal.UnmodelledSocketPhase (socketZero, SocketDomain.Inet, SocketKind.Stream, established)
+                )
+            )
+
+            let fd, system = withSocket platform
+
+            ReadOutcomes.read fd UserBuffer.Mapped 5UL system
+            |> shouldEqual (notConnected system)
 
     [<Test>]
     let ``a screening platform answers a socket's bad address before the read`` () : unit =
         // Measured on both. Linux screens the address before the object's own
         // read operation, so `read(socket, (void*)-1, n)` is EFAULT for every `n`
-        // including 0 — the socket is never consulted, and refusing would
-        // decline a call a real kernel answers. Darwin screens nothing, so the
-        // same call reaches the socket and earns a connection-state answer this
-        // kernel cannot give.
+        // including 0 — the socket is never consulted. Darwin screens nothing,
+        // so the same call reaches the socket, which answers without touching
+        // the buffer: ENOTCONN for a stream socket with no peer.
         let wild = UserBuffer.Unmapped System.UInt64.MaxValue
         let linuxFd, linuxSystem = withSocket linux
         let darwinFd, darwinSystem = withSocket darwin
@@ -342,18 +376,15 @@ module TestUnixSystemStep =
             |> shouldEqual (Ok (ReadAnswer.Failed UnixError.EFAULT, linuxSystem))
 
             ReadOutcomes.read darwinFd wild count darwinSystem
-            |> shouldEqual (
-                Error (ReadRefusal.SocketConnectionState (socketZero, SocketDomain.Inet, SocketKind.Stream))
-            )
+            |> shouldEqual (notConnected darwinSystem)
 
     [<Test>]
-    let ``a zero-length read of a socket is answered on Linux and refused on Darwin`` () : unit =
-        // The one socket answer that needs no connection state, and it is a
-        // flavour fact rather than a quirk of one socket kind: measured on
+    let ``a zero-length read of a stream socket with no peer is 0 on Linux and ENOTCONN on Darwin`` () : unit =
+        // A flavour fact rather than a quirk of one socket kind: measured on
         // Linux, `read(sock, buf, 0)` is 0 for an INET stream, a UNIX-domain
         // stream and a datagram socket alike, while the same descriptors answer
-        // ENOTCONN at length 1. Darwin has no such short-circuit — its stream
-        // sockets answer ENOTCONN at length 0 too — so there the refusal stands.
+        // ENOTCONN at length 1. Darwin has no such short-circuit: its stream
+        // sockets answer ENOTCONN at length 0 too.
         let linuxFd, linuxSystem = withSocket linux
         let darwinFd, darwinSystem = withSocket darwin
 
@@ -361,12 +392,15 @@ module TestUnixSystemStep =
         |> shouldEqual (Ok (ReadAnswer.Completed ImmutableArray.Empty, linuxSystem))
 
         ReadOutcomes.read darwinFd UserBuffer.Mapped 0UL darwinSystem
-        |> shouldEqual (Error (ReadRefusal.SocketConnectionState (socketZero, SocketDomain.Inet, SocketKind.Stream)))
+        |> shouldEqual (notConnected darwinSystem)
 
-        // And the rule really is about the length rather than the socket: one
-        // byte is refused on both.
+        // And Linux's rule really is about the length rather than the socket:
+        // one byte is ENOTCONN on both.
         ReadOutcomes.read linuxFd UserBuffer.Mapped 1UL linuxSystem
-        |> shouldEqual socketRefused
+        |> shouldEqual (notConnected linuxSystem)
+
+        ReadOutcomes.read darwinFd UserBuffer.Mapped 1UL darwinSystem
+        |> shouldEqual (notConnected darwinSystem)
 
     [<Test>]
     let ``Linux's zero-length socket answer does not depend on the phase`` () : unit =
@@ -414,12 +448,14 @@ module TestUnixSystemStep =
             ReadOutcomes.read fd UserBuffer.Mapped 0UL system
             |> shouldEqual (Ok (ReadAnswer.Completed ImmutableArray.Empty, system))
 
-            // ...and one byte is still refused in every one of them, so the row
-            // above is about the length rather than about the phase happening to
-            // be an answerable one.
-            match ReadOutcomes.read fd UserBuffer.Mapped 1UL system with
-            | Error (ReadRefusal.SocketConnectionState _) -> ()
-            | other -> failwith $"expected a refusal for phase %O{phase}, got %A{other}"
+            // ...and one byte is refused in every phase with a peer or an error,
+            // so the row above is about the length rather than about the phase
+            // happening to be an answerable one.
+            match phase, ReadOutcomes.read fd UserBuffer.Mapped 1UL system with
+            | SocketPhase.Idle, answer
+            | SocketPhase.Listening _, answer -> answer |> shouldEqual (notConnected system)
+            | _, Error (ReadRefusal.UnmodelledSocketPhase (_, _, _, refusedIn)) -> refusedIn |> shouldEqual phase
+            | _, other -> failwith $"expected a refusal for phase %O{phase}, got %A{other}"
 
     [<Test>]
     let ``read of a descriptor that is not open is EBADF whatever the buffer`` () : unit =
@@ -603,15 +639,21 @@ module TestUnixSystemStep =
         WriteOutcomes.write readOnlyFd ImmutableArray<byte>.Empty readOnly
         |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EBADF, readOnly))
 
+    /// Whether `outcome` is a process ended by `SIGPIPE`'s default action.
+    let private endedBySigPipe (outcome : Result<WriteOutcome<'Answer, int, string>, WriteRefusal>) : bool =
+        match outcome with
+        | Ok (WriteOutcome.ProcessEnded ended) ->
+            ended.Termination = ProcessTermination.Signaled (Signal.SIGPIPE, false)
+        | _ -> false
+
     [<Test>]
-    let ``a socket is refused by both halves of the write`` () : unit =
-        // `write(2)` on a socket is an answer about connection state, which this
-        // kernel does not model; EPIPE is the answer a reader of the Linux
-        // measurement would reach for, and it is wrong on Darwin. Both calls
-        // must refuse: the admission because a caller must not extract bytes for
-        // a write that cannot happen, and `write` because a caller that skipped
-        // the admission must not get a guess either.
+    let ``a socket with a peer is refused by both halves of the write`` () : unit =
+        // A connected socket's write moves bytes, which this kernel does not
+        // model. Both calls must refuse: the admission because a caller must
+        // not extract bytes for a write that cannot happen, and `write` because
+        // a caller that skipped the admission must not get a guess either.
         let socketId = SocketId 0L
+        let established = SocketPhase.Established (ConnectionId 0L)
 
         let socket : SocketDescription =
             {
@@ -619,7 +661,7 @@ module TestUnixSystemStep =
                 Kind = SocketKind.Stream
                 Protocol = SocketProtocol.Tcp
                 Binding = None
-                Phase = SocketPhase.Idle
+                Phase = established
                 ReuseAddress = false
             }
 
@@ -639,27 +681,52 @@ module TestUnixSystemStep =
             }
 
         let expected =
-            Error (WriteRefusal.SocketConnectionState (socketId, SocketDomain.Inet, SocketKind.Stream))
+            Error (WriteRefusal.UnmodelledSocketPhase (socketId, SocketDomain.Inet, SocketKind.Stream, established))
 
         WriteAdmissions.unchanged fd UserBuffer.Mapped 5UL system
         |> shouldEqual expected
 
-        // Also at length zero, where a *file* would have been the no-op:
-        // measured on both, `write(socket, buf, 0)` is the socket's own error.
         WriteAdmissions.unchanged fd UserBuffer.Mapped 0UL system
         |> shouldEqual expected
 
         WriteOutcomes.write fd (ImmutableArray.CreateRange [ 1uy ]) system
         |> shouldEqual expected
 
+        // With no peer, both halves give the socket's own answer, at length
+        // zero too, where a *file* would have been the no-op: measured on both,
+        // `write(socket, buf, 0)` is the socket's own error. On Linux that is
+        // EPIPE and SIGPIPE, whose default action ends the process.
+        let idle =
+            { system with
+                Machine =
+                    { system.Machine with
+                        Sockets =
+                            Map.ofList
+                                [
+                                    socketId,
+                                    { socket with
+                                        Phase = SocketPhase.Idle
+                                    }
+                                ]
+                    }
+            }
+
+        for count in [ 0UL ; 5UL ] do
+            UnixReadWrite.admitWrite idle.Leader fd UserBuffer.Mapped count idle
+            |> endedBySigPipe
+            |> shouldEqual true
+
+        UnixReadWrite.write idle.Leader fd (ImmutableArray.CreateRange [ 1uy ]) idle
+        |> endedBySigPipe
+        |> shouldEqual true
+
     [<Test>]
     let ``a screening platform answers a socket's bad address before the socket`` () : unit =
         // Measured on both. Linux screens the address before the object's own
         // write operation, so `write(socket, (void*)-1, n)` is EFAULT for every
-        // `n` including 0 — the socket is never consulted, and refusing here
-        // would abort a call a real kernel answers. Darwin screens nothing, so
-        // the same call reaches the socket and earns a connection-state answer
-        // this kernel cannot give.
+        // `n` including 0 — the socket is never consulted. Darwin screens
+        // nothing, so the same call reaches the socket, which answers without
+        // touching the buffer: ENOTCONN for a stream socket with no peer.
         let socketId = SocketId 0L
 
         let socket : SocketDescription =
@@ -697,7 +764,7 @@ module TestUnixSystemStep =
             |> shouldEqual (Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EFAULT)))
 
             WriteAdmissions.unchanged darwinFd wild count darwinSystem
-            |> shouldEqual (Error (WriteRefusal.SocketConnectionState (socketId, SocketDomain.Inet, SocketKind.Stream)))
+            |> shouldEqual (Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.ENOTCONN)))
 
     [<Test>]
     let ``a defaulted byte array is rejected rather than written`` () : unit =
@@ -936,13 +1003,20 @@ module TestUnixSystemStep =
                     |> shouldEqual (failedWith UnixError.ESPIPE)
 
         // This is where `pread` and `read` part company hardest, and why `pread`
-        // needs no socket refusal: a socket's *read* operation is an answer about
-        // connection state, which this kernel does not model, but its
-        // seekability is not — every socket is unseekable whatever it is
-        // connected to, so `pread` never reaches the read operation to ask.
-        let fd, system = withSocket linux
+        // needs no socket refusal: a socket's *read* operation depends on its
+        // phase, and is refused in some, but its seekability does not — every
+        // socket is unseekable whatever it is connected to, so `pread` never
+        // reaches the read operation to ask.
+        let established = SocketPhase.Established (ConnectionId 0L)
+        let fd, system = withSocketIn established linux
 
-        ReadOutcomes.read fd UserBuffer.Mapped 5UL system |> shouldEqual socketRefused
+        ReadOutcomes.read fd UserBuffer.Mapped 5UL system
+        |> shouldEqual (
+            Error (ReadRefusal.UnmodelledSocketPhase (socketZero, SocketDomain.Inet, SocketKind.Stream, established))
+        )
+
+        UnixReadWrite.pread fd UserBuffer.Mapped 5UL 0L system
+        |> shouldEqual (failedWith UnixError.ESPIPE)
 
     [<Test>]
     let ``pread of a descriptor that is not open is EBADF whatever the buffer`` () : unit =
@@ -1225,12 +1299,15 @@ module TestUnixSystemStep =
                     UnixReadWrite.admitPWrite portFd buffer count 0L portSystem
                     |> shouldEqual (pwriteFailed UnixError.ESPIPE)
 
-        // The same socket refuses a `write`, and the port answers it with the
-        // kind's own errno rather than with unseekability.
+        // The same socket answers a `write` itself, and so does the port, each
+        // with its own kind's answer rather than with unseekability: on Linux,
+        // the socket's is EPIPE and SIGPIPE, whose default action ends the
+        // process.
         let fd, system = withSocket linux
 
-        WriteAdmissions.unchanged fd UserBuffer.Mapped 4UL system
-        |> shouldEqual (Error (WriteRefusal.SocketConnectionState (socketZero, SocketDomain.Inet, SocketKind.Stream)))
+        UnixReadWrite.admitWrite system.Leader fd UserBuffer.Mapped 4UL system
+        |> endedBySigPipe
+        |> shouldEqual true
 
         let portFd, portSystem = withSocketEventPort linux
 
