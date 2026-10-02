@@ -614,17 +614,14 @@ module TestDirectoryDescription =
             | other -> failwith $"%O{platform}: %A{other}"
 
     [<Test>]
-    let ``O_DIRECTORY with a flag whose order against it is unmeasured is refused`` () : unit =
-        let unmeasured : OpenFlags list =
+    let ``O_DIRECTORY with a flag whose order against it is unmodelled is refused`` () : unit =
+        let unmodelled : OpenFlags list =
             [
                 { directoryReading with
                     Access = FileAccessMode.WriteOnly
                 }
                 { directoryReading with
                     Access = FileAccessMode.ReadWrite
-                }
-                { directoryReading with
-                    Create = true
                 }
                 { directoryReading with
                     Truncate = true
@@ -639,9 +636,38 @@ module TestDirectoryDescription =
                 UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
                 |> makeDirectory "d"
 
-            for flags in unmeasured do
-                (fun () -> Answered.openPath flags (rooted "d") 0 system |> ignore)
-                |> shouldFail
+            for flags in unmodelled do
+                let word = OpenFlagWords.encode platform flags
+
+                match UnixNamespace.openPath word (PathArg.ofPath (rooted "d")) 0 system with
+                | Error (OpenRefusal.UnmodelledDirectoryOpen refused) -> refused |> shouldEqual word
+                | other -> failwith $"%O{platform} %A{flags}: %A{other}"
+
+    [<Test>]
+    let ``O_DIRECTORY with O_CREAT is EINVAL whatever the path`` () : unit =
+        // Measured on both flavours (`path-copyin-order.c`, `open-flags.c`):
+        // the word is screened before the path is copied in.
+        for platform in platforms do
+            let system =
+                UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                |> makeDirectory "d"
+
+            let word =
+                OpenFlagWords.encode
+                    platform
+                    { directoryReading with
+                        Create = true
+                    }
+
+            for path in
+                [
+                    PathArg.ofPath (rooted "d")
+                    PathArg.ofText "nx"
+                    PathArgumentBytes.Unreadable
+                ] do
+                match UnixNamespace.openPath word path 0 system with
+                | Ok (SyscallAnswer.Failed UnixError.EINVAL, after) -> after |> shouldEqual system
+                | other -> failwith $"%O{platform}: %A{other}"
 
     // ------------------------------------------------------------ invariants
 

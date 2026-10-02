@@ -551,8 +551,9 @@ type OpenFileTarget =
 /// `O_RDWR`.
 ///
 /// A three-case DU rather than a readable/writable pair of booleans, because
-/// there is no fourth: an access mode of neither is refused before a
-/// descriptor exists at all (see `OpenFlags`).
+/// this kernel opens no fourth: Darwin answers EINVAL for access mode 3, and
+/// Linux's descriptor that permits neither is refused before one exists (see
+/// `OpenRefusal.IoctlOnlyAccessMode`).
 ///
 /// Fixed when the description is created and never changed afterwards — POSIX
 /// offers no way to alter one, and Linux's nearest equivalent (reopening through
@@ -594,7 +595,8 @@ module FileAccessMode =
 /// produced belongs here.
 ///
 /// Of the status flags, only `O_NONBLOCK` is present: `O_APPEND` is absent
-/// because no modelled syscall can set it, `OpenFlags` carrying neither bit.
+/// because no modelled syscall can set it, `UnixNamespace.openPath` refusing
+/// both bits.
 type OpenFileDescription =
     {
         /// What this description refers to, and where in it.
@@ -1007,8 +1009,8 @@ module FileDescriptorRegistry =
     /// Fresh, unlike `dup`: two `open` calls on one path give two descriptions,
     /// which is why they can hold separate offsets and separate `flock` locks.
     ///
-    /// The offset starts at 0 for *every* flag, not merely the ones `OpenFlags`
-    /// carries. `O_APPEND` is no exception: measured on both platforms, a
+    /// The offset starts at 0 for *every* flag, not merely the ones
+    /// `UnixNamespace.openPath` models. `O_APPEND` is no exception: measured on both platforms, a
     /// descriptor opened `O_WRONLY | O_APPEND` on a five-byte file reports 0
     /// from `lseek(0, SEEK_CUR)` immediately afterwards, and only reaches 6
     /// after a one-byte write. The flag repositions to the end before each
@@ -1039,8 +1041,8 @@ module FileDescriptorRegistry =
                     {
                         Target = OpenFileTarget.File (inode, 0L)
                         AccessMode = accessMode
-                        // `OpenFlags` carries no `O_NONBLOCK` bit, so every
-                        // modelled open starts blocking.
+                        // `UnixNamespace.openPath` refuses `O_NONBLOCK`, so
+                        // every modelled open starts blocking.
                         NonBlocking = false
                         // `open(2)` never takes a lock.
                         Flock = None

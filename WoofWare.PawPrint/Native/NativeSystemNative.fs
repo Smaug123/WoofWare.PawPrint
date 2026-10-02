@@ -3080,21 +3080,6 @@ module NativeSystemNative =
             let operation = "SystemNative_Open"
             let flags = NativeCall.int32Argument operation instruction.Arguments.[1]
 
-            // `Interop.Sys.OpenFlags`, which is a **PAL** enum: `ConvertOpenFlags`
-            // (pal_io.c:275) translates these to the platform's own `<fcntl.h>`
-            // bits, so PawPrint consumes portable values and has no platform
-            // question to answer at this boundary.
-            let palAccessMask = 0x0003
-            let palRdOnly = 0x0000
-            let palWrOnly = 0x0001
-            let palRdWr = 0x0002
-            let palCloExec = 0x0010
-            let palCreat = 0x0020
-            let palExcl = 0x0040
-            let palTrunc = 0x0080
-            let palSync = 0x0100
-            let palNoFollow = 0x0200
-
             let fail (error : UnixError) : NativeHandlerResult option =
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
@@ -3105,51 +3090,16 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
-            let known =
-                palAccessMask
-                ||| palCloExec
-                ||| palCreat
-                ||| palExcl
-                ||| palTrunc
-                ||| palSync
-                ||| palNoFollow
-
-            // The shim's own rejections, in the order the C makes them, and both
-            // stay here rather than crossing: neither is a kernel's decision, and
-            // neither is expressible once the flags are a record. An
-            // unrecognised *bit* is EINVAL (it `assert`s first, so a checked
-            // build aborts instead — the same retail-behaviour-only reasoning
-            // `SystemNative_GetCwd` records), and so is an access mode that is
-            // none of the three.
-            if flags &&& ~~~known <> 0 then
-                fail UnixError.EINVAL
-            else
-
-            let accessMode = flags &&& palAccessMask
-
-            if accessMode <> palRdOnly && accessMode <> palWrOnly && accessMode <> palRdWr then
-                fail UnixError.EINVAL
-            else
-
-            // Each bit becomes the fact it stands for. `O_EXCL` is passed
-            // through exactly as the guest set it rather than combined with
-            // `O_CREAT` here: that it does nothing on its own is the kernel's
-            // rule, and `UnixNamespace.openPath` owns it.
-            let openFlags : OpenFlags =
-                {
-                    Access =
-                        if accessMode = palWrOnly then FileAccessMode.WriteOnly
-                        elif accessMode = palRdWr then FileAccessMode.ReadWrite
-                        else FileAccessMode.ReadOnly
-                    Create = flags &&& palCreat <> 0
-                    Exclusive = flags &&& palExcl <> 0
-                    Truncate = flags &&& palTrunc <> 0
-                    NoFollow = flags &&& palNoFollow <> 0
-                    CloseOnExec = flags &&& palCloExec <> 0
-                    Synchronous = flags &&& palSync <> 0
-                    // The PAL has no `O_DIRECTORY` bit to translate.
-                    Directory = false
-                }
+            // `Interop.Sys.OpenFlags` is a **PAL** enum, which the shim's
+            // `ConvertOpenFlags` screens and translates to the platform's own
+            // `<fcntl.h>` bits; `OpenFlagsPal` is that translation. Its EINVAL
+            // (an unknown bit, or an access mode that is none of the three) is
+            // the C's own, made without reaching the kernel. A checked build
+            // `assert`s first and aborts instead -- the same
+            // retail-behaviour-only reasoning `SystemNative_GetCwd` records.
+            match OpenFlagsPal.decode state.Kernel.UnixPlatform flags with
+            | None -> fail UnixError.EINVAL
+            | Some openFlags ->
 
             let path = pathArgumentBytes ctx operation "path" instruction.Arguments.[0] state
 
@@ -3349,24 +3299,15 @@ module NativeSystemNative =
             // `TrailingSeparatorDemanded`, because a directory is demanded
             // outright whether the separator was there or not.
             // `opendir(3)` is this open: glibc's is
-            // `openat(O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY)`, measured, and
-            // `O_NONBLOCK` means nothing to a directory.
-            let flags : OpenFlags =
-                {
-                    Access = FileAccessMode.ReadOnly
-                    Create = false
-                    Exclusive = false
-                    Truncate = false
-                    NoFollow = false
-                    CloseOnExec = true
-                    Synchronous = false
-                    Directory = true
-                }
+            // `openat(O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY)`, measured,
+            // and `O_NONBLOCK` means nothing to a directory (see
+            // `OpenFlagsPal.directoryStream`).
+            let flags = OpenFlagsPal.directoryStream state.Kernel.UnixPlatform
 
             match UnixNamespace.openPath flags path 0 (EmulatedKernel.unix state.Kernel) with
             | Error refusal ->
                 failwith
-                    $"%s{operation}: OpenRefusal: %s{OpenRefusal.describe refusal} This open does not ask for O_TRUNC, and a truncation is the only thing the kernel refuses an open for (this is an interpreter bug)."
+                    $"%s{operation}: OpenRefusal: %s{OpenRefusal.describe refusal} This open asks only for O_RDONLY|O_DIRECTORY|O_CLOEXEC, which the kernel models, and not for O_TRUNC, whose set-ID change is the only other thing it refuses an open for (this is an interpreter bug)."
             | Ok (SyscallAnswer.Failed error, system) ->
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
@@ -6877,16 +6818,14 @@ module NativeSystemNative =
             // what makes it appear on a console. One write delivers at most
             // once, and exactly the bytes it moved.
             let effectOf (system : UnixSystem<ThreadId, NativeSignalHandler>) : StepEffect =
-                let before = admitted.Machine.Delivered.Length
+                let before = DeliveryLog.count admitted.Machine.Delivered
 
-                match system.Machine.Delivered.Length - before with
-                | 0 -> StepEffect.NoEffect
-                | 1 ->
-                    let delivery = system.Machine.Delivered.[before]
-                    StepEffect.WroteToFd (StandardStreams.roleOf delivery.Endpoint, delivery.Bytes)
+                match DeliveryLog.since before system.Machine.Delivered with
+                | [] -> StepEffect.NoEffect
+                | [ delivery ] -> StepEffect.WroteToFd (StandardStreams.roleOf delivery.Endpoint, delivery.Bytes)
                 | delivered ->
                     failwith
-                        $"%s{operation}: fd %d{fd}: one write delivered %d{delivered} times to the pipes PawPrint drains; a write delivers once or not at all (this is an interpreter bug)."
+                        $"%s{operation}: fd %d{fd}: one write delivered %d{delivered.Length} times to the pipes PawPrint drains; a write delivers once or not at all (this is an interpreter bug)."
 
             finish outcome effectOf
         | Some "SystemNative_GetNonCryptographicallySecureRandomBytes",
@@ -6917,12 +6856,8 @@ module NativeSystemNative =
           [ ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
             ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
-            // The kernel's entropy pool. On Linux CoreCLR's shim `open`s and
-            // `read`s `/dev/urandom`; the emulated kernel has no device inodes,
-            // so this draws from the pool directly rather than through a
-            // descriptor. On macOS the shim calls `CCRandomGenerateBytes`, a
-            // userspace generator the kernel seeds; PawPrint draws from the pool
-            // for that flavour too rather than modelling a second generator.
+            // The shim is `minipal_get_cryptographically_secure_random_bytes`,
+            // which asks the kernel: see `MinipalRandom` for how, per flavour.
             //
             // The bytes are emphatically not cryptographically secure: anyone
             // who knows the seed knows them. Nothing inside a deterministic
@@ -6932,7 +6867,7 @@ module NativeSystemNative =
             // Unlike its non-crypto sibling this entry point reports status:
             // `Interop.GetCryptographicallySecureRandomBytes` branches on the
             // result with `brfalse` and throws `CryptographicException` for
-            // anything non-zero. The pool has no failure mode, so it always
+            // anything non-zero. `MinipalRandom` never fails, so this always
             // reports success. Malformed arguments abort loudly inside
             // `randomBytesDestination` rather than being reported as entropy
             // failure, because a negative length or a null destination is a
@@ -6944,18 +6879,9 @@ module NativeSystemNative =
                 match randomBytesDestination ctx operation with
                 | None -> state
                 | Some (buffer, length) ->
-                    let bytes, pool = EntropyPool.draw length state.Kernel.Machine.EntropyPool
-
-                    let state = writeBytesThrough ctx operation buffer bytes state
-
-                    state.MapKernel (fun kernel ->
-                        { kernel with
-                            Machine =
-                                { kernel.Machine with
-                                    EntropyPool = pool
-                                }
-                        }
-                    )
+                    let bytes, kernel = MinipalRandom.secureRandomBytes operation length state.Kernel
+                    let state = state.MapKernel (fun _ -> kernel)
+                    writeBytesThrough ctx operation buffer bytes state
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
