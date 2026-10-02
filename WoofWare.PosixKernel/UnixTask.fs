@@ -171,6 +171,9 @@ type ParkedPipeWrite =
         /// How many of them, from the start, are already in the pipe: less than
         /// `Count`.
         Written : int
+        /// The pipe's `PipeState.Reads` when the write went to sleep: a read
+        /// since then is one that woke it, on Darwin.
+        ReadsSeen : int64
     }
 
 /// <summary>

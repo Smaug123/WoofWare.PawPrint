@@ -167,6 +167,7 @@ module UnixWait =
             | WakePrimitive.PipeHasRoom _
             | WakePrimitive.PipeWriteEndClosed _
             | WakePrimitive.PipeReadEndClosed _
+            | WakePrimitive.PipeReadWhileNonBlocking _
             | WakePrimitive.FlockGrantable _
             | WakePrimitive.DescriptorReady _
             | WakePrimitive.DeadlinePassed _

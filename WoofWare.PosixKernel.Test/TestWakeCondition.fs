@@ -111,6 +111,8 @@ module TestWakeCondition =
             WakePrimitive.PipeHasRoom (idOf 1 system, 1, 0), true
             WakePrimitive.PipeHasRoom (idOf 1 system, 70000, 65536), true
             WakePrimitive.PipeReadEndClosed (idOf 1 system), false
+            // Linux: never.
+            WakePrimitive.PipeReadWhileNonBlocking (idOf 1 system, -1L), false
         ]
 
     let private at (clock : int64) : UnixSystem<int, string> =
@@ -132,7 +134,8 @@ module TestWakeCondition =
         | WakePrimitive.PipeHasBytes _
         | WakePrimitive.PipeWriteEndClosed _
         | WakePrimitive.PipeHasRoom _
-        | WakePrimitive.PipeReadEndClosed _ ->
+        | WakePrimitive.PipeReadEndClosed _
+        | WakePrimitive.PipeReadWhileNonBlocking _ ->
             match List.tryFind (fun (p, _) -> p = primitive) fixedTruths with
             | Some (_, truth) -> truth
             | None -> failwith $"the oracle's truth table has no row for %O{primitive}"
@@ -325,6 +328,7 @@ module TestWakeCondition =
                         | WakePrimitive.PipeWriteEndClosed _
                         | WakePrimitive.PipeHasRoom _
                         | WakePrimitive.PipeReadEndClosed _
+                        | WakePrimitive.PipeReadWhileNonBlocking _
                         | WakePrimitive.SignalDeliverable -> None
                     )
                 )

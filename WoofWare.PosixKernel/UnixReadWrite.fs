@@ -822,6 +822,7 @@ module UnixReadWrite =
             PipeState.afterRead
                 { pipe with
                     Buffer = remaining
+                    Reads = if bytes.IsEmpty then pipe.Reads else pipe.Reads + 1L
                 }
 
         // Measured on Linux 6.18.5 (supplied-pipe-epoll.c): the client's
@@ -1524,6 +1525,18 @@ module UnixReadWrite =
         (system : UnixSystem<'Task, 'Handler>)
         : WriteOutcome<'Answer, 'Task, 'Handler>
         =
+        let reads =
+            match
+                FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+                |> Map.tryFind writer
+            with
+            | Some {
+                       Target = OpenFileTarget.Pipe (pipeId, PipeEnd.Write)
+                   } -> (UnixMachineState.pipe pipeId system.Machine).Reads
+            | other ->
+                failwith
+                    $"UnixReadWrite: a write parking on open file description %O{writer} found %A{other} rather than a pipe's write end (this is a bug in this library)."
+
         let parked =
             ParkedSyscall.PipeWrite
                 {
@@ -1531,6 +1544,7 @@ module UnixReadWrite =
                     Buffer = buffer
                     Count = count
                     Written = written
+                    ReadsSeen = reads
                 }
 
         WriteOutcome.WouldBlock (WakeCondition.ofPark parked, UnixWait.park task parked system)

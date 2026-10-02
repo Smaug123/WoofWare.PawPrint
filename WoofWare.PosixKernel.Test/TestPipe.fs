@@ -312,6 +312,8 @@ module TestPipe =
             // Set once a write's SIGPIPE has ended the process, after which
             // there is nothing left to call.
             let mutable ended = false
+            // How many reads have taken bytes from the pipe.
+            let mutable reads = 0L
 
             let mutable reference =
                 {
@@ -452,6 +454,7 @@ module TestPipe =
                                 Buffer = buffer
                                 Count = count
                                 Written = takes
+                                ReadsSeen = reads
                             }
 
                         UnixTaskTable.parkedFor system.Leader after.Tasks
@@ -553,6 +556,9 @@ module TestPipe =
                       Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), after) ->
                         List.ofSeq bytes |> shouldEqual (List.ofSeq expectedBytes)
                         let _, drained = modelRead bytes.Length reference.Buffer
+
+                        if not bytes.IsEmpty then
+                            reads <- reads + 1L
 
                         reference <-
                             { reference with

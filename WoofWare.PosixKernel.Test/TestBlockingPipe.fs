@@ -157,6 +157,8 @@ module TestBlockingPipe =
             Ordinal : int
             /// The client has woken it, and not yet finished it.
             Woken : bool
+            /// How many reads had taken bytes when it parked.
+            ReadsSeen : int
         }
 
     type private Reference =
@@ -172,6 +174,8 @@ module TestBlockingPipe =
             NextOrdinal : int
             Signalled : Set<int>
             Writes : int
+            /// How many reads have taken bytes.
+            Reads : int
         }
 
     let private endOpen (pipeEnd : PipeEnd) (r : Reference) : bool =
@@ -194,6 +198,7 @@ module TestBlockingPipe =
                         Call = call
                         Ordinal = r.NextOrdinal
                         Woken = false
+                        ReadsSeen = r.Reads
                     }
                     r.Parks
             NextOrdinal = r.NextOrdinal + 1
@@ -221,6 +226,7 @@ module TestBlockingPipe =
                     Seen.ReadBytes bytes,
                     { r with
                         Buffer = buffer
+                        Reads = r.Reads + 1
                     }
                 else
                     Seen.Failed UnixError.EFAULT, r
@@ -350,6 +356,14 @@ module TestBlockingPipe =
                 | Call.Writing _ -> not (endOpen PipeEnd.Read r)
             )
             || (hasBytes park.Call && (not r.Linux || firstReader = Some task))
+            // Darwin wakes every writer at each read, and one whose description
+            // has become non-blocking gives up.
+            || (
+                match park.Call with
+                | Call.Writing (description, _, _, _) ->
+                    not r.Linux && r.NonBlocking.[description] && r.Reads > park.ReadsSeen
+                | Call.Reading _ -> false
+            )
             || (hasRoom park.Call && (not r.Linux || firstWriter = Some task))
         )
         |> List.sortBy (fun (_, park) -> park.Ordinal)
@@ -374,6 +388,7 @@ module TestBlockingPipe =
                         { park with
                             Woken = false
                             Ordinal = r.NextOrdinal
+                            ReadsSeen = r.Reads
                         }
                         r.Parks
                 NextOrdinal = r.NextOrdinal + 1
@@ -400,6 +415,7 @@ module TestBlockingPipe =
                         task
                         { r with
                             Buffer = buffer
+                            Reads = r.Reads + 1
                         }
             elif signalled then
                 interrupted r, answered task r
@@ -445,6 +461,7 @@ module TestBlockingPipe =
                                         Call = Call.Writing (description, payload, written, mapped)
                                         Woken = false
                                         Ordinal = r.NextOrdinal
+                                        ReadsSeen = r.Reads
                                     }
                                     r.Parks
                             NextOrdinal = r.NextOrdinal + 1
@@ -673,6 +690,7 @@ module TestBlockingPipe =
                     NextOrdinal = 0
                     Signalled = Set.empty
                     Writes = 0
+                    Reads = 0
                 }
 
             let mutable stopped = false
@@ -1630,3 +1648,24 @@ module TestBlockingPipe =
 
         fst (fromWrite (libraryFinishWrite sleeper (payload 7 4096) system))
         |> shouldEqual Seen.Sleeps
+
+    [<Test>]
+    let ``on Darwin a read wakes a write too large for its room, which gives up if non-blocking`` () : unit =
+        // Darwin wakes every writer at each read, room or not; a 512-byte write
+        // with 50 bytes of room sleeps on, unless its description has become
+        // non-blocking, when it answers EAGAIN. Linux wakes a writer only when
+        // it can write.
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            let linux = SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Linux
+            let size = if linux then 4096 else 512
+
+            for nonBlocking in [ false ; true ] do
+                let system = pipeHolding platform false 65536 |> writerAsleep size
+                let _, system = UnixSocket.setNonBlocking 4 nonBlocking system
+                let system = leaderReads 50 system
+                let woken = UnixWait.wakes (Set.singleton sleeper) system |> List.map fst
+                woken |> shouldEqual (if nonBlocking && not linux then [ sleeper ] else [])
+
+                if not woken.IsEmpty then
+                    finished (Some (payload 7 size)) system
+                    |> shouldEqual (Seen.Failed UnixError.EAGAIN)

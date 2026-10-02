@@ -177,6 +177,14 @@ type PipeState =
         Buffer : PipeBuffer
         /// Who made the pipe, and what that says about it.
         Origin : PipeOrigin
+        /// How many reads by the process have taken bytes from the pipe.
+        ///
+        /// Darwin wakes every writer asleep on a pipe at each such read, room
+        /// or not, and one that still cannot write either sleeps again or,
+        /// through a description that has become non-blocking, gives up; a
+        /// write's park records this count, so that its wake condition can say
+        /// whether a read has happened since (`WakePrimitive.PipeReadWhileNonBlocking`).
+        Reads : int64
     }
 
 /// What a client asleep in a write did when a read made room in its pipe.
@@ -235,12 +243,14 @@ module PipeState =
             {
                 Buffer = empty
                 Origin = PipeOrigin.Launched (endpoint, ClientEnd.Draining)
+                Reads = 0L
             },
             PipeEnd.Write
         | LaunchDescriptor.Gone ->
             {
                 Buffer = empty
                 Origin = PipeOrigin.Launched (endpoint, ClientEnd.ReadEndClosed)
+                Reads = 0L
             },
             PipeEnd.Write
         | LaunchDescriptor.Supplied bytes ->
@@ -271,6 +281,7 @@ module PipeState =
             {
                 Buffer = buffer
                 Origin = PipeOrigin.Launched (endpoint, client)
+                Reads = 0L
             },
             PipeEnd.Read
 
@@ -307,7 +318,7 @@ module PipeState =
                             Written = written
                         }
 
-            {
+            { pipe with
                 Buffer = buffer
                 Origin = PipeOrigin.Launched (endpoint, client)
             },

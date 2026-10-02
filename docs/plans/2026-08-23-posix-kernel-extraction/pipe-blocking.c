@@ -93,7 +93,10 @@
 //      it bytes or room and taking them back before it runs, 10 trials: what
 //      it answers. N4 the same through a stopped process (as J). N5 two
 //      sleepers, bytes or room for one, 10 trials: what each answers within
-//      100 ms, or that it still sleeps.
+//      100 ms, or that it still sleeps. N6 a write of at most PIPE_BUF bytes
+//      asleep on a full pipe, O_NONBLOCK set or not, then a read of 50 bytes,
+//      too few to make room for it, 5 trials: whether it returns ("late:"
+//      if only once more room was made).
 //
 // Build and run, from this directory:
 //   Darwin: nix develop -c clang -Wall -pthread -o /tmp/pb pipe-blocking.c && /tmp/pb
@@ -160,7 +163,11 @@
 //      the call restarts afresh, now non-blocking (a stop, not a wake); on
 //      Darwin the stopped sleeper finished its transfer inside the kernel
 //      before the helper could take the room back, so N4 cannot make a
-//      beaten sleeper there, and N5 is the Darwin measurement.
+//      beaten sleeper there, and N5 is the Darwin measurement. N6: Darwin's
+//      512-byte write answered EAGAIN at the 50-byte read when non-blocking
+//      (every read wakes every writer), and slept on to complete later when
+//      not; Linux's 4096-byte write slept on to complete later either way
+//      (no slot was freed, so nothing woke it). 5 trials each.
 //   K  Linux (once): neither close woke the sleeper, which completed when
 //      given data (3) or room (1): the sleeping call holds its description.
 //      Darwin (once): closing a dup changed nothing, but closing the
@@ -1643,6 +1650,51 @@ static void section_n5(void)
     }
 }
 
+// N6: a write of at most PIPE_BUF bytes asleep on a full pipe, O_NONBLOCK
+// set or not, then a read too small to make room for it (Linux: 50 bytes of a
+// 4096-byte write, no slot freed; Darwin: 50 of a 512-byte write): whether it
+// returns within 100 ms, and what.
+static void section_n6(void)
+{
+    signal(SIGPIPE, SIG_IGN);
+#ifdef __linux__
+    size_t size = 4096;
+#else
+    size_t size = 512;
+#endif
+    for (int nonblocking = 0; nonblocking <= 1; nonblocking++)
+    {
+        char seen[5][24];
+        for (int trial = 0; trial < 5; trial++)
+        {
+            int fds[2];
+            pipe(fds);
+            fill(fds[0], fds[1]);
+            struct writer w;
+            memset(&w, 0, sizeof w);
+            w.fd = fds[1];
+            w.buf = big;
+            w.count = size;
+            pthread_t t;
+            pthread_create(&t, NULL, writer_main, &w);
+            sleep_ms(50);
+            if (nonblocking) set_nonblock(fds[1], 1);
+            drain_bytes(fds[0], 50);
+            sleep_ms(100);
+            int returned = atomic_load(&w.returned);
+            if (!returned) drain_bytes(fds[0], 8192);
+            pthread_join(t, NULL);
+            if (w.rv < 0) snprintf(seen[trial], sizeof seen[trial], "%se%d", returned ? "" : "late:", w.error);
+            else snprintf(seen[trial], sizeof seen[trial], "%s%zd", returned ? "" : "late:", w.rv);
+            close(fds[0]);
+            close(fds[1]);
+        }
+        printf("N6 a %zu-byte write, O_NONBLOCK %s, 50 bytes read:", size, nonblocking ? "set" : "not set");
+        for (int i = 0; i < 5; i++) printf(" %s", seen[i]);
+        printf("\n");
+    }
+}
+
 int main(int argc, char **argv)
 {
     alarm(600);
@@ -1667,6 +1719,7 @@ int main(int argc, char **argv)
     if (strchr(only, 'N')) section_n12();
     if (strchr(only, 'N')) section_n4();
     if (strchr(only, 'N')) section_n5();
+    if (strchr(only, 'N')) section_n6();
 #ifdef __linux__
     if (strchr(only, 'N')) section_n3();
 #endif

@@ -73,6 +73,16 @@ type WakePrimitive =
     /// The pipe whose write end the open file description `writer` names has
     /// no read end open, so a write into it answers `EPIPE`.
     | PipeReadEndClosed of writer : OpenFileDescriptionId
+    /// Under Darwin, the open file description `writer` carries `O_NONBLOCK`,
+    /// and a read has taken bytes from the pipe whose write end it names since
+    /// it had seen `reads` of them (`PipeState.Reads`). Never under Linux.
+    ///
+    /// Darwin wakes every writer asleep on a pipe at each read, room or not,
+    /// and one that still cannot write, through a description that has become
+    /// non-blocking, gives up; Linux wakes a writer only once it can write.
+    /// What a write of at most `PIPE_BUF` bytes waits for besides room for all
+    /// of it, which `PipeHasRoom` is.
+    | PipeReadWhileNonBlocking of writer : OpenFileDescriptionId * reads : int64
     /// The machine's monotonic clock (`UnixMachineState.NanosecondsSinceBoot`)
     /// has reached `nanosecondsSinceBoot`.
     ///
@@ -204,6 +214,14 @@ module WakeCondition =
         | WakePrimitive.PipeReadEndClosed writer ->
             let pipeId, pipe = pipeOfWaiter primitive writer PipeEnd.Write system
             not (UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Read system.Process)
+        | WakePrimitive.PipeReadWhileNonBlocking (writer, reads) ->
+            let _, pipe = pipeOfWaiter primitive writer PipeEnd.Write system
+
+            match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+            | SimulatedUnixFlavour.Linux -> false
+            | SimulatedUnixFlavour.Darwin ->
+                pipe.Reads > reads
+                && (FileDescriptorRegistry.descriptions system.Process.FileDescriptors).[writer].NonBlocking
         | WakePrimitive.DeadlinePassed deadline -> system.Machine.NanosecondsSinceBoot >= deadline
         | WakePrimitive.SignalDeliverable -> SyscallInterruption.wakes task system
 
@@ -264,6 +282,7 @@ module WakeCondition =
         | WakeCondition.Primitive (WakePrimitive.PipeWriteEndClosed _)
         | WakeCondition.Primitive (WakePrimitive.PipeHasRoom _)
         | WakeCondition.Primitive (WakePrimitive.PipeReadEndClosed _)
+        | WakeCondition.Primitive (WakePrimitive.PipeReadWhileNonBlocking _)
         | WakeCondition.Primitive WakePrimitive.SignalDeliverable -> []
         | WakeCondition.AnyOf (first, rest) -> deadlines first @ List.collect deadlines rest
 
@@ -331,6 +350,7 @@ module WakeCondition =
                 [
                     WakeCondition.Primitive (WakePrimitive.PipeHasRoom (write.Writer, write.Count, write.Written))
                     WakeCondition.Primitive (WakePrimitive.PipeReadEndClosed write.Writer)
+                    WakeCondition.Primitive (WakePrimitive.PipeReadWhileNonBlocking (write.Writer, write.ReadsSeen))
                 ]
 
         let signal = WakeCondition.Primitive WakePrimitive.SignalDeliverable
