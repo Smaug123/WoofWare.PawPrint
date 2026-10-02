@@ -309,6 +309,9 @@ module TestSocketAddressLength =
             gen {
                 let! clients = Gen.choose (1, 3)
                 let! closedClients = Gen.listOfLength clients (ArbMap.defaults |> ArbMap.generate<bool>)
+                // A non-blocking client's connect answers EINPROGRESS and leaves
+                // it awaiting the report of its establishment.
+                let! nonBlockingClients = Gen.listOfLength clients (ArbMap.defaults |> ArbMap.generate<bool>)
 
                 let! watched =
                     Gen.listOfLength
@@ -316,10 +319,10 @@ module TestSocketAddressLength =
                         (Gen.elements [ 0u ; 0x80000001u ; 0x80002001u ; 0x80000004u ; 0x80002015u ])
 
                 let! word = lengthGen |> Gen.filter (fun word -> int word < 0)
-                return closedClients, watched, word
+                return List.zip3 closedClients nonBlockingClients watched, word
             }
 
-        let property (closedClients : bool list, watched : uint32 list, word : uint32) : unit =
+        let property (clients : (bool * bool * uint32) list, word : uint32) : unit =
             let listenerFd, system = withListener SimulatedUnixPlatform.linuxX64
 
             let portFd, system =
@@ -328,9 +331,26 @@ module TestSocketAddressLength =
                 | other -> failwith $"epoll_create1: %A{other}"
 
             let system =
-                (system, List.zip closedClients watched)
-                ||> List.fold (fun system (closed, events) ->
-                    let clientFd, system = connectClient system
+                (system, clients)
+                ||> List.fold (fun system (closed, nonBlocking, events) ->
+                    let clientFd, system =
+                        if nonBlocking then
+                            let fd, system = streamSocket system
+                            let system = UnixSocket.setNonBlocking fd true system |> snd
+
+                            match
+                                UnixConnection.connect
+                                    fd
+                                    UserBuffer.Mapped
+                                    16u
+                                    (Some inetFamily)
+                                    (Some (loopback listenerPort))
+                                    system
+                            with
+                            | Ok (ConnectOutcome.Failed UnixError.EINPROGRESS, system) -> fd, system
+                            | other -> failwith $"connecting a non-blocking client: %A{other}"
+                        else
+                            connectClient system
 
                     let system =
                         if events = 0u then
