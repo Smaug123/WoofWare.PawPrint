@@ -127,7 +127,7 @@ module EpollCreateFlags =
     /// `EPOLL_CLOEXEC`: set `FD_CLOEXEC` on the new descriptor. The same value
     /// as `O_CLOEXEC`.
     [<Literal>]
-    let CloseOnExec : int = 0x80000
+    let CloseOnExec : int = OpenFlagNumbering.LinuxCloseOnExec
 
 /// Why this kernel will not answer an `epoll_create1(2)`.
 [<RequireQualifiedAccess>]

@@ -233,16 +233,20 @@ module CreatingOpenRules =
         // is not in, and as root in the first. Umask 010 is the row that shows
         // the order: 02775 there gives 0765, where judging after the umask would
         // keep the bit.
-        let setGroupId = 0o2000
-        let groupExecute = 0o0010
 
         let requested = mode &&& PermissionBits.toInt rules.ModeMask
 
         let stripsSetGroupId =
-            requested &&& (setGroupId ||| groupExecute) = (setGroupId ||| groupExecute)
-            && PermissionBits.toInt parentPermissions &&& setGroupId <> 0
+            requested &&& (PermissionBits.setGroupId ||| PermissionBits.groupExecute) = (PermissionBits.setGroupId
+                                                                                         ||| PermissionBits.groupExecute)
+            && PermissionBits.toInt parentPermissions &&& PermissionBits.setGroupId <> 0
             && parentStanding.Privilege = CallerPrivilege.Unprivileged
             && not parentStanding.InGroup
 
-        let mode = if stripsSetGroupId then mode &&& ~~~setGroupId else mode
+        let mode =
+            if stripsSetGroupId then
+                mode &&& ~~~PermissionBits.setGroupId
+            else
+                mode
+
         PermissionBits.fromCreationMode rules.ModeMask umask mode

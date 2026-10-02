@@ -54,10 +54,9 @@ type ProtectedFiles =
 
 [<RequireQualifiedAccess>]
 module ProtectedFiles =
-    let private sticky : int = 0o1000
     let private groupWritable : int = 0o0020
     let private worldWritable : int = 0o0002
-    let private stickyWorldWritable : int = sticky ||| worldWritable
+    let private stickyWorldWritable : int = PermissionBits.sticky ||| worldWritable
 
     /// Every one of the sysctls 0: Linux's own default, and how Darwin, which
     /// has none of them, behaves.
@@ -128,7 +127,7 @@ module ProtectedFiles =
             | InodeContent.Symlink _
             | InodeContent.Directory _ -> None
 
-        if bits &&& sticky = 0 then
+        if bits &&& PermissionBits.sticky = 0 then
             false
         elif governing = Some CreationProtection.Off then
             false
