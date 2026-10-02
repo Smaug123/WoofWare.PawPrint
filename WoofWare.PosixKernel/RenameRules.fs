@@ -1,7 +1,7 @@
 namespace WoofWare.PosixKernel
 
 /// The order in which `rename(2)` resolves its two paths, which is
-/// guest-visible because the two kernels answer different errnos when both
+/// observable because the two kernels answer different errnos when both
 /// paths are bad.
 ///
 /// Measured with pairs that *disagree* — a pair answering one errno either way
@@ -76,7 +76,7 @@ type RenameRules =
 /// What `rename(2)` should do next, once both of its paths have been resolved.
 [<RequireQualifiedAccess>]
 type RenameVerdict =
-    /// Answer the guest with this errno.
+    /// Answer the caller with this errno.
     | Refuse of error : UnixError
     /// Both paths name one inode. Succeed, and change nothing at all — not a
     /// binding, not a timestamp.

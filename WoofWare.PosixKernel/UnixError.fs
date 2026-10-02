@@ -56,7 +56,7 @@ type RawErrnoPortability =
 /// The conventional errors a syscall can report.
 /// </summary>
 /// <remarks>
-/// The guest will experience these errors as integers, which on a real host would come from <c>&lt;errno.h&gt;</c>.
+/// A process sees these errors as integers, which on a real host would come from <c>&lt;errno.h&gt;</c>.
 /// However, those ints are not portable across the simulated platforms, so we also provide this separate
 /// semantic layer.
 /// Call <c>UnixError.toRawErrnoUnder</c> to get an integer out directly for a given platform, or
@@ -340,7 +340,7 @@ type UnixError =
     /// Reported by <c>bind(2)</c> for an address this machine does not hold.
     ///
     /// What counts as "held" differs per Unix flavour, as follows:
-    /// the guest is configured with two lists of addresses, <c>LocalAddresses</c> (which configures interfaces),
+    /// the machine is configured with two lists of addresses, <c>LocalAddresses</c> (which configures interfaces),
     /// and <c>LocalRoutes</c> (the routing table).
     /// Darwin reads only <c>LocalAddresses</c> when binding, while Linux will additionally
     /// bind any address inside a prefix in <c>LocalRoutes</c>.
@@ -802,7 +802,7 @@ module UnixError =
 
     /// <summary>
     /// Describe the errno corresponding to a <c>UnixError</c>, in a way that is agnostic about the flavour of
-    /// guest platform.
+    /// simulated platform.
     /// </summary>
     /// <remarks>
     /// Use <c>toRawErrnoUnder</c> to get an actual integer.

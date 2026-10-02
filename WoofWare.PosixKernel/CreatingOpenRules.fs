@@ -33,7 +33,7 @@ type CreatingOpenRules =
         /// artefact.
         RootNavigation : UnixError option
         /// The bits `open(2)` keeps from its `mode` argument before the umask is
-        /// applied. XNU masks with `ACCESSPERMS`, so a Darwin guest cannot
+        /// applied. XNU masks with `ACCESSPERMS`, so a Darwin process cannot
         /// create a setuid, setgid or sticky file at all — measured, 0o4644,
         /// 0o2644 and 0o1644 all land as 0o644. Linux keeps all twelve bits.
         ModeMask : PermissionBits
@@ -57,7 +57,7 @@ type CreatingOpenRules =
 /// descriptor.
 [<RequireQualifiedAccess>]
 type CreatingOpenVerdict =
-    /// Answer the guest with this errno.
+    /// Answer the caller with this errno.
     | Refuse of error : UnixError
     /// Bind a new empty regular file under `name` in `directory`.
     | Create of directory : InodeNumber * name : DirectoryEntryName

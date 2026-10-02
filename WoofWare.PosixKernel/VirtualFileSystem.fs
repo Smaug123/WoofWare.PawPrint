@@ -124,7 +124,7 @@ type VirtualFileSystem =
             /// </summary>
             /// <remarks>
             /// Numbers are never reused, even after the last link to a file is removed:
-            /// reuse is observable to a guest that cached an <c>(st_dev, st_ino)</c> pair,
+            /// reuse is observable to a process that cached an <c>(st_dev, st_ino)</c> pair,
             /// and a fresh number can only ever make a stale comparison report
             /// "different file", which is the safe direction to be wrong in.
             /// </remarks>
@@ -304,7 +304,7 @@ type SeekWhence =
 ///
 /// Not a `UnixError`, and deliberately: this is a limit of the model rather than
 /// anything a kernel does, so a caller must fail loudly rather than translate it
-/// into an errno a guest could catch and interpret. Measured on ext4 and APFS
+/// into an errno a process could catch and interpret. Measured on ext4 and APFS
 /// alike, `pwrite` of one byte at offset 2^40 succeeds and leaves a sparse 1 TB
 /// file behind.
 [<RequireQualifiedAccess>]
@@ -458,7 +458,7 @@ module VirtualFileSystem =
     /// The `st_dev` every inode on the root filesystem reports. An inode on a
     /// mounted filesystem reports that filesystem's own, which its mount's
     /// configuration states. A
-    /// runtime reads `(st_dev, st_ino)` pairs to decide whether two paths name
+    /// program reads `(st_dev, st_ino)` pairs to decide whether two paths name
     /// the same file, and Darwin's `statfs(2)` reports the same number as the
     /// first word of `f_fsid`. It is *non-zero*: no mounted filesystem reports
     /// 0, so a zero here would be indistinguishable from a field nobody
@@ -565,7 +565,7 @@ module VirtualFileSystem =
 
         if offset >= int64 length then
             // Includes an offset beyond `int` range, which no seeded file can
-            // reach but a guest can certainly ask for.
+            // reach but a process can certainly ask for.
             0
         else
             // `length - offset` is in `(0, length]` here, so the `int` conversion
@@ -752,7 +752,7 @@ module VirtualFileSystem =
         (offset : int64)
         : Result<int64, SeekFault>
         =
-        // A property of the model rather than of the guest: a description's
+        // A property of the model rather than of the caller: a description's
         // offset is established non-negative by this very function.
         System.Diagnostics.Debug.Assert (current >= 0L, "seekTarget: the current offset must not be negative")
 
@@ -1444,7 +1444,7 @@ module VirtualFileSystem =
     ///    orphan strands the moved inode: it keeps a name, so nothing reaps it,
     ///    and no path reaches it. `mkdir`, `open(O_CREAT)` and `symlink` all
     ///    answer ENOENT there — measured on both kernels — and rename is the
-    ///    third guest-reachable operation that adds a name, so it owes the same.
+    ///    third syscall that adds a name, so it owes the same.
     ///    This is also what keeps `isOrphanedDirectory`'s stated invariant true:
     ///    an orphan is empty because `rmdir` refuses a populated directory *and*
     ///    nothing can afterwards put an entry into one.
@@ -1687,8 +1687,8 @@ module VirtualFileSystem =
     /// the single name `z` enumerates as `z .. .` on CI's ext4, where it
     /// enumerates as `. .. z` on APFS. Both are lawful, `readdir(3)` fixes no
     /// position for anything, and this is the less convenient of the two — it
-    /// refuses a guest that consumes two entries to skip the dots, or that
-    /// expects the first entry to be one. A guest doing either is already broken
+    /// refuses a program that consumes two entries to skip the dots, or that
+    /// expects the first entry to be one. A program doing either is already broken
     /// on ext4, and the point of this simulation is to say so deterministically
     /// rather than on whichever machine happens to run it.
     ///
@@ -2575,10 +2575,10 @@ module VirtualFileSystem =
 
     /// Fail loudly if `vfs` is not sound, naming `context`. For the operations
     /// that build a filesystem from host configuration, where a defect is a
-    /// host bug rather than anything a guest could have caused.
+    /// host bug rather than anything a process could have caused.
     let assertInvariants (context : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
         // Nothing pinned: these callers build a filesystem out of host
-        // configuration, before any guest exists to have opened anything, so an
+        // configuration, before any process exists to have opened anything, so an
         // inode no path reaches is a bug in the builder every time.
         match checkInvariants Set.empty vfs with
         | [] -> vfs
@@ -2614,7 +2614,7 @@ module VirtualFileSystem =
             =
             // `Map` iterates in key order, so the inode numbers a seed produces
             // are a function of the seed alone rather than of how the host
-            // happened to build the map. Inode numbers are guest-observable
+            // happened to build the map. Inode numbers are visible to a process
             // through `st_ino`, so this is part of the replay contract.
             entries
             |> Map.fold

@@ -185,19 +185,20 @@
             touch $out
           '';
         # Fails `nix flake check` when a WoofWare.PosixKernel source line names
-        # WoofWare.PawPrint or one of its symbols (`KernelConfig`, `EmulatedKernel`, ...).
-        # The library is meant to read as a POSIX simulator that knows nothing of the client
-        # it was extracted from, and prose is where that knowledge crept back in. Runs the
+        # WoofWare.PawPrint or one of its symbols (`KernelConfig`, `EmulatedKernel`, ...),
+        # names CoreCLR, or calls the process a guest. The library is meant to read as a
+        # POSIX simulator that knows nothing of the client it was extracted from, and prose
+        # is where that knowledge crept back in. Runs the
         # checker's own contract first, so that a change to the checker cannot quietly
         # retire it.
-        pawprint-references =
-          pkgs.runCommand "pawprint-references" {
+        client-references =
+          pkgs.runCommand "client-references" {
             buildInputs = [pkgs.python3 pkgs.bash];
           }
           ''
-            ${pkgs.bash}/bin/bash ${./scripts/test-pawprint-references.sh} \
-              ${./scripts/check-pawprint-references.py}
-            ${pkgs.python3}/bin/python3 ${./scripts/check-pawprint-references.py} \
+            ${pkgs.bash}/bin/bash ${./scripts/test-client-references.sh} \
+              ${./scripts/check-client-references.py}
+            ${pkgs.python3}/bin/python3 ${./scripts/check-client-references.py} \
               ${pkgs.lib.fileset.toSource {
               root = ./WoofWare.PosixKernel;
               fileset = pkgs.lib.fileset.fileFilter (f: f.hasExt "fs") ./WoofWare.PosixKernel;

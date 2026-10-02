@@ -501,7 +501,7 @@ module PermissionBits =
     /// </param>
     ///
     /// <param name="mode">
-    /// The integer which a guest passes as a filemode argument to the syscall you're implementing.
+    /// The integer which a process passes as a filemode argument to the syscall you're implementing.
     /// </param>
     ///
     /// <remarks>

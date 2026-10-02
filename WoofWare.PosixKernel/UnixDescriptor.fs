@@ -524,7 +524,7 @@ module UnixDescriptor =
         // Whence *validity* is settled; whence *semantics* is not, and the two
         // sit at different points in Linux's order — which is why refusing 3 and
         // 4 up front would be wrong. Measured, `lseek(badfd, 0, 3)` is EBADF and
-        // `lseek(pipe, 0, 3)` is ESPIPE on both platforms, so a guest reaching
+        // `lseek(pipe, 0, 3)` is ESPIPE on both platforms, so a caller reaching
         // here with whence 3 or 4 really is asking about a seekable file's
         // sparseness.
         if whence > seekEnd then
