@@ -1668,14 +1668,9 @@ module EmulatedKernel =
                     }
             }
 
-        // `raise` directs the signal at the calling thread; a signal whose default
-        // terminates the process kills it whichever thread takes it, so `kill`'s
-        // answer is the same.
-        let pid = ProcessId.toInt32 (UnixSystem.processId system)
-
         let signo = Signal.toRawSignoUnder (SignalState.numbering signals) Signal.SIGABRT
 
-        match UnixSignal.kill pid signo system with
+        match UnixSignal.pthreadKill thread signo system with
         | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
             match ended.Termination with
             | ProcessTermination.Signaled (Signal.SIGABRT, _) -> ended.Termination

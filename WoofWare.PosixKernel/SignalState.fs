@@ -209,6 +209,14 @@ type SignalReceiverRefusal =
     /// signals at the same return. What a stopped process does with frames
     /// already pushed has not been measured.
     | DefaultBehindHandlers of signal : Signal
+    /// Under Darwin's numbering, `signal`, a standard signal, would be left
+    /// pending on the process as a whole while an instance of it is pending on
+    /// the leader alone, or the other way round. Darwin holds the two as one
+    /// instance: it puts a signal sent to the process in the pending set of
+    /// the thread it chooses to take it, which is the leader whenever this
+    /// library answers. This library keeps the process's set apart from each
+    /// task's.
+    | PendingForProcessAndLeader of signal : Signal
 
 [<RequireQualifiedAccess>]
 module SignalState =
@@ -576,18 +584,18 @@ module SignalState =
     /// one, `ValueSome t` the thread's own. Measured on Linux 6.18.5 and
     /// Darwin 25.6.0: three process-directed `SIGUSR1` while blocked deliver
     /// once; and the sets are separate keys — a process-directed plus a
-    /// thread-directed `SIGUSR2` deliver twice, on Linux and on a two-thread
-    /// Darwin process alike. A real-time signal (Linux's 32..64; see
+    /// thread-directed `SIGUSR2` deliver twice on Linux, and on Darwin when
+    /// the thread is not the leader. A real-time signal (Linux's 32..64; see
     /// `Signal.isRealTimeUnder`) queues without coalescing.
     ///
-    /// One measured divergence is deliberately not modelled: a
-    /// *single-threaded* Darwin process delivers that process-plus-thread
-    /// pair once, not twice, because xnu assigns a process-directed signal to
-    /// a thread at generation time and the two instances then coalesce in
-    /// that thread's set. Modelling it would need this function to resolve
-    /// `ValueNone` to a thread at enqueue time, importing xnu's assignment
-    /// policy for a difference nothing can yet generate; revisit when
-    /// `kill(2)` or `pthread_kill(2)` is modelled for Darwin flavours.
+    /// One measured divergence is not modelled here: Darwin delivers a
+    /// process-directed and a thread-directed instance once, not twice, when
+    /// the thread is the leader (measured on Darwin 27.0.0 by
+    /// `docs/plans/2026-08-23-posix-kernel-extraction/raise-sweep.c`), because it puts a signal sent to the process
+    /// in the pending set of the thread it chooses to take it. `generate`
+    /// refuses to leave such a pair pending
+    /// (`SignalReceiverRefusal.PendingForProcessAndLeader`); this function,
+    /// which is not told the leader, holds them apart.
     let enqueue (entry : PendingSignal<'Task>) (state : SignalState<'Task, 'Handler>) : SignalState<'Task, 'Handler> =
         let entry =
             { entry with
@@ -678,7 +686,10 @@ module SignalState =
     /// pending signals of the opposite kind first, as `enqueue` describes.
     ///
     /// Refuses a caught signal sent to the process that only a task other than
-    /// the leader could receive.
+    /// the leader could receive; and, under Darwin's numbering, a standard
+    /// signal it would leave pending on the process while an instance is
+    /// pending on the leader alone, or the other way round, which Darwin holds
+    /// as one instance where this library holds two.
     ///
     /// Fails loudly unless `leader` is among `tasks`, and on a signal aimed at a
     /// task that is not.
@@ -711,10 +722,39 @@ module SignalState =
         // nothing. Which task receives such a signal does not matter, since it
         // acts on the whole process, so it is answered even when the leader
         // blocks it.
+        // Measured by `docs/plans/2026-08-23-posix-kernel-extraction/raise-sweep.c`
+        // on Darwin 27.0.0, with every catchable signal blocked by every thread:
+        // a `kill(2)` of the process and a `raise(3)` on the main thread, in
+        // either order, by either thread, in a process of one thread or two,
+        // were delivered once, to the main thread; a `kill` and a
+        // `pthread_kill` of the second thread were delivered once to each.
+        // Linux 6.18.5 delivered the first pair twice.
+        let leftPending () : Result<SignalGeneration<'Task, 'Handler>, SignalReceiverRefusal> =
+            let mergesOnDarwin =
+                match state.Numbering with
+                | SignalNumbering.Linux -> false
+                | SignalNumbering.Darwin ->
+                    let partner =
+                        match entry.Target with
+                        | ValueNone -> ValueSome (ValueSome leader)
+                        | ValueSome target when target = leader -> ValueSome ValueNone
+                        | ValueSome _ -> ValueNone
+
+                    match partner with
+                    | ValueNone -> false
+                    | ValueSome partner ->
+                        state.Pending
+                        |> List.exists (fun pending -> pending.Signal = entry.Signal && pending.Target = partner)
+
+            if mergesOnDarwin then
+                Error (SignalReceiverRefusal.PendingForProcessAndLeader entry.Signal)
+            else
+                Ok (SignalGeneration.ProcessContinues (admit entry state))
+
         match receiverFor leader tasks entry state, disposition entry.Signal state with
-        | Receiver.Nobody, _ -> Ok (SignalGeneration.ProcessContinues (admit entry state))
+        | Receiver.Nobody, _ -> leftPending ()
         | Receiver.BeyondLeader, SignalDisposition.Catch _ -> Error (SignalReceiverRefusal.LeaderBlocks entry.Signal)
-        | Receiver.Task _, SignalDisposition.Catch _ -> Ok (SignalGeneration.ProcessContinues (admit entry state))
+        | Receiver.Task _, SignalDisposition.Catch _ -> leftPending ()
         // Discarded without ever being pending, on both kernels. Were it
         // queued instead, it would sit there until the client next asked
         // `onReturnToUser`, and a handler installed in between would receive a
@@ -726,7 +766,7 @@ module SignalState =
                 Ok (SignalGeneration.ProcessTerminated (entry.Signal, dumpsCore coreDumps state.Numbering entry.Signal))
             | DefaultDisposition.Stop -> Ok (SignalGeneration.ProcessStopped (entry.Signal, state))
             | DefaultDisposition.Ignore -> Ok (SignalGeneration.ProcessContinues state)
-            | DefaultDisposition.Continue -> Ok (SignalGeneration.ProcessContinues (admit entry state))
+            | DefaultDisposition.Continue -> leftPending ()
 
     /// Every pending entry, every signal in its canonical spelling: the
     /// process's own set first, then each task's, each set in the order a task
