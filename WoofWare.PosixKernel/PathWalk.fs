@@ -252,6 +252,10 @@ type PausedResolution =
             FinalSymlinkFollowed : bool
             LastNavigation : FinalNavigation
             SymlinksTraversed : int
+            /// The directory the last "." or ".." was consumed from, which is
+            /// the directory a kernel's parent walk stops in for a path whose
+            /// last component is one of them.
+            NavigatedFrom : InodeNumber
         }
 
 [<RequireQualifiedAccess>]
@@ -380,6 +384,7 @@ module PathWalk =
         (finalSymlinkFollowed : bool)
         (lastNavigation : FinalNavigation)
         (symlinks : int)
+        (navigatedFrom : InodeNumber)
         : Result<PausedResolution, PathFailure>
         =
         let paused (final : (DirectoryEntryName * PathCursor) option) : PausedResolution =
@@ -396,6 +401,7 @@ module PathWalk =
                 FinalSymlinkFollowed = finalSymlinkFollowed
                 LastNavigation = lastNavigation
                 SymlinksTraversed = symlinks
+                NavigatedFrom = navigatedFrom
             }
 
         match PathCursor.next remaining with
@@ -466,6 +472,7 @@ module PathWalk =
                 finalSymlinkFollowed
                 FinalNavigation.Current
                 symlinks
+                directory
         | PathComponent.Parent ->
             walkFrom
                 limits
@@ -480,6 +487,7 @@ module PathWalk =
                 finalSymlinkFollowed
                 FinalNavigation.Parent
                 symlinks
+                directory
         | PathComponent.Name name ->
 
         // The final name's length is checked by `completeResolution` rather
@@ -544,6 +552,7 @@ module PathWalk =
                 // here.
                 lastNavigation
                 (symlinks + 1)
+                next
         | InodeContent.Directory _ ->
             walkFrom
                 limits
@@ -558,6 +567,7 @@ module PathWalk =
                 finalSymlinkFollowed
                 lastNavigation
                 symlinks
+                target
         // A path cannot continue through a regular file or a device.
         | InodeContent.RegularFile _
         | InodeContent.CharacterDevice _ -> Error (PathFailure.Errno UnixError.ENOTDIR)
@@ -584,17 +594,26 @@ module PathWalk =
         | None -> false
         | Some _ -> VirtualFileSystem.isOrphanedDirectory paused.Directory paused.FileSystem
 
-    /// The root of the mounted filesystem the directory this paused resolution
-    /// would look its final name up in is on, or `None` for the root
-    /// filesystem. Two paths whose parents answer differently are on different
-    /// filesystems, which is the question `rename(2)` asks before either final
-    /// name is looked up.
+    /// The root of the mounted filesystem a kernel's parent walk of this path
+    /// stops on, or `None` for the root filesystem: the directory the final
+    /// name would be looked up in, or, for a path ending in "." or "..", the
+    /// directory that component was taken from. Two paths whose parents answer
+    /// differently are on different filesystems, which is the question
+    /// `rename(2)` asks before either final name is looked up.
     let pausedMountedRoot (paused : PausedResolution) : InodeNumber option =
         match box paused with
         | null ->
             failwith
                 "PathWalk.pausedMountedRoot: this paused resolution is null, which it can only be if it came from `Unchecked.defaultof` or C# `default`; obtain one from PathWalk.resolveParent instead."
-        | _ -> VirtualFileSystem.mountedRootOf paused.Directory paused.FileSystem
+        | _ ->
+
+        // For a path ending in "." or "..", the parent walk stops in the
+        // directory that component was consumed from, not in the one it
+        // reached: Linux's `filename_parentat` hands back the path before the
+        // last component, so "/dev/.." is on the device filesystem.
+        match paused.Final with
+        | Some _ -> VirtualFileSystem.mountedRootOf paused.Directory paused.FileSystem
+        | None -> VirtualFileSystem.mountedRootOf paused.NavigatedFrom paused.FileSystem
 
     /// What `paused.SymlinkProtection` says about following the link `link`
     /// found in `directory`: `None` to follow it.
@@ -823,6 +842,7 @@ module PathWalk =
                 true
                 lastNavigation
                 (paused.SymlinksTraversed + 1)
+                next
             |> Result.bind completeResolution
         | InodeContent.Symlink _ ->
             // Final position under NoFollowFinal with no trailing
@@ -922,6 +942,7 @@ module PathWalk =
             false
             FinalNavigation.Root
             0
+            start
 
     /// Resolve `path` all the way: `resolveParent` followed by
     /// `completeResolution`, which is what every caller resolving a single path

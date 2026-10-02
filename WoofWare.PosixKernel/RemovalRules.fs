@@ -30,6 +30,10 @@ type RemovalRefusal =
     /// then answer for that name as it answers for any it does not hold, and
     /// this one refuses every name it does not hold.
     | DeviceFileSystem of directory : InodeNumber * name : DirectoryEntryName
+    /// The path names `mountRoot`, the root of a mounted filesystem, in a
+    /// sticky directory. The sticky rule consults the covered directory's
+    /// owner, which this kernel does not hold.
+    | MountPoint of mountRoot : InodeNumber
 
 [<RequireQualifiedAccess>]
 module StickyRefusal =
@@ -50,6 +54,8 @@ module RemovalRefusal =
         match refusal with
         | RemovalRefusal.Sticky refusal -> StickyRefusal.describe refusal
         | RemovalRefusal.Path refusal -> PathRefusal.describe refusal
+        | RemovalRefusal.MountPoint mountRoot ->
+            $"the path names inode %O{mountRoot}, the root of a mounted filesystem, in a sticky directory. Whether the sticky rule lets the caller remove the name depends on the covered directory's owner, which this kernel does not hold."
         | RemovalRefusal.DeviceFileSystem (directory, name) ->
             $"the call would remove \"%s{DirectoryEntryName.toEscaped name}\" from inode %O{directory}, on the device filesystem, which holds only the nodes of the devices this kernel has drivers for; it removes none of them, because it could not then say what a real one answers for the name."
 

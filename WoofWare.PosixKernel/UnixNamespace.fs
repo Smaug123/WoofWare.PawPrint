@@ -306,7 +306,7 @@ module RenameRefusal =
         | RenameRefusal.Sticky refusal -> StickyRefusal.describe refusal
         | RenameRefusal.Path refusal -> PathRefusal.describe refusal
         | RenameRefusal.MountPoint mountRoot ->
-            $"one of the paths names inode %O{mountRoot}, the root of a mounted filesystem. Measured on Linux, moving it to a free name is EBUSY once the permission checks pass; what any other rename involving it answers, and where among the other checks, has not been measured."
+            $"one of the paths names inode %O{mountRoot}, the root of a mounted filesystem. Measured on Linux, renaming it to a free name in its own directory is EACCES without write on that directory and EBUSY with it. Any other rename involving it can depend on the covered directory's own owner and mode, which this kernel does not hold, and has not been measured."
         | RenameRefusal.DeviceFileSystem (directory, name) ->
             $"the call would move \"%s{DirectoryEntryName.toEscaped name}\" out of inode %O{directory}, on the device filesystem, which holds only the nodes of the devices this kernel has drivers for; it removes none of them, because it could not then say what a real one answers for the name."
 
@@ -1296,6 +1296,25 @@ module UnixNamespace =
         | Error (PathFailure.Refused refusal) -> Error (RemovalRefusal.Path refusal)
         | Ok resolution ->
 
+        // The covered directory, not the mounted root, is what a sticky
+        // parent's rule consults; see `RemovalRefusal.MountPoint`.
+        let coveredInStickyDirectory =
+            match resolution.Target with
+            | ResolvedTarget.Entry (directory, _, Some target) when
+                (VirtualFileSystem.mountOf target system.Machine.FileSystem).IsSome
+                ->
+                match VirtualFileSystem.tryGetDirectory directory system.Machine.FileSystem with
+                | Some content when PermissionBits.toInt content.Permissions &&& PermissionBits.sticky <> 0 ->
+                    Some target
+                | Some _
+                | None -> None
+            | ResolvedTarget.Entry _
+            | ResolvedTarget.Directory _ -> None
+
+        match coveredInStickyDirectory with
+        | Some mountRoot -> Error (RemovalRefusal.MountPoint mountRoot)
+        | None ->
+
         match
             UnlinkRules.verdict
                 (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform)
@@ -1373,6 +1392,25 @@ module UnixNamespace =
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error (RemovalRefusal.Path refusal)
         | Ok resolution ->
+
+        // The covered directory, not the mounted root, is what a sticky
+        // parent's rule consults; see `RemovalRefusal.MountPoint`.
+        let coveredInStickyDirectory =
+            match resolution.Target with
+            | ResolvedTarget.Entry (directory, _, Some target) when
+                (VirtualFileSystem.mountOf target system.Machine.FileSystem).IsSome
+                ->
+                match VirtualFileSystem.tryGetDirectory directory system.Machine.FileSystem with
+                | Some content when PermissionBits.toInt content.Permissions &&& PermissionBits.sticky <> 0 ->
+                    Some target
+                | Some _
+                | None -> None
+            | ResolvedTarget.Entry _
+            | ResolvedTarget.Directory _ -> None
+
+        match coveredInStickyDirectory with
+        | Some mountRoot -> Error (RemovalRefusal.MountPoint mountRoot)
+        | None ->
 
         match
             RmDirRules.verdict
@@ -1617,18 +1655,33 @@ module UnixNamespace =
 
         // A mount point's own rows. Linux checks the permissions first and the
         // mount after (`rename("/dev", "/devx")` is EACCES at uid 1000 and EBUSY
-        // at uid 0), and that pair is all that has been measured.
+        // at uid 0), and that pair, a mount point renamed within its own
+        // directory, is all that has been measured. It is also all that can be
+        // answered: the mount point's own inode is the covered directory, whose
+        // owner a sticky parent consults and whose write bit a move to another
+        // directory consults, and this kernel holds only the mounted root.
+        let sticky (resolution : Resolution) : bool =
+            match resolution.Target with
+            | ResolvedTarget.Entry (directory, _, _) ->
+                match VirtualFileSystem.tryGetDirectory directory vfs with
+                | Some content -> PermissionBits.toInt content.Permissions &&& PermissionBits.sticky <> 0
+                | None -> false
+            | ResolvedTarget.Directory _ -> false
+
         let verdict =
             match mountRootNamed sourceResolution, mountRootNamed destinationResolution, verdict with
             | None, None, verdict -> Ok verdict
-            | _, _, Ok (RenameVerdict.Refuse UnixError.EACCES as refused)
-            | _, _, Ok (RenameVerdict.Refuse UnixError.EPERM as refused) -> Ok (Ok refused)
-            | Some _, None, Ok (RenameVerdict.Move (_, _, destinationDirectory, destinationName)) when
-                (match VirtualFileSystem.tryGetDirectory destinationDirectory vfs with
-                 | Some content -> not (Map.containsKey destinationName content.Entries)
-                 | None -> false)
-                ->
-                Ok (Ok (RenameVerdict.Refuse UnixError.EBUSY))
+            | Some mountRoot, None, verdict when not (sticky sourceResolution) && not (sticky destinationResolution) ->
+                match sourceResolution.Target, destinationResolution.Target, verdict with
+                | ResolvedTarget.Entry (sourceDirectory, _, _),
+                  ResolvedTarget.Entry (destinationDirectory, _, None),
+                  Ok (RenameVerdict.Refuse UnixError.EACCES as refused) when sourceDirectory = destinationDirectory ->
+                    Ok (Ok refused)
+                | ResolvedTarget.Entry (sourceDirectory, _, _),
+                  ResolvedTarget.Entry (destinationDirectory, _, None),
+                  Ok (RenameVerdict.Move _) when sourceDirectory = destinationDirectory ->
+                    Ok (Ok (RenameVerdict.Refuse UnixError.EBUSY))
+                | _ -> Error (RenameRefusal.MountPoint mountRoot)
             | Some mountRoot, _, _
             | None, Some mountRoot, _ -> Error (RenameRefusal.MountPoint mountRoot)
 

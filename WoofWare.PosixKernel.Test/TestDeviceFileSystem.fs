@@ -355,6 +355,51 @@ module TestDeviceFileSystem =
         |> shouldEqual (Ok (Some UnixError.EEXIST))
 
     [<Test>]
+    let ``a path ending in a dot component is on the filesystem it was taken from`` () : unit =
+        // Linux's parent walk stops before the last component, so "/dev/.." and
+        // "/dev/." are on the device filesystem whatever they reach.
+        for system in [ booted linux ; asRoot (booted linux) ] do
+            for source in [ "/dev/.." ; "/dev/." ] do
+                match UnixNamespace.rename (PathArg.ofText source) (PathArg.ofText "/d/x") system with
+                | Ok answer -> failed answer |> shouldEqual (Some UnixError.EXDEV)
+                | Error refusal -> failwith $"rename %s{source}: refused: %s{RenameRefusal.describe refusal}"
+
+            // And "/d/.." is on the root filesystem though it reaches the root.
+            match UnixNamespace.rename (PathArg.ofText "/d/..") (PathArg.ofText "/dev/x") system with
+            | Ok answer -> failed answer |> shouldEqual (Some UnixError.EXDEV)
+            | Error refusal -> failwith $"rename /d/..: refused: %s{RenameRefusal.describe refusal}"
+
+    [<Test>]
+    let ``what the covered directory's own inode would decide is refused`` () : unit =
+        // A sticky root consults the covered directory's owner, and a move to
+        // another directory its write bit; this kernel holds neither.
+        let unprivileged = booted linux
+
+        let sticky =
+            match UnixPathResolution.chmod (PathArg.ofText "/") 0o1777 (asRoot unprivileged) with
+            | Ok (SyscallAnswer.Completed 0L, system) -> system
+            | other -> failwith $"chmod / as root: %A{other}"
+
+        let sticky =
+            UnixSystem.withCredentials
+                context
+                (Credentials.ofIds (UserId.parseOrFail context 1000u) (GroupId.parseOrFail context 1000u) [])
+                sticky
+
+        for removal in [ UnixNamespace.rmdir ; UnixNamespace.unlink ] do
+            match removal (PathArg.ofText "/dev") sticky with
+            | Error (RemovalRefusal.MountPoint _) -> ()
+            | other -> failwith $"removing /dev from a sticky root: expected a refusal, got %A{other}"
+
+        match UnixNamespace.rename (PathArg.ofText "/dev") (PathArg.ofText "/devx") sticky with
+        | Error (RenameRefusal.MountPoint _) -> ()
+        | other -> failwith $"renaming /dev in a sticky root: expected a refusal, got %A{other}"
+
+        match UnixNamespace.rename (PathArg.ofText "/dev") (PathArg.ofText "/d/dev") (asRoot unprivileged) with
+        | Error (RenameRefusal.MountPoint _) -> ()
+        | other -> failwith $"moving /dev to another directory: expected a refusal, got %A{other}"
+
+    [<Test>]
     let ``no name in the device filesystem is created, removed or moved`` () : unit =
         let unprivileged = booted linux
         let root = asRoot unprivileged

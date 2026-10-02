@@ -3148,6 +3148,7 @@ module NativeSystemNative =
                         | RemovalRefusal.Sticky refusal ->
                             $"StickyRefusal: %s{StickyRefusal.describe refusal} %s{unmeasuredDarwinRow}"
                         | RemovalRefusal.Path _
+                        | RemovalRefusal.MountPoint _
                         | RemovalRefusal.DeviceFileSystem _ -> RemovalRefusal.describe refusal
                     )
                 )
@@ -3180,6 +3181,7 @@ module NativeSystemNative =
                         | RemovalRefusal.Sticky refusal ->
                             $"StickyRefusal: %s{StickyRefusal.describe refusal} %s{unmeasuredDarwinRow}"
                         | RemovalRefusal.Path _
+                        | RemovalRefusal.MountPoint _
                         | RemovalRefusal.DeviceFileSystem _ -> RemovalRefusal.describe refusal
                     )
                 )
