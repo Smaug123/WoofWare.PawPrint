@@ -127,6 +127,7 @@ class LockAndPortWaiters
         | ParkedSyscall.Kevent _ -> true
         | ParkedSyscall.Flock _
         | ParkedSyscall.Poll _
+        | ParkedSyscall.KqueuePoll _
         | ParkedSyscall.Accept _
         | ParkedSyscall.PipeRead _
         | ParkedSyscall.PipeWrite _ -> false

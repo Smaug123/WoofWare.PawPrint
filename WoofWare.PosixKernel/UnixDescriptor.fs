@@ -167,15 +167,17 @@ type CloseRefusal<'Task> =
     /// Any descriptor onto an open file description that `task` is parked on
     /// an `flock` of, under the Darwin flavour.
     | DarwinFlockedDescriptorWithWaiter of description : OpenFileDescriptionId * task : 'Task
-    /// The descriptor `fd`, which `task` is parked in a `poll(2)` watching.
+    /// The descriptor `fd`, which `task` is parked in a Linux-flavoured
+    /// `poll(2)` watching.
     ///
-    /// Refused under either flavour. Linux's sleeping poll keeps the file it
-    /// found, which this kernel represents, but when it wakes it looks the
-    /// number up again and reports what the number names by then, and it is
-    /// woken only by the files it found: a wake that finds nothing ready under
-    /// the number sleeps again until the next one. This kernel's wake
-    /// conditions are levels, not edges, so such a poll would be woken again
-    /// at once, for ever.
+    /// Refused because Linux's sleeping poll keeps the file it found, which
+    /// this kernel represents, but when it wakes it looks the number up again
+    /// and reports what the number names by then, and it is woken only by the
+    /// files it found: a wake that finds nothing ready under the number sleeps
+    /// again until the next one. This kernel's wake conditions are levels, not
+    /// edges, so such a poll would be woken again at once, for ever. A Darwin
+    /// poll's watched descriptor closes: the close removes the filters
+    /// registered through it from the kqueue the poll made, as Darwin does.
     | PolledDescriptor of fd : int * task : 'Task
     /// Any descriptor onto a listening socket that `task` is parked in an
     /// `accept(2)` on, under the Darwin flavour.
@@ -1070,6 +1072,7 @@ module UnixDescriptor =
             | Some (ParkedSyscall.Accept accept) ->
                 failwith
                     $"UnixDescriptor.flockAcquire: task %O{task} is parked in an accept on %O{accept.Listener}, not in an flock, so there is no acquisition to finish (this is a bug in the client)."
+            | Some (ParkedSyscall.KqueuePoll _ as other)
             | Some (ParkedSyscall.PipeRead _ as other)
             | Some (ParkedSyscall.PipeWrite _ as other) ->
                 failwith
@@ -1349,6 +1352,10 @@ module UnixDescriptor =
     /// inode is still named is a question about the filesystem, and what a
     /// sleeping call holds is the task table's.
     ///
+    /// Every kqueue registration made through `fd` goes with it, in a kqueue the
+    /// process holds and in the kqueue of every Darwin `poll` asleep
+    /// (`ParkedKqueuePoll`), whose entry then reports nothing.
+    ///
     /// EBADF is its only errno; see `CloseRefusal` for the inputs it declines
     /// to answer at all.
     let close<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -1401,7 +1408,9 @@ module UnixDescriptor =
                     | ParkedSyscall.PipeRead _
                     | ParkedSyscall.PipeWrite _
                     | ParkedSyscall.Flock _
-                    | ParkedSyscall.Poll _ -> None
+                    | ParkedSyscall.Poll _
+                    // A Darwin poll's filters go with the descriptor (below).
+                    | ParkedSyscall.KqueuePoll _ -> None
                 )
 
         match darwinRefusal with
@@ -1431,6 +1440,7 @@ module UnixDescriptor =
                 | ParkedSyscall.Flock _
                 | ParkedSyscall.SocketWait _
                 | ParkedSyscall.Kevent _
+                | ParkedSyscall.KqueuePoll _
                 | ParkedSyscall.Accept _
                 | ParkedSyscall.PipeRead _
                 | ParkedSyscall.PipeWrite _ -> None
@@ -1451,6 +1461,13 @@ module UnixDescriptor =
             | Error FileDescriptorCloseError.BadFd ->
                 failwith
                     $"UnixDescriptor.close: fd %d{fd} named open file description %O{closingId} (%A{closing.Target}) a moment ago, and the registry now calls it a bad descriptor (this is a bug in this library)."
+
+        // `dropDescriptor` removed the kqueue registrations made through `fd`
+        // from every kqueue the process holds; a sleeping Darwin poll's kqueue
+        // is the call's own, so it loses them here (measured, `poll-timeout.c`
+        // section E: the entry then reports nothing, and the poll sleeps on to
+        // its timeout).
+        let tasks = KqueuePoll.dropRegistrationsThrough fd system.Tasks
 
         // Measured on Darwin 27.0.0 (`kqueue-kevent.c`, sections E and F):
         // closing a descriptor a task is asleep in `kevent` through drains the
@@ -1474,6 +1491,7 @@ module UnixDescriptor =
                         | ParkedSyscall.SocketWait _
                         | ParkedSyscall.Flock _
                         | ParkedSyscall.Poll _
+                        | ParkedSyscall.KqueuePoll _
                         | ParkedSyscall.Accept _
                         | ParkedSyscall.PipeRead _
                         | ParkedSyscall.PipeWrite _ -> false
@@ -1496,6 +1514,7 @@ module UnixDescriptor =
                     { system.Process with
                         FileDescriptors = registry
                     }
+                Tasks = tasks
             }
 
         match destroyed with

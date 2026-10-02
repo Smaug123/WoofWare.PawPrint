@@ -281,10 +281,11 @@ type KqueueFilterReport =
     /// socket's pending error, or 0 when there is none.
     | EndOfFile of data : int64 * pendingError : UnixError option
 
-/// The readiness a Darwin-flavoured socket presents to a kqueue filter.
+/// The readiness a Darwin-flavoured socket or pipe presents to a kqueue
+/// filter.
 ///
-/// Answers for the stream sockets of `AF_INET` and `AF_INET6`, the only
-/// sockets `UnixKqueue.kevent` registers a filter on (see `modelsSocket`).
+/// Answers for the stream sockets of `AF_INET` and `AF_INET6` (see
+/// `modelsSocket`), and for both ends of a pipe.
 [<RequireQualifiedAccess>]
 module DarwinReadiness =
 
@@ -435,6 +436,59 @@ module DarwinReadiness =
             failwith
                 $"DarwinReadiness.ofSocket: stream socket %O{socketId} holds a datagram peer, which this kernel's socket invariants forbid (this is a bug in the caller's state construction)."
 
+    /// What the kqueue filter `filter`, registered through a descriptor onto
+    /// `pipeEnd` of the pipe `pipeId`, reports right now, or `None` when the
+    /// filter is not ready.
+    ///
+    /// Either filter registers on either end. Measured on Darwin 27.0.0
+    /// (`pipe-activation.c` and `poll-darwin.c`): `EVFILT_READ` on the read
+    /// end is ready while the pipe holds anything, reporting how much;
+    /// `EVFILT_WRITE` on the write end is ready while it is writable (see
+    /// `PipeBuffer.writable`), reporting the free space
+    /// (`PipeBuffer.darwinWriteSpace`); the other two are ready only once the
+    /// pipe has lost an end. Once either end has no descriptor left, every
+    /// filter on the surviving end is ready with `EV_EOF`, reporting 0, but a
+    /// read end's `EVFILT_READ`, which still reports what the pipe holds.
+    let ofPipe<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (filter : KqueueFilter)
+        (pipeId : PipeId)
+        (pipeEnd : PipeEnd)
+        (system : UnixSystem<'Task, 'Handler>)
+        : KqueueFilterReport option
+        =
+        let pipe = UnixMachineState.pipe pipeId system.Machine
+
+        let otherEnd =
+            match pipeEnd with
+            | PipeEnd.Read -> PipeEnd.Write
+            | PipeEnd.Write -> PipeEnd.Read
+
+        let ended = not (UnixProcessState.pipeEndOpen pipeId pipe otherEnd system.Process)
+
+        let held = int64 (PipeBuffer.held pipe.Buffer)
+
+        match pipeEnd, filter with
+        | PipeEnd.Read, KqueueFilter.Read ->
+            if ended then
+                Some (KqueueFilterReport.EndOfFile (held, None))
+            elif held > 0L then
+                Some (KqueueFilterReport.Ready (held))
+            else
+                None
+        | PipeEnd.Write, KqueueFilter.Write ->
+            if ended then
+                Some (KqueueFilterReport.EndOfFile (0L, None))
+            elif PipeBuffer.writable pipe.Buffer then
+                Some (KqueueFilterReport.Ready ((int64 (PipeBuffer.darwinWriteSpace pipe.Buffer))))
+            else
+                None
+        | PipeEnd.Read, KqueueFilter.Write
+        | PipeEnd.Write, KqueueFilter.Read ->
+            if ended then
+                Some (KqueueFilterReport.EndOfFile (0L, None))
+            else
+                None
+
 /// One event a kqueue reports: the registration that reported it, and what its
 /// filter reported.
 type KqueueReport =
@@ -537,8 +591,39 @@ module KqueueQueue =
                 }
                 system
 
+    /// The registrations of the socket `socketId` among `registrations` (each
+    /// with the ordinal it was first made at) that an event waking each filter
+    /// of `filters`, in that order, activates: each whose filter is ready now
+    /// and which is not in `active` already. Of several registrations of the
+    /// socket for one filter, made through different descriptors onto it, the
+    /// newest-registered comes first.
+    let private entering<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (socketId : SocketId)
+        (filters : KqueueFilter list)
+        (registrations : ((int * KqueueFilter) * int64) list)
+        (active : (int * KqueueFilter) list)
+        (system : UnixSystem<'Task, 'Handler>)
+        : (int * KqueueFilter) list
+        =
+        // Measured on Darwin 27.0.0 (`kevent-register.c`): one event activates
+        // WRITE before READ whatever order they were registered in (O2), and a
+        // socket's registrations through a descriptor and its dup newest first
+        // (O6).
+        filters
+        |> List.collect (fun filter ->
+            registrations
+            |> List.filter (fun ((fd, registered), _) -> registered = filter && socketOf fd system = Some socketId)
+            |> List.sortByDescending snd
+            |> List.map fst
+        )
+        |> List.filter (fun (_, filter as key) ->
+            not (List.contains key active)
+            && Option.isSome (DarwinReadiness.ofSocket filter socketId system.Machine)
+        )
+
     /// Something happened to the socket `socketId` that wakes each filter of
-    /// `filters`, in that order: in every kqueue, queue each registration of
+    /// `filters`, in that order: in every kqueue, and in the kqueue of every
+    /// Darwin `poll` asleep (`ParkedKqueuePoll`), queue each registration of
     /// the socket for that filter whose filter is ready now and which is not
     /// queued already. Of several registrations of the socket for one filter,
     /// made through different descriptors onto it, the newest-registered is
@@ -549,10 +634,6 @@ module KqueueQueue =
         (system : UnixSystem<'Task, 'Handler>)
         : UnixSystem<'Task, 'Handler>
         =
-        // Measured on Darwin 27.0.0 (`kevent-register.c`): one event activates
-        // WRITE before READ whatever order they were registered in (O2), and a
-        // socket's registrations through a descriptor and its dup newest first
-        // (O6).
         let kqueues =
             FileDescriptorRegistry.descriptions system.Process.FileDescriptors
             |> Map.toList
@@ -567,31 +648,58 @@ module KqueueQueue =
                 | OpenFileTarget.Pipe _ -> None
             )
 
-        (system, kqueues)
-        ||> List.fold (fun system (kqueue, state) ->
-            let entering =
-                filters
-                |> List.collect (fun filter ->
+        let system =
+            (system, kqueues)
+            ||> List.fold (fun system (kqueue, state) ->
+                let registrations =
                     state.Registrations
                     |> Map.toList
-                    |> List.filter (fun ((fd, registered), _) ->
-                        registered = filter && socketOf fd system = Some socketId
-                    )
-                    |> List.sortByDescending (fun (_, registration) -> registration.RegisteredAt)
-                    |> List.map fst
-                )
-                |> List.filter (fun key -> not (List.contains key state.Active) && Option.isSome (reportOf key system))
+                    |> List.map (fun (key, registration) -> key, registration.RegisteredAt)
 
-            match entering with
-            | [] -> system
-            | entering ->
-                withState
-                    kqueue
-                    { state with
-                        Active = state.Active @ entering
-                    }
-                    system
-        )
+                match entering socketId filters registrations state.Active system with
+                | [] -> system
+                | entering ->
+                    withState
+                        kqueue
+                        { state with
+                            Active = state.Active @ entering
+                        }
+                        system
+            )
+
+        let tasks =
+            system.Tasks
+            |> Map.map (fun _ task ->
+                match task.Parked with
+                | Some ({
+                            Syscall = ParkedSyscall.KqueuePoll poll
+                        } as park) ->
+                    let registrations =
+                        poll.Registrations
+                        |> Map.toList
+                        |> List.map (fun (key, registration) -> key, int64 registration.RegisteredAt)
+
+                    match entering socketId filters registrations poll.Active system with
+                    | [] -> task
+                    | entering ->
+                        { task with
+                            Parked =
+                                Some
+                                    { park with
+                                        Syscall =
+                                            ParkedSyscall.KqueuePoll
+                                                { poll with
+                                                    Active = poll.Active @ entering
+                                                }
+                                    }
+                        }
+                | Some _
+                | None -> task
+            )
+
+        { system with
+            Tasks = tasks
+        }
 
     /// Whether a wait on the kqueue `kqueue` would report at least one event
     /// right now: the question a task waiting in `kevent` on it is polled
@@ -745,7 +853,8 @@ module SocketWake =
         | SocketWake.RefusalReset -> []
 
     /// `wake` happened to the socket `socketId`: signal every epoll
-    /// registration of it, and activate every kqueue registration of it.
+    /// registration of it, and activate every kqueue registration of it,
+    /// including those of a sleeping Darwin `poll`.
     ///
     /// Called with the socket already in the state the event left it in,
     /// since a kqueue registration is activated only if its filter is then

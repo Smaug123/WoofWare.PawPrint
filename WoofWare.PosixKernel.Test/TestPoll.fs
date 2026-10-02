@@ -8,10 +8,9 @@ open WoofWare.PosixKernel
 ///
 /// The tier that reaches what `sourcesPure/SocketPoll.cs` cannot: every bit of
 /// Linux's own `<poll.h>` alphabet (a guest reaches `poll` through the shim,
-/// which asks for six bits and hands back six), the Darwin refusal (a guest
-/// runs one flavour, and PawPrint's guests run Linux), and the socket-event-port
+/// which asks for six bits and hands back six) and the socket-event-port
 /// entry (no managed caller polls one). A poll that sleeps is
-/// `TestPollTimeout`'s.
+/// `TestPollTimeout`'s, and a Darwin-flavoured poll is `TestDarwinPoll`'s.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestPoll =
@@ -458,22 +457,6 @@ module TestPoll =
     // ------------------------------------------------------------------
     // Refusals
     // ------------------------------------------------------------------
-
-    /// Ahead of the entries, and so of an empty entry list too, and whatever
-    /// the request: Darwin's answer depends on which of its kqueue filters the
-    /// requested bits select, so no request mask is answerable without that
-    /// model.
-    [<Test>]
-    let ``a Darwin-flavoured kernel refuses every poll, whatever it asks`` () : unit =
-        let darwin = systemOn SimulatedUnixPlatform.macOsArm64
-        let expected = Error (PollRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin)
-
-        pollNow [] 0 darwin |> shouldEqual expected
-
-        for mask in 0..0xFFFF do
-            let events = int16 (uint16 mask)
-
-            pollNow [ entry 0 events ; entry 99 events ] 0 darwin |> shouldEqual expected
 
     /// A guest can reach this where it cannot reach epoll's equivalent:
     /// `epoll_ctl` screens the targets it accepts, and `poll(2)` accepts any

@@ -287,6 +287,22 @@ module PipeBuffer =
             - ByteQueue.length darwin.Bytes
             >= DarwinPipeBuf
 
+    /// The free space a Darwin pipe's write end reports to a kqueue's
+    /// `EVFILT_WRITE` while its reader is open: 16 KiB or the size the buffer
+    /// has grown to, whichever is larger, less what it holds (measured,
+    /// `pipe-activation.c`). The write end is ready exactly when this is at
+    /// least 512 (`writable`).
+    ///
+    /// Only a Darwin buffer has one: Linux has no kqueue.
+    let darwinWriteSpace (buffer : PipeBuffer) : int =
+        match buffer with
+        | PipeBuffer.Linux _ ->
+            failwith
+                "PipeBuffer.darwinWriteSpace: a Linux pipe's buffer was asked for the space a kqueue filter reports, and only Darwin has kqueue (this is a bug in the caller)."
+        | PipeBuffer.Darwin darwin ->
+            max DarwinReadyFloor (DarwinPipeBufferSize.bytes darwin.Size)
+            - ByteQueue.length darwin.Bytes
+
     /// How many bytes a non-blocking write of `count` bytes would take now: the
     /// count `write` answers, without the bytes themselves.
     ///

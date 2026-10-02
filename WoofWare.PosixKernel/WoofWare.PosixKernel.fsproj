@@ -66,6 +66,7 @@
         <Compile Include="UnixSystemState.fs" />
         <Compile Include="UnixSocket.fs" />
         <Compile Include="Readiness.fs" />
+        <Compile Include="KqueuePoll.fs" />
         <Compile Include="ObjectLifetime.fs" />
         <Compile Include="SyscallInterruption.fs" />
         <Compile Include="WakeCondition.fs" />

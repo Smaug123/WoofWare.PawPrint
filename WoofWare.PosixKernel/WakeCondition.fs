@@ -54,6 +54,18 @@ type WakePrimitive =
     /// `POLLERR` and `POLLHUP` a poll reports unasked. It never waits on a
     /// socket event port, whose level is not modelled.
     | DescriptorReady of description : OpenFileDescriptionId * conditions : uint32
+    /// The Darwin `poll` the waiting task is asleep in would report something
+    /// were it to scan the kqueue it made for itself now
+    /// (`KqueuePoll.reportable`).
+    ///
+    /// Names no kernel object, as `SignalDeliverable` names none: the kqueue
+    /// is the waiter's own, kept in its park (`ParkedKqueuePoll`). Holds only
+    /// once a scan would add something to some entry's `revents`: a filter
+    /// activated whose report would add nothing does not wake the waiter here,
+    /// where a real kernel wakes it to find nothing and sleep again, having
+    /// consumed the registration. Answering when the waiter next scans is the
+    /// schedule in which it had not yet run.
+    | KqueuePollReportable
     /// The listening socket the open file description `listener` names holds a
     /// completed connection in its accept queue.
     ///
@@ -184,6 +196,7 @@ module WakeCondition =
                 |> not
         | WakePrimitive.SocketEventDeliverable port -> SocketEventPort.hasDeliverableEvent port system
         | WakePrimitive.KqueueEventDeliverable kqueue -> KqueueQueue.hasDeliverableEvent kqueue system
+        | WakePrimitive.KqueuePollReportable -> KqueuePoll.reportable task system
         | WakePrimitive.KqueueDrained kqueue ->
             match
                 FileDescriptorRegistry.descriptions system.Process.FileDescriptors
@@ -314,6 +327,7 @@ module WakeCondition =
         | WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable _)
         | WakeCondition.Primitive (WakePrimitive.KqueueDrained _)
         | WakeCondition.Primitive (WakePrimitive.KqueueEventDeliverable _)
+        | WakeCondition.Primitive WakePrimitive.KqueuePollReportable
         | WakeCondition.Primitive (WakePrimitive.DescriptorReady _)
         | WakeCondition.Primitive (WakePrimitive.AcceptQueueNonEmpty _)
         | WakeCondition.Primitive (WakePrimitive.PipeHasBytes _)
@@ -389,6 +403,13 @@ module WakeCondition =
                     |> Option.toList
 
                 watched @ deadline
+            | ParkedSyscall.KqueuePoll poll ->
+                let deadline =
+                    poll.Deadline
+                    |> Option.map (WakePrimitive.DeadlinePassed >> WakeCondition.Primitive)
+                    |> Option.toList
+
+                WakeCondition.Primitive WakePrimitive.KqueuePollReportable :: deadline
             | ParkedSyscall.Accept accept ->
                 // No deadline: `SO_RCVTIMEO`, which bounds a Linux accept, is an
                 // option `setsockopt` refuses to set.

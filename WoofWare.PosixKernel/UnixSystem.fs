@@ -219,6 +219,23 @@ type UnixSystemDefect<'Task> =
         fd : int *
         watched : OpenFileDescriptionId *
         current : OpenFileDescriptionId option
+    /// A task's parked Darwin `poll` registers a filter through `fd`, which is
+    /// not open (`target` is `None`) or names something other than a socket
+    /// whose filters are modelled or a pipe. Closing a descriptor removes its
+    /// registrations, a poll registers on nothing else, and a regular file's
+    /// filters are always ready, so they report before the call can sleep.
+    | ParkedKqueuePollRegistrationTarget of task : 'Task * fd : int * target : OpenFileTarget option
+    /// A task's parked Darwin `poll` attributes the registration `key` to
+    /// entry `entry`, which the call does not have.
+    | ParkedKqueuePollEntryOutOfRange of task : 'Task * key : (int * KqueueFilter) * entry : int
+    /// A task's parked Darwin `poll` lists `key` as activated where the list
+    /// may not hold it: `key` is not registered, is listed twice, or is not a
+    /// socket's filter (see `ParkedKqueuePoll.Active`).
+    | ParkedKqueuePollActiveMalformed of task : 'Task * key : (int * KqueueFilter)
+    /// A task's parked Darwin `poll` registers the socket filter `key`, which is
+    /// ready, and does not list it as activated: whatever made it ready did not
+    /// activate it, so the call would sleep through what a real one wakes for.
+    | ParkedKqueuePollActivationMissed of task : 'Task * key : (int * KqueueFilter)
     /// A task is parked in an `accept` on a description that is not a listening
     /// socket, which no accept could have produced and on which
     /// `WakeCondition.satisfied` crashes.
@@ -931,6 +948,69 @@ module UnixSystem =
 
                                 target @ rebound
                     )
+                | Some (ParkedSyscall.KqueuePoll poll) ->
+                    let entries = List.length poll.Entries
+
+                    let socketOf (fd : int) : SocketId option =
+                        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+                        | Some (OpenFileTarget.Socket socketId) -> Some socketId
+                        | Some _
+                        | None -> None
+
+                    let registrations =
+                        poll.Registrations
+                        |> Map.toList
+                        |> List.collect (fun ((fd, filter as key), registration) ->
+                            let target =
+                                match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+                                | Some (OpenFileTarget.Socket socketId) as target ->
+                                    match Map.tryFind socketId system.Machine.Sockets with
+                                    | Some socket when DarwinReadiness.modelsSocket socket ->
+                                        if
+                                            not (List.contains key poll.Active)
+                                            && Option.isSome (DarwinReadiness.ofSocket filter socketId system.Machine)
+                                        then
+                                            [ UnixSystemDefect.ParkedKqueuePollActivationMissed (task, key) ]
+                                        else
+                                            []
+                                    | Some _
+                                    | None ->
+                                        [ UnixSystemDefect.ParkedKqueuePollRegistrationTarget (task, fd, target) ]
+                                | Some (OpenFileTarget.Pipe _) -> []
+                                | target -> [ UnixSystemDefect.ParkedKqueuePollRegistrationTarget (task, fd, target) ]
+
+                            let entry =
+                                if registration.Entry >= 0 && registration.Entry < entries then
+                                    []
+                                else
+                                    [
+                                        UnixSystemDefect.ParkedKqueuePollEntryOutOfRange (
+                                            task,
+                                            key,
+                                            registration.Entry
+                                        )
+                                    ]
+
+                            target @ entry
+                        )
+
+                    let active =
+                        poll.Active
+                        |> List.indexed
+                        |> List.choose (fun (index, (fd, _ as key)) ->
+                            let repeated = poll.Active |> List.take index |> List.contains key
+
+                            if
+                                repeated
+                                || not (Map.containsKey key poll.Registrations)
+                                || Option.isNone (socketOf fd)
+                            then
+                                Some (UnixSystemDefect.ParkedKqueuePollActiveMalformed (task, key))
+                            else
+                                None
+                        )
+
+                    registrations @ active
                 | Some (ParkedSyscall.Accept accept) ->
                     match Map.tryFind accept.Listener descriptions with
                     | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, accept.Listener) ]

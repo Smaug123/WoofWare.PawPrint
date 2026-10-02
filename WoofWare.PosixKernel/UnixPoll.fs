@@ -1,20 +1,5 @@
 namespace WoofWare.PosixKernel
 
-/// One entry of a `poll(2)` call, as its caller supplied it: `struct pollfd`'s
-/// `fd` and `events`, without the `revents` the kernel writes back.
-type PollEntry =
-    {
-        /// The descriptor to poll. A negative one is not an error: measured on
-        /// both kernels, it is ignored, reports nothing, and does not count
-        /// towards the return value.
-        Fd : int
-        /// What the caller asked about: `events`, as raw bits in the simulated
-        /// flavour's own `<poll.h>` numbering. `POLLERR`, `POLLHUP` and
-        /// `POLLNVAL` are reported whether or not they appear here, so a caller
-        /// may leave them out and still be told about them.
-        Events : int16
-    }
-
 /// Why this kernel will not answer a `poll`.
 ///
 /// Distinct from an errno: an errno is an answer, and these are the inputs for
@@ -22,24 +7,42 @@ type PollEntry =
 /// answer to give.
 [<RequireQualifiedAccess>]
 type PollRefusal =
-    /// This kernel models `poll(2)` for one flavour only, and it is not this
-    /// one.
-    ///
-    /// Darwin's answer is not one level masked by the request, as Linux's is:
-    /// what it reports depends on which bits were asked for together. A request
-    /// carrying `POLLEXTEND`, `POLLATTRIB`, `POLLNLINK` or `POLLWRITE` on a
-    /// socket answers `POLLNVAL`; a TCP socket whose peer has closed answers
-    /// `POLLOUT` to a request for `POLLOUT` but `POLLIN|POLLHUP` to a request
-    /// for `POLLIN|POLLOUT`; a request of 0 reports nothing, even for a
-    /// descriptor that is not open. So it is a second model rather than an
-    /// extra column.
-    | UnmodelledFlavour of flavour : SimulatedUnixFlavour
     /// The entry names a socket event port, which this kernel does not answer
-    /// `poll(2)` for.
+    /// `poll(2)` for: under Linux an epoll instance, whatever was asked; under
+    /// Darwin a kqueue asked for a bit that registers `EVFILT_READ` on it.
     ///
     /// Reachable in a way epoll's equivalent is not: `epoll_ctl` screens the
     /// targets it will accept, and `poll(2)` accepts any descriptor.
     | UnmodelledTarget of fd : int
+    /// Under Darwin, the entry asks a socket of a kind whose kqueue filters
+    /// this kernel does not model (see `DarwinReadiness.modelsSocket`) for a
+    /// bit that registers one.
+    | UnmodelledSocket of fd : int * domain : SocketDomain * kind : SocketKind
+    /// Under Darwin, nothing is ready and the call would sleep with an
+    /// `EVFILT_VNODE` filter registered on the regular file or directory `fd`
+    /// names: such a filter reports only when the file changes, which this
+    /// kernel does not model.
+    | UnmodelledVnodeWait of fd : int
+    /// Under Darwin, nothing is ready and the call would sleep with a timeout
+    /// of `milliseconds`, which is negative and not -1.
+    ///
+    /// Darwin waits for ever on -1 alone. By its source it reads any other
+    /// timeout as an unsigned count of milliseconds, so -2 would wait about
+    /// 49.7 days: no measurement can tell that from waiting for ever, and a
+    /// client that advances its clock to the next deadline would reach it at
+    /// once.
+    | UnmeasuredNegativeTimeout of milliseconds : int
+    /// Under Darwin, the call has `count` entries, more than `FD_SETSIZE`
+    /// (1024) and no more than `OPEN_MAX` (10240). Darwin answers `EINVAL` for
+    /// such a count exactly when it exceeds the process's `RLIMIT_NOFILE` soft
+    /// limit, or for root only when it does and also exceeds 1024 (measured
+    /// for a process that is not root, `poll-darwin.c` section N); this kernel
+    /// models no `RLIMIT_NOFILE`.
+    | UnmodelledEntryCount of count : int
+    /// Under Darwin, a sleeping call has both something to report and reached
+    /// its deadline. Darwin answers whichever reached the sleeping task first,
+    /// which this kernel does not record.
+    | EventsBesideDeadline
     /// Nothing is ready, and the timeout ends past the last instant the
     /// machine's monotonic clock (`UnixMachineState.NanosecondsSinceBoot`,
     /// an `int64` of nanoseconds) can represent: `nanosecondsSinceBoot` plus
@@ -56,9 +59,9 @@ type PollOutcome =
     /// flavour's own `<poll.h>` numbering, and the return value, which counts
     /// the entries carrying anything.
     | Answered of revents : int16 list * count : int
-    /// `poll` failed with this errno. Only a finishing call answers this: a
-    /// poll that was asleep fails with `EINTR` when a signal with a handler
-    /// interrupts it.
+    /// `poll` failed with this errno: under Darwin, `EINVAL` for more than
+    /// 10240 entries; and a poll that was asleep fails with `EINTR` when a
+    /// signal with a handler interrupts it.
     | Failed of error : UnixError
     /// `poll` did not return. The calling task is parked, and sleeps until
     /// `WakeCondition.satisfied` of this condition is non-empty; then
@@ -71,10 +74,18 @@ module PollRefusal =
     /// its own half -- which entry point asked, and what it should do instead.
     let describe (refusal : PollRefusal) : string =
         match refusal with
-        | PollRefusal.UnmodelledFlavour flavour ->
-            $"this kernel is %O{flavour}-flavoured, and `poll(2)` is modelled here for Linux only. Darwin's answer is not one level masked by the request: it registers a kqueue filter per group of requested bits, so which bits were asked together decides what is reported (a vnode bit on a socket answers POLLNVAL, a reported HUP suppresses OUT, and a request of 0 reports nothing even for a descriptor that is not open). Model that before polling under this flavour."
         | PollRefusal.UnmodelledTarget fd ->
-            $"fd %d{fd} names a socket event port, which this kernel does not answer `poll(2)` for. Linux answers it by re-polling the port's ready list, as `epoll_wait` does, and what that walk leaves in the list is unmeasured; model that before answering."
+            $"fd %d{fd} names a socket event port (an epoll instance, or a kqueue asked for a read bit), which this kernel does not answer `poll(2)` for. A port's own readiness depends on re-reading what it has queued, and what that leaves queued is unmeasured; model that before answering."
+        | PollRefusal.UnmodelledSocket (fd, domain, kind) ->
+            $"fd %d{fd} is a %O{kind} socket in %O{domain}, and the entry asks for a bit that registers a kqueue filter on it. This kernel models those filters for IPv4 and IPv6 stream sockets only: what activates a datagram socket's filters is not modelled, and a Unix-domain socket's are not measured."
+        | PollRefusal.UnmodelledVnodeWait fd ->
+            $"nothing is ready, and the poll would sleep with an EVFILT_VNODE filter registered on fd %d{fd} for a vnode bit (POLLEXTEND, POLLATTRIB, POLLNLINK or POLLWRITE). That filter reports when the file changes, which this kernel does not model."
+        | PollRefusal.UnmeasuredNegativeTimeout milliseconds ->
+            $"nothing is ready, and the timeout is %d{milliseconds}ms. Darwin waits for ever on -1 alone, and by its source reads any other negative timeout as an unsigned count of milliseconds (about 49.7 days for -2), which no measurement can tell from waiting for ever."
+        | PollRefusal.UnmodelledEntryCount count ->
+            $"the poll has %d{count} entries, more than FD_SETSIZE (1024) and no more than OPEN_MAX (10240). Darwin answers EINVAL for such a count exactly when it exceeds the RLIMIT_NOFILE soft limit (for root, the source says, only when it exceeds 1024 too), and this kernel models no RLIMIT_NOFILE."
+        | PollRefusal.EventsBesideDeadline ->
+            "a task asleep in poll has both something to report and reached its deadline (0). Darwin answers whichever reached the sleeping task first, and this kernel does not record which did."
         | PollRefusal.DeadlineBeyondClock (now, timeoutMilliseconds) ->
             $"the machine has been up for %d{now} ns and the timeout is %d{timeoutMilliseconds}ms, which ends past the last nanosecond the monotonic clock can represent. Linux's source saturates such a deadline, making the wait infinite, but that is unmeasured."
         | PollRefusal.Interruption refusal -> SyscallInterruptionRefusal.describe refusal
@@ -771,73 +782,14 @@ module UnixPoll =
             else
                 Ok (Some (now + timeout))
 
-    /// `poll(2)`: what each entry reports, and how many entries carry anything;
-    /// or, when nothing does and the timeout lets it, the calling task sleeps.
-    ///
-    /// Each entry's `Events`, and each `revents` answered for it, is the raw
-    /// bits in the simulated flavour's own `<poll.h>` numbering. Under the Linux
-    /// flavour every bit is answered as a real kernel answers it: each named
-    /// bit is reported when the descriptor presents it and the entry asked for
-    /// it, `POLLERR` and `POLLHUP` whether asked for or not, and `POLLNVAL`
-    /// alone for a descriptor that is not open. A bit Linux does not read
-    /// (`POLLREMOVE`, 0x0800, 0x4000 and 0x8000) is ignored, as it is there.
-    /// Under the Darwin flavour every poll is refused.
-    ///
-    /// The count is `poll(2)`'s own return value, and it is neither the number
-    /// of entries nor the number of *conditions*: it counts entries carrying
-    /// something.
-    ///
-    /// `milliseconds` is read as Linux's `poll(2)` reads it. Zero answers now.
-    /// A positive timeout, when nothing is ready, parks `task` until a watched
-    /// descriptor becomes ready or `milliseconds` have passed on the machine's
-    /// monotonic clock, whichever is first; at the deadline and not before, the
-    /// call finishes with 0. A negative timeout of any size is infinite. A wait
-    /// with nothing to watch and no deadline parks until a signal ends it. A
-    /// foreign-function layer that screens some negative values itself does
-    /// that before calling.
-    ///
-    /// A poll with anything ready is answered at every timeout: an entry
-    /// carrying anything at all -- a requested `IN`/`OUT`, an unrequested
-    /// `HUP`, or `NVAL` -- makes a real poll return at once. The system comes
-    /// back unchanged unless the task parked.
-    ///
-    /// `task` must not already be parked: a task blocks in one syscall at a
-    /// time, and a parked `poll` is finished with `finishPoll`.
-    let poll<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// A Linux-flavoured `poll(2)`, after the parked-task check: see `poll`.
+    let private linuxPoll<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (entries : PollEntry list)
         (milliseconds : int)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<PollOutcome * UnixSystem<'Task, 'Handler>, PollRefusal>
         =
-        match UnixTaskTable.parkedFor task system.Tasks with
-        | Some parked ->
-            failwith
-                $"UnixPoll.poll: task %O{task} is parked in %A{parked}, and is issuing a poll. A task blocks in one syscall at a time; a parked poll is finished with `finishPoll` (this is a bug in the client)."
-        | None ->
-
-        // Ahead of the entries, and so ahead of an empty entry list too: a
-        // zero-entry poll answers `rv = 0` identically on both flavours and
-        // consults no readiness at all, but answering that one row would be a
-        // branch reachable only from a flavour whose every other row refuses.
-        //
-        // Darwin's alphabet (`<poll.h>` on 25.6.0 arm64, 2026-09-23): the six
-        // shared bits, POLLRDNORM 0x40, POLLRDBAND 0x80, POLLWRNORM = POLLOUT,
-        // POLLWRBAND 0x100, POLLEXTEND 0x200, POLLATTRIB 0x400, POLLNLINK 0x800,
-        // POLLWRITE 0x1000. `poll-alphabet.c`'s full sweep there finds no
-        // request that fails, and no object for which the answer is one level
-        // masked by the request: `poll` registers EVFILT_READ for any of
-        // IN/RDNORM/PRI/RDBAND/HUP, EVFILT_WRITE for any of OUT/WRNORM/WRBAND,
-        // and EVFILT_VNODE for any of the four vnode bits, and a filter the
-        // descriptor cannot take turns the whole entry into POLLNVAL (a vnode
-        // bit on every socket, pipe and kqueue; a read or write bit on a
-        // directory; a write bit on a kqueue; any of them on a descriptor that
-        // is not open). ERR and NVAL, and 0x2000..0x8000, register nothing, so
-        // a request of only those reports nothing at all.
-        match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
-        | SimulatedUnixFlavour.Darwin -> Error (PollRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin)
-        | SimulatedUnixFlavour.Linux ->
-
         match scan system entries with
         | Error refusal -> Error refusal
         | Ok (reported, triggered) ->
@@ -877,21 +829,13 @@ module UnixPoll =
 
         Ok (PollOutcome.WouldBlock (WakeCondition.ofPark parked), UnixWait.park task parked system)
 
-    let private finishPollHolding<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// Finish the Linux-flavoured `poll` `task` is parked in: see `finishPoll`.
+    let private finishLinuxPoll<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
+        (parked : ParkedPoll)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<PollOutcome * UnixSystem<'Task, 'Handler>, PollRefusal>
         =
-        let parked =
-            match UnixTaskTable.parkedFor task system.Tasks with
-            | Some (ParkedSyscall.Poll parked) -> parked
-            | Some other ->
-                failwith
-                    $"UnixPoll.finishPoll: task %O{task} is parked in %A{other}, not in a poll, so there is no poll to finish (this is a bug in the client)."
-            | None ->
-                failwith
-                    $"UnixPoll.finishPoll: task %O{task} is not parked, so there is no poll to finish. Only a task `poll` answered `WouldBlock` finishes here (this is a bug in the client)."
-
         let descriptions =
             FileDescriptorRegistry.descriptions system.Process.FileDescriptors
 
@@ -958,20 +902,377 @@ module UnixPoll =
             let parkedAgain = ParkedSyscall.Poll parked
             Ok (PollOutcome.WouldBlock (WakeCondition.ofPark parkedAgain), UnixWait.park task parkedAgain system)
 
-    /// Finish the `poll` `task` parked in: scan its entries again, as a woken
-    /// real poll does, and answer.
+    // Darwin's limits on how many entries one call takes (`OPEN_MAX` and
+    // `FD_SETSIZE` in `poll_nocancel`), measured in `poll-darwin.c` section N.
+    let private darwinOpenMax = 10240
+    let private darwinFdSetSize = 1024
+
+    /// What registering one group of an entry's filters does.
+    [<RequireQualifiedAccess>]
+    type private DarwinRegistration =
+        /// The registration fails, and the entry answers `POLLNVAL`.
+        | Fails
+        /// The filter registers.
+        | Registers of KqueueFilter
+        /// An `EVFILT_VNODE` registers on a regular file or a directory. It
+        /// reports only when the file changes, which nothing here does while
+        /// a call runs, so it reports nothing to a call that does not sleep.
+        | RegistersVnode
+
+    /// Which groups of filters `events` registers, in the order `poll`
+    /// registers them: `EVFILT_READ` (with `EV_OOBAND` when `true`),
+    /// `EVFILT_WRITE`, then `EVFILT_VNODE`.
+    let private darwinGroups (events : int16) : (KqueueFilter * bool) option list =
+        [
+            if events &&& DarwinPollEvents.ReadGroup <> 0s then
+                Some (KqueueFilter.Read, events &&& DarwinPollEvents.OutOfBandGroup <> 0s)
+            if events &&& DarwinPollEvents.WriteGroup <> 0s then
+                Some (KqueueFilter.Write, false)
+            if events &&& DarwinPollEvents.VnodeGroup <> 0s then
+                None
+        ]
+
+    /// What registering `group` (a read or write filter, or `None` for
+    /// `EVFILT_VNODE`) through the descriptor `fd` does.
+    let private darwinRegistration<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (group : KqueueFilter option)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<DarwinRegistration, PollRefusal>
+        =
+        // Measured on Darwin 27.0.0 (`poll-darwin.c` section S), each row of
+        // which agreed with XNU's own filters: a descriptor that is not open
+        // registers nothing (EBADF); `EVFILT_VNODE` registers on a vnode
+        // alone, so on a regular file or a directory, and fails (EINVAL) on a
+        // socket, a pipe and a kqueue; read and write filters fail on a
+        // directory, and a kqueue takes a read filter but not a write one.
+        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors, group with
+        | None, _ -> Ok DarwinRegistration.Fails
+        | Some (OpenFileTarget.Socket _), None
+        | Some (OpenFileTarget.Pipe _), None
+        | Some (OpenFileTarget.Kqueue _), None -> Ok DarwinRegistration.Fails
+        | Some (OpenFileTarget.File _), None
+        | Some (OpenFileTarget.Directory _), None -> Ok DarwinRegistration.RegistersVnode
+        | Some (OpenFileTarget.Directory _), Some _ -> Ok DarwinRegistration.Fails
+        | Some (OpenFileTarget.File _), Some filter
+        | Some (OpenFileTarget.Pipe _), Some filter -> Ok (DarwinRegistration.Registers filter)
+        | Some (OpenFileTarget.Socket socketId), Some filter ->
+            let socket = UnixMachineState.socket socketId system.Machine
+
+            if DarwinReadiness.modelsSocket socket then
+                Ok (DarwinRegistration.Registers filter)
+            else
+                Error (PollRefusal.UnmodelledSocket (fd, socket.Domain, socket.Kind))
+        | Some (OpenFileTarget.Kqueue _), Some KqueueFilter.Write -> Ok DarwinRegistration.Fails
+        | Some (OpenFileTarget.Kqueue _), Some KqueueFilter.Read -> Error (PollRefusal.UnmodelledTarget fd)
+        | Some (OpenFileTarget.Epoll _), _ ->
+            failwith
+                $"UnixPoll.poll: fd %d{fd} names an epoll instance, which a Darwin-flavoured kernel cannot hold (this is a bug in the caller's state construction)."
+        | Some (OpenFileTarget.CharacterDevice _), _ ->
+            failwith
+                $"UnixPoll.poll: fd %d{fd} names a character device, which a Darwin-flavoured kernel cannot hold: its device filesystem is not modelled, so no path opens one (this is a bug in the caller's state construction)."
+
+    /// Register every entry's filters, as `poll_nocancel` does before it scans:
+    /// each entry's `revents` so far (`POLLNVAL` for an entry whose
+    /// registration failed, 0 otherwise), the registrations, and the
+    /// descriptors an `EVFILT_VNODE` registered on.
+    let private darwinRegister<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (entries : PollEntry list)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<int16 list * Map<int * KqueueFilter, PollRegistration> * int list, PollRefusal>
+        =
+        let rec registerGroups
+            (index : int)
+            (entry : PollEntry)
+            (groups : (KqueueFilter * bool) option list)
+            (registrations : Map<int * KqueueFilter, PollRegistration>)
+            (vnodes : int list)
+            : Result<bool * Map<int * KqueueFilter, PollRegistration> * int list, PollRefusal>
+            =
+            match groups with
+            | [] -> Ok (false, registrations, vnodes)
+            | group :: rest ->
+
+            match darwinRegistration entry.Fd (group |> Option.map fst) system with
+            | Error refusal -> Error refusal
+            // The first group that fails ends the entry's registration, and the
+            // groups registered before it stay registered (measured,
+            // `poll-darwin.c` M3: `IN|EXTEND` on a socket answers `IN|NVAL`
+            // beside another entry).
+            | Ok DarwinRegistration.Fails -> Ok (true, registrations, vnodes)
+            | Ok DarwinRegistration.RegistersVnode -> registerGroups index entry rest registrations (entry.Fd :: vnodes)
+            | Ok (DarwinRegistration.Registers filter) ->
+                let outOfBand =
+                    match group with
+                    | Some (_, outOfBand) -> outOfBand
+                    | None -> false
+
+                let key = entry.Fd, filter
+
+                // A pair an earlier entry registered is registered again, which
+                // keeps its flags and its place and gives it this entry
+                // (measured, `poll-darwin.c` M1 and M17-M24).
+                let registration =
+                    match Map.tryFind key registrations with
+                    | Some existing ->
+                        { existing with
+                            Entry = index
+                        }
+                    | None ->
+                        {
+                            Entry = index
+                            OutOfBand = outOfBand
+                            RegisteredAt = Map.count registrations
+                        }
+
+                registerGroups index entry rest (Map.add key registration registrations) vnodes
+
+        let folded =
+            ((Ok ([], Map.empty, [])
+             : Result<int16 list * Map<int * KqueueFilter, PollRegistration> * int list, PollRefusal>),
+             List.indexed entries)
+            ||> List.fold (fun state (index, entry) ->
+                match state with
+                | Error refusal -> Error refusal
+                | Ok (revents, registrations, vnodes) ->
+
+                if entry.Fd < 0 then
+                    Ok (0s :: revents, registrations, vnodes)
+                else
+
+                match registerGroups index entry (darwinGroups entry.Events) registrations vnodes with
+                | Error refusal -> Error refusal
+                | Ok (failed, registrations, vnodes) ->
+                    let answer = if failed then DarwinPollEvents.Nval else 0s
+                    Ok (answer :: revents, registrations, vnodes)
+            )
+
+        folded
+        |> Result.map (fun (revents, registrations, vnodes) -> List.rev revents, registrations, List.rev vnodes)
+
+    /// How many entries carry anything: `poll`'s return value.
+    let private triggered (revents : int16 list) : int =
+        revents |> List.filter (fun revents -> revents <> 0s) |> List.length
+
+    /// A Darwin-flavoured `poll(2)`, after the parked-task check: see `poll`.
+    let private darwinPoll<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (entries : PollEntry list)
+        (milliseconds : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<PollOutcome * UnixSystem<'Task, 'Handler>, PollRefusal>
+        =
+        let count = List.length entries
+
+        // Measured (`poll-darwin.c` section N): above `OPEN_MAX` is EINVAL
+        // whatever the process's limit and whatever the buffer, ahead of the
+        // copy-in's EFAULT.
+        if count > darwinOpenMax then
+            Ok (PollOutcome.Failed UnixError.EINVAL, system)
+        elif count > darwinFdSetSize then
+            Error (PollRefusal.UnmodelledEntryCount count)
+        else
+
+        match darwinRegister entries system with
+        | Error refusal -> Error refusal
+        | Ok (revents, registrations, vnodes) ->
+
+        // `poll_nocancel` scans only if some entry registered, so a call whose
+        // every entry failed answers POLLNVAL for each and nothing else
+        // (measured, `poll-darwin.c` M4), where a failure beside an entry that
+        // did not fail -- a negative descriptor included -- still lets the
+        // failing entry's earlier filters report (M3, M5).
+        let failedAll =
+            count > 0
+            && revents |> List.forall (fun revents -> revents = DarwinPollEvents.Nval)
+
+        if failedAll then
+            Ok (PollOutcome.Answered (revents, count), system)
+        else
+
+        let active = KqueuePoll.activeAtRegistration registrations system
+
+        let revents, registrations, active =
+            KqueuePoll.scan entries revents registrations active system
+
+        let reported = triggered revents
+
+        // A failed registration makes the scan immediate, but it has already
+        // put POLLNVAL in that entry, so it is counted here too.
+        if reported > 0 || milliseconds = 0 then
+            Ok (PollOutcome.Answered (revents, reported), system)
+        elif milliseconds < -1 then
+            Error (PollRefusal.UnmeasuredNegativeTimeout milliseconds)
+        else
+
+        match vnodes with
+        | fd :: _ -> Error (PollRefusal.UnmodelledVnodeWait fd)
+        | [] ->
+
+        let now = system.Machine.NanosecondsSinceBoot
+
+        let deadline =
+            if milliseconds = -1 then
+                Ok None
+            else
+                relativeDeadline now milliseconds
+
+        match deadline with
+        | Error () -> Error (PollRefusal.DeadlineBeyondClock (now, milliseconds))
+        | Ok deadline ->
+
+        let parked =
+            ParkedSyscall.KqueuePoll
+                {
+                    Entries = entries
+                    Registrations = registrations
+                    Active = active
+                    Deadline = deadline
+                }
+
+        Ok (PollOutcome.WouldBlock (WakeCondition.ofPark parked), UnixWait.park task parked system)
+
+    /// Finish the Darwin-flavoured `poll` `task` is parked in: see `finishPoll`.
+    let private finishDarwinPoll<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (parked : ParkedKqueuePoll)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<PollOutcome * UnixSystem<'Task, 'Handler>, PollRefusal>
+        =
+        let zero = parked.Entries |> List.map (fun _ -> 0s)
+
+        let revents, registrations, active =
+            KqueuePoll.scan parked.Entries zero parked.Registrations parked.Active system
+
+        let reported = triggered revents
+
+        let timedOut =
+            match parked.Deadline with
+            | Some deadline -> system.Machine.NanosecondsSinceBoot >= deadline
+            | None -> false
+
+        let finished =
+            { system with
+                Tasks = UnixTaskTable.unpark task system.Tasks
+            }
+
+        // A woken Darwin wait answers whichever of its wake-ups reached it
+        // first -- a report, its deadline or a signal -- and this library does
+        // not record which; `SyscallInterruption.beforeCompleting` refuses a
+        // signal pending beside an answer, as it does for `kevent`.
+        if reported > 0 && timedOut then
+            Error PollRefusal.EventsBesideDeadline
+        elif reported > 0 then
+            SyscallInterruption.beforeCompleting task system
+            |> Result.mapError PollRefusal.Interruption
+            |> Result.map (fun () -> PollOutcome.Answered (revents, reported), finished)
+        elif timedOut then
+            SyscallInterruption.beforeCompleting task system
+            |> Result.mapError PollRefusal.Interruption
+            |> Result.map (fun () -> PollOutcome.Answered (zero, 0), finished)
+        else
+
+        match SyscallInterruption.ofPark task system with
+        | Error refusal -> Error (PollRefusal.Interruption refusal)
+        | Ok (Some SyscallInterruption.Eintr) -> Ok (PollOutcome.Failed UnixError.EINTR, finished)
+        | Ok (Some SyscallInterruption.Restart) ->
+            failwith
+                "UnixPoll.finishPoll: a poll restarted after a signal, where `SyscallInterruption.ruleOf` says a poll never restarts (this is a bug in this library)."
+        | Ok None ->
+            // Whatever woke the task has gone again. Its scan consumed what
+            // reported without adding anything, and dropped what is no longer
+            // ready, as a woken real poll's does, and it sleeps on.
+            let parkedAgain =
+                ParkedSyscall.KqueuePoll
+                    { parked with
+                        Registrations = registrations
+                        Active = active
+                    }
+
+            Ok (PollOutcome.WouldBlock (WakeCondition.ofPark parkedAgain), UnixWait.park task parkedAgain system)
+
+    /// `poll(2)`: what each entry reports, and how many entries carry anything;
+    /// or, when nothing does and the timeout lets it, the calling task sleeps.
     ///
-    /// Scans the entries the call was made with, not whatever the caller's
-    /// array holds now: a real kernel copied them in when the call began. A
-    /// descriptor is looked up afresh, as a real poll does, and `close` refuses
-    /// to close one a parked poll watches, so each still names the description
-    /// the call went to sleep on.
+    /// Each entry's `Events`, and each `revents` answered for it, is the raw
+    /// bits in the simulated flavour's own `<poll.h>` numbering. The count is
+    /// `poll(2)`'s own return value, and it is neither the number of entries
+    /// nor the number of *conditions*: it counts entries carrying something.
+    /// A negative descriptor reports nothing and is not counted.
     ///
-    /// Answers the count when any entry carries anything, whether or not the
-    /// deadline has passed or a signal is pending too; `Failed EINTR` when a
-    /// signal with a handler interrupts it, whether or not the deadline has
-    /// passed; 0, with every `revents` 0, when only the deadline has; and
-    /// otherwise re-parks the task on the same entries and deadline, since
+    /// **Under Linux** every bit is answered as a real kernel answers it: each
+    /// named bit is reported when the descriptor presents it and the entry
+    /// asked for it, `POLLERR` and `POLLHUP` whether asked for or not, and
+    /// `POLLNVAL` alone for a descriptor that is not open. A bit Linux does not
+    /// read (`POLLREMOVE`, 0x0800, 0x4000 and 0x8000) is ignored, as it is
+    /// there. An entry naming an epoll instance is refused.
+    ///
+    /// **Under Darwin** the call is answered as XNU builds it, over a kqueue it
+    /// makes for its own use: each entry registers `EVFILT_READ` for any of
+    /// `IN|RDNORM|PRI|RDBAND|HUP`, `EVFILT_WRITE` for any of `OUT|WRBAND`, and
+    /// `EVFILT_VNODE` for any of the vnode bits (see `DarwinPollEvents`); an
+    /// entry whose registration fails answers `POLLNVAL`; and each filter's
+    /// report is folded into its entry by `KqueuePoll.callback`. So a request
+    /// of none of those bits reports nothing, even for a descriptor that is not
+    /// open; one descriptor named by several entries reports into the last of
+    /// them alone; and a reported hang-up suppresses `POLLOUT`. A call with
+    /// more than 10240 entries fails with `EINVAL`. Refused (see
+    /// `PollRefusal`): more than 1024 entries and at most 10240; a socket
+    /// whose filters are not modelled; a kqueue asked for a read bit; and a
+    /// call that would sleep with a vnode filter registered, or with a
+    /// negative timeout other than -1.
+    ///
+    /// `milliseconds` is read as the flavour reads it. Zero answers now. A
+    /// positive timeout, when nothing is reported, parks `task` until something
+    /// is or `milliseconds` have passed on the machine's monotonic clock,
+    /// whichever is first; at the deadline and not before, the call finishes
+    /// with 0. -1 is infinite on both, and under Linux so is every negative
+    /// timeout. A wait with nothing to watch and no deadline parks until a
+    /// signal ends it. A foreign-function layer that screens some negative
+    /// values itself does that before calling.
+    ///
+    /// A poll with anything to report is answered at every timeout. The system
+    /// comes back unchanged unless the task parked.
+    ///
+    /// `task` must not already be parked: a task blocks in one syscall at a
+    /// time, and a parked `poll` is finished with `finishPoll`.
+    let poll<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (entries : PollEntry list)
+        (milliseconds : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<PollOutcome * UnixSystem<'Task, 'Handler>, PollRefusal>
+        =
+        match UnixTaskTable.parkedFor task system.Tasks with
+        | Some parked ->
+            failwith
+                $"UnixPoll.poll: task %O{task} is parked in %A{parked}, and is issuing a poll. A task blocks in one syscall at a time; a parked poll is finished with `finishPoll` (this is a bug in the client)."
+        | None ->
+
+        match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+        | SimulatedUnixFlavour.Linux -> linuxPoll task entries milliseconds system
+        | SimulatedUnixFlavour.Darwin -> darwinPoll task entries milliseconds system
+
+    /// Finish the `poll` `task` parked in, as a woken real poll does, and
+    /// answer.
+    ///
+    /// **Under Linux** it scans the entries the call was made with, not
+    /// whatever the caller's array holds now, looking each descriptor up
+    /// afresh; `close` refuses to close one a parked poll watches, so each
+    /// still names the description the call went to sleep on. It answers the
+    /// count when any entry carries anything, whether or not the deadline has
+    /// passed or a signal is pending too; `Failed EINTR` when a signal with a
+    /// handler interrupts it, whether or not the deadline has passed; and 0,
+    /// with every `revents` 0, when only the deadline has.
+    ///
+    /// **Under Darwin** it scans the kqueue the call made for itself, which a
+    /// close of a watched descriptor has left without that descriptor's
+    /// filters. It answers the count when anything is reported, 0 when the
+    /// deadline has passed, and `Failed EINTR` when a signal with a handler
+    /// interrupts it; and refuses each pair of those that hold at once, since
+    /// Darwin answers whichever reached the sleeping task first.
+    ///
+    /// Otherwise it re-parks the task on the same call and deadline, since
     /// whatever woke it has gone again. An answer clears the park.
     ///
     /// `task` must be parked in a `poll`.
@@ -980,18 +1281,29 @@ module UnixPoll =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<PollOutcome * UnixSystem<'Task, 'Handler>, PollRefusal>
         =
-        let held =
-            match UnixTaskTable.parkedFor task system.Tasks with
-            | Some parked -> ParkedSyscall.descriptions parked
-            | None -> []
-
-        // `close` refuses to close a descriptor a parked poll watches, so each
-        // description the call held is still named by its descriptor.
-        finishPollHolding task system
-        |> Result.map (fun (outcome, after) ->
-            outcome, ObjectLifetime.releaseUnreferencedUnrefusable "UnixPoll.finishPoll" held after
-        )
-
+        match UnixTaskTable.parkedFor task system.Tasks with
+        | Some (ParkedSyscall.Poll parked as held) ->
+            // `close` refuses to close a descriptor a parked Linux poll
+            // watches, so each description the call held is still named by its
+            // descriptor; released all the same, as every finishing call
+            // releases what its park held.
+            finishLinuxPoll task parked system
+            |> Result.map (fun (outcome, after) ->
+                outcome,
+                ObjectLifetime.releaseUnreferencedUnrefusable
+                    "UnixPoll.finishPoll"
+                    (ParkedSyscall.descriptions held)
+                    after
+            )
+        // A Darwin poll holds no description (see `ParkedSyscall.descriptions`),
+        // so its return releases nothing.
+        | Some (ParkedSyscall.KqueuePoll parked) -> finishDarwinPoll task parked system
+        | Some other ->
+            failwith
+                $"UnixPoll.finishPoll: task %O{task} is parked in %A{other}, not in a poll, so there is no poll to finish (this is a bug in the client)."
+        | None ->
+            failwith
+                $"UnixPoll.finishPoll: task %O{task} is not parked, so there is no poll to finish. Only a task `poll` answered `WouldBlock` finishes here (this is a bug in the client)."
 
     /// `epoll_create1(2)`: create an epoll instance and a descriptor onto it, the
     /// lowest one not in use.

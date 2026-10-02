@@ -180,6 +180,7 @@ module UnixWait =
             | WakePrimitive.FlockGrantable _
             | WakePrimitive.KqueueDrained _
             | WakePrimitive.KqueueEventDeliverable _
+            | WakePrimitive.KqueuePollReportable
             | WakePrimitive.DescriptorReady _
             | WakePrimitive.DeadlinePassed _
             | WakePrimitive.SignalDeliverable -> None
@@ -212,6 +213,9 @@ module UnixWait =
                            }
                     | Some {
                                Syscall = ParkedSyscall.Poll _
+                           }
+                    | Some {
+                               Syscall = ParkedSyscall.KqueuePoll _
                            }
                     | Some {
                                Syscall = ParkedSyscall.PipeRead _

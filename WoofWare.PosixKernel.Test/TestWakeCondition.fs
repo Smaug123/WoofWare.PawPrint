@@ -197,6 +197,7 @@ module TestWakeCondition =
         | WakePrimitive.SocketEventDeliverable _
         | WakePrimitive.KqueueDrained _
         | WakePrimitive.KqueueEventDeliverable _
+        | WakePrimitive.KqueuePollReportable
         | WakePrimitive.DescriptorReady _
         | WakePrimitive.AcceptQueueNonEmpty _
         | WakePrimitive.PipeHasBytes _
@@ -409,6 +410,7 @@ module TestWakeCondition =
                         | WakePrimitive.SocketEventDeliverable _
                         | WakePrimitive.KqueueDrained _
                         | WakePrimitive.KqueueEventDeliverable _
+                        | WakePrimitive.KqueuePollReportable
                         | WakePrimitive.DescriptorReady _
                         | WakePrimitive.AcceptQueueNonEmpty _
                         | WakePrimitive.PipeHasBytes _
