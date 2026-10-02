@@ -197,7 +197,7 @@ module TestAmbiguousDefaultInterfaceDispatch =
     /// A struct implementing `I<string>` and `I<Exception>` of a covariant `I<out T>`, each instantiation
     /// with a default body from an interface of its own, called through `I<object>`. Both bodies are
     /// variance-compatible with the call, but CoreCLR's variance pass takes one rather than throwing.
-    let private variantSource : string =
+    let variantSource : string =
         """
 public interface I<out T> { int M(int n); }
 public interface L : I<string> { int I<string>.M(int n) => 1 / n; }

@@ -1178,8 +1178,19 @@ public static class Uses
         }
         catch (System.TypeLoadException) { return false; }
     }
+    public interface IRuns { int Run(); }
+    public struct UsesGone : IRuns
+    {
+        public int Run()
+        {
+            Provider.GoneType x = null;
+            return x == null ? 0 : 1;
+        }
+    }
     static void Generic<T>() { }
     public static void InstantiateWithGone() { Generic<Provider.GoneType>(); }
+    static int Through<T>(T x) where T : IRuns => x.Run();
+    public static int ConstrainedReachesGoneLocal() => Through(new UsesGone());
     public static int ConstrainedOnGone()
     {
         var x = new Provider.GoneStruct();
@@ -1202,7 +1213,7 @@ public static class Uses
         let providerImage1 = compile "Provider" [] version1
         let clientAssembly = read "Client" (compile "Client" [ providerImage1 ] client)
 
-        let answers (provider : DumpedAssembly) : string -> Set<string> =
+        let answers (provider : DumpedAssembly) : string -> Set<string> * bool =
             let providerReference =
                 clientAssembly.AssemblyReferences.Values
                 |> Seq.find (fun r -> r.Name.Name = "Provider")
@@ -1217,7 +1228,7 @@ public static class Uses
                     EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Uses" methodName)
 
                 analysis <- next
-                render analysis escapes
+                render analysis escapes, escapes.Unknown
 
         let against1 = answers (read "Provider" providerImage1)
         let against2 = answers (read "Provider" (compile "Provider" [] version2))
@@ -1248,14 +1259,23 @@ public static class Uses
                 // The type a `constrained.` prefix names.
                 "ConstrainedOnGone", "=System.TypeLoadException"
             ] do
-            let bound = against1 methodName
-            let unbound = against2 methodName
+            let bound, _ = against1 methodName
+            let unbound, _ = against2 methodName
 
             if bound.Contains failure then
                 failwith $"%s{methodName} against the provider it was compiled against: %A{Set.toList bound}"
 
             if not (unbound.Contains failure) then
                 failwith $"%s{methodName} against the provider lacking what it uses: %A{Set.toList unbound}"
+
+        // A `constrained.` call reaching a method whose local's type is gone: the JIT throws
+        // compiling that method, which the analysis reports, or it does not decide the call.
+        match against2 "ConstrainedReachesGoneLocal" with
+        | _, true -> ()
+        | shown, false when shown.Contains "=System.TypeLoadException" -> ()
+        | shown, false ->
+            failwith
+                $"ConstrainedReachesGoneLocal against the provider lacking its local's type: %A{Set.toList shown}, unknown false"
 
     [<Test>]
     let ``a catch absorbs an exception however deep its base chain`` () : unit =
@@ -3015,3 +3035,26 @@ public static class Holder<T> where T : IProbe
         then
             failwith
                 $"Run.Call: %A{Set.toList shown}, unknown %b{escapes.Unknown}; expected AmbiguousImplementationException, and nothing unknown"
+
+    [<Test>]
+    let ``a constrained call whose default bodies conflict only through variance is not called ambiguous`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            Roslyn.compileAssembly
+                "Variant"
+                OutputKind.DynamicallyLinkedLibrary
+                []
+                [ TestAmbiguousDefaultInterfaceDispatch.variantSource ]
+
+        let assembly =
+            Assembly.read loggerFactory (Some "Variant.dll") (new MemoryStream (image))
+
+        // On the real runtime, one of the bodies runs and divides by zero.
+        let analysis, escapes =
+            EscapeAnalysis.escapes (analysisOver [ assembly ] id) (methodNamed assembly "Run" "Go")
+
+        let shown = render analysis escapes
+
+        if not escapes.Unknown && not (shown.Contains "=System.DivideByZeroException") then
+            failwith $"Run.Go: %A{Set.toList shown}, unknown false; lacks DivideByZeroException"

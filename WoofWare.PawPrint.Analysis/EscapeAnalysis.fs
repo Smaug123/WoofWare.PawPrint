@@ -189,6 +189,9 @@ type EscapeAnalysisState =
             Facts : Map<MethodKey, LocalFacts>
             /// What each instance summarised so far calls.
             InstanceCalls : Map<MethodInstance, InstanceCalls>
+            /// Whether dispatch on a receiver of each type definition can be resolved, as far as it
+            /// has been asked (`dispatchBinds`).
+            DispatchBinds : Map<ResolvedTypeIdentity, bool>
             Summaries : Map<MethodInstance, Escapes>
             /// Each type definition's base type, as far as it has been asked; `None` at the root.
             Bases : Map<ResolvedTypeIdentity, ResolvedTypeIdentity option>
@@ -264,6 +267,7 @@ module EscapeAnalysis =
             BaseTypes = context.BaseTypes
             Facts = Map.empty
             InstanceCalls = Map.empty
+            DispatchBinds = Map.empty
             Summaries = Map.empty
             Bases = Map.empty
         }
@@ -1828,6 +1832,78 @@ module EscapeAnalysis =
 
                 state, instanceOf state callee.Callee calleeTypeArguments calleeMethodArguments
 
+    /// Whether everything dispatch reads of a receiver of the type `identity` binds: the signature
+    /// and locals of every method of the type, of its base types, and of the interfaces any of
+    /// them implements. Dispatch instantiates the method a call lands on, locals and all, which a
+    /// type its assembly no longer has makes impossible; the JIT throws `TypeLoadException`
+    /// compiling that method instead.
+    let rec private dispatchBinds
+        (state : EscapeAnalysisState)
+        (identity : ResolvedTypeIdentity)
+        : EscapeAnalysisState * bool
+        =
+        match state.DispatchBinds.TryFind identity with
+        | Some known -> state, known
+        | None ->
+
+        let assembly, ty = definitionOf state identity
+
+        // A type a spelling names, if the spelling binds.
+        let named (state : EscapeAnalysisState) (spelling : TypeDefn) : EscapeAnalysisState * bool =
+            match spellingBinds state assembly spelling with
+            | state, false -> state, false
+            | state, true ->
+                match nominalIdentity state assembly spelling with
+                | state, Some related -> dispatchBinds state related
+                | state, None -> state, true
+
+        let typeToken (state : EscapeAnalysisState) (token : MetadataToken) : EscapeAnalysisState * bool =
+            match token with
+            | MetadataToken.TypeDefinition handle -> dispatchBinds state assembly.TypeDefs.[handle].Identity
+            | MetadataToken.TypeReference handle ->
+                match resolveTypeRef state assembly assembly.TypeRefs.[handle] with
+                | state, Some related -> dispatchBinds state related
+                | state, None -> state, false
+            | MetadataToken.TypeSpecification handle -> named state assembly.TypeSpecs.[handle].Signature
+            | _ -> state, false
+
+        let methodBinds
+            (state : EscapeAnalysisState)
+            (method : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+            : EscapeAnalysisState * bool
+            =
+            let locals =
+                match method.Body with
+                | MethodBody.Il body -> body.LocalVars |> Option.map List.ofSeq |> Option.defaultValue []
+                | _ -> []
+
+            allBind state assembly (signatureTypes method.Signature @ locals)
+
+        let checks : (EscapeAnalysisState -> EscapeAnalysisState * bool) list =
+            [
+                match ty.BaseType with
+                | None -> ()
+                | Some (BaseTypeInfo.TypeDef handle) ->
+                    yield fun state -> typeToken state (MetadataToken.TypeDefinition handle)
+                | Some (BaseTypeInfo.TypeRef handle) ->
+                    yield fun state -> typeToken state (MetadataToken.TypeReference handle)
+                | Some (BaseTypeInfo.TypeSpec handle) ->
+                    yield fun state -> typeToken state (MetadataToken.TypeSpecification handle)
+                for implemented in ty.ImplementedInterfaces do
+                    yield fun state -> typeToken state implemented.InterfaceHandle
+                for method in ty.Methods do
+                    yield fun state -> methodBinds state method
+            ]
+
+        let state, binds =
+            ((state, true), checks)
+            ||> List.fold (fun (state, soFar) check -> if soFar then check state else state, false)
+
+        { state with
+            DispatchBinds = state.DispatchBinds.Add (identity, binds)
+        },
+        binds
+
     /// What a `constrained.` call does, when the body of `assembly` making it runs as `caller`, if
     /// the type the prefix names decides it, which it does for a value type and for a sealed class
     /// (ECMA-335 III.2.1). Undecided where an instance of a derived class may receive the call, or
@@ -1874,6 +1950,18 @@ module EscapeAnalysis =
             concretize state spellingAssembly.DefinitionFullName typeArguments methodArguments spelling
 
         let _, definition = methodOf state named.Definition
+
+        let state, binds =
+            match TypeSystemState.tryGetConcreteTypeInfo state.TypeSystem receiver with
+            | None -> state, true
+            | Some (_, receiverType) ->
+                match dispatchBinds state receiverType.Identity with
+                | state, true -> dispatchBinds state definition.RequiredDeclaringType.Identity
+                | state, false -> state, false
+
+        if not binds then
+            state, ConstrainedOutcome.Undecided
+        else
 
         let typeSystem, concretized, declaringType =
             MethodConcretisation.concretizeMethodWithAllGenerics
@@ -1947,7 +2035,8 @@ module EscapeAnalysis =
 
         match runs with
         | None
-        | Some VirtualImplementation.NotOverridden -> state, ConstrainedOutcome.Undecided
+        | Some VirtualImplementation.NotOverridden
+        | Some (VirtualImplementation.Unmodelled _) -> state, ConstrainedOutcome.Undecided
         | Some (VirtualImplementation.Ambiguous _) ->
             state,
             ConstrainedOutcome.Raises (

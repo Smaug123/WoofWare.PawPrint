@@ -41,7 +41,9 @@ method) may add more:
   each closed instantiation a call reaches, which decides what a `constrained.` call on one of its
   type variables runs. Asked about by itself, a generic definition stands for every instantiation,
   so such a call is opaque in it, as is one on a class that may be derived from, whose instance may
-  be of a class that overrides the method. An instantiation nested more than eight deep is analysed
+  be of a class that overrides the method, one whose default bodies conflict through a variant
+  interface, and one on a type some method of which, or of its base types or interfaces, names a
+  type that is not there. An instantiation nested more than eight deep is analysed
   as its definition, so that a method calling itself at ever deeper instantiations reaches finitely
   many;
 * a `catch` absorbs what derives from its type, decided on the real base chains of types in any
