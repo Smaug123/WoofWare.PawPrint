@@ -54,9 +54,9 @@ module TestUnixPathBytes =
 
         let system =
             linux
-            |> UnixNamespace.mkdir (pathOf directory) 0o777
+            |> UnixNamespace.mkdir (PathArg.ofPath (pathOf directory)) 0o777
             |> completed
-            |> UnixPathResolution.chdir (pathOf directory)
+            |> UnixPathResolution.chdir (PathArg.ofPath (pathOf directory))
             |> completed
 
         match UnixPathResolution.getcwd UserBuffer.Mapped 4096UL system with
@@ -74,10 +74,10 @@ module TestUnixPathBytes =
             names
             |> List.fold
                 (fun system name ->
-                    UnixNamespace.mkdir (pathOf (parent @ [ slash ] @ name)) 0o777 system
+                    UnixNamespace.mkdir (PathArg.ofPath (pathOf (parent @ [ slash ] @ name))) 0o777 system
                     |> completed
                 )
-                (UnixNamespace.mkdir (pathOf parent) 0o777 linux |> completed)
+                (UnixNamespace.mkdir (PathArg.ofPath (pathOf parent)) 0o777 linux |> completed)
 
         let fd, system =
             match DirectoryReading.openDirectory (pathOf parent) system with
@@ -207,9 +207,9 @@ module TestUnixPathBytes =
         // cannot give its own process.
         let orphaned =
             seeded (Map.toList BindingProbes.tree) darwin
-            |> UnixNamespace.mkdir (pathOf (text "/gone")) 0o777
+            |> UnixNamespace.mkdir (PathArg.ofPath (pathOf (text "/gone"))) 0o777
             |> completed
-            |> UnixPathResolution.chdir (pathOf (text "/gone"))
+            |> UnixPathResolution.chdir (PathArg.ofPath (pathOf (text "/gone")))
             |> completed
             |> Answered.rmdir (pathOf (text "../gone"))
             |> completed
@@ -227,7 +227,7 @@ module TestUnixPathBytes =
             }
 
         for name in [ text "g" ; [ 0xFFuy ] ] do
-            fst (UnixNamespace.mkdir (pathOf name) 0o777 orphaned)
+            fst (UnixNamespace.mkdir (PathArg.ofPath (pathOf name)) 0o777 orphaned)
             |> shouldEqual (SyscallAnswer.Failed UnixError.ENOENT)
 
             fst (Answered.openPath creating (pathOf name) 0o666 orphaned)
@@ -350,11 +350,18 @@ module TestUnixPathBytes =
                 let system =
                     seeded [ nameOf [ byte 'l' ], SeedEntry.Symlink (targetOf bytes, None) ] system
 
-                match UnixNamespace.readlink (pathOf [ slash ; byte 'l' ]) UserBuffer.Mapped 8192 system with
+                match
+                    UnixNamespace.readlink (PathArg.ofPath (pathOf [ slash ; byte 'l' ])) UserBuffer.Mapped 8192 system
+                with
                 | Ok (ReadLinkAnswer.Reported reported) -> List.ofSeq reported |> shouldEqual bytes
                 | other -> failwith $"expected a target, got %A{other}"
 
-                match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (pathOf [ slash ; byte 'l' ]) system with
+                match
+                    UnixPathResolution.stat
+                        SymlinkPolicy.NoFollowFinal
+                        (PathArg.ofPath (pathOf [ slash ; byte 'l' ]))
+                        system
+                with
                 | Ok (FileStatusAnswer.Reported status) -> status.Size |> shouldEqual (int64 bytes.Length)
                 | other -> failwith $"expected a status, got %A{other}"
 
@@ -372,7 +379,12 @@ module TestUnixPathBytes =
                 ]
                 linux
 
-        match UnixPathResolution.stat SymlinkPolicy.Follow (pathOf [ slash ; byte 'l' ; slash ; byte '.' ]) system with
+        match
+            UnixPathResolution.stat
+                SymlinkPolicy.Follow
+                (PathArg.ofPath (pathOf [ slash ; byte 'l' ; slash ; byte '.' ]))
+                system
+        with
         | Ok (FileStatusAnswer.Reported status) -> status.Mode &&& 0o170000 |> shouldEqual 0o040000
         | other -> failwith $"expected the directory, got %A{other}"
 
@@ -391,7 +403,10 @@ module TestUnixPathBytes =
             let system =
                 seeded [ nameOf [ byte 'l' ], SeedEntry.Symlink (targetOf (target length), None) ] darwin
 
-            UnixPathResolution.stat SymlinkPolicy.Follow (pathOf [ slash ; byte 'l' ; slash ; byte 'a' ]) system
+            UnixPathResolution.stat
+                SymlinkPolicy.Follow
+                (PathArg.ofPath (pathOf [ slash ; byte 'l' ; slash ; byte 'a' ]))
+                system
 
         // Fits, so the walk proceeds into the target, whose first component
         // does not exist.

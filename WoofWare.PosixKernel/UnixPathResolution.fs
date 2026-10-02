@@ -349,30 +349,13 @@ module UnixPathResolution =
         | PathArgument.Failed error -> Error error
         | PathArgument.Parsed path -> Ok path
 
-    /// Whether `path`, as the bytes a kernel would copy in, is within this
-    /// platform's `PATH_MAX`. A `UnixPath` is text of any length, so the
-    /// copy-in rule every path-taking syscall applies before it looks at the
-    /// path is applied here, at the one door those syscalls walk through:
-    /// measured on both, a too-long argument is ENAMETOOLONG whether or not
-    /// its first component exists.
-    let private withinPathMax<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (system : UnixSystem<'Task, 'Handler>)
-        (path : UnixPath)
-        : bool
-        =
-        let limits = SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform
-        // The limit counts the NUL terminator, which the path does not carry.
-        UnixByteString.length (UnixPath.toByteString path)
-        <= PathLimits.pathMaxBytes limits - 1
-
     /// <summary>
     /// The full result of walking <c>path</c>.
     /// </summary>
     /// <remarks>
     /// Callers that only want the resulting inode should use <c>resolvePath</c> instead.
-    /// A path longer than this platform's <c>PATH_MAX</c> is <c>ENAMETOOLONG</c> before
-    /// anything is looked up, as the kernel's copy-in refuses it; <c>PathArgument.copyIn</c>
-    /// applies the same rule to raw bytes.
+    /// <c>path</c> is one this kernel has copied in, so within <c>PATH_MAX</c>; see
+    /// <c>copyIn</c>.
     /// This function is for callers that must distinguish
     /// "the name exists" from "the name is free in a directory that exists", such as
     /// <c>rename</c>, <c>link</c>, and <c>open</c> with <c>O_CREAT</c>.
@@ -380,17 +363,13 @@ module UnixPathResolution =
     /// Relative paths start at the process's current directory <i>inode</i>, not at a
     /// re-walk of its path.
     /// </remarks>
-    let resolvePathFull<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal resolvePathFull<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (policy : SymlinkPolicy)
         (trailingSeparatorPolicy : TrailingSeparatorPolicy)
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<Resolution, UnixError>
         =
-        if not (withinPathMax system path) then
-            Error UnixError.ENAMETOOLONG
-        else
-
         // The held inode, not a re-walk of the recorded current directory: a real
         // process reaches its current directory through a reference it already
         // holds, so no component of that directory's own path is looked up here
@@ -427,17 +406,13 @@ module UnixPathResolution =
     ///
     /// Finish such a walk with <c>PathWalk.completeResolution</c>.
     /// </remarks>
-    let resolvePathParent<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal resolvePathParent<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (policy : SymlinkPolicy)
         (trailingSeparatorPolicy : TrailingSeparatorPolicy)
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<PausedResolution, UnixError>
         =
-        if not (withinPathMax system path) then
-            Error UnixError.ENAMETOOLONG
-        else
-
         PathWalk.resolveParent
             (SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform)
             system.Process.Credentials
@@ -454,7 +429,7 @@ module UnixPathResolution =
     /// <remarks>
     /// This is the call path for every non-creating caller.
     /// </remarks>
-    let resolvePath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal resolvePath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (policy : SymlinkPolicy)
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
@@ -535,19 +510,8 @@ module UnixPathResolution =
                 }
         )
 
-    /// `stat(2)` and `lstat(2)`: report the status of the inode `path` names,
-    /// the two differing only in whether a symbolic link in the final position
-    /// is followed.
-    ///
-    /// Changes nothing and returns no system, for the reason `fstat` does not:
-    /// a `stat` records no access.
-    ///
-    /// Refuses only for a directory on an NFS mount, as `statOf` does; see
-    /// `StatRefusal`. The three descriptor kinds `fstat` also refuses for are
-    /// unreachable from here: every inode a path resolves to is one this
-    /// filesystem holds, since a name for an inode-free object cannot be
-    /// created in it.
-    let stat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `stat`, of a path this kernel has already copied in.
+    let internal statParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (policy : SymlinkPolicy)
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
@@ -563,6 +527,31 @@ module UnixPathResolution =
         | None ->
             failwith
                 $"UnixPathResolution.stat: resolving %O{path} returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
+
+    /// `stat(2)` and `lstat(2)`: report the status of the inode `path` names,
+    /// the two differing only in whether a symbolic link in the final position
+    /// is followed.
+    ///
+    /// Changes nothing and returns no system, for the reason `fstat` does not:
+    /// a `stat` records no access.
+    ///
+    /// Refuses only for a directory on an NFS mount, as `statOf` does; see
+    /// `StatRefusal`. The three descriptor kinds `fstat` also refuses for are
+    /// unreachable from here: every inode a path resolves to is one this
+    /// filesystem holds, since a name for an inode-free object cannot be
+    /// created in it.
+    ///
+    /// `path` is the argument's bytes, copied in before anything else: EFAULT
+    /// if they were unreadable, ENAMETOOLONG if they run past `PATH_MAX`.
+    let stat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (policy : SymlinkPolicy)
+        (path : PathArgumentBytes)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<FileStatusAnswer, StatRefusal>
+        =
+        match copyIn path system with
+        | Error error -> Ok (FileStatusAnswer.Failed error)
+        | Ok path -> statParsed policy path system
 
     /// `fstat(2)`: report the status of the inode `fd` names.
     ///
@@ -690,18 +679,8 @@ module UnixPathResolution =
             }
         )
 
-    /// `chmod(2)`: change the mode of the inode `path` names.
-    ///
-    /// `mode` is the raw mode word, of which only the low twelve bits are read;
-    /// see `PermissionBits.afterModeChange` for what the caller may set.
-    ///
-    /// A symbolic link in the final position is followed, so the link's target
-    /// changes and a dangling link is ENOENT. Every other failure but EPERM is
-    /// the path resolution's own.
-    ///
-    /// Refuses where the mode change has not been measured for this caller; see
-    /// `ChModRefusal`.
-    let chmod<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `chmod`, of a path this kernel has already copied in.
+    let internal chmodParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
         (mode : int)
         (system : UnixSystem<'Task, 'Handler>)
@@ -718,6 +697,30 @@ module UnixPathResolution =
         | Ok inode ->
             changeModeOf inode mode system
             |> Result.mapError ChModRefusal.UnmeasuredModeChange
+
+    /// `chmod(2)`: change the mode of the inode `path` names.
+    ///
+    /// `mode` is the raw mode word, of which only the low twelve bits are read;
+    /// see `PermissionBits.afterModeChange` for what the caller may set.
+    ///
+    /// A symbolic link in the final position is followed, so the link's target
+    /// changes and a dangling link is ENOENT. Every other failure but EPERM is
+    /// the path resolution's own.
+    ///
+    /// Refuses where the mode change has not been measured for this caller; see
+    /// `ChModRefusal`.
+    ///
+    /// `path` is the argument's bytes, copied in before anything else: EFAULT
+    /// if they were unreadable, ENAMETOOLONG if they run past `PATH_MAX`.
+    let chmod<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (mode : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, ChModRefusal>
+        =
+        match copyIn path system with
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Ok path -> chmodParsed path mode system
 
     /// `fchmod(2)`: change the mode of the inode `fd` names.
     ///
@@ -878,20 +881,8 @@ module UnixPathResolution =
             }
         )
 
-    /// `chown(2)`: change the owner and group of the inode `path` names.
-    ///
-    /// `None` is `(uid_t)-1` or `(gid_t)-1`, which leaves that ID as it is.
-    /// See `OwnerChangeRules.verdict` for who may name which IDs, and which
-    /// set-ID bits a change clears.
-    ///
-    /// A symbolic link in the final position is followed, so the link's target
-    /// changes and a dangling link is ENOENT. Every other failure but EPERM is
-    /// the path resolution's own, and comes first: a path through a directory
-    /// the caller may not search is EACCES whatever it asks.
-    ///
-    /// Refuses where the change has not been measured for this caller; see
-    /// `ChOwnRefusal`.
-    let chown<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `chown`, of a path this kernel has already copied in.
+    let internal chownParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
         (user : UserId option)
         (group : GroupId option)
@@ -911,14 +902,35 @@ module UnixPathResolution =
             changeOwnerOf inode user group system
             |> Result.mapError ChOwnRefusal.UnmeasuredOwnerChange
 
-    /// `lchown(2)`: change the owner and group of the inode `path` names,
-    /// without following a symbolic link in the final position, so a link
-    /// itself changes.
+    /// `chown(2)`: change the owner and group of the inode `path` names.
     ///
-    /// A trailing separator makes the final component a directory, so "l/" for
-    /// a link to a directory changes the directory, and for a link to anything
-    /// else is ENOTDIR. Otherwise as `chown`.
-    let lchown<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `None` is `(uid_t)-1` or `(gid_t)-1`, which leaves that ID as it is.
+    /// See `OwnerChangeRules.verdict` for who may name which IDs, and which
+    /// set-ID bits a change clears.
+    ///
+    /// A symbolic link in the final position is followed, so the link's target
+    /// changes and a dangling link is ENOENT. Every other failure but EPERM is
+    /// the path resolution's own, and comes first: a path through a directory
+    /// the caller may not search is EACCES whatever it asks.
+    ///
+    /// Refuses where the change has not been measured for this caller; see
+    /// `ChOwnRefusal`.
+    ///
+    /// `path` is the argument's bytes, copied in before anything else: EFAULT
+    /// if they were unreadable, ENAMETOOLONG if they run past `PATH_MAX`.
+    let chown<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (user : UserId option)
+        (group : GroupId option)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, ChOwnRefusal>
+        =
+        match copyIn path system with
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Ok path -> chownParsed path user group system
+
+    /// `lchown`, of a path this kernel has already copied in.
+    let internal lchownParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
         (user : UserId option)
         (group : GroupId option)
@@ -934,6 +946,27 @@ module UnixPathResolution =
         | Ok inode ->
             changeOwnerOf inode user group system
             |> Result.mapError ChOwnRefusal.UnmeasuredOwnerChange
+
+    /// `lchown(2)`: change the owner and group of the inode `path` names,
+    /// without following a symbolic link in the final position, so a link
+    /// itself changes.
+    ///
+    /// A trailing separator makes the final component a directory, so "l/" for
+    /// a link to a directory changes the directory, and for a link to anything
+    /// else is ENOTDIR. Otherwise as `chown`.
+    ///
+    /// `path` is the argument's bytes, copied in before anything else: EFAULT
+    /// if they were unreadable, ENAMETOOLONG if they run past `PATH_MAX`.
+    let lchown<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (user : UserId option)
+        (group : GroupId option)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, ChOwnRefusal>
+        =
+        match copyIn path system with
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Ok path -> lchownParsed path user group system
 
     /// `fchown(2)`: change the owner and group of the inode `fd` names.
     ///
@@ -1094,15 +1127,8 @@ module UnixPathResolution =
             }
         )
 
-    /// `statfs(2)`: report the filesystem the inode `path` names is on.
-    ///
-    /// A symbolic link in the final position is followed, as `statfs` always
-    /// does, so a dangling link is ENOENT. Every failure is the path
-    /// resolution's own, as for `stat(2)`.
-    ///
-    /// Changes nothing and returns no system. Refuses a machine whose platform
-    /// and mount do not describe one machine, whatever the path.
-    let statfs<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `statfs`, of a path this kernel has already copied in.
+    let internal statfsParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
         : FileSystemStatisticsAnswer
@@ -1113,6 +1139,28 @@ module UnixPathResolution =
         | Error error -> FileSystemStatisticsAnswer.Failed error
         | Ok inode ->
             FileSystemStatistics.ofObject system.Machine.UnixPlatform system.Machine.Mount (OpenFileObject.File inode)
+
+    /// `statfs(2)`: report the filesystem the inode `path` names is on.
+    ///
+    /// A symbolic link in the final position is followed, as `statfs` always
+    /// does, so a dangling link is ENOENT. Every failure is the path
+    /// resolution's own, as for `stat(2)`.
+    ///
+    /// Changes nothing and returns no system. Refuses a machine whose platform
+    /// and mount do not describe one machine, whatever the path.
+    ///
+    /// `path` is the argument's bytes, copied in before anything else: EFAULT
+    /// if they were unreadable, ENAMETOOLONG if they run past `PATH_MAX`.
+    let statfs<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (system : UnixSystem<'Task, 'Handler>)
+        : FileSystemStatisticsAnswer
+        =
+        FileSystemStatistics.assertCoherent "UnixPathResolution.statfs" system.Machine.UnixPlatform system.Machine.Mount
+
+        match copyIn path system with
+        | Error error -> FileSystemStatisticsAnswer.Failed error
+        | Ok path -> statfsParsed path system
 
     /// `fstatfs(2)`: report the filesystem the object `fd` names is on.
     ///
@@ -1270,10 +1318,8 @@ module UnixPathResolution =
         else
             transfer (GetCwdAnswer.Reported terminated)
 
-    /// <summary>
-    /// <c>chdir(2)</c>: set the relative-path resolution base directory to <c>path</c>.
-    /// </summary>
-    let chdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `chdir`, of a path this kernel has already copied in.
+    let internal chdirParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
         : SyscallAnswer * UnixSystem<'Task, 'Handler>
@@ -1356,6 +1402,22 @@ module UnixPathResolution =
         // exactly here. Without this it would be stranded for the run.
         SyscallAnswer.Completed 0L, UnixDescriptor.forgetIfUnheld previous moved
 
+    /// <summary>
+    /// <c>chdir(2)</c>: set the relative-path resolution base directory to <c>path</c>.
+    /// </summary>
+    /// <remarks>
+    /// <c>path</c> is the argument's bytes, copied in before anything else: <c>EFAULT</c> if they
+    /// were unreadable, <c>ENAMETOOLONG</c> if they run past <c>PATH_MAX</c>.
+    /// </remarks>
+    let chdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        match copyIn path system with
+        | Error error -> SyscallAnswer.Failed error, system
+        | Ok path -> chdirParsed path system
+
     // The order of every step of `access` and `faccessat` is measured by
     // `access-rules.c`, on Linux 6.18.5 and Darwin 27.0: the mode and flag
     // words (`AccessRules.screen`), then the path's copy-in (an unreadable
@@ -1364,6 +1426,7 @@ module UnixPathResolution =
     // naming nothing, ENOTDIR for a regular file), then the walk, then the
     // permission bits. An absolute path never looks at its dirfd, even one
     // naming nothing.
+
     let private screenFrom<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (directory : AtDirectory)
         (mode : int)

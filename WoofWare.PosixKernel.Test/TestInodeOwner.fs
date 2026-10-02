@@ -174,7 +174,12 @@ module TestInodeOwner =
         |> UnixSystem.withCredentials context credentials
 
     let private ownerAt (path : string) (system : UnixSystem<int, string>) : InodeOwner =
-        match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (UnixPath.parseOrFail context path) system with
+        match
+            UnixPathResolution.stat
+                SymlinkPolicy.NoFollowFinal
+                (PathArg.ofPath (UnixPath.parseOrFail context path))
+                system
+        with
         | Ok (FileStatusAnswer.Reported status) ->
             {
                 User = status.UserId
@@ -203,7 +208,7 @@ module TestInodeOwner =
             | other -> failwith $"expected the file to be created, got %O{other}"
 
         let system =
-            match UnixNamespace.mkdir (UnixPath.parseOrFail context "/p/dir") 0o755 system with
+            match UnixNamespace.mkdir (PathArg.ofPath (UnixPath.parseOrFail context "/p/dir")) 0o755 system with
             | SyscallAnswer.Completed 0L, system -> system
             | other -> failwith $"expected the directory to be created, got %O{other}"
 

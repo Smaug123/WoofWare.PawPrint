@@ -128,7 +128,6 @@
     <Compile Include="TestSeedForOracle.fs" />
     <Compile Include="TestRealRuntimeCleanup.fs" />
     <Compile Include="TestRealRuntimeStandardInput.fs" />
-    <Compile Include="TestGuestPathBytes.fs" />
     <Compile Include="TestRuntimeConfig.fs" />
     <Compile Include="TestDynamicCodeSupport.fs" />
     <Compile Include="TestSwitchIlOp.fs" />

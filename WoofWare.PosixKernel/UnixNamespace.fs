@@ -344,25 +344,21 @@ module UnixNamespace =
             failwith
                 $"%s{context}: about to create an inode in inode %O{directory}, which the walk had established was a directory, but it is now absent or not a directory (this is a bug in this library)."
 
-    /// `open(2)`: resolve `path`, apply every check a kernel makes, and return a
-    /// descriptor onto what it names.
-    ///
-    /// Named for the path it takes, `open` being an F# keyword and
-    /// `FileDescriptorRegistry.openFile` already meaning "open this inode". It
-    /// opens directories too, for reading.
-    ///
-    /// `mode` is raw and **unvalidated**, and must stay that way:
-    /// callers commonly pass 0666 even for a read-only open of an existing file,
-    /// and a kernel accepts that, so refusing a nonzero mode without `O_CREAT`
-    /// would refuse an ordinary read. It is read only when a file is actually created,
-    /// and then masked rather than rejected: measured, `mode` 0o10777 creates
-    /// 0o0755 on both flavours, so a bit above the permission word is dropped
-    /// exactly as the platform's own mask drops it.
-    ///
-    /// Never refused: every outcome is a descriptor or an errno. The one
-    /// exception is an `O_DIRECTORY` combination this library does not model;
-    /// see `OpenFlags.Directory`.
-    let openPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// Refuse an `O_DIRECTORY` open this library does not model; see
+    /// `OpenFlags.Directory`.
+    let private refuseUnmodelledDirectoryOpen (flags : OpenFlags) : unit =
+        if
+            flags.Directory
+            && (flags.Access <> FileAccessMode.ReadOnly
+                || flags.Create
+                || flags.Truncate
+                || flags.NoFollow)
+        then
+            failwith
+                $"UnixNamespace.openPath: O_DIRECTORY with %A{flags}. Only O_DIRECTORY|O_RDONLY without O_CREAT, O_TRUNC or O_NOFOLLOW (what opendir(3) opens with) is modelled; where ENOTDIR falls among EISDIR, EACCES, ELOOP and the creation checks for any other combination is unmeasured."
+
+    /// `openPath`, of a path this kernel has already copied in.
+    let internal openPathParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (flags : OpenFlags)
         (path : UnixPath)
         (mode : int)
@@ -406,16 +402,9 @@ module UnixNamespace =
                 }
             )
 
-        if flags.Directory then
-            if
-                flags.Access <> FileAccessMode.ReadOnly
-                || flags.Create
-                || flags.Truncate
-                || flags.NoFollow
-            then
-                failwith
-                    $"UnixNamespace.openPath: O_DIRECTORY with %A{flags}. Only O_DIRECTORY|O_RDONLY without O_CREAT, O_TRUNC or O_NOFOLLOW (what opendir(3) opens with) is modelled; where ENOTDIR falls among EISDIR, EACCES, ELOOP and the creation checks for any other combination is unmeasured."
+        refuseUnmodelledDirectoryOpen flags
 
+        if flags.Directory then
             // `opendir(3)` is exactly this open, and its rows are measured on
             // both kernels, which agree in every one: a final symlink is
             // followed, a trailing separator changes nothing, being a file beats
@@ -621,25 +610,46 @@ module UnixNamespace =
 
         truncated |> Result.bind (opened inode)
 
-    /// `readlink(2)`: report what the symbolic link at `path` points at.
+    /// `open(2)`: resolve `path`, apply every check a kernel makes, and return a
+    /// descriptor onto what it names.
     ///
-    /// Changes nothing and returns no system. That is *not* quite what POSIX
-    /// says: a successful `readlink` marks the link's access time for update,
-    /// and this kernel does not move it. Whether it would move is a property of
-    /// the mount rather than of this syscall, and the two flavours disagree —
-    /// measured on macOS (lstat, sleep, readlink, lstat) `st_atime` does not
-    /// move, while Linux's default `relatime` updates whenever `mtime` or
-    /// `ctime` is at or after the old `atime`, and a freshly seeded inode has
-    /// all three equal, so the first read there *would* move it. Deciding it
-    /// inside one entry point would set mount semantics for every future read
-    /// by accident, and would make `readlink` the only syscall obeying them.
+    /// `path` is the argument's bytes, copied in before anything but the
+    /// `O_DIRECTORY` refusal below: EFAULT if they were unreadable,
+    /// ENAMETOOLONG if they run past `PATH_MAX`.
     ///
-    /// `capacity` is the caller's buffer size. A size that is not positive is
-    /// answered as this system's flavour answers it
-    /// (`SimulatedUnixPlatform.readlinkCapacity`): EINVAL before resolution on
-    /// Linux and for a negative size on Darwin, and zero bytes from a resolved
-    /// link on Darwin for a size of zero.
-    let readlink<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// Named for the path it takes, `open` being an F# keyword and
+    /// `FileDescriptorRegistry.openFile` already meaning "open this inode". It
+    /// opens directories too, for reading.
+    ///
+    /// `mode` is raw and **unvalidated**, and must stay that way:
+    /// callers commonly pass 0666 even for a read-only open of an existing file,
+    /// and a kernel accepts that, so refusing a nonzero mode without `O_CREAT`
+    /// would refuse an ordinary read. It is read only when a file is actually created,
+    /// and then masked rather than rejected: measured, `mode` 0o10777 creates
+    /// 0o0755 on both flavours, so a bit above the permission word is dropped
+    /// exactly as the platform's own mask drops it.
+    ///
+    /// Never refused: every outcome is a descriptor or an errno. The one
+    /// exception is an `O_DIRECTORY` combination this library does not model;
+    /// see `OpenFlags.Directory`.
+    let openPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (flags : OpenFlags)
+        (path : PathArgumentBytes)
+        (mode : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, OpenRefusal>
+        =
+        // Before the path is copied in: measured (`path-copyin-order.c`), both
+        // kernels answer `O_CREAT|O_DIRECTORY` EINVAL whatever the path pointer
+        // is, so an unmodelled combination is refused before the path is read.
+        refuseUnmodelledDirectoryOpen flags
+
+        match UnixPathResolution.copyIn path system with
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Ok path -> openPathParsed flags path mode system
+
+    /// `readlink`, of a path this kernel has already copied in.
+    let internal readlinkParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
         (destination : UserBuffer)
         (capacity : int)
@@ -709,6 +719,48 @@ module UnixNamespace =
             Ok (ReadLinkAnswer.Reported all)
         else
             Ok (ReadLinkAnswer.Reported (ImmutableArray.CreateRange (Seq.truncate capacity all)))
+
+    /// `readlink(2)`: report what the symbolic link at `path` points at.
+    ///
+    /// Changes nothing and returns no system. That is *not* quite what POSIX
+    /// says: a successful `readlink` marks the link's access time for update,
+    /// and this kernel does not move it. Whether it would move is a property of
+    /// the mount rather than of this syscall, and the two flavours disagree —
+    /// measured on macOS (lstat, sleep, readlink, lstat) `st_atime` does not
+    /// move, while Linux's default `relatime` updates whenever `mtime` or
+    /// `ctime` is at or after the old `atime`, and a freshly seeded inode has
+    /// all three equal, so the first read there *would* move it. Deciding it
+    /// inside one entry point would set mount semantics for every future read
+    /// by accident, and would make `readlink` the only syscall obeying them.
+    ///
+    /// `capacity` is the caller's buffer size. A size that is not positive is
+    /// answered as this system's flavour answers it
+    /// (`SimulatedUnixPlatform.readlinkCapacity`): EINVAL before the path is
+    /// copied in on Linux and for a negative size on Darwin, and zero bytes
+    /// from a resolved link on Darwin for a size of zero.
+    ///
+    /// `path` is the argument's bytes, copied in after that screen and before
+    /// anything else: EFAULT if they were unreadable, ENAMETOOLONG if they run
+    /// past `PATH_MAX`.
+    let readlink<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (destination : UserBuffer)
+        (capacity : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<ReadLinkAnswer, BufferRefusal>
+        =
+        // The size is screened before the path is copied in, on both flavours:
+        // measured (`path-copyin-order.c`), a size Linux refuses is EINVAL with a
+        // NULL path, and so is a negative one on Darwin, whose size of zero goes on
+        // to copy the path in.
+        match SimulatedUnixPlatform.readlinkCapacity system.Machine.UnixPlatform capacity with
+        | ReadLinkCapacityVerdict.Refuse error -> Ok (ReadLinkAnswer.Failed error)
+        | ReadLinkCapacityVerdict.ReportNothing
+        | ReadLinkCapacityVerdict.Admit ->
+
+        match UnixPathResolution.copyIn path system with
+        | Error error -> Ok (ReadLinkAnswer.Failed error)
+        | Ok path -> readlinkParsed path destination capacity system
 
     /// Read the next entry of the directory `fd` names, and move its open file
     /// description's position past it: one record of `getdents(2)` (Linux) or
@@ -808,15 +860,8 @@ module UnixNamespace =
 
         Ok (ReadDirectoryAnswer.Entry record, withPosition (DirectoryPosition.Cursor next) system)
 
-    /// `mkdir(2)`: bind a new directory at `path`.
-    ///
-    /// `mode` is raw, exactly as the caller passed it, so what the created
-    /// directory's permissions actually are depends on the umask and, on one
-    /// flavour, on the parent's set-group-ID bit. `MkDirRules` holds that.
-    ///
-    /// Never refused: every outcome is a success or an errno, the rules having
-    /// been measured on both flavours.
-    let mkdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `mkdir`, of a path this kernel has already copied in.
+    let internal mkdirParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
         (mode : int)
         (system : UnixSystem<'Task, 'Handler>)
@@ -868,13 +913,29 @@ module UnixNamespace =
                 }
         }
 
-    /// `unlink(2)`: remove the name `path`, and the inode it named if nothing
-    /// else holds it.
+    /// `mkdir(2)`: bind a new directory at `path`.
     ///
-    /// Every outcome is a success or an errno, except where Darwin's sticky
-    /// rule has not been measured for this caller (`StickyRefusal`), which
-    /// changes nothing.
-    let unlink<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `mode` is raw, exactly as the caller passed it, so what the created
+    /// directory's permissions actually are depends on the umask and, on one
+    /// flavour, on the parent's set-group-ID bit. `MkDirRules` holds that.
+    ///
+    /// Never refused: every outcome is a success or an errno, the rules having
+    /// been measured on both flavours.
+    ///
+    /// `path` is the argument's bytes, copied in before anything else: EFAULT
+    /// if they were unreadable, ENAMETOOLONG if they run past `PATH_MAX`.
+    let mkdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (mode : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        match UnixPathResolution.copyIn path system with
+        | Error error -> SyscallAnswer.Failed error, system
+        | Ok path -> mkdirParsed path mode system
+
+    /// `unlink`, of a path this kernel has already copied in.
+    let internal unlinkParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, StickyRefusal>
@@ -927,12 +988,26 @@ module UnixNamespace =
                 }
         )
 
-    /// `rmdir(2)`: remove the empty directory `path` names.
+    /// `unlink(2)`: remove the name `path`, and the inode it named if nothing
+    /// else holds it.
     ///
     /// Every outcome is a success or an errno, except where Darwin's sticky
     /// rule has not been measured for this caller (`StickyRefusal`), which
     /// changes nothing.
-    let rmdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    ///
+    /// `path` is the argument's bytes, copied in before anything else: EFAULT
+    /// if they were unreadable, ENAMETOOLONG if they run past `PATH_MAX`.
+    let unlink<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, StickyRefusal>
+        =
+        match UnixPathResolution.copyIn path system with
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Ok path -> unlinkParsed path system
+
+    /// `rmdir`, of a path this kernel has already copied in.
+    let internal rmdirParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, StickyRefusal>
@@ -982,6 +1057,23 @@ module UnixNamespace =
                         }
                 }
         )
+
+    /// `rmdir(2)`: remove the empty directory `path` names.
+    ///
+    /// Every outcome is a success or an errno, except where Darwin's sticky
+    /// rule has not been measured for this caller (`StickyRefusal`), which
+    /// changes nothing.
+    ///
+    /// `path` is the argument's bytes, copied in before anything else: EFAULT
+    /// if they were unreadable, ENAMETOOLONG if they run past `PATH_MAX`.
+    let rmdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, StickyRefusal>
+        =
+        match UnixPathResolution.copyIn path system with
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Ok path -> rmdirParsed path system
 
     let private renameStopped
         (system : UnixSystem<'Task, 'Handler>)

@@ -465,7 +465,7 @@ module TestCloneFile =
             }
 
         let system =
-            match UnixNamespace.rmdir (UnixPath.parseOrFail context "/orph") system with
+            match UnixNamespace.rmdir (PathArg.ofPath (UnixPath.parseOrFail context "/orph")) system with
             | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"rmdir: %A{other}"
 

@@ -894,7 +894,13 @@ module TestVirtualFileSystemAgainstHost =
                     }
             }
 
-        match UnixNamespace.readlink (UnixPath.parseOrFail "test" relative) UserBuffer.Mapped capacity system with
+        match
+            UnixNamespace.readlink
+                (PathArg.ofPath (UnixPath.parseOrFail "test" relative))
+                UserBuffer.Mapped
+                capacity
+                system
+        with
         | Ok (ReadLinkAnswer.Reported bytes) -> Ok bytes.Length
         | Ok (ReadLinkAnswer.Failed error) -> Error (hostErrno error)
         | Error refusal -> failwith $"the model refused readlink of %s{relative}: %A{refusal}"
@@ -3196,7 +3202,7 @@ module TestVirtualFileSystemAgainstHost =
                     (GroupId.parseOrFail "chdir model" userId)
                     [])
 
-        match UnixPathResolution.chdir (UnixPath.parseOrFail "test" relative) system with
+        match UnixPathResolution.chdir (PathArg.ofPath (UnixPath.parseOrFail "test" relative)) system with
         | SyscallAnswer.Completed 0L, moved ->
             match UnixPathResolution.currentDirectoryPath moved with
             | Some path -> ChDirOutcome.Entered (PathText.ofAbsolute path)

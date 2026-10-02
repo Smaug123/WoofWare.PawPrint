@@ -8,6 +8,9 @@ open System.Collections.Immutable
 /// Arguments a real kernel validates arrive raw — `LSeek`'s `whence`, and every
 /// `fd` — because rejecting them is behaviour this library models, and models
 /// per flavour. Arguments only the client can classify arrive classified.
+///
+/// Every pathname is the argument's bytes (`PathArgumentBytes`), which this
+/// kernel copies in at the point the call's kernel does.
 type Syscall =
     | GetEffectiveUserId
     | GetEffectiveGroupId
@@ -23,19 +26,19 @@ type Syscall =
     /// `mode` is raw, as `mkdir(2)` takes it: how it combines with the umask
     /// and with the parent's set-group-ID bit is behaviour this kernel models,
     /// and models per flavour.
-    | MkDir of path : UnixPath * mode : int
-    | Unlink of path : UnixPath
-    | RmDir of path : UnixPath
-    | ChDir of path : UnixPath
+    | MkDir of path : PathArgumentBytes * mode : int
+    | Unlink of path : PathArgumentBytes
+    | RmDir of path : PathArgumentBytes
+    | ChDir of path : PathArgumentBytes
     /// `mode` is raw, as `chmod(2)` takes it: which of its bits the inode gets
     /// is behaviour this kernel models.
-    | ChMod of path : UnixPath * mode : int
+    | ChMod of path : PathArgumentBytes * mode : int
     /// `mode` is raw, as `fchmod(2)` takes it.
     | FChMod of fd : int * mode : int
     /// `None` is `(uid_t)-1` or `(gid_t)-1`: leave that ID as it is.
-    | ChOwn of path : UnixPath * user : UserId option * group : GroupId option
+    | ChOwn of path : PathArgumentBytes * user : UserId option * group : GroupId option
     /// As `ChOwn`, without following a symbolic link in the final position.
-    | LChOwn of path : UnixPath * user : UserId option * group : GroupId option
+    | LChOwn of path : PathArgumentBytes * user : UserId option * group : GroupId option
     /// As `ChOwn`, of the inode `fd` names.
     | FChOwn of fd : int * user : UserId option * group : GroupId option
     /// `mask` is raw, as `umask(2)` takes it: which of its bits the process

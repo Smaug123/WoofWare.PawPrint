@@ -81,6 +81,11 @@
     </ItemGroup>
 
     <ItemGroup>
+        <!-- Only the library's own tests may reach past its entry points. -->
+        <InternalsVisibleTo Include="WoofWare.PosixKernel.Test" />
+    </ItemGroup>
+
+    <ItemGroup>
         <None Include="logos\light.png" Pack="true" PackagePath="\" />
     </ItemGroup>
 
