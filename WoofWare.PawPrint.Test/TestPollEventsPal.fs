@@ -343,6 +343,8 @@ module TestPollEventsPal =
                     }
                 | PipeOrigin.Launched (_, ClientEnd.Supplying _) ->
                     failwith "TestPollEventsPal: no row launches a guest with bytes on its standard input."
+                | PipeOrigin.Launched (_, ClientEnd.ReadEndClosed) ->
+                    failwith "TestPollEventsPal: no row launches a guest with an output stream whose reader has gone."
                 | PipeOrigin.Made _ -> failwith "TestPollEventsPal: no row polls a pipe the guest made."
 
         (if level.In && palEvents &&& pal.["PAL_POLLIN"] <> 0s then

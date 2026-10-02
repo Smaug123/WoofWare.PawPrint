@@ -4,6 +4,7 @@ open System
 open System.Collections.Immutable
 open NUnit.Framework
 open FsUnitTyped
+open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
 /// The oracle writes a guest's standard input on a thread of its own, because
@@ -16,6 +17,11 @@ module TestRealRuntimeStandardInput =
 
     let private payload : ImmutableArray<byte> =
         ImmutableArray.Create<byte> (Array.init (1024 * 1024) (fun i -> byte (i % 251)))
+
+    let private withInput (bytes : ImmutableArray<byte>) : StandardStreamsConfig =
+        { StandardStreamsConfig.piped with
+            Input = bytes
+        }
 
     [<Test>]
     let ``a guest reads every byte of a standard input larger than a pipe`` () : unit =
@@ -48,7 +54,7 @@ class Program
 """
                 ]
 
-        RealRuntime.executeWithSeed FileSystemSeed.empty [] payload [||] image
+        RealRuntime.executeWithSeed FileSystemSeed.empty [] (withInput payload) [||] image
         |> shouldEqual (RealRuntimeResult.NormalExit 0)
 
     [<Test>]
@@ -64,7 +70,13 @@ class Program
 """
                 ]
 
-        RealRuntime.executeWithTimeoutAndSeed (TimeSpan.FromSeconds 60.0) FileSystemSeed.empty [] payload [||] image
+        RealRuntime.executeWithTimeoutAndSeed
+            (TimeSpan.FromSeconds 60.0)
+            FileSystemSeed.empty
+            []
+            (withInput payload)
+            [||]
+            image
         |> shouldEqual (RealRuntimeResult.NormalExit 7)
 
     /// The case the separate thread exists for: a guest that neither reads nor
@@ -96,7 +108,7 @@ class Program
                         (TimeSpan.FromSeconds 3.0)
                         FileSystemSeed.empty
                         []
-                        payload
+                        (withInput payload)
                         [||]
                         image
                     |> fun result -> Ok result

@@ -1,0 +1,327 @@
+# Darwin, PIPE_BUF 512
+# control, reader open: write -> 1; moved m1 c1 a0
+fill empty nonblock 0 count      0 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count      0 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count      0 buffer valid SIG_DFL died of signal 13
+fill empty nonblock 0 count      0 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count      0 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count      0 buffer NULL  SIG_DFL died of signal 13
+fill empty nonblock 0 count      0 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count      0 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count      0 buffer bad   SIG_DFL died of signal 13
+fill empty nonblock 0 count      1 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count      1 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count      1 buffer valid SIG_DFL died of signal 13
+fill empty nonblock 0 count      1 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count      1 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count      1 buffer NULL  SIG_DFL died of signal 13
+fill empty nonblock 0 count      1 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count      1 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count      1 buffer bad   SIG_DFL died of signal 13
+fill empty nonblock 0 count    512 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count    512 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count    512 buffer valid SIG_DFL died of signal 13
+fill empty nonblock 0 count    512 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count    512 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count    512 buffer NULL  SIG_DFL died of signal 13
+fill empty nonblock 0 count    512 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count    512 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count    512 buffer bad   SIG_DFL died of signal 13
+fill empty nonblock 0 count    513 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count    513 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count    513 buffer valid SIG_DFL died of signal 13
+fill empty nonblock 0 count    513 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count    513 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count    513 buffer NULL  SIG_DFL died of signal 13
+fill empty nonblock 0 count    513 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count    513 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count    513 buffer bad   SIG_DFL died of signal 13
+fill empty nonblock 0 count  65536 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count  65536 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count  65536 buffer valid SIG_DFL died of signal 13
+fill empty nonblock 0 count  65536 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count  65536 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count  65536 buffer NULL  SIG_DFL died of signal 13
+fill empty nonblock 0 count  65536 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count  65536 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count  65536 buffer bad   SIG_DFL died of signal 13
+fill empty nonblock 0 count 100000 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count 100000 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count 100000 buffer valid SIG_DFL died of signal 13
+fill empty nonblock 0 count 100000 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count 100000 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count 100000 buffer NULL  SIG_DFL died of signal 13
+fill empty nonblock 0 count 100000 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count 100000 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 0 count 100000 buffer bad   SIG_DFL died of signal 13
+fill empty nonblock 1 count      0 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count      0 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count      0 buffer valid SIG_DFL died of signal 13
+fill empty nonblock 1 count      0 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count      0 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count      0 buffer NULL  SIG_DFL died of signal 13
+fill empty nonblock 1 count      0 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count      0 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count      0 buffer bad   SIG_DFL died of signal 13
+fill empty nonblock 1 count      1 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count      1 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count      1 buffer valid SIG_DFL died of signal 13
+fill empty nonblock 1 count      1 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count      1 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count      1 buffer NULL  SIG_DFL died of signal 13
+fill empty nonblock 1 count      1 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count      1 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count      1 buffer bad   SIG_DFL died of signal 13
+fill empty nonblock 1 count    512 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count    512 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count    512 buffer valid SIG_DFL died of signal 13
+fill empty nonblock 1 count    512 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count    512 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count    512 buffer NULL  SIG_DFL died of signal 13
+fill empty nonblock 1 count    512 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count    512 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count    512 buffer bad   SIG_DFL died of signal 13
+fill empty nonblock 1 count    513 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count    513 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count    513 buffer valid SIG_DFL died of signal 13
+fill empty nonblock 1 count    513 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count    513 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count    513 buffer NULL  SIG_DFL died of signal 13
+fill empty nonblock 1 count    513 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count    513 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count    513 buffer bad   SIG_DFL died of signal 13
+fill empty nonblock 1 count  65536 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count  65536 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count  65536 buffer valid SIG_DFL died of signal 13
+fill empty nonblock 1 count  65536 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count  65536 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count  65536 buffer NULL  SIG_DFL died of signal 13
+fill empty nonblock 1 count  65536 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count  65536 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count  65536 buffer bad   SIG_DFL died of signal 13
+fill empty nonblock 1 count 100000 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count 100000 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count 100000 buffer valid SIG_DFL died of signal 13
+fill empty nonblock 1 count 100000 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count 100000 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count 100000 buffer NULL  SIG_DFL died of signal 13
+fill empty nonblock 1 count 100000 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count 100000 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill empty nonblock 1 count 100000 buffer bad   SIG_DFL died of signal 13
+fill 1000  nonblock 0 count      0 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count      0 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count      0 buffer valid SIG_DFL died of signal 13
+fill 1000  nonblock 0 count      0 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count      0 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count      0 buffer NULL  SIG_DFL died of signal 13
+fill 1000  nonblock 0 count      0 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count      0 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count      0 buffer bad   SIG_DFL died of signal 13
+fill 1000  nonblock 0 count      1 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count      1 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count      1 buffer valid SIG_DFL died of signal 13
+fill 1000  nonblock 0 count      1 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count      1 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count      1 buffer NULL  SIG_DFL died of signal 13
+fill 1000  nonblock 0 count      1 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count      1 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count      1 buffer bad   SIG_DFL died of signal 13
+fill 1000  nonblock 0 count    512 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count    512 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count    512 buffer valid SIG_DFL died of signal 13
+fill 1000  nonblock 0 count    512 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count    512 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count    512 buffer NULL  SIG_DFL died of signal 13
+fill 1000  nonblock 0 count    512 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count    512 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count    512 buffer bad   SIG_DFL died of signal 13
+fill 1000  nonblock 0 count    513 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count    513 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count    513 buffer valid SIG_DFL died of signal 13
+fill 1000  nonblock 0 count    513 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count    513 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count    513 buffer NULL  SIG_DFL died of signal 13
+fill 1000  nonblock 0 count    513 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count    513 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count    513 buffer bad   SIG_DFL died of signal 13
+fill 1000  nonblock 0 count  65536 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count  65536 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count  65536 buffer valid SIG_DFL died of signal 13
+fill 1000  nonblock 0 count  65536 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count  65536 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count  65536 buffer NULL  SIG_DFL died of signal 13
+fill 1000  nonblock 0 count  65536 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count  65536 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count  65536 buffer bad   SIG_DFL died of signal 13
+fill 1000  nonblock 0 count 100000 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count 100000 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count 100000 buffer valid SIG_DFL died of signal 13
+fill 1000  nonblock 0 count 100000 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count 100000 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count 100000 buffer NULL  SIG_DFL died of signal 13
+fill 1000  nonblock 0 count 100000 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count 100000 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 0 count 100000 buffer bad   SIG_DFL died of signal 13
+fill 1000  nonblock 1 count      0 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count      0 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count      0 buffer valid SIG_DFL died of signal 13
+fill 1000  nonblock 1 count      0 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count      0 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count      0 buffer NULL  SIG_DFL died of signal 13
+fill 1000  nonblock 1 count      0 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count      0 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count      0 buffer bad   SIG_DFL died of signal 13
+fill 1000  nonblock 1 count      1 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count      1 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count      1 buffer valid SIG_DFL died of signal 13
+fill 1000  nonblock 1 count      1 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count      1 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count      1 buffer NULL  SIG_DFL died of signal 13
+fill 1000  nonblock 1 count      1 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count      1 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count      1 buffer bad   SIG_DFL died of signal 13
+fill 1000  nonblock 1 count    512 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count    512 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count    512 buffer valid SIG_DFL died of signal 13
+fill 1000  nonblock 1 count    512 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count    512 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count    512 buffer NULL  SIG_DFL died of signal 13
+fill 1000  nonblock 1 count    512 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count    512 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count    512 buffer bad   SIG_DFL died of signal 13
+fill 1000  nonblock 1 count    513 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count    513 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count    513 buffer valid SIG_DFL died of signal 13
+fill 1000  nonblock 1 count    513 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count    513 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count    513 buffer NULL  SIG_DFL died of signal 13
+fill 1000  nonblock 1 count    513 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count    513 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count    513 buffer bad   SIG_DFL died of signal 13
+fill 1000  nonblock 1 count  65536 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count  65536 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count  65536 buffer valid SIG_DFL died of signal 13
+fill 1000  nonblock 1 count  65536 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count  65536 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count  65536 buffer NULL  SIG_DFL died of signal 13
+fill 1000  nonblock 1 count  65536 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count  65536 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count  65536 buffer bad   SIG_DFL died of signal 13
+fill 1000  nonblock 1 count 100000 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count 100000 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count 100000 buffer valid SIG_DFL died of signal 13
+fill 1000  nonblock 1 count 100000 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count 100000 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count 100000 buffer NULL  SIG_DFL died of signal 13
+fill 1000  nonblock 1 count 100000 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count 100000 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill 1000  nonblock 1 count 100000 buffer bad   SIG_DFL died of signal 13
+fill full  nonblock 0 count      0 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count      0 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count      0 buffer valid SIG_DFL died of signal 13
+fill full  nonblock 0 count      0 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count      0 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count      0 buffer NULL  SIG_DFL died of signal 13
+fill full  nonblock 0 count      0 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count      0 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count      0 buffer bad   SIG_DFL died of signal 13
+fill full  nonblock 0 count      1 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count      1 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count      1 buffer valid SIG_DFL died of signal 13
+fill full  nonblock 0 count      1 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count      1 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count      1 buffer NULL  SIG_DFL died of signal 13
+fill full  nonblock 0 count      1 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count      1 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count      1 buffer bad   SIG_DFL died of signal 13
+fill full  nonblock 0 count    512 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count    512 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count    512 buffer valid SIG_DFL died of signal 13
+fill full  nonblock 0 count    512 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count    512 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count    512 buffer NULL  SIG_DFL died of signal 13
+fill full  nonblock 0 count    512 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count    512 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count    512 buffer bad   SIG_DFL died of signal 13
+fill full  nonblock 0 count    513 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count    513 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count    513 buffer valid SIG_DFL died of signal 13
+fill full  nonblock 0 count    513 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count    513 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count    513 buffer NULL  SIG_DFL died of signal 13
+fill full  nonblock 0 count    513 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count    513 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count    513 buffer bad   SIG_DFL died of signal 13
+fill full  nonblock 0 count  65536 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count  65536 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count  65536 buffer valid SIG_DFL died of signal 13
+fill full  nonblock 0 count  65536 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count  65536 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count  65536 buffer NULL  SIG_DFL died of signal 13
+fill full  nonblock 0 count  65536 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count  65536 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count  65536 buffer bad   SIG_DFL died of signal 13
+fill full  nonblock 0 count 100000 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count 100000 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count 100000 buffer valid SIG_DFL died of signal 13
+fill full  nonblock 0 count 100000 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count 100000 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count 100000 buffer NULL  SIG_DFL died of signal 13
+fill full  nonblock 0 count 100000 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count 100000 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 0 count 100000 buffer bad   SIG_DFL died of signal 13
+fill full  nonblock 1 count      0 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count      0 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count      0 buffer valid SIG_DFL died of signal 13
+fill full  nonblock 1 count      0 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count      0 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count      0 buffer NULL  SIG_DFL died of signal 13
+fill full  nonblock 1 count      0 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count      0 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count      0 buffer bad   SIG_DFL died of signal 13
+fill full  nonblock 1 count      1 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count      1 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count      1 buffer valid SIG_DFL died of signal 13
+fill full  nonblock 1 count      1 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count      1 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count      1 buffer NULL  SIG_DFL died of signal 13
+fill full  nonblock 1 count      1 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count      1 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count      1 buffer bad   SIG_DFL died of signal 13
+fill full  nonblock 1 count    512 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count    512 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count    512 buffer valid SIG_DFL died of signal 13
+fill full  nonblock 1 count    512 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count    512 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count    512 buffer NULL  SIG_DFL died of signal 13
+fill full  nonblock 1 count    512 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count    512 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count    512 buffer bad   SIG_DFL died of signal 13
+fill full  nonblock 1 count    513 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count    513 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count    513 buffer valid SIG_DFL died of signal 13
+fill full  nonblock 1 count    513 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count    513 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count    513 buffer NULL  SIG_DFL died of signal 13
+fill full  nonblock 1 count    513 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count    513 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count    513 buffer bad   SIG_DFL died of signal 13
+fill full  nonblock 1 count  65536 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count  65536 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count  65536 buffer valid SIG_DFL died of signal 13
+fill full  nonblock 1 count  65536 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count  65536 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count  65536 buffer NULL  SIG_DFL died of signal 13
+fill full  nonblock 1 count  65536 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count  65536 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count  65536 buffer bad   SIG_DFL died of signal 13
+fill full  nonblock 1 count 100000 buffer valid SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count 100000 buffer valid handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count 100000 buffer valid SIG_DFL died of signal 13
+fill full  nonblock 1 count 100000 buffer NULL  SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count 100000 buffer NULL  handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count 100000 buffer NULL  SIG_DFL died of signal 13
+fill full  nonblock 1 count 100000 buffer bad   SIG_IGN -> -1 errno 32; handler 0 before return -1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count 100000 buffer bad   handler -> -1 errno 32; handler 1 before return 1; pending 0; moved m0 c0 a0; revents 0x10
+fill full  nonblock 1 count 100000 buffer bad   SIG_DFL died of signal 13
+# 324 rows, 0 break the rule

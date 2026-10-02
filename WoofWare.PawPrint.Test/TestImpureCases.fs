@@ -621,6 +621,80 @@ module TestImpureCases =
                 )
             ]
 
+    /// What `CopyFileWiringLinuxSeeded.cs` copies from and onto, owned by uid
+    /// 1000 unless it says otherwise.
+    let private copyFileWiringLinuxSeed : Map<DirectoryEntryName, SeedEntry> =
+        let name (s : string) =
+            DirectoryEntryName.parseOrFail "test seed" s
+
+        let bytes (contents : string) =
+            Text.Encoding.UTF8.GetBytes contents |> ImmutableArray.CreateRange
+
+        let mode (raw : int) =
+            PermissionBits.parseOrFail "test seed" raw
+
+        Map.ofList
+            [
+                name "src", SeedEntry.file (bytes "hello")
+                name "empty", SeedEntry.file (bytes "")
+                name "f", SeedEntry.File (bytes "hello", mode 0o640, None)
+                name "suid", SeedEntry.File (bytes "hello", mode 0o4755, None)
+                name "theirs",
+                SeedEntry.File (
+                    bytes "previous",
+                    mode 0o666,
+                    Some
+                        {
+                            User = UserId.root
+                            Group = GroupId.parseOrFail "test seed" 0u
+                        }
+                )
+                name "ro",
+                SeedEntry.Directory (
+                    Map.ofList [ name "w", SeedEntry.File (bytes "writable inside", mode 0o666, None) ],
+                    mode 0o555,
+                    None
+                )
+                name "dang", SeedEntry.Symlink (SymlinkTarget.parseOrFail "test seed" "nowhere", None)
+                name "lt", SeedEntry.Symlink (SymlinkTarget.parseOrFail "test seed" "t", None)
+                name "t", SeedEntry.file (bytes "target")
+            ]
+
+    /// What `CopyFileWiringDarwinSeeded.cs` clones, owned by uid 501.
+    let private copyFileWiringDarwinSeed : Map<DirectoryEntryName, SeedEntry> =
+        let name (s : string) =
+            DirectoryEntryName.parseOrFail "test seed" s
+
+        let bytes (contents : string) =
+            Text.Encoding.UTF8.GetBytes contents |> ImmutableArray.CreateRange
+
+        let mode (raw : int) =
+            PermissionBits.parseOrFail "test seed" raw
+
+        Map.ofList
+            [
+                name "f", SeedEntry.File (bytes "hello", mode 0o640, None)
+                name "suid", SeedEntry.File (bytes "hello", mode 0o4755, None)
+                name "g", SeedEntry.file (bytes "other")
+                name "ro", SeedEntry.Directory (Map.empty, mode 0o555, None)
+                name "dang", SeedEntry.Symlink (SymlinkTarget.parseOrFail "test seed" "nowhere", None)
+            ]
+
+    /// What `CopyFileOntoLinkSeeded.cs` copies onto: a link to a file.
+    let private copyFileOntoLinkSeed : Map<DirectoryEntryName, SeedEntry> =
+        let name (s : string) =
+            DirectoryEntryName.parseOrFail "test seed" s
+
+        let bytes (contents : string) =
+            Text.Encoding.UTF8.GetBytes contents |> ImmutableArray.CreateRange
+
+        Map.ofList
+            [
+                name "f", SeedEntry.file (bytes "hello")
+                name "t", SeedEntry.file (bytes "target")
+                name "lt", SeedEntry.Symlink (SymlinkTarget.parseOrFail "test seed" "t", None)
+            ]
+
     /// Shared by the two `mkdir` wiring guests, so that the only thing that
     /// differs between them is the flavour.
     let private mkDirWiringSeed : Map<DirectoryEntryName, SeedEntry> =
@@ -1097,6 +1171,39 @@ module TestImpureCases =
                 )
         }
 
+    /// Build one registration of `PipeBrokenRaw.cs` under `platform`, whose
+    /// exit code is the flavour's answer to a zero-length write with no reader:
+    /// 0 on Linux, 100 (EPIPE) on Darwin. The assertion here is that none of
+    /// the SIGPIPEs its writes raised was left pending, the runtime ignoring
+    /// it, and that the pipe was freed.
+    let private pipeBrokenRawCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
+        {
+            FileName = "PipeBrokenRaw.cs"
+            ExpectedReturnCode =
+                match SimulatedUnixPlatform.flavour platform with
+                | SimulatedUnixFlavour.Linux -> 0
+                | SimulatedUnixFlavour.Darwin -> 100
+            KernelConfig =
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.Never
+            ExpectsUnhandledException = false
+            AssertTerminalState =
+                Some (fun state ->
+                    SignalState.pending state.Kernel.Signals |> shouldEqual []
+
+                    (EmulatedKernel.unix state.Kernel).Machine.Pipes
+                    |> Map.forall (fun _ pipe ->
+                        match pipe.Origin with
+                        | PipeOrigin.Launched _ -> true
+                        | PipeOrigin.Made _ -> false
+                    )
+                    |> shouldEqual true
+                )
+        }
+
     let cases : EndToEndTestCase list =
         [
             // Both of these have a current directory whose UTF-8 encoding
@@ -1246,6 +1353,8 @@ module TestImpureCases =
             stdioNonBlockingCase SimulatedUnixPlatform.macOsArm64
             pipeRawCase SimulatedUnixPlatform.linuxX64
             pipeRawCase SimulatedUnixPlatform.macOsArm64
+            pipeBrokenRawCase SimulatedUnixPlatform.linuxX64
+            pipeBrokenRawCase SimulatedUnixPlatform.macOsArm64
             processIdCase None
             // Small enough to fit in a byte, so the case above is not the only
             // one that pins the handler to the configuration.
@@ -2215,6 +2324,41 @@ module TestImpureCases =
                 FileName = "AccessWiringDarwinSeeded.cs"
                 ExpectedReturnCode = 0
                 KernelConfig = accessWiringDarwinConfig 1000u
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // File.Copy on a Linux kernel with a umask and uid away from
+                // the defaults, onto files and links whose answer the oracle's
+                // host cannot be made to give, and SystemNative_CopyFile called
+                // directly for the errno each copy leaves.
+                FileName = "CopyFileWiringLinuxSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        Umask = PermissionBits.parseOrFail "test" 0o077
+                        UserId = Some 1000u
+                        FileSystem = copyFileWiringLinuxSeed
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // clonefile on a Darwin kernel, through the guest's own libc
+                // P/Invoke, with a umask a clone must not apply.
+                FileName = "CopyFileWiringDarwinSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        Umask = PermissionBits.parseOrFail "test" 0o077
+                        UserId = Some 501u
+                        FileSystem = copyFileWiringDarwinSeed
+                    }
                 AppContext = AppContextProperties.empty
                 Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
@@ -3907,17 +4051,17 @@ module TestImpureCases =
             // that is not compared starts no second run at all.
             let realResult, pawPrintResult =
                 if comparesHere then
-                    // The case's own seed, environment overlay and standard input drive
-                    // the oracle too, exactly as they do for a `sourcesPure` case, so
-                    // both runtimes see one description of a filesystem, of the
-                    // variables the case names, and of the bytes on standard input.
+                    // The case's own seed, environment overlay and standard streams
+                    // drive the oracle too, exactly as they do for a `sourcesPure`
+                    // case, so both runtimes see one description of a filesystem, of
+                    // the variables the case names, and of the standard streams.
                     let realResult, pawPrintResult =
                         DifferentialOracle.alongsideInterpreted
                             (fun () ->
                                 RealRuntime.executeWithSeed
                                     case.KernelConfig.FileSystem
                                     case.KernelConfig.Environment
-                                    case.KernelConfig.StandardInput
+                                    case.KernelConfig.StandardStreams
                                     [||]
                                     image
                             )
@@ -3998,6 +4142,164 @@ module TestImpureCases =
 
         exn.Message |> shouldContainText "SystemNative_GetGroups"
         exn.Message |> shouldContainText "GetGroupsRefusal.UnmeasuredGroupList"
+
+    [<Test>]
+    let ``a Darwin guest whose File.Copy reaches fcopyfile stops, naming it`` () : unit =
+        // An overwrite onto a link reaches SystemNative_CopyFile whichever
+        // CoreLib runs it (see the guest), and on a Darwin kernel that shim is
+        // fcopyfile(COPYFILE_ALL), which PawPrint refuses rather than copy
+        // without the metadata it carries.
+        let source = Assembly.getEmbeddedResourceAsString "CopyFileOntoLinkSeeded.cs" assy
+        let image = Roslyn.compile [ source ]
+
+        let _messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", "CopyFileOntoLinkSeeded.cs" ]
+
+        use _loggerFactoryResource = loggerFactory
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
+        use peImage = new MemoryStream (image)
+
+        let exn =
+            Assert.Catch (fun () ->
+                BoundedRun.run
+                    loggerFactory
+                    "CopyFileOntoLinkSeeded.cs"
+                    (Some "CopyFileOntoLinkSeeded.cs")
+                    peImage
+                    { HostConfig.Default dotnetRuntimes with
+                        Guest =
+                            { GuestConfig.Default dotnetRuntimes with
+                                Kernel =
+                                    { KernelConfig.Default with
+                                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                                        FileSystem = copyFileOntoLinkSeed
+                                    }
+                            }
+                    }
+                |> ExpectRun.ended
+                |> ignore<RunOutcome>
+            )
+
+        exn.Message |> shouldContainText "SystemNative_CopyFile"
+        exn.Message |> shouldContainText "fcopyfile"
+
+    [<Test>]
+    let ``a Linux kernel older than 5.3 sends System.Native's copy to sendfile, which stops the run`` () : unit =
+        // `SupportsCopyFileRange` reads the release's major and minor numbers
+        // and uses copy_file_range only from 5.3; below that the shim copies
+        // with sendfile, which the kernel does not model. Releases either side
+        // of the boundary, and ones whose minor number `%u.%u` cannot read.
+        let source = Assembly.getEmbeddedResourceAsString "CopyFileOntoLinkSeeded.cs" assy
+        let image = Roslyn.compile [ source ]
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
+
+        let run (release : string) =
+            let _messages, loggerFactory =
+                LoggerFactory.makeTestWithProperties [ "source_file", "CopyFileOntoLinkSeeded.cs" ]
+
+            use _loggerFactoryResource = loggerFactory
+            use peImage = new MemoryStream (image)
+
+            let platform =
+                SimulatedUnixPlatform.createOrFail
+                    "test"
+                    SimulatedUnixFlavour.Linux
+                    SimulatedUnixArchitecture.X64
+                    SimulatedPageSize.FourKiB
+                    release
+
+            BoundedRun.run
+                loggerFactory
+                "CopyFileOntoLinkSeeded.cs"
+                (Some "CopyFileOntoLinkSeeded.cs")
+                peImage
+                { HostConfig.Default dotnetRuntimes with
+                    Guest =
+                        { GuestConfig.Default dotnetRuntimes with
+                            Kernel =
+                                { KernelConfig.Default with
+                                    UnixPlatform = platform
+                                    FileSystem = copyFileOntoLinkSeed
+                                }
+                        }
+                }
+            |> ExpectRun.ended
+
+        // `%u` is strtoul's: it skips whitespace and takes a sign, a minus
+        // wraps and an overflow saturates (and is then not negated), so "-1.0" reads as a major of
+        // 2^32 - 1. The '.' between the two is a literal, which a space before
+        // it does not match. Each row is glibc's own answer
+        // (docs/plans/2026-08-23-posix-kernel-extraction/release-sscanf.c).
+        for release in
+            [
+                "5.3.0"
+                "5.3"
+                "6.0"
+                "10.1-rc1"
+                "5.+3"
+                "5. 3"
+                " 5.3"
+                "-1.0"
+                "5.-3"
+                "99999999999999999999.1"
+                "5.-18446744073709551616"
+                "5.-4294967293"
+            ] do
+            match run release with
+            | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 0
+            | other -> failwith $"%s{release}: expected a normal exit, got %O{other}"
+
+        for release in [ "5.2.99" ; "5" ; "4.19.0" ; "x5.3" ; "5 .3" ; "5.-18446744073709551615" ] do
+            let exn = Assert.Catch (fun () -> run release |> ignore<RunOutcome>)
+            exn.Message |> shouldContainText "sendfile"
+
+    [<Test>]
+    let ``the Linux File.Copy wiring guest answers the same on the pinned linux-x64 CoreLib`` () : unit =
+        // On a macOS host the registered case runs a Darwin CoreLib, whose
+        // File.Copy first asks clonefile and is told ENOTSUP; this runs the
+        // CoreLib CI and production run, which goes straight to
+        // SystemNative_CopyFile.
+        let frameworkDir = LinuxCoreLibFlavour.requireLinuxFramework ()
+
+        let source =
+            Assembly.getEmbeddedResourceAsString "CopyFileWiringLinuxSeeded.cs" assy
+
+        let image = Roslyn.compile [ source ]
+
+        let _messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", "CopyFileWiringLinuxSeeded.cs" ]
+
+        use _loggerFactoryResource = loggerFactory
+        let dotnetRuntimes = LinuxCoreLibFlavour.runtimeDirsPreferringLinux frameworkDir
+        use peImage = new MemoryStream (image)
+
+        let terminalState =
+            match
+                BoundedRun.run
+                    loggerFactory
+                    "CopyFileWiringLinuxSeeded.cs"
+                    (Some "CopyFileWiringLinuxSeeded.cs")
+                    peImage
+                    { HostConfig.Default dotnetRuntimes with
+                        Guest =
+                            { GuestConfig.Default dotnetRuntimes with
+                                Kernel =
+                                    { KernelConfig.Default with
+                                        Umask = PermissionBits.parseOrFail "test" 0o077
+                                        UserId = Some 1000u
+                                        FileSystem = copyFileWiringLinuxSeed
+                                    }
+                            }
+                    }
+                |> ExpectRun.ended
+            with
+            | RunOutcome.NormalExit (state, _, _) -> state
+            | other -> failwith $"expected a normal exit, got %O{other}"
+
+        terminalState.LatchedExitCode |> shouldEqual 0
+
+        LinuxCoreLibFlavour.loadedCorelibPath terminalState
+        |> shouldEqual (LinuxCoreLibFlavour.corelibPath frameworkDir)
 
     [<Test>]
     let ``a Darwin guest that asks root's X_OK of a regular file stops, naming the unmeasured rule`` () : unit =

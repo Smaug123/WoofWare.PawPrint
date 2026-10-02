@@ -85,7 +85,7 @@ module TestEmulatedKernelCurrentDirectory =
         let seed = Map.ofList [ name wide, SeedEntry.directory FileSystemSeed.empty ]
 
         let darwin =
-            EmulatedKernel.create SimulatedUnixPlatform.macOsArm64 ImmutableArray.Empty
+            EmulatedKernel.create SimulatedUnixPlatform.macOsArm64 StandardStreamsConfig.piped
             |> EmulatedKernel.withFileSystemAndCurrentDirectory
                 createdAt
                 (InodeOwner.ofProcess (UnixSystem.defaultCredentials SimulatedUnixFlavour.Linux))
@@ -102,7 +102,7 @@ module TestEmulatedKernelCurrentDirectory =
         // not passing because the limit is never consulted.
         let text =
             message (fun () ->
-                EmulatedKernel.create SimulatedUnixPlatform.linuxX64 ImmutableArray.Empty
+                EmulatedKernel.create SimulatedUnixPlatform.linuxX64 StandardStreamsConfig.piped
                 |> EmulatedKernel.withFileSystemAndCurrentDirectory
                     createdAt
                     (InodeOwner.ofProcess (UnixSystem.defaultCredentials SimulatedUnixFlavour.Linux))
@@ -131,7 +131,7 @@ module TestEmulatedKernelCurrentDirectory =
 
         let text =
             message (fun () ->
-                EmulatedKernel.create SimulatedUnixPlatform.macOsArm64 ImmutableArray.Empty
+                EmulatedKernel.create SimulatedUnixPlatform.macOsArm64 StandardStreamsConfig.piped
                 |> EmulatedKernel.withFileSystemAndCurrentDirectory
                     createdAt
                     (InodeOwner.ofProcess (UnixSystem.defaultCredentials SimulatedUnixFlavour.Linux))
@@ -202,7 +202,7 @@ module TestEmulatedKernelCurrentDirectory =
 
         let text =
             message (fun () ->
-                EmulatedKernel.create SimulatedUnixPlatform.macOsArm64 ImmutableArray.Empty
+                EmulatedKernel.create SimulatedUnixPlatform.macOsArm64 StandardStreamsConfig.piped
                 |> EmulatedKernel.withFileSystemAndCurrentDirectory
                     createdAt
                     (InodeOwner.ofProcess (UnixSystem.defaultCredentials SimulatedUnixFlavour.Linux))

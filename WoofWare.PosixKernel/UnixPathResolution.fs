@@ -216,6 +216,29 @@ module FChOwnRefusal =
         | FChOwnRefusal.Socket socket ->
             $"the descriptor is socket %O{socket}. Measured on Linux, fchown on a socket of every domain and kind changes the owner fstat then reports, by the same rule as a file's (the owner may give it one of its groups, a non-owner naming a user is EPERM, root may do anything); this kernel holds no owner for a socket, so it has nothing to judge the call against or to change."
 
+/// Why this kernel will not answer a `futimens(2)`.
+[<RequireQualifiedAccess>]
+type FUTimensRefusal =
+    /// This kernel is Darwin-flavoured. Darwin's `futimens` normalises a
+    /// nanosecond field outside `[0, 1e9)` where Linux refuses it, and moves a
+    /// file's birth time back to an earlier modification time, but not to one
+    /// before the epoch; this kernel models neither.
+    | UnmodelledFlavour of flavour : SimulatedUnixFlavour
+    /// The descriptor names something other than a file or directory: a pipe,
+    /// a socket or a socket event port.
+    | UnmodelledObject of object : OpenFileObject
+
+[<RequireQualifiedAccess>]
+module FUTimensRefusal =
+    /// What this kernel knows about why it will not answer. A client adds which
+    /// entry point asked, and with which descriptor.
+    let describe (refusal : FUTimensRefusal) : string =
+        match refusal with
+        | FUTimensRefusal.UnmodelledFlavour flavour ->
+            $"this kernel is %O{flavour}-flavoured, and only Linux's futimens is modelled. Measured on Darwin 27.0, futimens accepts a nanosecond field of 1e9 or -1 (carrying it into the seconds, or reading -1 as UTIME_NOW) where Linux answers EINVAL, answers EACCES rather than EPERM for a file the caller does not own, and moves the file's birth time back to an earlier modification time unless that time is before the epoch."
+        | FUTimensRefusal.UnmodelledObject object ->
+            $"the descriptor names %O{object}, which is neither a file nor a directory. Measured on Linux 6.18.5 as root, futimens sets the times fstat reports for either end of a pipe and for a socket, and answers EOPNOTSUPP for an epoll instance; this kernel holds no times for a socket, and what a caller who does not own the pipe or the epoll inode gets is unmeasured."
+
 /// <summary>
 /// What <c>fstat(2)</c> reported.
 /// </summary>
@@ -995,6 +1018,69 @@ module UnixPathResolution =
                         }
                 }
             )
+
+    /// `futimens(2)` with two explicit times: set the access and modification
+    /// times of the file or directory `fd` names to `access` and
+    /// `modification`, and its status-change time to now.
+    ///
+    /// Only the explicit form is expressible: a `UnixTimestamp` cannot hold the
+    /// `UTIME_NOW` or `UTIME_OMIT` markers, nor a nanosecond field the kernel
+    /// would answer EINVAL for.
+    ///
+    /// EBADF for a descriptor the process does not hold, and EPERM unless the
+    /// caller owns the inode or is privileged; the descriptor's access mode
+    /// plays no part. The birth time does not move.
+    let futimens<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (access : UnixTimestamp)
+        (modification : UnixTimestamp)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, FUTimensRefusal>
+        =
+        // Measured on Linux 6.18.5 (`copy-file-syscalls.c`, tmpfs and ext4
+        // alike): a regular file opened read-only, write-only and read-write
+        // and a directory all take the times; a closed descriptor and 9999 are
+        // EBADF, ahead of a nanosecond field of 1e9 (EINVAL for an open one);
+        // seconds -1e9, -1, 0, 2^31 - 1, 2^31 and 253402300799 are all stored
+        // exactly. uid 1000 on root's 0666 file opened O_RDWR is EPERM and
+        // changes nothing; uid 1000 on its own 0444 file opened O_RDONLY, and
+        // root on uid 1000's 0600 file, succeed. ctime moves to now; the birth
+        // time stays put even when the modification time is set before it.
+        match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+        | SimulatedUnixFlavour.Darwin -> Error (FUTimensRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin)
+        | SimulatedUnixFlavour.Linux ->
+
+        match FileDescriptorRegistry.tryFindObject fd system.Process.FileDescriptors with
+        | None -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
+        | Some (OpenFileObject.AnonymousInode as object)
+        | Some (OpenFileObject.Socket _ as object)
+        | Some (OpenFileObject.Pipe _ as object) -> Error (FUTimensRefusal.UnmodelledObject object)
+        | Some (OpenFileObject.File inode) ->
+
+        let entry =
+            match VirtualFileSystem.tryGet inode system.Machine.FileSystem with
+            | Some entry -> entry
+            | None ->
+                failwith
+                    $"UnixPathResolution.futimens: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
+
+        let standing = Standing.toward system.Process.Credentials entry.Owner
+
+        if not standing.Owns && standing.Privilege = CallerPrivilege.Unprivileged then
+            Ok (SyscallAnswer.Failed UnixError.EPERM, system)
+        else
+
+        let now = UnixMachineState.realtime system.Machine
+
+        Ok (
+            SyscallAnswer.Completed 0L,
+            { system with
+                Machine =
+                    { system.Machine with
+                        FileSystem = VirtualFileSystem.setTimes inode access modification now system.Machine.FileSystem
+                    }
+            }
+        )
 
     /// `statfs(2)`: report the filesystem the inode `path` names is on.
     ///

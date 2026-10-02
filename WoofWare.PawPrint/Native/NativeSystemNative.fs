@@ -189,7 +189,7 @@ module NativeSystemNative =
     /// For a syscall whose signature returns no system, so that there is nothing
     /// to write back. Handing the unchanged projection to `withErrno` instead
     /// would work, but it would say the syscall wrote.
-    let private withErrnoOnly (ctx : NativeCallContext) (error : UnixError) (state : IlMachineState) : IlMachineState =
+    let internal withErrnoOnly (ctx : NativeCallContext) (error : UnixError) (state : IlMachineState) : IlMachineState =
         let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
         state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error))
@@ -197,7 +197,7 @@ module NativeSystemNative =
     /// Write back the system a syscall failed from, and record the errno that
     /// failure produced. A failure still changes the system in general: `flock`
     /// advances the descriptor table before it discovers the conflict.
-    let private withErrno
+    let internal withErrno
         (ctx : NativeCallContext)
         (error : UnixError)
         (system : UnixSystem<ThreadId, NativeSignalHandler>)
@@ -235,7 +235,7 @@ module NativeSystemNative =
 
     /// Write back the system a syscall answered from, having neither failed nor
     /// been refused. Errno is left alone, as a successful syscall leaves it.
-    let private withAnswered
+    let internal withAnswered
         (system : UnixSystem<ThreadId, NativeSignalHandler>)
         (state : IlMachineState)
         : IlMachineState
@@ -1300,7 +1300,7 @@ module NativeSystemNative =
     /// performs it. Reading the bytes early costs nothing, being a pure read of
     /// guest memory; refusing early would answer about a pathname the syscall
     /// never looked at.
-    let private pathArgumentBytes
+    let internal pathArgumentBytes
         (ctx : NativeCallContext)
         (operation : string)
         (parameter : string)
@@ -1368,6 +1368,272 @@ module NativeSystemNative =
             pathArgumentBytes ctx operation "newPath" ctx.Instruction.Arguments.[1] state
             |> fun destination -> UnixNamespace.renameWithDestination destination paused
             |> answer
+
+    /// The `major.minor` at the start of a kernel release string, read as
+    /// `sscanf(release, "%u.%u", &major, &minor)` reads it into two zeroes: a
+    /// field it cannot read stays 0, and so does everything after it.
+    ///
+    /// Each `%u` is `strtoul`'s: whitespace skipped, an optional sign, the
+    /// digits saturating at `ULONG_MAX` (and a saturated value not negated),
+    /// a minus otherwise negating modulo 2^64, and the result narrowed to 32
+    /// bits by the store. The `.` between them is a
+    /// literal, which matches only a `.`.
+    let private releaseMajorMinor (release : string) : uint32 * uint32 =
+        let unsignedAt (start : int) : uint32 option * int =
+            let mutable index = start
+
+            while index < release.Length && Char.IsWhiteSpace release.[index] do
+                index <- index + 1
+
+            let negative = index < release.Length && release.[index] = '-'
+
+            if index < release.Length && (release.[index] = '+' || release.[index] = '-') then
+                index <- index + 1
+
+            let digits = index
+
+            while index < release.Length && Char.IsAsciiDigit release.[index] do
+                index <- index + 1
+
+            if index = digits then
+                None, start
+            else
+                // strtoul saturates an overflow at ULONG_MAX and does not then
+                // negate it; a magnitude that fits is negated modulo 2^64.
+                let digitValue =
+                    Numerics.BigInteger.Parse (release.Substring (digits, index - digits))
+
+                let value =
+                    if digitValue > Numerics.BigInteger UInt64.MaxValue then
+                        UInt64.MaxValue
+                    elif negative then
+                        0UL - uint64 digitValue
+                    else
+                        uint64 digitValue
+
+                Some (uint32 value), index
+
+        match unsignedAt 0 with
+        | None, _ -> 0u, 0u
+        | Some major, next ->
+            if next < release.Length && release.[next] = '.' then
+                match unsignedAt (next + 1) with
+                | Some minor, _ -> major, minor
+                | None, _ -> major, 0u
+            else
+                major, 0u
+
+    /// `int32_t SystemNative_CopyFile(intptr_t sourceFd, intptr_t destinationFd,
+    /// int64_t sourceLength)` (pal_io.c), as a Linux System.Native runs it:
+    /// `ioctl(FICLONE)`, then `copy_file_range(2)` until the length is copied,
+    /// then a read/write loop for whatever is left, then the source's access
+    /// and modification times and its permission bits (not the set-ID or
+    /// sticky bits) onto the destination, either of which may be EPERM without
+    /// failing the copy. Each syscall that fails leaves its errno, so a copy
+    /// that succeeds can leave one behind, as the shim's does.
+    ///
+    /// A Darwin System.Native is one `fcopyfile(3)` with `COPYFILE_ALL`, which
+    /// is refused.
+    let private copyFile (ctx : NativeCallContext) (state : IlMachineState) : NativeHandlerResult option =
+        let operation = "SystemNative_CopyFile"
+        let instruction = ctx.Instruction
+        let source = fdArgument operation instruction.Arguments.[0]
+        let destination = fdArgument operation instruction.Arguments.[1]
+        let sourceLength = NativeCall.int64Argument operation instruction.Arguments.[2]
+
+        let returning (value : int) (state : IlMachineState) : NativeHandlerResult option =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim value)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+
+        let system (state : IlMachineState) = EmulatedKernel.unix state.Kernel
+
+        match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
+        | SimulatedUnixFlavour.Darwin ->
+            // Measured on Darwin 27.0 (`clonefile-rules.c`): COPYFILE_ALL gives
+            // the destination the source's group (so it calls fchown), its
+            // mode including the set-ID bits, and its access, modification and
+            // birth times. A Darwin CoreLib reaches this only when clonefile
+            // could not make the copy itself: an overwrite onto a symbolic
+            // link, or onto a file its directory will not let it unlink.
+            failwith
+                $"%s{operation}: fd %d{source} to fd %d{destination} on a Darwin kernel, where the shim is fcopyfile(COPYFILE_ALL). It changes the destination's owner, which needs fchown(2), and its birth time, neither of which the kernel models yet."
+        | SimulatedUnixFlavour.Linux ->
+
+        // 1. `ioctl(outFd, FICLONE, inFd)` for a non-empty source. No
+        // filesystem the kernel answers for shares blocks, so this always
+        // fails, and the errno it leaves is what a successful copy returns
+        // with unless a later call fails.
+        let state =
+            if sourceLength = 0L then
+                state
+            else
+
+            match UnixDescriptor.fileClone destination source (system state) with
+            | Error refusal -> failwith $"%s{operation}: ioctl(FICLONE): %s{FileCloneRefusal.describe refusal}"
+            | Ok error -> withErrnoOnly ctx error state
+
+        // 2. `SupportsCopyFileRange()`, cached in the shim's static for the
+        // life of the process. The probe, `copy_file_range(-1, -1, 0)`, leaves
+        // its errno.
+        let supported, state =
+            match state.Kernel.CopyFileRangeSupport with
+            | CopyFileRangeSupport.Supported -> true, state
+            | CopyFileRangeSupport.Unsupported -> false, state
+            | CopyFileRangeSupport.Unprobed ->
+                let major, minor =
+                    releaseMajorMinor (SimulatedUnixPlatform.unixRelease state.Kernel.UnixPlatform)
+
+                let supported, state =
+                    if major > 5u || (major = 5u && minor >= 3u) then
+                        match UnixReadWrite.copyFileRange -1 -1 0UL 0 (system state) with
+                        | Ok (SyscallAnswer.Failed error, _) -> error <> UnixError.ENOSYS, withErrnoOnly ctx error state
+                        | other ->
+                            failwith
+                                $"%s{operation}: the probe copy_file_range(-1, -1, 0) answered %A{other}, where a kernel holding neither descriptor answers EBADF (this is a bug in PawPrint)."
+                    else
+                        false, state
+
+                let support =
+                    if supported then
+                        CopyFileRangeSupport.Supported
+                    else
+                        CopyFileRangeSupport.Unsupported
+
+                supported,
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        CopyFileRangeSupport = support
+                    }
+                )
+
+        // 3. `copy_file_range(inFd, NULL, outFd, NULL, len, 0)` until the
+        // length is copied, or until a call fails or moves nothing, which also
+        // rules out sendfile.
+        let ssizeMax = Int64.MaxValue
+
+        let rec copyRanges (remaining : int64) (state : IlMachineState) : int64 * bool * IlMachineState =
+            let length =
+                if remaining >= ssizeMax then
+                    uint64 ssizeMax
+                else
+                    uint64 remaining
+
+            match UnixReadWrite.copyFileRange source destination length 0 (system state) with
+            | Error refusal -> failwith $"%s{operation}: copy_file_range: %s{CopyFileRangeRefusal.describe refusal}"
+            | Ok (SyscallAnswer.Failed error, system) -> remaining, false, withErrno ctx error system state
+            | Ok (SyscallAnswer.Completed 0L, system) -> remaining, false, withAnswered system state
+            | Ok (SyscallAnswer.Completed sent, system) ->
+                let state = withAnswered system state
+                let remaining = remaining - sent
+
+                if remaining > 0L then
+                    copyRanges remaining state
+                else
+                    remaining, true, state
+
+        // `copied` is decided only by the copy_file_range loop: a length of 0
+        // (which the caller's fstat can report for a file that does hold
+        // bytes) leaves it false, so the read/write loop below still runs.
+        let remaining, trySendFile, copied, state =
+            if supported && sourceLength <> 0L then
+                let remaining, trySendFile, state = copyRanges sourceLength state
+                remaining, trySendFile, remaining = 0L, state
+            else
+                sourceLength, true, false, state
+
+        // 4. sendfile(2), reached when the shim did not use copy_file_range (a
+        // release older than 5.3), or when a negative length hint outlived it.
+        if trySendFile && not copied && remaining <> 0L then
+            let reason =
+                if supported then
+                    $"the length hint %d{sourceLength} is negative, so the copy_file_range loop ended with %d{remaining} still to copy"
+                else
+                    $"the kernel's release (%s{SimulatedUnixPlatform.unixRelease state.Kernel.UnixPlatform}) is older than 5.3"
+
+            failwith $"%s{operation}: %s{reason}, so the shim copies with sendfile(2), which the kernel does not model."
+
+        // 5. `CopyFile_ReadWrite`: 80 KiB reads, each written out whole.
+        let bufferLength = 80UL * 1024UL
+
+        let rec writeAll
+            (bytes : ImmutableArray<byte>)
+            (state : IlMachineState)
+            : Result<IlMachineState, IlMachineState>
+            =
+            if bytes.IsEmpty then
+                Ok state
+            else
+
+            // The destination was opened by path, and only a pipe raises a
+            // signal on write, so the raising outcomes mean the filesystem
+            // handed back something CoreLib's open never makes.
+            match UnixReadWrite.write ctx.Thread destination bytes (system state) with
+            | Error refusal -> failwith $"%s{operation}: write: %s{WriteRefusal.describe refusal}"
+            | Ok (WriteOutcome.ReturnsRaising (answer, signal, _)) ->
+                failwith
+                    $"%s{operation}: writing the destination answered %A{answer} and raised %A{signal}, but a destination opened by path is never a pipe"
+            | Ok (WriteOutcome.ProcessEnded ended) ->
+                failwith
+                    $"%s{operation}: writing the destination ended the process (%A{ended.Termination}), but a destination opened by path is never a pipe"
+            | Ok (WriteOutcome.Returns (WriteAnswer.Failed error, system)) -> Error (withErrno ctx error system state)
+            | Ok (WriteOutcome.Returns (WriteAnswer.Completed written, system)) ->
+                writeAll
+                    (ImmutableArray.Create (bytes, int written, bytes.Length - int written))
+                    (withAnswered system state)
+
+        let rec readWrite (state : IlMachineState) : Result<IlMachineState, IlMachineState> =
+            match UnixReadWrite.read source UserBuffer.Mapped bufferLength (system state) with
+            | Error refusal -> failwith $"%s{operation}: read: %s{ReadRefusal.describe refusal}"
+            | Ok (ReadAnswer.Failed error, system) -> Error (withErrno ctx error system state)
+            | Ok (ReadAnswer.Completed bytes, system) ->
+                let state = withAnswered system state
+
+                if bytes.IsEmpty then
+                    Ok state
+                else
+                    writeAll bytes state |> Result.bind readWrite
+
+        let copiedState = if copied then Ok state else readWrite state
+
+        match copiedState with
+        | Error state -> returning -1 state
+        | Ok state ->
+
+        // 6. The source's times onto the destination, ignoring EPERM: a
+        // destination someone else owns keeps its own.
+        match UnixPathResolution.fstat source (system state) with
+        | Error refusal -> failwith $"%s{operation}: fstat: %s{FStatRefusal.describe refusal}"
+        | Ok (FileStatusAnswer.Failed error) ->
+            if error = UnixError.EPERM then
+                // The shim would go on to fchmod with a mode its failed fstat
+                // never filled in; fstat of a descriptor the process holds
+                // cannot be EPERM here.
+                failwith $"%s{operation}: fstat of fd %d{source} answered EPERM (this is a bug in PawPrint)."
+
+            returning -1 (withErrnoOnly ctx error state)
+        | Ok (FileStatusAnswer.Reported status) ->
+
+        let timesFailed, state =
+            match UnixPathResolution.futimens destination status.AccessTime status.ModificationTime (system state) with
+            | Error refusal -> failwith $"%s{operation}: futimens: %s{FUTimensRefusal.describe refusal}"
+            | Ok (SyscallAnswer.Failed error, system) -> Some error, withErrno ctx error system state
+            | Ok (SyscallAnswer.Completed _, system) -> None, withAnswered system state
+
+        match timesFailed with
+        | Some error when error <> UnixError.EPERM -> returning -1 state
+        | Some _
+        | None ->
+
+        // 7. The source's permission bits, without its set-ID and sticky bits,
+        // again ignoring EPERM.
+        match UnixPathResolution.fchmod destination (status.Mode &&& 0o777) (system state) with
+        | Error refusal -> failwith $"%s{operation}: fchmod: %s{FChModRefusal.describe refusal}"
+        | Ok (SyscallAnswer.Failed error, system) ->
+            let state = withErrno ctx error system state
+            returning (if error = UnixError.EPERM then 0 else -1) state
+        | Ok (SyscallAnswer.Completed _, system) -> returning 0 (withAnswered system state)
 
     /// Shared body of `SystemNative_Stat` and `SystemNative_LStat`, which
     /// differ only in whether a symbolic link in the final position is
@@ -2218,6 +2484,21 @@ module NativeSystemNative =
             let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
             pushInt32 (UnixErrorPal.ofRawErrnoUnder numbering raw) ctx |> Some
+        | Some "SystemNative_ConvertErrorPalToPlatform",
+          [ PalErrorReturn state.TypeSystem.ConcreteTypes ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
+            // `int32_t SystemNative_ConvertErrorPalToPlatform(int32_t error)`
+            // (pal_errno.c), the other direction: an `Interop.Error` value to the
+            // raw number the configured kernel's `<errno.h>` gives that error.
+            // CoreLib reaches it from `Interop.ErrorInfo.RawErrno` on an
+            // `ErrorInfo` it built from a PAL value alone, as
+            // `SafeFileHandle.Init` does to refuse a directory opened for
+            // reading with `Interop.Error.EACCES.Info()`.
+            let pal =
+                NativeCall.int32Argument "SystemNative_ConvertErrorPalToPlatform" instruction.Arguments.[0]
+
+            let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+            pushInt32 (UnixErrorPal.toRawErrnoUnder numbering pal) ctx |> Some
         | Some "SystemNative_GetCpuUtilization",
           [ ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Double) ->
@@ -3400,6 +3681,15 @@ module NativeSystemNative =
                 |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 0u) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
+        | Some "SystemNative_CopyFile",
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes
+            ConcreteIntPtr state.TypeSystem.ConcreteTypes
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int64 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
+            // CoreLib's `FileSystem.CopyFile` reaches it with the source opened
+            // read-only and the destination created (or opened, locked and
+            // truncated) for writing, and the source's length as fstat gave it.
+            copyFile ctx state
         | Some "SystemNative_FTruncate",
           [ ConcreteIntPtr state.TypeSystem.ConcreteTypes
             ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int64 ],
@@ -6364,7 +6654,10 @@ module NativeSystemNative =
             // for part of it. A guest depending on EAGAIN or a partial write
             // from a non-blocking socket would need connection state PawPrint
             // does not model, which `UnixReadWrite.write` refuses rather than
-            // guesses.
+            // guesses. A write into a pipe with no reader answers EPIPE and
+            // raises SIGPIPE, which PawPrint's startup ignores, as CoreCLR's
+            // does, so the guest sees the EPIPE alone unless it has given the
+            // signal a disposition of its own.
             let operation = "SystemNative_Write"
             let fd = fdArgument operation instruction.Arguments.[0]
             let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
@@ -6380,8 +6673,9 @@ module NativeSystemNative =
                         "Write less, or raise the model's file-length limit (issue #956)."
                     | WriteRefusal.PipeWouldBlock _ ->
                         "PawPrint parks no task in a write yet. A guest reaching this writes more into a pipe it made with `SystemNative_Pipe` than the pipe has room for; give the write end O_NONBLOCK, or read from the pipe first."
-                    | WriteRefusal.BrokenPipe _ ->
-                        "PawPrint's startup ignores SIGPIPE, as CoreCLR does, so a real run would see EPIPE here; the kernel does not yet hold the disposition that says so."
+                    | WriteRefusal.InitProcess _ -> "Configure a process ID other than 1 (KernelConfig.ProcessId)."
+                    | WriteRefusal.SignalReceiver _ ->
+                        "The guest catches SIGPIPE, and its main thread blocks it while another thread does not; PawPrint delivers a process's signals to its main thread only (SignalDispatch)."
                     | WriteRefusal.Buffer _ -> "Pass a buffer that names guest storage."
                     | WriteRefusal.UnmeasuredSetIdChange _ ->
                         $"(WriteRefusal.UnmeasuredSetIdChange) %s{unmeasuredDarwinRow}"
@@ -6398,7 +6692,53 @@ module NativeSystemNative =
                 | WriteAnswer.Completed written ->
                     shimTransferCount operation bufferSize written, withAnswered system state
 
-            let result, effect, state =
+            // A signal the write raised is delivered as `kill`'s are, through
+            // `SignalDispatch`, which delivers only to the main thread.
+            let screenRaised
+                (raised : PendingSignal<ThreadId>)
+                (after : UnixSystem<ThreadId, NativeSignalHandler>)
+                : unit
+                =
+                match
+                    NativeLibc.screenRaisedSignal
+                        state.Kernel.UnixPlatform
+                        ctx.Thread
+                        state.Kernel.Leader
+                        state.Kernel.PosixSignalShim
+                        state.Kernel.Signals
+                        raised
+                        after.Process.Signals
+                with
+                | Some refusal ->
+                    failwith
+                        $"%s{operation}: fd %d{fd}: the write raised %O{raised.Signal}, which is not modelled: %s{UnmodelledSelfSignal.describe refusal}"
+                | None -> ()
+
+            /// What `outcome` leaves the guest with: the call's result, its
+            /// effect, and the state; or the process killed by the signal the
+            /// write raised, from which the call never returns.
+            let finish
+                (outcome : WriteOutcome<WriteAnswer, ThreadId, NativeSignalHandler>)
+                (effectOf : UnixSystem<ThreadId, NativeSignalHandler> -> StepEffect)
+                : Choice<int * StepEffect * IlMachineState, ExecutionResult>
+                =
+                match outcome with
+                | WriteOutcome.Returns (answer, system) ->
+                    let result, state = answered answer system state
+                    Choice1Of2 (result, effectOf system, state)
+                | WriteOutcome.ReturnsRaising (answer, raised, system) ->
+                    screenRaised raised system
+                    let result, state = answered answer system state
+                    Choice1Of2 (result, effectOf system, state)
+                | WriteOutcome.ProcessEnded ended ->
+                    match ended.Termination with
+                    | ProcessTermination.Signaled (signal, coreDumped) ->
+                        Choice2Of2 (ExecutionResult.SignalTerminated (state, signal, coreDumped))
+                    | ProcessTermination.Exited _ ->
+                        failwith
+                            $"%s{operation}: fd %d{fd}: a write ended the process with an exit status (%O{ended.Termination}), which only an exit can"
+
+            let outcome =
                 if bufferSize < 0 then
                     // `Common_Write`'s own guard, which refuses before any
                     // dereference of `buffer`. ERANGE, where `Common_Read`
@@ -6411,7 +6751,7 @@ module NativeSystemNative =
                     let _, state =
                         answered (WriteAnswer.Failed UnixError.ERANGE) (EmulatedKernel.unix state.Kernel) state
 
-                    -1, StepEffect.NoEffect, state
+                    Choice1Of2 (-1, StepEffect.NoEffect, state)
                 else
 
                 // Decoding the buffer pointer is deferred until the kernel says
@@ -6421,8 +6761,11 @@ module NativeSystemNative =
                 // itself is total, so it is the *extraction* below that waits.
                 let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 
+                let noEffect (_ : UnixSystem<ThreadId, NativeSignalHandler>) = StepEffect.NoEffect
+
                 match
                     UnixReadWrite.admitWrite
+                        ctx.Thread
                         fd
                         (BufferPointer.toUserBuffer buffer)
                         (uint64 bufferSize)
@@ -6430,10 +6773,15 @@ module NativeSystemNative =
                 with
                 | Error (WriteRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
                 | Error refusal -> refused refusal
-                | Ok (WriteAdmission.Answered answer, admitted) ->
-                    let result, state = answered answer admitted state
-                    result, StepEffect.NoEffect, state
-                | Ok (WriteAdmission.Transfer count, admitted) ->
+                | Ok (WriteOutcome.Returns (WriteAdmission.Answered answer, admitted)) ->
+                    finish (WriteOutcome.Returns (answer, admitted)) noEffect
+                | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Answered answer, raised, admitted)) ->
+                    finish (WriteOutcome.ReturnsRaising (answer, raised, admitted)) noEffect
+                | Ok (WriteOutcome.ProcessEnded ended) -> finish (WriteOutcome.ProcessEnded ended) noEffect
+                | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Transfer count, raised, _)) ->
+                    failwith
+                        $"%s{operation}: fd %d{fd}: the kernel raised %O{raised.Signal} and still asked for %d{count} bytes; a write that raises a signal takes none (this is a bug in the kernel library)."
+                | Ok (WriteOutcome.Returns (WriteAdmission.Transfer count, admitted)) ->
 
                 let source =
                     match BufferPointer.dereferenceable buffer with
@@ -6444,16 +6792,16 @@ module NativeSystemNative =
 
                 let bytes = readBytesThrough ctx operation source count state
 
-                match UnixReadWrite.write fd bytes admitted with
+                match UnixReadWrite.write ctx.Thread fd bytes admitted with
                 | Error refusal -> refused refusal
-                | Ok (answer, system) ->
+                | Ok outcome ->
 
                 // The host's own view of what the guest printed, which is
                 // PawPrint's business rather than the kernel's: the kernel
                 // records what reached the pipes PawPrint drains, and this is
                 // what makes it appear on a console. One write delivers at most
                 // once, and exactly the bytes it moved.
-                let effect =
+                let effectOf (system : UnixSystem<ThreadId, NativeSignalHandler>) : StepEffect =
                     let before = admitted.Machine.Delivered.Length
 
                     match system.Machine.Delivered.Length - before with
@@ -6465,14 +6813,15 @@ module NativeSystemNative =
                         failwith
                             $"%s{operation}: fd %d{fd}: one write delivered %d{delivered} times to the pipes PawPrint drains; a write delivers once or not at all (this is an interpreter bug)."
 
-                let result, state = answered answer system state
+                finish outcome effectOf
 
-                result, effect, state
-
-            state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) ctx.Thread
-            |> NativeHandlerResult.completedWith effect
-            |> Some
+            match outcome with
+            | Choice1Of2 (result, effect, state) ->
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) ctx.Thread
+                |> NativeHandlerResult.completedWith effect
+                |> Some
+            | Choice2Of2 ended -> NativeHandlerResult.ofExecutionResult ended |> Some
         | Some "SystemNative_GetNonCryptographicallySecureRandomBytes",
           [ ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
             ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],

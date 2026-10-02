@@ -9,6 +9,7 @@ open System.Reflection.PortableExecutable
 open System.Runtime.InteropServices
 open System.Text
 open System.Threading
+open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
 /// What the real runtime's stderr reveals about *which* fatal error killed the guest.
@@ -209,15 +210,24 @@ module RealRuntime =
     /// child otherwise inherits whole: a name here replaces the host's value of
     /// it, and every other host variable comes through untouched.
     ///
-    /// `standardInput` is written into the child's standard input, a pipe, and
-    /// the pipe then closed, as PawPrint's `KernelConfig.StandardInput` is.
+    /// `standardStreams` is PawPrint's `KernelConfig.StandardStreams`: its
+    /// `Input` is written into the child's standard input, a pipe, and the pipe
+    /// then closed; an output stream it calls `Gone` has its reader closed as
+    /// soon as the child has started, and anything else is read.
+    ///
+    /// That is just after the child starts rather than before, which
+    /// `Process` cannot do, so a write the child made in between would find a
+    /// reader. Guests written for a gone stream write more than a pipe holds,
+    /// so that whichever comes first, they meet EPIPE. A child whose standard
+    /// error is gone cannot show the runtime's fatal-error banners, so its end
+    /// is classified by its exit code alone.
     let private runToCompletion
         (timeout : TimeSpan)
         (exePath : string)
         (arguments : string list)
         (workingDirectory : string)
         (environment : Map<string, string>)
-        (standardInput : ImmutableArray<byte>)
+        (standardStreams : StandardStreamsConfig)
         (description : string)
         : RealRuntimeResult
         =
@@ -265,8 +275,16 @@ module RealRuntime =
         )
 
         proc.Start () |> ignore
-        proc.BeginOutputReadLine ()
-        proc.BeginErrorReadLine ()
+
+        match standardStreams.Output with
+        | OutputStreamReader.Drained -> proc.BeginOutputReadLine ()
+        | OutputStreamReader.Gone -> proc.StandardOutput.Close ()
+
+        match standardStreams.Error with
+        | OutputStreamReader.Drained -> proc.BeginErrorReadLine ()
+        | OutputStreamReader.Gone -> proc.StandardError.Close ()
+
+        let standardInput = standardStreams.Input
 
         // The bytes go in as one write and then the pipe closes, so a guest that reads past them
         // sees a prompt EOF rather than a hang. The write is on another thread because it blocks
@@ -691,7 +709,7 @@ module RealRuntime =
         (timeout : TimeSpan)
         (seed : Map<DirectoryEntryName, SeedEntry>)
         (environment : string list)
-        (standardInput : ImmutableArray<byte>)
+        (standardStreams : StandardStreamsConfig)
         (inheritedIgnores : int list)
         (args : string[])
         (assemblyBytes : byte array)
@@ -741,7 +759,14 @@ module RealRuntime =
                     [ "-c" ; $"trap '' %s{trap}; exec \"$0\" \"$@\"" ; muxerPath ; dllPath ]
                     @ List.ofArray args
 
-            runToCompletion timeout exePath arguments tempDir (oracleEnvironment environment) standardInput assemblyName
+            runToCompletion
+                timeout
+                exePath
+                arguments
+                tempDir
+                (oracleEnvironment environment)
+                standardStreams
+                assemblyName
         finally
             try
                 // A seed may deliberately have left a directory unreadable or
@@ -784,19 +809,20 @@ module RealRuntime =
     /// the order of the environment. Entries the overlay cannot express are
     /// refused; see `oracleEnvironment`.
     ///
-    /// `standardInput` is `KernelConfig.StandardInput`: the guest's standard
-    /// input is a pipe into which the oracle writes these bytes before closing
-    /// it.
+    /// `standardStreams` is `KernelConfig.StandardStreams`: the guest's
+    /// standard input is a pipe into which the oracle writes `Input` before
+    /// closing it, and each output stream is read, or has no reader, as it
+    /// says (see `runToCompletion` for the limits of the latter).
     let executeWithTimeoutAndSeed
         (timeout : TimeSpan)
         (seed : Map<DirectoryEntryName, SeedEntry>)
         (environment : string list)
-        (standardInput : ImmutableArray<byte>)
+        (standardStreams : StandardStreamsConfig)
         (args : string[])
         (assemblyBytes : byte array)
         : RealRuntimeResult
         =
-        executeInScratch timeout seed environment standardInput [] args assemblyBytes
+        executeInScratch timeout seed environment standardStreams [] args assemblyBytes
 
     /// As `executeWithTimeoutAndSeed` with an empty seed and no environment
     /// entries, the standard time limit, and the guest started with the
@@ -813,23 +839,30 @@ module RealRuntime =
         if List.isEmpty ignoredSignos then
             failwith "RealRuntime.executeWithInheritedIgnores: no signals to ignore; use executeWithRealRuntime."
 
-        executeInScratch guestTimeout FileSystemSeed.empty [] ImmutableArray.Empty ignoredSignos args assemblyBytes
+        executeInScratch
+            guestTimeout
+            FileSystemSeed.empty
+            []
+            StandardStreamsConfig.piped
+            ignoredSignos
+            args
+            assemblyBytes
 
     /// As `executeWithTimeoutAndSeed`, with an empty filesystem seed, no
-    /// environment entries, and nothing on standard input.
+    /// environment entries, and its standard streams `StandardStreamsConfig.piped`.
     let executeWithTimeout (timeout : TimeSpan) (args : string[]) (assemblyBytes : byte array) : RealRuntimeResult =
-        executeWithTimeoutAndSeed timeout FileSystemSeed.empty [] ImmutableArray.Empty args assemblyBytes
+        executeWithTimeoutAndSeed timeout FileSystemSeed.empty [] StandardStreamsConfig.piped args assemblyBytes
 
     /// As `executeWithTimeoutAndSeed`, with the standard guest time limit.
     let executeWithSeed
         (seed : Map<DirectoryEntryName, SeedEntry>)
         (environment : string list)
-        (standardInput : ImmutableArray<byte>)
+        (standardStreams : StandardStreamsConfig)
         (args : string[])
         (assemblyBytes : byte array)
         : RealRuntimeResult
         =
-        executeWithTimeoutAndSeed guestTimeout seed environment standardInput args assemblyBytes
+        executeWithTimeoutAndSeed guestTimeout seed environment standardStreams args assemblyBytes
 
     /// As `executeWithTimeout`, with the standard guest time limit.
     let executeWithRealRuntime (args : string[]) (assemblyBytes : byte array) : RealRuntimeResult =
@@ -861,7 +894,7 @@ module RealRuntime =
             (dllPath :: List.ofArray args)
             directory
             Map.empty
-            ImmutableArray.Empty
+            StandardStreamsConfig.piped
             name
 
     /// Run an already-published application in place, by executing its apphost.
@@ -882,5 +915,5 @@ module RealRuntime =
             (List.ofArray args)
             (Path.GetDirectoryName executablePath)
             Map.empty
-            ImmutableArray.Empty
+            StandardStreamsConfig.piped
             (Path.GetFileName executablePath)

@@ -478,3 +478,72 @@ module TestUnixErrorPal =
             if actual <> expected then
                 failwith
                     $"TestUnixErrorPal: under %O{numbering}, raw %d{raw} converts to 0x%X{actual}, but this host's shim answers 0x%X{expected}."
+
+    [<DllImport("libSystem.Native", EntryPoint = "SystemNative_ConvertErrorPalToPlatform")>]
+    extern int private hostConvertErrorPalToPlatform(int error)
+
+    /// Every `Interop.Error` value, the pseudo-errors and ENONSTANDARD, and the
+    /// numbers around and between them that name none.
+    let private palSweep : int list =
+        [
+            0
+            1
+            -1
+            0x1FFFF
+            0x20001
+            0x20002
+            0x20003
+            0x30000
+            Int32.MinValue
+            Int32.MaxValue
+        ]
+        @ [ 0x10000..0x10100 ]
+        @ (UnixError.all |> List.map UnixErrorPal.toPal)
+
+    /// `toRawErrnoUnder` against whatever shim this host has: the Darwin half
+    /// on a dev box, the Linux half in CI. Pure in the shim, a switch over the
+    /// constants it was compiled with; a value it has no case for is -1 in a
+    /// release build, whose assertion is compiled out.
+    [<Test>]
+    let ``toRawErrnoUnder answers what this host's shim does`` () : unit =
+        let numbering =
+            if RuntimeInformation.IsOSPlatform OSPlatform.OSX then
+                Some RawErrnoNumbering.Darwin
+            elif RuntimeInformation.IsOSPlatform OSPlatform.Linux then
+                Some RawErrnoNumbering.Linux
+            else
+                None
+
+        match numbering with
+        | None -> Assert.Ignore $"no modelled Unix to measure (%s{RuntimeInformation.OSDescription})"
+        | Some numbering ->
+
+        for pal in palSweep do
+            let expected = hostConvertErrorPalToPlatform pal
+            let actual = UnixErrorPal.toRawErrnoUnder numbering pal
+
+            if actual <> expected then
+                failwith
+                    $"TestUnixErrorPal: under %O{numbering}, PAL 0x%X{pal} converts to %d{actual}, but this host's shim answers %d{expected}."
+
+    /// The two directions agree wherever an error has a PAL value of its own:
+    /// converting one to PAL and back gives the number it started from. The
+    /// one value two errors share, ENOTSUP's and EOPNOTSUPP's, converts back
+    /// to ENOTSUP's number, which on Darwin is not EOPNOTSUPP's.
+    [<Test>]
+    let ``toRawErrnoUnder inverts ofRawErrnoUnder for every error with a PAL value of its own`` () : unit =
+        let shared = UnixErrorPal.toPal UnixError.ENOTSUP
+
+        for numbering in [ RawErrnoNumbering.Linux ; RawErrnoNumbering.Darwin ] do
+            UnixErrorPal.toRawErrnoUnder numbering shared
+            |> shouldEqual (UnixError.toRawErrnoUnder numbering UnixError.ENOTSUP)
+
+            for error in UnixError.all do
+                match UnixError.tryToRawErrnoUnder numbering error with
+                | None -> ()
+                | Some raw ->
+
+                let pal = UnixErrorPal.ofRawErrnoUnder numbering raw
+
+                if pal <> UnixErrorPal.palNonStandard && pal <> shared then
+                    UnixErrorPal.toRawErrnoUnder numbering pal |> shouldEqual raw

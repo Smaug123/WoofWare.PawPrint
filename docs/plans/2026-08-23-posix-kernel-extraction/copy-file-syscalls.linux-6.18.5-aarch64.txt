@@ -1,0 +1,430 @@
+6.18.5
+base /dev/shm/cfs, euid 0
+CFR-KINDS: copy_file_range(in, NULL, out, NULL, len, 0) for every pair of kinds; len 5 / len 0 / flags 1
+  in=file-ro  out=file-ro  | len5=EBADF | len0=EBADF | flags1=EINVAL
+  in=file-ro  out=file-wo  | len5=5 | len0=0 | flags1=EINVAL
+  in=file-ro  out=file-rw  | len5=5 | len0=0 | flags1=EINVAL
+  in=file-ro  out=dir      | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=file-ro  out=pipe-r   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=file-ro  out=pipe-w   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=file-ro  out=socket   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=file-ro  out=port     | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=file-ro  out=closed   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=file-ro  out=fd9999   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=file-wo  out=file-ro  | len5=EBADF | len0=EBADF | flags1=EINVAL
+  in=file-wo  out=file-wo  | len5=EBADF | len0=EBADF | flags1=EINVAL
+  in=file-wo  out=file-rw  | len5=EBADF | len0=EBADF | flags1=EINVAL
+  in=file-wo  out=dir      | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=file-wo  out=pipe-r   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=file-wo  out=pipe-w   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=file-wo  out=socket   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=file-wo  out=port     | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=file-wo  out=closed   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=file-wo  out=fd9999   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=file-rw  out=file-ro  | len5=EBADF | len0=EBADF | flags1=EINVAL
+  in=file-rw  out=file-wo  | len5=5 | len0=0 | flags1=EINVAL
+  in=file-rw  out=file-rw  | len5=5 | len0=0 | flags1=EINVAL
+  in=file-rw  out=dir      | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=file-rw  out=pipe-r   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=file-rw  out=pipe-w   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=file-rw  out=socket   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=file-rw  out=port     | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=file-rw  out=closed   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=file-rw  out=fd9999   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=dir      out=file-ro  | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=dir      out=file-wo  | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=dir      out=file-rw  | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=dir      out=dir      | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=dir      out=pipe-r   | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=dir      out=pipe-w   | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=dir      out=socket   | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=dir      out=port     | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=dir      out=closed   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=dir      out=fd9999   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=pipe-r   out=file-ro  | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-r   out=file-wo  | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-r   out=file-rw  | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-r   out=dir      | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=pipe-r   out=pipe-r   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-r   out=pipe-w   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-r   out=socket   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-r   out=port     | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-r   out=closed   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=pipe-r   out=fd9999   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=pipe-w   out=file-ro  | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-w   out=file-wo  | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-w   out=file-rw  | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-w   out=dir      | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=pipe-w   out=pipe-r   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-w   out=pipe-w   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-w   out=socket   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-w   out=port     | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-w   out=closed   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=pipe-w   out=fd9999   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=socket   out=file-ro  | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=socket   out=file-wo  | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=socket   out=file-rw  | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=socket   out=dir      | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=socket   out=pipe-r   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=socket   out=pipe-w   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=socket   out=socket   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=socket   out=port     | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=socket   out=closed   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=socket   out=fd9999   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=port     out=file-ro  | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=port     out=file-wo  | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=port     out=file-rw  | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=port     out=dir      | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=port     out=pipe-r   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=port     out=pipe-w   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=port     out=socket   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=port     out=port     | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=port     out=closed   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=port     out=fd9999   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=closed   out=file-ro  | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=closed   out=file-wo  | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=closed   out=file-rw  | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=closed   out=dir      | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=closed   out=pipe-r   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=closed   out=pipe-w   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=closed   out=socket   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=closed   out=port     | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=closed   out=closed   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=closed   out=fd9999   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=fd9999   out=file-ro  | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=fd9999   out=file-wo  | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=fd9999   out=file-rw  | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=fd9999   out=dir      | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=fd9999   out=pipe-r   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=fd9999   out=pipe-w   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=fd9999   out=socket   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=fd9999   out=port     | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=fd9999   out=closed   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=fd9999   out=fd9999   | len5=EBADF | len0=EBADF | flags1=EBADF
+CFR-BEHAVIOUR
+  src before: mode=0640 uid=0 size=11 a=1000000000.111111111 m=900000000.222222222 c=1790888401.030086125 b=1790888401.030086125 pos=0
+  dst before: mode=0644 uid=0 size=0 a=1200000000.111111111 m=1300000000.222222222 c=1790888401.030086125 b=1790888401.030086125 pos=0
+  cfr(11) = 11 
+  src after: mode=0640 uid=0 size=11 a=1790888402.036000000 m=900000000.222222222 c=1790888401.030086125 b=1790888401.030086125 pos=11
+  dst after: mode=0644 uid=0 size=11 a=1200000000.111111111 m=1790888402.036000000 c=1790888402.036000000 b=1790888401.030086125 pos=11
+  cfr at EOF (11) = 0 
+  dst after EOF call: mode=0644 uid=0 size=11 a=1200000000.111111111 m=1790888402.036000000 c=1790888402.036000000 b=1790888401.030086125 pos=11
+  cfr(100) from 4 into offset 6 of a 3-byte file = 6 
+  src: mode=0640 uid=0 size=10 a=1790888402.037355042 m=1790888402.036000000 c=1790888402.036000000 b=1790888402.036000000 pos=10
+  dst: mode=0644 uid=0 size=12 a=1790888402.037355042 m=1790888402.037355042 c=1790888402.037355042 b=1790888402.037355042 pos=12
+  dst bytes (12): 61 62 63 00 00 00 34 35 36 37 38 39
+  cfr(len=9223372036854775807) = 5 
+  cfr(len=18446744073709551615) = 5 
+  cfr(len=2147479553) = 5 
+  cfr of a 3 MiB file in one call = 3145728 
+  cfr of a sparse 2 GiB + 4096 file in one call = 63954944 
+  cfr(5) into offset INT64_MAX-2 = 2 
+  cfr(5) from offset INT64_MAX-2 = 0 
+  same description, offset 0 to 0, len 5 = -1 EINVAL
+  two descriptions, 0 to 3, len 5 (overlap) = -1 EINVAL
+  two descriptions, 0 to 5, len 5 (adjacent) = 5 
+  two descriptions, 0 to 5, len 6 (overlap by one) = -1 EINVAL
+  two descriptions, 8 to 0, len 5 (2 remain, no overlap) = 2 
+  two descriptions, 2 to 0, len 5 (overlap) = -1 EINVAL
+  two descriptions, 0 to 12, len 20 of a 10-byte file = 10 
+  hard link, 0 to 0, len 5 = -1 EINVAL
+  flags: 0=EINVAL 1=EINVAL 2=EINVAL 3=EINVAL 4=EINVAL 5=EINVAL 6=EINVAL 7=EINVAL 8=EINVAL 9=EINVAL 10=EINVAL 11=EINVAL 12=EINVAL 13=EINVAL 14=EINVAL 15=EINVAL 16=EINVAL 17=EINVAL 18=EINVAL 19=EINVAL 20=EINVAL 21=EINVAL 22=EINVAL 23=EINVAL 24=EINVAL 25=EINVAL 26=EINVAL 27=EINVAL 28=EINVAL 29=EINVAL 30=EINVAL 31=EINVAL
+  closed in, len 0, flags 1 = -1 EBADF
+  same description, len 0 = 0 
+CFR-SETID: a non-root copy into a set-ID destination (each mode, then root)
+  uid1000: dst 6755 -> cfr=5 -> 0755
+  uid1000: dst 6745 -> cfr=5 -> 2745
+  uid1000: dst 4644 -> cfr=5 -> 0644
+  uid1000: dst 2755 -> cfr=5 -> 0755
+  uid1000: dst 2644 -> cfr=5 -> 2644
+  uid1000: dst 1644 -> cfr=5 -> 1644
+  root: dst 6755 -> cfr=5 -> 6755
+  root: dst 6745 -> cfr=5 -> 6745
+  root: dst 4644 -> cfr=5 -> 4644
+  root: dst 2755 -> cfr=5 -> 2755
+  root: dst 2644 -> cfr=5 -> 2644
+  root: dst 1644 -> cfr=5 -> 1644
+FICLONE: ioctl(out, FICLONE, in) for every pair of kinds
+  in=file-ro : file-ro=EBADF file-wo=EOPNOTSUPP file-rw=EOPNOTSUPP dir=EISDIR pipe-r=EXDEV pipe-w=EXDEV socket=EXDEV port=EXDEV closed=EBADF fd9999=EBADF
+  in=file-wo : file-ro=EBADF file-wo=EBADF file-rw=EBADF dir=EISDIR pipe-r=EXDEV pipe-w=EXDEV socket=EXDEV port=EXDEV closed=EBADF fd9999=EBADF
+  in=file-rw : file-ro=EBADF file-wo=EOPNOTSUPP file-rw=EOPNOTSUPP dir=EISDIR pipe-r=EXDEV pipe-w=EXDEV socket=EXDEV port=EXDEV closed=EBADF fd9999=EBADF
+  in=dir     : file-ro=EISDIR file-wo=EISDIR file-rw=EISDIR dir=EISDIR pipe-r=EXDEV pipe-w=EXDEV socket=EXDEV port=EXDEV closed=EBADF fd9999=EBADF
+  in=pipe-r  : file-ro=EXDEV file-wo=EXDEV file-rw=EXDEV dir=EXDEV pipe-r=EINVAL pipe-w=EINVAL socket=EXDEV port=EXDEV closed=EBADF fd9999=EBADF
+  in=pipe-w  : file-ro=EXDEV file-wo=EXDEV file-rw=EXDEV dir=EXDEV pipe-r=EINVAL pipe-w=EINVAL socket=EXDEV port=EXDEV closed=EBADF fd9999=EBADF
+  in=socket  : file-ro=EXDEV file-wo=EXDEV file-rw=EXDEV dir=EXDEV pipe-r=EXDEV pipe-w=EXDEV socket=EINVAL port=EXDEV closed=EBADF fd9999=EBADF
+  in=port    : file-ro=EXDEV file-wo=EXDEV file-rw=EXDEV dir=EXDEV pipe-r=EXDEV pipe-w=EXDEV socket=EXDEV port=EINVAL closed=EBADF fd9999=EBADF
+  in=closed  : file-ro=EBADF file-wo=EBADF file-rw=EBADF dir=EBADF pipe-r=EBADF pipe-w=EBADF socket=EBADF port=EBADF closed=EBADF fd9999=EBADF
+  in=fd9999  : file-ro=EBADF file-wo=EBADF file-rw=EBADF dir=EBADF pipe-r=EBADF pipe-w=EBADF socket=EBADF port=EBADF closed=EBADF fd9999=EBADF
+  empty file-ro into file-wo: EOPNOTSUPP
+  same description: EOPNOTSUPP
+FUTIMENS-KINDS: futimens(fd, explicit times) on each kind, as the owner where there is one
+  file-ro : ok
+  after: mode=0644 uid=0 size=5 a=1000000000.111111111 m=900000000.222222222 c=1790888402.058325709 b=1790888402.058325709 pos=0
+  file-wo : ok
+  after: mode=0644 uid=0 size=5 a=1000000000.111111111 m=900000000.222222222 c=1790888402.059399709 b=1790888402.059399709 pos=0
+  file-rw : ok
+  after: mode=0644 uid=0 size=5 a=1000000000.111111111 m=900000000.222222222 c=1790888402.059405625 b=1790888402.059405625 pos=0
+  dir     : ok
+  after: mode=0777 uid=0 size=200 a=1000000000.111111111 m=900000000.222222222 c=1790888402.059410917 b=1790888401.028450750 pos=0
+  pipe-r  : ok
+  after: mode=0600 uid=0 size=0 a=1000000000.111111111 m=900000000.222222222 c=1790888402.059410917 b=0.000000000 pos=-1
+  pipe-w  : ok
+  after: mode=0600 uid=0 size=0 a=1000000000.111111111 m=900000000.222222222 c=1790888402.059410917 b=0.000000000 pos=-1
+  socket  : ok
+  after: mode=0777 uid=0 size=0 a=1000000000.111111111 m=900000000.222222222 c=1790888402.059410917 b=0.000000000 pos=-1
+  port    : EOPNOTSUPP
+  closed  : EBADF
+  fd9999  : EBADF
+FUTIMENS-VALUES
+  atime nsec 0: ok
+  after: mode=0644 uid=0 size=5 a=1000000000.000000000 m=900000000.000000005 c=1790888402.059410917 b=1790888402.059410917 pos=0
+  atime nsec 999999999: ok
+  after: mode=0644 uid=0 size=5 a=1000000000.999999999 m=900000000.000000005 c=1790888402.059462125 b=1790888402.059462125 pos=0
+  atime nsec 1000000000: EINVAL
+  atime nsec -1: EINVAL
+  atime nsec 1073741823: ok
+  after: mode=0644 uid=0 size=5 a=1790888402.059467250 m=900000000.000000005 c=1790888402.059467250 b=1790888402.059467250 pos=0
+  atime nsec 1073741822: ok
+  after: mode=0644 uid=0 size=5 a=1790888402.059483667 m=900000000.000000005 c=1790888402.059483667 b=1790888402.059483667 pos=0
+  atime nsec -2: EINVAL
+  closed fd with nsec 1e9: EBADF
+  seconds -1: ok
+  after: mode=0644 uid=0 size=5 a=-1.000000007 m=-1.000000008 c=1790888402.059488709 b=1790888402.059488709 pos=0
+  seconds -1000000000: ok
+  after: mode=0644 uid=0 size=5 a=-1000000000.000000007 m=-1000000000.000000008 c=1790888402.059506417 b=1790888402.059506417 pos=0
+  seconds 0: ok
+  after: mode=0644 uid=0 size=5 a=0.000000007 m=0.000000008 c=1790888402.059512042 b=1790888402.059512042 pos=0
+  seconds 2147483647: ok
+  after: mode=0644 uid=0 size=5 a=2147483647.000000007 m=2147483647.000000008 c=1790888402.059517042 b=1790888402.059517042 pos=0
+  seconds 2147483648: ok
+  after: mode=0644 uid=0 size=5 a=2147483648.000000007 m=2147483648.000000008 c=1790888402.059524959 b=1790888402.059524959 pos=0
+  seconds 253402300799: ok
+  after: mode=0644 uid=0 size=5 a=253402300799.000000007 m=253402300799.000000008 c=1790888402.059530042 b=1790888402.059530042 pos=0
+FUTIMENS-BIRTH: mtime set before and after the birth time
+  fresh: mode=0644 uid=0 size=5 a=1790888402.059535250 m=1790888402.059535250 c=1790888402.059535250 b=1790888402.059535250 pos=0
+  after setting both later than birth: mode=0644 uid=0 size=5 a=4000000000.000000001 m=4000000000.000000002 c=1790888402.059539625 b=1790888402.059535250 pos=0
+  after setting atime earlier than birth: mode=0644 uid=0 size=5 a=900000000.000000003 m=4000000000.000000004 c=1790888402.059540959 b=1790888402.059535250 pos=0
+  after setting mtime earlier than birth: mode=0644 uid=0 size=5 a=4000000000.000000005 m=900000000.000000006 c=1790888402.059542417 b=1790888402.059535250 pos=0
+  after setting mtime later again: mode=0644 uid=0 size=5 a=4000000000.000000007 m=4100000000.000000008 c=1790888402.059543834 b=1790888402.059535250 pos=0
+FUTIMENS-STANDING
+  uid1000, root's 0666 file opened O_RDWR: EPERM
+  after: mode=0666 uid=0 size=5 a=1790888402.059546084 m=1790888402.059546084 c=1790888402.059546084 b=1790888402.059546084 pos=0
+  uid1000, own 0444 file opened O_RDONLY: ok
+  after: mode=0444 uid=1000 size=5 a=1000000000.000000001 m=900000000.000000002 c=1790888402.059721292 b=1790888402.059721292 pos=0
+  root, uid1000's 0600 file: ok
+  after: mode=0600 uid=1000 size=5 a=1000000000.000000001 m=900000000.000000002 c=1790888402.059846500 b=1790888402.059846500 pos=0
+===EXT4
+base /tmp/cfs, euid 0
+CFR-KINDS: copy_file_range(in, NULL, out, NULL, len, 0) for every pair of kinds; len 5 / len 0 / flags 1
+  in=file-ro  out=file-ro  | len5=EBADF | len0=EBADF | flags1=EINVAL
+  in=file-ro  out=file-wo  | len5=5 | len0=0 | flags1=EINVAL
+  in=file-ro  out=file-rw  | len5=5 | len0=0 | flags1=EINVAL
+  in=file-ro  out=dir      | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=file-ro  out=pipe-r   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=file-ro  out=pipe-w   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=file-ro  out=socket   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=file-ro  out=port     | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=file-ro  out=closed   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=file-ro  out=fd9999   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=file-wo  out=file-ro  | len5=EBADF | len0=EBADF | flags1=EINVAL
+  in=file-wo  out=file-wo  | len5=EBADF | len0=EBADF | flags1=EINVAL
+  in=file-wo  out=file-rw  | len5=EBADF | len0=EBADF | flags1=EINVAL
+  in=file-wo  out=dir      | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=file-wo  out=pipe-r   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=file-wo  out=pipe-w   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=file-wo  out=socket   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=file-wo  out=port     | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=file-wo  out=closed   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=file-wo  out=fd9999   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=file-rw  out=file-ro  | len5=EBADF | len0=EBADF | flags1=EINVAL
+  in=file-rw  out=file-wo  | len5=5 | len0=0 | flags1=EINVAL
+  in=file-rw  out=file-rw  | len5=5 | len0=0 | flags1=EINVAL
+  in=file-rw  out=dir      | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=file-rw  out=pipe-r   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=file-rw  out=pipe-w   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=file-rw  out=socket   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=file-rw  out=port     | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=file-rw  out=closed   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=file-rw  out=fd9999   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=dir      out=file-ro  | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=dir      out=file-wo  | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=dir      out=file-rw  | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=dir      out=dir      | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=dir      out=pipe-r   | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=dir      out=pipe-w   | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=dir      out=socket   | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=dir      out=port     | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=dir      out=closed   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=dir      out=fd9999   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=pipe-r   out=file-ro  | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-r   out=file-wo  | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-r   out=file-rw  | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-r   out=dir      | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=pipe-r   out=pipe-r   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-r   out=pipe-w   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-r   out=socket   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-r   out=port     | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-r   out=closed   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=pipe-r   out=fd9999   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=pipe-w   out=file-ro  | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-w   out=file-wo  | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-w   out=file-rw  | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-w   out=dir      | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=pipe-w   out=pipe-r   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-w   out=pipe-w   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-w   out=socket   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-w   out=port     | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=pipe-w   out=closed   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=pipe-w   out=fd9999   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=socket   out=file-ro  | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=socket   out=file-wo  | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=socket   out=file-rw  | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=socket   out=dir      | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=socket   out=pipe-r   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=socket   out=pipe-w   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=socket   out=socket   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=socket   out=port     | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=socket   out=closed   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=socket   out=fd9999   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=port     out=file-ro  | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=port     out=file-wo  | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=port     out=file-rw  | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=port     out=dir      | len5=EISDIR | len0=EISDIR | flags1=EINVAL
+  in=port     out=pipe-r   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=port     out=pipe-w   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=port     out=socket   | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=port     out=port     | len5=EINVAL | len0=EINVAL | flags1=EINVAL
+  in=port     out=closed   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=port     out=fd9999   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=closed   out=file-ro  | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=closed   out=file-wo  | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=closed   out=file-rw  | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=closed   out=dir      | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=closed   out=pipe-r   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=closed   out=pipe-w   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=closed   out=socket   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=closed   out=port     | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=closed   out=closed   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=closed   out=fd9999   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=fd9999   out=file-ro  | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=fd9999   out=file-wo  | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=fd9999   out=file-rw  | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=fd9999   out=dir      | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=fd9999   out=pipe-r   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=fd9999   out=pipe-w   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=fd9999   out=socket   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=fd9999   out=port     | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=fd9999   out=closed   | len5=EBADF | len0=EBADF | flags1=EBADF
+  in=fd9999   out=fd9999   | len5=EBADF | len0=EBADF | flags1=EBADF
+CFR-BEHAVIOUR
+  src before: mode=0640 uid=0 size=11 a=1000000000.111111111 m=900000000.222222222 c=1790888402.068000000 b=1790888402.068000000 pos=0
+  dst before: mode=0644 uid=0 size=0 a=1200000000.111111111 m=1300000000.222222222 c=1790888402.068000000 b=1790888402.068000000 pos=0
+  cfr(11) = 11 
+  src after: mode=0640 uid=0 size=11 a=1790888403.072000001 m=900000000.222222222 c=1790888402.068000000 b=1790888402.068000000 pos=11
+  dst after: mode=0644 uid=0 size=11 a=1200000000.111111111 m=1790888403.072000001 c=1790888403.072000001 b=1790888402.068000000 pos=11
+  cfr at EOF (11) = 0 
+  dst after EOF call: mode=0644 uid=0 size=11 a=1200000000.111111111 m=1790888403.072000001 c=1790888403.072000001 b=1790888402.068000000 pos=11
+  cfr(100) from 4 into offset 6 of a 3-byte file = 6 
+  src: mode=0640 uid=0 size=10 a=1790888403.074168001 m=1790888403.072000001 c=1790888403.072000001 b=1790888403.072000001 pos=10
+  dst: mode=0644 uid=0 size=12 a=1790888403.074168001 m=1790888403.074168001 c=1790888403.074168001 b=1790888403.074168001 pos=12
+  dst bytes (12): 61 62 63 00 00 00 34 35 36 37 38 39
+  cfr(len=9223372036854775807) = 5 
+  cfr(len=18446744073709551615) = 5 
+  cfr(len=2147479553) = 5 
+  cfr of a 3 MiB file in one call = 3145728 
+  cfr of a sparse 2 GiB + 4096 file in one call = 2147479552 
+  cfr(5) into offset INT64_MAX-2 = 5 
+  cfr(5) from offset INT64_MAX-2 = 0 
+  same description, offset 0 to 0, len 5 = -1 EINVAL
+  two descriptions, 0 to 3, len 5 (overlap) = -1 EINVAL
+  two descriptions, 0 to 5, len 5 (adjacent) = 5 
+  two descriptions, 0 to 5, len 6 (overlap by one) = -1 EINVAL
+  two descriptions, 8 to 0, len 5 (2 remain, no overlap) = 2 
+  two descriptions, 2 to 0, len 5 (overlap) = -1 EINVAL
+  two descriptions, 0 to 12, len 20 of a 10-byte file = 10 
+  hard link, 0 to 0, len 5 = -1 EINVAL
+  flags: 0=EINVAL 1=EINVAL 2=EINVAL 3=EINVAL 4=EINVAL 5=EINVAL 6=EINVAL 7=EINVAL 8=EINVAL 9=EINVAL 10=EINVAL 11=EINVAL 12=EINVAL 13=EINVAL 14=EINVAL 15=EINVAL 16=EINVAL 17=EINVAL 18=EINVAL 19=EINVAL 20=EINVAL 21=EINVAL 22=EINVAL 23=EINVAL 24=EINVAL 25=EINVAL 26=EINVAL 27=EINVAL 28=EINVAL 29=EINVAL 30=EINVAL 31=EINVAL
+  closed in, len 0, flags 1 = -1 EBADF
+  same description, len 0 = 0 
+CFR-SETID: a non-root copy into a set-ID destination (each mode, then root)
+  uid1000: dst 6755 -> cfr=5 -> 0755
+  uid1000: dst 6745 -> cfr=5 -> 2745
+  uid1000: dst 4644 -> cfr=5 -> 0644
+  uid1000: dst 2755 -> cfr=5 -> 0755
+  uid1000: dst 2644 -> cfr=5 -> 2644
+  uid1000: dst 1644 -> cfr=5 -> 1644
+  root: dst 6755 -> cfr=5 -> 6755
+  root: dst 6745 -> cfr=5 -> 6745
+  root: dst 4644 -> cfr=5 -> 4644
+  root: dst 2755 -> cfr=5 -> 2755
+  root: dst 2644 -> cfr=5 -> 2644
+  root: dst 1644 -> cfr=5 -> 1644
+FICLONE: ioctl(out, FICLONE, in) for every pair of kinds
+  in=file-ro : file-ro=EBADF file-wo=EOPNOTSUPP file-rw=EOPNOTSUPP dir=EISDIR pipe-r=EXDEV pipe-w=EXDEV socket=EXDEV port=EXDEV closed=EBADF fd9999=EBADF
+  in=file-wo : file-ro=EBADF file-wo=EBADF file-rw=EBADF dir=EISDIR pipe-r=EXDEV pipe-w=EXDEV socket=EXDEV port=EXDEV closed=EBADF fd9999=EBADF
+  in=file-rw : file-ro=EBADF file-wo=EOPNOTSUPP file-rw=EOPNOTSUPP dir=EISDIR pipe-r=EXDEV pipe-w=EXDEV socket=EXDEV port=EXDEV closed=EBADF fd9999=EBADF
+  in=dir     : file-ro=EISDIR file-wo=EISDIR file-rw=EISDIR dir=EISDIR pipe-r=EXDEV pipe-w=EXDEV socket=EXDEV port=EXDEV closed=EBADF fd9999=EBADF
+  in=pipe-r  : file-ro=EXDEV file-wo=EXDEV file-rw=EXDEV dir=EXDEV pipe-r=EINVAL pipe-w=EINVAL socket=EXDEV port=EXDEV closed=EBADF fd9999=EBADF
+  in=pipe-w  : file-ro=EXDEV file-wo=EXDEV file-rw=EXDEV dir=EXDEV pipe-r=EINVAL pipe-w=EINVAL socket=EXDEV port=EXDEV closed=EBADF fd9999=EBADF
+  in=socket  : file-ro=EXDEV file-wo=EXDEV file-rw=EXDEV dir=EXDEV pipe-r=EXDEV pipe-w=EXDEV socket=EINVAL port=EXDEV closed=EBADF fd9999=EBADF
+  in=port    : file-ro=EXDEV file-wo=EXDEV file-rw=EXDEV dir=EXDEV pipe-r=EXDEV pipe-w=EXDEV socket=EXDEV port=EINVAL closed=EBADF fd9999=EBADF
+  in=closed  : file-ro=EBADF file-wo=EBADF file-rw=EBADF dir=EBADF pipe-r=EBADF pipe-w=EBADF socket=EBADF port=EBADF closed=EBADF fd9999=EBADF
+  in=fd9999  : file-ro=EBADF file-wo=EBADF file-rw=EBADF dir=EBADF pipe-r=EBADF pipe-w=EBADF socket=EBADF port=EBADF closed=EBADF fd9999=EBADF
+  empty file-ro into file-wo: EOPNOTSUPP
+  same description: EOPNOTSUPP
+FUTIMENS-KINDS: futimens(fd, explicit times) on each kind, as the owner where there is one
+  file-ro : ok
+  after: mode=0644 uid=0 size=5 a=1000000000.111111111 m=900000000.222222222 c=1790888403.957389043 b=1790888403.957389043 pos=0
+  file-wo : ok
+  after: mode=0644 uid=0 size=5 a=1000000000.111111111 m=900000000.222222222 c=1790888403.958306751 b=1790888403.958306751 pos=0
+  file-rw : ok
+  after: mode=0644 uid=0 size=5 a=1000000000.111111111 m=900000000.222222222 c=1790888403.958318209 b=1790888403.958318209 pos=0
+  dir     : ok
+  after: mode=0777 uid=0 size=4096 a=1000000000.111111111 m=900000000.222222222 c=1790888403.958323709 b=1790888402.060000000 pos=0
+  pipe-r  : ok
+  after: mode=0600 uid=0 size=0 a=1000000000.111111111 m=900000000.222222222 c=1790888403.958330001 b=0.000000000 pos=-1
+  pipe-w  : ok
+  after: mode=0600 uid=0 size=0 a=1000000000.111111111 m=900000000.222222222 c=1790888403.958330001 b=0.000000000 pos=-1
+  socket  : ok
+  after: mode=0777 uid=0 size=0 a=1000000000.111111111 m=900000000.222222222 c=1790888403.958330001 b=0.000000000 pos=-1
+  port    : EOPNOTSUPP
+  closed  : EBADF
+  fd9999  : EBADF
+FUTIMENS-VALUES
+  atime nsec 0: ok
+  after: mode=0644 uid=0 size=5 a=1000000000.000000000 m=900000000.000000005 c=1790888403.958330001 b=1790888403.958330001 pos=0
+  atime nsec 999999999: ok
+  after: mode=0644 uid=0 size=5 a=1000000000.999999999 m=900000000.000000005 c=1790888403.958379709 b=1790888403.958379709 pos=0
+  atime nsec 1000000000: EINVAL
+  atime nsec -1: EINVAL
+  atime nsec 1073741823: ok
+  after: mode=0644 uid=0 size=5 a=1790888403.958386043 m=900000000.000000005 c=1790888403.958386043 b=1790888403.958386043 pos=0
+  atime nsec 1073741822: ok
+  after: mode=0644 uid=0 size=5 a=1790888403.958440709 m=900000000.000000005 c=1790888403.958440709 b=1790888403.958440709 pos=0
+  atime nsec -2: EINVAL
+  closed fd with nsec 1e9: EBADF
+  seconds -1: ok
+  after: mode=0644 uid=0 size=5 a=-1.000000007 m=-1.000000008 c=1790888403.958450334 b=1790888403.958450334 pos=0
+  seconds -1000000000: ok
+  after: mode=0644 uid=0 size=5 a=-1000000000.000000007 m=-1000000000.000000008 c=1790888403.958467001 b=1790888403.958467001 pos=0
+  seconds 0: ok
+  after: mode=0644 uid=0 size=5 a=0.000000007 m=0.000000008 c=1790888403.958472668 b=1790888403.958472668 pos=0
+  seconds 2147483647: ok
+  after: mode=0644 uid=0 size=5 a=2147483647.000000007 m=2147483647.000000008 c=1790888403.958483459 b=1790888403.958483459 pos=0
+  seconds 2147483648: ok
+  after: mode=0644 uid=0 size=5 a=2147483648.000000007 m=2147483648.000000008 c=1790888403.958489376 b=1790888403.958489376 pos=0
+  seconds 253402300799: ok
+  after: mode=0644 uid=0 size=5 a=15032385535.000000000 m=15032385535.000000000 c=1790888403.958498293 b=1790888403.958498293 pos=0
+FUTIMENS-BIRTH: mtime set before and after the birth time
+  fresh: mode=0644 uid=0 size=5 a=1790888403.958504834 m=1790888403.958504834 c=1790888403.958504834 b=1790888403.958504834 pos=0
+  after setting both later than birth: mode=0644 uid=0 size=5 a=4000000000.000000001 m=4000000000.000000002 c=1790888403.958509376 b=1790888403.958504834 pos=0
+  after setting atime earlier than birth: mode=0644 uid=0 size=5 a=900000000.000000003 m=4000000000.000000004 c=1790888403.958510709 b=1790888403.958504834 pos=0
+  after setting mtime earlier than birth: mode=0644 uid=0 size=5 a=4000000000.000000005 m=900000000.000000006 c=1790888403.958512084 b=1790888403.958504834 pos=0
+  after setting mtime later again: mode=0644 uid=0 size=5 a=4000000000.000000007 m=4100000000.000000008 c=1790888403.958516293 b=1790888403.958504834 pos=0
+FUTIMENS-STANDING
+  uid1000, root's 0666 file opened O_RDWR: EPERM
+  after: mode=0666 uid=0 size=5 a=1790888403.958518876 m=1790888403.958518876 c=1790888403.958518876 b=1790888403.958518876 pos=0
+  uid1000, own 0444 file opened O_RDONLY: ok
+  after: mode=0444 uid=1000 size=5 a=1000000000.000000001 m=900000000.000000002 c=1790888403.958637584 b=1790888403.958637584 pos=0
+  root, uid1000's 0600 file: ok
+  after: mode=0600 uid=1000 size=5 a=1000000000.000000001 m=900000000.000000002 c=1790888403.958754876 b=1790888403.958754876 pos=0

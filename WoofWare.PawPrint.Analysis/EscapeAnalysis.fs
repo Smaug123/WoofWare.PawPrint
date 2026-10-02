@@ -114,7 +114,10 @@ type EscapeAnalysisState =
             /// query answers, and whether a hardware instruction is emitted or throws.
             Target : JitTarget
             Profile : HardwareIntrinsicsProfile
-            Context : TypeConcretization.ConcretizationContext<DumpedAssembly>
+            /// The assemblies loaded so far, the concrete types instantiated so far, and what the type
+            /// system has memoised about them.
+            TypeSystem : TypeSystemState
+            BaseTypes : BaseClassTypes<DumpedAssembly>
             Facts : Map<MethodKey, LocalFacts>
             Summaries : Map<MethodKey, Escapes>
             /// Each type definition's base type, as far as it has been asked; `None` at the root.
@@ -179,20 +182,25 @@ module EscapeAnalysis =
             RuntimeDirs = List.ofSeq runtimeDirs
             Target = target
             Profile = profile
-            Context = context
+            TypeSystem =
+                { TypeSystemState.Empty with
+                    _LoadedAssemblies = context.LoadedAssemblies
+                    ConcreteTypes = context.ConcreteTypes
+                }
+            BaseTypes = context.BaseTypes
             Facts = Map.empty
             Summaries = Map.empty
             Bases = Map.empty
         }
 
     let private assemblyOf (state : EscapeAnalysisState) (fullName : string) : DumpedAssembly =
-        state.Context.LoadedAssemblies.ByDefinitionName fullName
+        state.TypeSystem._LoadedAssemblies.ByDefinitionName fullName
 
     let private withAssemblies (state : EscapeAnalysisState) (assemblies : LoadedAssemblies) : EscapeAnalysisState =
         { state with
-            Context =
-                { state.Context with
-                    LoadedAssemblies = assemblies
+            TypeSystem =
+                { state.TypeSystem with
+                    _LoadedAssemblies = assemblies
                 }
         }
 
@@ -202,13 +210,13 @@ module EscapeAnalysis =
         let dot = qualified.LastIndexOf '.'
         let ns, name = qualified.Substring (0, dot), qualified.Substring (dot + 1)
 
-        match state.Context.BaseTypes.Corelib.TryGetTopLevelTypeDef ns name with
+        match state.BaseTypes.Corelib.TryGetTopLevelTypeDef ns name with
         | Some ty -> ty.Identity
         | None -> failwith $"CoreLib declares no %s{qualified}, which OpcodeFaults names"
 
     /// The CoreLib type of this namespace and name.
     let private corelibType (state : EscapeAnalysisState) (ns : string) (name : string) : ResolvedTypeIdentity =
-        match state.Context.BaseTypes.Corelib.TryGetTopLevelTypeDef ns name with
+        match state.BaseTypes.Corelib.TryGetTopLevelTypeDef ns name with
         | Some ty -> ty.Identity
         | None -> failwith $"CoreLib declares no %s{ns}.%s{name}"
 
@@ -228,7 +236,7 @@ module EscapeAnalysis =
                 state.RuntimeDirs
                 assembly
                 typeRef
-                state.Context.LoadedAssemblies
+                state.TypeSystem._LoadedAssemblies
         with
         | assemblies, Ok identity -> withAssemblies state assemblies, Some identity
         | assemblies, Error _ -> withAssemblies state assemblies, None
@@ -251,7 +259,7 @@ module EscapeAnalysis =
         | TypeDefn.FromDefinition (identity, _) -> state, Some identity
         | TypeDefn.FromReference (typeRef, _) -> resolveTypeRef state assembly typeRef
         | TypeDefn.PrimitiveType primitive ->
-            state, Some (BaseClassTypes.ofPrimitive state.Context.BaseTypes primitive).Identity
+            state, Some (BaseClassTypes.ofPrimitive state.BaseTypes primitive).Identity
         | _ -> state, None
 
     let private definitionOf
@@ -341,8 +349,8 @@ module EscapeAnalysis =
         (thrown : ThrownType option)
         : EscapeAnalysisState * bool
         =
-        let objectType = state.Context.BaseTypes.Object.Identity
-        let exceptionType = state.Context.BaseTypes.Exception.Identity
+        let objectType = state.BaseTypes.Object.Identity
+        let exceptionType = state.BaseTypes.Exception.Identity
         let wraps = lazy (RuntimeCompatibility.wrapsNonExceptionThrows assembly)
 
         if caught = objectType then
@@ -443,7 +451,7 @@ module EscapeAnalysis =
             | state, true -> state, asThrown
             | state, false ->
 
-            let exceptionType = state.Context.BaseTypes.Exception.Identity
+            let exceptionType = state.BaseTypes.Exception.Identity
             let wrapper = wrapperType state
             let wraps = RuntimeCompatibility.wrapsNonExceptionThrows assembly
 
@@ -507,12 +515,23 @@ module EscapeAnalysis =
         | MetadataToken.MethodDef handle -> state, CallTarget.Method (MethodKey.make assembly handle)
         | MetadataToken.MethodSpecification handle -> callTarget state assembly assembly.MethodSpecs.[handle].Method
         | MetadataToken.MemberReference handle ->
+            let ctx : TypeConcretization.ConcretizationContext<DumpedAssembly> =
+                {
+                    ConcreteTypes = state.TypeSystem.ConcreteTypes
+                    LoadedAssemblies = state.TypeSystem._LoadedAssemblies
+                    BaseTypes = state.BaseTypes
+                }
+
             let ctx, target =
-                MethodReferenceResolution.resolve state.LoggerFactory state.RuntimeDirs state.Context assembly handle
+                MethodReferenceResolution.resolve state.LoggerFactory state.RuntimeDirs ctx assembly handle
 
             let state =
                 { state with
-                    Context = ctx
+                    TypeSystem =
+                        { state.TypeSystem with
+                            _LoadedAssemblies = ctx.LoadedAssemblies
+                            ConcreteTypes = ctx.ConcreteTypes
+                        }
                 }
 
             match target with
@@ -855,8 +874,8 @@ module EscapeAnalysis =
                         FieldReferenceResolution.resolve
                             state.LoggerFactory
                             state.RuntimeDirs
-                            state.Context.BaseTypes
-                            state.Context.LoadedAssemblies
+                            state.BaseTypes
+                            state.TypeSystem._LoadedAssemblies
                             assembly
                             handle
 
@@ -1220,7 +1239,7 @@ module EscapeAnalysis =
                         | SelfCallExpansion.ThrowPlatformNotSupported ->
                             // The JIT calls CoreLib's helper in place of the method, and what the
                             // helper raises is its own IL's to say.
-                            let corelib = state.Context.BaseTypes.Corelib
+                            let corelib = state.BaseTypes.Corelib
 
                             let helper =
                                 MethodKey.make corelib (IntrinsicBody.platformNotSupportedHelper corelib)
@@ -1237,7 +1256,7 @@ module EscapeAnalysis =
                                 // The JIT throws for an out-of-range immediate by calling CoreLib's
                                 // helper, and what that raises is its own IL's to say.
                                 if faults.Contains InstructionFault.ImmediateOutOfRange then
-                                    let corelib = state.Context.BaseTypes.Corelib
+                                    let corelib = state.BaseTypes.Corelib
 
                                     let helper = MethodKey.make corelib (IntrinsicBody.argumentOutOfRangeHelper corelib)
 

@@ -1,0 +1,143 @@
+6.18.5
+uid=0(root) gid=0(root) groups=0(root)
+uid-ish: root umask-default
+src s640: mode=-rw-r-----/640 uid=0 gid=0 ino=3 a=1015218367.765432100 m=981173106.123456700 c=1790887510.746754041 b=1790887510.740000000 size=5
+copy s640->d640: ok
+dst d640: mode=-rw-r-----/640 uid=0 gid=0 ino=4 a=1790887510.756000000 m=981173106.123456700 c=1790887510.756000000 b=1790887510.756000000 size=5
+src after s640: mode=-rw-r-----/640 uid=0 gid=0 ino=3 a=1790887510.756000000 m=981173106.123456700 c=1790887510.746754041 b=1790887510.740000000 size=5
+src s777: mode=-rwxrwxrwx/777 uid=0 gid=0 ino=5 a=1015218367.765432100 m=981173106.123456700 c=1790887510.784490333 b=1790887510.780000000 size=5
+copy s777->d777: ok
+dst d777: mode=-rwxrwxrwx/777 uid=0 gid=0 ino=6 a=1790887510.784856958 m=981173106.123456700 c=1790887510.784490333 b=1790887510.784490333 size=5
+src after s777: mode=-rwxrwxrwx/777 uid=0 gid=0 ino=5 a=1790887510.784856958 m=981173106.123456700 c=1790887510.784490333 b=1790887510.780000000 size=5
+src s4755: mode=-rwsr-xr-x/4755 uid=0 gid=0 ino=7 a=1015218367.765432100 m=981173106.123456700 c=1790887510.785482875 b=1790887510.784490333 size=5
+copy s4755->d4755: ok
+dst d4755: mode=-rwxr-xr-x/755 uid=0 gid=0 ino=8 a=1790887510.785761875 m=981173106.123456700 c=1790887510.785482875 b=1790887510.785482875 size=5
+src after s4755: mode=-rwsr-xr-x/4755 uid=0 gid=0 ino=7 a=1790887510.785761875 m=981173106.123456700 c=1790887510.785482875 b=1790887510.784490333 size=5
+src s2755: mode=-rwxr-sr-x/2755 uid=0 gid=0 ino=9 a=1015218367.765432100 m=981173106.123456700 c=1790887510.786282125 b=1790887510.785482875 size=5
+copy s2755->d2755: ok
+dst d2755: mode=-rwxr-xr-x/755 uid=0 gid=0 ino=10 a=1790887510.786553000 m=981173106.123456700 c=1790887510.786282125 b=1790887510.786282125 size=5
+src after s2755: mode=-rwxr-sr-x/2755 uid=0 gid=0 ino=9 a=1790887510.786553000 m=981173106.123456700 c=1790887510.786282125 b=1790887510.785482875 size=5
+src s1644: mode=-rw-r--r-T/1644 uid=0 gid=0 ino=11 a=1015218367.765432100 m=981173106.123456700 c=1790887510.787184958 b=1790887510.786282125 size=5
+copy s1644->d1644: ok
+dst d1644: mode=-rw-r--r--/644 uid=0 gid=0 ino=12 a=1790887510.787474833 m=981173106.123456700 c=1790887510.787184958 b=1790887510.787184958 size=5
+src after s1644: mode=-rw-r--r-T/1644 uid=0 gid=0 ino=11 a=1790887510.787474833 m=981173106.123456700 c=1790887510.787184958 b=1790887510.786282125 size=5
+src s0: mode=----------/0 uid=0 gid=0 ino=13 a=1015218367.765432100 m=981173106.123456700 c=1790887510.788063625 b=1790887510.787184958 size=5
+copy s0->d0: ok
+dst d0: mode=----------/0 uid=0 gid=0 ino=14 a=1790887510.788362541 m=981173106.123456700 c=1790887510.788063625 b=1790887510.788063625 size=5
+src after s0: mode=----------/0 uid=0 gid=0 ino=13 a=1790887510.788362541 m=981173106.123456700 c=1790887510.788063625 b=1790887510.787184958 size=5
+src s200: mode=--w-------/200 uid=0 gid=0 ino=15 a=1015218367.765432100 m=981173106.123456700 c=1790887510.788938916 b=1790887510.788063625 size=5
+copy s200->d200: ok
+dst d200: mode=--w-------/200 uid=0 gid=0 ino=16 a=1790887510.789217041 m=981173106.123456700 c=1790887510.788938916 b=1790887510.788938916 size=5
+src after s200: mode=--w-------/200 uid=0 gid=0 ino=15 a=1790887510.789217041 m=981173106.123456700 c=1790887510.788938916 b=1790887510.788063625 size=5
+copy su->du (umask 077): ok
+dst du: mode=-rwxrwxrwx/777 uid=0 gid=0 ino=18 a=1790887510.790184708 m=981173106.123456700 c=1790887510.790036958 b=1790887510.790036958 size=5
+x1 before: mode=-rw-------/600 uid=0 gid=0 ino=20 a=1790887510.790631291 m=1790887510.790631291 c=1790887510.790631291 b=1790887510.790631291 size=31
+copy e1->x1 overwrite:false: IOException HResult=0x00000011 "The file 'x1' already exists."
+x1 after false: mode=-rw-------/600 uid=0 gid=0 ino=20 a=1790887510.790631291 m=1790887510.790631291 c=1790887510.790631291 b=1790887510.790631291 size=31 content=previous content that is longer
+copy e1->x1 overwrite:true: ok
+x1 after true: mode=-rw-r-----/640 uid=0 gid=0 ino=20 a=1790887510.793075166 m=981173106.123456700 c=1790887510.793075166 b=1790887510.790631291 size=5 content=hello
+copy dir->nd: UnauthorizedAccessException HResult=0x80070005 "Access to the path 'dir' is denied."
+copy e1->dir overwrite:false: IOException HResult=0x80131620 "The target file 'dir' is a directory, not a file."
+copy e1->dir overwrite:true: UnauthorizedAccessException HResult=0x80070005 "Access to the path 'dir' is denied."
+dir after: mode=drwxr-xr-x/755 uid=0 gid=0 ino=21 a=1790887510.793075166 m=1790887510.793075166 c=1790887510.793075166 b=1790887510.793075166 size=40
+copy missing->m: FileNotFoundException HResult=0x80070002 "Could not find file 'missing'."
+copy e1->nodir/m: DirectoryNotFoundException HResult=0x80070003 "Could not find a part of the path 'nodir/m'."
+copy e1/sub->m: DirectoryNotFoundException HResult=0x80070003 "Could not find a part of the path 'e1/sub'."
+copy e1->e1/sub: DirectoryNotFoundException HResult=0x80070003 "Could not find a part of the path 'e1/sub'."
+copy e1->e1 overwrite:false: IOException HResult=0x00000011 "The file 'e1' already exists."
+copy e1->e1 overwrite:true: IOException HResult=0x0000000b "The process cannot access the file 'e1' because it is being used by another process."
+e1 after self: mode=-rw-r-----/640 uid=0 gid=0 ino=19 a=1790887510.793075166 m=981173106.123456700 c=1790887510.790631291 b=1790887510.790036958 size=5 content=hello
+copy le1->e1 overwrite:true: IOException HResult=0x0000000b "The process cannot access the file 'e1' because it is being used by another process."
+copy e1->le1 overwrite:true: IOException HResult=0x0000000b "The process cannot access the file 'le1' because it is being used by another process."
+le1 after: mode=lrwxrwxrwx/777 uid=0 gid=0 ino=22 a=1790887510.794301833 m=1790887510.793075166 c=1790887510.793075166 b=1790887510.793075166 size=2; e1 mode=-rw-r-----/640 uid=0 gid=0 ino=19 a=1790887510.793075166 m=981173106.123456700 c=1790887510.790631291 b=1790887510.790036958 size=5 content=hello
+copy e1->ro/new: ok
+copy e1->ro/w overwrite:false: IOException HResult=0x00000011 "The file 'ro/w' already exists."
+ro/w before overwrite: mode=-rw-rw-rw-/666 uid=0 gid=0 ino=24 a=1790887510.794301833 m=1790887510.794301833 c=1790887510.794301833 b=1790887510.794301833 size=26
+copy e1->ro/w overwrite:true: ok
+ro/w after overwrite: mode=-rw-r-----/640 uid=0 gid=0 ino=24 a=1790887510.793075166 m=981173106.123456700 c=1790887510.795328125 b=1790887510.794301833 size=5 content=hello
+copy lt->fromlink: ok
+fromlink: mode=-rw-r-----/640 uid=0 gid=0 ino=28 a=1790887510.795661291 m=981173106.123456700 c=1790887510.795629333 b=1790887510.795629333 size=6
+copy e1->lt2 overwrite:false: IOException HResult=0x00000011 "The file 'lt2' already exists."
+copy e1->lt2 overwrite:true: ok
+lt2 is link: t2; t2 content=hello; lt2 mode=lrwxrwxrwx/777 uid=0 gid=0 ino=30 a=1790887510.796054375 m=1790887510.795629333 c=1790887510.795629333 b=1790887510.795629333 size=2
+copy e1->dang overwrite:false: IOException HResult=0x00000011 "The file 'dang' already exists."
+copy e1->dang overwrite:true: ok
+dang link: nowhere; nowhere exists=True
+copy empty->dempty: ok
+dempty: mode=-rw-r--r--/644 uid=0 gid=0 ino=34 a=1790887510.816475166 m=981173106.123456700 c=1790887510.816453708 b=1790887510.816453708 size=0
+copy e1->rod overwrite:true: ok
+rod: mode=-rw-r-----/640 uid=0 gid=0 ino=35 a=1790887510.793075166 m=981173106.123456700 c=1790887510.816453708 b=1790887510.816453708 size=5 content=hello
+copy unr->dunr: ok
+copy e1->held overwrite:true (held shared): IOException HResult=0x0000000b "The process cannot access the file 'held' because it is being used by another process."
+held: held
+===EXT4
+uid-ish: root umask-default
+src s640: mode=-rw-r-----/640 uid=0 gid=0 ino=33513473 a=1015218367.765432100 m=981173106.123456700 c=1790887510.834412000 b=1790887510.828000000 size=5
+copy s640->d640: ok
+dst d640: mode=-rw-r-----/640 uid=0 gid=0 ino=33513474 a=1790887510.836000000 m=981173106.123456700 c=1790887510.836000000 b=1790887510.836000000 size=5
+src after s640: mode=-rw-r-----/640 uid=0 gid=0 ino=33513473 a=1790887510.836000000 m=981173106.123456700 c=1790887510.834412000 b=1790887510.828000000 size=5
+src s777: mode=-rwxrwxrwx/777 uid=0 gid=0 ino=33513475 a=1015218367.765432100 m=981173106.123456700 c=1790887510.860371625 b=1790887510.856000000 size=5
+copy s777->d777: ok
+dst d777: mode=-rwxrwxrwx/777 uid=0 gid=0 ino=33513476 a=1790887510.860731375 m=981173106.123456700 c=1790887510.860371625 b=1790887510.860371625 size=5
+src after s777: mode=-rwxrwxrwx/777 uid=0 gid=0 ino=33513475 a=1790887510.860731375 m=981173106.123456700 c=1790887510.860371625 b=1790887510.856000000 size=5
+src s4755: mode=-rwsr-xr-x/4755 uid=0 gid=0 ino=33513477 a=1015218367.765432100 m=981173106.123456700 c=1790887510.861341583 b=1790887510.860371625 size=5
+copy s4755->d4755: ok
+dst d4755: mode=-rwxr-xr-x/755 uid=0 gid=0 ino=33513478 a=1790887510.861719416 m=981173106.123456700 c=1790887510.861341583 b=1790887510.861341583 size=5
+src after s4755: mode=-rwsr-xr-x/4755 uid=0 gid=0 ino=33513477 a=1790887510.861719416 m=981173106.123456700 c=1790887510.861341583 b=1790887510.860371625 size=5
+src s2755: mode=-rwxr-sr-x/2755 uid=0 gid=0 ino=33513479 a=1015218367.765432100 m=981173106.123456700 c=1790887510.862524166 b=1790887510.861341583 size=5
+copy s2755->d2755: ok
+dst d2755: mode=-rwxr-xr-x/755 uid=0 gid=0 ino=33513480 a=1790887510.862965000 m=981173106.123456700 c=1790887510.862524166 b=1790887510.862524166 size=5
+src after s2755: mode=-rwxr-sr-x/2755 uid=0 gid=0 ino=33513479 a=1790887510.862965000 m=981173106.123456700 c=1790887510.862524166 b=1790887510.861341583 size=5
+src s1644: mode=-rw-r--r-T/1644 uid=0 gid=0 ino=33513481 a=1015218367.765432100 m=981173106.123456700 c=1790887510.863695041 b=1790887510.862524166 size=5
+copy s1644->d1644: ok
+dst d1644: mode=-rw-r--r--/644 uid=0 gid=0 ino=33513482 a=1790887510.864009500 m=981173106.123456700 c=1790887510.863695041 b=1790887510.863695041 size=5
+src after s1644: mode=-rw-r--r-T/1644 uid=0 gid=0 ino=33513481 a=1790887510.864009500 m=981173106.123456700 c=1790887510.863695041 b=1790887510.862524166 size=5
+src s0: mode=----------/0 uid=0 gid=0 ino=33513483 a=1015218367.765432100 m=981173106.123456700 c=1790887510.864733500 b=1790887510.863695041 size=5
+copy s0->d0: ok
+dst d0: mode=----------/0 uid=0 gid=0 ino=33513484 a=1790887510.865148291 m=981173106.123456700 c=1790887510.864733500 b=1790887510.864733500 size=5
+src after s0: mode=----------/0 uid=0 gid=0 ino=33513483 a=1790887510.865148291 m=981173106.123456700 c=1790887510.864733500 b=1790887510.863695041 size=5
+src s200: mode=--w-------/200 uid=0 gid=0 ino=33513485 a=1015218367.765432100 m=981173106.123456700 c=1790887510.866094416 b=1790887510.864733500 size=5
+copy s200->d200: ok
+dst d200: mode=--w-------/200 uid=0 gid=0 ino=33513486 a=1790887510.866448708 m=981173106.123456700 c=1790887510.866094416 b=1790887510.866094416 size=5
+src after s200: mode=--w-------/200 uid=0 gid=0 ino=33513485 a=1790887510.866448708 m=981173106.123456700 c=1790887510.866094416 b=1790887510.864733500 size=5
+copy su->du (umask 077): ok
+dst du: mode=-rwxrwxrwx/777 uid=0 gid=0 ino=33513488 a=1790887510.867240166 m=981173106.123456700 c=1790887510.867089083 b=1790887510.867089083 size=5
+x1 before: mode=-rw-------/600 uid=0 gid=0 ino=33513490 a=1790887510.867572041 m=1790887510.867572041 c=1790887510.867572041 b=1790887510.867572041 size=31
+copy e1->x1 overwrite:false: IOException HResult=0x00000011 "The file 'x1' already exists."
+x1 after false: mode=-rw-------/600 uid=0 gid=0 ino=33513490 a=1790887510.867572041 m=1790887510.867572041 c=1790887510.867572041 b=1790887510.867572041 size=31 content=previous content that is longer
+copy e1->x1 overwrite:true: ok
+x1 after true: mode=-rw-r-----/640 uid=0 gid=0 ino=33513490 a=1790887510.869436500 m=981173106.123456700 c=1790887510.869436500 b=1790887510.867572041 size=5 content=hello
+copy dir->nd: UnauthorizedAccessException HResult=0x80070005 "Access to the path 'dir' is denied."
+copy e1->dir overwrite:false: IOException HResult=0x80131620 "The target file 'dir' is a directory, not a file."
+copy e1->dir overwrite:true: UnauthorizedAccessException HResult=0x80070005 "Access to the path 'dir' is denied."
+dir after: mode=drwxr-xr-x/755 uid=0 gid=0 ino=8194 a=1790887510.869436500 m=1790887510.869436500 c=1790887510.869436500 b=1790887510.869436500 size=4096
+copy missing->m: FileNotFoundException HResult=0x80070002 "Could not find file 'missing'."
+copy e1->nodir/m: DirectoryNotFoundException HResult=0x80070003 "Could not find a part of the path 'nodir/m'."
+copy e1/sub->m: DirectoryNotFoundException HResult=0x80070003 "Could not find a part of the path 'e1/sub'."
+copy e1->e1/sub: DirectoryNotFoundException HResult=0x80070003 "Could not find a part of the path 'e1/sub'."
+copy e1->e1 overwrite:false: IOException HResult=0x00000011 "The file 'e1' already exists."
+copy e1->e1 overwrite:true: IOException HResult=0x0000000b "The process cannot access the file 'e1' because it is being used by another process."
+e1 after self: mode=-rw-r-----/640 uid=0 gid=0 ino=33513489 a=1790887510.869436500 m=981173106.123456700 c=1790887510.867572041 b=1790887510.867089083 size=5 content=hello
+copy le1->e1 overwrite:true: IOException HResult=0x0000000b "The process cannot access the file 'e1' because it is being used by another process."
+copy e1->le1 overwrite:true: IOException HResult=0x0000000b "The process cannot access the file 'le1' because it is being used by another process."
+le1 after: mode=lrwxrwxrwx/777 uid=0 gid=0 ino=33513491 a=1790887510.870971666 m=1790887510.869436500 c=1790887510.869436500 b=1790887510.869436500 size=2; e1 mode=-rw-r-----/640 uid=0 gid=0 ino=33513489 a=1790887510.869436500 m=981173106.123456700 c=1790887510.867572041 b=1790887510.867089083 size=5 content=hello
+copy e1->ro/new: ok
+copy e1->ro/w overwrite:false: IOException HResult=0x00000011 "The file 'ro/w' already exists."
+ro/w before overwrite: mode=-rw-rw-rw-/666 uid=0 gid=0 ino=33529857 a=1790887510.870971666 m=1790887510.870971666 c=1790887510.870971666 b=1790887510.870971666 size=26
+copy e1->ro/w overwrite:true: ok
+ro/w after overwrite: mode=-rw-r-----/640 uid=0 gid=0 ino=33529857 a=1790887510.869436500 m=981173106.123456700 c=1790887510.872116375 b=1790887510.870971666 size=5 content=hello
+copy lt->fromlink: ok
+fromlink: mode=-rw-r-----/640 uid=0 gid=0 ino=33513493 a=1790887510.872440083 m=981173106.123456700 c=1790887510.872412000 b=1790887510.872412000 size=6
+copy e1->lt2 overwrite:false: IOException HResult=0x00000011 "The file 'lt2' already exists."
+copy e1->lt2 overwrite:true: ok
+lt2 is link: t2; t2 content=hello; lt2 mode=lrwxrwxrwx/777 uid=0 gid=0 ino=33513495 a=1790887510.872929458 m=1790887510.872412000 c=1790887510.872412000 b=1790887510.872412000 size=2
+copy e1->dang overwrite:false: IOException HResult=0x00000011 "The file 'dang' already exists."
+copy e1->dang overwrite:true: ok
+dang link: nowhere; nowhere exists=True
+copy empty->dempty: ok
+dempty: mode=-rw-r--r--/644 uid=0 gid=0 ino=33513499 a=1790887510.896340750 m=981173106.123456700 c=1790887510.896315333 b=1790887510.896315333 size=0
+copy e1->rod overwrite:true: ok
+rod: mode=-rw-r-----/640 uid=0 gid=0 ino=33513500 a=1790887510.869436500 m=981173106.123456700 c=1790887510.896315333 b=1790887510.896315333 size=5 content=hello
+copy unr->dunr: ok
+copy e1->held overwrite:true (held shared): IOException HResult=0x0000000b "The process cannot access the file 'held' because it is being used by another process."
+held: held

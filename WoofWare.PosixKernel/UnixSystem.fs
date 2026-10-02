@@ -50,6 +50,16 @@ type Syscall =
     /// `dirfd`, `mode` and `flags` are raw, as `faccessat(2)` takes them: each
     /// flavour numbers `AT_FDCWD` and the flags its own way.
     | FAccessAt of dirfd : int * path : PathArgumentBytes * mode : int * flags : int
+    /// `futimens(2)` with two explicit times; see `UnixPathResolution.futimens`.
+    | FUTimens of fd : int * access : UnixTimestamp * modification : UnixTimestamp
+    /// `copy_file_range(2)` at both descriptions' own offsets. `length` is the
+    /// `size_t` asked for and `flags` is raw, since any flag is refused.
+    | CopyFileRange of inFd : int * outFd : int * length : uint64 * flags : int
+    /// `ioctl(destination, FICLONE, source)`.
+    | FileClone of destination : int * source : int
+    /// `clonefile(2)`. The pathnames are their arguments' bytes, which this
+    /// kernel copies in at the points it measured; `flags` is raw.
+    | CloneFile of source : PathArgumentBytes * destination : PathArgumentBytes * flags : int
 
 /// Why this kernel will not answer a syscall at all. The client decides what a
 /// refusal means for it; nothing here is recoverable by retrying.
@@ -67,6 +77,10 @@ type SyscallRefusal<'Task> =
     | FChOwn of FChOwnRefusal
     | Access of AccessRefusal
     | Close of CloseRefusal<'Task>
+    | FUTimens of FUTimensRefusal
+    | CopyFileRange of CopyFileRangeRefusal
+    | FileClone of FileCloneRefusal
+    | CloneFile of CloneFileRefusal
 
 /// A way this system's tables disagree with each other — a state no kernel
 /// could be in, and which the operations here exist to keep unreachable.
@@ -470,6 +484,22 @@ module UnixSystem =
             UnixPathResolution.faccessat dirfd path mode flags system
             |> Result.map (fun answer -> SyscallOutcome.Answered answer, system)
             |> Result.mapError SyscallRefusal.Access
+        | Syscall.FUTimens (fd, access, modification) ->
+            UnixPathResolution.futimens fd access modification system
+            |> answered
+            |> Result.mapError SyscallRefusal.FUTimens
+        | Syscall.CopyFileRange (inFd, outFd, length, flags) ->
+            UnixReadWrite.copyFileRange inFd outFd length flags system
+            |> answered
+            |> Result.mapError SyscallRefusal.CopyFileRange
+        | Syscall.FileClone (destination, source) ->
+            UnixDescriptor.fileClone destination source system
+            |> Result.map (fun error -> SyscallOutcome.Answered (SyscallAnswer.Failed error), system)
+            |> Result.mapError SyscallRefusal.FileClone
+        | Syscall.CloneFile (source, destination, flags) ->
+            UnixNamespace.cloneFile source destination flags system
+            |> answered
+            |> Result.mapError SyscallRefusal.CloneFile
 
     /// Every way this system's tables disagree with each other: the socket table
     /// and the pipe table against the descriptor table, each pipe and the pipe
@@ -1268,7 +1298,9 @@ module UnixSystem =
     /// most test harnesses do: descriptor 0 reads a pipe whose writer supplied
     /// nothing, and descriptors 1 and 2 write to pipes the client drains. A
     /// client supplying bytes on standard input replaces entry 0 with
-    /// `LaunchDescriptor.Supplied` of them.
+    /// `LaunchDescriptor.Supplied` of them, and one that closed the reader of
+    /// an output stream before the process started replaces its entry with
+    /// `LaunchDescriptor.Gone`.
     ///
     /// Not the only shape a real process can inherit, and not the terminal one.
     /// Under a tty, descriptors 0, 1 and 2 are `dup`s of a single `O_RDWR`
@@ -1288,7 +1320,7 @@ module UnixSystem =
     ///
     /// Each entry of `launch` is a descriptor the launcher set up before the
     /// process started, at that number: a pipe end of its own, whose other end
-    /// the client holds as the entry says (see `LaunchDescriptor`). The pipes
+    /// is the client's, as the entry says (see `LaunchDescriptor`). The pipes
     /// are the first the machine makes, in descriptor order. A launch table
     /// naming a negative descriptor is refused.
     ///

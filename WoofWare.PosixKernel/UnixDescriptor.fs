@@ -279,6 +279,34 @@ module GetGroupsRefusal =
         | GetGroupsRefusal.UnmeasuredGroupList flavour ->
             $"which groups %O{flavour}'s getgroups(2) reports for these credentials has not been measured. It depends on what setgroups(2) does with the list it is given, and setting that needs root. A login process reports its effective group first and the rest unsorted, which fits both of two rules (the effective group added in front of the supplementary groups, or a list that already began with it reported as given), and the two disagree about every other list."
 
+/// Why this kernel will not answer an `ioctl(2)` of `FICLONE`.
+[<RequireQualifiedAccess>]
+type FileCloneRefusal =
+    /// This kernel is not Linux-flavoured, and `FICLONE` is a Linux request.
+    | UnmodelledFlavour of flavour : SimulatedUnixFlavour
+    /// Both descriptors name regular files on a mount of this type, whose
+    /// answer to a clone request is unmeasured.
+    | UnmeasuredFileSystem of fileSystem : EmulatedFileSystemType
+
+[<RequireQualifiedAccess>]
+module FileCloneRefusal =
+    /// What this kernel knows about why it will not answer. A client adds which
+    /// entry point asked, and with which descriptors.
+    let describe (refusal : FileCloneRefusal) : string =
+        match refusal with
+        | FileCloneRefusal.UnmodelledFlavour flavour ->
+            $"this kernel is %O{flavour}-flavoured, and FICLONE is a Linux ioctl request."
+        | FileCloneRefusal.UnmeasuredFileSystem fileSystem ->
+            $"both descriptors name regular files on a %O{fileSystem} mount. Whether a clone request succeeds there depends on the filesystem (tmpfs answers EOPNOTSUPP; Btrfs and XFS share the source's extents), and this filesystem's answer has not been measured."
+
+/// Which filesystem an open object lives on, for a call that refuses to work
+/// across two.
+[<RequireQualifiedAccess>]
+type private ObjectFileSystem =
+    /// The machine's one mount, which holds every file and directory.
+    | Mounted
+    | Pseudo of PseudoFileSystem
+
 /// Why a file descriptor cannot be seeked, as a *fault* rather than as the errno
 /// it becomes.
 ///
@@ -1235,6 +1263,83 @@ module UnixDescriptor =
         | UserBuffer.Opaque -> Error (BytesAvailableRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
         | UserBuffer.Addressless -> Error (BytesAvailableRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
         | UserBuffer.Mapped -> Ok (BytesAvailableAnswer.Reported count)
+
+    /// `ioctl(destination, FICLONE, source)`: make the file `destination` names
+    /// share the contents of the file `source` names.
+    ///
+    /// No filesystem this kernel answers for can share contents, so the answer
+    /// is always an errno: EBADF for a descriptor the process does not hold,
+    /// EXDEV for two objects on different filesystems, EISDIR if either is a
+    /// directory, EINVAL if either is not a regular file, EBADF for a
+    /// destination not open for writing or a source not open for reading, and
+    /// otherwise EOPNOTSUPP on a tmpfs. Changes nothing.
+    let fileClone<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (destination : int)
+        (source : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<UnixError, FileCloneRefusal>
+        =
+        // Measured on Linux 6.18.5 (`copy-file-syscalls.c`, tmpfs and ext4
+        // alike) over every pair of a file opened read-only, write-only and
+        // read-write, a directory, each end of a pipe, a socket, an epoll
+        // instance, a closed descriptor and 9999: either missing is EBADF; then
+        // two objects on different filesystems (a file against a pipe, a pipe
+        // against a socket) are EXDEV, a directory with anything on its own
+        // filesystem is EISDIR, two pipe ends, two sockets or two epoll
+        // instances are EINVAL, a read-only destination or a write-only source
+        // is EBADF, and two regular files are EOPNOTSUPP, empty or not, and the
+        // same description included. ext4 answers as tmpfs does.
+        match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+        | SimulatedUnixFlavour.Darwin -> Error (FileCloneRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin)
+        | SimulatedUnixFlavour.Linux ->
+
+        let registry = system.Process.FileDescriptors
+
+        match FileDescriptorRegistry.tryFind destination registry, FileDescriptorRegistry.tryFind source registry with
+        | None, _
+        | _, None -> Ok UnixError.EBADF
+        | Some destinationDescription, Some sourceDescription ->
+
+        let fileSystemOf (description : OpenFileDescription) : ObjectFileSystem =
+            match OpenFileDescription.object description with
+            | OpenFileObject.File _ -> ObjectFileSystem.Mounted
+            | OpenFileObject.Pipe _ -> ObjectFileSystem.Pseudo PseudoFileSystem.Pipe
+            | OpenFileObject.Socket _ -> ObjectFileSystem.Pseudo PseudoFileSystem.Socket
+            | OpenFileObject.AnonymousInode -> ObjectFileSystem.Pseudo PseudoFileSystem.AnonymousInode
+
+        let isDirectory (description : OpenFileDescription) : bool =
+            match description.Target with
+            | OpenFileTarget.Directory _ -> true
+            | OpenFileTarget.File _
+            | OpenFileTarget.Pipe _
+            | OpenFileTarget.Socket _
+            | OpenFileTarget.SocketEventPort _ -> false
+
+        let isRegularFile (description : OpenFileDescription) : bool =
+            match description.Target with
+            | OpenFileTarget.File _ -> true
+            | OpenFileTarget.Directory _
+            | OpenFileTarget.Pipe _
+            | OpenFileTarget.Socket _
+            | OpenFileTarget.SocketEventPort _ -> false
+
+        if fileSystemOf destinationDescription <> fileSystemOf sourceDescription then
+            Ok UnixError.EXDEV
+        elif isDirectory destinationDescription || isDirectory sourceDescription then
+            Ok UnixError.EISDIR
+        elif not (isRegularFile destinationDescription && isRegularFile sourceDescription) then
+            Ok UnixError.EINVAL
+        elif
+            not (FileAccessMode.permitsWrite destinationDescription.AccessMode)
+            || not (FileAccessMode.permitsRead sourceDescription.AccessMode)
+        then
+            Ok UnixError.EBADF
+        else
+
+        match EmulatedMount.fileSystemType system.Machine.Mount with
+        | EmulatedFileSystemType.Tmpfs -> Ok UnixError.EOPNOTSUPP
+        | EmulatedFileSystemType.Apfs
+        | EmulatedFileSystemType.Nfs as fileSystem -> Error (FileCloneRefusal.UnmeasuredFileSystem fileSystem)
 
     /// `tcgetattr(3)`, and so `isatty(3)`: whether `fd` is a terminal. None of
     /// the objects this kernel models is one, so the answer is always the errno

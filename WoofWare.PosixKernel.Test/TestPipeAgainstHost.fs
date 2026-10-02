@@ -212,6 +212,20 @@ module TestPipeAgainstHost =
                     system
                     |> UnixSystem.withCredentials "TestPipeAgainstHost" (Credentials.ofIds uid gid [])
 
+                // The test host's runtime ignores SIGPIPE, so a write with no
+                // reader answers EPIPE there rather than ending it.
+                let system =
+                    { system with
+                        Process =
+                            { system.Process with
+                                Signals =
+                                    SignalState.setDisposition
+                                        Signal.SIGPIPE
+                                        SignalDisposition.Ignore
+                                        system.Process.Signals
+                            }
+                    }
+
                 // Up a second before the pipe is made, so that its creation is
                 // not the epoch that Darwin reports as its birth.
                 { system with
@@ -326,14 +340,24 @@ module TestPipeAgainstHost =
                             let bytes = payload offered count
 
                             let model =
-                                match UnixReadWrite.admitWrite modelFd buffer (uint64 count) system with
+                                match UnixReadWrite.admitWrite system.Leader modelFd buffer (uint64 count) system with
                                 | Error refusal -> Error refusal
-                                | Ok (WriteAdmission.Answered answer, after) -> Ok (answer, after)
-                                | Ok (WriteAdmission.Transfer n, admitted) ->
-                                    UnixReadWrite.write
+                                | Ok (WriteOutcome.Returns (WriteAdmission.Answered answer, after)) ->
+                                    Ok (answer, after)
+                                | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Answered answer, raised, after)) ->
+                                    // The one signal a write raises, discarded
+                                    // as the ignored signal it is.
+                                    (answer, raised.Signal)
+                                    |> shouldEqual (WriteAnswer.Failed UnixError.EPIPE, Signal.SIGPIPE)
+
+                                    after.Process.Signals |> shouldEqual system.Process.Signals
+                                    Ok (answer, after)
+                                | Ok (WriteOutcome.Returns (WriteAdmission.Transfer n, admitted)) ->
+                                    WriteOutcomes.write
                                         modelFd
                                         (ImmutableArray.Create<byte> (Array.sub bytes 0 n))
                                         admitted
+                                | Ok other -> failwith $"%s{where}: model %A{other}"
 
                             let hostCall () =
                                 if mapped then
@@ -347,10 +371,6 @@ module TestPipeAgainstHost =
                                 // temporary O_NONBLOCK would leave it holding
                                 // what the model does not, so it is not asked.
                                 ()
-                            | Error (WriteRefusal.BrokenPipe _) ->
-                                // The runtime ignores SIGPIPE, so the host answers
-                                // EPIPE rather than dying.
-                                hostAnswer numbering (hostCall ()) |> shouldEqual (Error UnixError.EPIPE)
                             | Error refusal -> failwith $"%s{where}: model refused %A{refusal}"
                             | Ok (answer, after) ->
                                 let host =

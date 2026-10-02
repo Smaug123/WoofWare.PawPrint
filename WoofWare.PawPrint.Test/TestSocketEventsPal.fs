@@ -565,6 +565,8 @@ module TestSocketEventsPal =
                 }
             | PipeOrigin.Launched (_, ClientEnd.Supplying _) ->
                 failwith "oldLevel: no row launches a guest with bytes on its standard input"
+            | PipeOrigin.Launched (_, ClientEnd.ReadEndClosed) ->
+                failwith "oldLevel: no row launches a guest with an output stream whose reader has gone"
             | PipeOrigin.Made _ -> failwith $"oldLevel: %O{pipeId} is a pipe the process made, which no row registers"
         | other -> failwith $"oldLevel: %O{other} cannot be registered"
 
