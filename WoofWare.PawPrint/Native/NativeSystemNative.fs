@@ -2602,14 +2602,15 @@ module NativeSystemNative =
             // allocation pattern and its timer bucketing — depend on which
             // core the *interpreter* happened to be running on.
             //
-            // We report a real per-thread placement, not the `-1` "platform
-            // lacks sched_getcpu" sentinel (legitimate on macOS, and handled by
-            // CoreLib via a `Environment.CurrentManagedThreadId` fallback):
-            // PawPrint reports a Linux platform identity through
-            // `SystemNative_GetUnixRelease`, and on Linux the call works.
+            // The simulated flavour decides which build of the shim the guest
+            // is calling. Darwin's libc has no `sched_getcpu`, so its shim is
+            // built without HAVE_SCHED_GETCPU and answers -1 on every call (measured on
+            // Darwin 27.0.0 through the real libSystem.Native), which CoreLib
+            // reads as "not supported" and replaces with
+            // `Environment.CurrentManagedThreadId`.
             //
-            // The value is fixed at thread creation by
-            // `EmulatedKernel.cpuForRotation` and stored in
+            // Under Linux the value is the calling task's placement, fixed at
+            // thread creation by `EmulatedKernel.cpuForRotation` and stored in
             // `ThreadState.Cpu`; see there for why round-robin, and why
             // "pinned to" and "currently running on" coincide under a
             // scheduler that never migrates threads. It is returned verbatim
@@ -2617,11 +2618,11 @@ module NativeSystemNative =
             // kernel's env table live, so if environment mutation is ever
             // added, a re-derivation could silently turn a guest's shard index
             // into an out-of-range one.
-            let cpu = UnixTaskTable.cpuOf ctx.Thread state.Kernel.Tasks
-
-            let (CpuId.CpuId cpu) = cpu
-
-            pushInt32 cpu ctx |> Some
+            match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
+            | SimulatedUnixFlavour.Darwin -> pushInt32 (-1) ctx |> Some
+            | SimulatedUnixFlavour.Linux ->
+                let (CpuId.CpuId cpu) = UnixTaskTable.cpuOf ctx.Thread state.Kernel.Tasks
+                pushInt32 cpu ctx |> Some
         | Some "SystemNative_TryGetUInt32OSThreadId",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32) ->
