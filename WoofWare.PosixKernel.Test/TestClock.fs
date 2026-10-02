@@ -292,14 +292,16 @@ module TestClock =
         match flavour with
         | SimulatedUnixFlavour.Linux ->
             match clockId with
-            | 0 -> Outcome.Realtime
+            // CLOCK_REALTIME_COARSE reads the realtime clock as of the last
+            // tick, and this machine's last update is its current reading.
+            | 0
+            | 5 -> Outcome.Realtime
             | 1
             | 4
             | 6
             | 7 -> Outcome.Monotonic
             | 2
             | 3
-            | 5
             | 8
             | 9
             | 11 -> Outcome.Refused
@@ -395,7 +397,8 @@ module TestClock =
         let toMicroseconds (n : bigint) = n - n % 1000I
 
         match flavour, clockId with
-        | SimulatedUnixFlavour.Linux, 0 -> realtime
+        | SimulatedUnixFlavour.Linux, 0
+        | SimulatedUnixFlavour.Linux, 5 -> realtime
         | SimulatedUnixFlavour.Linux, _ -> monotonic
         | SimulatedUnixFlavour.Darwin, 0 -> toMicroseconds realtime
         | SimulatedUnixFlavour.Darwin, 6 -> toMicroseconds monotonic

@@ -1,0 +1,32 @@
+# Linux 6.18.5 aarch64 (maps: ld-linux-aarch64.so.1)
+GETRES id=0 1 ns
+GETRES id=1 1 ns
+GETRES id=2 1 ns
+GETRES id=3 1 ns
+GETRES id=4 1 ns
+GETRES id=5 4000000 ns
+GETRES id=6 4000000 ns
+GETRES id=7 1 ns
+GETRES id=8 1 ns
+GETRES id=9 1 ns
+GETRES id=10 failed
+GETRES id=11 1 ns
+PAIR fine=0 coarse=5 readings=20509677 coarse_ahead_of_later_fine=0 lag_at_least_a_tick=10232194 max_lag=6938791 ns coarse_with_submicrosecond_digits=0
+PAIR fine=1 coarse=6 readings=20418779 coarse_ahead_of_later_fine=0 lag_at_least_a_tick=9930677 max_lag=5939417 ns coarse_with_submicrosecond_digits=20418779
+OFFSET samples=999974 coarse_offset_differs_from_fine_offset_at_microseconds=0
+# Linux 6.18.5 x86_64 (maps: ld-linux-x86-64.so.2)
+GETRES id=0 1 ns
+GETRES id=1 1 ns
+GETRES id=2 1 ns
+GETRES id=3 1 ns
+GETRES id=4 1 ns
+GETRES id=5 4000000 ns
+GETRES id=6 4000000 ns
+GETRES id=7 1 ns
+GETRES id=8 1 ns
+GETRES id=9 1 ns
+GETRES id=10 failed
+GETRES id=11 1 ns
+PAIR fine=0 coarse=5 readings=13292879 coarse_ahead_of_later_fine=0 lag_at_least_a_tick=11259379 max_lag=8391875 ns coarse_with_submicrosecond_digits=0
+PAIR fine=1 coarse=6 readings=13522828 coarse_ahead_of_later_fine=0 lag_at_least_a_tick=11770674 max_lag=7486167 ns coarse_with_submicrosecond_digits=13522828
+OFFSET samples=999862 coarse_offset_differs_from_fine_offset_at_microseconds=4
