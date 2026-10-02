@@ -266,3 +266,439 @@ module SocketEventPort =
                         FileDescriptorRegistry.setSocketEventReady portId surviving system.Process.FileDescriptors
                 }
         }
+
+/// What the `data` field of an event a kqueue reports holds.
+[<RequireQualifiedAccess>]
+type KqueueEventData =
+    /// Exactly this value.
+    | Exactly of int64
+    /// The free space in the socket's send buffer, in bytes: what
+    /// `EVFILT_WRITE` reports of a socket. This library models no send buffer,
+    /// so it cannot say how much.
+    | SendBufferSpace
+
+/// What a kqueue filter reports of a descriptor on which it is ready.
+[<RequireQualifiedAccess>]
+type KqueueFilterReport =
+    /// The filter is ready, and reports `data`.
+    | Ready of data : KqueueEventData
+    /// The filter is ready and reports `EV_EOF`: the socket can receive no
+    /// more, or (for `EVFILT_WRITE`) send no more. Its `fflags` hold the
+    /// socket's pending error, or 0 when there is none.
+    | EndOfFile of data : KqueueEventData * pendingError : UnixError option
+
+/// The readiness a Darwin-flavoured socket presents to a kqueue filter.
+///
+/// Answers for the stream sockets of `AF_INET` and `AF_INET6`, the only
+/// sockets `UnixKqueue.kevent` registers a filter on (see `modelsSocket`).
+[<RequireQualifiedAccess>]
+module DarwinReadiness =
+
+    /// Whether this kernel models what a kqueue filter reports of `socket`: a
+    /// stream socket of `AF_INET` or `AF_INET6`.
+    ///
+    /// A datagram socket's readiness is measured but not modelled, because
+    /// what activates its filters is not: Darwin's datagram `connect` activates
+    /// `EVFILT_WRITE`, where nothing in Linux's does. A Unix-domain socket's is
+    /// not measured.
+    let modelsSocket (socket : SocketDescription) : bool =
+        match socket.Domain, socket.Kind with
+        | SocketDomain.Inet, SocketKind.Stream
+        | SocketDomain.Inet6, SocketKind.Stream -> true
+        | SocketDomain.Unix, _
+        | _, SocketKind.Datagram
+        | _, SocketKind.SeqPacket -> false
+
+    /// What the kqueue filter `filter` reports of the socket `socketId` right
+    /// now, or `None` when the filter is not ready.
+    ///
+    /// The socket must be one `modelsSocket` admits.
+    let ofSocket
+        (filter : KqueueFilter)
+        (socketId : SocketId)
+        (machine : UnixMachineState)
+        : KqueueFilterReport option
+        =
+        let socket = UnixMachineState.socket socketId machine
+
+        if not (modelsSocket socket) then
+            failwith
+                $"DarwinReadiness.ofSocket: socket %O{socketId} is %O{socket.Kind} in %O{socket.Domain}, which `kevent` never registers a filter on (this is a bug in this library, or in a caller that assembled the state by hand)."
+
+        // Every row measured on Darwin 27.0.0 arm64 (`kevent-register.c`,
+        // sections P and X, in IPv4 and IPv6 alike), with or without EV_CLEAR.
+        // No receive path is modelled, so no byte is ever waiting to be read:
+        // a connected socket's READ is ready only once nothing more can come.
+        let pendingError (error : RefusalError) : UnixError option =
+            match error with
+            | RefusalError.Pending -> Some UnixError.ECONNREFUSED
+            | RefusalError.Reported -> None
+
+        match socket.Phase, filter with
+        | SocketPhase.Listening listenState, KqueueFilter.Read ->
+            // Ready while a connection is queued, reporting how many are.
+            match listenState.Queue with
+            | [] -> None
+            | queue -> Some (KqueueFilterReport.Ready (KqueueEventData.Exactly (int64 (List.length queue))))
+        | SocketPhase.Listening _, KqueueFilter.Write -> None
+        // Bound or not: a socket that is not connected can neither be read nor
+        // written.
+        | SocketPhase.Idle, _ -> None
+        | SocketPhase.Established connectionId, KqueueFilter.Read ->
+            if UnixMachineState.peerOpen socketId connectionId machine then
+                None
+            else
+                // The peer's FIN: EV_EOF, no error, and nothing waiting.
+                Some (KqueueFilterReport.EndOfFile (KqueueEventData.Exactly 0L, None))
+        // Writable whether or not the peer has gone, and without EV_EOF.
+        | SocketPhase.Established _, KqueueFilter.Write ->
+            Some (KqueueFilterReport.Ready KqueueEventData.SendBufferSpace)
+        // Both filters report EV_EOF once a connect is refused, with the error
+        // in `fflags` until an `SO_ERROR` read takes it (measured: ECONNREFUSED,
+        // then 0). The WRITE filter's data is still the send buffer's free space
+        // (2048 measured, where a connected socket's is its SO_SNDBUF).
+        | SocketPhase.Refused error, KqueueFilter.Read ->
+            Some (KqueueFilterReport.EndOfFile (KqueueEventData.Exactly 0L, pendingError error))
+        | SocketPhase.Refused error, KqueueFilter.Write ->
+            Some (KqueueFilterReport.EndOfFile (KqueueEventData.SendBufferSpace, pendingError error))
+        | SocketPhase.EstablishedPendingReport _, _ ->
+            failwith
+                $"DarwinReadiness.ofSocket: socket %O{socketId} is in EstablishedPendingReport, which only a Linux-flavoured connect enters (this is a bug in the caller's state construction)."
+        | SocketPhase.DatagramPeer _, _ ->
+            failwith
+                $"DarwinReadiness.ofSocket: stream socket %O{socketId} holds a datagram peer, which this kernel's socket invariants forbid (this is a bug in the caller's state construction)."
+
+/// One event a kqueue reports: the registration that reported it, and what its
+/// filter reported.
+type KqueueReport =
+    {
+        /// The descriptor the registration was made through.
+        Fd : int
+        /// The registration's filter.
+        Filter : KqueueFilter
+        /// The registration, as it stood when it reported.
+        Registration : KqueueRegistration
+        /// What the filter reported.
+        Report : KqueueFilterReport
+    }
+
+/// Darwin's kqueue as its registrations see it: activating them when something
+/// happens to a socket, and reporting them to a wait.
+///
+/// A registration is activated when something happens that the real kernel
+/// wakes its filter for, and only if its filter is then ready; an activated
+/// registration waits in its kqueue's `KqueueState.Active` queue until a wait
+/// reports it. A wait reads each filter again as it reaches it.
+[<RequireQualifiedAccess>]
+module KqueueQueue =
+
+    /// The kqueue state of the open file description `kqueue`. Loudly partial:
+    /// every caller has just resolved it as a live kqueue.
+    let private stateOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (operation : string)
+        (kqueue : OpenFileDescriptionId)
+        (system : UnixSystem<'Task, 'Handler>)
+        : KqueueState
+        =
+        match Map.tryFind kqueue (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
+        | Some {
+                   Target = OpenFileTarget.Kqueue state
+               } -> state
+        | other ->
+            failwith
+                $"KqueueQueue.%s{operation}: %O{kqueue} names %A{other} rather than a live kqueue (this is a bug in the caller, which resolved it as one)."
+
+    let private withState<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (kqueue : OpenFileDescriptionId)
+        (state : KqueueState)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        { system with
+            Process =
+                { system.Process with
+                    FileDescriptors = FileDescriptorRegistry.setKqueueState kqueue state system.Process.FileDescriptors
+                }
+        }
+
+    /// The socket the descriptor `fd` names, or `None` when it names anything
+    /// else or nothing.
+    let private socketOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SocketId option
+        =
+        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        | Some (OpenFileTarget.Socket socketId) -> Some socketId
+        | Some _
+        | None -> None
+
+    /// What the registration `key` would report were a wait to reach it now.
+    let private reportOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int, filter : KqueueFilter as key)
+        (system : UnixSystem<'Task, 'Handler>)
+        : KqueueFilterReport option
+        =
+        match socketOf fd system with
+        | Some socketId -> DarwinReadiness.ofSocket filter socketId system.Machine
+        | None ->
+            failwith
+                $"KqueueQueue: a kqueue registers %A{key}, whose descriptor names no socket. Closing a descriptor removes its registrations, and `kevent` registers sockets alone, so the system breaks UnixSystem.checkInvariants (this is a bug in this library, or in a caller that assembled the state by hand)."
+
+    /// Activate the registration `key` of the kqueue `kqueue`: queue it at the
+    /// tail if its filter is ready now and it is not queued already. What an
+    /// `EV_ADD` does, of a new registration and of an existing one alike.
+    let activateRegistration<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (kqueue : OpenFileDescriptionId)
+        (key : int * KqueueFilter)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        let state = stateOf "activateRegistration" kqueue system
+
+        if not (Map.containsKey key state.Registrations) then
+            failwith
+                $"KqueueQueue.activateRegistration: kqueue %O{kqueue} does not register %A{key} (this is a bug in the caller, which has just added it)."
+
+        if List.contains key state.Active || Option.isNone (reportOf key system) then
+            system
+        else
+            withState
+                kqueue
+                { state with
+                    Active = state.Active @ [ key ]
+                }
+                system
+
+    /// Something happened to the socket `socketId` that wakes each filter of
+    /// `filters`, in that order: in every kqueue, queue each registration of
+    /// the socket for that filter whose filter is ready now and which is not
+    /// queued already. Of several registrations of the socket for one filter,
+    /// made through different descriptors onto it, the newest-registered is
+    /// queued first.
+    let activate<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (socketId : SocketId)
+        (filters : KqueueFilter list)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        // Measured on Darwin 27.0.0 (`kevent-register.c`): one event activates
+        // WRITE before READ whatever order they were registered in (O2), and a
+        // socket's registrations through a descriptor and its dup newest first
+        // (O6).
+        let kqueues =
+            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+            |> Map.toList
+            |> List.choose (fun (id, description) ->
+                match description.Target with
+                | OpenFileTarget.Kqueue state -> Some (id, state)
+                | OpenFileTarget.Epoll _
+                | OpenFileTarget.File _
+                | OpenFileTarget.Directory _
+                | OpenFileTarget.Socket _
+                | OpenFileTarget.CharacterDevice _
+                | OpenFileTarget.Pipe _ -> None
+            )
+
+        (system, kqueues)
+        ||> List.fold (fun system (kqueue, state) ->
+            let entering =
+                filters
+                |> List.collect (fun filter ->
+                    state.Registrations
+                    |> Map.toList
+                    |> List.filter (fun ((fd, registered), _) ->
+                        registered = filter && socketOf fd system = Some socketId
+                    )
+                    |> List.sortByDescending (fun (_, registration) -> registration.RegisteredAt)
+                    |> List.map fst
+                )
+                |> List.filter (fun key -> not (List.contains key state.Active) && Option.isSome (reportOf key system))
+
+            match entering with
+            | [] -> system
+            | entering ->
+                withState
+                    kqueue
+                    { state with
+                        Active = state.Active @ entering
+                    }
+                    system
+        )
+
+    /// Whether a wait on the kqueue `kqueue` would report at least one event
+    /// right now: the question a task waiting in `kevent` on it is polled
+    /// against, and the one `drain` answers by reporting.
+    ///
+    /// Loudly partial in `kqueue`, as `SocketEventPort.hasDeliverableEvent` is
+    /// in its port: a task parked on a kqueue holds it until its call returns,
+    /// so the kqueue cannot have gone while something waits on it.
+    let hasDeliverableEvent<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (kqueue : OpenFileDescriptionId)
+        (system : UnixSystem<'Task, 'Handler>)
+        : bool
+        =
+        match Map.tryFind kqueue (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
+        | None ->
+            failwith
+                $"KqueueQueue.hasDeliverableEvent: %O{kqueue} names no live open file description, but a task waits on it, and a park holds what it waits on until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
+        | Some {
+                   Target = OpenFileTarget.Kqueue state
+               } -> state.Active |> List.exists (fun key -> Option.isSome (reportOf key system))
+        | Some other ->
+            failwith
+                $"KqueueQueue.hasDeliverableEvent: %O{kqueue} names %A{other.Target} rather than a kqueue, so no wait can be parked on it (this is a bug in the caller)."
+
+    /// Report up to `maxCount` events from the kqueue `kqueue`, as one wait
+    /// does: walk the queue in order, reading each registration's filter
+    /// again. One no longer ready leaves the queue and reports nothing. One
+    /// that reports leaves the queue if it was added with `EV_CLEAR`, and
+    /// otherwise goes back to the tail, behind the entries the walk did not
+    /// reach. The walk stops once `maxCount` events are reported, and the
+    /// entries it did not reach stay queued in order.
+    ///
+    /// Returns the reports in order, and the system with the queue as the walk
+    /// left it. Loudly partial: `kqueue` must be a live kqueue, and `maxCount`
+    /// positive.
+    let drain<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (kqueue : OpenFileDescriptionId)
+        (maxCount : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : KqueueReport list * UnixSystem<'Task, 'Handler>
+        =
+        if maxCount <= 0 then
+            failwith
+                $"KqueueQueue.drain: maxCount %d{maxCount} is not positive; kevent returns at once before reaching the queue for it, so this is a bug in the caller."
+
+        let state = stateOf "drain" kqueue system
+
+        // Measured on Darwin 27.0.0 (`kevent-register.c`): stale entries are
+        // dropped (P1.8, P4.7); a level registration goes back behind what the
+        // walk did not reach (O4, O5); room for fewer stops the walk (R14, O5).
+        let rec walk
+            (reported : KqueueReport list)
+            (requeued : (int * KqueueFilter) list)
+            (remaining : (int * KqueueFilter) list)
+            : KqueueReport list * (int * KqueueFilter) list
+            =
+            match remaining with
+            | _ when List.length reported = maxCount -> List.rev reported, remaining @ List.rev requeued
+            | [] -> List.rev reported, List.rev requeued
+            | (fd, filter as key) :: rest ->
+                let registration =
+                    match Map.tryFind key state.Registrations with
+                    | Some registration -> registration
+                    | None ->
+                        failwith
+                            $"KqueueQueue.drain: kqueue %O{kqueue} queues %A{key}, which it does not register. FileDescriptorRegistryDefect.KqueueActiveEntryUnregistered exists to make this unreachable, so the system breaks UnixSystem.checkInvariants (this is a bug in this library, or in a caller that assembled the state by hand)."
+
+                match reportOf key system with
+                | None -> walk reported requeued rest
+                | Some report ->
+                    let reported =
+                        {
+                            Fd = fd
+                            Filter = filter
+                            Registration = registration
+                            Report = report
+                        }
+                        :: reported
+
+                    if registration.Clear then
+                        walk reported requeued rest
+                    else
+                        walk reported (key :: requeued) rest
+
+        let reported, active = walk [] [] state.Active
+
+        reported,
+        withState
+            kqueue
+            { state with
+                Active = active
+            }
+            system
+
+/// Something that happened to a socket, which a task waiting in `epoll_wait`
+/// or `kevent` may be waiting for.
+///
+/// The producers are a measured set, not "anything that writes the socket
+/// table": a datagram re-target or dissolve, `bind(2)`, an `accept(2)`, an
+/// `SO_ERROR` read, and the completion-reporting connect signal nothing at all
+/// (`order3.c` rows N, O, P on Linux; `kevent-register.c` sections P and X on
+/// Darwin).
+[<RequireQualifiedAccess>]
+type SocketWake =
+    /// A completed connection joined the listening socket's accept queue.
+    | AcceptQueuePush
+    /// A connect on the socket resolved: it completed, or it was refused.
+    | ConnectResolved
+    /// Linux's connect delivered a pending refusal and reset the socket to
+    /// idle. Darwin never does.
+    | RefusalReset
+    /// The other end of the socket's connection closed, which delivers its FIN.
+    | PeerFin
+
+[<RequireQualifiedAccess>]
+module SocketWake =
+
+    /// The key an epoll wake for `wake` carries, in Linux's `<sys/epoll.h>`
+    /// numbering, or `None` for an unkeyed wake (see
+    /// `FileDescriptorRegistry.signalSocketEventPorts`).
+    let epollKey (wake : SocketWake) : uint32 option =
+        match wake with
+        // A data-ready wake, keyed with what `sock_def_readable` passes its
+        // waiters, so a registration whose stored mask misses all four is
+        // never queued (measured, `order6.c`), and one asking only for
+        // `EPOLLPRI` or `EPOLLRDBAND` is queued although a listener never
+        // reports either (measured, the WAKE section of `epoll-ctl.c`).
+        | SocketWake.AcceptQueuePush ->
+            Some (EpollEvents.In ||| EpollEvents.Pri ||| EpollEvents.RdNorm ||| EpollEvents.RdBand)
+        // State changes, which queue every registration regardless of interest:
+        // the entry keeps the wake's position through a later interest change,
+        // and delivery's re-poll does the filtering (measured, `order8.c`,
+        // `order9.c`).
+        | SocketWake.ConnectResolved
+        | SocketWake.RefusalReset
+        | SocketWake.PeerFin -> None
+
+    /// The kqueue filters `wake` activates, in the order it activates them.
+    let kqueueFilters (wake : SocketWake) : KqueueFilter list =
+        // Measured on Darwin 27.0.0 (`kevent-register.c`, section P): a queued
+        // connection activates the listener's READ (P1); a connect completing
+        // its WRITE (P2), and a refusal its WRITE and then its READ (P3, O2);
+        // the peer's FIN its READ alone, though its WRITE is ready too (P5,
+        // P6). A completing connect's READ is never ready, so whether it is
+        // activated is not observable.
+        match wake with
+        | SocketWake.AcceptQueuePush -> [ KqueueFilter.Read ]
+        | SocketWake.ConnectResolved -> [ KqueueFilter.Write ; KqueueFilter.Read ]
+        | SocketWake.PeerFin -> [ KqueueFilter.Read ]
+        // Only Linux resets a refused socket, and Linux has no kqueue.
+        | SocketWake.RefusalReset -> []
+
+    /// `wake` happened to the socket `socketId`: signal every epoll
+    /// registration of it, and activate every kqueue registration of it.
+    ///
+    /// Called with the socket already in the state the event left it in,
+    /// since a kqueue registration is activated only if its filter is then
+    /// ready.
+    let signal<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (socketId : SocketId)
+        (wake : SocketWake)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        let system =
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors =
+                            FileDescriptorRegistry.signalSocketEventPorts
+                                (UnixProcessState.descriptionsNamingSocket socketId system.Process)
+                                (epollKey wake)
+                                system.Process.FileDescriptors
+                    }
+            }
+
+        KqueueQueue.activate socketId (kqueueFilters wake) system

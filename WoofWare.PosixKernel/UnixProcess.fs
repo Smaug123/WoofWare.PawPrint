@@ -265,25 +265,6 @@ module UnixProcessState =
         || FileDescriptorRegistry.descriptions proc.FileDescriptors
            |> Map.exists (fun _ description -> description.Target = OpenFileTarget.Pipe (pipeId, pipeEnd))
 
-    /// A *state-change* wake on `socketId` — a connect resolving (completion
-    /// or refusal), the refusal delivery's reset, a peer's FIN. Unkeyed:
-    /// measured (`order8.c`, `order9.c`), such a wake queues every
-    /// registration regardless of interest, the entry keeps the wake's
-    /// position through a later interest change, and delivery's re-poll does
-    /// the filtering.
-    let signalSocketStateChange<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (socketId : SocketId)
-        (proc : UnixProcessState<'Task, 'Handler>)
-        : UnixProcessState<'Task, 'Handler>
-        =
-        { proc with
-            FileDescriptors =
-                FileDescriptorRegistry.signalSocketEventPorts
-                    (descriptionsNamingSocket socketId proc)
-                    None
-                    proc.FileDescriptors
-        }
-
     /// Every inode this kernel holds a reference to *directly*, independently of
     /// any name the filesystem binds to it.
     ///

@@ -166,6 +166,8 @@ module TestKqueue =
                             OpenFileTarget.Kqueue
                                 {
                                     Drained = false
+                                    Registrations = Map.empty
+                                    Active = []
                                 }
                         AccessMode = FileAccessMode.ReadWrite
                         NonBlocking = false
@@ -425,9 +427,59 @@ module TestKqueue =
     // The ladder, beyond the probe's columns
     // ------------------------------------------------------------------
 
+    /// What a kqueue in `system`, which holds no socket, makes of the readable
+    /// `changes` of a changelist of `nchanges` entries with room for `room` entries:
+    /// the entries echoed, or the errno that ends the call, or a refusal. None of them
+    /// can change the system: an ADD names no socket, and a DELETE nothing registered.
+    let private changesWithNoSocket
+        (system : UnixSystem<int, string>)
+        (nchanges : int)
+        (changes : Kevent list)
+        (room : int)
+        : Result<Result<Kevent list, UnixError>, KeventRefusal>
+        =
+        let allowed = [ 0x01us ; 0x21us ; 0x41us ; 0x61us ; 0x02us ; 0x42us ]
+
+        let rec go (echoed : Kevent list) (room : int) (remaining : Kevent list) =
+            match remaining with
+            | [] when nchanges > List.length changes -> Ok (Error UnixError.EFAULT)
+            | [] -> Ok (Ok (List.rev echoed))
+            | change :: rest ->
+                let outcome =
+                    if not (List.contains change.Flags allowed) then
+                        Error (KeventRefusal.UnmodelledFlags change)
+                    elif change.Filter <> -1s && change.Filter <> -2s then
+                        Error (KeventRefusal.UnmodelledFilter change)
+                    elif change.FilterFlags <> 0u || change.Data <> 0L then
+                        Error (KeventRefusal.UnmodelledFilterParameters change)
+                    elif change.Flags &&& 0x02us <> 0us then
+                        Ok UnixError.ENOENT
+                    else
+                        match
+                            FileDescriptorRegistry.tryFindTarget (int change.Ident) system.Process.FileDescriptors
+                        with
+                        | None -> Ok UnixError.EBADF
+                        | Some target -> Error (KeventRefusal.UnmodelledTarget (change, target))
+
+                match outcome with
+                | Error refusal -> Error refusal
+                | Ok error when room > 0 ->
+                    let entry =
+                        { change with
+                            Flags = change.Flags ||| 0x4000us
+                            Data = int64 (UnixError.toRawErrnoUnder RawErrnoNumbering.Darwin error)
+                        }
+
+                    go (entry :: echoed) (room - 1) rest
+                | Ok error -> Ok (Error error)
+
+        go [] room changes
+
     /// What the measured ladder answers for a call that gets past the timeout and the
-    /// descriptor, on a kqueue nothing has drained: `None` for a call that waits.
+    /// descriptor, on a kqueue in `system` that nothing has drained and that registers
+    /// nothing: `None` for a call that waits.
     let private oracle
+        (system : UnixSystem<int, string>)
         (nchanges : int)
         (readable : Kevent list)
         (nevents : int)
@@ -445,11 +497,13 @@ module TestKqueue =
             Ok (Some (KeventOutcome.Failed UnixError.EINVAL))
         | _ ->
 
-        if nchanges > 0 && List.isEmpty readable then
-            Ok (Some (KeventOutcome.Failed UnixError.EFAULT))
-        elif nchanges > 0 then
-            Error (KeventRefusal.Changelist readable)
-        elif nevents <= 0 then
+        match changesWithNoSocket system nchanges readable (max nevents 0) with
+        | Error refusal -> Error refusal
+        | Ok (Error error) -> Ok (Some (KeventOutcome.Failed error))
+        | Ok (Ok (_ :: _ as echoed)) -> Ok (Some (KeventOutcome.Echoed echoed))
+        | Ok (Ok []) ->
+
+        if nevents <= 0 then
             Ok (Some (KeventOutcome.Answered []))
         else
             match timeout with
@@ -522,7 +576,7 @@ module TestKqueue =
             let actual =
                 UnixKqueue.kevent 1 fd nchanges readable nevents UserBuffer.Mapped timeout system
 
-            match oracle nchanges readable nevents timeout, actual with
+            match oracle system nchanges readable nevents timeout, actual with
             | Error expected, actual -> actual |> shouldEqual (Error expected)
             | Ok (Some expected), actual -> actual |> shouldEqual (Ok (expected, system))
             | Ok None, Ok (KeventOutcome.WouldBlock _, parked) ->
@@ -545,11 +599,11 @@ module TestKqueue =
         =
         let property (fd : int, timeout : KeventTimeout, nchanges : int, nevents : int) : unit =
             let expected =
-                match oracle 0 [] 1 timeout with
+                match oracle darwin 0 [] 1 timeout with
                 | Ok (Some (KeventOutcome.Failed error)) when error <> UnixError.EBADF -> KeventOutcome.Failed error
                 | _ -> KeventOutcome.Failed UnixError.EBADF
 
-            // Even a readable change, which a kqueue would refuse to apply, is never reached.
+            // Even a readable change, which a kqueue would apply or refuse, is never reached.
             let readable = if nchanges > 0 then [ someChange ] else []
 
             UnixKqueue.kevent 1 fd nchanges readable nevents UserBuffer.Mapped timeout darwin
@@ -582,8 +636,9 @@ module TestKqueue =
             condition
             |> shouldEqual (
                 WakeCondition.AnyOf (
-                    WakeCondition.Primitive (WakePrimitive.KqueueDrained (idOf fd system)),
+                    WakeCondition.Primitive (WakePrimitive.KqueueEventDeliverable (idOf fd system)),
                     [
+                        WakeCondition.Primitive (WakePrimitive.KqueueDrained (idOf fd system))
                         WakeCondition.Primitive (WakePrimitive.DeadlinePassed deadline)
                         WakeCondition.Primitive WakePrimitive.SignalDeliverable
                     ]
@@ -626,15 +681,18 @@ module TestKqueue =
         Check.One (config, Prop.forAll (Arb.fromGen gen) property)
 
     [<Test>]
-    let ``a null timeout waits for a drain or a signal, and no deadline`` () : unit =
+    let ``a null timeout waits for an event, a drain or a signal, and no deadline`` () : unit =
         let fd, system = createKqueue darwin
         let condition, parked = parks 1 fd KeventTimeout.Null system
 
         condition
         |> shouldEqual (
             WakeCondition.AnyOf (
-                WakeCondition.Primitive (WakePrimitive.KqueueDrained (idOf fd system)),
-                [ WakeCondition.Primitive WakePrimitive.SignalDeliverable ]
+                WakeCondition.Primitive (WakePrimitive.KqueueEventDeliverable (idOf fd system)),
+                [
+                    WakeCondition.Primitive (WakePrimitive.KqueueDrained (idOf fd system))
+                    WakeCondition.Primitive WakePrimitive.SignalDeliverable
+                ]
             )
         )
 
@@ -646,6 +704,7 @@ module TestKqueue =
                     Kqueue = idOf fd system
                     Fd = fd
                     MaxEvents = 1
+                    Buffer = UserBuffer.Mapped
                     Deadline = None
                 }
         | other -> failwith $"expected a kevent park, got %A{other}"
@@ -692,6 +751,8 @@ module TestKqueue =
                     OpenFileTarget.Kqueue
                         {
                             Drained = true
+                            Registrations = Map.empty
+                            Active = []
                         }
                 )
             )
@@ -822,6 +883,8 @@ module TestKqueue =
                     OpenFileTarget.Kqueue
                         {
                             Drained = true
+                            Registrations = Map.empty
+                            Active = []
                         }
                 )
             )
@@ -906,6 +969,7 @@ module TestKqueue =
                     Kqueue = OpenFileDescriptionId 0L
                     Fd = 3
                     MaxEvents = 1
+                    Buffer = UserBuffer.Mapped
                     Deadline = None
                 }
         )
@@ -949,6 +1013,7 @@ module TestKqueue =
                 Kqueue = kqueue
                 Fd = k
                 MaxEvents = 1
+                Buffer = UserBuffer.Mapped
                 Deadline = None
             }
 
@@ -1006,6 +1071,8 @@ module TestKqueue =
                     OpenFileTarget.Kqueue
                         {
                             Drained = false
+                            Registrations = Map.empty
+                            Active = []
                         },
                     SimulatedUnixFlavour.Linux
                 )

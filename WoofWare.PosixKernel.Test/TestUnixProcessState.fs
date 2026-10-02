@@ -256,9 +256,17 @@ module TestUnixProcessState =
 
         ready proc |> shouldEqual []
 
-        let woken = UnixProcessState.signalSocketStateChange watched proc
-        ready woken |> List.length |> shouldEqual 1
+        let signalled (wake : SocketWake) (socketId : SocketId) : UnixProcessState<int, string> =
+            { proc with
+                FileDescriptors =
+                    FileDescriptorRegistry.signalSocketEventPorts
+                        (UnixProcessState.descriptionsNamingSocket socketId proc)
+                        (SocketWake.epollKey wake)
+                        proc.FileDescriptors
+            }
 
-        // A socket nothing watches wakes nothing.
-        ready (UnixProcessState.signalSocketStateChange (SocketId 2L) proc)
-        |> shouldEqual []
+        for wake in [ SocketWake.ConnectResolved ; SocketWake.RefusalReset ; SocketWake.PeerFin ] do
+            ready (signalled wake watched) |> List.length |> shouldEqual 1
+
+            // A socket nothing watches wakes nothing.
+            ready (signalled wake (SocketId 2L)) |> shouldEqual []

@@ -157,7 +157,8 @@ type UnixSystemDefect<'Task> =
     /// A connection in the table has an identity at or above the next one to
     /// allocate, so a future connect would mint a duplicate.
     | NextConnectionIdNotFresh of nextConnectionId : ConnectionId * existing : ConnectionId
-    /// A socket event registration records an ADD ordinal at or above the
+    /// A socket event registration, an epoll instance's or a kqueue's, records
+    /// an ADD ordinal at or above the
     /// next one to mint, so some future ADD would repeat it — and the
     /// ordinal's whole job is to order same-signal ties, which a repeat
     /// leaves unspecified.
@@ -805,8 +806,11 @@ module UnixSystem =
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
-                | OpenFileTarget.Pipe _
-                | OpenFileTarget.Kqueue _ -> []
+                | OpenFileTarget.Pipe _ -> []
+                | OpenFileTarget.Kqueue state ->
+                    state.Registrations
+                    |> Map.toList
+                    |> List.map (fun (_, registration) -> portId, registration.RegisteredAt)
                 | OpenFileTarget.Epoll portState ->
                     portState.Registrations
                     |> Map.toList

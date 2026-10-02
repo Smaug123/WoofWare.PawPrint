@@ -33,9 +33,11 @@ type UnixMachineState =
         /// `NextSocketId`.
         NextConnectionId : ConnectionId
         /// The ordinal the next committed socket event registration records
-        /// as its `RegisteredAt`. Monotonic, and bumped only when an ADD
-        /// commits, so a failed `epoll_ctl` leaves the kernel exactly as it
-        /// found it.
+        /// as its `RegisteredAt`, whether an epoll instance's
+        /// (`EpollRegistration`) or a kqueue's (`KqueueRegistration`).
+        /// Monotonic, and bumped only when an `EPOLL_CTL_ADD` or the first
+        /// `EV_ADD` of a kqueue registration commits, so a failed `epoll_ctl`
+        /// leaves the kernel exactly as it found it.
         NextSocketEventRegistrationOrdinal : int64
         /// The ordinal the next park of any task records as its
         /// `TaskPark.Ordinal`. Monotonic, and bumped only by `UnixWait.park`.
@@ -554,6 +556,27 @@ module UnixMachineState =
             failwith
                 $"UnixMachineState.connection: %O{connectionId} names no connection in this kernel's connection table. UnixSystemDefect.DanglingConnection and DanglingQueuedConnection exist to make this unreachable, so the system breaks UnixSystem.checkInvariants: this is a bug in this library, or in a caller that assembled the state by hand."
 
+    /// Whether the other end of the connection `connectionId`, of which the
+    /// socket `socketId` is one end, is still open: some other socket holds
+    /// the connection established, or a listener holds it in its accept queue.
+    ///
+    /// Derived rather than stored: the connection object outlives its ends
+    /// exactly as long as something references it, so the scan is the truth.
+    let peerOpen (socketId : SocketId) (connectionId : ConnectionId) (machine : UnixMachineState) : bool =
+        machine.Sockets
+        |> Map.exists (fun otherId other ->
+            otherId <> socketId
+            && (
+                match other.Phase with
+                | SocketPhase.Established c
+                | SocketPhase.EstablishedPendingReport c -> c = connectionId
+                | SocketPhase.Listening listenState -> List.contains connectionId listenState.Queue
+                | SocketPhase.Idle
+                | SocketPhase.Refused _
+                | SocketPhase.DatagramPeer _ -> false
+            )
+        )
+
     /// The readiness a socket presents right now, before any waiter's interest
     /// mask is applied. Every row is measured on Linux 6.18.5 — `masks.c`
     /// (docs/plans/2026-08-21-socket-readiness-wake) through level-triggered
@@ -564,8 +587,8 @@ module UnixMachineState =
     ///
     /// Darwin has no measured rows and needs none: both waiters refuse that
     /// flavour before reaching here — epoll, which Darwin does not have, and
-    /// `UnixPoll.poll` — and `UnixKqueue.kevent` refuses every registration, so
-    /// none asks a readiness question of a Darwin-flavoured machine.
+    /// `UnixPoll.poll` — and Darwin's kqueue reads its own filters'
+    /// readiness (`DarwinReadiness`), not this.
     let socketReadinessLevel (socketId : SocketId) (machine : UnixMachineState) : ReadinessLevel =
         let target = socket socketId machine
 
@@ -596,30 +619,12 @@ module UnixMachineState =
             // With the peer alive and no receive path modelled, both ends
             // are exactly write-ready; once the peer is gone, the level is
             // the measured half-closed one.
-            let peerAlive =
-                machine.Sockets
-                |> Map.exists (fun otherId other ->
-                    otherId <> socketId
-                    && (
-                        match other.Phase with
-                        | SocketPhase.Established c
-                        | SocketPhase.EstablishedPendingReport c -> c = connectionId
-                        | SocketPhase.Listening listenState -> List.contains connectionId listenState.Queue
-                        | SocketPhase.Idle
-                        | SocketPhase.Refused _
-                        | SocketPhase.DatagramPeer _ -> false
-                    )
-                )
-
-            if peerAlive then
+            if peerOpen socketId connectionId machine then
                 { ReadinessLevel.none with
                     Out = true
                 }
             else
-                // The measured half-closed level (`order3.c` row Q). Peer
-                // liveness is derived rather than stored: the connection
-                // object outlives its ends exactly as long as something
-                // references it, so the scan is the truth.
+                // The measured half-closed level (`order3.c` row Q).
                 {
                     In = true
                     Out = true

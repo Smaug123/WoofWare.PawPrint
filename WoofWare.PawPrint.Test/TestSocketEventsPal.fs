@@ -443,7 +443,7 @@ module TestSocketEventsPal =
 
         for current in 0 .. SocketEventsPal.supported do
             for next in 0 .. SocketEventsPal.supported do
-                let change (filter : int16) (bit : int) =
+                let change (filter : int16) (bit : int) : Kevent =
                     {
                         Ident = uint64 (int64 -7)
                         Filter = filter
