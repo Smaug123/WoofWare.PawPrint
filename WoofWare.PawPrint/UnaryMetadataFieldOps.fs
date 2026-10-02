@@ -59,6 +59,8 @@ module internal UnaryMetadataFieldOps =
     /// `field.RelativeVirtualAddress`. For a `FieldDefinition` token the two assemblies coincide;
     /// for a `MemberReference` they need not.
     ///
+    /// A MemberRef that binds nothing is `Error`, which `throwBindingFailure` raises.
+    ///
     /// `opName` and `verb` appear in diagnostics only, the latter in the phrase "Unexpectedly asked
     /// to <verb> a non-field".
     let private resolveFieldToken
@@ -66,7 +68,7 @@ module internal UnaryMetadataFieldOps =
         (verb : string)
         (ctx : UnaryMetadataIlOpContext)
         (state : IlMachineState)
-        : IlMachineState * FieldInfo<TypeDefn, TypeDefn> * DumpedAssembly
+        : IlMachineState * Result<FieldInfo<TypeDefn, TypeDefn> * DumpedAssembly, FieldReferenceFailure>
         =
         match ctx.FieldOperand with
         | ResolvedFieldOperand.FromScope fieldHandle ->
@@ -116,7 +118,7 @@ module internal UnaryMetadataFieldOps =
                         typeGenerics.[index]
                 )
 
-            state, field, declaringAssy
+            state, Ok (field, declaringAssy)
         | ResolvedFieldOperand.FromMetadata (activeAssy, metadataToken) ->
 
         let state, field =
@@ -133,7 +135,7 @@ module internal UnaryMetadataFieldOps =
                             failwith $"%s{opName}: generics are not allowed on a FieldDefinition token"
                         )
 
-                    state, field
+                    state, Ok field
             | MetadataToken.MemberReference mr ->
                 let state, _, resolved, _ =
                     IlMachineState.resolveMember
@@ -149,8 +151,13 @@ module internal UnaryMetadataFieldOps =
                 | Choice1Of2 method ->
                     failwith
                         $"%s{opName}: member reference resolved to a method (%s{method.Name}), not a field. This indicates invalid IL or a misresolved token."
-                | Choice2Of2 field -> state, field
+                | Choice2Of2 (FieldReferenceBinding.Bound field) -> state, Ok field
+                | Choice2Of2 (FieldReferenceBinding.Fails failure) -> state, Error failure
             | t -> failwith $"Unexpectedly asked to %s{verb} a non-field: {t}"
+
+        match field with
+        | Error failure -> state, Error failure
+        | Ok field ->
 
         // Resolving the token is what loads the declaring assembly, so it is expected to be present.
         let declaringAssy =
@@ -160,7 +167,29 @@ module internal UnaryMetadataFieldOps =
                     $"%s{opName}: declaring assembly %s{field.DeclaringType.AssemblyFullName} of field %s{field.DeclaringType.Namespace}.%s{field.DeclaringType.Name}::%s{field.Name} was not loaded. Resolving the field token is expected to have loaded it."
             )
 
-        state, field, declaringAssy
+        state, Ok (field, declaringAssy)
+
+    /// Throw into the guest the exception binding a field operand throws. The program counter stays
+    /// on the instruction, so dispatch finds the handlers that cover it.
+    ///
+    /// Real .NET throws when it compiles the method, before any of it runs; this throws when the
+    /// instruction is reached (see docs/divergences.md).
+    let throwBindingFailure
+        (ctx : UnaryMetadataIlOpContext)
+        (failure : FieldReferenceFailure)
+        (state : IlMachineState)
+        : IlMachineState * WhatWeDid
+        =
+        let exceptionType, fields =
+            IlMachineMemberResolution.bindingFailureException ctx.BaseClassTypes failure
+
+        IlMachineStateExecution.raiseRuntimeExceptionWithFields
+            ctx.LoggerFactory
+            ctx.BaseClassTypes
+            exceptionType
+            fields
+            ctx.Thread
+            state
 
     /// Assert that a field reached through a *static* field op really is static, and vice versa.
     /// The static ops key their storage off `(declaringTypeHandle, fieldHandle)` with no instance,
@@ -282,7 +311,9 @@ module internal UnaryMetadataFieldOps =
         let thread = ctx.Thread
         let logger = ctx.Logger
 
-        let state, field, declaringAssy = resolveFieldToken "stfld" "store to" ctx state
+        match resolveFieldToken "stfld" "store to" ctx state with
+        | state, Error failure -> throwBindingFailure ctx failure state
+        | state, Ok (field, declaringAssy) ->
 
         do
             logger.LogTrace (
@@ -370,7 +401,9 @@ module internal UnaryMetadataFieldOps =
         let thread = ctx.Thread
         let logger = ctx.Logger
 
-        let state, field, declaringAssy = resolveFieldToken "stsfld" "store to" ctx state
+        match resolveFieldToken "stsfld" "store to" ctx state with
+        | state, Error failure -> throwBindingFailure ctx failure state
+        | state, Ok (field, declaringAssy) ->
 
         checkFieldStaticness "stsfld" "store" true "stfld" field
 
@@ -432,7 +465,9 @@ module internal UnaryMetadataFieldOps =
         let thread = ctx.Thread
         let logger = ctx.Logger
 
-        let state, field, _declaringAssy = resolveFieldToken "ldfld" "load from" ctx state
+        match resolveFieldToken "ldfld" "load from" ctx state with
+        | state, Error failure -> throwBindingFailure ctx failure state
+        | state, Ok (field, _declaringAssy) ->
 
         // The declaring type's name is carried on `field.DeclaringType` directly; we
         // do not dereference `Definition.Get` against `activeAssy.TypeDefs`
@@ -627,10 +662,11 @@ module internal UnaryMetadataFieldOps =
         let baseClassTypes = ctx.BaseClassTypes
         let thread = ctx.Thread
 
-        let ptr, state = IlMachineState.popEvalStack thread state
+        match resolveFieldToken "ldflda" "load from" ctx state with
+        | state, Error failure -> throwBindingFailure ctx failure state
+        | state, Ok (field, _declaringAssy) ->
 
-        // TODO: generics
-        let state, field, _declaringAssy = resolveFieldToken "ldflda" "load from" ctx state
+        let ptr, state = IlMachineState.popEvalStack thread state
 
         checkFieldStaticness "ldflda" "take the address of" false "ldsflda" field
 
@@ -661,7 +697,9 @@ module internal UnaryMetadataFieldOps =
         let thread = ctx.Thread
         let logger = ctx.Logger
 
-        let state, field, declaringAssy = resolveFieldToken "ldsfld" "load from" ctx state
+        match resolveFieldToken "ldsfld" "load from" ctx state with
+        | state, Error failure -> throwBindingFailure ctx failure state
+        | state, Ok (field, declaringAssy) ->
 
         checkFieldStaticness "ldsfld" "load" true "ldfld" field
 
@@ -845,7 +883,9 @@ module internal UnaryMetadataFieldOps =
 
         // TODO: check whether we should throw FieldAccessException
 
-        let state, field, declaringAssy = resolveFieldToken "ldsflda" "load" ctx state
+        match resolveFieldToken "ldsflda" "load" ctx state with
+        | state, Error failure -> throwBindingFailure ctx failure state
+        | state, Ok (field, declaringAssy) ->
 
         checkFieldStaticness "ldsflda" "take the address of" true "ldflda" field
 
