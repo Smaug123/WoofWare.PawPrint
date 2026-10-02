@@ -22,9 +22,28 @@ type MemberReferenceParent =
     /// is scoped to, so binding the member throws <c>TypeLoadException</c>, whatever the member. The
     /// miss is the first such reference that load reaches.
     | Unresolved of TypeResolutionMiss
+    /// CoreCLR's load of the parent reaches a type reference to an assembly no runtime directory
+    /// supplies, so binding the member throws <c>FileNotFoundException</c>, whatever the member. The
+    /// reference is the first such one that load reaches.
+    | AssemblyUnavailable of WoofWare.PawPrint.AssemblyReference
 
 [<RequireQualifiedAccess>]
 module MemberReferenceParent =
+
+    /// Why a type that loading a parent reaches cannot be loaded.
+    [<RequireQualifiedAccess>]
+    type private LoadMiss =
+        /// A type reference names no type in the assembly it is scoped to.
+        | TypeAbsent of TypeResolutionMiss
+        /// A type reference is to an assembly no runtime directory supplies.
+        | AssemblyUnavailable of WoofWare.PawPrint.AssemblyReference
+
+    /// A type reference's definition, or why it has none.
+    let private ofIdentity (identity : TypeReferenceIdentity) : Result<ResolvedTypeIdentity, LoadMiss> =
+        match identity with
+        | TypeReferenceIdentity.Resolved identity -> Ok identity
+        | TypeReferenceIdentity.TypeAbsent miss -> Error (LoadMiss.TypeAbsent miss)
+        | TypeReferenceIdentity.AssemblyUnavailable reference -> Error (LoadMiss.AssemblyUnavailable reference)
 
     /// The definition a type spelling in `spellingAssembly` names, looking through custom modifiers
     /// and instantiations, and reading a primitive as its CoreLib type.
@@ -35,10 +54,18 @@ module MemberReferenceParent =
         (spellingAssembly : DumpedAssembly)
         (spelling : TypeDefn)
         (assemblies : LoadedAssemblies)
-        : LoadedAssemblies * Result<ResolvedTypeIdentity, TypeResolutionMiss>
+        : LoadedAssemblies * Result<ResolvedTypeIdentity, LoadMiss>
         =
         let ofReference (typeRef : TypeRef) =
-            TypeResolution.resolveTypeRefIdentity loggerFactory dotnetRuntimeDirs spellingAssembly typeRef assemblies
+            let assemblies, identity =
+                TypeResolution.tryResolveTypeRefIdentity
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    spellingAssembly
+                    typeRef
+                    assemblies
+
+            assemblies, ofIdentity identity
 
         match TypeDefn.stripCustomModifiers spelling with
         | TypeDefn.GenericInstantiation (root, _) ->
@@ -93,9 +120,9 @@ module MemberReferenceParent =
     /// The first of `steps` to find a type that cannot be loaded, running each on the walk the one
     /// before it left.
     let rec private firstMiss
-        (steps : (LoadWalk -> LoadWalk * TypeResolutionMiss option) list)
+        (steps : (LoadWalk -> LoadWalk * LoadMiss option) list)
         (walk : LoadWalk)
-        : LoadWalk * TypeResolutionMiss option
+        : LoadWalk * LoadMiss option
         =
         match steps with
         | [] -> walk, None
@@ -106,9 +133,9 @@ module MemberReferenceParent =
 
     /// Run `step`, unless an earlier one found a miss.
     let private andThen
-        (step : LoadWalk -> LoadWalk * TypeResolutionMiss option)
-        (walk : LoadWalk, miss : TypeResolutionMiss option)
-        : LoadWalk * TypeResolutionMiss option
+        (step : LoadWalk -> LoadWalk * LoadMiss option)
+        (walk : LoadWalk, miss : LoadMiss option)
+        : LoadWalk * LoadMiss option
         =
         match miss with
         | Some miss -> walk, Some miss
@@ -121,13 +148,13 @@ module MemberReferenceParent =
         (spellingAssembly : DumpedAssembly)
         (spelling : TypeDefn)
         (walk : LoadWalk)
-        : LoadWalk * Result<ResolvedTypeIdentity, TypeResolutionMiss>
+        : LoadWalk * Result<ResolvedTypeIdentity, LoadMiss>
         =
         match spelling with
         | TypeDefn.FromDefinition (identity, _) -> walk, Ok identity
         | TypeDefn.FromReference (typeRef, _) ->
-            let assemblies, result =
-                TypeResolution.resolveTypeRefIdentity
+            let assemblies, identity =
+                TypeResolution.tryResolveTypeRefIdentity
                     loggerFactory
                     dotnetRuntimeDirs
                     spellingAssembly
@@ -137,7 +164,7 @@ module MemberReferenceParent =
             { walk with
                 Assemblies = assemblies
             },
-            result
+            ofIdentity identity
         | other -> failwith $"BUG: %O{other} is not a nominal spelling"
 
     /// A type definition's base, as a spelling in its own assembly.
@@ -233,12 +260,12 @@ module MemberReferenceParent =
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (withArguments : bool)
-        (atDefinition : ResolvedTypeIdentity -> LoadWalk -> LoadWalk * TypeResolutionMiss option)
-        (onPart : TypeDefn -> LoadWalk -> LoadWalk * TypeResolutionMiss option)
+        (atDefinition : ResolvedTypeIdentity -> LoadWalk -> LoadWalk * LoadMiss option)
+        (onPart : TypeDefn -> LoadWalk -> LoadWalk * LoadMiss option)
         (spellingAssembly : DumpedAssembly)
         (spelling : TypeDefn)
         (walk : LoadWalk)
-        : LoadWalk * TypeResolutionMiss option
+        : LoadWalk * LoadMiss option
         =
         let recurse = onPart
 
@@ -270,7 +297,7 @@ module MemberReferenceParent =
         (spellingAssembly : DumpedAssembly)
         (spelling : TypeDefn)
         (walk : LoadWalk)
-        : LoadWalk * TypeResolutionMiss option
+        : LoadWalk * LoadMiss option
         =
         match TypeDefn.stripCustomModifiers spelling with
         | TypeDefn.GenericInstantiation (root, args) ->
@@ -306,7 +333,7 @@ module MemberReferenceParent =
         (spellingAssembly : DumpedAssembly)
         (spelling : TypeDefn)
         (walk : LoadWalk)
-        : LoadWalk * TypeResolutionMiss option
+        : LoadWalk * LoadMiss option
         =
         match TypeDefn.stripCustomModifiers spelling with
         | TypeDefn.GenericInstantiation (root, args) ->
@@ -328,7 +355,7 @@ module MemberReferenceParent =
         (spellingAssembly : DumpedAssembly)
         (spelling : TypeDefn)
         (walk : LoadWalk)
-        : LoadWalk * TypeResolutionMiss option
+        : LoadWalk * LoadMiss option
         =
         walkSpelling
             loggerFactory
@@ -348,7 +375,7 @@ module MemberReferenceParent =
         (dotnetRuntimeDirs : string seq)
         (identity : ResolvedTypeIdentity)
         (walk : LoadWalk)
-        : LoadWalk * TypeResolutionMiss option
+        : LoadWalk * LoadMiss option
         =
         if walk.Approximate.Contains identity then
             walk, None
@@ -380,7 +407,7 @@ module MemberReferenceParent =
         (spellingAssembly : DumpedAssembly)
         (spelling : TypeDefn)
         (walk : LoadWalk)
-        : LoadWalk * TypeResolutionMiss option
+        : LoadWalk * LoadMiss option
         =
         approximate loggerFactory dotnetRuntimeDirs spellingAssembly spelling walk
         |> andThen (
@@ -401,7 +428,7 @@ module MemberReferenceParent =
         (dotnetRuntimeDirs : string seq)
         (identity : ResolvedTypeIdentity)
         (walk : LoadWalk)
-        : LoadWalk * TypeResolutionMiss option
+        : LoadWalk * LoadMiss option
         =
         if walk.Exact.Contains identity then
             walk, None
@@ -467,7 +494,7 @@ module MemberReferenceParent =
         (spellingAssembly : DumpedAssembly)
         (spelling : TypeDefn)
         (walk : LoadWalk)
-        : LoadWalk * TypeResolutionMiss option
+        : LoadWalk * LoadMiss option
         =
         exact loggerFactory dotnetRuntimeDirs spellingAssembly spelling walk
         |> andThen (
@@ -489,7 +516,7 @@ module MemberReferenceParent =
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (identity : ResolvedTypeIdentity)
         (walk : LoadWalk)
-        : LoadWalk * TypeResolutionMiss option
+        : LoadWalk * LoadMiss option
         =
         if walk.Full.Contains identity then
             walk, None
@@ -536,7 +563,7 @@ module MemberReferenceParent =
         (spellingAssembly : DumpedAssembly)
         (spelling : TypeDefn)
         (walk : LoadWalk)
-        : LoadWalk * TypeResolutionMiss option
+        : LoadWalk * LoadMiss option
         =
         let recurse =
             loadFresh loggerFactory dotnetRuntimeDirs baseClassTypes level spellingAssembly
@@ -588,7 +615,7 @@ module MemberReferenceParent =
         (spellingAssembly : DumpedAssembly)
         (spelling : TypeDefn)
         (assemblies : LoadedAssemblies)
-        : LoadedAssemblies * TypeResolutionMiss option
+        : LoadedAssemblies * LoadMiss option
         =
         let walk =
             {
@@ -616,16 +643,22 @@ module MemberReferenceParent =
         =
         let row = referencingAssembly.Members.[reference]
 
+        let unloadable (miss : LoadMiss) : MemberReferenceParent =
+            match miss with
+            | LoadMiss.TypeAbsent miss -> MemberReferenceParent.Unresolved miss
+            | LoadMiss.AssemblyUnavailable reference -> MemberReferenceParent.AssemblyUnavailable reference
+
         let nominal (assemblies, result) =
             match result with
             | Ok identity -> assemblies, MemberReferenceParent.Nominal identity
-            | Error miss -> assemblies, MemberReferenceParent.Unresolved miss
+            | Error miss -> assemblies, unloadable miss
 
         // CoreCLR loads the whole parent before it looks for the member, so a parent whose load
-        // reaches a type reference that names nothing is `Unresolved` whatever the member.
+        // reaches a type reference that names nothing, or an assembly that is not there, binds no
+        // member.
         let loaded (spelling : TypeDefn) (answer : LoadedAssemblies -> LoadedAssemblies * MemberReferenceParent) =
             match loadMiss loggerFactory dotnetRuntimeDirs baseClassTypes referencingAssembly spelling assemblies with
-            | assemblies, Some miss -> assemblies, MemberReferenceParent.Unresolved miss
+            | assemblies, Some miss -> assemblies, unloadable miss
             | assemblies, None -> answer assemblies
 
         match row.Parent with
@@ -642,13 +675,15 @@ module MemberReferenceParent =
             loaded
                 (TypeDefn.FromReference (typeRef, SignatureTypeKind.Unknown))
                 (fun assemblies ->
-                    TypeResolution.resolveTypeRefIdentity
-                        loggerFactory
-                        dotnetRuntimeDirs
-                        referencingAssembly
-                        typeRef
-                        assemblies
-                    |> nominal
+                    let assemblies, identity =
+                        TypeResolution.tryResolveTypeRefIdentity
+                            loggerFactory
+                            dotnetRuntimeDirs
+                            referencingAssembly
+                            typeRef
+                            assemblies
+
+                    nominal (assemblies, ofIdentity identity)
                 )
         | MetadataToken.TypeSpecification handle ->
             let spelling = referencingAssembly.TypeSpecs.[handle].Signature

@@ -120,6 +120,7 @@ type internal CallTarget =
     | ArrayAccessor of arrayType : TypeDefn * ArrayAccessor
     | Missing
     | TypeMissing
+    | AssemblyMissing
     | DependsOnInstantiation
 
 /// What CoreCLR runs when a method is called (`IntrinsicBody.classify`).
@@ -699,6 +700,7 @@ module EscapeAnalysis =
                 state, CallTarget.ArrayAccessor (arrayType, accessor), false
             | MethodReferenceTarget.Missing -> state, CallTarget.Missing, false
             | MethodReferenceTarget.ParentTypeMissing _ -> state, CallTarget.TypeMissing, false
+            | MethodReferenceTarget.ParentAssemblyUnavailable _ -> state, CallTarget.AssemblyMissing, false
             | MethodReferenceTarget.DependsOnInstantiation -> state, CallTarget.DependsOnInstantiation, false
         | other -> failwith $"A call in %s{assembly.DefinitionFullName} names %O{other}, which is not a method"
 
@@ -1030,11 +1032,6 @@ module EscapeAnalysis =
         (token : MetadataToken)
         : EscapeAnalysisState * CallTarget option * OutsideBodyFact list
         =
-        let typeLoad () =
-            [
-                OutsideBodyFact.Raises (ThrownType.Exactly (corelibException state "TypeLoadException"))
-            ]
-
         let raisesOf (failure : BindFailure option) : OutsideBodyFact list =
             failure |> Option.map (bindFailureRaises state) |> Option.toList
 
@@ -1080,7 +1077,10 @@ module EscapeAnalysis =
                         Some CallTarget.Missing,
                         OutsideBodyFact.Raises (ThrownType.Exactly (corelibException state "MissingMethodException"))
                         :: signatureFailures
-                    | state, CallTarget.TypeMissing -> state, Some CallTarget.TypeMissing, typeLoad ()
+                    | state, CallTarget.TypeMissing ->
+                        state, Some CallTarget.TypeMissing, raisesOf (Some BindFailure.TypeAbsent)
+                    | state, CallTarget.AssemblyMissing ->
+                        state, Some CallTarget.AssemblyMissing, raisesOf (Some BindFailure.AssemblyUnavailable)
                     | state, CallTarget.DependsOnInstantiation ->
                         state, Some CallTarget.DependsOnInstantiation, dependsOnInstantiation :: signatureFailures
                     | state, target -> state, Some target, signatureFailures
@@ -1103,7 +1103,9 @@ module EscapeAnalysis =
                         [
                             OutsideBodyFact.Raises (ThrownType.Exactly (corelibException state "MissingFieldException"))
                         ]
-                    | FieldReferenceTarget.ParentTypeMissing _ -> state, None, typeLoad ()
+                    | FieldReferenceTarget.ParentTypeMissing _ -> state, None, raisesOf (Some BindFailure.TypeAbsent)
+                    | FieldReferenceTarget.ParentAssemblyUnavailable _ ->
+                        state, None, raisesOf (Some BindFailure.AssemblyUnavailable)
                     | FieldReferenceTarget.DependsOnInstantiation -> state, None, [ dependsOnInstantiation ]
                     | FieldReferenceTarget.Defined _ -> state, None, []
 
@@ -1565,7 +1567,8 @@ module EscapeAnalysis =
                         state, raises, (offset, Opacity.DependsOnInstantiation) :: opaque, calls
                     // Binding the token fails, which step 0 recorded; there is nothing to call.
                     | MetadataOperand.FromMetadata _, Some CallTarget.Missing, _
-                    | MetadataOperand.FromMetadata _, Some CallTarget.TypeMissing, _ -> state, raises, opaque, calls
+                    | MetadataOperand.FromMetadata _, Some CallTarget.TypeMissing, _
+                    | MetadataOperand.FromMetadata _, Some CallTarget.AssemblyMissing, _ -> state, raises, opaque, calls
                     | MetadataOperand.FromMetadata token, None, _ ->
                         failwith
                             $"A call in %s{assembly.DefinitionFullName} names %O{token.Token}, which is not a method"

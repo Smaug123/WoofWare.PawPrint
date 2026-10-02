@@ -90,8 +90,7 @@ constraint added since now rejects, and a type it names whose own base type, int
 are no longer there (`TypeLoadException`).
 
 An assembly that is not there at all, where a type was missing from one that is, is reported as
-`FileNotFoundException` where a token, a local or a `catch` clause names a type in it. A member
-reference whose parent type is in such an assembly stops the analysis instead.
+`FileNotFoundException` wherever a token, a local or a `catch` clause names a type in it.
 
 This package sees `WoofWare.PawPrint.Domain`, `WoofWare.PawPrint.Loader`,
 `WoofWare.PawPrint.TypeSystem` and `WoofWare.PawPrint.Semantics`, and never the interpreter.

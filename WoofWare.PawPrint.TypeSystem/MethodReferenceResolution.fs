@@ -55,6 +55,10 @@ type MethodReferenceTarget =
     /// <c>TypeLoadException</c>.
     | ParentTypeMissing of TypeResolutionMiss
 
+    /// CoreCLR's load of the parent reaches a type reference to an assembly no runtime directory
+    /// supplies, so binding the reference throws <c>FileNotFoundException</c>.
+    | ParentAssemblyUnavailable of WoofWare.PawPrint.AssemblyReference
+
 /// <summary>
 /// Which method a MemberRef names, answered at the level of generic definitions: no type is
 /// instantiated, and a reference to a member of <c>List&lt;int&gt;</c> resolves to the method of
@@ -455,3 +459,5 @@ module MethodReferenceResolution =
             withAssemblies ctx assemblies, MethodReferenceTarget.DependsOnInstantiation
         | assemblies, MemberReferenceParent.Unresolved miss ->
             withAssemblies ctx assemblies, MethodReferenceTarget.ParentTypeMissing miss
+        | assemblies, MemberReferenceParent.AssemblyUnavailable reference ->
+            withAssemblies ctx assemblies, MethodReferenceTarget.ParentAssemblyUnavailable reference
