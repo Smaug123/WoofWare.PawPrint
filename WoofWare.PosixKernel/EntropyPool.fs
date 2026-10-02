@@ -13,6 +13,8 @@ open System.Runtime.InteropServices
 ///
 /// The pool is initialised from the moment it exists, so a draw never has to
 /// wait for entropy to accumulate.
+///
+/// A process gets bytes from it through `UnixEntropy`'s syscalls.
 [<Struct>]
 type EntropyPool = private | EntropyPool of state : uint64
 
@@ -103,7 +105,7 @@ module EntropyPool =
     /// one.
     ///
     /// `count` must not be negative.
-    let take (count : int) (pool : EntropyPool) : EntropyDraw * EntropyPool =
+    let internal take (count : int) (pool : EntropyPool) : EntropyDraw * EntropyPool =
         if count < 0 then
             failwith $"EntropyPool.take: a count of %d{count} bytes is negative"
 
@@ -111,6 +113,6 @@ module EntropyPool =
         EntropyDraw (state, count), EntropyPool (state + SplitMix64.outputsFor count * SplitMix64.Gamma)
 
     /// `take`, with every byte of the draw produced at once.
-    let draw (count : int) (pool : EntropyPool) : ImmutableArray<byte> * EntropyPool =
+    let internal draw (count : int) (pool : EntropyPool) : ImmutableArray<byte> * EntropyPool =
         let taken, pool = take count pool
         EntropyDraw.bytes taken, pool

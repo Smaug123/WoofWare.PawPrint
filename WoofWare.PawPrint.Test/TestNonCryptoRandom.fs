@@ -170,7 +170,7 @@ module TestNonCryptoRandom =
         // can't shift the bytes `Guid.NewGuid` observes. Seeding the two alike
         // would have them emit identical byte sequences from a fresh kernel,
         // which is both surprising and a sign the streams got merged.
-        let pool, _ = EntropyPool.draw 64 EmulatedKernel.initial.Machine.EntropyPool
+        let pool, _ = MinipalRandom.secureRandomBytes "test" 64 EmulatedKernel.initial
 
         let libc, _ =
             NonCryptoRandom.drawBytes 64 EmulatedKernel.initial.NonCryptoRandomState
@@ -183,7 +183,15 @@ module TestNonCryptoRandom =
         // other. A seed must name the same byte stream in both, or one of them
         // is not splitmix64.
         let property (seed : uint64) (count : byte) : bool =
-            let pool, _ = EntropyPool.draw (int count) (EntropyPool.ofSeed seed)
+            let kernel =
+                { EmulatedKernel.initial with
+                    Machine =
+                        { EmulatedKernel.initial.Machine with
+                            EntropyPool = EntropyPool.ofSeed seed
+                        }
+                }
+
+            let pool, _ = MinipalRandom.secureRandomBytes "test" (int count) kernel
             let libc, _ = NonCryptoRandom.drawBytes (int count) seed
             Seq.toArray pool = libc
 

@@ -160,6 +160,7 @@
     <Compile Include="Native\DirectoryEntryPal.fs" />
     <Compile Include="Native\SocketShimPal.fs" />
     <Compile Include="Native\OsThreadIdPal.fs" />
+    <Compile Include="Native\MinipalRandom.fs" />
     <Compile Include="Native\NativeCall.fs" />
     <Compile Include="Native\NativeLibc.fs" />
     <Compile Include="Native\NativeGc.fs" />
