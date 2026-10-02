@@ -331,6 +331,48 @@ module TestUnixSystemInvariants =
     /// A description id nothing in `system` holds.
     let private absentDescription : OpenFileDescriptionId = OpenFileDescriptionId 999L
 
+    /// `system` with the description stdin names, and every descriptor naming
+    /// it, gone from the descriptor table but for the description itself.
+    let private stdinUnnamed (system : UnixSystem<int, string>) : OpenFileDescriptionId * UnixSystem<int, string> =
+        let stdin =
+            FileDescriptorRegistry.tryFindId 0 system.Process.FileDescriptors |> Option.get
+
+        let registry =
+            match FileDescriptorRegistry.dropDescriptor 0 (Set.singleton stdin) system.Process.FileDescriptors with
+            | Ok (registry, None) -> registry
+            | other -> failwith $"expected the description to survive, got %A{other}"
+
+        stdin,
+        { system with
+            Process =
+                { system.Process with
+                    FileDescriptors = registry
+                }
+        }
+
+    [<Test>]
+    let ``a description nothing references is a defect, and one a parked call holds is not`` () : unit =
+        let stdin, unnamed = stdinUnnamed system
+
+        UnixSystem.checkInvariants unnamed
+        |> shouldEqual [ UnixSystemDefect.UnreferencedDescription stdin ]
+
+        // Held by a read asleep on it, as a read of the launched pipe's empty
+        // read end would be.
+        unnamed
+        |> withTask (
+            Some (
+                ParkedSyscall.PipeRead
+                    {
+                        Reader = stdin
+                        Buffer = UserBuffer.Mapped
+                        Count = 1
+                    }
+            )
+        )
+        |> UnixSystem.checkInvariants
+        |> shouldEqual []
+
     [<Test>]
     let ``a task parked on an flock of an absent description is a defect`` () : unit =
         system

@@ -955,16 +955,25 @@ module TestSignalDispatch =
 
     [<Test>]
     let ``a sleeping dispatcher holds its read end open against a close`` () : unit =
-        // The sleeping read holds the description, and this kernel refuses the
-        // close that would take it away underneath it.
+        // Measured (open-file-references.c, section B): on Linux the sleeping
+        // read holds the description, so closing the last descriptor onto it
+        // leaves the read asleep on a description that outlives the number.
+        // Darwin's close would end the read, which this kernel refuses.
         for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
-            let state, _dispatcher, _ = preparedStateOn platform
+            let state, dispatcher, _ = preparedStateOn platform
             let state = poll state
 
-            match UnixDescriptor.close (pipeOf state).ReadEnd (EmulatedKernel.unix state.Kernel) with
-            | Error (CloseRefusal.LinuxLastPipeDescriptorWithTransfer _)
-            | Error (CloseRefusal.DarwinPipeDescriptorWithTransfer _) -> ()
-            | other -> failwith $"closing the read end under the sleeping dispatcher answered %O{other}"
+            match
+                SimulatedUnixPlatform.flavour platform,
+                UnixDescriptor.close (pipeOf state).ReadEnd (EmulatedKernel.unix state.Kernel)
+            with
+            | SimulatedUnixFlavour.Linux, Ok (SyscallAnswer.Completed _, system) ->
+                let state = state.MapKernel (EmulatedKernel.withUnix system)
+                dispatcherRead dispatcher state |> Option.isSome |> shouldEqual true
+                defects state |> shouldEqual []
+            | SimulatedUnixFlavour.Darwin, Error (CloseRefusal.DarwinPipeDescriptorWithTransfer _) -> ()
+            | flavour, other ->
+                failwith $"%O{flavour}: closing the read end under the sleeping dispatcher answered %O{other}"
 
     /// A second task, `reader`, asleep in a blocking read of the signal pipe,
     /// as a guest thread reading the shim's pipe itself would be.

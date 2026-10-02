@@ -258,7 +258,10 @@ module TestFileSystemTypePal =
                     // `SetLastError` would see.
                     match modelSaid with
                     | FileSystemStatisticsAnswer.Failed error ->
-                        let expected = UnixError.toRawErrno error
+                        let expected =
+                            UnixError.toRawErrnoUnder
+                                (SimulatedUnixPlatform.rawErrnoNumbering (HostPlatform.platformOf flavour))
+                                error
 
                         if hostErrno <> expected then
                             failwith

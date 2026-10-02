@@ -61,38 +61,9 @@ module Pipe2Refusal =
 [<RequireQualifiedAccess>]
 module UnixPipe =
 
-    // Linux's `<asm-generic/fcntl.h>` numbering, which x86-64 and aarch64 share
-    // for these three.
-    [<Literal>]
-    let private LinuxNonBlock = 0x800
-
-    [<Literal>]
-    let private LinuxCloseOnExec = 0x80000
-
     /// `O_NOTIFICATION_PIPE`, which is `O_EXCL`.
     [<Literal>]
-    let private LinuxNotificationPipe = 0x80
-
-    /// `O_DIRECT`, whose number is the architecture's. aarch64's
-    /// `<asm/fcntl.h>` moves it to 0x10000 (measured: `pipe2` with that bit
-    /// makes a packet pipe on Linux 6.18.5 aarch64, and 0x4000, which is
-    /// aarch64's `O_DIRECTORY`, is EINVAL). x86-64 keeps the generic 0x4000;
-    /// that column is the uapi header's, and `TestPipeAgainstHost` holds it to
-    /// the x86-64 kernel CI runs on.
-    let private linuxDirect (architecture : SimulatedUnixArchitecture) : int =
-        match architecture with
-        | SimulatedUnixArchitecture.Arm64 -> 0x10000
-        | SimulatedUnixArchitecture.X64 -> 0x4000
-
-    // Darwin's `<fcntl.h>`.
-    [<Literal>]
-    let private DarwinNonBlock = 0x4
-
-    [<Literal>]
-    let private DarwinCloseOnExec = 0x1000000
-
-    [<Literal>]
-    let private DarwinCloseOnFork = 0x8000000
+    let private LinuxNotificationPipe = OpenFlagNumbering.LinuxExclusive
 
     /// What the flag word asks for, once every bit in it is known to be one the
     /// flavour accepts.
@@ -117,10 +88,14 @@ module UnixPipe =
     let private decode (platform : SimulatedUnixPlatform) (flags : int) : Pipe2Flags =
         match SimulatedUnixPlatform.flavour platform with
         | SimulatedUnixFlavour.Linux ->
-            let direct = linuxDirect (SimulatedUnixPlatform.architecture platform)
+            let direct =
+                OpenFlagNumbering.linuxDirect (SimulatedUnixPlatform.architecture platform)
 
             let accepted =
-                LinuxNonBlock ||| LinuxCloseOnExec ||| direct ||| LinuxNotificationPipe
+                OpenFlagNumbering.LinuxNonBlock
+                ||| OpenFlagNumbering.LinuxCloseOnExec
+                ||| direct
+                ||| LinuxNotificationPipe
 
             if flags &&& ~~~accepted <> 0 then
                 Pipe2Flags.Fails UnixError.EINVAL
@@ -129,14 +104,17 @@ module UnixPipe =
             elif flags &&& direct <> 0 then
                 Pipe2Flags.Refused (Pipe2Refusal.PacketMode flags)
             else
-                Pipe2Flags.Creates (flags &&& LinuxNonBlock <> 0)
+                Pipe2Flags.Creates (flags &&& OpenFlagNumbering.LinuxNonBlock <> 0)
         | SimulatedUnixFlavour.Darwin ->
-            let accepted = DarwinNonBlock ||| DarwinCloseOnExec ||| DarwinCloseOnFork
+            let accepted =
+                OpenFlagNumbering.DarwinNonBlock
+                ||| OpenFlagNumbering.DarwinCloseOnExec
+                ||| OpenFlagNumbering.DarwinCloseOnFork
 
             if flags &&& ~~~accepted <> 0 then
                 Pipe2Flags.Fails UnixError.EINVAL
             else
-                Pipe2Flags.Creates (flags &&& DarwinNonBlock <> 0)
+                Pipe2Flags.Creates (flags &&& OpenFlagNumbering.DarwinNonBlock <> 0)
 
     /// `pipe2(2)`: make a pipe, with a descriptor onto each end, and store the
     /// two in the caller's array at `destination`.

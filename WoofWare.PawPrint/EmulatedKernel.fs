@@ -1721,9 +1721,9 @@ module EmulatedKernel =
     /// The descriptor table's own rules are `FileDescriptorRegistry.checkInvariants`,
     /// and the filesystem's are `VirtualFileSystem.checkInvariants`; this
     /// repeats neither. The latter takes a `pinned` argument, which is what
-    /// `UnixDescriptor.pinnedInodes` computes, so a caller wanting the whole picture
+    /// `ObjectLifetime.pinnedInodes` computes, so a caller wanting the whole picture
     /// pairs this with
-    /// `VirtualFileSystem.checkInvariants (UnixDescriptor.pinnedInodes (unix kernel))`.
+    /// `VirtualFileSystem.checkInvariants (ObjectLifetime.pinnedInodes (unix kernel))`.
     let checkInvariants (kernel : EmulatedKernel) : EmulatedKernelDefect list =
         let dispatcher =
             match PosixSignalShim.signalThread kernel.PosixSignalShim with

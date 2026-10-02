@@ -891,7 +891,7 @@ module TestImpureCases =
     /// Not a fact any guest can read — freeing an inode is not something a
     /// process can watch — and the orphan guests cannot check it either, since
     /// everything they remove stays pinned. Without this, a handler that never
-    /// called `UnixDescriptor.forgetIfUnheld` would pass every other assertion
+    /// called `ObjectLifetime.forgetIfUnheld` would pass every other assertion
     /// in this slice.
     let private assertRmDirLeftNoOrphan (state : IlMachineState) : unit =
         VirtualFileSystem.checkInvariants Set.empty state.Kernel.Machine.FileSystem
@@ -956,7 +956,7 @@ module TestImpureCases =
         let kernel = state.Kernel
         let filesystem = kernel.Machine.FileSystem
         let root = VirtualFileSystem.root filesystem
-        let pinned = UnixDescriptor.pinnedInodes (EmulatedKernel.unix kernel)
+        let pinned = ObjectLifetime.pinnedInodes (EmulatedKernel.unix kernel)
 
         let survivors =
             VirtualFileSystem.inodes filesystem
@@ -1019,14 +1019,14 @@ module TestImpureCases =
     /// which are the two halves of the rule — and the third must not be, excused
     /// its unreachability by being pinned.
     ///
-    /// This is the only place either half of `UnixDescriptor.forgetIfUnheld` is
+    /// This is the only place either half of `ObjectLifetime.forgetIfUnheld` is
     /// visible: freeing an inode is not something a guest can observe, and
     /// failing to free one shows up only as a filesystem that grows without
     /// bound.
     let private assertUnlinkReapedExactlyOne (state : IlMachineState) : unit =
         let kernel = state.Kernel
         let filesystem = kernel.Machine.FileSystem
-        let pinned = UnixDescriptor.pinnedInodes (EmulatedKernel.unix kernel)
+        let pinned = ObjectLifetime.pinnedInodes (EmulatedKernel.unix kernel)
 
         let survivors =
             VirtualFileSystem.inodes filesystem

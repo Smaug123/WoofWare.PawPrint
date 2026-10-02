@@ -127,7 +127,7 @@ module EpollCreateFlags =
     /// `EPOLL_CLOEXEC`: set `FD_CLOEXEC` on the new descriptor. The same value
     /// as `O_CLOEXEC`.
     [<Literal>]
-    let CloseOnExec : int = 0x80000
+    let CloseOnExec : int = OpenFlagNumbering.LinuxCloseOnExec
 
 /// Why this kernel will not answer an `epoll_create1(2)`.
 [<RequireQualifiedAccess>]
@@ -965,24 +965,7 @@ module UnixPoll =
 
         Ok (PollOutcome.WouldBlock (WakeCondition.ofPark parked), UnixWait.park task parked system)
 
-    /// Finish the `poll` `task` parked in: scan its entries again, as a woken
-    /// real poll does, and answer.
-    ///
-    /// Scans the entries the call was made with, not whatever the caller's
-    /// array holds now: a real kernel copied them in when the call began. A
-    /// descriptor is looked up afresh, as a real poll does, and `close` refuses
-    /// to close one a parked poll watches, so each still names the description
-    /// the call went to sleep on.
-    ///
-    /// Answers the count when any entry carries anything, whether or not the
-    /// deadline has passed or a signal is pending too; `Failed EINTR` when a
-    /// signal with a handler interrupts it, whether or not the deadline has
-    /// passed; 0, with every `revents` 0, when only the deadline has; and
-    /// otherwise re-parks the task on the same entries and deadline, since
-    /// whatever woke it has gone again. An answer clears the park.
-    ///
-    /// `task` must be parked in a `poll`.
-    let finishPoll<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let private finishPollHolding<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<PollOutcome * UnixSystem<'Task, 'Handler>, PollRefusal>
@@ -1012,7 +995,7 @@ module UnixPoll =
                 | ParkedPollEntry.Watched (fd, description, events) ->
                     if not (Map.containsKey description descriptions) then
                         failwith
-                            $"UnixPoll.finishPoll: task %O{task}'s poll watches open file description %O{description}, which is not in the table, so it was closed underneath the wait. `close` refuses such a close (this is a bug in this library, or in a caller that destroyed the description without UnixDescriptor.close)."
+                            $"UnixPoll.finishPoll: task %O{task}'s poll watches open file description %O{description}, which is not in the table, but a park holds its descriptions until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
 
                     match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
                     | Some current when current = description ->
@@ -1062,6 +1045,41 @@ module UnixPoll =
         else
             let parkedAgain = ParkedSyscall.Poll parked
             Ok (PollOutcome.WouldBlock (WakeCondition.ofPark parkedAgain), UnixWait.park task parkedAgain system)
+
+    /// Finish the `poll` `task` parked in: scan its entries again, as a woken
+    /// real poll does, and answer.
+    ///
+    /// Scans the entries the call was made with, not whatever the caller's
+    /// array holds now: a real kernel copied them in when the call began. A
+    /// descriptor is looked up afresh, as a real poll does, and `close` refuses
+    /// to close one a parked poll watches, so each still names the description
+    /// the call went to sleep on.
+    ///
+    /// Answers the count when any entry carries anything, whether or not the
+    /// deadline has passed or a signal is pending too; `Failed EINTR` when a
+    /// signal with a handler interrupts it, whether or not the deadline has
+    /// passed; 0, with every `revents` 0, when only the deadline has; and
+    /// otherwise re-parks the task on the same entries and deadline, since
+    /// whatever woke it has gone again. An answer clears the park.
+    ///
+    /// `task` must be parked in a `poll`.
+    let finishPoll<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<PollOutcome * UnixSystem<'Task, 'Handler>, PollRefusal>
+        =
+        let held =
+            match UnixTaskTable.parkedFor task system.Tasks with
+            | Some parked -> ParkedSyscall.descriptions parked
+            | None -> []
+
+        // `close` refuses to close a descriptor a parked poll watches, so each
+        // description the call held is still named by its descriptor.
+        finishPollHolding task system
+        |> Result.map (fun (outcome, after) ->
+            outcome, ObjectLifetime.releaseUnreferencedUnrefusable "UnixPoll.finishPoll" held after
+        )
+
 
     /// `epoll_create1(2)`: create an epoll instance and a descriptor onto it, the
     /// lowest one not in use.
@@ -1217,29 +1235,7 @@ module UnixPoll =
         | Error () -> Error (EpollWaitRefusal.DeadlineBeyondClock (now, milliseconds))
         | Ok deadline -> Ok (parkSocketWait task port maxEvents buffer deadline system)
 
-    /// Finish the wait on a socket event port that `task` is parked in: walk
-    /// the port again, as a woken real wait does, and answer.
-    ///
-    /// Delivers from the port the call was made on and with the `maxEvents` it
-    /// was made with, not whatever the caller's arguments hold now: the parked
-    /// call holds the port's open file description, and `close` refuses to
-    /// destroy a description a parked wait holds.
-    ///
-    /// Answers the events it finds, whether or not the deadline has passed or a
-    /// signal is pending too (measured, `epoll-wait.c` section E: an event and
-    /// an expired deadline both holding as the waiter runs report the event);
-    /// no events when the deadline has passed, whether or not a signal is
-    /// pending; `Failed EINTR` when a signal with a handler interrupts it; and
-    /// otherwise re-parks the task on the same port and deadline, since
-    /// whatever woke it has gone again. A re-park goes to the back of park
-    /// order, which puts it first in line for the port's next event. An answer
-    /// clears the park.
-    ///
-    /// Delivering events copies them out to the buffer the call was made with;
-    /// see `epollWait` for the buffers that refuses.
-    ///
-    /// `task` must be parked in a socket event wait.
-    let finishSocketWait<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let private finishSocketWaitHolding<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<EpollWaitOutcome * UnixSystem<'Task, 'Handler>, EpollWaitRefusal>
@@ -1284,3 +1280,43 @@ module UnixPoll =
             failwith
                 "UnixPoll.finishSocketWait: a socket event wait restarted after a signal, where `SyscallInterruption.ruleOf` says one never restarts (this is a bug in this library)."
         | Ok None -> Ok (parkSocketWait task parked.Port parked.MaxEvents parked.Buffer parked.Deadline system)
+
+    /// Finish the wait on a socket event port that `task` is parked in: walk
+    /// the port again, as a woken real wait does, and answer.
+    ///
+    /// Delivers from the port the call was made on and with the `maxEvents` it
+    /// was made with, not whatever the caller's arguments hold now: the parked
+    /// call holds the port's open file description, which outlives its last
+    /// descriptor until the call returns, and goes then.
+    ///
+    /// Answers the events it finds, whether or not the deadline has passed or a
+    /// signal is pending too (measured, `epoll-wait.c` section E: an event and
+    /// an expired deadline both holding as the waiter runs report the event);
+    /// no events when the deadline has passed, whether or not a signal is
+    /// pending; `Failed EINTR` when a signal with a handler interrupts it; and
+    /// otherwise re-parks the task on the same port and deadline, since
+    /// whatever woke it has gone again. A re-park goes to the back of park
+    /// order, which puts it first in line for the port's next event. An answer
+    /// clears the park.
+    ///
+    /// Delivering events copies them out to the buffer the call was made with;
+    /// see `epollWait` for the buffers that refuses.
+    ///
+    /// `task` must be parked in a socket event wait.
+    let finishSocketWait<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<EpollWaitOutcome * UnixSystem<'Task, 'Handler>, EpollWaitRefusal>
+        =
+        let held =
+            match UnixTaskTable.parkedFor task system.Tasks with
+            | Some parked -> ParkedSyscall.descriptions parked
+            | None -> []
+
+        // The call's reference to the port goes as it returns, and with it the
+        // port, if no descriptor names it any more (`open-file-references.c`
+        // section E).
+        finishSocketWaitHolding task system
+        |> Result.map (fun (outcome, after) ->
+            outcome, ObjectLifetime.releaseUnreferencedUnrefusable "UnixPoll.finishSocketWait" held after
+        )

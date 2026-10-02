@@ -16,9 +16,10 @@ open WoofWare.PosixKernel
 /// exactly one accepter, the one that parked first, and one that accepts again
 /// waits behind the others; making the listener non-blocking does not wake a
 /// sleeping accept, and Darwin's accepted socket then inherits the flag; and a
-/// close of a descriptor onto the listener leaves the wait alone on Linux
-/// unless it is the last, while on Darwin closing the one the wait was entered
-/// through ends it.
+/// close of a descriptor onto the listener leaves the wait alone on Linux, the
+/// last one included, the listener going as the accept returns
+/// (`open-file-references.c` section A), while on Darwin closing the one the
+/// wait was entered through ends it.
 ///
 /// Every system here is built through the syscalls themselves (`socket`,
 /// `bind`, `listen`, `connect`), so a queued connection is one `connect` put
@@ -576,21 +577,101 @@ module TestBlockingAccept =
     // Closing the listener
     // ------------------------------------------------------------------
 
-    /// Measured (`blocking-accept.c`, section C1): on Linux the sleeping accept
-    /// holds the file, so the last close leaves the socket listening under it.
-    /// The table cannot keep a description with no descriptor, so the close is
-    /// refused.
+    /// A new client socket's connect to loopback at `port`: what it answered.
+    let private connectAnswer (port : uint16) (system : UnixSystem<int, string>) : ConnectOutcome =
+        let fd, system =
+            NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
+
+        match UnixConnection.connect fd UserBuffer.Mapped 16u inetFamily (Some (loopback port)) system with
+        | Ok (outcome, _) -> outcome
+        | Error refusal -> failwith $"connecting to port %d{port}: %A{refusal}"
+
+    /// Measured (`open-file-references.c` section A1, and `blocking-accept.c`
+    /// section C1): on Linux the sleeping accept holds the file, so the last
+    /// close wakes nothing and the socket goes on listening under it; a connect
+    /// then completes the accept, and the listener closes as the accept
+    /// returns, so the next connect is refused.
     [<Test>]
-    let ``Linux: closing the last descriptor onto a listener an accept sleeps on is refused`` () : unit =
+    let ``Linux: the last close under a sleeping accept leaves the socket listening until the accept returns``
+        ()
+        : unit
+        =
         let fd, system = world SimulatedUnixPlatform.linuxX64
         let listener = idOf fd system
         let system = parkIn 1 fd system
 
-        match UnixDescriptor.close fd system with
-        | Error refusal ->
-            refusal
-            |> shouldEqual (CloseRefusal.LinuxLastListenerDescriptorWithAccepter (listener, 1))
-        | Ok (answer, _) -> failwith $"expected the close to be refused, got %A{answer}"
+        let system =
+            match UnixDescriptor.close fd system with
+            | Ok (SyscallAnswer.Completed 0L, system) -> system
+            | other -> failwith $"expected the close to succeed, got %A{other}"
+
+        awake [ 1 ] system |> shouldEqual []
+        UnixSystem.checkInvariants system |> shouldEqual []
+
+        FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+        |> Map.containsKey listener
+        |> shouldEqual true
+
+        let system = connectTo 5000us system
+        awake [ 1 ] system |> shouldEqual [ 1 ]
+        let accepted, system = finishWithConnection 1 system
+
+        FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+        |> Map.containsKey listener
+        |> shouldEqual false
+
+        FileDescriptorRegistry.tryFind accepted system.Process.FileDescriptors
+        |> Option.isSome
+        |> shouldEqual true
+
+        UnixSystem.checkInvariants system |> shouldEqual []
+
+        connectAnswer 5000us system
+        |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
+
+    /// The control for the row above (`open-file-references.c` section A2):
+    /// with a `dup` kept, the listener outlives the accept, and the next
+    /// connect is queued.
+    [<Test>]
+    let ``Linux: with a dup kept, the listener outlives the accept that slept on it`` () : unit =
+        let fd, system = world SimulatedUnixPlatform.linuxX64
+        let listener = idOf fd system
+        let _, system = dupOf fd system
+        let system = parkIn 1 fd system
+
+        let system =
+            match UnixDescriptor.close fd system with
+            | Ok (SyscallAnswer.Completed 0L, system) -> system
+            | other -> failwith $"expected the close to succeed, got %A{other}"
+
+        let system = connectTo 5000us system
+        let _, system = finishWithConnection 1 system
+
+        FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+        |> Map.containsKey listener
+        |> shouldEqual true
+
+        connectAnswer 5000us system |> shouldEqual ConnectOutcome.Completed
+
+    /// What the accept's return would do to a second queued connection, once
+    /// nothing else holds the listener: a real kernel resets the client, in a
+    /// state this kernel has not measured, so the finish refuses, as `close`
+    /// refuses to destroy such a listener.
+    [<Test>]
+    let ``Linux: an accept whose return would reset a second queued connection is refused`` () : unit =
+        let fd, system = world SimulatedUnixPlatform.linuxX64
+        let system = parkIn 1 fd system
+
+        let system =
+            match UnixDescriptor.close fd system with
+            | Ok (SyscallAnswer.Completed 0L, system) -> system
+            | other -> failwith $"expected the close to succeed, got %A{other}"
+
+        let system = connectTo 5000us system |> connectTo 5000us
+
+        match UnixConnection.finishAccept 1 system with
+        | Error (AcceptRefusal.Release (DescriptionReleaseRefusal.ListenerWouldResetUnacceptedClient _)) -> ()
+        | other -> failwith $"expected the finish to be refused, got %A{other}"
 
     /// Measured (`blocking-accept.c`, sections C2 and C3): on Linux, closing
     /// either of two descriptors onto the listener -- the one the accept came

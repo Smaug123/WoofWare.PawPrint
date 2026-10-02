@@ -84,7 +84,7 @@ module TestEpollCreate1 =
                 Process =
                     { linux.Process with
                         FileDescriptors =
-                            match FileDescriptorRegistry.dropDescriptor port withTwo with
+                            match FileDescriptorRegistry.dropDescriptor port Set.empty withTwo with
                             | Ok (registry, _) -> registry
                             | Error error -> failwith $"expected the close to succeed, got %O{error}"
                     }

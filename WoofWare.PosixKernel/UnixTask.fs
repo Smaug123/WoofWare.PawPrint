@@ -20,9 +20,10 @@ type CpuId =
 /// `kevent`): the state the syscall captured when it was entered, which
 /// outlives anything the process does to its arguments afterwards. The port is held by *description
 /// identity*, exactly as the real syscall holds a file reference: the fd the
-/// wait was called through is never consulted again, and `UnixDescriptor.close`
-/// refuses the close that would destroy the description under a waiter (on
-/// Linux the last descriptor's, on Darwin any descriptor's).
+/// wait was called through is never consulted again, and the port lives at
+/// least as long as the wait (`ParkedSyscall.descriptions`). Under Darwin,
+/// whose `kevent` a close ends, `UnixDescriptor.close` refuses any close of a
+/// descriptor onto it instead.
 type ParkedSocketWait =
     {
         /// <summary>
@@ -86,8 +87,9 @@ type ParkedPollEntry =
     /// call went to sleep.
     ///
     /// Both halves are kept because a real poll uses both: it sleeps on the
-    /// description it found, and when it wakes it looks `fd` up again. `close`
-    /// refuses to close `fd` while this entry waits, so the two stay in step.
+    /// description it found, which it holds, and when it wakes it looks `fd` up
+    /// again. `close` refuses to close `fd` while this entry waits, so the two
+    /// stay in step.
     | Watched of fd : int * description : OpenFileDescriptionId * events : int16
 
 /// One task's in-flight `poll(2)`: every entry the call was made with, in order,
@@ -113,7 +115,8 @@ type ParkedAccept =
         ///
         /// Held by description rather than by descriptor: a `dup` of the
         /// descriptor names the same listener, and under Linux the descriptor
-        /// the call came through can be closed while it sleeps.
+        /// the call came through can be closed while it sleeps, the last one
+        /// included, leaving the listener to the call.
         Listener : OpenFileDescriptionId
         /// Where the peer address is to be copied out to, as the caller
         /// classified it when the call was entered.
@@ -198,6 +201,29 @@ type ParkedSyscall =
     | PipeRead of ParkedPipeRead
     | PipeWrite of ParkedPipeWrite
 
+[<RequireQualifiedAccess>]
+module ParkedSyscall =
+    /// The open file descriptions the call holds while it is in flight, as a
+    /// real syscall holds a reference to each file it found: each stays alive
+    /// until the call returns, whatever descriptors are closed meanwhile.
+    ///
+    /// A `poll` holds every description it watches, as Linux's holds each file
+    /// whose wait queue it sleeps on.
+    let descriptions (parked : ParkedSyscall) : OpenFileDescriptionId list =
+        match parked with
+        | ParkedSyscall.SocketWait wait -> [ wait.Port ]
+        | ParkedSyscall.Flock parked -> [ parked.Requester ]
+        | ParkedSyscall.Poll poll ->
+            poll.Entries
+            |> List.choose (fun entry ->
+                match entry with
+                | ParkedPollEntry.Ignored _ -> None
+                | ParkedPollEntry.Watched (_, description, _) -> Some description
+            )
+        | ParkedSyscall.Accept accept -> [ accept.Listener ]
+        | ParkedSyscall.PipeRead read -> [ read.Reader ]
+        | ParkedSyscall.PipeWrite write -> [ write.Writer ]
+
 /// Where one park stands in the order every park on this machine was made in.
 ///
 /// Minted from `UnixMachineState.NextParkOrdinal` by `UnixWait.park`, so of any
@@ -266,10 +292,9 @@ type UnixTaskState =
         /// why there is one of it: the re-entry consults it rather than the
         /// guest's argument cells, which the guest may have written since;
         /// whatever a client polls to decide the call can be finished reads it
-        /// to learn what the call is waiting for; and `close` reads it to refuse
-        /// destroying a description something is waiting on — a rule about
-        /// kernel objects, which this library can only apply to a park it can
-        /// see.
+        /// to learn what the call is waiting for; and whatever destroys an open
+        /// file description reads it, because a description a park names
+        /// (`ParkedSyscall.descriptions`) lives until the call returns.
         ///
         /// Every payload holds kernel objects by *identity*, never by descriptor
         /// number: a sleeping task keeps the object rather than the number, and
@@ -400,6 +425,11 @@ module UnixTaskTable =
             tasks
 
     /// Record that `name` is no longer parked: its syscall has finished.
+    ///
+    /// The table alone: a description only this park held is left in the
+    /// descriptor table, where `UnixSystem.checkInvariants` reports it as a
+    /// leak. The syscalls' own finishing calls end a park and release what it
+    /// held; a client that ends a park must use them.
     let unpark<'Task when 'Task : comparison>
         (name : 'Task)
         (tasks : Map<'Task, UnixTaskState>)

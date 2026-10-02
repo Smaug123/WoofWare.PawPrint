@@ -163,11 +163,10 @@ module SocketEventPort =
     /// because both read the same annotated walk.
     ///
     /// Loudly partial in `portId`, exactly as a parked `flock`'s wake condition
-    /// is: this library's descriptor table models no reference from a waiter to
-    /// what it waits on, so a client that parks a task on a port must stop that
-    /// port being destroyed while it waits — which is what `close`'s port
-    /// refusal does. Asking about a port that has gone is that obligation being
-    /// broken, and neither answer is honest: `true` wakes the waiter into an
+    /// is: a task parked on a port holds it until its call returns, so the
+    /// port cannot have gone while something waits on it. Asking about a port
+    /// that has gone means a park was ended or the port destroyed some other
+    /// way, and neither answer is honest: `true` wakes the waiter into an
     /// `EBADF` no kernel produces, and `false` sleeps for ever.
     let hasDeliverableEvent<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (portId : OpenFileDescriptionId)
@@ -177,7 +176,7 @@ module SocketEventPort =
         match Map.tryFind portId (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
         | None ->
             failwith
-                $"SocketEventPort.hasDeliverableEvent: %O{portId} names no live open file description, so a task parked on a wait for it has had that description closed underneath it. This library's table models no reference from a waiter to what it waits on, so a client that parks must refuse such a close (as `close` does)."
+                $"SocketEventPort.hasDeliverableEvent: %O{portId} names no live open file description, but a task waits on it, and a park holds what it waits on until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
         | Some description ->
 
         match description.Target with

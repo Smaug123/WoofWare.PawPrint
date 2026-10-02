@@ -250,9 +250,10 @@ module UnixProcessState =
     /// whether some open file description names it, or the client holds it
     /// (`PipeState.heldByClient`).
     ///
-    /// Derived rather than stored, so it cannot disagree with the table: closing
-    /// the last descriptor onto an end the client does not hold is what closes
-    /// it, and `dup` keeps it open.
+    /// Derived rather than stored, so it cannot disagree with the table: the
+    /// end closes when the last description onto it goes, which is when its
+    /// last descriptor closes, or when a call that held it returns after that,
+    /// unless the client holds it; and `dup` keeps it open.
     let pipeEndOpen<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (pipeId : PipeId)
         (pipe : PipeState)
@@ -295,7 +296,7 @@ module UnixProcessState =
     /// Everything that can *create* a reference must appear here: an omission
     /// makes a live inode look free, and freeing it leaves a descriptor pointing
     /// at nothing. It is not what callers want, though — see
-    /// `UnixDescriptor.pinnedInodes`, which adds the references the *filesystem*
+    /// `ObjectLifetime.pinnedInodes`, which adds the references the *filesystem*
     /// holds on behalf of these.
     let heldInodes<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (proc : UnixProcessState<'Task, 'Handler>)

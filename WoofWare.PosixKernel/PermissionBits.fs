@@ -312,6 +312,13 @@ module PermissionBits =
     /// </summary>
     let private widest : int = 0o7777
 
+    // `<sys/stat.h>`'s S_ISUID, S_ISGID and S_ISVTX, and S_IXGRP, which every
+    // Unix numbers alike.
+    let internal setUserId : int = 0o4000
+    let internal setGroupId : int = 0o2000
+    let internal sticky : int = 0o1000
+    let internal groupExecute : int = 0o0010
+
     /// <summary>
     /// Render as an int.
     /// </summary>
@@ -421,7 +428,6 @@ module PermissionBits =
             failwith
                 $"PermissionBits.stickyRemoval: the standing towards the directory (%O{directory}) and the standing towards the entry (%O{entry}) disagree about the caller's privilege, so they cannot be one caller's."
 
-        let sticky = 0o1000
 
         if toInt directoryBits &&& sticky = 0 || directory.Owns || entry.Owns then
             StickyRemoval.Unrestricted
@@ -506,9 +512,6 @@ module PermissionBits =
         mode &&& toInt modeMask &&& ~~~(toInt umask)
         |> parseOrFail "PermissionBits.fromCreationMode"
 
-    let private setUserId : int = 0o4000
-    let private setGroupId : int = 0o2000
-    let private groupExecute : int = 0o0010
 
     /// <summary>
     /// What <c>chmod(2)</c> or <c>fchmod(2)</c>, asked for the raw mode word <c>mode</c> by a

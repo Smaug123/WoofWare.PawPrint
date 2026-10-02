@@ -1355,7 +1355,7 @@ module UnixReadWrite =
         with
         | None ->
             failwith
-                $"UnixReadWrite.%s{syscall}: task %O{task} sleeps on open file description %O{description}, which is not in the table, so it was closed underneath the call. `close` refuses such a close (this is a bug in this library, or in a caller that destroyed the description without UnixDescriptor.close)."
+                $"UnixReadWrite.%s{syscall}: task %O{task} sleeps on open file description %O{description}, which is not in the table, but a park holds its description until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
         | Some found ->
             match found.Target with
             | OpenFileTarget.Pipe (pipeId, named) when named = pipeEnd -> pipeId
@@ -1383,27 +1383,7 @@ module UnixReadWrite =
         | SimulatedUnixFlavour.Darwin ->
             (FileDescriptorRegistry.descriptions system.Process.FileDescriptors).[description].NonBlocking
 
-    /// Finish the `read` `task` is asleep in: look at the pipe again, as a woken
-    /// real read does, and answer.
-    ///
-    /// Bytes in the pipe are read, up to the count the call was made with, into
-    /// the buffer it was made with: a buffer naming no storage answers `EFAULT`
-    /// and leaves them there. A pipe still empty with no write end open is end
-    /// of file. Under Linux either beats a signal pending for the task, whose
-    /// handlers run as the call returns; under Darwin, a kernel answers
-    /// whichever reached the sleeper first, which this library does not
-    /// record, so both at once is refused.
-    ///
-    /// A pipe still empty with a write end open, and a signal with a handler
-    /// pending, ends the call: `Restarts` if every handler that runs was
-    /// installed with `SA_RESTART`, and `Failed EINTR` if none was. With no such
-    /// signal, the task sleeps again, behind every other park; except that on
-    /// Darwin, whose every sleeper wakes, one that finds nothing through a
-    /// description that has since become non-blocking answers `EAGAIN`. An
-    /// answer, `Restarts` included, clears the park.
-    ///
-    /// `task` must be asleep in a `read`.
-    let finishRead<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let private finishReadHolding<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<ReadOutcome * UnixSystem<'Task, 'Handler>, ReadRefusal>
@@ -1472,6 +1452,45 @@ module UnixReadWrite =
             // finds the pipe empty again sleeps at the back of the queue.
             let parkedAgain = ParkedSyscall.PipeRead parked
             Ok (ReadOutcome.WouldBlock (WakeCondition.ofPark parkedAgain), UnixWait.park task parkedAgain system)
+
+    /// Finish the `read` `task` is asleep in: look at the pipe again, as a woken
+    /// real read does, and answer.
+    ///
+    /// Bytes in the pipe are read, up to the count the call was made with, into
+    /// the buffer it was made with: a buffer naming no storage answers `EFAULT`
+    /// and leaves them there. A pipe still empty with no write end open is end
+    /// of file. Under Linux either beats a signal pending for the task, whose
+    /// handlers run as the call returns; under Darwin, a kernel answers
+    /// whichever reached the sleeper first, which this library does not
+    /// record, so both at once is refused.
+    ///
+    /// A pipe still empty with a write end open, and a signal with a handler
+    /// pending, ends the call: `Restarts` if every handler that runs was
+    /// installed with `SA_RESTART`, and `Failed EINTR` if none was. With no such
+    /// signal, the task sleeps again, behind every other park; except that on
+    /// Darwin, whose every sleeper wakes, one that finds nothing through a
+    /// description that has since become non-blocking answers `EAGAIN`. An
+    /// answer, `Restarts` included, clears the park.
+    ///
+    /// `task` must be asleep in a `read`.
+    let finishRead<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<ReadOutcome * UnixSystem<'Task, 'Handler>, ReadRefusal>
+        =
+        let held =
+            match UnixTaskTable.parkedFor task system.Tasks with
+            | Some parked -> ParkedSyscall.descriptions parked
+            | None -> []
+
+        // The call's reference to the read end goes as it returns, and with it
+        // the read end, if no descriptor names it any more
+        // (`open-file-references.c` section B1).
+        finishReadHolding task system
+        |> Result.map (fun (outcome, after) ->
+            outcome, ObjectLifetime.releaseUnreferencedUnrefusable "UnixReadWrite.finishRead" held after
+        )
+
 
     /// `pread(2)`: move up to `count` bytes from `offset` in the file `fd` names
     /// into the caller's buffer, without consulting or moving the description's
@@ -2073,6 +2092,28 @@ module UnixReadWrite =
                     }
             }
 
+    /// `outcome`, with the open file descriptions `held`, which the write held
+    /// while it slept, released if nothing references them now: the call's
+    /// reference goes as it returns, and with it the write end, if no
+    /// descriptor names it any more (`open-file-references.c` section C1). A
+    /// write that still sleeps, or is to be given more bytes, holds them yet.
+    let private releasedAfterWrite<'Answer, 'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (caller : string)
+        (held : OpenFileDescriptionId list)
+        (outcome : WriteOutcome<'Answer, 'Task, 'Handler>)
+        : WriteOutcome<'Answer, 'Task, 'Handler>
+        =
+        let release (system : UnixSystem<'Task, 'Handler>) =
+            ObjectLifetime.releaseUnreferencedUnrefusable caller held system
+
+        match outcome with
+        | WriteOutcome.Returns (answer, system) -> WriteOutcome.Returns (answer, release system)
+        | WriteOutcome.ReturnsRaising (answer, signal, system) ->
+            WriteOutcome.ReturnsRaising (answer, signal, release system)
+        | WriteOutcome.WouldBlock (condition, system) -> WriteOutcome.WouldBlock (condition, release system)
+        | WriteOutcome.Restarts system -> WriteOutcome.Restarts (release system)
+        | WriteOutcome.ProcessEnded ended -> WriteOutcome.ProcessEnded ended
+
     /// The write `task` is asleep in, and the pipe it writes into.
     let private parkedWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (syscall : string)
@@ -2121,37 +2162,7 @@ module UnixReadWrite =
             Ok (WriteOutcome.Returns (answered (WriteAnswer.Completed (int64 parked.Written)), finished))
         | Ok _ -> Ok (parkWrite task parked.Writer parked.Buffer parked.Count parked.Written system)
 
-    /// Every answer the `write` `task` is asleep in gives *without* reading more
-    /// of the caller's buffer, and otherwise which of its bytes to extract next.
-    /// See `WriteAdmission` for why that is a separate call.
-    ///
-    /// The pipe is looked at again, as a woken real write does:
-    ///
-    /// - **No reader is left.** On Linux the call answers the count it had put
-    ///   in, or `EPIPE` if none; on Darwin, `EPIPE` whatever it had put in.
-    ///   Either way it raises `SIGPIPE`, as `admitWrite` describes.
-    /// - **There is room** for the rest, or (for a write of more than
-    ///   `PIPE_BUF` bytes) for some of it: `WriteResumption.Transfer` names the
-    ///   bytes to pass to `finishWrite`. A buffer naming no storage answers
-    ///   `EFAULT`, the write having put nothing in.
-    /// - **Neither**, and a signal with a handler is pending for the task: a
-    ///   write that had put bytes in returns their count, whatever the
-    ///   handlers' flags; one that had not ends as `read` does, `Restarts` or
-    ///   `Failed EINTR`.
-    /// - **Neither, and no signal**: the task sleeps again, behind every other
-    ///   park; except that on Darwin, whose every sleeper wakes, one whose
-    ///   description has since become non-blocking gives up, answering the
-    ///   count it had put in, or `EAGAIN` if none.
-    ///
-    /// Under Linux the first two beat a pending signal, whose handlers run as
-    /// the call returns; under Darwin a kernel answers whichever reached the
-    /// sleeper first, which this library does not record, so either beside a
-    /// signal is refused. An answer, `Restarts` included, clears the park, and
-    /// on Darwin moves the pipe's timestamps, which do not move while the call
-    /// sleeps.
-    ///
-    /// `task` must be asleep in a `write`.
-    let admitFinishWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let private admitFinishWriteHolding<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<WriteOutcome<WriteResumption, 'Task, 'Handler>, WriteRefusal>
@@ -2228,18 +2239,51 @@ module UnixReadWrite =
             // no room again sleeps at the back of the queue.
             Ok (parkWrite task parked.Writer parked.Buffer parked.Count parked.Written system)
 
-    /// The `write` `task` is asleep in, given the bytes the caller extracted
-    /// after `admitFinishWrite` said to: they go into the pipe, and the call
-    /// returns its whole count if that was the last of it.
+    /// Every answer the `write` `task` is asleep in gives *without* reading more
+    /// of the caller's buffer, and otherwise which of its bytes to extract next.
+    /// See `WriteAdmission` for why that is a separate call.
     ///
-    /// Otherwise a signal with a handler pending for the task, or `O_NONBLOCK`
-    /// set on the description while the call slept, ends it with the count it
-    /// has put in by now, and with neither, it sleeps again for the rest.
+    /// The pipe is looked at again, as a woken real write does:
     ///
-    /// `bytes` must be exactly the ones `WriteResumption.Transfer` named, and
-    /// the system the one it came with: anything else is the caller's mistake,
-    /// and fails loudly.
-    let finishWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// - **No reader is left.** On Linux the call answers the count it had put
+    ///   in, or `EPIPE` if none; on Darwin, `EPIPE` whatever it had put in.
+    ///   Either way it raises `SIGPIPE`, as `admitWrite` describes.
+    /// - **There is room** for the rest, or (for a write of more than
+    ///   `PIPE_BUF` bytes) for some of it: `WriteResumption.Transfer` names the
+    ///   bytes to pass to `finishWrite`. A buffer naming no storage answers
+    ///   `EFAULT`, the write having put nothing in.
+    /// - **Neither**, and a signal with a handler is pending for the task: a
+    ///   write that had put bytes in returns their count, whatever the
+    ///   handlers' flags; one that had not ends as `read` does, `Restarts` or
+    ///   `Failed EINTR`.
+    /// - **Neither, and no signal**: the task sleeps again, behind every other
+    ///   park; except that on Darwin, whose every sleeper wakes, one whose
+    ///   description has since become non-blocking gives up, answering the
+    ///   count it had put in, or `EAGAIN` if none.
+    ///
+    /// Under Linux the first two beat a pending signal, whose handlers run as
+    /// the call returns; under Darwin a kernel answers whichever reached the
+    /// sleeper first, which this library does not record, so either beside a
+    /// signal is refused. An answer, `Restarts` included, clears the park, and
+    /// on Darwin moves the pipe's timestamps, which do not move while the call
+    /// sleeps.
+    ///
+    /// `task` must be asleep in a `write`.
+    let admitFinishWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<WriteOutcome<WriteResumption, 'Task, 'Handler>, WriteRefusal>
+        =
+        let held =
+            match UnixTaskTable.parkedFor task system.Tasks with
+            | Some parked -> ParkedSyscall.descriptions parked
+            | None -> []
+
+        admitFinishWriteHolding task system
+        |> Result.map (releasedAfterWrite "UnixReadWrite.admitFinishWrite" held)
+
+
+    let private finishWriteHolding<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (bytes : ImmutableArray<byte>)
         (system : UnixSystem<'Task, 'Handler>)
@@ -2289,6 +2333,32 @@ module UnixReadWrite =
                 (FileDescriptorRegistry.descriptions system.Process.FileDescriptors).[parked.Writer].NonBlocking
 
             afterPartWritten task pipeId parked nonBlocking id system
+
+    /// The `write` `task` is asleep in, given the bytes the caller extracted
+    /// after `admitFinishWrite` said to: they go into the pipe, and the call
+    /// returns its whole count if that was the last of it.
+    ///
+    /// Otherwise a signal with a handler pending for the task, or `O_NONBLOCK`
+    /// set on the description while the call slept, ends it with the count it
+    /// has put in by now, and with neither, it sleeps again for the rest.
+    ///
+    /// `bytes` must be exactly the ones `WriteResumption.Transfer` named, and
+    /// the system the one it came with: anything else is the caller's mistake,
+    /// and fails loudly.
+    let finishWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (bytes : ImmutableArray<byte>)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<WriteOutcome<WriteAnswer, 'Task, 'Handler>, WriteRefusal>
+        =
+        let held =
+            match UnixTaskTable.parkedFor task system.Tasks with
+            | Some parked -> ParkedSyscall.descriptions parked
+            | None -> []
+
+        finishWriteHolding task bytes system
+        |> Result.map (releasedAfterWrite "UnixReadWrite.finishWrite" held)
+
 
     /// A blocking `write` of `total` bytes by `task`, given the first of them
     /// that `WriteAdmission.TransferThenSleep` named: they go into the pipe, and

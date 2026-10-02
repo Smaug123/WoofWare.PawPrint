@@ -992,27 +992,6 @@ module UnixError =
         | UnixError.EQFULL -> darwinOnly 106
         | UnixError.ENOTCAPABLE -> darwinOnly 107
 
-    /// <summary>
-    /// The raw <c>&lt;errno.h&gt;</c> integer for this error, if that number would be the same across all
-    /// supported platforms.
-    /// </summary>
-    /// <remarks>
-    /// You probably don't want to use this, because it throws if the input error is platform-dependent.
-    /// <c>toRawErrnoUnder</c> is the safe version.
-    /// </remarks>
-    let toRawErrno (error : UnixError) : int =
-        match rawNumbering error with
-        | RawErrnoPortability.Portable value -> value
-        | RawErrnoPortability.PlatformDependent (linux, darwin) ->
-            failwith
-                $"UnixError.toRawErrno: %O{error} has no platform-independent errno number (Linux reports %d{linux}, Darwin reports %d{darwin}), so no number is right without knowing the platform. Reporting either would hand a process a number its configured SimulatedUnixPlatform contradicts. Use UnixError.toRawErrnoUnder with the platform instead."
-        | RawErrnoPortability.LinuxOnly linux ->
-            failwith
-                $"UnixError.toRawErrno: %O{error} exists only on Linux, where it is %d{linux}; Darwin has no such error, so the number is not platform-independent. Use UnixError.toRawErrnoUnder with the platform instead."
-        | RawErrnoPortability.DarwinOnly darwin ->
-            failwith
-                $"UnixError.toRawErrno: %O{error} exists only on Darwin, where it is %d{darwin}; Linux has no such error, so the number is not platform-independent. Use UnixError.toRawErrnoUnder with the platform instead."
-
     /// The raw `<errno.h>` number for this error on the chosen platform, or
     /// `None` if that platform has no such error (`ENOKEY` under Darwin, say).
     let tryToRawErrnoUnder (reporting : RawErrnoNumbering) (error : UnixError) : int option =

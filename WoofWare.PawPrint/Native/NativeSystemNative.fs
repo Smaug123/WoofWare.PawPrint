@@ -490,22 +490,16 @@ module NativeSystemNative =
     let private closeRefusalMessage (operation : string) (fd : int) (refusal : CloseRefusal<ThreadId>) : string =
         let remedy =
             match refusal with
-            | CloseRefusal.LinuxLastPortDescriptorWithWaiter _ ->
-                "Implement port retention for in-flight waits before closing one out from under a waiter."
             | CloseRefusal.DarwinPortDescriptorWithWaiter _ ->
                 "Measure what the woken wait reports before closing a kqueue out from under a waiter, or configure a Linux platform."
-            | CloseRefusal.LastFlockedDescriptorWithWaiter _ ->
-                "Model a blocked flock's reference to the file it waits on before closing the description out from under a waiter."
-            | CloseRefusal.ListenerWouldResetUnacceptedClient _ ->
+            | CloseRefusal.DarwinFlockedDescriptorWithWaiter _ ->
+                "Model a close that sleeps until a blocked flock returns before closing a descriptor onto the description it waits on, or configure a Linux platform."
+            | CloseRefusal.Release (DescriptionReleaseRefusal.ListenerWouldResetUnacceptedClient _) ->
                 "Accept the connection or close the client before closing the listener."
             | CloseRefusal.PolledDescriptor _ ->
-                "Model a sleeping poll's reference to the files it watches before closing one out from under it."
-            | CloseRefusal.LinuxLastListenerDescriptorWithAccepter _ ->
-                "Model a sleeping accept's reference to its listener before closing the listener out from under it."
+                "Model a sleeping poll's edge-triggered wake-ups, and its look-up of each descriptor again as it wakes, before closing one out from under it."
             | CloseRefusal.DarwinListenerDescriptorWithAccepter _ ->
                 "Model a close ending a sleeping accept with ECONNABORTED before closing the listener out from under it, or configure a Linux platform."
-            | CloseRefusal.LinuxLastPipeDescriptorWithTransfer _ ->
-                "Model a sleeping read or write's reference to its pipe end before closing the end out from under it, or keep a dup of the descriptor open."
             | CloseRefusal.DarwinPipeDescriptorWithTransfer _ ->
                 "Model a close ending a sleeping read or write before closing its pipe end out from under it, or configure a Linux platform."
 
@@ -1604,11 +1598,6 @@ module NativeSystemNative =
         let instruction = ctx.Instruction
 
         let fail (error : UnixError) : NativeHandlerResult option =
-            // `toRawErrnoUnder` rather than `toRawErrno`, because a resolution
-            // can fail with ELOOP — a symlink cycle needs no more than
-            // `l -> l` — and that error has no platform-independent number.
-            // The emulated kernel knows which Unix it is impersonating, so it
-            // can answer where the bare conversion refuses to.
             let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
             state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error))
@@ -2772,7 +2761,7 @@ module NativeSystemNative =
                 // reports. Not a `failwith` either — the flavours agree on an
                 // answer, `Interop.Sys.GetProcessPath` is declared `string?`, and
                 // `Environment.ProcessPath` handles null by design.
-                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.ENOENT))
+                withErrnoOnly ctx UnixError.ENOENT state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ManagedPointerSource.Null) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
@@ -3566,10 +3555,8 @@ module NativeSystemNative =
                 // no `SetLastError`, so `TryGetFileSystemType` sees only the 0.
                 // A hand-rolled guest that does declare it would see the errno
                 // on a real host, though, so recording it is what keeps the two
-                // agreeing. `toRawErrno` rather than `toRawErrnoUnder`: both
-                // errnos here are portable, and the stricter form would crash
-                // loudly if a platform-dependent one were ever routed through.
-                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
+                // agreeing.
+                withErrnoOnly ctx error state
                 |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 0u) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
@@ -4268,9 +4255,6 @@ module NativeSystemNative =
 
             /// Set errno and return -1, as the C does on every failure path.
             let fail (error : UnixError) : NativeHandlerResult option =
-                // `toRawErrnoUnder` rather than `toRawErrno`, for the reason
-                // `statLike`'s twin gives: a resolution can fail with ELOOP,
-                // which has no platform-independent number.
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
                 state.MapKernel (
@@ -4526,9 +4510,7 @@ module NativeSystemNative =
 
             match answer with
             | SetNonBlockingAnswer.Set -> complete 0 state
-            | SetNonBlockingAnswer.Failed error ->
-                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
-                |> complete (-1)
+            | SetNonBlockingAnswer.Failed error -> withErrnoOnly ctx error state |> complete (-1)
         | Some "SystemNative_FcntlGetIsNonBlocking",
           [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ; ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
@@ -4569,9 +4551,7 @@ module NativeSystemNative =
             | None ->
                 // The C stores 0 through the pointer before returning -1, and the
                 // only failure the modelled targets can produce is EBADF.
-                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EBADF))
-                |> store 0
-                |> complete (-1)
+                withErrnoOnly ctx UnixError.EBADF state |> store 0 |> complete (-1)
             | Some isNonBlocking -> state |> store (if isNonBlocking then 1 else 0) |> complete 0
         // `int32_t SystemNative_Socket(int32_t addressFamily, int32_t socketType,
         // int32_t protocolType, intptr_t* createdSocket)` (pal_networking.c:2812).
@@ -4706,10 +4686,6 @@ module NativeSystemNative =
 
             let platform = state.Kernel.UnixPlatform
 
-            // `toRawErrnoUnder` rather than `toRawErrno`: several of these errnos
-            // are numbered differently on the two flavours — EADDRNOTAVAIL is 99
-            // on Linux and 49 on Darwin — and the emulated kernel's own platform
-            // is what decides which a guest sees.
             let failFromSyscall (error : UnixError) (state : IlMachineState) : NativeHandlerResult option =
                 let raw =
                     UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) error
@@ -4989,8 +4965,6 @@ module NativeSystemNative =
                 | Ok (AcceptOutcome.Accepted _, _)
                 | Error _ -> acceptedCell.Force () |> ignore<ManagedPointerSource>
 
-                // `toRawErrnoUnder` rather than `toRawErrno`: EOPNOTSUPP is 95 on
-                // Linux against 102 on Darwin, and ENOTSOCK 88 against 38.
                 let failFromSyscall (error : UnixError) (state : IlMachineState) : NativeHandlerResult option =
                     let raw =
                         UnixError.toRawErrnoUnder
@@ -5027,7 +5001,8 @@ module NativeSystemNative =
                     failwith
                         $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal} `socketAddress` is %O{addressArgument}; pass a real buffer."
                 | Error (AcceptRefusal.UnmeasuredKind _ as refusal)
-                | Error (AcceptRefusal.Interruption _ as refusal) ->
+                | Error (AcceptRefusal.Interruption _ as refusal)
+                | Error (AcceptRefusal.Release _ as refusal) ->
                     failwith $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal}"
                 // A signal ended the sleep. The shim's `accept4` loop calls again
                 // after EINTR, and a restart calls again with no EINTR.
@@ -5237,9 +5212,6 @@ module NativeSystemNative =
             let fd = fdArgument operation instruction.Arguments.[0]
             let platform = state.Kernel.UnixPlatform
 
-            // `toRawErrnoUnder` rather than `toRawErrno`: most of connect's
-            // errnos are numbered differently on the two flavours (EISCONN is
-            // 106 on Linux and 56 on Darwin, EINPROGRESS 115 against 36).
             let failFromSyscall (error : UnixError) (state : IlMachineState) : NativeHandlerResult option =
                 let raw =
                     UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) error
@@ -5405,8 +5377,6 @@ module NativeSystemNative =
                 complete (UnixErrorPal.toPal UnixError.EFAULT) state
             else
 
-            // `toRawErrnoUnder` rather than `toRawErrno`: ENOTSOCK's raw number
-            // is platform-dependent (88 on Linux, 38 on Darwin).
             let failFromSyscall (error : UnixError) (state : IlMachineState) : NativeHandlerResult option =
                 state.MapKernel (
                     EmulatedKernel.withLastSystemError
@@ -5786,7 +5756,7 @@ module NativeSystemNative =
                 // numberings, so no flavour decision arises.
                 let state = storePointer ManagedPointerSource.Null state
 
-                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.ENOMEM))
+                withErrnoOnly ctx UnixError.ENOMEM state
                 |> IlMachineState.pushToEvalStack'
                     (EvalStackValue.Int32 (Int32Source.Verbatim (UnixErrorPal.toPal UnixError.ENOMEM)))
                     ctx.Thread
@@ -5942,8 +5912,7 @@ module NativeSystemNative =
                 // number is portable, but only Linux reaches here anyway.
                 let unixError = EpollCtlError.toErrno reason
 
-                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno unixError))
-                |> complete (UnixErrorPal.toPal unixError)
+                withErrnoOnly ctx unixError state |> complete (UnixErrorPal.toPal unixError)
             | Ok (EpollCtlAnswer.Changed, system) ->
                 match data with
                 | Error message when newEvents <> 0 ->
@@ -6155,9 +6124,9 @@ module NativeSystemNative =
             // syscall was already *entered*: the port identity and maxevents
             // it captured outlive anything the guest has done to the
             // arguments since — the count cell can be overwritten, and the
-            // fd the wait was called through can be closed (a dup keeps the
-            // description alive; `UnixDescriptor.close`'s retention refusal keeps the
-            // last descriptor from destroying it). So a re-entry consults no
+            // fd the wait was called through can be closed (the park holds the
+            // description, so it outlives even its last descriptor until the
+            // wait returns). So a re-entry consults no
             // screen and no descriptor table: the kernel finishes the call from
             // the park.
             match UnixTaskTable.parkedFor ctx.Thread state.Kernel.Tasks with

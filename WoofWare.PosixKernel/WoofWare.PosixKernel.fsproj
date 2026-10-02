@@ -39,6 +39,7 @@
         <Compile Include="SignalState.fs" />
         <Compile Include="SimulatedUnixFlavour.fs" />
         <Compile Include="SimulatedUnixArchitecture.fs" />
+        <Compile Include="OpenFlagNumbering.fs" />
         <Compile Include="EmulatedFileSystemType.fs" />
         <Compile Include="UserBuffer.fs" />
         <Compile Include="ProcessId.fs" />
@@ -62,6 +63,7 @@
         <Compile Include="UnixMachine.fs" />
         <Compile Include="UnixClock.fs" />
         <Compile Include="UnixSystemState.fs" />
+        <Compile Include="ObjectLifetime.fs" />
         <Compile Include="UnixSocket.fs" />
         <Compile Include="Readiness.fs" />
         <Compile Include="SyscallInterruption.fs" />
