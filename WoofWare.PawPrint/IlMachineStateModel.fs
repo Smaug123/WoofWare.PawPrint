@@ -40,13 +40,14 @@ type IlMachineState =
         ///
         /// The one cursor with that property, and it stays specific to CPU
         /// placement. A thread's OS thread id is the kernel's to mint
-        /// (`UnixTaskLifecycle.spawn`), and every thread consumes one, as the
-        /// signal-handling thread a real runtime creates does.
+        /// (`UnixTaskLifecycle.spawn`) when the thread gets its OS thread, and every
+        /// such thread consumes one, as the signal-handling thread a real runtime
+        /// creates does.
         ///
-        /// Advanced when a thread is *created*, not when it is started: a guest
-        /// that constructs a `Thread` and never calls `Start` still consumes a
-        /// rotation slot, mirroring real .NET's eager `ManagedThreadId`
-        /// assignment in the constructor.
+        /// Advanced when a thread is *constructed*, not when it is started, which
+        /// is when its OS thread id is minted: a guest that constructs a `Thread`
+        /// and never calls `Start` still consumes a rotation slot, mirroring real
+        /// .NET's eager `ManagedThreadId` assignment in the constructor.
         NextCpuRotation : int
         // CallStack : StackFrame list
         /// Multiple managed heaps are allowed, but we hopefully only need one.

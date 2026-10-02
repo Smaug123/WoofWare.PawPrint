@@ -190,6 +190,12 @@ module TestCpuPlacement =
     let private cpuOf (thread : ThreadId) (state : IlMachineState) : CpuId =
         UnixTaskTable.cpuOf thread state.Kernel.Tasks
 
+    /// The processor a constructed, unstarted thread will run on once started.
+    let private constructedCpu (thread : ThreadId) (state : IlMachineState) : CpuId =
+        match state.ThreadState.[thread].Status with
+        | ThreadStatus.NotStarted cpu -> cpu
+        | other -> failwith $"%O{thread} is %O{other}, not an unstarted thread"
+
     [<Test>]
     let ``a fresh machine starts its rotation at zero`` () =
         (machineWith 4).NextCpuRotation |> shouldEqual 0
@@ -201,16 +207,16 @@ module TestCpuPlacement =
         let state = machineWith 4
 
         let state, first =
-            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1) state
+            IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1) state
 
         state.NextCpuRotation |> shouldEqual 1
-        cpuOf first state |> shouldEqual (CpuId 0)
+        constructedCpu first state |> shouldEqual (CpuId 0)
 
         let state, second =
-            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 2) state
+            IlMachineState.allocateUnstartedThread (ManagedHeapAddress 2) state
 
         state.NextCpuRotation |> shouldEqual 2
-        cpuOf second state |> shouldEqual (CpuId 1)
+        constructedCpu second state |> shouldEqual (CpuId 1)
 
     [<Test>]
     let ``allocateParkedThread leaves the rotation untouched`` () =
@@ -241,10 +247,10 @@ module TestCpuPlacement =
             [ 1..5 ]
             |> List.map (fun i ->
                 let state', thread =
-                    IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress i) state
+                    IlMachineState.allocateUnstartedThread (ManagedHeapAddress i) state
 
                 state <- state'
-                cpuOf thread state
+                constructedCpu thread state
             )
 
         let placementsWithout =
@@ -253,10 +259,10 @@ module TestCpuPlacement =
             [ 1..5 ]
             |> List.map (fun i ->
                 let state', thread =
-                    IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress i) state
+                    IlMachineState.allocateUnstartedThread (ManagedHeapAddress i) state
 
                 state <- state'
-                cpuOf thread state
+                constructedCpu thread state
             )
 
         placementsWithParked |> shouldEqual placementsWithout

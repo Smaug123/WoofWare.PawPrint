@@ -146,7 +146,7 @@ module NativeThreading =
         // yet, so fail loud at the call site rather than silently returning
         // false (timeout=0) or blocking forever on a thread that will never run.
         match targetState.Status with
-        | ThreadStatus.NotStarted ->
+        | ThreadStatus.NotStarted _ ->
             failwith
                 $"Thread.Join: target ThreadId {targetThreadId} has never been Start()ed. The real CLR raises ThreadStateException here; PawPrint doesn't synthesise that yet, so this is a guest bug we can't currently report structurally."
         | _ -> ()
@@ -185,10 +185,9 @@ module NativeThreading =
     /// scheduler ignores `NotStarted` threads, so the slot stays inert until `StartInternal`
     /// populates a bottom frame and flips the status to `Runnable`.
     ///
-    /// `constructing` is the thread running the `Thread` constructor, which is the one that
-    /// creates the new thread's task.
+    /// Like CoreCLR's `SetupUnstartedThread`, this creates no OS thread, so the kernel has
+    /// no task for the new thread until `Start`.
     let private initializeThreadObject
-        (constructing : ThreadId)
         (threadAddr : ManagedHeapAddress)
         (state : IlMachineState)
         : IlMachineState * ThreadId
@@ -217,7 +216,7 @@ module NativeThreading =
                 NextManagedThreadId = state.NextManagedThreadId + 1
             }
 
-        IlMachineState.allocateUnstartedThread constructing threadAddr state
+        IlMachineState.allocateUnstartedThread threadAddr state
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
@@ -293,7 +292,7 @@ module NativeThreading =
                     failwith $"%s{operation}: ObjectHandleOnStack pointed to a null Thread reference"
                 | other -> failwith $"%s{operation}: expected ObjectRef in ObjectHandleOnStack, got %O{other}"
 
-            let state, _newThreadId = initializeThreadObject ctx.Thread threadAddr state
+            let state, _newThreadId = initializeThreadObject threadAddr state
             NativeHandlerResult.completed state |> Some
         | "ThreadNative_Join",
           "System.Private.CoreLib",
@@ -842,7 +841,7 @@ module NativeThreading =
                 | EvalStackValue.ObjectRef addr -> addr
                 | other -> failwith $"Thread.Initialize: expected ObjectRef for 'this', got %O{other}"
 
-            let state, _newThreadId = initializeThreadObject ctx.Thread threadAddr state
+            let state, _newThreadId = initializeThreadObject threadAddr state
             NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib", "System.Threading", "Thread", "StartInternal", _, MethodReturnType.Void ->
             // StartInternal (ThreadHandle t, int stackSize, int priority, Interop.BOOL isThreadPool, char* pThreadName) -> void
@@ -894,11 +893,13 @@ module NativeThreading =
 
             // The ThreadId slot was minted at `Thread.Initialize` time and bound to
             // `threadAddr` in `ManagedThreadObjects`; promote it from `NotStarted`
-            // to `Runnable` and install the worker's bottom frame in one step.
-            // Status / frame transitions go through `startUnstartedThread` so the
-            // double-Start guard (status must be `NotStarted`) lives next to the
-            // mutation it protects.
-            let state = IlMachineState.startUnstartedThread newThreadId newMethodState state
+            // to `Runnable`, give it its task in the kernel, and install the worker's
+            // bottom frame in one step. The calling thread is the one creating the OS
+            // thread, as it is in CoreCLR's `ThreadNative_Start`. Status / frame
+            // transitions go through `startUnstartedThread` so the double-Start guard
+            // (status must be `NotStarted`) lives next to the mutation it protects.
+            let state =
+                IlMachineState.startUnstartedThread ctx.Thread newThreadId newMethodState state
 
             // A method reached by a call has its declaring type's initialiser armed by
             // `callMethodWithCommitment`; the bottom frame is entered without a call, so the

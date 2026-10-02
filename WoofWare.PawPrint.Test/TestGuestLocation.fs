@@ -48,8 +48,8 @@ module TestGuestLocation =
 
     [<Test>]
     let ``a thread with no live frame renders its status alone`` () : unit =
-        render ThreadStatus.NotStarted GuestThreadPosition.NoFrame
-        |> shouldEqual "thread 3 (NotStarted)"
+        render (ThreadStatus.NotStarted (WoofWare.PosixKernel.CpuId 0)) GuestThreadPosition.NoFrame
+        |> shouldEqual "thread 3 (NotStarted (CpuId 0))"
 
     [<Test>]
     let ``an attributed frame names the source span`` () : unit =
@@ -259,7 +259,7 @@ class HoldsAnUnstartedThread
 
         // Asserted, not merely survived: without this the test passes for a `GuestLocation` that
         // never met a frameless thread at all, and the guard it is meant to cover goes untested.
-        message |> shouldContainText "thread 1 (NotStarted)"
+        message |> shouldContainText "thread 1 (NotStarted (CpuId 0))"
         message |> shouldContainText $"File0.cs:%d{expected}"
 
     /// A guest that blocks by calling a native handler *directly*, so its own frame is the active
