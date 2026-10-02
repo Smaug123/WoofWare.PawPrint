@@ -721,6 +721,40 @@ module TestUnixSystemStep =
         |> shouldEqual true
 
     [<Test>]
+    let ``every phase with a peer or a refused connection's error refuses a read and a write`` () : unit =
+        // Measured, a refused socket answers neither as a fresh one nor as the
+        // other flavour's does (socket-unconnected-transfer-after.c), and a
+        // connected one moves bytes; so each is refused, naming its phase, and
+        // only `Idle` and `Listening` are answered.
+        let refusing =
+            [
+                SocketPhase.EstablishedPendingReport (ConnectionId 0L)
+                SocketPhase.Established (ConnectionId 0L)
+                SocketPhase.Refused RefusalError.Pending
+                SocketPhase.Refused RefusalError.Reported
+                SocketPhase.DatagramPeer (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 9us)
+            ]
+
+        for platform in [ linux ; darwin ] do
+            for phase in refusing do
+                let fd, system = withSocketIn phase platform
+
+                ReadOutcomes.read fd UserBuffer.Mapped 1UL system
+                |> shouldEqual (
+                    Error (ReadRefusal.UnmodelledSocketPhase (socketZero, SocketDomain.Inet, SocketKind.Stream, phase))
+                )
+
+                let refused =
+                    Error (WriteRefusal.UnmodelledSocketPhase (socketZero, SocketDomain.Inet, SocketKind.Stream, phase))
+
+                for count in [ 0UL ; 1UL ] do
+                    UnixReadWrite.admitWrite system.Leader fd UserBuffer.Mapped count system
+                    |> shouldEqual refused
+
+                UnixReadWrite.write system.Leader fd (ImmutableArray.CreateRange [ 1uy ]) system
+                |> shouldEqual refused
+
+    [<Test>]
     let ``a screening platform answers a socket's bad address before the socket`` () : unit =
         // Measured on both. Linux screens the address before the object's own
         // write operation, so `write(socket, (void*)-1, n)` is EFAULT for every
