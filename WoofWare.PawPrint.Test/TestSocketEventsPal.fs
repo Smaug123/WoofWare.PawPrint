@@ -391,9 +391,18 @@ module TestSocketEventsPal =
     let private keventChangeInnerBody () : string =
         let source = File.ReadAllText (palPath "pal_networking.c")
 
+        // The kqueue backend's definitions follow its own `GetSocketEvents`,
+        // whose signature the epoll backend's does not share.
         let kqueueSection =
-            match source.IndexOf ("#elif HAVE_KQUEUE", StringComparison.Ordinal) with
-            | -1 -> failwith "TestSocketEventsPal: the pinned pal_networking.c has no `#elif HAVE_KQUEUE` section."
+            match
+                source.IndexOf (
+                    "static SocketEvents GetSocketEvents(int16_t filter, uint16_t flags)",
+                    StringComparison.Ordinal
+                )
+            with
+            | -1 ->
+                failwith
+                    "TestSocketEventsPal: the pinned pal_networking.c has no kqueue `GetSocketEvents(int16_t filter, uint16_t flags)`, which this test finds the kqueue backend by."
             | start -> source.Substring start
 
         functionBody kqueueSection "static int32_t TryChangeSocketEventRegistrationInner("
