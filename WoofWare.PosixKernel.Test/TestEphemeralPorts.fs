@@ -60,7 +60,7 @@ module TestEphemeralPorts =
             else
                 system
 
-        match UnixSocket.bind fd UserBuffer.Mapped 16 inetFamily (Some endpoint) system with
+        match UnixSocket.bind fd UserBuffer.Mapped 16u inetFamily (Some endpoint) system with
         | Ok (answer, system) -> Ok answer, system
         | Error refusal -> Error refusal, system
 
@@ -108,14 +108,15 @@ module TestEphemeralPorts =
         (system : UnixSystem<int, string>)
         : ConnectOutcome * UnixSystem<int, string>
         =
-        match UnixConnection.connect fd UserBuffer.Mapped 16 inetFamily (Some destination) system with
+        match UnixConnection.connect fd UserBuffer.Mapped 16u inetFamily (Some destination) system with
         | Ok result -> result
         | Error refusal -> failwith $"connect refused: %s{ConnectRefusal.describe refusal}"
 
     let private acceptFrom (fd : int) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        match UnixConnection.accept 0 fd UserBuffer.Mapped 16 system with
+        match UnixConnection.accept 0 fd UserBuffer.Mapped 16u system with
         | Ok (AcceptOutcome.Accepted (accepted, _, _), system) -> accepted, system
         | Ok (AcceptOutcome.Failed error, _) -> failwith $"accept failed with %A{error}"
+        | Ok (AcceptOutcome.DroppedConnection error, _) -> failwith $"accept dropped the connection with %A{error}"
         | Ok (AcceptOutcome.WouldBlock _, _) -> failwith "accept parked"
         | Ok (AcceptOutcome.Restarts, _) -> failwith "accept restarted"
         | Error refusal -> failwith $"accept refused: %A{refusal}"

@@ -38,19 +38,6 @@ module TestDirectoryStreamFds =
             seed
             (absolute "/")
 
-    /// `opendir(3)`'s open.
-    let private directoryFlags : OpenFlags =
-        {
-            Access = FileAccessMode.ReadOnly
-            Create = false
-            Exclusive = false
-            Truncate = false
-            NoFollow = false
-            CloseOnExec = true
-            Synchronous = false
-            Directory = true
-        }
-
     /// Everything `SystemNative_OpenDir` does to kernel state: the library opens
     /// the directory, and the client allocates the native block standing in for
     /// the `DIR*` and binds it to the descriptor.
@@ -58,8 +45,8 @@ module TestDirectoryStreamFds =
         let fd, system =
             match
                 UnixNamespace.openPath
-                    directoryFlags
-                    (UnixPath.parseOrFail "test" "/dir")
+                    (OpenFlagsPal.directoryStream kernel.UnixPlatform)
+                    (PathArgumentBytes.Bytes (UnixPath.toByteString (UnixPath.parseOrFail "test" "/dir")))
                     0
                     (EmulatedKernel.unix kernel)
             with

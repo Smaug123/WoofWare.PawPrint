@@ -45,7 +45,7 @@ module TestAccess =
     let private path (p : string) : UnixPath = UnixPath.parseOrFail context p
 
     let private bytes (p : string) : PathArgumentBytes =
-        PathArgumentBytes.Bytes (ImmutableArray.CreateRange (System.Text.Encoding.ASCII.GetBytes p))
+        PathArg.ofBytes (System.Text.Encoding.ASCII.GetBytes p)
 
     let private ok (result : Result<'a, 'e>) : 'a =
         match result with

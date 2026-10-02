@@ -795,7 +795,7 @@ module TestSockOpt =
         (system : UnixSystem<int, string>)
         : BindAnswer * UnixSystem<int, string>
         =
-        match UnixSocket.bind fd UserBuffer.Mapped 16 inetFamily (Some endpoint) system with
+        match UnixSocket.bind fd UserBuffer.Mapped 16u inetFamily (Some endpoint) system with
         | Ok result -> result
         | Error refusal -> failwith $"expected an answer, got a refusal: %s{BindRefusal.describe refusal}"
 

@@ -816,7 +816,7 @@ module TestOwnerChange =
         (system : UnixSystem<int, string>)
         : SyscallAnswer * UnixSystem<int, string>
         =
-        match UnixPathResolution.chown (path p) user group system with
+        match UnixPathResolution.chown (PathArg.ofPath (path p)) user group system with
         | Ok answer -> answer
         | Error refusal -> failwith $"chown(%s{p}) was refused: %s{ChOwnRefusal.describe refusal}"
 
@@ -827,7 +827,7 @@ module TestOwnerChange =
         (system : UnixSystem<int, string>)
         : SyscallAnswer * UnixSystem<int, string>
         =
-        match UnixPathResolution.lchown (path p) user group system with
+        match UnixPathResolution.lchown (PathArg.ofPath (path p)) user group system with
         | Ok answer -> answer
         | Error refusal -> failwith $"lchown(%s{p}) was refused: %s{ChOwnRefusal.describe refusal}"
 
@@ -862,7 +862,8 @@ module TestOwnerChange =
                     let before = inodeOf p system
 
                     match
-                        reference rule standing request target raw, UnixPathResolution.chown (path p) user group system
+                        reference rule standing request target raw,
+                        UnixPathResolution.chown (PathArg.ofPath (path p)) user group system
                     with
                     | Error expected, Error actual ->
                         actual
@@ -1517,15 +1518,15 @@ module TestOwnerChange =
 
         let memberGroup = Some (gid 2000u)
 
-        UnixSystem.step 1 (Syscall.ChOwn (path "/p/lf", None, memberGroup)) system
+        UnixSystem.step 1 (Syscall.ChOwn (PathArg.ofPath (path "/p/lf"), None, memberGroup)) system
         |> answered
         |> shouldEqual (chownAnswer "/p/lf" None memberGroup system)
 
-        UnixSystem.step 1 (Syscall.LChOwn (path "/p/lf", None, memberGroup)) system
+        UnixSystem.step 1 (Syscall.LChOwn (PathArg.ofPath (path "/p/lf"), None, memberGroup)) system
         |> answered
         |> shouldEqual (lchownAnswer "/p/lf" None memberGroup system)
 
-        UnixSystem.step 1 (Syscall.ChOwn (path "/p/theirs", Some (uid 1002u), None)) system
+        UnixSystem.step 1 (Syscall.ChOwn (PathArg.ofPath (path "/p/theirs"), Some (uid 1002u), None)) system
         |> answered
         |> shouldEqual (chownAnswer "/p/theirs" (Some (uid 1002u)) None system)
 
@@ -1541,13 +1542,16 @@ module TestOwnerChange =
 
         for call in
             [
-                Syscall.ChOwn (path "/t/f", None, None)
-                Syscall.LChOwn (path "/t/f", None, None)
+                Syscall.ChOwn (PathArg.ofPath (path "/t/f"), None, None)
+                Syscall.LChOwn (PathArg.ofPath (path "/t/f"), None, None)
             ] do
             match UnixSystem.step 1 call darwin with
             | Error (SyscallRefusal.ChOwn refusal) ->
                 Error refusal
-                |> shouldEqual (UnixPathResolution.chown (path "/t/f") None None darwin |> Result.map ignore)
+                |> shouldEqual (
+                    UnixPathResolution.chown (PathArg.ofPath (path "/t/f")) None None darwin
+                    |> Result.map ignore
+                )
             | other -> failwith $"step %A{call} as Darwin root: %A{other}"
 
         match UnixSystem.step 1 (Syscall.FChOwn (fd, None, None)) withFd with

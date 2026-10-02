@@ -3,7 +3,6 @@ namespace WoofWare.PawPrint
 open System
 open System.IO
 open System.Reflection
-open WoofWare.PosixKernel
 
 open NativeRuntimeTypeHelpers
 
@@ -21,28 +20,18 @@ module NativeRuntimeAssemblyBuilder =
     /// `CALG_SHA1`, which `Assembly::CreateDynamic` stores when the caller passes no hash algorithm.
     let private calgSha1 : int = 0x8004
 
-    /// A version-4 GUID over bytes drawn from the kernel's entropy pool, as `minipal_guid_v4_create`
-    /// makes one over secure random bytes: the metadata emitter stamps a dynamic module's version ID
-    /// that way, so it differs between runs of the real runtime.
-    let private freshModuleVersionId (state : IlMachineState) : Guid * IlMachineState =
-        let bytes, pool = EntropyPool.draw 16 state.Kernel.Machine.EntropyPool
+    /// A version-4 GUID over secure random bytes from the kernel, as `minipal_guid_v4_create` makes
+    /// one: the metadata emitter stamps a dynamic module's version ID that way, so it differs between
+    /// runs of the real runtime.
+    let private freshModuleVersionId (operation : string) (state : IlMachineState) : Guid * IlMachineState =
+        let bytes, kernel = MinipalRandom.secureRandomBytes operation 16 state.Kernel
         let bytes = Seq.toArray bytes
         // `Data3` is bytes 6 and 7, little-endian, and its top nibble is the version.
         bytes.[7] <- (bytes.[7] &&& 0x0Fuy) ||| 0x40uy
         // The top two bits of `Data4[0]` are the RFC 4122 variant.
         bytes.[8] <- (bytes.[8] &&& 0x3Fuy) ||| 0x80uy
 
-        let state =
-            state.MapKernel (fun kernel ->
-                { kernel with
-                    Machine =
-                        { kernel.Machine with
-                            EntropyPool = pool
-                        }
-                }
-            )
-
-        Guid bytes, state
+        Guid bytes, state.MapKernel (fun _ -> kernel)
 
     /// The binder behind a managed `AssemblyLoadContext`: its `_nativeAssemblyLoadContext` field,
     /// which `AssemblyNative_InitializeAssemblyLoadContext` filled.
@@ -231,7 +220,7 @@ module NativeRuntimeAssemblyBuilder =
                 failwith
                     $"TODO: %s{operation}: the dynamic assembly '%s{simpleName}' asks for flags 0x%08x{uint32 requestedFlags}, with bits above the sixteen DynamicAssemblyImage can write; CoreCLR stores all thirty-two"
 
-            let moduleVersionId, state = freshModuleVersionId state
+            let moduleVersionId, state = freshModuleVersionId operation state
 
             let assembly =
                 use image = new MemoryStream (DynamicAssemblyImage.build name moduleVersionId)

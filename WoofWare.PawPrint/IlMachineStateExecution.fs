@@ -37,9 +37,10 @@ module IlMachineStateExecution =
 
         state.WithTypeSystem typeSystem, result
 
-    /// `ConcreteVirtualDispatch.tryResolveVirtualImplementation` against the machine's type system:
-    /// `None` when nothing overrides the method named. Refuses where more than one default
-    /// interface body is most specific, where the guest would see `AmbiguousImplementationException`.
+    /// `ConcreteVirtualDispatch.tryResolveVirtualImplementation` against the machine's type system,
+    /// with the method it finds instantiated: `None` when nothing overrides the method named. Refuses where more than one default
+    /// interface body is most specific, where the guest would see `AmbiguousImplementationException`,
+    /// and where the type system does not model the dispatch.
     let tryResolveVirtualImplementation
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -64,7 +65,18 @@ module IlMachineStateExecution =
                 state.TypeSystem
 
         match result with
-        | VirtualImplementation.Found implementation -> state.WithTypeSystem typeSystem, Some implementation
+        | VirtualImplementation.Found implementation ->
+            let typeSystem, implementation, _ =
+                MethodConcretisation.concretizeMethodWithAllGenerics
+                    loggerFactory
+                    state.DotnetRuntimeDirs
+                    baseClassTypes
+                    implementation.TypeGenerics
+                    implementation.Definition
+                    implementation.MethodGenerics
+                    typeSystem
+
+            state.WithTypeSystem typeSystem, Some implementation
         | VirtualImplementation.NotOverridden -> state.WithTypeSystem typeSystem, None
         | VirtualImplementation.Ambiguous candidates ->
             candidates
@@ -72,6 +84,7 @@ module IlMachineStateExecution =
             |> String.concat ", "
             // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
             |> failwithf "multiple most-specific default interface implementations matched this virtual slot: %s"
+        | VirtualImplementation.Unmodelled reason -> failwith reason
 
     /// How a call chooses the method it runs.
     [<RequireQualifiedAccess>]

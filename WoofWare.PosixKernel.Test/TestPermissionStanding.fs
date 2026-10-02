@@ -543,8 +543,7 @@ module TestPermissionStanding =
 
     let private path (p : string) : UnixPath = UnixPath.parseOrFail context p
 
-    let private argument (p : string) : PathArgumentBytes =
-        PathArgumentBytes.Bytes (ImmutableArray.CreateRange (System.Text.Encoding.UTF8.GetBytes p))
+    let private argument (p : string) : PathArgumentBytes = PathArg.ofText p
 
     [<RequireQualifiedAccess>]
     type private Call =
@@ -564,13 +563,12 @@ module TestPermissionStanding =
     let private run (call : Call) (system : UnixSystem<int, string>) : Outcome * UnixSystem<int, string> =
         let result =
             match call with
-            | Call.Unlink p -> UnixNamespace.unlink (path p) system
-            | Call.RmDir p -> UnixNamespace.rmdir (path p) system
+            | Call.Unlink p -> UnixNamespace.unlink (PathArg.ofPath (path p)) system
+            | Call.RmDir p -> UnixNamespace.rmdir (PathArg.ofPath (path p)) system
             | Call.Rename (source, destination) ->
                 match UnixNamespace.rename (argument source) (argument destination) system with
                 | Ok answer -> Ok answer
                 | Error (RenameRefusal.Sticky refusal) -> Error refusal
-                | Error (RenameRefusal.PathArgument refusal) -> failwith $"%A{call}: %A{refusal}"
 
         match result with
         | Error refusal -> Outcome.Refused refusal, system
@@ -936,7 +934,9 @@ module TestPermissionStanding =
                     |> opened
 
                 let searched =
-                    match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (path "/d/kid") system with
+                    match
+                        UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (PathArg.ofPath (path "/d/kid")) system
+                    with
                     | Ok (FileStatusAnswer.Reported _) -> true
                     | Ok (FileStatusAnswer.Failed UnixError.EACCES) -> false
                     | other -> failwith $"stat: %A{other}"
@@ -978,7 +978,7 @@ module TestPermissionStanding =
         let system = systemOn SimulatedUnixPlatform.macOsArm64 darwinCaller vfs
 
         let search (p : string) : UnixError option =
-            match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (path (p + "/nx")) system with
+            match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (PathArg.ofPath (path (p + "/nx"))) system with
             | Ok (FileStatusAnswer.Failed error) -> Some error
             | other -> failwith $"stat: %A{other}"
 
@@ -1019,7 +1019,7 @@ module TestPermissionStanding =
         openFor FileAccessMode.ReadOnly "/hosts" |> shouldEqual true
         openFor FileAccessMode.WriteOnly "/hosts" |> shouldEqual false
 
-        UnixNamespace.mkdir (path "/wheel0755/x") 0o755 system
+        UnixNamespace.mkdir (PathArg.ofPath (path "/wheel0755/x")) 0o755 system
         |> fst
         |> shouldEqual (SyscallAnswer.Failed UnixError.EACCES)
 
@@ -1137,7 +1137,7 @@ module TestPermissionStanding =
                 Truncate = true
             }
 
-        match UnixNamespace.openPath truncating (path "/f") 0 system with
+        match OpenFlagWords.openPath truncating (PathArg.ofPath (path "/f")) 0 system with
         | Error refusal -> refusal |> shouldEqual (OpenRefusal.UnmeasuredSetIdChange (inode, truncated))
         | Ok (answer, _) -> failwith $"open(O_TRUNC) answered %A{answer}"
 
@@ -1167,7 +1167,7 @@ module TestPermissionStanding =
         let directory = inodeAt tree "/tmp/base/own-sticky"
         let standing = Standing.toward root (owner 7u 7u)
 
-        UnixSystem.step 1 (Syscall.Unlink (path "/tmp/base/own-sticky/theirs")) system
+        UnixSystem.step 1 (Syscall.Unlink (PathArg.ofPath (path "/tmp/base/own-sticky/theirs"))) system
         |> Result.map fst
         |> shouldEqual (
             Error (
@@ -1181,7 +1181,7 @@ module TestPermissionStanding =
             )
         )
 
-        UnixSystem.step 1 (Syscall.RmDir (path "/tmp/base/own-sticky/theirdir")) system
+        UnixSystem.step 1 (Syscall.RmDir (PathArg.ofPath (path "/tmp/base/own-sticky/theirdir"))) system
         |> Result.map fst
         |> shouldEqual (
             Error (
@@ -1278,11 +1278,13 @@ module TestPermissionStanding =
             [
                 "search (stat /d/kid)",
                 fun system ->
-                    match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (path "/d/kid") system with
+                    match
+                        UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (PathArg.ofPath (path "/d/kid")) system
+                    with
                     | Ok (FileStatusAnswer.Reported _) -> true
                     | Ok (FileStatusAnswer.Failed UnixError.EACCES) -> false
                     | other -> failwith $"stat: %A{other}"
-                "chdir /d", fun system -> UnixPathResolution.chdir (path "/d") system |> succeeds
+                "chdir /d", fun system -> UnixPathResolution.chdir (PathArg.ofPath (path "/d")) system |> succeeds
                 "opendir /d",
                 fun system ->
                     Answered.openPath
@@ -1295,7 +1297,8 @@ module TestPermissionStanding =
                     |> succeeds
                 "open(O_CREAT) /d/new",
                 fun system -> Answered.openPath creating (path "/d/new") 0o600 system |> succeeds
-                "mkdir /d/new", fun system -> UnixNamespace.mkdir (path "/d/new") 0o755 system |> succeeds
+                "mkdir /d/new",
+                fun system -> UnixNamespace.mkdir (PathArg.ofPath (path "/d/new")) 0o755 system |> succeeds
                 "unlink /d/f", fun system -> Answered.unlink (path "/d/f") system |> succeeds
                 "rmdir /d/e", fun system -> Answered.rmdir (path "/d/e") system |> succeeds
                 "rename /d/f out of /d", renamed "/d/f" "/o/f"
@@ -1340,7 +1343,7 @@ module TestPermissionStanding =
             | Error refusal -> Some $"%A{refusal}"
 
         let throughDescriptor (p : string) : string option list =
-            match UnixNamespace.openPath readWrite (path p) 0 system with
+            match OpenFlagWords.openPath readWrite (PathArg.ofPath (path p)) 0 system with
             | Ok (SyscallAnswer.Completed fd, opened) ->
                 let fd = int fd
 
@@ -1355,11 +1358,11 @@ module TestPermissionStanding =
 
         [
             for p in [ "/d/f" ; "/d/g" ] do
-                yield UnixNamespace.openPath truncating (path p) 0 system |> refused
+                yield OpenFlagWords.openPath truncating (PathArg.ofPath (path p)) 0 system |> refused
                 yield! throughDescriptor p
             for p in [ "/d/f" ; "/d/e" ] do
-                yield UnixNamespace.unlink (path p) system |> refused
-                yield UnixNamespace.rmdir (path p) system |> refused
+                yield UnixNamespace.unlink (PathArg.ofPath (path p)) system |> refused
+                yield UnixNamespace.rmdir (PathArg.ofPath (path p)) system |> refused
             for source, destination in
                 [
                     "/d/f", "/d/g"

@@ -388,9 +388,8 @@ module TestNonBlocking =
                 | SetNonBlockingAnswer.Failed error, _ -> failwith $"could not clear the flag: %O{error}"
 
             let deliveries (system : UnixSystem<int, string>) =
-                system.Machine.Delivered
-                |> Seq.map (fun delivery -> delivery.Endpoint, List.ofSeq delivery.Bytes)
-                |> List.ofSeq
+                DeliveryLog.toList system.Machine.Delivered
+                |> List.map (fun delivery -> delivery.Endpoint, List.ofSeq delivery.Bytes)
 
             match WriteOutcomes.write fd bytes flagged, WriteOutcomes.write fd bytes clear with
             | Ok (answer, after), Ok (blockingAnswer, blockingAfter) when count <= emptyPipeTakes ->
@@ -400,18 +399,7 @@ module TestNonBlocking =
                 // The same bytes reach the same client, delivery for delivery,
                 // and the flag is the only other difference.
                 deliveries after |> shouldEqual (deliveries blockingAfter)
-
-                // Compared delivery by delivery above: an `ImmutableArray`'s
-                // own equality is its array's identity.
-                let withoutLog (system : UnixSystem<int, string>) =
-                    { system with
-                        Machine =
-                            { system.Machine with
-                                Delivered = ImmutableArray.Empty
-                            }
-                    }
-
-                withoutLog (unflag after) |> shouldEqual (withoutLog blockingAfter)
+                unflag after |> shouldEqual blockingAfter
             | Ok (answer, after), Ok (WriteAnswer.Completed written, blockingAfter) ->
                 written |> shouldEqual (int64 count)
 
@@ -447,9 +435,8 @@ module TestNonBlocking =
 
             match WriteOutcomes.write 1 (ImmutableArray.Create<byte> (Array.zeroCreate 65537)) flagged with
             | Ok (WriteAnswer.Completed 65536L, after) ->
-                after.Machine.Delivered
-                |> Seq.map (fun delivery -> delivery.Bytes.Length)
-                |> List.ofSeq
+                DeliveryLog.toList after.Machine.Delivered
+                |> List.map (fun delivery -> delivery.Bytes.Length)
                 |> shouldEqual [ 65536 ]
             | other -> failwith $"%O{platform}: a 65537-byte write answered %A{Result.map fst other}"
 

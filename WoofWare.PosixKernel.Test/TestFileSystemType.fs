@@ -296,11 +296,11 @@ module TestFileSystemType =
             UnixPathResolution.fstatfs fileFd system
             UnixPathResolution.fstatfs dirFd system
             UnixPathResolution.fstatfs rootFd system
-            UnixPathResolution.statfs (UnixPath.parseOrFail context "/f") system
-            UnixPathResolution.statfs (UnixPath.parseOrFail context "/d") system
-            UnixPathResolution.statfs (UnixPath.parseOrFail context "/") system
-            UnixPathResolution.statfs (UnixPath.parseOrFail context "ld") system
-            UnixPathResolution.statfs (UnixPath.parseOrFail context "d/") system
+            UnixPathResolution.statfs (PathArg.ofPath (UnixPath.parseOrFail context "/f")) system
+            UnixPathResolution.statfs (PathArg.ofPath (UnixPath.parseOrFail context "/d")) system
+            UnixPathResolution.statfs (PathArg.ofPath (UnixPath.parseOrFail context "/")) system
+            UnixPathResolution.statfs (PathArg.ofPath (UnixPath.parseOrFail context "ld")) system
+            UnixPathResolution.statfs (PathArg.ofPath (UnixPath.parseOrFail context "d/")) system
         ]
 
     // ----------------------------------------------------------- type fields
@@ -614,7 +614,8 @@ module TestFileSystemType =
                 let system = systemWith platform (EmulatedMount.defaultOf fsType)
 
                 for path, expected in measuredPathRows do
-                    let answer = UnixPathResolution.statfs (UnixPath.parseOrFail context path) system
+                    let answer =
+                        UnixPathResolution.statfs (PathArg.ofPath (UnixPath.parseOrFail context path)) system
 
                     match expected, answer with
                     | Some error, FileSystemStatisticsAnswer.Failed actual when actual = error -> ()
@@ -652,13 +653,13 @@ module TestFileSystemType =
                 let parsed = UnixPath.parseOrFail context path
 
                 let viaStat =
-                    match UnixPathResolution.stat SymlinkPolicy.Follow parsed system with
+                    match UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofPath parsed) system with
                     | Ok (FileStatusAnswer.Failed error) -> Some error
                     | Ok (FileStatusAnswer.Reported _) -> None
                     | Error refusal -> failwith $"test bug: stat refused: %s{StatRefusal.describe refusal}"
 
                 let viaStatfs =
-                    match UnixPathResolution.statfs parsed system with
+                    match UnixPathResolution.statfs (PathArg.ofPath parsed) system with
                     | FileSystemStatisticsAnswer.Failed error -> Some error
                     | FileSystemStatisticsAnswer.Reported _ -> None
 
@@ -694,10 +695,17 @@ module TestFileSystemType =
                 Assert.Throws (fun () -> UnixPathResolution.fstatfs fd incoherent |> ignore<FileSystemStatisticsAnswer>)
                 |> ignore<exn>
 
-            for path in [ "/f" ; "/missing" ] do
+            // Including arguments the kernel cannot copy in, which fail before
+            // any lookup.
+            for path in
+                [
+                    PathArg.ofText "/f"
+                    PathArg.ofText "/missing"
+                    PathArgumentBytes.Unreadable
+                    PathArg.ofText (String.replicate 5000 "a")
+                ] do
                 Assert.Throws (fun () ->
-                    UnixPathResolution.statfs (UnixPath.parseOrFail context path) incoherent
-                    |> ignore<FileSystemStatisticsAnswer>
+                    UnixPathResolution.statfs path incoherent |> ignore<FileSystemStatisticsAnswer>
                 )
                 |> ignore<exn>
 

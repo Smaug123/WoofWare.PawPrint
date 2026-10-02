@@ -1809,11 +1809,12 @@ module UnixReadWrite =
                                             }
                                             system.Machine.Pipes
                                     Delivered =
-                                        system.Machine.Delivered.Add
+                                        DeliveryLog.append
                                             {
                                                 Endpoint = endpoint
                                                 Bytes = delivered
                                             }
+                                            system.Machine.Delivered
                                 }
                          }
                          |> touchedByWrite pipeId)

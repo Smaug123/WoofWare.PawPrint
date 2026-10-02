@@ -18,6 +18,7 @@
     <Compile Include="HostFileSystemType.fs" />
     <Compile Include="ReuseAddress.fs" />
     <Compile Include="PathText.fs" />
+    <Compile Include="OpenFlagWords.fs" />
     <Compile Include="Answered.fs" />
     <Compile Include="DirectoryReading.fs" />
     <Compile Include="Owners.fs" />
@@ -56,6 +57,8 @@
     <Compile Include="TestSocketFuzz.fs" />
     <Compile Include="TestNoPawPrintReference.fs" />
     <Compile Include="TestPathArgument.fs" />
+    <Compile Include="TestPathCopyIn.fs" />
+    <Compile Include="TestOpenFlagWord.fs" />
     <Compile Include="TestUserBuffer.fs" />
     <Compile Include="TestTransferCounts.fs" />
     <Compile Include="TestCopyFileSyscalls.fs" />
@@ -84,6 +87,7 @@
     <Compile Include="TestSignalDispositions.fs" />
     <Compile Include="TestUnixSignal.fs" />
     <Compile Include="TestPthreadKill.fs" />
+    <Compile Include="TestSigaction.fs" />
     <Compile Include="TestSignalPickOrder.fs" />
     <Compile Include="TestSignalReceiver.fs" />
     <Compile Include="SignalFuzz.fs" />
@@ -120,6 +124,7 @@
     <Compile Include="TestListen.fs" />
     <Compile Include="TestNonBlocking.fs" />
     <Compile Include="TestConnect.fs" />
+    <Compile Include="TestSocketAddressLength.fs" />
     <Compile Include="TestPoll.fs" />
     <Compile Include="TestPollTimeout.fs" />
     <Compile Include="TestSocketWait.fs" />
@@ -131,6 +136,7 @@
     <Compile Include="TestPipeBufferCorpus.fs" />
     <Compile Include="TestPipeBufferAgainstHost.fs" />
     <Compile Include="TestPipe.fs" />
+    <Compile Include="TestDeliveryLog.fs" />
     <Compile Include="TestLaunchedStreams.fs" />
     <Compile Include="TestSuppliedPipe.fs" />
     <Compile Include="TestBlockingPipe.fs" />
@@ -170,6 +176,11 @@
          `TestOwnerChange` replays every row. -->
     <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\chown-rules.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.chownRules.linux.txt" />
     <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\chown-rules.darwin-27.0-uid501.txt" LogicalName="WoofWare.PosixKernel.Test.chownRules.darwin.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\path-copyin-order.linux-6.18.5-aarch64-root.txt" LogicalName="WoofWare.PosixKernel.Test.pathCopyInOrder.linux.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\path-copyin-order.darwin-27.0-uid501.txt" LogicalName="WoofWare.PosixKernel.Test.pathCopyInOrder.darwin.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\open-flags.linux-6.12.111-x86_64-root.txt" LogicalName="WoofWare.PosixKernel.Test.openFlags.linuxX64.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\open-flags.linux-6.18.5-aarch64-root.txt" LogicalName="WoofWare.PosixKernel.Test.openFlags.linuxArm64.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\open-flags.darwin-27.0-uid501.txt" LogicalName="WoofWare.PosixKernel.Test.openFlags.darwin.txt" />
   </ItemGroup>
 
   <ItemGroup>

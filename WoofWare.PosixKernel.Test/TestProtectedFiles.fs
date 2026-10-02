@@ -52,7 +52,7 @@ module TestProtectedFiles =
     let private path (p : string) : UnixPath = UnixPath.parseOrFail context p
 
     let private bytes (p : string) : PathArgumentBytes =
-        PathArgumentBytes.Bytes (ImmutableArray.CreateRange (Text.Encoding.ASCII.GetBytes p))
+        PathArg.ofBytes (Text.Encoding.ASCII.GetBytes p)
 
     let private ok (result : Result<'a, 'e>) : 'a =
         match result with
@@ -442,7 +442,7 @@ module TestProtectedFiles =
         | SyscallAnswer.Failed error -> $"%A{error}"
 
     let private statText (policy : SymlinkPolicy) (p : string) (system : UnixSystem<int, string>) : string =
-        match UnixPathResolution.stat policy (path p) system |> ok with
+        match UnixPathResolution.stat policy (PathArg.ofPath (path p)) system |> ok with
         | FileStatusAnswer.Reported _ -> "ok"
         | FileStatusAnswer.Failed error -> $"%A{error}"
 
@@ -464,7 +464,7 @@ module TestProtectedFiles =
         (system : UnixSystem<int, string>)
         : string * UnixSystem<int, string>
         =
-        match UnixNamespace.openPath flags (path p) 0o644 system with
+        match OpenFlagWords.openPath flags (PathArg.ofPath (path p)) 0o644 system with
         | Ok (answer, after) -> answerText answer, after
         | Error refusal -> failwith $"open(%s{p}) was refused: %A{refusal}"
 
@@ -540,7 +540,10 @@ module TestProtectedFiles =
         let accessText (call : Result<SyscallAnswer, AccessRefusal>) : string = call |> ok |> answerText
 
         let readlinkText =
-            match UnixNamespace.readlink (path "/s/lf") UserBuffer.Mapped 4096 system |> ok with
+            match
+                UnixNamespace.readlink (PathArg.ofPath (path "/s/lf")) UserBuffer.Mapped 4096 system
+                |> ok
+            with
             | ReadLinkAnswer.Reported _ -> "ok"
             | ReadLinkAnswer.Failed error -> $"%A{error}"
 
@@ -561,19 +564,22 @@ module TestProtectedFiles =
             "access", accessText (UnixPathResolution.access (bytes "/s/lf") 4 system)
             "access-nofollow", accessText (UnixPathResolution.faccessat -100 (bytes "/s/lf") 0 0x100 system)
             "chown",
-            UnixPathResolution.chown (path "/s/lf") None None system
+            UnixPathResolution.chown (PathArg.ofPath (path "/s/lf")) None None system
             |> ok
             |> fst
             |> answerText
             "lchown",
-            UnixPathResolution.lchown (path "/s/lf") None None system
+            UnixPathResolution.lchown (PathArg.ofPath (path "/s/lf")) None None system
             |> ok
             |> fst
             |> answerText
             "dir-slash", stat "/s/ld/"
             "dir-dot", stat "/s/ld/."
             "dir-child", stat "/s/ld/x"
-            "chdir", UnixPathResolution.chdir (path "/s/ld") system |> fst |> answerText
+            "chdir",
+            UnixPathResolution.chdir (PathArg.ofPath (path "/s/ld")) system
+            |> fst
+            |> answerText
             "opendir",
             fst (
                 openText
@@ -588,7 +594,11 @@ module TestProtectedFiles =
             "dangling-created", (if exists "/c/dangle" afterCreat then "EEXIST" else "ok")
             "cycle-stat", stat "/s/lcyc"
             "via-chain", stat "/v/via"
-            "unlink", UnixNamespace.unlink (path "/s/lf") system |> ok |> fst |> answerText
+            "unlink",
+            UnixNamespace.unlink (PathArg.ofPath (path "/s/lf")) system
+            |> ok
+            |> fst
+            |> answerText
         ]
         |> Map.ofList
 

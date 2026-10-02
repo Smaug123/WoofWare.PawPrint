@@ -118,7 +118,7 @@ module TestSyscallInterruption =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
         let system =
-            match UnixSocket.bind listener UserBuffer.Mapped 16 inetFamily (Some (loopback 5000us)) system with
+            match UnixSocket.bind listener UserBuffer.Mapped 16u inetFamily (Some (loopback 5000us)) system with
             | Ok (BindAnswer.Bound _, system) -> system
             | other -> failwith $"binding the listener: %A{other}"
 
@@ -215,7 +215,7 @@ module TestSyscallInterruption =
         | Sleep.Accept ->
             parked
                 "the accept"
-                (UnixConnection.accept task world.Listener UserBuffer.Mapped 16 world.System)
+                (UnixConnection.accept task world.Listener UserBuffer.Mapped 16u world.System)
                 (function
                 | AcceptOutcome.WouldBlock _ -> true
                 | _ -> false
@@ -278,7 +278,7 @@ module TestSyscallInterruption =
             let client, system =
                 NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
-            match UnixConnection.connect client UserBuffer.Mapped 16 inetFamily (Some (loopback 5000us)) system with
+            match UnixConnection.connect client UserBuffer.Mapped 16u inetFamily (Some (loopback 5000us)) system with
             | Ok (ConnectOutcome.Completed, system) -> system
             | other -> failwith $"connecting: %A{other}"
 

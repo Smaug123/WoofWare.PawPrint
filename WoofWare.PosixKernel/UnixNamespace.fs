@@ -2,37 +2,104 @@ namespace WoofWare.PosixKernel
 
 open System.Collections.Immutable
 
+/// A bit of `open(2)`'s flag word that the simulated flavour defines and this
+/// kernel does not model. `UnixNamespace.openPath` refuses a word holding any
+/// of them (`OpenRefusal.UnmodelledFlags`) rather than ignore what the caller
+/// asked for.
+[<RequireQualifiedAccess>]
+type UnmodelledOpenFlag =
+    /// `O_NOCTTY`, on both flavours.
+    | NoControllingTerminal
+    /// `O_APPEND`, on both flavours.
+    | Append
+    /// `O_NONBLOCK`, on both flavours.
+    | NonBlocking
+    /// `O_ASYNC` (Linux's `FASYNC`), on both flavours.
+    | Asynchronous
+    /// `O_DSYNC` without `O_SYNC`, on both flavours.
+    | DataSynchronous
+    /// Linux's `O_DIRECT`.
+    | Direct
+    /// Linux's `O_LARGEFILE`.
+    | LargeFile
+    /// Linux's `O_NOATIME`.
+    | NoAccessTime
+    /// Linux's `O_PATH`.
+    | PathOnly
+    /// Linux's `__O_TMPFILE`, the bit `O_TMPFILE` adds to `O_DIRECTORY`.
+    | TemporaryFile
+    /// Darwin's `O_SHLOCK`.
+    | SharedLock
+    /// Darwin's `O_EXLOCK`.
+    | ExclusiveLock
+    /// Darwin's `O_RESOLVE_BENEATH`.
+    | ResolveBeneath
+    /// Darwin's `O_UNIQUE`.
+    | Unique
+    /// Darwin's `O_EVTONLY`.
+    | EventOnly
+    /// Darwin's `O_SYMLINK`.
+    | Symlink
+    /// Darwin's `O_CLOFORK`.
+    | CloseOnFork
+    /// Darwin's `O_NOFOLLOW_ANY`.
+    | NoFollowAny
+    /// Darwin's `O_EXEC`, which with `O_DIRECTORY` is `O_SEARCH`.
+    | Execute
+    /// Darwin's `O_POPUP`.
+    | Popup
+
+[<RequireQualifiedAccess>]
+module UnmodelledOpenFlag =
+    /// The flag's name in the flavour's `<fcntl.h>`.
+    let name (flag : UnmodelledOpenFlag) : string =
+        match flag with
+        | UnmodelledOpenFlag.NoControllingTerminal -> "O_NOCTTY"
+        | UnmodelledOpenFlag.Append -> "O_APPEND"
+        | UnmodelledOpenFlag.NonBlocking -> "O_NONBLOCK"
+        | UnmodelledOpenFlag.Asynchronous -> "O_ASYNC"
+        | UnmodelledOpenFlag.DataSynchronous -> "O_DSYNC"
+        | UnmodelledOpenFlag.Direct -> "O_DIRECT"
+        | UnmodelledOpenFlag.LargeFile -> "O_LARGEFILE"
+        | UnmodelledOpenFlag.NoAccessTime -> "O_NOATIME"
+        | UnmodelledOpenFlag.PathOnly -> "O_PATH"
+        | UnmodelledOpenFlag.TemporaryFile -> "__O_TMPFILE"
+        | UnmodelledOpenFlag.SharedLock -> "O_SHLOCK"
+        | UnmodelledOpenFlag.ExclusiveLock -> "O_EXLOCK"
+        | UnmodelledOpenFlag.ResolveBeneath -> "O_RESOLVE_BENEATH"
+        | UnmodelledOpenFlag.Unique -> "O_UNIQUE"
+        | UnmodelledOpenFlag.EventOnly -> "O_EVTONLY"
+        | UnmodelledOpenFlag.Symlink -> "O_SYMLINK"
+        | UnmodelledOpenFlag.CloseOnFork -> "O_CLOFORK"
+        | UnmodelledOpenFlag.NoFollowAny -> "O_NOFOLLOW_ANY"
+        | UnmodelledOpenFlag.Execute -> "O_EXEC"
+        | UnmodelledOpenFlag.Popup -> "O_POPUP"
+
 /// What a caller asked `open(2)` for, as facts about the open rather than as a
-/// bit pattern.
+/// bit pattern: the flag word as `OpenFlagWord.decode` reads it for one
+/// flavour.
 ///
-/// Parsed rather than raw, unlike `mkdir`'s `mode`, because a bit pattern
-/// lets this kernel *guess*: given an `int`, a flag it does not model is
-/// indistinguishable from one it does, and it would silently do something the
-/// caller did not ask for. A record has
-/// exactly the fields this kernel acts on, so a caller can see what is
-/// supported, and a flag that is not here is one the client had to decide about
-/// before calling. An `int -> OpenFlags` decoder can be added later if a caller
-/// wants one; it cannot be taken away once the surface is a number.
-///
-/// A caller holding a raw flag word answers two cases itself before calling,
-/// an unrecognised bit and an access mode that is none of the three, because
-/// neither is expressible once the flags are parsed.
-type OpenFlags =
+/// Every field is a flag this kernel acts on, or (`CloseOnExec`,
+/// `Synchronous`) one it accepts knowing it changes nothing here. A word
+/// holding any other bit its flavour defines never becomes one of these: the
+/// decoder refuses it, so the kernel cannot guess at a flag it does not
+/// model.
+type internal OpenFlags =
     {
-        /// `O_RDONLY`, `O_WRONLY` or `O_RDWR`. A real `open` takes these as the
-        /// low two bits and rejects the fourth combination; by the time the
-        /// flags are a record there is no fourth combination to reject.
+        /// `O_RDONLY`, `O_WRONLY` or `O_RDWR`, access modes 0, 1 and 2. The
+        /// fourth, 3, never decodes to one of these: Darwin answers EINVAL
+        /// for it, and Linux opens a descriptor that can neither read nor
+        /// write, which this kernel refuses.
         Access : FileAccessMode
         /// `O_CREAT`: create the final component if nothing holds that name.
         Create : bool
         /// `O_EXCL`: fail EEXIST if the final component exists.
         ///
-        /// Pass this exactly as the caller set it, **without** first ANDing it
-        /// with `Create`. That it does nothing on its own is a measured kernel
-        /// fact this library owns — `open(existing, O_WRONLY|O_EXCL)` succeeds
-        /// and `open(missing, O_WRONLY|O_EXCL)` is ENOENT, exactly as without
-        /// it — and a client that pre-combined them would be asserting the rule
-        /// rather than exercising it.
+        /// Exactly as the word set it, **without** first ANDing it with
+        /// `Create`. That it does nothing on its own is a measured kernel fact
+        /// `UnixNamespace.openPathParsed` owns — `open(existing,
+        /// O_WRONLY|O_EXCL)` succeeds and `open(missing, O_WRONLY|O_EXCL)` is
+        /// ENOENT, exactly as without it.
         Exclusive : bool
         /// `O_TRUNC`: empty a regular file that is opened successfully.
         ///
@@ -45,20 +112,20 @@ type OpenFlags =
         NoFollow : bool
         /// `O_CLOEXEC`. Accepted and ignored: it sets `FD_CLOEXEC`, which
         /// matters only across `exec`, and this kernel models neither `fork` nor
-        /// `exec`. Here so that a caller can say it was asked for rather than
-        /// having to drop it silently.
+        /// `exec`.
         CloseOnExec : bool
-        /// `O_SYNC`. Accepted and ignored: it governs when a write reaches
-        /// storage rather than whether it is visible, and this filesystem holds
-        /// its bytes in memory, so every write is already as durable as the
-        /// model gets. Here for the same reason as `CloseOnExec`.
+        /// `O_SYNC` (on Linux, the `__O_SYNC` bit, which the kernel completes to
+        /// `O_SYNC` whether or not `O_DSYNC` is beside it). Accepted and
+        /// ignored: it governs when a write reaches storage rather than whether
+        /// it is visible, and this filesystem holds its bytes in memory, so
+        /// every write is already as durable as the model gets.
         Synchronous : bool
         /// `O_DIRECTORY`: fail ENOTDIR unless the path names a directory.
         ///
         /// Modelled only as `opendir(3)` uses it: with `O_RDONLY`, and without
-        /// `O_CREAT`, `O_TRUNC` or `O_NOFOLLOW`. `UnixNamespace.openPath`
+        /// `O_TRUNC` or `O_NOFOLLOW` (`O_CREAT` with it is EINVAL). The decoder
         /// refuses every other combination, whose check order against those
-        /// flags is unmeasured.
+        /// flags is unmodelled.
         Directory : bool
     }
 
@@ -192,8 +259,6 @@ type RenameProgress<'Task, 'Handler when 'Task : comparison and 'Handler : equal
 /// Why this kernel will not answer a `rename(2)`.
 [<RequireQualifiedAccess>]
 type RenameRefusal =
-    /// One of the pathnames' bytes are not a pathname at all.
-    | PathArgument of refusal : PathArgumentRefusal
     /// A sticky directory whose rule Darwin has not been measured to apply to
     /// this caller.
     | Sticky of refusal : StickyRefusal
@@ -204,8 +269,6 @@ module RenameRefusal =
     /// entry point asked, and with which paths.
     let describe (refusal : RenameRefusal) : string =
         match refusal with
-        | RenameRefusal.PathArgument (PathArgumentRefusal.InteriorNul offset) ->
-            $"a pathname's bytes hold a NUL at offset %d{offset}, so they are not a C string: the caller read past the string's end, or built the bytes from something that was never one."
         | RenameRefusal.Sticky refusal -> StickyRefusal.describe refusal
 
 /// Why this kernel will not answer a `clonefile(2)`.
@@ -223,8 +286,6 @@ type CloneFileRefusal =
     /// The caller is privileged, which changes who owns the clone and which
     /// permission bits it keeps, unmeasured.
     | PrivilegedCaller
-    /// One of the pathnames' bytes are not a pathname at all.
-    | PathArgument of refusal : PathArgumentRefusal
     /// The source is the directory at `inode`; cloning one copies its whole
     /// tree, which this kernel does not model.
     | DirectorySource of inode : InodeNumber
@@ -248,8 +309,6 @@ module CloneFileRefusal =
             $"flags 0x%x{flags} ask for CLONE_NOFOLLOW (0x1), CLONE_NOFOLLOW_ANY (0x8) or CLONE_RESOLVE_BENEATH (0x10). Each changes how a pathname resolves, and cloning a symbolic link itself is not modelled."
         | CloneFileRefusal.PrivilegedCaller ->
             "the caller is privileged. A privileged clone keeps the source's owner unless CLONE_NOOWNERCOPY is given, and which permission bits it keeps has not been measured."
-        | CloneFileRefusal.PathArgument (PathArgumentRefusal.InteriorNul offset) ->
-            $"a pathname's bytes hold a NUL at offset %d{offset}, so they are not a C string: the caller read past the string's end, or built the bytes from something that was never one."
         | CloneFileRefusal.DirectorySource inode ->
             $"the source is directory %O{inode}. clonefile clones a directory's whole tree, which this kernel does not model."
         | CloneFileRefusal.UnmeasuredSpecialBits (inode, standing, permissions) ->
@@ -317,6 +376,20 @@ type OpenRefusal =
     /// An `O_TRUNC` open of the file at `inode`, whose effect on the file's
     /// set-ID bits has not been measured for this caller. Nothing was changed.
     | UnmeasuredSetIdChange of inode : InodeNumber * refusal : SetIdChangeRefusal
+    /// The flag word `flags` holds bits the simulated flavour defines and this
+    /// kernel does not model, named in `unmodelled` in ascending order of bit.
+    /// Nothing was read or changed.
+    | UnmodelledFlags of flags : int * unmodelled : UnmodelledOpenFlag list
+    /// The flag word `flags` asks for Linux's access mode 3, which opens a
+    /// descriptor that can neither read nor write and serves only `ioctl(2)`
+    /// and the calls that need no access mode. This kernel's descriptions
+    /// permit reading, writing or both. Nothing was read or changed.
+    | IoctlOnlyAccessMode of flags : int
+    /// The flag word `flags` asks for `O_DIRECTORY` with a write access mode,
+    /// `O_TRUNC` or `O_NOFOLLOW`. This kernel models `O_DIRECTORY` only as
+    /// `opendir(3)` uses it, alone with `O_RDONLY`. Nothing was read or
+    /// changed.
+    | UnmodelledDirectoryOpen of flags : int
 
 [<RequireQualifiedAccess>]
 module OpenRefusal =
@@ -326,6 +399,185 @@ module OpenRefusal =
         match refusal with
         | OpenRefusal.UnmeasuredSetIdChange (inode, refusal) ->
             $"opening inode %O{inode} with O_TRUNC: %s{SetIdChangeRefusal.describe refusal}"
+        | OpenRefusal.UnmodelledFlags (flags, unmodelled) ->
+            let names = unmodelled |> List.map UnmodelledOpenFlag.name |> String.concat ", "
+
+            $"flags 0x%x{flags} hold %s{names}, which this platform defines and this kernel does not model; model them before answering."
+        | OpenRefusal.IoctlOnlyAccessMode flags ->
+            $"flags 0x%x{flags} ask for access mode 3, which Linux opens (demanding the read and write permission bits) as a descriptor that can neither read nor write: read, write and flock answer EBADF, ftruncate EINVAL, and only ioctl and the calls that need no access mode succeed. This kernel's descriptions permit reading, writing or both; model the fourth before answering."
+        | OpenRefusal.UnmodelledDirectoryOpen flags ->
+            $"flags 0x%x{flags} ask for O_DIRECTORY with a write access mode, O_TRUNC or O_NOFOLLOW. Only O_DIRECTORY|O_RDONLY (what opendir(3) opens with) is modelled; where ENOTDIR falls among EISDIR, EACCES and ELOOP for any other combination is not."
+
+/// `open(2)`'s flag word, in the simulated flavour's own `<fcntl.h>`
+/// numbering, read as the kernel reads it.
+[<RequireQualifiedAccess>]
+module internal OpenFlagWord =
+
+    /// What the flag word asks for, or how the call ends without reading the
+    /// path.
+    [<RequireQualifiedAccess>]
+    type Decoding =
+        /// The word is one this kernel models, asking for this.
+        | Decoded of OpenFlags
+        /// The kernel answers this errno before it copies the path in.
+        | Fails of UnixError
+        | Refused of OpenRefusal
+
+    /// What one bit above the access mode asks for.
+    [<RequireQualifiedAccess>]
+    type private Meaning =
+        | Create
+        | Exclusive
+        | Truncate
+        | NoFollow
+        | Directory
+        | CloseOnExec
+        | Synchronous
+        /// `O_DSYNC`, which `O_SYNC` beside it subsumes.
+        | DataSynchronous
+        | Unmodelled of UnmodelledOpenFlag
+
+    // Each flavour's numbering of every bit it defines above the access mode,
+    // in ascending order of bit. Measured by open-flags.c on Linux 6.18.5
+    // aarch64, Linux 6.12.111 x86-64 and Darwin 27.0 arm64: a single-bit row
+    // differs from the bare access mode's for exactly these bits, bar those
+    // that cannot act alone (O_EXCL; O_NOCTTY on a file that is not a
+    // terminal; Linux's O_LARGEFILE, which a 64-bit kernel sets on every
+    // description; Darwin's O_SYMLINK and O_POPUP). Every other bit is ignored
+    // by both kernels, Darwin included, so it is ignored here too.
+    //
+    // Linux's O_SYNC is two bits, __O_SYNC and O_DSYNC, and the kernel reads
+    // __O_SYNC alone as O_SYNC (F_GETFL reads both back).
+
+    let private linuxBits (architecture : SimulatedUnixArchitecture) : (int * Meaning) list =
+        // aarch64's <asm/fcntl.h> moves four bits; x86-64 keeps the generic
+        // numbering.
+        let directory, noFollow, direct, largeFile =
+            match architecture with
+            | SimulatedUnixArchitecture.X64 -> 0x10000, 0x20000, 0x4000, 0x8000
+            | SimulatedUnixArchitecture.Arm64 -> 0x4000, 0x8000, 0x10000, 0x20000
+
+        [
+            0x40, Meaning.Create
+            0x80, Meaning.Exclusive
+            0x100, Meaning.Unmodelled UnmodelledOpenFlag.NoControllingTerminal
+            0x200, Meaning.Truncate
+            0x400, Meaning.Unmodelled UnmodelledOpenFlag.Append
+            0x800, Meaning.Unmodelled UnmodelledOpenFlag.NonBlocking
+            0x1000, Meaning.DataSynchronous
+            0x2000, Meaning.Unmodelled UnmodelledOpenFlag.Asynchronous
+            direct, Meaning.Unmodelled UnmodelledOpenFlag.Direct
+            largeFile, Meaning.Unmodelled UnmodelledOpenFlag.LargeFile
+            directory, Meaning.Directory
+            noFollow, Meaning.NoFollow
+            0x40000, Meaning.Unmodelled UnmodelledOpenFlag.NoAccessTime
+            0x80000, Meaning.CloseOnExec
+            0x100000, Meaning.Synchronous
+            0x200000, Meaning.Unmodelled UnmodelledOpenFlag.PathOnly
+            0x400000, Meaning.Unmodelled UnmodelledOpenFlag.TemporaryFile
+        ]
+        |> List.sortBy fst
+
+    let private darwinBits : (int * Meaning) list =
+        [
+            0x4, Meaning.Unmodelled UnmodelledOpenFlag.NonBlocking
+            0x8, Meaning.Unmodelled UnmodelledOpenFlag.Append
+            0x10, Meaning.Unmodelled UnmodelledOpenFlag.SharedLock
+            0x20, Meaning.Unmodelled UnmodelledOpenFlag.ExclusiveLock
+            0x40, Meaning.Unmodelled UnmodelledOpenFlag.Asynchronous
+            0x80, Meaning.Synchronous
+            0x100, Meaning.NoFollow
+            0x200, Meaning.Create
+            0x400, Meaning.Truncate
+            0x800, Meaning.Exclusive
+            0x1000, Meaning.Unmodelled UnmodelledOpenFlag.ResolveBeneath
+            0x2000, Meaning.Unmodelled UnmodelledOpenFlag.Unique
+            0x8000, Meaning.Unmodelled UnmodelledOpenFlag.EventOnly
+            0x20000, Meaning.Unmodelled UnmodelledOpenFlag.NoControllingTerminal
+            0x100000, Meaning.Directory
+            0x200000, Meaning.Unmodelled UnmodelledOpenFlag.Symlink
+            0x400000, Meaning.DataSynchronous
+            0x1000000, Meaning.CloseOnExec
+            // Not in the SDK's headers, but the kernel sets FD_CLOFORK for it.
+            0x8000000, Meaning.Unmodelled UnmodelledOpenFlag.CloseOnFork
+            0x20000000, Meaning.Unmodelled UnmodelledOpenFlag.NoFollowAny
+            0x40000000, Meaning.Unmodelled UnmodelledOpenFlag.Execute
+            0x80000000, Meaning.Unmodelled UnmodelledOpenFlag.Popup
+        ]
+
+    /// Read `flags` as `platform`'s kernel does.
+    let decode (platform : SimulatedUnixPlatform) (flags : int) : Decoding =
+        let flavour = SimulatedUnixPlatform.flavour platform
+
+        let meanings =
+            match flavour with
+            | SimulatedUnixFlavour.Linux -> linuxBits (SimulatedUnixPlatform.architecture platform)
+            | SimulatedUnixFlavour.Darwin -> darwinBits
+            |> List.filter (fun (bit, _) -> flags &&& bit <> 0)
+            |> List.map snd
+
+        let has (meaning : Meaning) : bool = List.contains meaning meanings
+
+        let unmodelled =
+            meanings
+            |> List.choose (fun meaning ->
+                match meaning with
+                | Meaning.Unmodelled flag -> Some flag
+                | Meaning.DataSynchronous when not (has Meaning.Synchronous) -> Some UnmodelledOpenFlag.DataSynchronous
+                | Meaning.Create
+                | Meaning.Exclusive
+                | Meaning.Truncate
+                | Meaning.NoFollow
+                | Meaning.Directory
+                | Meaning.CloseOnExec
+                | Meaning.Synchronous
+                | Meaning.DataSynchronous -> None
+            )
+
+        // Refused first: a flag this kernel does not model can lift a screen
+        // below (Linux's O_PATH lifts O_CREAT|O_DIRECTORY's EINVAL), so no
+        // answer is certain once one is present.
+        if not unmodelled.IsEmpty then
+            Decoding.Refused (OpenRefusal.UnmodelledFlags (flags, unmodelled))
+        // Measured on both, for every word of modelled and undefined bits:
+        // EINVAL, before the path is copied in. Linux has done so since 6.4.
+        elif has Meaning.Create && has Meaning.Directory then
+            Decoding.Fails UnixError.EINVAL
+        else
+
+        match flags &&& 3 with
+        | 3 ->
+            match flavour with
+            // Measured for every word: EINVAL, before the path is copied in.
+            | SimulatedUnixFlavour.Darwin -> Decoding.Fails UnixError.EINVAL
+            | SimulatedUnixFlavour.Linux -> Decoding.Refused (OpenRefusal.IoctlOnlyAccessMode flags)
+        | access ->
+
+        let decoded : OpenFlags =
+            {
+                Access =
+                    match access with
+                    | 0 -> FileAccessMode.ReadOnly
+                    | 1 -> FileAccessMode.WriteOnly
+                    | _ -> FileAccessMode.ReadWrite
+                Create = has Meaning.Create
+                Exclusive = has Meaning.Exclusive
+                Truncate = has Meaning.Truncate
+                NoFollow = has Meaning.NoFollow
+                CloseOnExec = has Meaning.CloseOnExec
+                Synchronous = has Meaning.Synchronous
+                Directory = has Meaning.Directory
+            }
+
+        if
+            decoded.Directory
+            && (decoded.Access <> FileAccessMode.ReadOnly
+                || decoded.Truncate
+                || decoded.NoFollow)
+        then
+            Decoding.Refused (OpenRefusal.UnmodelledDirectoryOpen flags)
+        else
+            Decoding.Decoded decoded
 
 [<RequireQualifiedAccess>]
 module UnixNamespace =
@@ -352,25 +604,8 @@ module UnixNamespace =
             failwith
                 $"%s{context}: about to create an inode in inode %O{directory}, which the walk had established was a directory, but it is now absent or not a directory (this is a bug in this library)."
 
-    /// `open(2)`: resolve `path`, apply every check a kernel makes, and return a
-    /// descriptor onto what it names.
-    ///
-    /// Named for the path it takes, `open` being an F# keyword and
-    /// `FileDescriptorRegistry.openFile` already meaning "open this inode". It
-    /// opens directories too, for reading.
-    ///
-    /// `mode` is raw and **unvalidated**, and must stay that way:
-    /// callers commonly pass 0666 even for a read-only open of an existing file,
-    /// and a kernel accepts that, so refusing a nonzero mode without `O_CREAT`
-    /// would refuse an ordinary read. It is read only when a file is actually created,
-    /// and then masked rather than rejected: measured, `mode` 0o10777 creates
-    /// 0o0755 on both flavours, so a bit above the permission word is dropped
-    /// exactly as the platform's own mask drops it.
-    ///
-    /// Never refused: every outcome is a descriptor or an errno. The one
-    /// exception is an `O_DIRECTORY` combination this library does not model;
-    /// see `OpenFlags.Directory`.
-    let openPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `openPath`, of a path this kernel has already copied in.
+    let internal openPathParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (flags : OpenFlags)
         (path : UnixPath)
         (mode : int)
@@ -414,16 +649,17 @@ module UnixNamespace =
                 }
             )
 
-        if flags.Directory then
-            if
-                flags.Access <> FileAccessMode.ReadOnly
+        if
+            flags.Directory
+            && (flags.Access <> FileAccessMode.ReadOnly
                 || flags.Create
                 || flags.Truncate
-                || flags.NoFollow
-            then
-                failwith
-                    $"UnixNamespace.openPath: O_DIRECTORY with %A{flags}. Only O_DIRECTORY|O_RDONLY without O_CREAT, O_TRUNC or O_NOFOLLOW (what opendir(3) opens with) is modelled; where ENOTDIR falls among EISDIR, EACCES, ELOOP and the creation checks for any other combination is unmeasured."
+                || flags.NoFollow)
+        then
+            failwith
+                $"UnixNamespace.openPath: O_DIRECTORY with %A{flags}, a combination OpenFlagWord.decode refuses or answers EINVAL before the path is read (this is a bug in this library)."
 
+        if flags.Directory then
             // `opendir(3)` is exactly this open, and its rows are measured on
             // both kernels, which agree in every one: a final symlink is
             // followed, a trailing separator changes nothing, being a file beats
@@ -629,25 +865,58 @@ module UnixNamespace =
 
         truncated |> Result.bind (opened inode)
 
-    /// `readlink(2)`: report what the symbolic link at `path` points at.
+    /// `open(2)`: resolve `path`, apply every check a kernel makes, and return a
+    /// descriptor onto what it names.
     ///
-    /// Changes nothing and returns no system. That is *not* quite what POSIX
-    /// says: a successful `readlink` marks the link's access time for update,
-    /// and this kernel does not move it. Whether it would move is a property of
-    /// the mount rather than of this syscall, and the two flavours disagree —
-    /// measured on macOS (lstat, sleep, readlink, lstat) `st_atime` does not
-    /// move, while Linux's default `relatime` updates whenever `mtime` or
-    /// `ctime` is at or after the old `atime`, and a freshly seeded inode has
-    /// all three equal, so the first read there *would* move it. Deciding it
-    /// inside one entry point would set mount semantics for every future read
-    /// by accident, and would make `readlink` the only syscall obeying them.
+    /// `flags` is raw, in the simulated flavour's own `<fcntl.h>` numbering,
+    /// which differs between Linux's architectures as well as between
+    /// flavours. A bit the flavour does not define is ignored, as both
+    /// kernels ignore it. A bit it defines is either one this kernel models
+    /// or a refusal naming it (`OpenRefusal.UnmodelledFlags`), never silently
+    /// dropped.
     ///
-    /// `capacity` is the caller's buffer size. A size that is not positive is
-    /// answered as this system's flavour answers it
-    /// (`SimulatedUnixPlatform.readlinkCapacity`): EINVAL before resolution on
-    /// Linux and for a negative size on Darwin, and zero bytes from a resolved
-    /// link on Darwin for a size of zero.
-    let readlink<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// The word is screened before the path is copied in, so its EINVAL comes
+    /// ahead of EFAULT, ENAMETOOLONG, EEXIST and EISDIR: on both flavours for
+    /// `O_CREAT|O_DIRECTORY`, and on Darwin for access mode 3. Then `path` is
+    /// the argument's bytes, copied in: EFAULT if they were unreadable,
+    /// ENAMETOOLONG if they run past `PATH_MAX`.
+    ///
+    /// Named for the path it takes, `open` being an F# keyword and
+    /// `FileDescriptorRegistry.openFile` already meaning "open this inode". It
+    /// opens directories too, for reading.
+    ///
+    /// `mode` is raw and **unvalidated**, and must stay that way:
+    /// callers commonly pass 0666 even for a read-only open of an existing file,
+    /// and a kernel accepts that, so refusing a nonzero mode without `O_CREAT`
+    /// would refuse an ordinary read. It is read only when a file is actually created,
+    /// and then masked rather than rejected: measured, `mode` 0o10777 creates
+    /// 0o0755 on both flavours, so a bit above the permission word is dropped
+    /// exactly as the platform's own mask drops it.
+    ///
+    /// Refused, before anything is read or changed, for a flag word this kernel
+    /// does not model (see `OpenRefusal`), and for an `O_TRUNC` open whose
+    /// effect on set-ID bits is unmeasured. Every other outcome is a descriptor
+    /// or an errno.
+    let openPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (flags : int)
+        (path : PathArgumentBytes)
+        (mode : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, OpenRefusal>
+        =
+        // Before the path is copied in: measured (`open-flags.c`), each
+        // kernel screens the word whatever the path pointer is.
+        match OpenFlagWord.decode system.Machine.UnixPlatform flags with
+        | OpenFlagWord.Decoding.Refused refusal -> Error refusal
+        | OpenFlagWord.Decoding.Fails error -> Ok (SyscallAnswer.Failed error, system)
+        | OpenFlagWord.Decoding.Decoded flags ->
+
+        match UnixPathResolution.copyIn path system with
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Ok path -> openPathParsed flags path mode system
+
+    /// `readlink`, of a path this kernel has already copied in.
+    let internal readlinkParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
         (destination : UserBuffer)
         (capacity : int)
@@ -717,6 +986,48 @@ module UnixNamespace =
             Ok (ReadLinkAnswer.Reported all)
         else
             Ok (ReadLinkAnswer.Reported (ImmutableArray.CreateRange (Seq.truncate capacity all)))
+
+    /// `readlink(2)`: report what the symbolic link at `path` points at.
+    ///
+    /// Changes nothing and returns no system. That is *not* quite what POSIX
+    /// says: a successful `readlink` marks the link's access time for update,
+    /// and this kernel does not move it. Whether it would move is a property of
+    /// the mount rather than of this syscall, and the two flavours disagree —
+    /// measured on macOS (lstat, sleep, readlink, lstat) `st_atime` does not
+    /// move, while Linux's default `relatime` updates whenever `mtime` or
+    /// `ctime` is at or after the old `atime`, and a freshly seeded inode has
+    /// all three equal, so the first read there *would* move it. Deciding it
+    /// inside one entry point would set mount semantics for every future read
+    /// by accident, and would make `readlink` the only syscall obeying them.
+    ///
+    /// `capacity` is the caller's buffer size. A size that is not positive is
+    /// answered as this system's flavour answers it
+    /// (`SimulatedUnixPlatform.readlinkCapacity`): EINVAL before the path is
+    /// copied in on Linux and for a negative size on Darwin, and zero bytes
+    /// from a resolved link on Darwin for a size of zero.
+    ///
+    /// `path` is the argument's bytes, copied in after that screen and before
+    /// anything else: EFAULT if they were unreadable, ENAMETOOLONG if they run
+    /// past `PATH_MAX`.
+    let readlink<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (destination : UserBuffer)
+        (capacity : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<ReadLinkAnswer, BufferRefusal>
+        =
+        // The size is screened before the path is copied in, on both flavours:
+        // measured (`path-copyin-order.c`), a size Linux refuses is EINVAL with a
+        // NULL path, and so is a negative one on Darwin, whose size of zero goes on
+        // to copy the path in.
+        match SimulatedUnixPlatform.readlinkCapacity system.Machine.UnixPlatform capacity with
+        | ReadLinkCapacityVerdict.Refuse error -> Ok (ReadLinkAnswer.Failed error)
+        | ReadLinkCapacityVerdict.ReportNothing
+        | ReadLinkCapacityVerdict.Admit ->
+
+        match UnixPathResolution.copyIn path system with
+        | Error error -> Ok (ReadLinkAnswer.Failed error)
+        | Ok path -> readlinkParsed path destination capacity system
 
     /// Read the next entry of the directory `fd` names, and move its open file
     /// description's position past it: one record of `getdents(2)` (Linux) or
@@ -816,15 +1127,8 @@ module UnixNamespace =
 
         Ok (ReadDirectoryAnswer.Entry record, withPosition (DirectoryPosition.Cursor next) system)
 
-    /// `mkdir(2)`: bind a new directory at `path`.
-    ///
-    /// `mode` is raw, exactly as the caller passed it, so what the created
-    /// directory's permissions actually are depends on the umask and, on one
-    /// flavour, on the parent's set-group-ID bit. `MkDirRules` holds that.
-    ///
-    /// Never refused: every outcome is a success or an errno, the rules having
-    /// been measured on both flavours.
-    let mkdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `mkdir`, of a path this kernel has already copied in.
+    let internal mkdirParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
         (mode : int)
         (system : UnixSystem<'Task, 'Handler>)
@@ -876,13 +1180,29 @@ module UnixNamespace =
                 }
         }
 
-    /// `unlink(2)`: remove the name `path`, and the inode it named if nothing
-    /// else holds it.
+    /// `mkdir(2)`: bind a new directory at `path`.
     ///
-    /// Every outcome is a success or an errno, except where Darwin's sticky
-    /// rule has not been measured for this caller (`StickyRefusal`), which
-    /// changes nothing.
-    let unlink<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `mode` is raw, exactly as the caller passed it, so what the created
+    /// directory's permissions actually are depends on the umask and, on one
+    /// flavour, on the parent's set-group-ID bit. `MkDirRules` holds that.
+    ///
+    /// Never refused: every outcome is a success or an errno, the rules having
+    /// been measured on both flavours.
+    ///
+    /// `path` is the argument's bytes, copied in before anything else: EFAULT
+    /// if they were unreadable, ENAMETOOLONG if they run past `PATH_MAX`.
+    let mkdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (mode : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        match UnixPathResolution.copyIn path system with
+        | Error error -> SyscallAnswer.Failed error, system
+        | Ok path -> mkdirParsed path mode system
+
+    /// `unlink`, of a path this kernel has already copied in.
+    let internal unlinkParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, StickyRefusal>
@@ -935,12 +1255,26 @@ module UnixNamespace =
                 }
         )
 
-    /// `rmdir(2)`: remove the empty directory `path` names.
+    /// `unlink(2)`: remove the name `path`, and the inode it named if nothing
+    /// else holds it.
     ///
     /// Every outcome is a success or an errno, except where Darwin's sticky
     /// rule has not been measured for this caller (`StickyRefusal`), which
     /// changes nothing.
-    let rmdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    ///
+    /// `path` is the argument's bytes, copied in before anything else: EFAULT
+    /// if they were unreadable, ENAMETOOLONG if they run past `PATH_MAX`.
+    let unlink<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, StickyRefusal>
+        =
+        match UnixPathResolution.copyIn path system with
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Ok path -> unlinkParsed path system
+
+    /// `rmdir`, of a path this kernel has already copied in.
+    let internal rmdirParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, StickyRefusal>
@@ -991,41 +1325,29 @@ module UnixNamespace =
                 }
         )
 
-    /// How a phase of `rename`'s two-path walk ended, when it did not produce a
-    /// resolution.
+    /// `rmdir(2)`: remove the empty directory `path` names.
     ///
-    /// Two kinds, because the two are answered differently: an errno is what the
-    /// caller is told, while a refusal is this kernel saying the bytes it was
-    /// handed are not a pathname at all (see `PathArgumentRefusal`).
-    [<RequireQualifiedAccess>]
-    type private RenameStop =
-        | Errno of error : UnixError
-        | Refused of refusal : PathArgumentRefusal
-
-    /// `getname()`: what the kernel learns when it copies one pathname in,
-    /// before anything looks at what it says.
+    /// Every outcome is a success or an errno, except where Darwin's sticky
+    /// rule has not been measured for this caller (`StickyRefusal`), which
+    /// changes nothing.
     ///
-    /// The decode happens here rather than in the caller, and that is the point
-    /// of taking bytes: a caller that decoded a pathname the syscall never
-    /// copies in would refuse one `rename(2)` never read.
-    let private copiedIn (limits : PathLimits) (argument : PathArgumentBytes) : Result<UnixPath, RenameStop> =
-        match argument with
-        | PathArgumentBytes.Unreadable -> Error (RenameStop.Errno UnixError.EFAULT)
-        | PathArgumentBytes.Bytes bytes ->
-
-        match PathArgument.parse limits bytes with
-        | Error refusal -> Error (RenameStop.Refused refusal)
-        | Ok (PathArgument.Failed error) -> Error (RenameStop.Errno error)
-        | Ok (PathArgument.Parsed path) -> Ok path
+    /// `path` is the argument's bytes, copied in before anything else: EFAULT
+    /// if they were unreadable, ENAMETOOLONG if they run past `PATH_MAX`.
+    let rmdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, StickyRefusal>
+        =
+        match UnixPathResolution.copyIn path system with
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Ok path -> rmdirParsed path system
 
     let private renameStopped
         (system : UnixSystem<'Task, 'Handler>)
-        (stop : RenameStop)
-        : Result<RenameProgress<'Task, 'Handler>, PathArgumentRefusal>
+        (error : UnixError)
+        : RenameProgress<'Task, 'Handler>
         =
-        match stop with
-        | RenameStop.Refused refusal -> Error refusal
-        | RenameStop.Errno error -> Ok (RenameProgress.Answered (SyscallAnswer.Failed error, system))
+        RenameProgress.Answered (SyscallAnswer.Failed error, system)
 
     /// Everything `rename(2)` does before it copies its *destination* pathname
     /// in: on Linux the source's pathname and parent walk, on Darwin the whole
@@ -1037,23 +1359,20 @@ module UnixNamespace =
     let renameSourcePhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (source : PathArgumentBytes)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<RenameProgress<'Task, 'Handler>, PathArgumentRefusal>
+        : RenameProgress<'Task, 'Handler>
         =
         let rules = SimulatedUnixPlatform.renameRules system.Machine.UnixPlatform
-        let limits = SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform
 
         let paused (progress : RenameSourceProgress) =
-            Ok (
-                RenameProgress.NeedsDestination
-                    {
-                        System = system
-                        Rules = rules
-                        SourceProgress = progress
-                    }
-            )
+            RenameProgress.NeedsDestination
+                {
+                    System = system
+                    Rules = rules
+                    SourceProgress = progress
+                }
 
-        match copiedIn limits source with
-        | Error stop -> renameStopped system stop
+        match UnixPathResolution.copyIn source system with
+        | Error error -> renameStopped system error
         | Ok sourcePath ->
 
         // `NoFollowFinal` for both paths on both flavours — `rename` moves the
@@ -1069,30 +1388,29 @@ module UnixNamespace =
                     sourcePath
                     system
             with
-            | Error error -> renameStopped system (RenameStop.Errno error)
+            | Error error -> renameStopped system error
             | Ok parent -> paused (RenameSourceProgress.ParentWalked parent)
         | RenameWalkOrder.SourceThenDestination ->
 
         match
             UnixPathResolution.resolvePathFull SymlinkPolicy.NoFollowFinal rules.TrailingSeparator sourcePath system
         with
-        | Error error -> renameStopped system (RenameStop.Errno error)
+        | Error error -> renameStopped system error
         | Ok sourceResolution ->
 
         // Darwin's source-side `namei` runs under rename semantics, so two of
         // the refusals the verdict would otherwise make are settled here —
         // before the destination's pathname has been read at all.
         match RenameRules.sourceScreen rules.WalkOrder sourceResolution with
-        | Some error -> renameStopped system (RenameStop.Errno error)
+        | Some error -> renameStopped system error
         | None -> paused (RenameSourceProgress.Resolved sourceResolution)
 
     /// The rest of `rename(2)`, given the destination pathname the kernel has
     /// just reached the point of copying in.
     ///
-    /// Every outcome is a success or an errno, except the two things that are
-    /// neither: a pathname whose bytes are not a pathname at all, and a sticky
-    /// directory whose rule Darwin has not been measured to apply to this
-    /// caller. Neither changes anything.
+    /// Every outcome is a success or an errno, except where Darwin's sticky
+    /// rule has not been measured for this caller (`StickyRefusal`), which
+    /// changes nothing.
     let renameWithDestination<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (destination : PathArgumentBytes)
         (paused : PausedRename<'Task, 'Handler>)
@@ -1106,11 +1424,10 @@ module UnixNamespace =
 
         let system = paused.System
         let rules = paused.Rules
-        let limits = SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform
 
-        let resolved : Result<Resolution * Resolution, RenameStop> =
-            match copiedIn limits destination with
-            | Error stop -> Error stop
+        let resolved : Result<Resolution * Resolution, UnixError> =
+            match UnixPathResolution.copyIn destination system with
+            | Error error -> Error error
             | Ok destinationPath ->
 
             match paused.SourceProgress with
@@ -1122,7 +1439,6 @@ module UnixNamespace =
                     rules.TrailingSeparator
                     destinationPath
                     system
-                |> Result.mapError RenameStop.Errno
                 |> Result.map (fun destinationResolution -> sourceResolution, destinationResolution)
             | RenameSourceProgress.ParentWalked sourceParent ->
 
@@ -1134,7 +1450,7 @@ module UnixNamespace =
                     destinationPath
                     system
             with
-            | Error error -> Error (RenameStop.Errno error)
+            | Error error -> Error error
             | Ok destinationParent ->
 
             // Source before destination, and here the order *is* pinned: the
@@ -1142,7 +1458,7 @@ module UnixNamespace =
             // is ENAMETOOLONG while a 300-byte destination name under the same
             // orphaned parent is ENOENT. Measured both ways.
             match PathWalk.completeResolution sourceParent with
-            | Error error -> Error (RenameStop.Errno error)
+            | Error error -> Error error
             | Ok sourceResolution ->
 
             // Linux's source screen runs here: after both parents and the
@@ -1152,7 +1468,7 @@ module UnixNamespace =
             // ENOENT — and it beats the destination's NAME_MAX, which is what
             // makes `rename("nope", <300-byte name>)` ENOENT.
             match RenameRules.sourceScreen rules.WalkOrder sourceResolution with
-            | Some error -> Error (RenameStop.Errno error)
+            | Some error -> Error error
             | None ->
 
             // A destination parent that has lost its own last name — reachable
@@ -1163,16 +1479,14 @@ module UnixNamespace =
             // ENAMETOOLONG there. So this is the Linux position of a check both
             // flavours make, not a check only Linux makes.
             if PathWalk.pausedParentIsOrphaned destinationParent then
-                Error (RenameStop.Errno UnixError.ENOENT)
+                Error UnixError.ENOENT
             else
 
             PathWalk.completeResolution destinationParent
-            |> Result.mapError RenameStop.Errno
             |> Result.map (fun destinationResolution -> sourceResolution, destinationResolution)
 
         match resolved with
-        | Error (RenameStop.Refused refusal) -> Error (RenameRefusal.PathArgument refusal)
-        | Error (RenameStop.Errno error) -> Ok (SyscallAnswer.Failed error, system)
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
         | Ok (sourceResolution, destinationResolution) ->
 
         match
@@ -1254,9 +1568,8 @@ module UnixNamespace =
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, RenameRefusal>
         =
         match renameSourcePhase source system with
-        | Error refusal -> Error (RenameRefusal.PathArgument refusal)
-        | Ok (RenameProgress.Answered (answer, system)) -> Ok (answer, system)
-        | Ok (RenameProgress.NeedsDestination paused) -> renameWithDestination destination paused
+        | RenameProgress.Answered (answer, system) -> Ok (answer, system)
+        | RenameProgress.NeedsDestination paused -> renameWithDestination destination paused
 
 
     /// `clonefile(source, destination, flags)`, up to the point where the
@@ -1327,11 +1640,8 @@ module UnixNamespace =
 
         let system = paused.System
 
-        let limits = SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform
-
-        match copiedIn limits source with
-        | Error (RenameStop.Refused refusal) -> Error (CloneFileRefusal.PathArgument refusal)
-        | Error (RenameStop.Errno error) -> Ok (CloneFileProgress.Answered (SyscallAnswer.Failed error, system))
+        match UnixPathResolution.copyIn source system with
+        | Error error -> Ok (CloneFileProgress.Answered (SyscallAnswer.Failed error, system))
         | Ok sourcePath ->
 
         match UnixPathResolution.resolvePath SymlinkPolicy.Follow sourcePath system with
@@ -1399,13 +1709,11 @@ module UnixNamespace =
 
         let system = paused.System
         let failed (error : UnixError) = Ok (SyscallAnswer.Failed error, system)
-        let limits = SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform
         let rules = SimulatedUnixPlatform.creatingOpenRules system.Machine.UnixPlatform
         let credentials = system.Process.Credentials
 
-        match copiedIn limits destination with
-        | Error (RenameStop.Refused refusal) -> Error (CloneFileRefusal.PathArgument refusal)
-        | Error (RenameStop.Errno error) -> failed error
+        match UnixPathResolution.copyIn destination system with
+        | Error error -> failed error
         | Ok destinationPath ->
 
         match

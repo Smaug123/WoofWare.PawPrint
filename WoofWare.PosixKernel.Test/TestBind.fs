@@ -32,7 +32,7 @@ module TestBind =
 
     /// The length of a well-formed `sockaddr_in`, which every row below declares
     /// unless it is testing the length itself.
-    let private exactLength : int = 16
+    let private exactLength : uint32 = 16u
 
     let private inetFamily : int = SimulatedUnixPlatform.internetAddressFamily
 

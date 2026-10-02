@@ -10,7 +10,7 @@ open WoofWare.PosixKernel
 /// pathname *as the caller passed it*, in bytes, before any parsing. `UnixPath`
 /// has already lost that — it collapses repeated separators and records a
 /// trailing one as a flag — so the rule lives at the syscall boundary,
-/// in `PathArgument.parse`, and is tested here against that function directly
+/// in `PathArgument.copyIn`, and is tested here against that function directly
 /// rather than through a resolution.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -27,6 +27,10 @@ module TestPathArgument =
     /// counts it) is compared against `pathMaxBytes - 1`.
     let private bytesOf (s : string) : ImmutableArray<byte> =
         UnixPathText.utf8.GetBytes s |> ImmutableArray.CreateRange
+
+    /// `PathArgument.copyIn` of bytes the caller read.
+    let private parse (limits : PathLimits) (bytes : ImmutableArray<byte>) : PathArgument =
+        PathArgument.copyIn limits (PathArg.ofBytes bytes)
 
     /// A path of exactly `n` bytes that would resolve if it were short enough:
     /// "./" repeated, so every component is a "." and none can hit NAME_MAX.
@@ -50,13 +54,13 @@ module TestPathArgument =
         // limit counts the NUL, which is why the usable length is one less than
         // the number in the header.
         let ok (limits : PathLimits) (n : int) : unit =
-            match PathArgument.parse limits (bytesOf (ofLength n)) with
-            | Ok (PathArgument.Parsed _) -> ()
+            match parse limits (bytesOf (ofLength n)) with
+            | PathArgument.Parsed _ -> ()
             | other -> failwith $"a %d{n}-byte path was not parsed: %O{other}"
 
         let tooLong (limits : PathLimits) (n : int) : unit =
-            PathArgument.parse limits (bytesOf (ofLength n))
-            |> shouldEqual (Ok (PathArgument.Failed UnixError.ENAMETOOLONG))
+            parse limits (bytesOf (ofLength n))
+            |> shouldEqual (PathArgument.Failed UnixError.ENAMETOOLONG)
 
         ok darwin 1023
         tooLong darwin 1024
@@ -76,13 +80,13 @@ module TestPathArgument =
         let multiByte = String.replicate 512 "é"
         (bytesOf multiByte).Length |> shouldEqual 1024
 
-        PathArgument.parse darwin (bytesOf multiByte)
-        |> shouldEqual (Ok (PathArgument.Failed UnixError.ENAMETOOLONG))
+        parse darwin (bytesOf multiByte)
+        |> shouldEqual (PathArgument.Failed UnixError.ENAMETOOLONG)
 
-    /// The bytes `PathArgument.parse` put in a parsed path.
-    let private parsedBytes (outcome : Result<PathArgument, PathArgumentRefusal>) : byte list =
+    /// The bytes `PathArgument.copyIn` put in a parsed path.
+    let private parsedBytes (outcome : PathArgument) : byte list =
         match outcome with
-        | Ok (PathArgument.Parsed path) -> UnixPath.toByteString path |> UnixByteString.toBytes |> Seq.toList
+        | PathArgument.Parsed path -> UnixPath.toByteString path |> UnixByteString.toBytes |> Seq.toList
         | other -> failwith $"expected a parse, got %O{other}"
 
     [<Test>]
@@ -92,49 +96,29 @@ module TestPathArgument =
         let invalid =
             ImmutableArray.CreateRange (Seq.append (bytesOf (ofLength 2000)) [ 0xFFuy ])
 
-        PathArgument.parse darwin invalid
-        |> shouldEqual (Ok (PathArgument.Failed UnixError.ENAMETOOLONG))
+        parse darwin invalid |> shouldEqual (PathArgument.Failed UnixError.ENAMETOOLONG)
 
-        PathArgument.parse linux invalid
-        |> parsedBytes
-        |> shouldEqual (Seq.toList invalid)
+        parse linux invalid |> parsedBytes |> shouldEqual (Seq.toList invalid)
 
     [<Test>]
     let ``a lone invalid byte is kept rather than substituted`` () : unit =
         // A lenient decode would turn 0xFF into U+FFFD and name a file literally
         // called "�", which a caller could have seeded, so it would answer
         // confidently about the wrong inode.
-        PathArgument.parse linux (ImmutableArray.CreateRange [ 0x2Fuy ; 0xFFuy ])
+        parse linux (ImmutableArray.CreateRange [ 0x2Fuy ; 0xFFuy ])
         |> parsedBytes
         |> shouldEqual [ 0x2Fuy ; 0xFFuy ]
 
-    /// A kernel receives a pathname as a C string, which ends at its first
-    /// NUL, so bytes carrying one are something no kernel was handed. Refused
-    /// as the caller's mistake, and before any rule about the string is
-    /// applied.
     [<Test>]
-    let ``bytes holding a NUL are refused, naming where it is`` () : unit =
-        PathArgument.parse linux (ImmutableArray.CreateRange [ 0x61uy ; 0x00uy ; 0x62uy ])
-        |> shouldEqual (Error (PathArgumentRefusal.InteriorNul 1))
-
-        PathArgument.parse linux (ImmutableArray.CreateRange [ 0x00uy ])
-        |> shouldEqual (Error (PathArgumentRefusal.InteriorNul 0))
-
-        // Ahead of the length rule: what follows the NUL is not part of any
-        // string the kernel would have seen, so its length is not either.
-        let overLong = Array.append [| 0x61uy ; 0x00uy |] (Array.create 5000 0x62uy)
-
-        PathArgument.parse linux (ImmutableArray.CreateRange overLong)
-        |> shouldEqual (Error (PathArgumentRefusal.InteriorNul 1))
-
-        // ...whatever the bytes before it are.
-        PathArgument.parse linux (ImmutableArray.CreateRange [ 0xFFuy ; 0x00uy ])
-        |> shouldEqual (Error (PathArgumentRefusal.InteriorNul 1))
+    let ``an unreadable argument is EFAULT, whatever the limit`` () : unit =
+        for limits in [ linux ; darwin ] do
+            PathArgument.copyIn limits PathArgumentBytes.Unreadable
+            |> shouldEqual (PathArgument.Failed UnixError.EFAULT)
 
     [<Test>]
     let ``a path within the limit parses to what it says`` () : unit =
-        match PathArgument.parse linux (bytesOf "/etc/hostname") with
-        | Ok (PathArgument.Parsed path) -> PathText.ofPath path |> shouldEqual "/etc/hostname"
+        match parse linux (bytesOf "/etc/hostname") with
+        | PathArgument.Parsed path -> PathText.ofPath path |> shouldEqual "/etc/hostname"
         | other -> failwith $"expected a parse, got %O{other}"
 
     [<Test>]
@@ -145,31 +129,30 @@ module TestPathArgument =
         // names.
         let exn =
             Assert.Throws<Exception> (fun () ->
-                PathArgument.parse Unchecked.defaultof<PathLimits> (bytesOf "/etc")
-                |> ignore<Result<PathArgument, PathArgumentRefusal>>
+                parse Unchecked.defaultof<PathLimits> (bytesOf "/etc") |> ignore<PathArgument>
             )
 
-        exn.Message |> shouldContainText "PathArgument.parse"
+        exn.Message |> shouldContainText "PathArgument.copyIn"
 
     [<Test>]
-    let ``a defaulted byte array is rejected rather than read`` () : unit =
-        // `default(ImmutableArray<byte>)` wraps a null array, so the length read
-        // below would throw a bare NullReferenceException from inside the
-        // parser. It is also not the same as an empty path, which the row below
-        // shows is a legitimate argument.
+    let ``a defaulted byte string is rejected rather than read`` () : unit =
+        // `default(UnixByteString)` wraps a null array, so the length read would
+        // throw a bare NullReferenceException from inside the copy-in. It is
+        // also not the same as an empty path, which the row below shows is a
+        // legitimate argument.
         let exn =
             Assert.Throws<Exception> (fun () ->
-                PathArgument.parse linux Unchecked.defaultof<ImmutableArray<byte>>
-                |> ignore<Result<PathArgument, PathArgumentRefusal>>
+                PathArgument.copyIn linux (PathArgumentBytes.Bytes Unchecked.defaultof<UnixByteString>)
+                |> ignore<PathArgument>
             )
 
-        exn.Message |> shouldContainText "ImmutableArray<byte>.Empty"
+        exn.Message |> shouldContainText "Unchecked.defaultof"
 
     [<Test>]
     let ``an empty argument parses rather than refusing`` () : unit =
         // `open("")` is ENOENT, which is an answer about resolution rather than
         // about the bytes, so this stage must let it through: refusing here
         // would turn a guest's ordinary mistake into a crash.
-        match PathArgument.parse linux ImmutableArray<byte>.Empty with
-        | Ok (PathArgument.Parsed path) -> UnixPath.isEmpty path |> shouldEqual true
+        match parse linux ImmutableArray<byte>.Empty with
+        | PathArgument.Parsed path -> UnixPath.isEmpty path |> shouldEqual true
         | other -> failwith $"expected an empty path, got %O{other}"

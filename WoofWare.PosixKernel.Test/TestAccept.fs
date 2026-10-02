@@ -152,7 +152,7 @@ module TestAccept =
     let private acceptOrFail
         (fd : int)
         (destination : UserBuffer)
-        (declaredLength : int)
+        (declaredLength : uint32)
         (system : UnixSystem<int, string>)
         : AcceptOutcome * UnixSystem<int, string>
         =
@@ -176,8 +176,10 @@ module TestAccept =
         =
         let fd, connections, system = listenerWith platform 2
 
-        match acceptOrFail fd UserBuffer.Mapped 16 system with
+        match acceptOrFail fd UserBuffer.Mapped 16u system with
         | AcceptOutcome.Failed error, _ -> failwith $"expected an accept, got %O{error}"
+        | AcceptOutcome.DroppedConnection error, _ ->
+            failwith $"expected an accept, but the connection was dropped with %O{error}"
         | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
         | AcceptOutcome.Restarts, _ -> failwith "expected an accept, but the call restarted"
         | AcceptOutcome.Accepted (acceptedFd, peer, reportedLength), system ->
@@ -226,8 +228,10 @@ module TestAccept =
 
         let fd, system = withSocket (SocketId 0L) listener system
 
-        match acceptOrFail fd UserBuffer.Mapped 16 system with
+        match acceptOrFail fd UserBuffer.Mapped 16u system with
         | AcceptOutcome.Failed error, _ -> failwith $"expected an accept, got %O{error}"
+        | AcceptOutcome.DroppedConnection error, _ ->
+            failwith $"expected an accept, but the connection was dropped with %O{error}"
         | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
         | AcceptOutcome.Restarts, _ -> failwith "expected an accept, but the call restarted"
         | AcceptOutcome.Accepted (acceptedFd, _, _), system ->
@@ -247,8 +251,10 @@ module TestAccept =
         let peers, system =
             List.fold
                 (fun (peers, system) (_ : int) ->
-                    match acceptOrFail fd UserBuffer.Mapped 16 system with
+                    match acceptOrFail fd UserBuffer.Mapped 16u system with
                     | AcceptOutcome.Failed error, _ -> failwith $"expected an accept, got %O{error}"
+                    | AcceptOutcome.DroppedConnection error, _ ->
+                        failwith $"expected an accept, but the connection was dropped with %O{error}"
                     | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
                     | AcceptOutcome.Restarts, _ -> failwith "expected an accept, but the call restarted"
                     | AcceptOutcome.Accepted (_, peer, _), system -> peers @ [ peer ], system
@@ -266,11 +272,13 @@ module TestAccept =
     /// reported.
     [<TestCaseSource(nameof platforms)>]
     let ``the declared length does not bound what is reported`` (platform : SimulatedUnixPlatform) : unit =
-        for declaredLength in [ 1 ; 8 ; 16 ; 17 ; 128 ; 4096 ] do
+        for declaredLength in [ 1u ; 8u ; 16u ; 17u ; 128u ; 4096u ] do
             let fd, _, system = listenerWith platform 1
 
             match acceptOrFail fd UserBuffer.Mapped declaredLength system with
             | AcceptOutcome.Failed error, _ -> failwith $"expected an accept at %d{declaredLength}, got %O{error}"
+            | AcceptOutcome.DroppedConnection error, _ ->
+                failwith $"expected an accept, but the connection was dropped with %O{error}"
             | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
             | AcceptOutcome.Restarts, _ -> failwith "expected an accept, but the call restarted"
             | AcceptOutcome.Accepted (_, _, reportedLength), _ -> reportedLength |> shouldEqual 16
@@ -289,8 +297,10 @@ module TestAccept =
             ] do
             let fd, _, system = listenerWith platform 1
 
-            match acceptOrFail fd destination 0 system with
+            match acceptOrFail fd destination 0u system with
             | AcceptOutcome.Failed error, _ -> failwith $"expected an accept through %A{destination}, got %O{error}"
+            | AcceptOutcome.DroppedConnection error, _ ->
+                failwith $"expected an accept, but the connection was dropped with %O{error}"
             | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
             | AcceptOutcome.Restarts, _ -> failwith "expected an accept, but the call restarted"
             | AcceptOutcome.Accepted (_, _, reportedLength), system ->
@@ -306,7 +316,7 @@ module TestAccept =
     let ``a descriptor that is not open is EBADF`` (platform : SimulatedUnixPlatform) : unit =
         let _, _, system = listenerWith platform 1
 
-        acceptOrFail 99 UserBuffer.Mapped 16 system
+        acceptOrFail 99 UserBuffer.Mapped 16u system
         |> fst
         |> shouldEqual (AcceptOutcome.Failed UnixError.EBADF)
 
@@ -330,7 +340,7 @@ module TestAccept =
             }
 
         for fd in [ 0 ; fileFd ; portFd ] do
-            acceptOrFail fd UserBuffer.Mapped 16 system
+            acceptOrFail fd UserBuffer.Mapped 16u system
             |> fst
             |> shouldEqual (AcceptOutcome.Failed UnixError.ENOTSOCK)
 
@@ -356,7 +366,7 @@ module TestAccept =
                         }
                 }
 
-            acceptOrFail fd UserBuffer.Mapped 16 system
+            acceptOrFail fd UserBuffer.Mapped 16u system
             |> fst
             |> shouldEqual (AcceptOutcome.Failed UnixError.EOPNOTSUPP)
 
@@ -377,7 +387,7 @@ module TestAccept =
         for phase in phases do
             let fd, system = withSocket (SocketId 0L) (streamSocket phase) (systemOn platform)
 
-            acceptOrFail fd UserBuffer.Mapped 16 system
+            acceptOrFail fd UserBuffer.Mapped 16u system
             |> fst
             |> shouldEqual (AcceptOutcome.Failed UnixError.EINVAL)
 
@@ -393,7 +403,7 @@ module TestAccept =
                     }
             }
 
-        acceptOrFail fd UserBuffer.Mapped 16 system
+        acceptOrFail fd UserBuffer.Mapped 16u system
         |> fst
         |> shouldEqual (AcceptOutcome.Failed UnixError.EAGAIN)
 
@@ -421,7 +431,7 @@ module TestAccept =
                     }
             }
 
-        acceptOrFail duplicate UserBuffer.Mapped 16 system
+        acceptOrFail duplicate UserBuffer.Mapped 16u system
         |> fst
         |> shouldEqual (AcceptOutcome.Failed UnixError.EAGAIN)
 
@@ -432,7 +442,7 @@ module TestAccept =
     let ``a failed accept changes nothing`` (platform : SimulatedUnixPlatform) : unit =
         let _, _, system = listenerWith platform 1
 
-        let _, after = acceptOrFail 99 UserBuffer.Mapped 16 system
+        let _, after = acceptOrFail 99 UserBuffer.Mapped 16u system
         after |> shouldEqual system
 
     // ------------------------------------------------------------------
@@ -453,7 +463,7 @@ module TestAccept =
 
             let fd, system = withSocket (SocketId 0L) socket (systemOn platform)
 
-            UnixConnection.accept 0 fd UserBuffer.Mapped 16 system
+            UnixConnection.accept 0 fd UserBuffer.Mapped 16u system
             |> shouldEqual (Error (AcceptRefusal.UnmodelledDomain (SocketId 0L, domain)))
 
     [<TestCaseSource(nameof platforms)>]
@@ -466,7 +476,7 @@ module TestAccept =
 
             let fd, system = withSocket (SocketId 0L) socket (systemOn platform)
 
-            UnixConnection.accept 0 fd UserBuffer.Mapped 16 system
+            UnixConnection.accept 0 fd UserBuffer.Mapped 16u system
             |> shouldEqual (Error (AcceptRefusal.UnmeasuredKind (SocketId 0L, kind)))
 
     /// The park itself, and what finishes it, are `TestBlockingAccept`'s.
@@ -474,7 +484,7 @@ module TestAccept =
     let ``an empty queue on a blocking listener parks the caller`` (platform : SimulatedUnixPlatform) : unit =
         let fd, _, system = listenerWith platform 0
 
-        match UnixConnection.accept 0 fd UserBuffer.Mapped 16 system with
+        match UnixConnection.accept 0 fd UserBuffer.Mapped 16u system with
         | Ok (AcceptOutcome.WouldBlock condition, _) ->
             condition
             |> shouldEqual (
@@ -495,7 +505,7 @@ module TestAccept =
     let ``a copy-out through an unmapped destination is refused`` (platform : SimulatedUnixPlatform) : unit =
         let fd, _, system = listenerWith platform 1
 
-        UnixConnection.accept 0 fd (UserBuffer.Unmapped 4096UL) 16 system
+        UnixConnection.accept 0 fd (UserBuffer.Unmapped 4096UL) 16u system
         |> shouldEqual (Error (AcceptRefusal.UnmeasuredCopyOutFault (SocketId 0L)))
 
     /// A destination whose bytes the client cannot produce is a different
@@ -516,7 +526,7 @@ module TestAccept =
         for destination, expected in rows do
             let fd, _, system = listenerWith platform 1
 
-            UnixConnection.accept 0 fd destination 16 system
+            UnixConnection.accept 0 fd destination 16u system
             |> shouldEqual (Error (AcceptRefusal.Buffer expected))
 
     /// A refusal carries no system, so the connection it would have handed over
@@ -526,7 +536,7 @@ module TestAccept =
     let ``a refused copy-out leaves the connection queued`` (platform : SimulatedUnixPlatform) : unit =
         let fd, connections, system = listenerWith platform 1
 
-        UnixConnection.accept 0 fd UserBuffer.Opaque 16 system
+        UnixConnection.accept 0 fd UserBuffer.Opaque 16u system
         |> shouldEqual (Error (AcceptRefusal.Buffer BufferRefusal.OpaqueAtTransfer))
 
         queueOf (SocketId 0L) system |> shouldEqual connections
@@ -538,7 +548,7 @@ module TestAccept =
     let ``an empty queue outranks an unwritable buffer`` (platform : SimulatedUnixPlatform) : unit =
         let fd, _, system = listenerWith platform 0
 
-        match UnixConnection.accept 0 fd UserBuffer.Opaque 16 system with
+        match UnixConnection.accept 0 fd UserBuffer.Opaque 16u system with
         | Ok (AcceptOutcome.WouldBlock _, _) -> ()
         | other -> failwith $"expected the accept to park, got %A{other}"
 
@@ -588,8 +598,10 @@ module TestAccept =
                     }
             }
 
-        match acceptOrFail fd UserBuffer.Mapped 16 system with
+        match acceptOrFail fd UserBuffer.Mapped 16u system with
         | AcceptOutcome.Failed error, _ -> failwith $"expected an accept, got %O{error}"
+        | AcceptOutcome.DroppedConnection error, _ ->
+            failwith $"expected an accept, but the connection was dropped with %O{error}"
         | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
         | AcceptOutcome.Restarts, _ -> failwith "expected an accept, but the call restarted"
         | AcceptOutcome.Accepted (acceptedFd, _, _), system ->
@@ -604,8 +616,10 @@ module TestAccept =
     let ``a blocking listener's accepted socket is blocking`` (platform : SimulatedUnixPlatform) : unit =
         let fd, _, system = listenerWith platform 1
 
-        match acceptOrFail fd UserBuffer.Mapped 16 system with
+        match acceptOrFail fd UserBuffer.Mapped 16u system with
         | AcceptOutcome.Failed error, _ -> failwith $"expected an accept, got %O{error}"
+        | AcceptOutcome.DroppedConnection error, _ ->
+            failwith $"expected an accept, but the connection was dropped with %O{error}"
         | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
         | AcceptOutcome.Restarts, _ -> failwith "expected an accept, but the call restarted"
         | AcceptOutcome.Accepted (acceptedFd, _, _), system ->
@@ -639,8 +653,10 @@ module TestAccept =
                     }
             }
 
-        match acceptOrFail duplicate UserBuffer.Mapped 16 system with
+        match acceptOrFail duplicate UserBuffer.Mapped 16u system with
         | AcceptOutcome.Failed error, _ -> failwith $"expected an accept, got %O{error}"
+        | AcceptOutcome.DroppedConnection error, _ ->
+            failwith $"expected an accept, but the connection was dropped with %O{error}"
         | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
         | AcceptOutcome.Restarts, _ -> failwith "expected an accept, but the call restarted"
         | AcceptOutcome.Accepted (acceptedFd, _, _), system ->
@@ -672,15 +688,6 @@ module TestAccept =
     // ------------------------------------------------------------------
 
     [<Test>]
-    let ``a negative declared length is a caller bug`` () : unit =
-        let fd, _, system = listenerWith SimulatedUnixPlatform.linuxX64 1
-
-        let e =
-            Assert.Throws<exn> (fun () -> UnixConnection.accept 0 fd UserBuffer.Mapped -1 system |> ignore<_>)
-
-        e.Message |> shouldContainText "is negative, which no kernel is ever asked"
-
-    [<Test>]
     let ``a stream socket holding a datagram peer is a caller bug`` () : unit =
         let socket = streamSocket (SocketPhase.DatagramPeer (loopback 9000us))
 
@@ -688,7 +695,7 @@ module TestAccept =
             withSocket (SocketId 0L) socket (systemOn SimulatedUnixPlatform.linuxX64)
 
         let e =
-            Assert.Throws<exn> (fun () -> UnixConnection.accept 0 fd UserBuffer.Mapped 16 system |> ignore<_>)
+            Assert.Throws<exn> (fun () -> UnixConnection.accept 0 fd UserBuffer.Mapped 16u system |> ignore<_>)
 
         e.Message |> shouldContainText "socket invariants forbid"
 
