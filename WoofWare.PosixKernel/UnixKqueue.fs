@@ -132,6 +132,13 @@ type KeventOutcome =
     /// A call that returns any such entry reports no events and does not wait,
     /// whatever is queued and whatever its timeout.
     | Echoed of changes : Kevent list
+    /// `kevent` failed with this errno, having first written these entries of
+    /// its changelist into the eventlist, as `Echoed` describes them. The call
+    /// returned -1, so only the eventlist's memory shows them.
+    ///
+    /// Any change the call applied before it failed stays applied, with the
+    /// system this rides with.
+    | FailedAfterEchoing of error : UnixError * changes : Kevent list
     /// `kevent` returned these events, in the order it reports them.
     ///
     /// Empty for a wait that timed out, for a timeout of zero with nothing to
@@ -171,9 +178,10 @@ type KeventRefusal =
     /// The eventlist reached a copy and has no address to copy to, or bytes
     /// the caller cannot produce.
     | Buffer of BufferRefusal
-    /// The call has entries or events to copy out to the eventlist, and the
-    /// eventlist is unmapped, so the copy faults. What Darwin answers then,
-    /// and what becomes of what it would have copied, is not measured.
+    /// The call has events to copy out to the eventlist, and the eventlist is
+    /// unmapped, so the copy faults. What Darwin answers then for several
+    /// events, and what becomes of each, is not measured. (An entry of the
+    /// changelist echoed into such an eventlist is answered: `EFAULT`.)
     | UnmeasuredCopyOutFault of kqueue : OpenFileDescriptionId
     /// Nothing is reportable, and the timeout ends past the last instant the
     /// machine's monotonic clock (`UnixMachineState.NanosecondsSinceBoot`, an
@@ -216,7 +224,7 @@ module KeventRefusal =
             $"the changelist holds %A{change}, an EV_ADD on a %O{kind} socket in %O{domain}. This kernel models a filter's readiness for IPv4 and IPv6 stream sockets only: what activates a datagram socket's filters is not modelled, and a Unix-domain socket's are not measured."
         | KeventRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | KeventRefusal.UnmeasuredCopyOutFault kqueue ->
-            $"kevent on kqueue %O{kqueue} has entries or events to copy out, and the eventlist is unmapped, so the copy faults. What Darwin answers then, and what becomes of what it would have copied, is not measured."
+            $"kevent on kqueue %O{kqueue} has events to copy out, and the eventlist is unmapped, so the copy faults. What Darwin answers then, and what becomes of each event it would have copied, is not measured."
         | KeventRefusal.DeadlineBeyondClock (now, seconds, nanoseconds) ->
             $"the machine has been up for %d{now} ns and the timeout is %d{seconds} s and %d{nanoseconds} ns, which ends past the last nanosecond the monotonic clock can represent."
         | KeventRefusal.DrainBesideDeadline kqueue ->
@@ -487,19 +495,21 @@ module UnixKqueue =
         | Some target -> Error (KeventRefusal.UnmodelledTarget (change, target))
 
     /// The outcome of the changelist: the entries it echoes, or the errno that
-    /// ended the call; and the system its applied changes left.
+    /// ended the call and the entries echoed before it; and the system its
+    /// applied changes left.
     [<RequireQualifiedAccess>]
     type private ChangelistOutcome<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
         | Applied of echoed : Kevent list * system : UnixSystem<'Task, 'Handler>
-        | Failed of error : UnixError * system : UnixSystem<'Task, 'Handler>
+        | Failed of error : UnixError * echoed : Kevent list * system : UnixSystem<'Task, 'Handler>
 
     /// Apply the readable `changes` of a changelist of `nchanges` entries in
-    /// order, with room for `room` entries in the eventlist.
+    /// order, with room for `room` entries in `eventlist`.
     let private applyChangelist<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (kqueue : OpenFileDescriptionId)
         (nchanges : int)
         (changes : Kevent list)
         (room : int)
+        (eventlist : UserBuffer)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<ChangelistOutcome<'Task, 'Handler>, KeventRefusal>
         =
@@ -508,7 +518,10 @@ module UnixKqueue =
         // Measured on 27.0.0 (`kevent-register.c`, sections R, X and Y): a
         // change with EV_RECEIPT, or one that fails, is echoed while there is
         // room; with no room a receipt is dropped and its change still applies,
-        // and a failure ends the call, the changes after it unapplied.
+        // and a failure ends the call, the changes after it unapplied and the
+        // entries echoed before it left in the eventlist (Y4). An echo into an
+        // eventlist that cannot be written ends the call with EFAULT, its change
+        // applied (Y5).
         let rec apply
             (echoed : Kevent list)
             (room : int)
@@ -529,26 +542,31 @@ module UnixKqueue =
             if not echoes then
                 apply echoed room system rest
             elif room > 0 then
-                let entry =
-                    { change with
-                        Flags = change.Flags ||| KeventFlags.Error
-                        Data =
-                            match failure with
-                            | None -> 0L
-                            | Some error -> int64 (UnixError.toRawErrnoUnder numbering error)
-                    }
+                match eventlist with
+                | UserBuffer.Opaque -> Error (KeventRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+                | UserBuffer.Addressless -> Error (KeventRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
+                | UserBuffer.Unmapped _ -> Ok (ChangelistOutcome.Failed (UnixError.EFAULT, List.rev echoed, system))
+                | UserBuffer.Mapped ->
+                    let entry =
+                        { change with
+                            Flags = change.Flags ||| KeventFlags.Error
+                            Data =
+                                match failure with
+                                | None -> 0L
+                                | Some error -> int64 (UnixError.toRawErrnoUnder numbering error)
+                        }
 
-                apply (entry :: echoed) (room - 1) system rest
+                    apply (entry :: echoed) (room - 1) system rest
             else
                 match failure with
-                | Some error -> Ok (ChangelistOutcome.Failed (error, system))
+                | Some error -> Ok (ChangelistOutcome.Failed (error, List.rev echoed, system))
                 | None -> apply echoed room system rest
 
         match apply [] room system changes with
         // Measured (Y3): a change the copy-in cannot read ends the call with
         // EFAULT, the readable ones before it applied.
-        | Ok (ChangelistOutcome.Applied (_, system)) when nchanges > List.length changes ->
-            Ok (ChangelistOutcome.Failed (UnixError.EFAULT, system))
+        | Ok (ChangelistOutcome.Applied (echoed, system)) when nchanges > List.length changes ->
+            Ok (ChangelistOutcome.Failed (UnixError.EFAULT, echoed, system))
         | other -> other
 
     /// `kevent(2)`, made by `task` through the descriptor `kq`, with a
@@ -572,9 +590,11 @@ module UnixKqueue =
     /// registered, replaces its `udata`; `EV_DELETE` removes one. A change with
     /// `EV_RECEIPT`, or one that fails, is echoed into the eventlist while it
     /// has room (`KeventOutcome.Echoed`); a failure with no room left ends the
-    /// call with its errno, and a change the copy-in could not read with
-    /// `EFAULT`, and either way the changes before it stay applied. A call
-    /// that echoes anything returns at once with no events.
+    /// call with its errno, a change the copy-in could not read with `EFAULT`,
+    /// and an echo into an `Unmapped` eventlist with `EFAULT` too, and either
+    /// way the changes before it stay applied and the entries echoed before it
+    /// stay written (`KeventOutcome.FailedAfterEchoing`). A call that echoes
+    /// anything returns at once with no events.
     ///
     /// Otherwise an `nevents` of zero or less returns no events at once; a
     /// kqueue a close has drained (see `KqueueState.Drained`) fails with
@@ -588,8 +608,9 @@ module UnixKqueue =
     /// Every waiter on one kqueue is woken by an event to report and by the
     /// close that drains it, and a deadline or a signal is each waiter's own.
     ///
-    /// Refused are a change this library does not apply (see `KeventRefusal`)
-    /// and a copy of entries or events to an eventlist that is not `Mapped`.
+    /// Refused are a change this library does not apply (see `KeventRefusal`),
+    /// a copy of events to an eventlist that is not `Mapped`, and an echo into
+    /// an `Opaque` or `Addressless` one.
     /// `task` must not already be parked. Under the Linux flavour every call
     /// is refused: Linux has no kqueue.
     let kevent<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -651,14 +672,15 @@ module UnixKqueue =
         | None -> Ok (KeventOutcome.Failed UnixError.EBADF, system)
         | Some kqueue ->
 
-        match applyChangelist kqueue nchanges changes (max nevents 0) system with
+        match applyChangelist kqueue nchanges changes (max nevents 0) eventlist system with
         | Error refusal -> Error refusal
-        | Ok (ChangelistOutcome.Failed (error, system)) -> Ok (KeventOutcome.Failed error, system)
+        | Ok (ChangelistOutcome.Failed (error, [], system)) -> Ok (KeventOutcome.Failed error, system)
+        | Ok (ChangelistOutcome.Failed (error, echoed, system)) ->
+            Ok (KeventOutcome.FailedAfterEchoing (error, echoed), system)
         | Ok (ChangelistOutcome.Applied (echoed, system)) ->
 
         if not (List.isEmpty echoed) then
-            copyOut kqueue eventlist (List.length echoed)
-            |> Result.map (fun () -> KeventOutcome.Echoed echoed, system)
+            Ok (KeventOutcome.Echoed echoed, system)
         elif nevents <= 0 then
             Ok (KeventOutcome.Answered [], system)
         // Measured (`kevent-register.c`, Y1): a wait that reaches a drained

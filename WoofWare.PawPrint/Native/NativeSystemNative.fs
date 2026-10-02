@@ -6327,7 +6327,8 @@ module NativeSystemNative =
                         ctx.Thread
                     |> NativeHandlerResult.completed
                     |> Some
-                | KeventOutcome.Echoed changes ->
+                | KeventOutcome.Echoed changes
+                | KeventOutcome.FailedAfterEchoing (_, changes) ->
                     failwith
                         $"%s{operation}: kevent echoed %d{List.length changes} changes, but the shim's wait passes no changelist (this is an interpreter bug)."
                 | KeventOutcome.WouldBlock _ ->

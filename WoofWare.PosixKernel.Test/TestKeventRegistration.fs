@@ -159,7 +159,7 @@ module TestKeventRegistration =
         (changes : Kevent list)
         (room : int)
         (model : Model)
-        : Result<Kevent list, UnixError> * Model
+        : Result<Kevent list, UnixError * Kevent list> * Model
         =
         let rec go (echoed : Kevent list) (room : int) (model : Model) (remaining : Kevent list) =
             match remaining with
@@ -253,7 +253,7 @@ module TestKeventRegistration =
                     go (entry :: echoed) (room - 1) model rest
                 else
                     match failure with
-                    | Some error -> Error error, model
+                    | Some error -> Error (error, List.rev echoed), model
                     | None -> go echoed room model rest
 
         go [] room model changes
@@ -558,7 +558,9 @@ module TestKeventRegistration =
                     let outcome, after = KeventWorld.apply kq changes room system
 
                     match expected, outcome with
-                    | Error error, KeventOutcome.Failed actual -> actual |> shouldEqual error
+                    | Error (error, []), KeventOutcome.Failed actual -> actual |> shouldEqual error
+                    | Error (error, echoed), KeventOutcome.FailedAfterEchoing (actual, written) ->
+                        (actual, written) |> shouldEqual (error, echoed)
                     | Ok [], KeventOutcome.Answered [] when room <= 0 -> ()
                     | Ok (_ :: _ as echoed), KeventOutcome.Echoed actual -> actual |> shouldEqual echoed
                     | Ok [], _ ->
@@ -724,7 +726,7 @@ module TestKeventRegistration =
         |> shouldEqual (KeventRefusal.UnmodelledFilter bad)
 
     [<Test>]
-    let ``copying to an eventlist that is not mapped is refused`` () : unit =
+    let ``copying to an eventlist that is not mapped is EFAULT for an echo and refused for events`` () : unit =
         let system, listener, _, kq = ready ()
 
         let call (changes : Kevent list) (eventlist : UserBuffer) =
@@ -742,9 +744,19 @@ module TestKeventRegistration =
 
         let kqueueId = KeventWorld.idOf kq system
 
+        // Measured (Y5): an echo into an eventlist that cannot be written is EFAULT,
+        // its change applied. Events to such an eventlist are not measured beyond one.
+        match call [ receipt ] (UserBuffer.Unmapped 8UL) with
+        | Ok (KeventOutcome.Failed UnixError.EFAULT, after) ->
+            (KeventWorld.stateOf kq after).Registrations
+            |> Map.containsKey (listener, KqueueFilter.Read)
+            |> shouldEqual true
+        | other -> failwith $"expected EFAULT with the change applied, got %A{other}"
+
+        call [ plain ] (UserBuffer.Unmapped 8UL)
+        |> shouldEqual (Error (KeventRefusal.UnmeasuredCopyOutFault kqueueId))
+
         for changes in [ [ receipt ] ; [ plain ] ] do
-            call changes (UserBuffer.Unmapped 8UL)
-            |> shouldEqual (Error (KeventRefusal.UnmeasuredCopyOutFault kqueueId))
 
             call changes UserBuffer.Opaque
             |> shouldEqual (Error (KeventRefusal.Buffer BufferRefusal.OpaqueAtTransfer))

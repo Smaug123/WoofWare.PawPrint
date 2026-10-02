@@ -295,7 +295,10 @@ module KeventWorld =
             | _ -> $"ident%d{ident}"
 
         match outcome with
-        | KeventOutcome.Failed error ->
+        // The probe prints entries only for a call that returned them, so what a
+        // failure left written in the eventlist is compared separately.
+        | KeventOutcome.Failed error
+        | KeventOutcome.FailedAfterEchoing (error, _) ->
             {
                 Result = -1
                 Errno = errnoName error

@@ -55,7 +55,9 @@
 //       ident's low 32 bits name a registered descriptor.
 //   Y   a kqueue drained under a sleeper, with registrations; a sleeper woken
 //       by an ADD from another thread; a changelist whose second entry is
-//       unreadable (the array ends at a PROT_NONE page).
+//       unreadable (the array ends at a PROT_NONE page); what a failure that
+//       ends the call leaves in the eventlist after receipts were copied into
+//       it; and an eventlist that cannot be written.
 //
 // Build and run, from this directory:
 //   Darwin: nix develop -c clang -Wall -O1 -o /tmp/kr kevent-register.c && /tmp/kr
@@ -118,8 +120,11 @@
 //     queued and whatever the timeout (R1, R6, R9, X5, X6). With no room left a
 //     receipt is dropped and its change still applies (R2, R3, R12); a failure
 //     with no room ends the call with -1 and that errno, the changes before it
-//     applied and those after it not (R4, R5, R7, X4). An unreadable change
-//     ends the call with EFAULT, the readable ones before it applied (Y3).
+//     applied and those after it not (R4, R5, R7, X4), and the receipts copied
+//     before it still written in the eventlist (Y4). An unreadable change ends
+//     the call with EFAULT, the readable ones before it applied (Y3); so does
+//     an echo into an eventlist that cannot be written, its own change applied
+//     (Y5), and an event copied into one is consumed (Y5).
 //   Errors: EV_DELETE of something not registered is ENOENT whatever the ident
 //     names, a closed descriptor and every non-socket included (R4, R10, X2,
 //     X3). EV_ADD reads the ident's low 32 bits as a descriptor: not open
@@ -1511,6 +1516,52 @@ static void section_y(void)
         printf("Y\tY2 trial %d: asleep before the ADD %d; returned after it %d\trv=%d\t%s\n", trial, before == -2,
                after != -2, sleeper_rv, ename(sleeper_errno));
         close(c); close(l); close(k);
+    }
+
+    // What a failure that ends the call leaves in the eventlist, after receipts
+    // were copied into it; and an eventlist that cannot be written.
+    {
+        struct scene s = scene_new();
+        int closed = dup(s.c);
+        close(closed);
+        struct kevent ch[3] = { change(s.l, EVFILT_READ, AC | EV_RECEIPT, 1), change(s.c, EVFILT_WRITE, AC | EV_RECEIPT, 2),
+                                change(closed, EVFILT_READ, AC, 4) };
+        for (int room = 1; room <= 2; room++) {
+            struct kevent out[4];
+            memset(out, 0xAA, sizeof out);
+            struct timespec zero = { 0, 0 };
+            errno = 0;
+            int rv = kevent(s.kq, ch, 3, out, room, &zero);
+            printf("Y\tY4 [ADD rcpt, ADD rcpt, ADD closed], room for %d\trv=%d\t%s\t", room, rv, ename(rv < 0 ? errno : 0));
+            for (int i = 0; i < 3; i++) {
+                int untouched = out[i].flags == 0xAAAA;
+                if (untouched) printf("%s[%d] untouched", i ? "; " : "", i);
+                else printf("%s[%d] ident=%s filter=%s flags=0x%x data=%lld udata=0x%llx", i ? "; " : "", i, ident_name(out[i].ident),
+                            fname(out[i].filter), out[i].flags, (long long)out[i].data, (unsigned long long)(uintptr_t)out[i].udata);
+            }
+            printf("\n");
+            show("Y\tY4 poll", s.kq);
+        }
+        scene_free(s);
+
+        long page = sysconf(_SC_PAGESIZE);
+        char *mem = mmap(NULL, page, PROT_NONE, MAP_ANON | MAP_PRIVATE, -1, 0);
+        s = scene_new();
+        struct kevent ch2[2] = { change(s.l, EVFILT_READ, AC | EV_RECEIPT, 1), change(s.c, EVFILT_WRITE, AC, 2) };
+        struct timespec zero = { 0, 0 };
+        errno = 0;
+        int rv = kevent(s.kq, ch2, 2, (struct kevent *)mem, 4, &zero);
+        printf("Y\tY5 [ADD rcpt, ADD] into an unwritable eventlist, room for 4\trv=%d\t%s\n", rv, ename(rv < 0 ? errno : 0));
+        show("Y\tY5 poll", s.kq);
+        scene_free(s);
+        s = scene_new();
+        struct kevent ch3[1] = { change(s.l, EVFILT_READ, AC, 1) };
+        errno = 0;
+        rv = kevent(s.kq, ch3, 1, (struct kevent *)mem, 4, &zero);
+        printf("Y\tY5 [ADD of a ready listener] into an unwritable eventlist, room for 4\trv=%d\t%s\n", rv, ename(rv < 0 ? errno : 0));
+        show("Y\tY5 poll", s.kq);
+        scene_free(s);
+        munmap(mem, page);
     }
 
     // A changelist whose second entry is unreadable.

@@ -406,6 +406,14 @@ Y	Y1 an ADD without receipt through D, room for 0	rv=0	-	[]
 Y	Y2 trial 0: asleep before the ADD 1; returned after it 1	rv=1	-
 Y	Y2 trial 1: asleep before the ADD 1; returned after it 1	rv=1	-
 Y	Y2 trial 2: asleep before the ADD 1; returned after it 1	rv=1	-
+Y	Y4 [ADD rcpt, ADD rcpt, ADD closed], room for 1	rv=-1	EBADF	[0] ident=L filter=READ flags=0x4061 data=0 udata=0x1; [1] untouched; [2] untouched
+Y	Y4 poll	rv=2	-	[L:READ flags=0x61 fflags=0 data=1 udata=0x1; C:WRITE flags=0x61 fflags=0 data=146988 udata=0x2]
+Y	Y4 [ADD rcpt, ADD rcpt, ADD closed], room for 2	rv=-1	EBADF	[0] ident=L filter=READ flags=0x4061 data=0 udata=0x1; [1] ident=C filter=WRITE flags=0x4061 data=0 udata=0x2; [2] untouched
+Y	Y4 poll	rv=2	-	[L:READ flags=0x61 fflags=0 data=1 udata=0x1; C:WRITE flags=0x61 fflags=0 data=146988 udata=0x2]
+Y	Y5 [ADD rcpt, ADD] into an unwritable eventlist, room for 4	rv=-1	EFAULT
+Y	Y5 poll	rv=1	-	[L:READ flags=0x61 fflags=0 data=1 udata=0x1]
+Y	Y5 [ADD of a ready listener] into an unwritable eventlist, room for 4	rv=-1	EFAULT
+Y	Y5 poll	rv=0	-	[]
 Y	Y3 [ADD with receipt, unreadable], room for 8	rv=-1	EFAULT	[]
 Y	Y3 poll	rv=1	-	[L:READ flags=0x61 fflags=0 data=1 udata=0x1]
 Y	Y3 [ADD of a ready listener, unreadable], room for 8	rv=-1	EFAULT	[]

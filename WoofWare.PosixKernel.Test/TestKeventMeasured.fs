@@ -1110,3 +1110,80 @@ module TestKeventMeasured =
                     compared <- compared + 1
 
         compared |> shouldEqual 60
+
+    /// The probe's Y4 and Y5: what a failure that ends the call leaves written in the
+    /// eventlist after receipts were copied into it, and an echo into an eventlist that
+    /// cannot be written.
+    [<Test>]
+    let ``a failure after receipts leaves them written, as on Darwin`` () : unit =
+        for room in [ 1 ; 2 ] do
+            let system = KeventWorld.darwin
+            let l, system = KeventWorld.listenerAt 5000us system
+            let c, system = KeventWorld.client 5000us system
+            let kq, system = KeventWorld.kqueue system
+            let closed, system = KeventWorld.dup c system
+            let system = KeventWorld.close closed system
+
+            let changes =
+                [
+                    change l read (addClear ||| receipt) 1UL
+                    change c write (addClear ||| receipt) 2UL
+                    change closed read addClear 4UL
+                ]
+
+            let written, after =
+                match KeventWorld.apply kq changes room system with
+                | KeventOutcome.FailedAfterEchoing (UnixError.EBADF, written), after -> written, after
+                | other, _ -> failwith $"room %d{room}: expected EBADF after echoing, got %A{other}"
+
+            let names = Map.ofList [ l, "L" ; c, "C" ]
+
+            let rendered =
+                written
+                |> List.mapi (fun i entry ->
+                    let filter = if entry.Filter = read then "READ" else "WRITE"
+
+                    $"[%d{i}] ident=%s{names.[int entry.Ident]} filter=%s{filter} flags=0x%x{entry.Flags} data=%d{entry.Data} udata=0x%x{entry.UserData}"
+                )
+
+            let untouched = [ List.length written .. 2 ] |> List.map (sprintf "[%d] untouched")
+
+            KeventWorld.probeColumns [ "Y" ; $"Y4 [ADD rcpt, ADD rcpt, ADD closed], room for %d{room}" ]
+            |> shouldEqual [ "rv=-1" ; "EBADF" ; String.concat "; " (rendered @ untouched) ]
+
+            // Both ADDs applied, the dropped receipt's too.
+            let polled, _ = KeventWorld.apply kq [] 16 after
+
+            KeventWorld.agrees
+                (List.item (room - 1) (KeventWorld.observedAll [ "Y" ; "Y4 poll" ]))
+                (KeventWorld.render names polled)
+            |> shouldEqual true
+
+        // Y5: the receipt's change applied, and the change after it not.
+        let system = KeventWorld.darwin
+        let l, system = KeventWorld.listenerAt 5000us system
+        let c, system = KeventWorld.client 5000us system
+        let kq, system = KeventWorld.kqueue system
+
+        match
+            UnixKqueue.kevent
+                4
+                kq
+                2
+                [ change l read (addClear ||| receipt) 1UL ; change c write addClear 2UL ]
+                4
+                (UserBuffer.Unmapped 0x1000UL)
+                (KeventTimeout.Readable (0L, 0L))
+                system
+        with
+        | Ok (KeventOutcome.Failed UnixError.EFAULT, after) ->
+            KeventWorld.probeColumns [ "Y" ; "Y5 [ADD rcpt, ADD] into an unwritable eventlist, room for 4" ]
+            |> shouldEqual [ "rv=-1" ; "EFAULT" ]
+
+            let polled, _ = KeventWorld.apply kq [] 16 after
+
+            KeventWorld.agrees
+                (List.head (KeventWorld.observedAll [ "Y" ; "Y5 poll" ]))
+                (KeventWorld.render (Map.ofList [ l, "L" ; c, "C" ]) polled)
+            |> shouldEqual true
+        | other -> failwith $"expected EFAULT, got %A{other}"

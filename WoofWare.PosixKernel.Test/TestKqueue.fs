@@ -436,13 +436,13 @@ module TestKqueue =
         (nchanges : int)
         (changes : Kevent list)
         (room : int)
-        : Result<Result<Kevent list, UnixError>, KeventRefusal>
+        : Result<Result<Kevent list, UnixError * Kevent list>, KeventRefusal>
         =
         let allowed = [ 0x01us ; 0x21us ; 0x41us ; 0x61us ; 0x02us ; 0x42us ]
 
         let rec go (echoed : Kevent list) (room : int) (remaining : Kevent list) =
             match remaining with
-            | [] when nchanges > List.length changes -> Ok (Error UnixError.EFAULT)
+            | [] when nchanges > List.length changes -> Ok (Error (UnixError.EFAULT, List.rev echoed))
             | [] -> Ok (Ok (List.rev echoed))
             | change :: rest ->
                 let outcome =
@@ -471,7 +471,7 @@ module TestKqueue =
                         }
 
                     go (entry :: echoed) (room - 1) rest
-                | Ok error -> Ok (Error error)
+                | Ok error -> Ok (Error (error, List.rev echoed))
 
         go [] room changes
 
@@ -499,7 +499,8 @@ module TestKqueue =
 
         match changesWithNoSocket system nchanges readable (max nevents 0) with
         | Error refusal -> Error refusal
-        | Ok (Error error) -> Ok (Some (KeventOutcome.Failed error))
+        | Ok (Error (error, [])) -> Ok (Some (KeventOutcome.Failed error))
+        | Ok (Error (error, echoed)) -> Ok (Some (KeventOutcome.FailedAfterEchoing (error, echoed)))
         | Ok (Ok (_ :: _ as echoed)) -> Ok (Some (KeventOutcome.Echoed echoed))
         | Ok (Ok []) ->
 
