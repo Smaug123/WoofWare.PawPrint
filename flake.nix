@@ -185,9 +185,10 @@
             touch $out
           '';
         # Fails `nix flake check` when a WoofWare.PosixKernel source line names
-        # WoofWare.PawPrint or one of its symbols (`KernelConfig`, `EmulatedKernel`, ...).
-        # The library is meant to read as a POSIX simulator that knows nothing of the client
-        # it was extracted from, and prose is where that knowledge crept back in. Runs the
+        # WoofWare.PawPrint or one of its symbols (`KernelConfig`, `EmulatedKernel`, ...),
+        # names CoreCLR, or calls the process a guest. The library is meant to read as a
+        # POSIX simulator that knows nothing of the client it was extracted from, and prose
+        # is where that knowledge crept back in. Runs the
         # checker's own contract first, so that a change to the checker cannot quietly
         # retire it.
         client-references =
