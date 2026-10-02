@@ -8,8 +8,8 @@ open Microsoft.Extensions.Logging
 /// operand stack.
 ///
 /// The `box` opcode is not the only place the runtime boxes: `constrained.` callvirt boxes a
-/// value-type receiver whose method it inherits from Object/ValueType/Enum (III.2.1 case 3), and
-/// the reflection-invocation QCall boxes a value-type return. Every one of those must apply the
+/// value-type receiver for a method it does not implement itself (III.2.1 case 3), and the
+/// reflection-invocation QCall boxes a value-type return. Every one of those must apply the
 /// same Nullable rule, so they share this module rather than each rebuilding the heap object.
 [<RequireQualifiedAccess>]
 module internal Boxing =
