@@ -83,6 +83,7 @@
     <Compile Include="TestSignalState.fs" />
     <Compile Include="TestSignalDispositions.fs" />
     <Compile Include="TestUnixSignal.fs" />
+    <Compile Include="TestPthreadKill.fs" />
     <Compile Include="TestSignalPickOrder.fs" />
     <Compile Include="TestSignalReceiver.fs" />
     <Compile Include="SignalFuzz.fs" />

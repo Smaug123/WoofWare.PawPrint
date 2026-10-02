@@ -202,6 +202,7 @@
     <Compile Include="TestMethodReferenceResolutionGenerated.fs" />
     <Compile Include="TestFieldReferenceResolution.fs" />
     <Compile Include="TestMemberReferenceParentLoad.fs" />
+    <Compile Include="TestFieldBindingFailure.fs" />
     <Compile Include="TestEscapeAnalysis.fs" />
     <Compile Include="TestFunctionPointerConcretization.fs" />
     <Compile Include="Netstandard21FSharpCore.fs" />
@@ -365,6 +366,7 @@
     <Compile Include="TestImpureCases.fs" />
     <Compile Include="TestSignalTerminatedCases.fs" />
     <Compile Include="TestLibcKillRefusals.fs" />
+    <Compile Include="TestLibcRaise.fs" />
     <Compile Include="TestProcessTerminationWiring.fs" />
     <Compile Include="TestAppExitCode.fs" />
     <Compile Include="TestEmulatedKernelAbort.fs" />

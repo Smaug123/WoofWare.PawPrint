@@ -841,6 +841,42 @@ handler, can tell the difference. This is the same timing trade PawPrint makes f
 exception for each shape, with the instruction first in its method and no handler of its own, where
 the two runtimes agree.
 
+## A field reference that binds nothing throws when it is reached
+
+**CoreCLR**: a field instruction (`ldfld`, `ldflda`, `stfld`, `ldsfld`, `ldsflda`, `stsfld`) or an
+`ldtoken` whose operand is a field MemberRef binds it with `MemberLoader::GetDescFromMemberRef` when
+the JIT compiles the method holding it. A reference that names no field throws
+`MissingFieldException`, and one whose parent cannot be loaded throws `TypeLoadException`. So, as for
+an abstract `call`, the method runs nothing, the exception arrives even when the instruction is on a
+path that would never execute, and only the caller's handlers can catch it.
+
+**PawPrint**: binds the reference, and throws the same exception with the same message (and, for
+`TypeLoadException`, the same `TypeName`, assembly name and resource id), when the instruction
+*executes*. Everything the method did before reaching it has happened, a path that never reaches it
+runs normally, and a `try` in that method which covers the instruction catches it.
+
+It answers only where it can vouch for every type the parent's load reaches: CoreLib's own types,
+combined so that no load failure but a missing type can arise (`ParentLoadVouching`). CoreCLR's loader
+fails for many other reasons, and binding throws whichever comes first, so for any other parent
+PawPrint refuses to run on rather than guess the exception.
+
+**Spec status**: ECMA-335 II.22.25 requires a MemberRef to name a member of its parent, but a
+reference that was valid when its assembly was compiled stops being valid when the assembly
+declaring the field is replaced by a version without it. This is not invalid IL, so unlike the
+abstract `call` case a well-formed program run against a mismatched dependency can tell the
+difference. The spec says nothing about when the failure surfaces.
+
+**Why we chose this**: the same trade as for an abstract `call`: PawPrint has no compilation step, and
+binding every field reference of a method when it is first entered would load assemblies and types
+in a different order from the program's own execution. Closing it means binding them at method
+entry anyway, and accepting that order.
+
+**Where this lives in code**: `MemberReferenceInstantiation.resolveMemberWithGenerics` decides the
+binding (`FieldReferenceBinding`), and `UnaryMetadataFieldOps.throwBindingFailure` raises it, from
+each field op and from `UnaryMetadataTokenOps.executeLdtoken`. `TestFabricatedFieldReference` pins
+each shape with the instruction first in its method and no handler of its own, where the two
+runtimes agree.
+
 ## Simulated time advances per retired instruction
 
 **CoreCLR**: time is what the OS says it is. `Environment.TickCount64`, `Stopwatch` and

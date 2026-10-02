@@ -406,6 +406,46 @@ module TestNativeLibc =
                     NativeLibc.screenRaisedSignal platform sender leader PosixSignalShim.initial before raised after
                     |> shouldEqual expected
 
+    /// `raise(3)` aims the signal at the thread that raises it, which takes it
+    /// inside its own call, as the main thread takes one it sends the process
+    /// with `kill(2)`. A hardware-fault signal the main thread raises is
+    /// answered as its own `kill` is; one another thread raises is refused for
+    /// being left pending there, not for being taken by a thread that did not
+    /// send it.
+    [<Test>]
+    let ``a hardware-fault signal a thread raises is screened as taken by that thread`` () : unit =
+        let worker = 1
+
+        for platform in everyPlatform do
+            let numbering = SimulatedUnixPlatform.signalNumbering platform
+            let sigill = signal numbering 4
+            let before = initial numbering
+
+            for raiser in [ leader ; worker ] do
+                let raised : PendingSignal<int> =
+                    {
+                        Signal = sigill
+                        Target = ValueSome raiser
+                    }
+
+                let after =
+                    match
+                        SignalState.generate CoreDumps.Suppressed leader (Set.ofList [ leader ; worker ]) raised before
+                    with
+                    | Ok (SignalGeneration.ProcessContinues after) -> after
+                    | other -> failwith $"%O{platform}: generating %A{raised}: %A{other}"
+
+                let expected =
+                    if raiser = leader then
+                        None
+                    else
+                        Some (UnmodelledSelfSignal.PendingOnOtherThread sigill)
+
+                (platform,
+                 raiser,
+                 NativeLibc.screenRaisedSignal platform raiser leader PosixSignalShim.initial before raised after)
+                |> shouldEqual (platform, raiser, expected)
+
     [<Test>]
     let ``System.Native installs its handler once until it restores it, whatever the disposition does meanwhile``
         ()

@@ -21,6 +21,27 @@ type MemberResolutionKey =
         MethodGenerics : ConcreteTypeHandle list
     }
 
+/// Why a field-shaped MemberRef row binds nothing, as CoreCLR's `MemberLoader::GetDescFromMemberRef`
+/// decides it. Each case is the exception binding the row throws, and what that exception names.
+[<RequireQualifiedAccess>]
+type FieldReferenceFailure =
+    /// No field of this name and signature where CoreCLR looks, so binding throws
+    /// `MissingFieldException`. `parent` is the type the row's parent names, as
+    /// `MethodTable::_GetFullyQualifiedNameForClass` renders it.
+    | MissingField of parent : string * name : string
+    /// CoreCLR cannot load the row's parent, so binding throws `TypeLoadException`. `typeName` is the
+    /// type reference that names nothing, as its row spells it, and `searchedIn` the display name of
+    /// the assembly it was looked for in.
+    | ParentTypeMissing of typeName : string * searchedIn : string
+
+/// What a field-shaped MemberRef row binds to.
+[<RequireQualifiedAccess>]
+type FieldReferenceBinding =
+    /// The field the row names, its declaring type instantiated at the row's parent.
+    | Bound of WoofWare.PawPrint.FieldInfo<TypeDefn, TypeDefn>
+    /// The row binds nothing.
+    | Fails of FieldReferenceFailure
+
 /// What a MemberRef row resolves to: `MemberReferenceInstantiation.resolveMember`'s answer, kept
 /// so the row need not be resolved again on the next instruction that names it.
 type ResolvedMemberReference =
@@ -28,10 +49,7 @@ type ResolvedMemberReference =
         /// The assembly the member is declared in.
         DeclaringAssembly : AssemblyName
         Member :
-            Choice<
-                WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>,
-                WoofWare.PawPrint.FieldInfo<TypeDefn, TypeDefn>
-             >
+            Choice<WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>, FieldReferenceBinding>
         /// The generic arguments of the type that declares the member: the parent the row names, or
         /// the ancestor of it that declares the method, instantiated as the row spells the parent.
         TargetTypeGenerics : ImmutableArray<TypeDefn>
