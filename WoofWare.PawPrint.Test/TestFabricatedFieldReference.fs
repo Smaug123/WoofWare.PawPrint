@@ -18,9 +18,10 @@ open NUnit.Framework
 /// the reference is compiled, so each method here is the one access and nothing else, and the
 /// driver catches around the call.
 ///
-/// PawPrint does not yet raise either exception: where the real runtime throws, the test requires
-/// that PawPrint refuses to run on, for the reason the real runtime throws, rather than binding a
-/// field the real runtime would not.
+/// PawPrint throws the same exception, with the same message (and, for `TypeLoadException`, the
+/// same `TypeName`), when the instruction runs. A member named through a generic definition with no
+/// instantiation, which CoreCLR refuses with `TypeLoadException` outside `ldtoken`, PawPrint does
+/// not yet raise: there the test requires that it refuses to run on, naming the type.
 ///
 /// C# emits a field MemberRef only across assemblies or through a generic instantiation, and only
 /// for a field that existed when it compiled, so every reference here is hand-written metadata.
@@ -221,6 +222,23 @@ module TestFabricatedFieldReference =
             )
 
         let vectorOfGone = typeSpec (fun encoder -> encoder.SZArray().Type (goneRef, false))
+
+        let listOfInt =
+            typeSpec (fun encoder ->
+                let args =
+                    encoder.GenericInstantiation (corelibType "System.Collections.Generic" "List`1", 1, false)
+
+                args.AddArgument().Int32 ()
+            )
+
+        // `WeakReference<T>` constrains `T` to reference types.
+        let weakReferenceOfInt =
+            typeSpec (fun encoder ->
+                let args =
+                    encoder.GenericInstantiation (corelibType "System" "WeakReference`1", 1, false)
+
+                args.AddArgument().Int32 ()
+            )
 
         let addField (attributes : FieldAttributes) (name : string) (signature : BlobHandle) =
             metadata.AddFieldDefinition (attributes, metadata.GetOrAddString name, signature)
@@ -501,6 +519,26 @@ module TestFabricatedFieldReference =
                 il.Token (reference typeRef "get_IsValueType" getIsValueType)
             )
 
+        // A field the generic definition does not declare, named through its TypeDef: the parent is
+        // refused before the field is looked for.
+        readStatic "AbsentFieldOfOpenDefinition" (reference baseHandle "absent" int32Sig)
+
+        // An array whose element is a generic definition with no instantiation, which no signature
+        // may spell.
+        let vectorOfOpenDefinition =
+            typeSpec (fun encoder -> encoder.SZArray().Type (baseHandle, true))
+
+        readStatic "ArrayOfOpenDefinition" (reference vectorOfOpenDefinition "Length" int32Sig)
+
+        define
+            "LdtokenArrayOfOpenDefinition"
+            None
+            (fun il ->
+                op il ILOpCode.Ldtoken (reference vectorOfOpenDefinition "Length" int32Sig)
+                il.OpCode ILOpCode.Pop
+                il.LoadConstantI4 0
+            )
+
         // A generic definition's field, named through its TypeDef by code outside it.
         readStatic "FieldOfOpenDefinition" (reference baseHandle "s" int32Sig)
 
@@ -702,6 +740,10 @@ module TestFabricatedFieldReference =
         readStatic "ParentArgumentAbsentFieldPresent" (reference baseOfGone "s" int32Sig)
         readStatic "ParentArgumentAbsentFieldAbsent" (reference baseOfGone "absent" int32Sig)
         readStatic "ParentElementAbsent" (reference vectorOfGone "Length" int32Sig)
+        // CoreLib's instantiation at a CoreLib argument, which PawPrint can vouch loads.
+        readStatic "CoreLibInstantiationAbsent" (reference listOfInt "absent" int32Sig)
+        // An instantiation that violates its definition's constraint, so CoreCLR cannot load it.
+        readStatic "ConstraintViolatedAbsent" (reference weakReferenceOfInt "absent" int32Sig)
 
         let firstMethod = firstMethod.Value
 
@@ -796,31 +838,53 @@ module TestFabricatedFieldReference =
         peBuilder.Serialize peImage |> ignore<BlobContentId>
         peImage.ToArray ()
 
-    /// How the driver's call ended.
+    /// An exception the driver's call throws on the real runtime.
     [<RequireQualifiedAccess>]
-    type private Expected =
-        /// The method returned this.
-        | Returns of int
+    type private Thrown =
         /// `MissingFieldException`, whose message is this C# expression.
         | MissingField of message : string
         /// `TypeLoadException`, whose message is this C# expression and whose `TypeName` is this.
         | TypeLoad of message : string * typeName : string
 
+    /// How the driver's call ended.
+    [<RequireQualifiedAccess>]
+    type private Expected =
+        /// The method returned this.
+        | Returns of int
+        /// The call threw this, and PawPrint raises the same exception into the guest.
+        | Throws of Thrown
+        /// The call threw this, and PawPrint refuses to run on rather than raising it, with a
+        /// message containing each of `reasons`.
+        | Refused of Thrown * reasons : string list
+
     let private fieldNotFound (qualified : string) : Expected =
-        Expected.MissingField $"\"Field not found: '%s{qualified}'.\""
+        Expected.Throws (Thrown.MissingField $"\"Field not found: '%s{qualified}'.\"")
 
     let private goneTypeLoad : Expected =
-        Expected.TypeLoad (
-            "\"Could not load type 'System.Gone' from assembly '\" + typeof(object).Assembly.FullName + \"'.\"",
-            "System.Gone"
+        Expected.Throws (
+            Thrown.TypeLoad (
+                "\"Could not load type 'System.Gone' from assembly '\" + typeof(object).Assembly.FullName + \"'.\"",
+                "System.Gone"
+            )
         )
 
     /// A generic definition named without an instantiation, outside `ldtoken`.
     let private openDefinitionTypeLoad (typeName : string) : Expected =
-        Expected.TypeLoad (
-            $"\"Could not load type '%s{typeName}' from assembly 'FieldRefGuest, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null'.\"",
-            typeName
+        Expected.Refused (
+            Thrown.TypeLoad (
+                $"\"Could not load type '%s{typeName}' from assembly 'FieldRefGuest, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null'.\"",
+                typeName
+            ),
+            [ "TODO: raise TypeLoadException" ; typeName ]
         )
+
+    /// A reference whose parent PawPrint cannot vouch loads, because a type its load reaches is not
+    /// CoreLib's: PawPrint refuses rather than tell which exception binding throws.
+    let private unvouched (expected : Expected) : Expected =
+        match expected with
+        | Expected.Throws thrown
+        | Expected.Refused (thrown, _) -> Expected.Refused (thrown, [ "TODO" ; "cannot vouch" ])
+        | Expected.Returns _ -> failwith $"BUG: only a thrown exception can be refused, not %A{expected}"
 
     let private cases : Map<string, Expected> =
         [
@@ -834,23 +898,23 @@ module TestFabricatedFieldReference =
             // `ELEMENT_TYPE_STRING` and a `CLASS` naming System.String are different signatures.
             "StringEmptyAsClass", fieldNotFound "System.String.Empty"
             // Symbolic: `!0` is not the `int32` the instantiation puts there.
-            "BaseFAsInt32", fieldNotFound "W.Base`1.f"
+            "BaseFAsInt32", unvouched (fieldNotFound "W.Base`1.f")
             // Custom modifiers are compared.
-            "BaseFModified", fieldNotFound "W.Base`1.f"
+            "BaseFModified", unvouched (fieldNotFound "W.Base`1.f")
             // A literal field has no FieldDesc for a reference to find.
-            "BaseKLiteral", fieldNotFound "W.Base`1.k"
+            "BaseKLiteral", unvouched (fieldNotFound "W.Base`1.k")
             // The definition's modifier is resolved first. It names no type, so nothing matches,
             // and the assembly the reference's modifier names is never bound.
-            "OddGModifiedByUnbound", fieldNotFound "W.Odd.g"
+            "OddGModifiedByUnbound", unvouched (fieldNotFound "W.Odd.g")
             // The header byte is compared too.
-            "OddHHeader", fieldNotFound "W.Odd.h"
-            "HolderAbsent", fieldNotFound "W.Holder.absent"
+            "OddHHeader", unvouched (fieldNotFound "W.Odd.h")
+            "HolderAbsent", unvouched (fieldNotFound "W.Holder.absent")
             // Fields are not inherited.
-            "SubInherited", fieldNotFound "W.Sub.s"
-            "BrokenBaseFieldPresent", goneTypeLoad
-            "BrokenBaseFieldAbsent", goneTypeLoad
+            "SubInherited", unvouched (fieldNotFound "W.Sub.s")
+            "BrokenBaseFieldPresent", unvouched goneTypeLoad
+            "BrokenBaseFieldAbsent", unvouched goneTypeLoad
             "BaseInUnloadedAssembly", Expected.Returns 0
-            "LdtokenFieldOfAbsentType", goneTypeLoad
+            "LdtokenFieldOfAbsentType", unvouched goneTypeLoad
             // A field of a reference type is bound without loading its type.
             "LdtokenReferenceFieldOfAbsentType", Expected.Returns 0
             "CallOpenFromClosedCaller", openDefinitionTypeLoad "W.GC`1"
@@ -859,24 +923,38 @@ module TestFabricatedFieldReference =
             "LdftnInheritedOpen", openDefinitionTypeLoad "W.GC`1"
             "TypeofThroughOpenDefinition", openDefinitionTypeLoad "W.TypeSub`1"
             "FieldOfOpenDefinition", openDefinitionTypeLoad "W.Base`1"
-            "SiblingValueFieldAbsent", goneTypeLoad
+            "AbsentFieldOfOpenDefinition", unvouched (openDefinitionTypeLoad "W.Base`1")
+            "ArrayOfOpenDefinition", unvouched (openDefinitionTypeLoad "W.Base`1")
+            "LdtokenArrayOfOpenDefinition", unvouched (openDefinitionTypeLoad "W.Base`1")
+            "SiblingValueFieldAbsent", unvouched goneTypeLoad
             "LdtokenInheritedMethodOfGenericDefinition", Expected.Returns 0
             // An array has no fields.
             "VectorLength", fieldNotFound "System.Int32[].Length"
-            "StsfldAbsent", fieldNotFound "W.Holder.absent"
-            "LdsfldaAbsent", fieldNotFound "W.Holder.absent"
-            "LdfldaAbsent", fieldNotFound "W.Odd.absent"
-            "LdtokenAbsent", fieldNotFound "W.Holder.absent"
+            "StsfldAbsent", unvouched (fieldNotFound "W.Holder.absent")
+            "LdsfldaAbsent", unvouched (fieldNotFound "W.Holder.absent")
+            "LdfldaAbsent", unvouched (fieldNotFound "W.Odd.absent")
+            "LdtokenAbsent", unvouched (fieldNotFound "W.Holder.absent")
             "ParentAbsent", goneTypeLoad
             // Named by the missing row alone, not by the type it is nested in.
             "NestedParentAbsent",
-            Expected.TypeLoad (
-                "\"Could not load type 'GoneNested' from assembly '\" + typeof(object).Assembly.FullName + \"'.\"",
-                "GoneNested"
+            Expected.Throws (
+                Thrown.TypeLoad (
+                    "\"Could not load type 'GoneNested' from assembly '\" + typeof(object).Assembly.FullName + \"'.\"",
+                    "GoneNested"
+                )
             )
-            "ParentArgumentAbsentFieldPresent", goneTypeLoad
-            "ParentArgumentAbsentFieldAbsent", goneTypeLoad
+            "ParentArgumentAbsentFieldPresent", unvouched goneTypeLoad
+            "ParentArgumentAbsentFieldAbsent", unvouched goneTypeLoad
             "ParentElementAbsent", goneTypeLoad
+            "CoreLibInstantiationAbsent", fieldNotFound "System.Collections.Generic.List`1.absent"
+            "ConstraintViolatedAbsent",
+            Expected.Refused (
+                Thrown.TypeLoad (
+                    "\"GenericArguments[0], 'System.Int32', on 'System.WeakReference`1[T]' violates the constraint of type parameter 'T'.\"",
+                    ""
+                ),
+                [ "TODO" ; "cannot vouch" ]
+            )
         ]
         |> Map.ofList
 
@@ -938,36 +1016,34 @@ public static class Driver
         | inner -> e.Message :: messages inner
 
     [<TestCaseSource(nameof caseNames)>]
-    let ``a field MemberRef binds as the real runtime binds it, or PawPrint refuses where it throws``
-        (name : string)
-        : unit
-        =
+    let ``a field MemberRef binds as the real runtime binds it`` (name : string) : unit =
         let unexpected = "\"<no exception expected>\""
 
         let missingFieldMessage, typeLoadMessage, typeName, exitCode =
             match cases.[name] with
             | Expected.Returns value -> unexpected, unexpected, "", value
-            | Expected.MissingField message -> message, unexpected, "", MissingFieldExit
-            | Expected.TypeLoad (message, typeName) -> unexpected, message, typeName, TypeLoadExit
+            | Expected.Throws thrown
+            | Expected.Refused (thrown, _) ->
+                match thrown with
+                | Thrown.MissingField message -> message, unexpected, "", MissingFieldExit
+                | Thrown.TypeLoad (message, typeName) -> unexpected, message, typeName, TypeLoadExit
 
         let driver = driverSource name missingFieldMessage typeLoadMessage typeName
 
         match cases.[name] with
-        | Expected.Returns _ ->
+        | Expected.Returns _
+        | Expected.Throws _ ->
             FabricatedGuest.run "FieldRefGuest" (fabricate ()) $"FieldRef%s{name}Driver" driver exitCode
-        | Expected.MissingField _
-        | Expected.TypeLoad _ ->
+        | Expected.Refused (_, reasons) ->
 
         let onHost, onPawPrint =
             FabricatedGuest.runOnBoth "FieldRefGuest" (fabricate ()) $"FieldRef%s{name}Driver" driver
 
         onHost |> shouldEqual (RealRuntimeResult.NormalExit exitCode)
 
-        // The reason PawPrint refuses: the resolver finding no field, or the type it could not load.
-        let reason =
-            match cases.[name] with
-            | Expected.TypeLoad _ -> typeName
-            | _ -> "binds to no field"
+        // PawPrint's own refusal: not a guest exception, which would also fail the run.
+        let isRefusal (message : string) =
+            reasons |> List.forall (fun reason -> message.Contains reason)
 
         match onPawPrint with
         | FabricatedOutcome.Exited code ->
@@ -975,5 +1051,5 @@ public static class Driver
         | FabricatedOutcome.Failed e ->
             let messages = messages e
 
-            if not (messages |> List.exists (fun message -> message.Contains reason)) then
-                failwith $"PawPrint refused for a reason not naming '%s{reason}': %A{messages}"
+            if not (messages |> List.exists isRefusal) then
+                failwith $"PawPrint did not refuse, saying %A{reasons}: %A{messages}"

@@ -18,6 +18,10 @@ type VirtualImplementation =
     /// `AmbiguousImplementationException` (`MethodTable::FindDefaultInterfaceImplementation`,
     /// methodtable.cpp, through `ThrowAmbiguousResolutionException`). These are the candidates.
     | Ambiguous of WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list
+    /// The receiver's default interface bodies conflict in a way this does not model, for the
+    /// reason given: through a variant interface, CoreCLR's variance pass takes the first candidate
+    /// in an order this does not reproduce, rather than throwing.
+    | Unmodelled of reason : string
 
 /// Which method a virtual or interface call runs on a receiver of a known concrete type, as
 /// CoreCLR's `MethodTable::FindDispatchImpl` decides it: the receiver's dispatch table and
@@ -1214,7 +1218,28 @@ module ConcreteVirtualDispatch =
 
             let state, meth = concretizeImplementation implementationTypeHandle meth state
             state, VirtualImplementation.Found meth
-        | _ -> state, VirtualImplementation.Ambiguous (mostSpecificInterfaceMethods |> List.map snd)
+        | _ ->
+            // Candidates are matched allowing variance, so through a variant interface they may
+            // all be variance-compatible ones, among which CoreCLR's variance pass picks rather
+            // than throwing. Only through an invariant interface is the conflict CoreCLR's
+            // exact-pass one.
+            let candidates = mostSpecificInterfaceMethods |> List.map snd
+
+            let throughVariantInterface =
+                methodDeclaringType.Generics
+                |> Seq.exists (fun (_, metadata) -> metadata.Variance.IsSome)
+
+            if throughVariantInterface then
+                let described =
+                    candidates
+                    |> List.map (fun m -> $"%s{MethodOwner.describe m.Owner}::%s{m.Name}")
+                    |> String.concat ", "
+
+                state,
+                VirtualImplementation.Unmodelled
+                    $"more than one most-specific default body of %s{methodToCall.Name} through a variant interface, which CoreCLR's variance pass chooses between in an order not modelled: %s{described}"
+            else
+                state, VirtualImplementation.Ambiguous candidates
 
     /// One entry of a receiver's interface map, as the search for a variance-compatible default
     /// body visits it.
@@ -1556,9 +1581,8 @@ module ConcreteVirtualDispatch =
     /// `walkBaseTypes` false means "exact-type dispatch": the `constrained.` value-type probe,
     /// which asks whether `T` itself supplies the method rather than inheriting it.
     ///
-    /// Refuses where the search for a variance-compatible default body finds more than one most
-    /// specific: CoreCLR's variance pass takes the first candidate in an order that is not
-    /// modelled.
+    /// `Unmodelled` where default bodies conflict through variance, among which CoreCLR's variance
+    /// pass takes the first candidate in an order that is not modelled.
     let tryResolveVirtualImplementation
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -1583,7 +1607,8 @@ module ConcreteVirtualDispatch =
 
         match primary with
         | VirtualImplementation.Found _
-        | VirtualImplementation.Ambiguous _ -> state, primary
+        | VirtualImplementation.Ambiguous _
+        | VirtualImplementation.Unmodelled _ -> state, primary
         | VirtualImplementation.NotOverridden ->
 
         // Nothing implements the call site's own instantiation, not even a default body. A
@@ -1630,13 +1655,15 @@ module ConcreteVirtualDispatch =
                 match resolved with
                 | VirtualImplementation.NotOverridden -> firstResolved state rest
                 | VirtualImplementation.Ambiguous candidates ->
-                    candidates
-                    |> List.map (fun m -> $"%s{MethodOwner.describe m.Owner}::%s{m.Name}")
-                    |> String.concat ", "
-                    |> failwithf
-                        "variant interface dispatch of %s: retargeting onto %O found more than one most-specific default body, of which CoreCLR's variance pass takes the first in an order that is not modelled: %s"
-                        methodToCall.Name
-                        retargeted.DeclaringTypeGenerics
+                    let described =
+                        candidates
+                        |> List.map (fun m -> $"%s{MethodOwner.describe m.Owner}::%s{m.Name}")
+                        |> String.concat ", "
+
+                    state,
+                    VirtualImplementation.Unmodelled
+                        $"variant interface dispatch of %s{methodToCall.Name}: retargeting onto %O{retargeted.DeclaringTypeGenerics} found more than one most-specific default body, of which CoreCLR's variance pass takes the first in an order that is not modelled: %s{described}"
+                | VirtualImplementation.Unmodelled _ as unmodelled -> state, unmodelled
                 | VirtualImplementation.Found resolved when isDefaultInterfaceBody state resolved ->
                     let logger = loggerFactory.CreateLogger "CallMethod"
 
@@ -1739,6 +1766,7 @@ module ConcreteVirtualDispatch =
                 "%s: multiple most-specific default interface implementations of %s: %s"
                 opName
                 methodToCall.Name
+        | VirtualImplementation.Unmodelled reason -> failwith $"%s{opName}: %s{reason}"
         | VirtualImplementation.Found implementation when not implementation.IsStatic ->
             failwith
                 $"%s{opName}: resolved non-static implementation %s{MethodOwner.describe implementation.Owner}::%s{implementation.Name}"
