@@ -57,6 +57,15 @@ type WakePrimitive =
     /// often it is asked: a syscall's relative timeout becomes one of these when
     /// the call parks.
     | DeadlinePassed of nanosecondsSinceBoot : int64
+    /// A signal with a handler is deliverable to the task that waits: were it to
+    /// return to user mode now, it would run that handler.
+    ///
+    /// Names no kernel object, because what it asks about is the waiter itself:
+    /// a condition is always some task's, and `satisfied` is told whose. Every
+    /// park waits for it, since every sleep this library models is one a signal
+    /// interrupts; `SyscallInterruption.ofPark` says how the interrupted call
+    /// then ends.
+    | SignalDeliverable
 
 /// What a task parked in a syscall is waiting for: one primitive, or the first
 /// of several.
@@ -84,6 +93,7 @@ module WakeCondition =
     // A primitive that names a description no longer in the table has had its
     // wait broken underneath it: see `satisfied`.
     let private holds<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
         (primitive : WakePrimitive)
         (system : UnixSystem<'Task, 'Handler>)
         : bool
@@ -135,9 +145,11 @@ module WakeCondition =
                 failwith
                     $"WakeCondition.satisfied: a task is parked in an accept on open file description %O{listener}, which names %A{description.Target} rather than a socket (this is a bug in the caller that recorded it)."
         | WakePrimitive.DeadlinePassed deadline -> system.Machine.NanosecondsSinceBoot >= deadline
+        | WakePrimitive.SignalDeliverable -> SyscallInterruption.wakes task system
 
-    /// The primitives of `condition` which hold of `system`: empty exactly when
-    /// the syscall that parked on it would get no further now.
+    /// The primitives of `condition`, the wake condition of `task`, which hold of
+    /// `system`: empty exactly when the syscall that parked on it would get no
+    /// further now.
     ///
     /// A set rather than a yes or no so that the call which finishes the wait
     /// can tell *why* it woke — an event, or its deadline — which a real kernel
@@ -161,19 +173,20 @@ module WakeCondition =
     /// answering: the honest answers are "grantable", which wakes the task into
     /// an `EBADF` no kernel produces, and "not yet", which sleeps forever.
     let rec satisfied<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
         (condition : WakeCondition)
         (system : UnixSystem<'Task, 'Handler>)
         : Set<WakePrimitive>
         =
         match condition with
         | WakeCondition.Primitive primitive ->
-            if holds primitive system then
+            if holds task primitive system then
                 Set.singleton primitive
             else
                 Set.empty
         | WakeCondition.AnyOf (first, rest) ->
-            (satisfied first system, rest)
-            ||> List.fold (fun acc condition -> Set.union acc (satisfied condition system))
+            (satisfied task first system, rest)
+            ||> List.fold (fun acc condition -> Set.union acc (satisfied task condition system))
 
     /// Every deadline in `condition`, in nanoseconds since boot, one per
     /// `DeadlinePassed` it contains.
@@ -186,62 +199,71 @@ module WakeCondition =
         | WakeCondition.Primitive (WakePrimitive.FlockGrantable _)
         | WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable _)
         | WakeCondition.Primitive (WakePrimitive.DescriptorReady _)
-        | WakeCondition.Primitive (WakePrimitive.AcceptQueueNonEmpty _) -> []
+        | WakeCondition.Primitive (WakePrimitive.AcceptQueueNonEmpty _)
+        | WakeCondition.Primitive WakePrimitive.SignalDeliverable -> []
         | WakeCondition.AnyOf (first, rest) -> deadlines first @ List.collect deadlines rest
 
-    /// What the task holding `parked` is waiting for.
+    /// What the task holding `parked` is waiting for: what its syscall waits
+    /// for, or a signal (`WakePrimitive.SignalDeliverable`), whichever comes
+    /// first.
     ///
     /// The direction that generalises, and the one every reader of a park should
     /// use. A record is *richer* than its condition — a socket wait also carries
     /// the event count its finishing call will copy out with, which no condition
     /// mentions — so record to condition is total where condition to record is
-    /// not. The one record with no condition is a parked `poll` with no
-    /// descriptor to watch and no deadline, a wait only a signal could end; no
-    /// syscall here parks one, and this fails loudly on it.
+    /// not. A parked `poll` that watches no descriptor and has no deadline waits
+    /// for a signal alone.
     ///
     /// Deriving rather than storing the condition beside the record is what stops
     /// the two disagreeing: a client cannot park a task on one object while
     /// polling for another, because the thing polled *is* the thing parked on.
     let ofPark (parked : ParkedSyscall) : WakeCondition =
-        match parked with
-        | ParkedSyscall.Flock parked ->
-            WakeCondition.Primitive (WakePrimitive.FlockGrantable (parked.Requester, parked.Mode))
-        | ParkedSyscall.SocketWait wait ->
-            let deliverable =
-                WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable wait.Port)
+        let own : WakeCondition list =
+            match parked with
+            | ParkedSyscall.Flock parked ->
+                [
+                    WakeCondition.Primitive (WakePrimitive.FlockGrantable (parked.Requester, parked.Mode))
+                ]
+            | ParkedSyscall.SocketWait wait ->
+                let deliverable =
+                    WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable wait.Port)
 
-            match wait.Deadline with
-            | None -> deliverable
-            | Some deadline ->
-                WakeCondition.AnyOf (deliverable, [ WakeCondition.Primitive (WakePrimitive.DeadlinePassed deadline) ])
-        | ParkedSyscall.Poll poll ->
-            let watched =
-                poll.Entries
-                |> List.choose (fun entry ->
-                    match entry with
-                    | ParkedPollEntry.Ignored _ -> None
-                    | ParkedPollEntry.Watched (_, description, events) ->
-                        // Through `uint16`, so that a request with its top bit
-                        // set does not sign-extend into bits above `<poll.h>`.
-                        let conditions = uint32 (uint16 events) ||| EpollEvents.Err ||| EpollEvents.Hup
-                        Some (WakeCondition.Primitive (WakePrimitive.DescriptorReady (description, conditions)))
-                )
+                match wait.Deadline with
+                | None -> [ deliverable ]
+                | Some deadline ->
+                    [
+                        deliverable
+                        WakeCondition.Primitive (WakePrimitive.DeadlinePassed deadline)
+                    ]
+            | ParkedSyscall.Poll poll ->
+                let watched =
+                    poll.Entries
+                    |> List.choose (fun entry ->
+                        match entry with
+                        | ParkedPollEntry.Ignored _ -> None
+                        | ParkedPollEntry.Watched (_, description, events) ->
+                            // Through `uint16`, so that a request with its top bit
+                            // set does not sign-extend into bits above `<poll.h>`.
+                            let conditions = uint32 (uint16 events) ||| EpollEvents.Err ||| EpollEvents.Hup
+                            Some (WakeCondition.Primitive (WakePrimitive.DescriptorReady (description, conditions)))
+                    )
 
-            let deadline =
-                poll.Deadline
-                |> Option.map (WakePrimitive.DeadlinePassed >> WakeCondition.Primitive)
-                |> Option.toList
+                let deadline =
+                    poll.Deadline
+                    |> Option.map (WakePrimitive.DeadlinePassed >> WakeCondition.Primitive)
+                    |> Option.toList
 
-            match watched @ deadline with
-            | [] ->
-                failwith
-                    $"WakeCondition.ofPark: a parked poll with entries %A{poll.Entries} watches no descriptor and has no deadline, so nothing but a signal could end it, and this library parks no such poll (this is a bug in the caller that recorded it)."
-            | [ only ] -> only
-            | first :: rest -> WakeCondition.AnyOf (first, rest)
-        | ParkedSyscall.Accept accept ->
-            // No deadline: `SO_RCVTIMEO`, which bounds a Linux accept, is an
-            // option `setsockopt` refuses to set.
-            WakeCondition.Primitive (WakePrimitive.AcceptQueueNonEmpty accept.Listener)
+                watched @ deadline
+            | ParkedSyscall.Accept accept ->
+                // No deadline: `SO_RCVTIMEO`, which bounds a Linux accept, is an
+                // option `setsockopt` refuses to set.
+                [ WakeCondition.Primitive (WakePrimitive.AcceptQueueNonEmpty accept.Listener) ]
+
+        let signal = WakeCondition.Primitive WakePrimitive.SignalDeliverable
+
+        match own with
+        | [] -> signal
+        | first :: rest -> WakeCondition.AnyOf (first, rest @ [ signal ])
 
 /// What became of a request this kernel could answer, where "answer" may be
 /// "the calling task sleeps".
@@ -269,3 +291,11 @@ type SyscallOutcome =
     /// nothing. That advance is the whole reason blocking is an outcome here
     /// rather than a refusal, which by design carries no system at all.
     | WouldBlock of WakeCondition
+    /// The call was asleep, a signal with a handler interrupted it, and the call
+    /// restarts (`SyscallInterruption.Restart`): it never returns. The task is
+    /// no longer parked. Once the handlers have run, the client issues the call
+    /// again with the arguments it was first made with, descriptor numbers
+    /// included, as a real kernel re-executes it.
+    ///
+    /// Only a finishing call answers this, never the call as first made.
+    | Restarts

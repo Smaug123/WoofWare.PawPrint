@@ -1724,6 +1724,49 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // A signal interrupts the main thread's socket event wait, and
+                // the shim's EINTR loop leaves errno at EINTR when the wait then
+                // succeeds. Compared on every host: epoll_wait and kevent both
+                // fail with EINTR under SA_RESTART, and EINTR is 4 on both
+                // kernels, so the real runtime reports the same errno whichever
+                // kernel the host runs. The guest's comment says how it makes
+                // sure the wait is interrupted on the real runtime.
+                FileName = "SignalInterruptsSocketEventWait.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Always
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // A shim function a signal interrupts calls again with what it
+                // copied from the caller's memory before its loop: accept's
+                // length and poll's descriptors, rewritten by another thread
+                // while the call slept. Compared on every host: both shims copy,
+                // on both kernels.
+                FileName = "SignalRetryKeepsShimCopies.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Always
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // A socket event wait a signal interrupts is made again past the
+                // wrapper's screens, so a count rewritten to -1 meanwhile reaches
+                // epoll_wait, which answers EINVAL. Linux only: macOS's kevent
+                // answers a negative count with no events.
+                FileName = "SignalRetrySocketWaitCountLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // A blocked epoll_wait holds its port by file reference:
                 // closing the fd the wait went through, with a dup keeping
                 // the description alive, still delivers when the edge

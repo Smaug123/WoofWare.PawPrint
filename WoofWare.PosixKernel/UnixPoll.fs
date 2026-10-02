@@ -40,18 +40,14 @@ type PollRefusal =
     /// Reachable in a way epoll's equivalent is not: `epoll_ctl` screens the
     /// targets it will accept, and `poll(2)` accepts any descriptor.
     | UnmodelledTarget of fd : int
-    /// No entry carries anything, no entry names a descriptor, and the timeout
-    /// is negative, so a real `poll` sleeps until a signal interrupts it.
-    ///
-    /// Such a wait has nothing to wake on but a signal, and this library does
-    /// not deliver signals into a sleeping syscall, so it has no condition to
-    /// park on.
-    | UnendingWait of timeoutMilliseconds : int
     /// Nothing is ready, and the timeout ends past the last instant the
     /// machine's monotonic clock (`UnixMachineState.NanosecondsSinceBoot`,
     /// an `int64` of nanoseconds) can represent: `nanosecondsSinceBoot` plus
     /// `timeoutMilliseconds` overflows it.
     | DeadlineBeyondClock of nanosecondsSinceBoot : int64 * timeoutMilliseconds : int
+    /// The poll was asleep and a signal is pending for the task, and this
+    /// library will not say how the signal ends it.
+    | Interruption of SyscallInterruptionRefusal
 
 /// What became of a `poll(2)` this kernel could answer.
 [<RequireQualifiedAccess>]
@@ -60,6 +56,10 @@ type PollOutcome =
     /// flavour's own `<poll.h>` numbering, and the return value, which counts
     /// the entries carrying anything.
     | Answered of revents : int16 list * count : int
+    /// `poll` failed with this errno. Only a finishing call answers this: a
+    /// poll that was asleep fails with `EINTR` when a signal with a handler
+    /// interrupts it.
+    | Failed of error : UnixError
     /// `poll` did not return. The calling task is parked, and sleeps until
     /// `WakeCondition.satisfied` of this condition is non-empty; then
     /// `UnixPoll.finishPoll` finishes the call.
@@ -77,8 +77,7 @@ module PollRefusal =
             $"fd %d{fd} names a socket event port, which this kernel does not answer `poll(2)` for. Linux answers it by re-polling the port's ready list, as `epoll_wait` does, and what that walk leaves in the list is unmeasured; model that before answering."
         | PollRefusal.DeadlineBeyondClock (now, timeoutMilliseconds) ->
             $"the machine has been up for %d{now} ns and the timeout is %d{timeoutMilliseconds}ms, which ends past the last nanosecond the monotonic clock can represent. Linux's source saturates such a deadline, making the wait infinite, but that is unmeasured."
-        | PollRefusal.UnendingWait timeoutMilliseconds ->
-            $"no entry names a descriptor and the timeout is %d{timeoutMilliseconds}ms, which `poll(2)` reads as infinite, so a real poll sleeps until a signal interrupts it. This library delivers no signal into a sleeping syscall, so nothing could end the wait."
+        | PollRefusal.Interruption refusal -> SyscallInterruptionRefusal.describe refusal
 
 /// What a wait for socket events settles before it can either deliver or sleep:
 /// `epoll_wait(2)`'s screens under one flavour, `kevent(2)`'s under the other.
@@ -96,7 +95,8 @@ type SocketWaitAdmission =
     ///
     /// The one input on which the flavours disagree about whether the call
     /// blocks at all: measured, `kevent(kq, NULL, 0, evs, 0, NULL)` returns 0
-    /// immediately where `epoll_wait` with `maxevents == 0` is EINVAL.
+    /// immediately, as it does for any negative count, where `epoll_wait` with
+    /// `maxevents <= 0` is EINVAL.
     | NoEvents
     /// The call reaches the port: take up to `maxEvents` events off it, and
     /// sleep if that delivers nothing.
@@ -147,7 +147,11 @@ module EpollCreateRefusal =
 /// What became of an `epoll_wait(2)` this kernel could answer.
 [<RequireQualifiedAccess>]
 type EpollWaitOutcome =
-    /// `epoll_wait` failed with this errno, and changed nothing.
+    /// `epoll_wait` failed with this errno.
+    ///
+    /// The call as first made changes nothing when it fails. A finishing call
+    /// fails only with `EINTR`, when a signal with a handler interrupts the
+    /// wait, and what its walk of the port consumed stays consumed.
     | Failed of error : UnixError
     /// `epoll_wait` returned these events, in delivery order: each the
     /// registration's `data` and the `events` written for it, in Linux's
@@ -180,6 +184,9 @@ type EpollWaitRefusal =
     /// `int64` of nanoseconds) can represent: `nanosecondsSinceBoot` plus
     /// `timeoutMilliseconds` overflows it.
     | DeadlineBeyondClock of nanosecondsSinceBoot : int64 * timeoutMilliseconds : int
+    /// The wait was asleep and a signal is pending for the task, and this
+    /// library will not say how the signal ends it.
+    | Interruption of SyscallInterruptionRefusal
 
 [<RequireQualifiedAccess>]
 module EpollWaitRefusal =
@@ -194,6 +201,7 @@ module EpollWaitRefusal =
             $"the socket event port %O{port} has events to deliver, so this call copies them out -- but the buffer is unmapped, so that copy faults. Which of the events the walk took stay pending after the fault, and whether the call answers EFAULT or the count copied before it, are unmeasured."
         | EpollWaitRefusal.DeadlineBeyondClock (now, timeoutMilliseconds) ->
             $"the machine has been up for %d{now} ns and the timeout is %d{timeoutMilliseconds}ms, which ends past the last nanosecond the monotonic clock can represent. Linux's source saturates such a deadline, making the wait infinite, but that is unmeasured."
+        | EpollWaitRefusal.Interruption refusal -> SyscallInterruptionRefusal.describe refusal
 
 /// The `event` argument of `epoll_ctl(2)`, as the kernel's copy-in finds it.
 ///
@@ -359,10 +367,7 @@ module UnixPoll =
     /// client needs this only for `kevent(2)`, whose wait this library does not
     /// yet answer as a call of its own.
     ///
-    /// `maxEvents` must not be negative. Neither kernel is ever asked one -- a
-    /// foreign-function layer that reads it out of a caller's cell screens it
-    /// there -- so a caller that has not is asking a question this library has no
-    /// answer for.
+    /// A negative `maxEvents` is answered as 0 is, by both kernels.
     ///
     /// Each ordering is measured, on Linux 6.18.5 and Darwin 25.6.0, rather than
     /// read off the kernel sources: the widely-reproduced `do_epoll_wait` listing
@@ -378,10 +383,6 @@ module UnixPoll =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SocketWaitAdmission, SocketWaitRefusal>
         =
-        if maxEvents < 0 then
-            failwith
-                $"UnixPoll.admitSocketWait: maxEvents %d{maxEvents} is negative, which neither kernel is ever asked -- the layer that reads it out of the caller's cell answers for a negative itself. Screen this in the client (this is a bug in the caller)."
-
         let openFile =
             FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors
 
@@ -397,9 +398,9 @@ module UnixPoll =
             let architecture = SimulatedUnixPlatform.architecture system.Machine.UnixPlatform
 
             // The kernel's predicate is `maxevents <= 0 || maxevents > EP_MAX_EVENTS`.
-            // Zero is the only non-positive value that reaches here, negatives
-            // having been screened by the caller.
-            if maxEvents = 0 || maxEvents > LinuxEpollLimits.maxEvents architecture then
+            // Measured (`epoll-wait.c`, section G): a negative maxevents is
+            // screened exactly as zero is.
+            if maxEvents <= 0 || maxEvents > LinuxEpollLimits.maxEvents architecture then
                 Ok (SocketWaitAdmission.Failed UnixError.EINVAL)
             else
 
@@ -463,7 +464,9 @@ module UnixPoll =
                 Ok (SocketWaitAdmission.Failed UnixError.EBADF)
             | OpenFileTarget.SocketEventPort portState ->
 
-            if maxEvents = 0 then
+            // Measured on 27.0.0 (`kevent-negative-count.c`): a negative
+            // `nevents` returns 0 at once, as zero does, whatever the port holds.
+            if maxEvents <= 0 then
                 Ok SocketWaitAdmission.NoEvents
             else
 
@@ -871,9 +874,9 @@ module UnixPoll =
     /// descriptor becomes ready or `milliseconds` have passed on the machine's
     /// monotonic clock, whichever is first; at the deadline and not before, the
     /// call finishes with 0. A negative timeout of any size is infinite. A wait
-    /// with nothing to watch and no deadline is refused, since only a signal
-    /// could end it. A foreign-function layer that screens some negative values
-    /// itself does that before calling.
+    /// with nothing to watch and no deadline parks until a signal ends it. A
+    /// foreign-function layer that screens some negative values itself does
+    /// that before calling.
     ///
     /// A poll with anything ready is answered at every timeout: an entry
     /// carrying anything at all -- a requested `IN`/`OUT`, an unrequested
@@ -947,18 +950,6 @@ module UnixPoll =
         | Error () -> Error (PollRefusal.DeadlineBeyondClock (now, milliseconds))
         | Ok deadline ->
 
-        let watchesNothing =
-            parkedEntries
-            |> List.forall (fun entry ->
-                match entry with
-                | ParkedPollEntry.Ignored _ -> true
-                | ParkedPollEntry.Watched _ -> false
-            )
-
-        if watchesNothing && deadline.IsNone then
-            Error (PollRefusal.UnendingWait milliseconds)
-        else
-
         let parked =
             ParkedSyscall.Poll
                 {
@@ -978,10 +969,11 @@ module UnixPoll =
     /// the call went to sleep on.
     ///
     /// Answers the count when any entry carries anything, whether or not the
-    /// deadline has passed too; 0, with every `revents` 0, when only the
-    /// deadline has; and otherwise re-parks the task on the same entries and
-    /// deadline, since whatever woke it has gone again. An answer clears the
-    /// park.
+    /// deadline has passed or a signal is pending too; `Failed EINTR` when a
+    /// signal with a handler interrupts it, whether or not the deadline has
+    /// passed; 0, with every `revents` 0, when only the deadline has; and
+    /// otherwise re-parks the task on the same entries and deadline, since
+    /// whatever woke it has gone again. An answer clears the park.
     ///
     /// `task` must be parked in a `poll`.
     let finishPoll<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -1036,12 +1028,30 @@ module UnixPoll =
             | Some deadline -> system.Machine.NanosecondsSinceBoot >= deadline
             | None -> false
 
-        if triggered > 0 || timedOut then
-            let finished =
-                { system with
-                    Tasks = UnixTaskTable.unpark task system.Tasks
-                }
+        let finished =
+            { system with
+                Tasks = UnixTaskTable.unpark task system.Tasks
+            }
 
+        // Measured on Linux 6.18.5 (`signal-interrupt-requeue.c`, sections D
+        // and E), with the sleeper held off the CPU until both held: a ready
+        // descriptor beats a pending signal, and a pending signal beats an
+        // expired deadline, whichever came first.
+        if triggered > 0 then
+            SyscallInterruption.beforeCompleting task system
+            |> Result.mapError PollRefusal.Interruption
+            |> Result.map (fun () -> PollOutcome.Answered (reported, triggered), finished)
+        else
+
+        match SyscallInterruption.ofPark task system with
+        | Error refusal -> Error (PollRefusal.Interruption refusal)
+        | Ok (Some SyscallInterruption.Eintr) -> Ok (PollOutcome.Failed UnixError.EINTR, finished)
+        | Ok (Some SyscallInterruption.Restart) ->
+            failwith
+                "UnixPoll.finishPoll: a poll restarted after a signal, where `SyscallInterruption.ruleOf` says a poll never restarts (this is a bug in this library)."
+        | Ok None ->
+
+        if timedOut then
             Ok (PollOutcome.Answered (reported, triggered), finished)
         else
             let parkedAgain = ParkedSyscall.Poll parked
@@ -1177,18 +1187,7 @@ module UnixPoll =
         | SimulatedUnixFlavour.Darwin -> Error (EpollWaitRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin)
         | SimulatedUnixFlavour.Linux ->
 
-        let admission =
-            if maxEvents < 0 then
-                // Measured (`epoll-wait.c`, section G): a negative maxevents is
-                // screened exactly as zero is, EBADF ahead of it and it ahead of
-                // both the buffer and the kind of descriptor.
-                match FileDescriptorRegistry.tryFindId epfd system.Process.FileDescriptors with
-                | None -> Ok (SocketWaitAdmission.Failed UnixError.EBADF)
-                | Some _ -> Ok (SocketWaitAdmission.Failed UnixError.EINVAL)
-            else
-                admitSocketWait epfd maxEvents buffer system
-
-        match admission with
+        match admitSocketWait epfd maxEvents buffer system with
         | Error (SocketWaitRefusal.Buffer refusal) -> Error (EpollWaitRefusal.Buffer refusal)
         | Ok (SocketWaitAdmission.Failed error) -> Ok (EpollWaitOutcome.Failed error, system)
         | Ok SocketWaitAdmission.NoEvents ->
@@ -1220,18 +1219,20 @@ module UnixPoll =
     /// call holds the port's open file description, and `close` refuses to
     /// destroy a description a parked wait holds.
     ///
-    /// Answers the events it finds, whether or not the deadline has passed too
-    /// (measured, `epoll-wait.c` section E: an event and an expired deadline
-    /// both holding as the waiter runs report the event); no events when only
-    /// the deadline has; and otherwise re-parks the task on the same port and
-    /// deadline, since whatever woke it has gone again. A re-park goes to the
-    /// back of park order, which puts it first in line for the port's next
-    /// event. An answer clears the park.
+    /// Answers the events it finds, whether or not the deadline has passed or a
+    /// signal is pending too (measured, `epoll-wait.c` section E: an event and
+    /// an expired deadline both holding as the waiter runs report the event);
+    /// no events when the deadline has passed, whether or not a signal is
+    /// pending; `Failed EINTR` when a signal with a handler interrupts it; and
+    /// otherwise re-parks the task on the same port and deadline, since
+    /// whatever woke it has gone again. A re-park goes to the back of park
+    /// order, which puts it first in line for the port's next event. An answer
+    /// clears the park.
     ///
     /// Delivering events copies them out to the buffer the call was made with;
     /// see `epollWait` for the buffers that refuses.
     ///
-    /// Never answers `Failed`. `task` must be parked in a socket event wait.
+    /// `task` must be parked in a socket event wait.
     let finishSocketWait<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
@@ -1254,13 +1255,26 @@ module UnixPoll =
             | Some deadline -> system.Machine.NanosecondsSinceBoot >= deadline
             | None -> false
 
+        let finished =
+            { system with
+                Tasks = UnixTaskTable.unpark task system.Tasks
+            }
+
+        // Measured on Linux 6.18.5 (`signal-interrupt-requeue.c`, sections D
+        // and E), with the sleeper held off the CPU until both held: an event
+        // beats a pending signal, and so does an expired deadline, whichever
+        // came first.
         if not (List.isEmpty delivered) || timedOut then
-            copyOut parked.Port parked.Buffer delivered
-            |> Result.map (fun () ->
-                EpollWaitOutcome.Answered delivered,
-                { system with
-                    Tasks = UnixTaskTable.unpark task system.Tasks
-                }
-            )
+            SyscallInterruption.beforeCompleting task system
+            |> Result.mapError EpollWaitRefusal.Interruption
+            |> Result.bind (fun () -> copyOut parked.Port parked.Buffer delivered)
+            |> Result.map (fun () -> EpollWaitOutcome.Answered delivered, finished)
         else
-            Ok (parkSocketWait task parked.Port parked.MaxEvents parked.Buffer parked.Deadline system)
+
+        match SyscallInterruption.ofPark task system with
+        | Error refusal -> Error (EpollWaitRefusal.Interruption refusal)
+        | Ok (Some SyscallInterruption.Eintr) -> Ok (EpollWaitOutcome.Failed UnixError.EINTR, finished)
+        | Ok (Some SyscallInterruption.Restart) ->
+            failwith
+                "UnixPoll.finishSocketWait: a socket event wait restarted after a signal, where `SyscallInterruption.ruleOf` says one never restarts (this is a bug in this library)."
+        | Ok None -> Ok (parkSocketWait task parked.Port parked.MaxEvents parked.Buffer parked.Deadline system)

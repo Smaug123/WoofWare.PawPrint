@@ -425,10 +425,17 @@ module TestPollEventsPal =
                     let expected = fds |> List.map (fun fd -> sixBitProjection pal system fd palEvents)
                     let expectedCount = expected |> List.filter (fun r -> r <> 0s) |> List.length
 
-                    match PollEventsPal.poll poller (fds |> List.map (fun fd -> fd, palEvents)) 0 system with
+                    match
+                        PollEventsPal.pollConverted
+                            poller
+                            (PollEventsPal.convert (fds |> List.map (fun fd -> fd, palEvents)))
+                            0
+                            system
+                    with
                     | Error refusal -> yield $"PAL events 0x%04x{raw}: refused: %s{PollRefusal.describe refusal}"
                     | Ok (PollOutcome.WouldBlock condition, _) ->
                         yield $"PAL events 0x%04x{raw}: parked at timeout 0 on %A{condition}"
+                    | Ok (PollOutcome.Failed error, _) -> yield $"PAL events 0x%04x{raw}: failed with %O{error}"
                     | Ok (PollOutcome.Answered (reported, count), _) ->
                         for fd, expected, reported in List.zip3 fds expected reported do
                             if expected <> reported then

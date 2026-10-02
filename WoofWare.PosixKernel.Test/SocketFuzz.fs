@@ -566,6 +566,9 @@ module SocketFuzz =
             | Error refusal -> raise (ModelRefusal $"poll of fd %d{fd} refused: %s{PollRefusal.describe refusal}")
             | Ok (PollOutcome.WouldBlock condition, _) ->
                 failwith $"INTERPRETER-DRIVER BUG: a poll at timeout 0 parked on %A{condition}."
+            | Ok (PollOutcome.Failed error, _) ->
+                failwith
+                    $"INTERPRETER-DRIVER BUG: a poll at timeout 0 failed with %A{error}, which only a finishing call answers."
             | Ok (PollOutcome.Answered ([ reported ], _), _) -> $"<%s{pollMaskString reported}>", state
             | Ok (PollOutcome.Answered (reported, _), _) ->
                 failwith $"INTERPRETER-DRIVER BUG: one poll entry was answered with %d{List.length reported} reports."
