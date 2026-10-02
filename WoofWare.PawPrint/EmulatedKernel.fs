@@ -825,9 +825,10 @@ type EmulatedKernelDefect =
     /// A thread exists with no task, so anything asking the kernel which
     /// processor it runs on or what OS thread id it reports would crash.
     | ThreadWithoutTask of thread : ThreadId
-    /// A task exists for a thread that does not, or that has terminated, so its
-    /// processor placement and OS thread id are held for a thread that can never
-    /// read them.
+    /// A task exists for a thread that does not, that has not been started, or
+    /// that has terminated: for a thread with no OS thread, so its processor
+    /// placement and OS thread id are held for a thread that cannot read them,
+    /// and an id is spent that a later thread should have had.
     | TaskWithoutThread of thread : ThreadId
     /// A thread is parked in `ThreadStatus.BlockedInSyscall` but its task records
     /// no park, so nothing says what it is waiting for: no sweep can decide
@@ -1665,36 +1666,31 @@ module EmulatedKernel =
                 $"EmulatedKernel.abort: %O{thread} raised SIGABRT at its default disposition, and the process did not die of it: %O{other}"
 
     /// Check that the kernel has a task for exactly the threads in `threads`
-    /// that have not terminated, and that each task's park agrees with its
-    /// thread's status.
+    /// that have an OS thread (`ThreadStatus.hasOsThread`: started, and not
+    /// terminated), and that each task's park agrees with its thread's status.
     ///
-    /// `threads` is every thread with its status, terminated ones included.
-    /// Separate from `checkInvariants`, and taking the threads as an argument,
-    /// because `EmulatedKernel` compiles before `IlMachineState` and so cannot
-    /// reach `ThreadState` to ask. Callers that have both should call both.
+    /// `threads` is every thread with its status, unstarted and terminated ones
+    /// included. Separate from `checkInvariants`, and taking the threads as an
+    /// argument, because `EmulatedKernel` compiles before `IlMachineState` and so
+    /// cannot reach `ThreadState` to ask. Callers that have both should call both.
     ///
-    /// A thread's task is spawned when the thread is created and leaves the table
-    /// when it terminates (`Scheduler.onThreadTerminated`), so this catches a
-    /// thread created without a task, a task spawned for a thread that was never
-    /// created, and a thread that terminated without the kernel being told.
+    /// A guest thread's task is spawned when the guest starts it
+    /// (`IlMachineState.startUnstartedThread`), the signal dispatcher's when it is
+    /// created, and a task leaves the table when its thread terminates
+    /// (`Scheduler.onThreadTerminated`). So this catches a thread started without
+    /// a task, a task spawned for a thread that was never created or not yet
+    /// started, and a thread that terminated without the kernel being told.
     ///
     /// The leader's task is the exception to the first half: `create` makes it
     /// with the kernel, before `IlMachineState.addThread` makes its thread, so
     /// until then this reports it as a task with no thread.
-    ///
-    /// A `NotStarted` thread has a task too, although a real process has no
-    /// kernel task for a thread that has not been started: PawPrint spawns a
-    /// guest thread's task when the guest constructs its `Thread`, not when it
-    /// starts it.
-    /// That stays so until stage 4 of the process-lifecycle plan moves
-    /// registration to `Start`, which will narrow this check to started threads.
     let checkTaskInvariants
         (threads : Map<ThreadId, ThreadStatus>)
         (kernel : EmulatedKernel)
         : EmulatedKernelDefect list
         =
         let liveThreads =
-            threads |> Map.filter (fun _ status -> status <> ThreadStatus.Terminated)
+            threads |> Map.filter (fun _ status -> ThreadStatus.hasOsThread status)
 
         // The comparison is the library's; naming the two failures is this
         // kernel's, because `EmulatedKernelDefect` is PawPrint's vocabulary.

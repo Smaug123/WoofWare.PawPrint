@@ -208,14 +208,31 @@ module TestSocketWait =
             admit darwinFd count UserBuffer.Mapped darwin
             |> shouldEqual (SocketWaitAdmission.DeliverOrWait (OpenFileDescriptionId 3L, count))
 
+    /// A negative count is answered as 0 is: epoll's EINVAL behind the
+    /// descriptor's EBADF (measured, `epoll-wait.c` section G), and kqueue's
+    /// immediate return with no events (measured, `kevent-negative-count.c`).
+    /// A shim that calls the wait again after a signal reads its count afresh,
+    /// unscreened, so either kernel can be asked one.
     [<TestCaseSource(nameof platforms)>]
-    let ``a negative event count is a caller bug`` (platform : SimulatedUnixPlatform) : unit =
+    let ``a negative event count is answered as zero is`` (platform : SimulatedUnixPlatform) : unit =
         let fd, system = withPort (systemOn platform)
 
-        let e =
-            Assert.Throws<exn> (fun () -> UnixPoll.admitSocketWait fd -1 UserBuffer.Mapped system |> ignore<_>)
+        for descriptor in [ fd ; 99 ] do
+            for buffer in [ UserBuffer.Mapped ; wild ] do
+                let zero = admit descriptor 0 buffer system
 
-        e.Message |> shouldContainText "is negative, which neither kernel is ever asked"
+                for count in [ -1 ; -2 ; System.Int32.MinValue ] do
+                    admit descriptor count buffer system |> shouldEqual zero
+
+        admit 99 -1 UserBuffer.Mapped system
+        |> shouldEqual (SocketWaitAdmission.Failed UnixError.EBADF)
+
+        admit fd -1 UserBuffer.Mapped system
+        |> shouldEqual (
+            match SimulatedUnixPlatform.flavour platform with
+            | SimulatedUnixFlavour.Linux -> SocketWaitAdmission.Failed UnixError.EINVAL
+            | SimulatedUnixFlavour.Darwin -> SocketWaitAdmission.NoEvents
+        )
 
     // ------------------------------------------------------------------
     // The buffer

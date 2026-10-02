@@ -179,6 +179,7 @@ module TestAccept =
         match acceptOrFail fd UserBuffer.Mapped 16 system with
         | AcceptOutcome.Failed error, _ -> failwith $"expected an accept, got %O{error}"
         | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
+        | AcceptOutcome.Restarts, _ -> failwith "expected an accept, but the call restarted"
         | AcceptOutcome.Accepted (acceptedFd, peer, reportedLength), system ->
 
         peer |> shouldEqual (loopback 40000us)
@@ -228,6 +229,7 @@ module TestAccept =
         match acceptOrFail fd UserBuffer.Mapped 16 system with
         | AcceptOutcome.Failed error, _ -> failwith $"expected an accept, got %O{error}"
         | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
+        | AcceptOutcome.Restarts, _ -> failwith "expected an accept, but the call restarted"
         | AcceptOutcome.Accepted (acceptedFd, _, _), system ->
 
         let acceptedId =
@@ -248,6 +250,7 @@ module TestAccept =
                     match acceptOrFail fd UserBuffer.Mapped 16 system with
                     | AcceptOutcome.Failed error, _ -> failwith $"expected an accept, got %O{error}"
                     | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
+                    | AcceptOutcome.Restarts, _ -> failwith "expected an accept, but the call restarted"
                     | AcceptOutcome.Accepted (_, peer, _), system -> peers @ [ peer ], system
                 )
                 ([], system)
@@ -269,6 +272,7 @@ module TestAccept =
             match acceptOrFail fd UserBuffer.Mapped declaredLength system with
             | AcceptOutcome.Failed error, _ -> failwith $"expected an accept at %d{declaredLength}, got %O{error}"
             | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
+            | AcceptOutcome.Restarts, _ -> failwith "expected an accept, but the call restarted"
             | AcceptOutcome.Accepted (_, _, reportedLength), _ -> reportedLength |> shouldEqual 16
 
     /// A call that writes nothing never looks at the destination, so every
@@ -288,6 +292,7 @@ module TestAccept =
             match acceptOrFail fd destination 0 system with
             | AcceptOutcome.Failed error, _ -> failwith $"expected an accept through %A{destination}, got %O{error}"
             | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
+            | AcceptOutcome.Restarts, _ -> failwith "expected an accept, but the call restarted"
             | AcceptOutcome.Accepted (_, _, reportedLength), system ->
 
             reportedLength |> shouldEqual 16
@@ -473,9 +478,11 @@ module TestAccept =
         | Ok (AcceptOutcome.WouldBlock condition, _) ->
             condition
             |> shouldEqual (
-                WakeCondition.Primitive (
-                    WakePrimitive.AcceptQueueNonEmpty (
-                        FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors |> Option.get
+                Interruptible.condition (
+                    WakeCondition.Primitive (
+                        WakePrimitive.AcceptQueueNonEmpty (
+                            FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors |> Option.get
+                        )
                     )
                 )
             )
@@ -584,6 +591,7 @@ module TestAccept =
         match acceptOrFail fd UserBuffer.Mapped 16 system with
         | AcceptOutcome.Failed error, _ -> failwith $"expected an accept, got %O{error}"
         | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
+        | AcceptOutcome.Restarts, _ -> failwith "expected an accept, but the call restarted"
         | AcceptOutcome.Accepted (acceptedFd, _, _), system ->
 
         (acceptedDescription acceptedFd system).NonBlocking |> shouldEqual inherits
@@ -599,6 +607,7 @@ module TestAccept =
         match acceptOrFail fd UserBuffer.Mapped 16 system with
         | AcceptOutcome.Failed error, _ -> failwith $"expected an accept, got %O{error}"
         | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
+        | AcceptOutcome.Restarts, _ -> failwith "expected an accept, but the call restarted"
         | AcceptOutcome.Accepted (acceptedFd, _, _), system ->
 
         (acceptedDescription acceptedFd system).NonBlocking |> shouldEqual false
@@ -633,6 +642,7 @@ module TestAccept =
         match acceptOrFail duplicate UserBuffer.Mapped 16 system with
         | AcceptOutcome.Failed error, _ -> failwith $"expected an accept, got %O{error}"
         | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
+        | AcceptOutcome.Restarts, _ -> failwith "expected an accept, but the call restarted"
         | AcceptOutcome.Accepted (acceptedFd, _, _), system ->
 
         (acceptedDescription acceptedFd system).NonBlocking |> shouldEqual inherits

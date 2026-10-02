@@ -1049,7 +1049,12 @@ module TestSignalDispatch =
         // Which thread takes a signal sent to the process is the kernel's
         // answer, and it is the leader: not the lowest-numbered thread that
         // happens to be running, so no other thread's status enters into it.
-        for sibling in [ ThreadStatus.Terminated ; ThreadStatus.NotStarted ; ThreadStatus.Runnable ] do
+        for sibling in
+            [
+                ThreadStatus.Terminated
+                ThreadStatus.NotStarted (CpuId 0)
+                ThreadStatus.Runnable
+            ] do
             let state, dispatcher, _ = preparedState ()
 
             let state' =

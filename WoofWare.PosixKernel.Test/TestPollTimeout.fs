@@ -310,13 +310,18 @@ module TestPollTimeout =
         | other -> failwith $"expected an answer, got %A{other}"
 
     [<Test>]
-    let ``a wait with nothing to watch and no deadline is refused`` () : unit =
-        // `poll(NULL, 0, -1)` sleeps until a signal, which this library does not
-        // deliver into a sleeping syscall.
+    let ``a wait with nothing to watch and no deadline sleeps until a signal`` () : unit =
+        // `poll(NULL, 0, -1)` sleeps until a signal interrupts it.
         for entries in [ [] ; [ entry -1 pollIn ] ; [ entry -5 pollIn ; entry -1 0s ] ] do
             for milliseconds in [ -1 ; System.Int32.MinValue ] do
-                UnixPoll.poll task entries milliseconds idle
-                |> shouldEqual (Error (PollRefusal.UnendingWait milliseconds))
+                match UnixPoll.poll task entries milliseconds idle with
+                | Ok (PollOutcome.WouldBlock condition, parked) ->
+                    condition
+                    |> shouldEqual (WakeCondition.Primitive WakePrimitive.SignalDeliverable)
+
+                    UnixWait.wakes (Set.singleton task) parked |> shouldEqual []
+                    UnixWait.deadlines (Set.singleton task) parked |> shouldEqual []
+                | other -> failwith $"expected the poll to sleep, got %A{other}"
 
     [<Test>]
     let ``a deadline past the clock's range is refused, and one just inside it parks`` () : unit =
@@ -341,7 +346,7 @@ module TestPollTimeout =
         let condition, parked = parks [ entry -1 pollIn ] 3 idle
 
         condition
-        |> shouldEqual (WakeCondition.Primitive (WakePrimitive.DeadlinePassed 3_000_000L))
+        |> shouldEqual (Interruptible.condition (WakeCondition.Primitive (WakePrimitive.DeadlinePassed 3_000_000L)))
 
         let reported, count, _ = parked |> after 3_000_000L |> finishes
         reported |> shouldEqual [ 0s ]

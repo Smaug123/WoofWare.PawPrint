@@ -1,6 +1,5 @@
 namespace WoofWare.PawPrint.Test
 
-open System.Collections.Immutable
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -13,7 +12,7 @@ open WoofWare.PosixKernel
 /// guess and a shared OS thread id silently breaks `System.Threading.Lock`.
 /// They are now fields of a `UnixTaskState` in the kernel, and the guarantee
 /// that replaces compile-time totality is that a key is never absent — one task
-/// per live thread, minted at creation.
+/// per thread with an OS thread, minted when the thread is started.
 ///
 /// These are the rows that hold the replacement guarantee up. Without them the
 /// move traded a property the compiler enforced for one nothing checks.
@@ -21,57 +20,10 @@ open WoofWare.PosixKernel
 [<Parallelizable(ParallelScope.All)>]
 module TestTaskState =
 
-    let private corelib : DumpedAssembly =
-        let corelibPath = typeof<obj>.Assembly.Location
-        let _, loggerFactory = LoggerFactory.makeTest ()
-        Assembly.readFile loggerFactory corelibPath
-
     /// A machine before `addThread` has given the leader its thread.
-    let private bare () : IlMachineState =
-        let _, loggerFactory = LoggerFactory.makeTest ()
-        IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
+    let private bare () : IlMachineState = ThreadFixtures.bare ()
 
-    let private baseClassTypes : BaseClassTypes<DumpedAssembly> =
-        BaseClassTypes.ofCorelib corelib
-
-    /// A frame on any concrete method: nothing reads its instructions, only that
-    /// `addThread` has something to start the thread on.
-    let private aFrame (state : IlMachineState) : IlMachineState * MethodState =
-        let _, loggerFactory = LoggerFactory.makeTest ()
-
-        let objectToString =
-            baseClassTypes.Object.Methods
-            |> List.find (fun method -> method.Name = "ToString" && (MethodInfo.arity method = 0))
-
-        let state, signature =
-            IlMachineState.concretizeMethodSignature
-                loggerFactory
-                baseClassTypes
-                state
-                corelib.DefinitionFullName
-                ImmutableArray.Empty
-                ImmutableArray.Empty
-                objectToString.Signature
-
-        let method =
-            objectToString
-            |> MethodInfo.mapTypeGenerics (fun _ -> failwith "System.Object::ToString is not type-generic")
-            |> MethodInfo.mapMethodGenerics (fun _ _ -> failwith "System.Object::ToString is not method-generic")
-            |> MethodInfo.setMethodVars (MethodBody.Il (MethodInstructions.onlyRet ())) signature
-
-        match
-            MethodState.Empty
-                state.TypeSystem.ConcreteTypes
-                baseClassTypes
-                state.TypeSystem._LoadedAssemblies
-                corelib
-                method
-                ImmutableArray.Empty
-                (ImmutableArray.Create (CliType.ObjectRef None))
-                None
-        with
-        | Ok methodState -> state, methodState
-        | Error missing -> failwith $"unexpected missing assembly references creating frame: %O{missing}"
+    let private aFrame (state : IlMachineState) : IlMachineState * MethodState = ThreadFixtures.aFrame state
 
     /// A machine whose leader has its thread, as `Program` leaves it before `Main` runs.
     let private machine () : IlMachineState =
@@ -104,13 +56,16 @@ module TestTaskState =
         agrees state
 
     [<Test>]
-    let ``an unstarted guest thread gets a task`` () : unit =
-        let state, thread =
-            machine ()
-            |> IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1)
+    let ``a guest thread gets its task when it is started, not when it is constructed`` () : unit =
+        let constructed, thread =
+            machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
 
-        agrees state
+        agrees constructed
         thread |> shouldEqual (ThreadId 1)
+        Map.containsKey thread constructed.Kernel.Tasks |> shouldEqual false
+
+        let state = ThreadFixtures.start (ThreadId 0) thread constructed
+        agrees state
 
         // The id after the leader's, which is the process ID.
         UnixTaskTable.osThreadIdOf thread state.Kernel.Tasks
@@ -118,6 +73,48 @@ module TestTaskState =
         |> shouldEqual 4243UL
 
         UnixTaskTable.parkedFor thread state.Kernel.Tasks |> shouldEqual None
+
+    [<Test>]
+    let ``a task for a thread that has not been started is refused`` () : unit =
+        // A real process has no task for a `Thread` it has constructed and not started:
+        // CoreCLR creates the OS thread in `Start`. A task here would also spend an id that
+        // the next thread to start should have had.
+        let state, thread =
+            machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
+
+        let haunted = state.MapKernel (KernelTasks.ensure thread)
+
+        EmulatedKernel.checkTaskInvariants (threads haunted) haunted.Kernel
+        |> shouldEqual [ EmulatedKernelDefect.TaskWithoutThread thread ]
+
+    [<Test>]
+    let ``the thread that starts a thread creates its task`` () : unit =
+        // The kernel's `clone` is made by the thread calling `Start`, so the new task inherits
+        // that thread's signal mask. A starter inside a signal handler is refused, because a
+        // mask is held only as handler frames here; so the refusal names the starter, and
+        // another thread can start a thread meanwhile.
+        let state, starter =
+            machine ()
+            |> ThreadFixtures.constructAndStart (ThreadId 0) (ManagedHeapAddress 1)
+
+        let state, first =
+            IlMachineState.allocateUnstartedThread (ManagedHeapAddress 2) state
+
+        let state, second =
+            IlMachineState.allocateUnstartedThread (ManagedHeapAddress 3) state
+
+        let inHandler =
+            state.MapKernel (SignalFrames.enter starter (Set.singleton Signal.SIGUSR1))
+
+        let exn =
+            Assert.Throws<exn> (fun () -> ThreadFixtures.start starter first inHandler |> ignore<IlMachineState>)
+
+        exn.Message
+        |> shouldContainText $"task %O{starter} creates a thread from inside a signal handler"
+
+        ThreadFixtures.start (ThreadId 0) second inHandler
+        |> fun state -> Map.containsKey second state.Kernel.Tasks
+        |> shouldEqual true
 
     [<Test>]
     let ``a parked interpreter thread gets a task too`` () : unit =
@@ -137,12 +134,12 @@ module TestTaskState =
         let state = machine ()
 
         let state, _ =
-            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1) state
+            ThreadFixtures.constructAndStart (ThreadId 0) (ManagedHeapAddress 1) state
 
         let state, parked = IlMachineState.allocateParkedThread (ThreadId 0) state
 
         let state, _ =
-            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 2) state
+            ThreadFixtures.constructAndStart (ThreadId 0) (ManagedHeapAddress 2) state
 
         agrees state
         state.Kernel.Tasks.Count |> shouldEqual (Map.count state.ThreadState)
@@ -161,15 +158,22 @@ module TestTaskState =
         |> shouldEqual true
 
     [<Test>]
-    let ``guest threads take successive cores in the rotation`` () : unit =
+    let ``guest threads take successive cores in the rotation, in construction order`` () : unit =
         let state =
             (machine ()).MapKernel (EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount 4))
 
         let state, first =
-            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1) state
+            IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1) state
 
         let state, second =
-            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 2) state
+            IlMachineState.allocateUnstartedThread (ManagedHeapAddress 2) state
+
+        // Started in the reverse order, so that a placement chosen at the start would
+        // swap the two.
+        let state =
+            state
+            |> ThreadFixtures.start (ThreadId 0) second
+            |> ThreadFixtures.start (ThreadId 0) first
 
         // The entry thread took the rotation's first slot.
         UnixTaskTable.cpuOf first state.Kernel.Tasks |> shouldEqual (CpuId 1)
@@ -198,7 +202,7 @@ module TestTaskState =
     let ``a thread with no task is refused`` () : unit =
         let state, thread =
             machine ()
-            |> IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1)
+            |> ThreadFixtures.constructAndStart (ThreadId 0) (ManagedHeapAddress 1)
 
         let stripped =
             state.MapKernel (fun kernel ->
@@ -251,7 +255,7 @@ module TestTaskState =
     let private threadParkedIn (parked : ParkedSyscall) : IlMachineState * ThreadId =
         let state, thread =
             machine ()
-            |> IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1)
+            |> ThreadFixtures.constructAndStart (ThreadId 0) (ManagedHeapAddress 1)
 
         state.MapKernel (EmulatedKernel.mapUnix (UnixWait.park thread parked)), thread
 
@@ -262,7 +266,7 @@ module TestTaskState =
         // decide whether to wake it, and no re-entered handler could decide what to finish.
         let state, thread =
             machine ()
-            |> IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1)
+            |> ThreadFixtures.constructAndStart (ThreadId 0) (ManagedHeapAddress 1)
 
         let statuses = threads state |> Map.add thread ThreadStatus.BlockedInSyscall
 
@@ -271,16 +275,13 @@ module TestTaskState =
 
     [<TestCaseSource(nameof parks)>]
     let ``a park record on a thread that cannot be waiting is refused`` (parked : ParkedSyscall) : unit =
-        // A thread that has not started, which has a task (it was registered at construction)
-        // but cannot be in a syscall.
+        // A thread asleep in `Thread.Sleep`, which has a task but cannot also be in a syscall.
         let recorded, thread = threadParkedIn parked
-        let statuses = threads recorded |> Map.add thread ThreadStatus.NotStarted
+        let asleep = ThreadStatus.BlockedOnSleep None
+        let statuses = threads recorded |> Map.add thread asleep
 
         EmulatedKernel.checkTaskInvariants statuses recorded.Kernel
-        |> shouldEqual
-            [
-                EmulatedKernelDefect.SyscallRecordWithoutWaiter (thread, ThreadStatus.NotStarted)
-            ]
+        |> shouldEqual [ EmulatedKernelDefect.SyscallRecordWithoutWaiter (thread, asleep) ]
 
     [<Test>]
     let ``a terminated thread that still has a task is refused`` () : unit =
@@ -288,7 +289,7 @@ module TestTaskState =
         // exit the kernel was never told of.
         let state, thread =
             machine ()
-            |> IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1)
+            |> ThreadFixtures.constructAndStart (ThreadId 0) (ManagedHeapAddress 1)
 
         let statuses = threads state |> Map.add thread ThreadStatus.Terminated
 
@@ -302,10 +303,10 @@ module TestTaskState =
         let state = machine ()
 
         let state, first =
-            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1) state
+            ThreadFixtures.constructAndStart (ThreadId 0) (ManagedHeapAddress 1) state
 
         let state, second =
-            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 2) state
+            ThreadFixtures.constructAndStart (ThreadId 0) (ManagedHeapAddress 2) state
 
         let before = state.Kernel.Tasks
         let state = Scheduler.onThreadTerminated first state
@@ -324,10 +325,10 @@ module TestTaskState =
         // A second thread, so that the worker is not the kernel's last task.
         let state, _ =
             machine ()
-            |> IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1)
+            |> ThreadFixtures.constructAndStart (ThreadId 0) (ManagedHeapAddress 1)
 
         let state, worker =
-            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 2) state
+            ThreadFixtures.constructAndStart (ThreadId 0) (ManagedHeapAddress 2) state
 
         let state =
             state.MapKernel (SignalFrames.enter worker (Set.singleton Signal.SIGUSR1))
@@ -406,7 +407,7 @@ module TestTaskState =
         // id, which is how a thread would end up aliasing another.
         let state, thread =
             machine ()
-            |> IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1)
+            |> ThreadFixtures.constructAndStart (ThreadId 0) (ManagedHeapAddress 1)
 
         let exn =
             Assert.Throws<exn> (fun () ->
@@ -424,7 +425,7 @@ module TestTaskState =
         // sleep, losing that wait with nothing to say so.
         let state, thread =
             machine ()
-            |> IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1)
+            |> ThreadFixtures.constructAndStart (ThreadId 0) (ManagedHeapAddress 1)
 
         let exn =
             Assert.Throws<exn> (fun () -> Scheduler.wakeFromSyscall thread state |> ignore<IlMachineState>)
@@ -441,7 +442,7 @@ module TestTaskState =
             (machine ()).MapKernel (EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount 4))
 
         let state, thread =
-            IlMachineState.allocateUnstartedThread (ThreadId 0) (ManagedHeapAddress 1) state
+            ThreadFixtures.constructAndStart (ThreadId 0) (ManagedHeapAddress 1) state
 
         UnixTaskTable.cpuOf thread state.Kernel.Tasks |> shouldEqual (CpuId 1)
 
@@ -454,8 +455,8 @@ module TestTaskState =
             }
 
         // The status goes with the record, because a park writes both and `checkTaskInvariants`
-        // refuses either alone: a record on a thread that has not started is a state no wait
-        // can have produced.
+        // refuses either alone: a record on a thread that is not parked in a syscall is a state
+        // no wait can have produced.
         let parked =
             state.MapKernel (EmulatedKernel.mapUnix (UnixWait.park thread (ParkedSyscall.SocketWait wait)))
             |> Scheduler.parkInSyscall thread

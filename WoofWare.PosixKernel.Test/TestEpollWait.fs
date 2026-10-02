@@ -271,8 +271,16 @@ module TestEpollWait =
         let counts =
             Gen.oneof
                 [
-                    Gen.choose (0, 3)
-                    Gen.elements [ 134217727 ; 134217728 ; 178956970 ; 178956971 ; System.Int32.MaxValue ]
+                    Gen.choose (-3, 3)
+                    Gen.elements
+                        [
+                            System.Int32.MinValue
+                            134217727
+                            134217728
+                            178956970
+                            178956971
+                            System.Int32.MaxValue
+                        ]
                 ]
 
         let buffers = Gen.elements [ UserBuffer.Mapped ; wild ]
@@ -375,9 +383,11 @@ module TestEpollWait =
 
             condition
             |> shouldEqual (
-                WakeCondition.AnyOf (
-                    WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable portId),
-                    [ WakeCondition.Primitive (WakePrimitive.DeadlinePassed deadline) ]
+                Interruptible.condition (
+                    WakeCondition.AnyOf (
+                        WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable portId),
+                        [ WakeCondition.Primitive (WakePrimitive.DeadlinePassed deadline) ]
+                    )
                 )
             )
 
@@ -407,12 +417,14 @@ module TestEpollWait =
         Check.One (config, Prop.forAll (Arb.fromGen bounded) property)
 
     [<Test>]
-    let ``a negative timeout waits for an event and nothing else`` () : unit =
+    let ``a negative timeout waits for an event or a signal, and no deadline`` () : unit =
         let property (milliseconds : int, now : int64) : unit =
             let condition, parked = parks milliseconds (after now idle)
 
             condition
-            |> shouldEqual (WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable portId))
+            |> shouldEqual (
+                Interruptible.condition (WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable portId))
+            )
 
             UnixWait.deadlines (Set.singleton task) parked |> shouldEqual []
 

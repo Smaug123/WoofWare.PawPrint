@@ -92,11 +92,19 @@ module AbstractMachine =
         let dispatchNative () =
             let nativeImport = instruction.ExecutingMethod.TryNativeImport
 
-            // The P/Invoke stub's pre-call clear. Runs on every entry, including a re-entry after
-            // the handler parked or pushed a managed callee: errno is per-thread, so the only
-            // thread that could have written this slot in between is the one that was parked, and
-            // clearing again is therefore exactly equivalent to having cleared once.
-            let state = NativeDispatch.clearLastError nativeImport thread state
+            // The P/Invoke stub's pre-call clear, once per call: a re-entry after the handler
+            // parked, pushed a managed callee or was interrupted by a signal finds the slot as
+            // the call left it. The last is the one that can tell: a C wrapper that calls again
+            // after `EINTR` leaves errno at `EINTR` when the call then succeeds.
+            let state =
+                if instruction.LastErrorCleared then
+                    state
+                else
+                    NativeDispatch.clearLastError nativeImport thread state
+                    |> IlMachineState.mapFrame
+                        thread
+                        state.ThreadState.[thread].ActiveMethodState
+                        MethodState.markLastErrorCleared
 
             let targetAssy =
                 state.LoadedAssembly instruction.ExecutingMethod.DeclaringAssemblyFullName
@@ -173,6 +181,11 @@ module AbstractMachine =
                 // Another thread owns this type's .cctor lock; the native frame must persist
                 // until that thread finishes, then we re-enter.
                 ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy, effect)
+            | NativeHandlerResult.ReenterRetainingFrame (state, effect) ->
+                // The handler's call is unfinished but the thread is not blocked: the frame stays,
+                // the caller's program counter still names the call, and the thread's next step
+                // runs the handler again from the top.
+                ExecutionResult.Stepped (state, WhatWeDid.Executed, effect)
             | NativeHandlerResult.BlockedRetainingFrame (state, effect) ->
                 // The handler parked its own thread and wants re-entering from the top when it
                 // wakes, so the native frame stays on the stack and the caller's program

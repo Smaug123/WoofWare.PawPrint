@@ -5,7 +5,7 @@ using System.Threading;
 // Exercises the SystemNative_TryGetUInt32OSThreadId and
 // SystemNative_GetUInt64OSThreadId PawPrint handlers directly via P/Invoke
 // stubs. The CLR would dispatch these to the real libSystem.Native shim;
-// PawPrint intercepts them and answers from ThreadState.OsThreadId.
+// PawPrint intercepts them and answers with the calling thread's task's id.
 //
 // Declaring the stubs here rather than reaching them through CoreLib is what
 // lets one test cover *both* entry points on any host. CoreLib is #if-split per

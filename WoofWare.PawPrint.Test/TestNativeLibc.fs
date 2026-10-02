@@ -505,3 +505,43 @@ module TestNativeLibc =
             |> ignore<EmulatedKernel>
         )
         |> ignore<exn>
+
+    [<Test>]
+    let ``gettid answers the task's id on Linux, and binds to nothing on Darwin`` () : unit =
+        // The id a Linux kernel mints is below `pid_max`, so every one fits the `pid_t`
+        // gettid returns; Darwin's C library has no gettid at all.
+        let linuxId (pid : int32) : OsThreadId =
+            let kernel =
+                KernelConfig.toKernel
+                    { KernelConfig.Default with
+                        ProcessId = ProcessId.parseOrFail "test" pid
+                    }
+
+            UnixTaskTable.osThreadIdOf kernel.Leader kernel.Tasks
+
+        let darwinId (id : uint64) : OsThreadId =
+            let kernel =
+                KernelConfig.toKernel
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        LeaderThreadId = Some id
+                    }
+
+            UnixTaskTable.osThreadIdOf kernel.Leader kernel.Tasks
+
+        let linux (pid : int32) : bool =
+            NativeLibc.gettid SimulatedUnixFlavour.Linux (linuxId pid) = Some pid
+
+        let darwin (id : uint64) : bool =
+            NativeLibc.gettid SimulatedUnixFlavour.Darwin (darwinId id) = None
+
+        for pid in [ 1 ; 4242 ; UnixSystem.defaultPidMax - 1 ] do
+            linux pid |> shouldEqual true
+
+        for id in [ 1UL ; 4242UL ; 0x1_0000_0000UL ] do
+            darwin id |> shouldEqual true
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 200,
+            Prop.forAll (Arb.fromGen (Gen.choose (1, UnixSystem.defaultPidMax - 1))) linux
+        )

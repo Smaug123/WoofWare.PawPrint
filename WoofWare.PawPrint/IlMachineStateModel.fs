@@ -40,13 +40,14 @@ type IlMachineState =
         ///
         /// The one cursor with that property, and it stays specific to CPU
         /// placement. A thread's OS thread id is the kernel's to mint
-        /// (`UnixTaskLifecycle.spawn`), and every thread consumes one, as the
-        /// signal-handling thread a real runtime creates does.
+        /// (`UnixTaskLifecycle.spawn`) when the thread gets its OS thread, and every
+        /// such thread consumes one, as the signal-handling thread a real runtime
+        /// creates does.
         ///
-        /// Advanced when a thread is *created*, not when it is started: a guest
-        /// that constructs a `Thread` and never calls `Start` still consumes a
-        /// rotation slot, mirroring real .NET's eager `ManagedThreadId`
-        /// assignment in the constructor.
+        /// Advanced when a thread is *constructed*, not when it is started, which
+        /// is when its OS thread id is minted: a guest that constructs a `Thread`
+        /// and never calls `Start` still consumes a rotation slot, mirroring real
+        /// .NET's eager `ManagedThreadId` assignment in the constructor.
         NextCpuRotation : int
         // CallStack : StackFrame list
         /// Multiple managed heaps are allowed, but we hopefully only need one.
@@ -605,6 +606,15 @@ type NativeHandlerResult =
     /// written through the caller's arguments, as
     /// `SystemNative_WaitForSocketEvents`' event buffer does.
     | BlockedRetainingFrame of IlMachineState * StepEffect
+    /// Native handler's call is unfinished, and its thread is not blocked: it stays
+    /// Runnable, and its next step runs the handler again from the top. Dispatcher leaves
+    /// the native frame on the stack and does not advance the caller's program counter, as
+    /// for `BlockedRetainingFrame`, and reports `WhatWeDid.Executed`.
+    ///
+    /// What a C wrapper's retry loop does once a signal has interrupted the syscall it
+    /// loops on: the thread returns to user mode, where the signal's handlers run between
+    /// two steps, and then the wrapper issues the call again.
+    | ReenterRetainingFrame of IlMachineState * StepEffect
     /// A sub-call's exception (typically a `TypeInitializationException` raised by a
     /// previously-failed `.cctor`) has already been dispatched into the guest and unwound
     /// past this native frame to a matching handler. The state already reflects the
@@ -809,6 +819,11 @@ module NativeHandlerResult =
     /// the relevant `Scheduler` helper; this only tells the dispatcher to keep the frame.
     let blockedRetainingFrame (state : IlMachineState) : NativeHandlerResult =
         NativeHandlerResult.BlockedRetainingFrame (state, StepEffect.NoEffect)
+
+    /// Native handler's call is to be issued again, from the top, on its thread's next step;
+    /// the thread stays Runnable. See `ReenterRetainingFrame`.
+    let reenterRetainingFrame (state : IlMachineState) : NativeHandlerResult =
+        NativeHandlerResult.ReenterRetainingFrame (state, StepEffect.NoEffect)
 
     /// Native handler is raising the given exception type. The dispatcher allocates
     /// the exception, calls its parameterless ctor, arms dispatch-on-return, and
