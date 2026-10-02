@@ -1126,6 +1126,45 @@ module TestImpureCases =
             // truncating to 16 bits is caught here.
             processIdCase (Some 4194303)
             {
+                // A thread's id is minted when it is started: the never-started
+                // thread takes none, and the two workers, started in the reverse
+                // of their construction order, take the ids after the pid in
+                // start order.
+                FileName = "ThreadIdsFollowStartOrder.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                // Real .NET's own runtime threads take ids too; the order alone
+                // is measured by `thread-start-order.cs`.
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState =
+                    Some (fun state ->
+                        OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
+                        |> Seq.toArray
+                        |> shouldEqual (
+                            let pid = ProcessId.toInt32 UnixSystem.defaultProcessId
+
+                            [| pid ; pid + 1 ; pid + 2 |]
+                            |> Array.collect (fun value ->
+                                [|
+                                    byte (value &&& 0xFF)
+                                    byte ((value >>> 8) &&& 0xFF)
+                                    byte ((value >>> 16) &&& 0xFF)
+                                    byte ((value >>> 24) &&& 0xFF)
+                                |]
+                            )
+                        )
+
+                        // The never-started thread has no task, and the workers'
+                        // exits took theirs.
+                        EmulatedKernel.checkTaskInvariants
+                            (state.ThreadState |> Map.map (fun _ ts -> ts.Status))
+                            state.Kernel
+                        |> shouldEqual []
+                    )
+            }
+            {
                 // The replay contract for the two random streams: under the
                 // default configuration these bytes are what every run hands
                 // the guest. The guest's header says what each row reads. A

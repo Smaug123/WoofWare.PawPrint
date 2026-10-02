@@ -34,7 +34,13 @@ type ThreadStatus =
     /// floor) remain `NotStarted` for the lifetime of the run; they do not
     /// contribute to deadlock detection beyond appearing in the stuck-threads
     /// description.
-    | NotStarted
+    ///
+    /// Such a thread has no OS thread, and so no task in the kernel: CoreCLR's
+    /// `Thread` constructor only records the thread (`SetupUnstartedThread`),
+    /// and `pthread_create` is `Thread.Start`'s. `cpu` is the logical processor
+    /// its task will run on once started, which the CPU rotation chose when the
+    /// thread was constructed.
+    | NotStarted of cpu : WoofWare.PosixKernel.CpuId
     /// This thread is blocked inside `Thread.Join`, waiting for the named
     /// thread to terminate. The wake comes from
     /// `Scheduler.onThreadTerminated`, which sweeps every
@@ -318,7 +324,7 @@ module ThreadStatus =
         // silently masking bugs in the dozens of callers that read frame data
         // behind this guard.
         match status with
-        | ThreadStatus.NotStarted -> true
+        | ThreadStatus.NotStarted _ -> true
         | ThreadStatus.Parked -> true
         | ThreadStatus.Runnable -> false
         | ThreadStatus.Terminated -> false
@@ -364,7 +370,7 @@ module ThreadStatus =
         // Fully enumerated, like `hasNoActiveFrame` above, so a new `ThreadStatus`
         // forces an answer here rather than silently inheriting one.
         match status with
-        | ThreadStatus.NotStarted -> false
+        | ThreadStatus.NotStarted _ -> false
         | ThreadStatus.Parked -> false
         | ThreadStatus.Runnable -> false
         | ThreadStatus.Terminated -> false
@@ -395,9 +401,32 @@ module ThreadStatus =
         // Fully enumerated, like the two above, so a new `ThreadStatus` must say whether the
         // process waits for it.
         match status with
-        | ThreadStatus.NotStarted -> false
+        | ThreadStatus.NotStarted _ -> false
         | ThreadStatus.Terminated -> false
         | ThreadStatus.Parked -> false
+        | ThreadStatus.WaitingForForegroundThreads -> true
+        | ThreadStatus.Runnable -> true
+        | ThreadStatus.BlockedOnJoin _ -> true
+        | ThreadStatus.BlockedOnClassInit _ -> true
+        | ThreadStatus.BlockedOnMonitorAcquire _ -> true
+        | ThreadStatus.BlockedOnMonitorWait _ -> true
+        | ThreadStatus.BlockedOnSyncBlockAcquire _ -> true
+        | ThreadStatus.BlockedOnSyncBlockWait _ -> true
+        | ThreadStatus.BlockedOnWaitHandle _ -> true
+        | ThreadStatus.BlockedOnWaitHandles _ -> true
+        | ThreadStatus.BlockedOnSleep _ -> true
+        | ThreadStatus.BlockedInSyscall -> true
+
+    /// True iff a thread in this status has an OS thread, and so a task in the kernel: it has
+    /// been started and has not exited. `Parked` is true, because the signal dispatcher stands
+    /// for the pthread System.Native creates when it initialises signal handling.
+    let hasOsThread (status : ThreadStatus) : bool =
+        // Fully enumerated, like the ones above, so a new `ThreadStatus` must say whether the
+        // kernel has a task for it.
+        match status with
+        | ThreadStatus.NotStarted _ -> false
+        | ThreadStatus.Terminated -> false
+        | ThreadStatus.Parked -> true
         | ThreadStatus.WaitingForForegroundThreads -> true
         | ThreadStatus.Runnable -> true
         | ThreadStatus.BlockedOnJoin _ -> true
@@ -437,7 +466,7 @@ module ThreadStatus =
         // guest sees.
         match status with
         | ThreadStatus.Runnable -> background
-        | ThreadStatus.NotStarted -> System.Threading.ThreadState.Unstarted ||| background
+        | ThreadStatus.NotStarted _ -> System.Threading.ThreadState.Unstarted ||| background
         | ThreadStatus.Terminated -> System.Threading.ThreadState.Stopped
         | ThreadStatus.WaitingForForegroundThreads ->
             System.Threading.ThreadState.Stopped
@@ -770,7 +799,7 @@ type ThreadState =
                 match ts.Status with
                 | ThreadStatus.BlockedOnClassInit next -> walk next (visited.Add current)
                 | ThreadStatus.Runnable
-                | ThreadStatus.NotStarted
+                | ThreadStatus.NotStarted _
                 | ThreadStatus.Parked
                 | ThreadStatus.Terminated
                 | ThreadStatus.BlockedOnJoin _

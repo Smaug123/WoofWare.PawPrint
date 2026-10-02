@@ -210,6 +210,22 @@ module NativeLibc =
             failwith
                 $"%s{operation}: %O{signal} would stop the whole process, and PawPrint does not model a stopped process (nothing could continue it)."
 
+    /// What `gettid(2)` answers on `flavour` for a thread whose task's OS thread
+    /// id is `id`: the id, as the `pid_t` it is on Linux. `None` on Darwin, whose
+    /// C library exports no `gettid`, so a P/Invoke of it never binds: measured on
+    /// Darwin 27.0.0 by `docs/plans/2026-08-23-posix-kernel-extraction/gettid-symbol.c`.
+    let gettid (flavour : SimulatedUnixFlavour) (id : OsThreadId) : int32 option =
+        match flavour with
+        | SimulatedUnixFlavour.Darwin -> None
+        | SimulatedUnixFlavour.Linux ->
+            let id = OsThreadId.toUInt64 id
+
+            // A Linux tid is below `pid_max`, which is at most 2^22.
+            if id > uint64 System.Int32.MaxValue then
+                failwith $"libc gettid: the kernel minted the Linux thread ID %d{id}, which is not a pid_t"
+
+            Some (int32 id)
+
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -234,4 +250,20 @@ module NativeLibc =
             let pid = NativeCall.int32Argument operation instruction.Arguments.[0]
             let signo = NativeCall.int32Argument operation instruction.Arguments.[1]
             kill operation ctx pid signo |> Some
+        | Some "gettid",
+          [],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
+            // `pid_t gettid(void)`, which glibc has exported since 2.30 and which
+            // makes the syscall every time.
+            let flavour = SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform
+
+            match gettid flavour (UnixTaskTable.osThreadIdOf ctx.Thread state.Kernel.Tasks) with
+            | Some tid ->
+                state
+                |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 tid)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | None ->
+                failwith
+                    $"libc gettid: the simulated platform is %O{flavour}, whose C library exports no gettid, so a real process's P/Invoke of it throws EntryPointNotFoundException; PawPrint does not raise that"
         | _ -> None

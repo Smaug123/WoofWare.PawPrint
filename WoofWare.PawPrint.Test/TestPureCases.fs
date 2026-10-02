@@ -528,10 +528,12 @@ module TestPureCases =
                 assertResult realResult pawPrintResult
             )
 
-    /// The run's terminal tasks against its threads: a task for every thread that has not
-    /// terminated, and for no other. A thread's exit is where the kernel is told it has gone,
-    /// so this is what catches a thread that ended without telling it, across every guest that
-    /// starts and ends threads, rather than only in fixtures written to look.
+    /// The run's terminal tasks against its threads: a task for every thread with an OS
+    /// thread, which is one that has been started and has not terminated, and for no other.
+    /// A thread's start and exit are where the kernel is told it has come and gone, so this is
+    /// what catches a thread that ended without telling it, or a task for a thread that was
+    /// constructed and never started, across every guest that makes threads, rather than only
+    /// in fixtures written to look.
     let private assertTasksMatchThreads (runEnd : RunEnd) : unit =
         let state = RunEnd.state runEnd
 

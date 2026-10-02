@@ -426,14 +426,19 @@ module IlMachineThreadState =
     /// helpers like `threadIdFromThreadAddr` can reverse-look-up the thread
     /// during the pre-Start window (notably for the `IsBackground` QCalls).
     ///
-    /// `parent` is the thread constructing it.
-    let allocateUnstartedThread
-        (parent : ThreadId)
-        (threadAddr : ManagedHeapAddress)
-        (state : IlMachineState)
-        : IlMachineState * ThreadId
-        =
+    /// The thread has no task in the kernel until `startUnstartedThread`: as in
+    /// CoreCLR, constructing a `Thread` creates no OS thread. It does take its
+    /// processor now, which its status carries until then.
+    let allocateUnstartedThread (threadAddr : ManagedHeapAddress) (state : IlMachineState) : IlMachineState * ThreadId =
         let thread = ThreadId state.NextThreadId
+
+        // Guest-visible, so it takes the next slot in the CPU rotation — here at
+        // construction time, before any `Start`, matching real .NET's eager
+        // `ManagedThreadId` assignment in the `Thread` constructor. A guest that
+        // constructs a thread and never starts it therefore still consumes a
+        // rotation slot, and a guest that starts threads out of construction
+        // order sees each on the processor its construction chose.
+        let cpu = EmulatedKernel.cpuForRotation state.NextCpuRotation state.Kernel
 
         // Frame-less stub mirroring the test helpers in TestLowLevelMonitor /
         // TestWaitHandle / TestSyncBlockMonitor: `ActiveMethodState` points at
@@ -445,7 +450,7 @@ module IlMachineThreadState =
                 MethodStates = Map.empty
                 NextFrameId = 0
                 ActiveMethodState = FrameId -1
-                Status = ThreadStatus.NotStarted
+                Status = ThreadStatus.NotStarted cpu
                 IsBackground = false
                 Name = None
                 YieldDebt = Set.empty
@@ -460,17 +465,6 @@ module IlMachineThreadState =
                 NextCpuRotation = state.NextCpuRotation + 1
                 ThreadState = state.ThreadState |> Map.add thread unstartedState
                 ManagedThreadObjects = state.ManagedThreadObjects |> Map.add thread threadAddr
-                // Guest-visible, so it takes the next slot in the CPU rotation —
-                // here at construction time, before any `Start`, matching real
-                // .NET's eager `ManagedThreadId` assignment in the `Thread`
-                // constructor. A guest that constructs a thread and never starts
-                // it therefore still consumes a rotation slot.
-                Kernel =
-                    spawnTask
-                        parent
-                        thread
-                        (EmulatedKernel.cpuForRotation state.NextCpuRotation state.Kernel)
-                        state.Kernel
             }
 
         newState, thread
@@ -622,13 +616,17 @@ module IlMachineThreadState =
             ThreadState = state.ThreadState |> Map.add thread parked
         }
 
-    /// Populate the bottom frame of a `NotStarted` thread with `newMethodState`
-    /// and flip its status to `Runnable`. The thread was
-    /// previously allocated by `allocateUnstartedThread` at `Thread.Initialize`
-    /// time. Fails loud if the thread is missing, in a non-`NotStarted`
-    /// status (double-Start would be the typical cause; the real CLR raises
+    /// `starter` starts the `NotStarted` thread `thread`: the thread gets its OS
+    /// thread, which is its task in the kernel, created by `starter` on the
+    /// processor its construction chose, and its bottom frame `newMethodState`,
+    /// and becomes `Runnable`. The thread was previously allocated by
+    /// `allocateUnstartedThread` at `Thread.Initialize` time.
+    ///
+    /// Fails loud if the thread is missing, in a non-`NotStarted` status
+    /// (double-Start would be the typical cause; the real CLR raises
     /// `ThreadStateException` here), or already has live frames.
     let startUnstartedThread
+        (starter : ThreadId)
         (thread : ThreadId)
         (newMethodState : MethodState)
         (state : IlMachineState)
@@ -639,11 +637,12 @@ module IlMachineThreadState =
             |> Map.tryFind thread
             |> Option.defaultWith (fun () -> failwith $"startUnstartedThread: thread {thread} has no ThreadState")
 
-        match existing.Status with
-        | ThreadStatus.NotStarted -> ()
-        | other ->
-            failwith
-                $"startUnstartedThread: thread {thread} is in status %O{other}, expected NotStarted. Most likely cause: double-Start on a Thread object. The real CLR raises ThreadStateException here, which PawPrint does not yet synthesise."
+        let cpu =
+            match existing.Status with
+            | ThreadStatus.NotStarted cpu -> cpu
+            | other ->
+                failwith
+                    $"startUnstartedThread: thread {thread} is in status %O{other}, expected NotStarted. Most likely cause: double-Start on a Thread object. The real CLR raises ThreadStateException here, which PawPrint does not yet synthesise."
 
         if not (Map.isEmpty existing.MethodStates) then
             failwith $"startUnstartedThread: thread {thread} unexpectedly has live frames before Start"
@@ -658,6 +657,9 @@ module IlMachineThreadState =
 
         { state with
             ThreadState = state.ThreadState |> Map.add thread started
+            // `ThreadNative_Start`'s `CreateNewThread` is where CoreCLR calls
+            // `pthread_create`, on the thread calling `Start`.
+            Kernel = spawnTask starter thread cpu state.Kernel
         }
 
     /// Allocate a single-dimensional, zero-based array of `len` elements, each set to

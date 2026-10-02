@@ -193,10 +193,11 @@ type UnixTaskState =
         /// The simulated logical processor this task is pinned to: what
         /// `sched_getcpu(3)` reports while it runs.
         ///
-        /// Assigned once, at thread creation, by `cpuForRotation`. This library
-        /// has no scheduler: under a client that runs one task at a time and
-        /// never migrates one between cores, "pinned to" and "currently
-        /// executing on" coincide, and a core-aware client would rewrite this.
+        /// Assigned once, when the task is created: the processor its creator
+        /// names to `UnixTaskLifecycle.spawn`. This library has no scheduler:
+        /// under a client that runs one task at a time and never migrates one
+        /// between cores, "pinned to" and "currently executing on" coincide, and
+        /// a core-aware client would rewrite this.
         Cpu : CpuId
         /// The OS thread identifier this task reports, as `gettid(2)` does.
         ///
