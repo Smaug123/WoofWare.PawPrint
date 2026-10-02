@@ -62,14 +62,33 @@ type FileStatus =
         /// <c>st_ino</c>.
         /// </summary>
         Inode : InodeNumber
+        /// `st_nlink`.
+        ///
+        /// For a regular file or a symbolic link this is how many names it
+        /// has, and 0 once the last has gone while a descriptor still holds
+        /// it. A directory's is a rule of the filesystem it is on, which
+        /// `EmulatedFileSystemType.directoryLinkCount` states, and a pipe's is
+        /// the flavour's. Darwin reports no more than 65535; see
+        /// `SimulatedUnixPlatform.linkCountCeiling`.
+        LinkCount : int64
+        /// `st_rdev`: which device a character or block special file stands
+        /// for. 0 for every other kind of file, which is every kind this
+        /// kernel holds.
+        SpecialFileDevice : int64
+        /// `st_flags`, the BSD file flags `chflags(2)` sets, or `None` on a
+        /// flavour whose `stat(2)` has no such field.
+        ///
+        /// 0 for everything on a flavour that has the field: a new file has
+        /// none set, and this kernel has no `chflags(2)` to set one.
+        FileFlags : uint32 option
     }
 
 /// Why this kernel refused to report a `struct stat` for a path.
 [<RequireQualifiedAccess>]
 type StatRefusal =
-    /// The path names a directory on an NFS mount. Its `st_size` is the size
-    /// the NFS server's GETATTR reports, and nothing in this machine
-    /// determines that.
+    /// The path names a directory on an NFS mount. Its `st_size` and its
+    /// `st_nlink` are what the NFS server's GETATTR reports, and nothing in
+    /// this machine determines them.
     | NfsDirectorySize of inode : InodeNumber
 
 [<RequireQualifiedAccess>]
@@ -79,7 +98,7 @@ module StatRefusal =
     let describe (refusal : StatRefusal) : string =
         match refusal with
         | StatRefusal.NfsDirectorySize inode ->
-            $"inode %O{inode} is a directory on an NFS mount. Its st_size is the size the NFS server's GETATTR reports, which nothing in this machine determines, so this kernel will not state one."
+            $"inode %O{inode} is a directory on an NFS mount. Its st_size and st_nlink are what the NFS server's GETATTR reports, which nothing in this machine determines, so this kernel will not state them."
 
 /// <summary>
 /// Why this kernel refused to report a <c>struct stat</c> for a descriptor.
@@ -110,8 +129,8 @@ type FStatRefusal =
     /// A directory on an NFS mount.
     /// </summary>
     /// <remarks>
-    /// Its <c>st_size</c> is the size the NFS server's GETATTR reports, and nothing in this machine
-    /// determines that.
+    /// Its <c>st_size</c> and its <c>st_nlink</c> are what the NFS server's GETATTR reports, and nothing in
+    /// this machine determines them.
     /// </remarks>
     | NfsDirectorySize of inode : InodeNumber
 
@@ -438,6 +457,22 @@ module UnixPathResolution =
         resolvePathFull policy TrailingSeparatorPolicy.Demand path system
         |> Result.bind (fun resolution -> PathWalk.existingOf resolution.Target)
 
+    /// `count` as the platform's `stat(2)` would report it in `st_nlink`.
+    let private reportedLinkCount (platform : SimulatedUnixPlatform) (count : int64) : int64 =
+        match SimulatedUnixPlatform.linkCountCeiling platform with
+        | Some ceiling -> min ceiling count
+        | None -> count
+
+    /// `st_flags` for anything this kernel holds, which nothing can have set.
+    /// Measured 2026-10-02 by `stat-fields.c` on Darwin 27.0: 0 for a fresh
+    /// regular file (a dot-file too), directory, symbolic link, FIFO and pipe,
+    /// where `chflags(UF_HIDDEN)` on the same file does then report it.
+    let private newFileFlags (platform : SimulatedUnixPlatform) : uint32 option =
+        if SimulatedUnixPlatform.reportsFileFlags platform then
+            Some 0u
+        else
+            None
+
     /// The status of an inode this filesystem holds, or `None` if it holds no
     /// such inode.
     ///
@@ -445,8 +480,8 @@ module UnixPathResolution =
     /// only in how they reach the inode. `fstat` is this plus a descriptor
     /// lookup, and `stat`/`lstat` are this plus a path resolution.
     ///
-    /// Refuses for a directory on an NFS mount, whose size this kernel cannot
-    /// state; see `StatRefusal`.
+    /// Refuses for a directory on an NFS mount, whose size and link count this
+    /// kernel cannot state; see `StatRefusal`.
     let statOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (inode : InodeNumber)
         (system : UnixSystem<'Task, 'Handler>)
@@ -462,24 +497,34 @@ module UnixPathResolution =
             | InodePermissions.PlatformSymlinkDefault ->
                 SimulatedUnixPlatform.symlinkPermissions system.Machine.UnixPlatform
 
-        let size : Result<int64, StatRefusal> =
+        let fileSystem = system.Machine.FileSystem
+
+        let sizeAndLinks : Result<int64 * int64, StatRefusal> =
             match entry.Content with
-            | InodeContent.RegularFile (contents, _) -> Ok (int64 contents.Length)
+            | InodeContent.RegularFile (contents, _) ->
+                Ok (int64 contents.Length, int64 (VirtualFileSystem.bindingCount inode fileSystem))
             // `readlink` reports the target's byte length as the link's size,
             // and a guest can see it through a file-length API.
-            | InodeContent.Symlink target -> Ok (int64 (UnixByteString.length (SymlinkTarget.toByteString target)))
-            | InodeContent.Directory directory ->
+            | InodeContent.Symlink target ->
+                Ok (
+                    int64 (UnixByteString.length (SymlinkTarget.toByteString target)),
+                    int64 (VirtualFileSystem.bindingCount inode fileSystem)
+                )
+            | InodeContent.Directory _ ->
                 let fsType = EmulatedMount.fileSystemType system.Machine.Mount
 
-                match EmulatedFileSystemType.directorySize fsType directory.Entries.Count with
-                | Some size -> Ok size
-                | None ->
+                match
+                    EmulatedFileSystemType.directorySize fsType (VirtualFileSystem.entryCount inode fileSystem),
+                    EmulatedFileSystemType.directoryLinkCount fsType inode fileSystem
+                with
+                | Some size, Some links -> Ok (size, links)
+                | _ ->
                     match fsType with
                     | EmulatedFileSystemType.Nfs -> Error (StatRefusal.NfsDirectorySize inode)
                     | EmulatedFileSystemType.Tmpfs
                     | EmulatedFileSystemType.Apfs ->
                         failwith
-                            $"UnixPathResolution.statOf: EmulatedFileSystemType.directorySize states no size for a %O{fsType} directory, which has a measured one (this is a bug in this library)"
+                            $"UnixPathResolution.statOf: EmulatedFileSystemType states no size or no link count for a %O{fsType} directory, which has measured ones (this is a bug in this library)"
 
         let birthTime =
             // Withheld rather than reported when the platform has no
@@ -490,9 +535,9 @@ module UnixPathResolution =
             else
                 None
 
-        match size with
+        match sizeAndLinks with
         | Error refusal -> Some (Error refusal)
-        | Ok size ->
+        | Ok (size, links) ->
 
         Some (
             Ok
@@ -507,6 +552,10 @@ module UnixPathResolution =
                     BirthTime = birthTime
                     DeviceId = VirtualFileSystem.deviceId
                     Inode = inode
+                    LinkCount = reportedLinkCount system.Machine.UnixPlatform links
+                    // Nothing this filesystem holds is a device node.
+                    SpecialFileDevice = 0L
+                    FileFlags = newFileFlags system.Machine.UnixPlatform
                 }
         )
 
@@ -620,6 +669,14 @@ module UnixPathResolution =
                 else
                     None
 
+            // Measured 2026-10-02 by `stat-fields.c`: 1 through either end on
+            // Linux 6.18.5 and 0 on Darwin 27.0, and the same through the read
+            // end once the write end has closed.
+            let links =
+                match flavour with
+                | SimulatedUnixFlavour.Linux -> 1L
+                | SimulatedUnixFlavour.Darwin -> 0L
+
             {
                 Mode = fifo ||| PermissionBits.toInt status.Permissions
                 UserId = status.Owner.User
@@ -631,6 +688,10 @@ module UnixPathResolution =
                 BirthTime = birthTime
                 DeviceId = system.Machine.PipeDevice
                 Inode = inode
+                LinkCount = reportedLinkCount system.Machine.UnixPlatform links
+                // Measured 0 through either end on both flavours.
+                SpecialFileDevice = 0L
+                FileFlags = newFileFlags system.Machine.UnixPlatform
             }
             |> FileStatusAnswer.Reported
             |> Ok

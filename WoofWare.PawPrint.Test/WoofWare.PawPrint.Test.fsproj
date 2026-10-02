@@ -44,6 +44,8 @@
          suites must not disagree about what they are measuring against. -->
     <Compile Include="..\WoofWare.PosixKernel.Test\HostPlatform.fs"
              Link="HostPlatform.fs" />
+    <Compile Include="..\WoofWare.PosixKernel.Test\HostStat.fs"
+             Link="HostStat.fs" />
     <Compile Include="RealRuntime.fs" />
     <Compile Include="TestRealRuntimeOracle.fs" />
     <Compile Include="TestHarness.fs"/>
@@ -241,6 +243,7 @@
     <Compile Include="TestFileAdvicePal.fs" />
     <Compile Include="TestOpenFlagsPal.fs" />
     <Compile Include="TestFileSystemTypePal.fs" />
+    <Compile Include="TestFileStatusPal.fs" />
     <Compile Include="TestSocketShimPal.fs" />
     <Compile Include="KernelSyscall.fs" />
     <Compile Include="TestDirectoryStreamFds.fs" />

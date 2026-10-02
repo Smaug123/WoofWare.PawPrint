@@ -23,9 +23,13 @@ type ReadAnswer =
 type ReadRefusal =
     /// The buffer has no answer at the step the read reached.
     | Buffer of BufferRefusal
-    /// A socket. Every answer a real kernel gives here is a claim about
-    /// connection state, which this kernel does not model.
-    | SocketConnectionState of socket : SocketId * domain : SocketDomain * kind : SocketKind
+    /// A socket in `phase`, which has a peer or a refused connection's error:
+    /// what a read does there is not modelled.
+    | UnmodelledSocketPhase of socket : SocketId * domain : SocketDomain * kind : SocketKind * phase : SocketPhase
+    /// A blocking read of a datagram socket with no peer, which sleeps until a
+    /// datagram arrives. Nothing in this kernel sends one, and a sleep only a
+    /// signal could end is not modelled.
+    | DatagramSleep of socket : SocketId * domain : SocketDomain
     /// A directory this description has read part of the way through, on a
     /// filesystem whose position there this kernel cannot bound, and a count
     /// for which the answer depends on that position. On Linux that is EINVAL
@@ -44,8 +48,10 @@ module ReadRefusal =
     let describe (refusal : ReadRefusal) : string =
         match refusal with
         | ReadRefusal.Buffer refusal -> BufferRefusal.describe refusal
-        | ReadRefusal.SocketConnectionState (socket, domain, kind) ->
-            $"the descriptor is socket %O{socket} (%O{domain}, %O{kind}). This kernel models no socket connection state, and `read(2)` on a socket is an answer about exactly that: measured on an unconnected socket it is ENOTCONN for a TCP socket, EINVAL on Linux against ENOTCONN on Darwin for a Unix-domain stream socket, and a block with no wake source for a datagram socket. Any constant here would become a lie the moment connection state is modelled."
+        | ReadRefusal.UnmodelledSocketPhase (socket, domain, kind, phase) ->
+            $"the descriptor is socket %O{socket} (%O{domain}, %O{kind}), in phase %A{phase}. This kernel answers `read(2)` on a socket with no peer, but models no transfer of bytes between sockets, nor what a read reports of a refused connection's error, so it has no answer for a socket that has a peer or such an error."
+        | ReadRefusal.DatagramSleep (socket, domain) ->
+            $"the descriptor is socket %O{socket} (%O{domain}, datagram), which has no peer, and the read is a blocking one. Such a read sleeps until a datagram arrives; nothing in this kernel sends one, and a sleep that only a signal could end is not modelled."
         | ReadRefusal.ScannedDirectoryPosition (inode, fileSystem) ->
             $"the descriptor is directory %O{inode} on %O{fileSystem}, which this description has read part of the way through. Ahead of a directory's EISDIR, Linux answers EINVAL when position + count passes INT64_MAX and Darwin answers 0 when the position is INT64_MAX, and the position after a partial scan is %O{fileSystem}'s own cookie (on an NFS mount, whatever the server chose, up to INT64_MAX), which is not a number this kernel's position corresponds to. So whether this read is EISDIR or the position's answer is unknown here."
         | ReadRefusal.Interruption refusal ->
@@ -127,16 +133,43 @@ type WriteResumption =
     /// The bytes before `offset` are in the pipe already.
     | Transfer of offset : int * count : int
 
+/// What a write that answers `EPIPE` and raises `SIGPIPE` was writing to.
+[<RequireQualifiedAccess>]
+type BrokenWriteTarget =
+    /// The write end of a pipe with no reader.
+    | Pipe of pipe : PipeId
+    /// A Linux stream socket with no peer.
+    | Socket of socket : SocketId
+
+[<RequireQualifiedAccess>]
+module BrokenWriteTarget =
+    /// The descriptor's object, for a message: "the write end of pipe ...".
+    let describe (target : BrokenWriteTarget) : string =
+        match target with
+        | BrokenWriteTarget.Pipe pipe -> $"the write end of pipe %O{pipe}, which has no reader"
+        | BrokenWriteTarget.Socket socket -> $"socket %O{socket}, a stream socket with no peer"
+
 /// Why this kernel will not answer a `write`.
 [<RequireQualifiedAccess>]
 type WriteRefusal =
     /// The buffer has no answer at the step the write reached.
     | Buffer of BufferRefusal
-    /// A socket, reached with a buffer the screen did not answer for. What a
-    /// real kernel says here depends on the socket's connection state and on its
-    /// kind — three different errnos across the two flavours — and this kernel
-    /// models none of it.
-    | SocketConnectionState of socket : SocketId * domain : SocketDomain * kind : SocketKind
+    /// A socket in `phase`, which has a peer or a refused connection's error:
+    /// what a write does there is not modelled.
+    | UnmodelledSocketPhase of socket : SocketId * domain : SocketDomain * kind : SocketKind * phase : SocketPhase
+    /// A Unix-domain datagram socket with no peer, on Linux, where the answer
+    /// depends on the size of the socket's send buffer, which is not modelled
+    /// (see `UnconnectedSocketWrite.DependsOnSendBuffer`).
+    | SendBuffer of socket : SocketId
+    /// An IPv6 datagram socket with no peer and no port, on Linux, which a write
+    /// binds to an ephemeral port before it fails
+    /// (`UnconnectedSocketRules.writeBindsFirst`): this kernel binds only IPv4
+    /// sockets, so it cannot record the binding.
+    | Inet6Binding of socket : SocketId
+    /// A datagram socket with no peer and no port, on Linux, which a write
+    /// binds to an ephemeral port before it fails, when every port in the
+    /// ephemeral range is taken. What the kernel answers then is not measured.
+    | EphemeralPortsExhausted of socket : SocketId * low : uint16 * high : uint16
     /// The write would leave the file longer than this kernel can represent.
     | ExceedsRepresentableLength of inode : InodeNumber * offset : int64 * count : int
     /// What writing to the file at `inode` would do to its set-ID bits has not
@@ -145,14 +178,15 @@ type WriteRefusal =
     /// A write asleep in a pipe has an answer, and the library will not say
     /// whether that or a signal ends it.
     | Interruption of SyscallInterruptionRefusal
-    /// A write into a pipe with no reader, which answers `EPIPE` and raises
-    /// `SIGPIPE`, when which task would receive the signal is not modelled.
-    | SignalReceiver of pipe : PipeId * refusal : SignalReceiverRefusal
-    /// A write into a pipe with no reader, which raises `SIGPIPE`, by process
-    /// ID 1. An init process ignores, from inside its own PID namespace, every
-    /// signal it has not installed a handler for, and this library does not
-    /// model that.
-    | InitProcess of pipe : PipeId
+    /// A write into a pipe with no reader, or a Linux stream socket with no
+    /// peer, which answers `EPIPE` and raises `SIGPIPE`, when which task would
+    /// receive the signal is not modelled.
+    | SignalReceiver of target : BrokenWriteTarget * refusal : SignalReceiverRefusal
+    /// A write into a pipe with no reader, or a Linux stream socket with no
+    /// peer, which raises `SIGPIPE`, by process ID 1. An init process ignores,
+    /// from inside its own PID namespace, every signal it has not installed a
+    /// handler for, and this library does not model that.
+    | InitProcess of target : BrokenWriteTarget
 
 [<RequireQualifiedAccess>]
 module WriteRefusal =
@@ -170,16 +204,22 @@ module WriteRefusal =
     let describe (refusal : WriteRefusal) : string =
         match refusal with
         | WriteRefusal.Buffer refusal -> BufferRefusal.describe refusal
-        | WriteRefusal.SocketConnectionState (socket, domain, kind) ->
-            $"the descriptor is socket %O{socket} (%O{domain}, %O{kind}). This kernel models no socket connection state, and `write(2)` on a socket is an answer about exactly that: measured on an unconnected socket it is EPIPE on Linux against ENOTCONN on Darwin for a TCP socket, ENOTCONN on both for a Unix-domain stream socket, and EDESTADDRREQ for a datagram socket. The Linux TCP row also raises SIGPIPE, though a runtime that ignores that signal process-wide sees only the errno."
+        | WriteRefusal.UnmodelledSocketPhase (socket, domain, kind, phase) ->
+            $"the descriptor is socket %O{socket} (%O{domain}, %O{kind}), in phase %A{phase}. This kernel answers `write(2)` on a socket with no peer, but models no transfer of bytes between sockets, nor what a write reports of a refused connection's error, so it has no answer for a socket that has a peer or such an error."
+        | WriteRefusal.Inet6Binding socket ->
+            $"the descriptor is socket %O{socket}, an unbound IPv6 datagram socket with no peer. Linux binds it to an ephemeral port before it answers the write, and this kernel binds only IPv4 sockets, so it cannot record that binding."
+        | WriteRefusal.EphemeralPortsExhausted (socket, low, high) ->
+            $"the descriptor is socket %O{socket}, an unbound datagram socket with no peer, which Linux binds to an ephemeral port before it answers the write; but every port in the ephemeral range %d{low}-%d{high} is taken, and what the kernel answers then is not measured."
+        | WriteRefusal.SendBuffer socket ->
+            $"the descriptor is socket %O{socket}, a Unix-domain datagram socket with no peer. Linux answers EMSGSIZE for a write larger than the socket's send buffer less 32 bytes, ahead of the ENOTCONN it gives otherwise, and the send buffer's size (SO_SNDBUF, and before that the net.core.wmem_default sysctl) is not modelled."
         | WriteRefusal.ExceedsRepresentableLength (inode, offset, count) ->
             describeExceedsRepresentableLength inode offset count
         | WriteRefusal.Interruption refusal ->
             $"the write was asleep in a pipe: %s{SyscallInterruptionRefusal.describe refusal}"
-        | WriteRefusal.InitProcess pipe ->
-            $"the descriptor is the write end of pipe %O{pipe}, which has no reader, so the write raises SIGPIPE; but the process is process ID 1, and what an init process does with a signal it has no handler for is not modelled."
-        | WriteRefusal.SignalReceiver (pipe, refusal) ->
-            $"the descriptor is the write end of pipe %O{pipe}, which has no reader, so the write answers EPIPE and raises SIGPIPE; but which task would take that signal is not modelled (%A{refusal})."
+        | WriteRefusal.InitProcess target ->
+            $"the descriptor is %s{BrokenWriteTarget.describe target}, so the write raises SIGPIPE; but the process is process ID 1, and what an init process does with a signal it has no handler for is not modelled."
+        | WriteRefusal.SignalReceiver (target, refusal) ->
+            $"the descriptor is %s{BrokenWriteTarget.describe target}, so the write answers EPIPE and raises SIGPIPE; but which task would take that signal is not modelled (%A{refusal})."
         | WriteRefusal.UnmeasuredSetIdChange (inode, refusal) -> describeUnmeasuredSetIdChange inode refusal
 
 /// What a `write(2)` this kernel answered did to the process that made it,
@@ -197,7 +237,8 @@ type WriteOutcome<'Answer, 'Task, 'Handler when 'Task : comparison and 'Handler 
     /// it was generated (see `SignalState.generate`).
     ///
     /// The one signal a write raises is `SIGPIPE`, for a write into a pipe
-    /// with no reader, which answers `EPIPE`.
+    /// with no reader or into a Linux stream socket with no peer, which answers
+    /// `EPIPE`.
     | ReturnsRaising of answer : 'Answer * signal : PendingSignal<'Task> * system : UnixSystem<'Task, 'Handler>
     /// The call generated a signal whose default action ended the process,
     /// which never returns from it. `EndedProcess.Termination` names the
@@ -233,10 +274,10 @@ type PWriteAdmission =
 
 /// Why this kernel will not answer a `pwrite`.
 ///
-/// `WriteRefusal` without its socket case, rather than the same type: a socket
-/// is unseekable, so `pwrite` answers ESPIPE and never reaches the socket's own
-/// write operation, and a shared type would hand every client an arm it could
-/// not reach and would have to invent a message for.
+/// `WriteRefusal` without its socket and pipe cases, rather than the same type:
+/// a socket or a pipe is unseekable, so `pwrite` answers ESPIPE and never
+/// reaches its own write operation, and a shared type would hand every client
+/// arms it could not reach and would have to invent messages for.
 [<RequireQualifiedAccess>]
 type PWriteRefusal =
     /// The buffer has no answer at the step this `pwrite` reached: its screen, or
@@ -308,8 +349,9 @@ type private ReadTarget =
     | Pipe of pipe : PipeId * description : OpenFileDescriptionId * nonBlocking : bool
     /// A file, at the offset its open file description currently holds.
     | File of inode : InodeNumber * offset : int64
-    /// A socket, which is refused rather than answered.
-    | Socket of socket : SocketId
+    /// A socket, and whether the description it was reached through carries
+    /// `O_NONBLOCK`.
+    | Socket of socket : SocketId * nonBlocking : bool
     /// A directory, which has no byte contents to read, at the position its
     /// open file description holds.
     | Directory of inode : InodeNumber * position : DirectoryPosition
@@ -321,8 +363,8 @@ type private WriteTarget =
     /// A file. The offset is the description's own, and the write advances it —
     /// which is the whole difference from `pwrite`.
     | File of inode : InodeNumber * offset : int64
-    /// A socket, which is refused rather than answered — but only once the
-    /// buffer screen has had its say, which on one flavour answers first.
+    /// A socket, which answers only once the buffer screen has had its say,
+    /// which on one flavour answers first.
     | Socket of socket : SocketId
     /// The write end of a pipe, the open file description it was reached
     /// through, and whether that description carries `O_NONBLOCK`.
@@ -636,7 +678,7 @@ module UnixReadWrite =
     ///
     /// Changes nothing: `touchedByWrite` is the caller's to apply, to every
     /// outcome but a refusal and `Broken`, `leftUntaken` to `TakesNothing` and
-    /// `Sleeps`, and `brokenPipe` to `Broken`.
+    /// `Sleeps`, and `broken` to `Broken`.
     let private pipeWriteStep<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (pipeId : PipeId)
         (nonBlocking : bool)
@@ -715,25 +757,28 @@ module UnixReadWrite =
             // `PipeBuffer.write` is the measured rule.
             PipeWriteStep.Takes taken
 
-    /// A write by `task` into `pipeId`, which has no reader: it answers
-    /// `answer`, `EPIPE`, and raises `SIGPIPE` before it returns, which the
-    /// process's disposition for the signal then decides the fate of.
-    let private brokenPipe<'Answer, 'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// A write by `task` into `target`, which has no reader or no peer: it
+    /// answers `answer`, `EPIPE`, and raises `SIGPIPE` before it returns, which
+    /// the process's disposition for the signal then decides the fate of.
+    let private broken<'Answer, 'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (answer : 'Answer)
         (task : 'Task)
-        (pipeId : PipeId)
+        (target : BrokenWriteTarget)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<WriteOutcome<'Answer, 'Task, 'Handler>, WriteRefusal>
         =
-        // Measured (pipe-sigpipe.c), a worker thread's write: Linux's handler
-        // ran on the writing thread, before its write returned; Darwin's ran on
-        // the main thread, after the worker's write had returned, as a signal
-        // sent to the process is delivered (see `SignalState.generate`).
+        // Measured (pipe-sigpipe.c), a worker thread's write into a pipe:
+        // Linux's handler ran on the writing thread, before its write
+        // returned; Darwin's ran on the main thread, after the worker's write
+        // had returned, as a signal sent to the process is delivered (see
+        // `SignalState.generate`). A Linux stream socket with no peer raises it
+        // as a pipe does (socket-unconnected-transfer.c: on the writing thread,
+        // before the write returned); no Darwin socket with no peer raises it.
         if ProcessId.toInt32 system.Process.ProcessId = 1 then
-            Error (WriteRefusal.InitProcess pipeId)
+            Error (WriteRefusal.InitProcess target)
         else
 
-        let target =
+        let receiver =
             match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
             | SimulatedUnixFlavour.Linux -> ValueSome task
             | SimulatedUnixFlavour.Darwin -> ValueNone
@@ -741,7 +786,7 @@ module UnixReadWrite =
         let entry =
             {
                 Signal = Signal.SIGPIPE
-                Target = target
+                Target = receiver
             }
 
         let generation =
@@ -753,7 +798,7 @@ module UnixReadWrite =
                 system.Process.Signals
 
         match generation with
-        | Error refusal -> Error (WriteRefusal.SignalReceiver (pipeId, refusal))
+        | Error refusal -> Error (WriteRefusal.SignalReceiver (target, refusal))
         | Ok (SignalGeneration.ProcessContinues signals) ->
             Ok (
                 WriteOutcome.ReturnsRaising (
@@ -773,7 +818,107 @@ module UnixReadWrite =
             |> Ok
         | Ok (SignalGeneration.ProcessStopped (signal, _)) ->
             failwith
-                $"UnixReadWrite: generating %O{signal} for a write into pipe %O{pipeId} stopped the process, but SIGPIPE's default is to terminate on every flavour (this is a bug in this library)."
+                $"UnixReadWrite: generating %O{signal} for a write into %s{BrokenWriteTarget.describe target} stopped the process, but SIGPIPE's default is to terminate on every flavour (this is a bug in this library)."
+
+    /// A write by `task` of `count` bytes to `socketId`, past the buffer screen:
+    /// the socket's own answer, as `wrap` makes it the caller's. It never reads
+    /// the buffer, because no socket this kernel answers for takes bytes.
+    let private socketWrite<'Answer, 'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (wrap : WriteAnswer -> 'Answer)
+        (task : 'Task)
+        (socketId : SocketId)
+        (count : uint64)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<WriteOutcome<'Answer, 'Task, 'Handler>, WriteRefusal>
+        =
+        let socket = UnixMachineState.socket socketId system.Machine
+        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+
+        match socket.Phase with
+        | SocketPhase.Idle
+        | SocketPhase.Listening _ ->
+            // The binding a write makes before it answers, if any: a port
+            // for a socket that has none. An unbound socket gets the wildcard
+            // address with nothing locked, as `listen(2)`'s implicit bind
+            // does; a half-bound one (a Linux dissolve kept its locked address
+            // and dropped its port) keeps its address and locks, as connect's
+            // implicit bind does. Measured on Linux, socket-unconnected-autobind.c:
+            // `127.0.0.1:0` reads back `127.0.0.1:<ephemeral>` after the
+            // failed write.
+            let bound : Result<UnixSystem<'Task, 'Handler>, WriteRefusal> =
+                match socket.Binding with
+                | Some binding when binding.Endpoint.Port <> 0us -> Ok system
+                | _ when not (UnconnectedSocketRules.writeBindsFirst flavour socket.Domain socket.Kind) -> Ok system
+                | existing ->
+
+                match socket.Domain with
+                | SocketDomain.Inet6 -> Error (WriteRefusal.Inet6Binding socketId)
+                | SocketDomain.Unix ->
+                    failwith
+                        $"UnixReadWrite: a write on Unix-domain socket %O{socketId} binds it first, which no flavour does (this is a bug in this library)."
+                | SocketDomain.Inet ->
+
+                let candidate (port : uint16) : SocketBinding =
+                    match existing with
+                    | Some halfBound ->
+                        { halfBound with
+                            Endpoint =
+                                { halfBound.Endpoint with
+                                    Port = port
+                                }
+                        }
+                    | None ->
+                        {
+                            Endpoint = InternetEndpoint.ofParts InternetEndpoint.WildcardAddress port
+                            LockedAddress = None
+                            LockedPort = false
+                        }
+
+                match
+                    UnixMachineState.allocateEphemeralPort
+                        EphemeralPortUse.Reserve
+                        socketId
+                        socket
+                        candidate
+                        system.Machine
+                with
+                | None ->
+                    let low, high = system.Machine.EphemeralPortRange
+                    Error (WriteRefusal.EphemeralPortsExhausted (socketId, low, high))
+                | Some (binding, machine) ->
+                    Ok
+                        { system with
+                            Machine =
+                                { machine with
+                                    Sockets =
+                                        Map.add
+                                            socketId
+                                            { socket with
+                                                Binding = Some binding
+                                            }
+                                            machine.Sockets
+                                }
+                        }
+
+            match UnconnectedSocketRules.write flavour socket.Domain socket.Kind count, bound with
+            | UnconnectedSocketWrite.DependsOnSendBuffer, _ -> Error (WriteRefusal.SendBuffer socketId)
+            | _, Error refusal -> Error refusal
+            | answer, Ok system ->
+
+            match answer with
+            | UnconnectedSocketWrite.Fails error -> Ok (WriteOutcome.Returns (wrap (WriteAnswer.Failed error), system))
+            | UnconnectedSocketWrite.Breaks ->
+                broken (wrap (WriteAnswer.Failed UnixError.EPIPE)) task (BrokenWriteTarget.Socket socketId) system
+            | UnconnectedSocketWrite.DependsOnSendBuffer -> Error (WriteRefusal.SendBuffer socketId)
+        | SocketPhase.EstablishedPendingReport _
+        | SocketPhase.Established _
+        | SocketPhase.DatagramPeer _
+        | SocketPhase.Refused _ ->
+            // A refused socket is here too: measured, its write is EPIPE and
+            // SIGPIPE on both, where Darwin's socket with no peer answers
+            // ENOTCONN (socket-unconnected-transfer-after.c), and what a
+            // pending error does to it is unmeasured.
+            Error (WriteRefusal.UnmodelledSocketPhase (socketId, socket.Domain, socket.Kind, socket.Phase))
 
     /// Fails loudly unless `task` is one of `system`'s tasks and is not
     /// already asleep in a syscall: a task makes one call at a time, and a
@@ -932,6 +1077,12 @@ module UnixReadWrite =
     /// The buffer is consulted at three points and *not* consulted at three
     /// others, and both sets are measured; see the comments inline.
     ///
+    /// A socket with no peer answers without the buffer, as
+    /// `UnconnectedSocketRules.read` says, except that a blocking read of a
+    /// datagram socket, which sleeps until a datagram arrives, is refused. A
+    /// socket with a peer, or with a refused connection's error, is refused,
+    /// except for Linux's zero-length read, which is 0 in every phase.
+    ///
     /// A read by `task` of a pipe that holds nothing while a write end is open,
     /// through a description without `O_NONBLOCK`, sleeps (`ReadOutcome.WouldBlock`)
     /// without looking at the buffer, and `finishRead` finishes it. Setting
@@ -992,7 +1143,7 @@ module UnixReadWrite =
                 match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
                 | SimulatedUnixFlavour.Linux -> Error UnixError.EINVAL
                 | SimulatedUnixFlavour.Darwin -> Error UnixError.ENXIO
-            | OpenFileTarget.Socket socketId -> Ok (ReadTarget.Socket socketId)
+            | OpenFileTarget.Socket socketId -> Ok (ReadTarget.Socket (socketId, description.NonBlocking))
             | OpenFileTarget.File (inode, offset) -> Ok (ReadTarget.File (inode, offset))
             | OpenFileTarget.Directory (inode, position) -> Ok (ReadTarget.Directory (inode, position))
             | OpenFileTarget.Pipe (pipeId, PipeEnd.Read) ->
@@ -1007,7 +1158,7 @@ module UnixReadWrite =
 
         // Everything below this point is the object's own read operation, which
         // on Linux the buffer screen precedes: hence EFAULT ahead of EISDIR, of
-        // a pipe's end-of-file and of a socket's connection state, and a
+        // a pipe's end-of-file and of a socket's own answer, and a
         // fault even for a zero-length request. Darwin screens nothing here, so
         // its answers come from the operation itself.
         match
@@ -1018,11 +1169,11 @@ module UnixReadWrite =
         | Ok false ->
 
         match target with
-        | ReadTarget.Socket socketId ->
-            // A zero-length read of a socket is where the flavours part, and it
-            // is the one socket answer that needs no connection state — on one
-            // of them. Measured across every phase this kernel can produce and
-            // every kind it models, `read(sock, buf, 0)`:
+        | ReadTarget.Socket (socketId, nonBlocking) ->
+            // A zero-length read of a socket is where the flavours part, and on
+            // one of them it needs no phase at all. Measured across every phase
+            // this kernel can produce and every kind it models,
+            // `read(sock, buf, 0)`:
             //
             //   socket state                     Linux   Darwin
             //   INET stream, idle                0       ENOTCONN
@@ -1037,24 +1188,43 @@ module UnixReadWrite =
             //   stream, peer closed               0      0
             //
             // So **Linux answers 0 in every state**, which is why the flavour
-            // alone decides it here: there is no phase or kind on which the
-            // answer depends. Darwin's is 0 too except for a stream socket that
-            // is not connected, and telling those apart means modelling exactly
-            // the connection state this refusal exists to avoid — so Darwin
-            // declines the whole class, which over-refuses the connected cases
-            // and never answers wrongly.
+            // alone decides it here, ahead of the phase: a connected socket's
+            // zero-length read is answered although its longer ones are not.
+            // Darwin's is 0 too except for a stream socket that is not
+            // connected, which `UnconnectedSocketRules` answers below with the
+            // rest of a socket without a peer.
             //
-            // The same descriptors answer ENOTCONN (or EAGAIN, connected and
-            // empty) at length 1, so the short-circuit is about the length
-            // rather than the socket. The socket event port does not share it
-            // and is answered above: measured, `read(port, buf, 0)` is EINVAL on
-            // Linux like every other length.
-            match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform, count with
+            // The socket event port does not share the shortcut and is answered
+            // above: measured, `read(port, buf, 0)` is EINVAL on Linux like
+            // every other length.
+            let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+
+            match flavour, count with
             | SimulatedUnixFlavour.Linux, 0UL -> answered (ReadAnswer.Completed ImmutableArray.Empty) system
             | SimulatedUnixFlavour.Linux, _
             | SimulatedUnixFlavour.Darwin, _ ->
-                let socket = UnixMachineState.socket socketId system.Machine
-                Error (ReadRefusal.SocketConnectionState (socketId, socket.Domain, socket.Kind))
+
+            let socket = UnixMachineState.socket socketId system.Machine
+
+            match socket.Phase with
+            | SocketPhase.Idle
+            | SocketPhase.Listening _ ->
+                // No peer, so no byte can be on its way: a socket fresh from
+                // `socket(2)`, bound, or listening, or one a Linux connect left
+                // idle (a refusal it reported, or an `AF_UNSPEC` dissolve), which
+                // answers as a fresh one does (socket-unconnected-transfer-after.c).
+                match UnconnectedSocketRules.read flavour socket.Domain socket.Kind nonBlocking count with
+                | UnconnectedSocketRead.Empty -> answered (ReadAnswer.Completed ImmutableArray.Empty) system
+                | UnconnectedSocketRead.Fails error -> answered (ReadAnswer.Failed error) system
+                | UnconnectedSocketRead.Sleeps -> Error (ReadRefusal.DatagramSleep (socketId, socket.Domain))
+            | SocketPhase.EstablishedPendingReport _
+            | SocketPhase.Established _
+            | SocketPhase.DatagramPeer _
+            | SocketPhase.Refused _ ->
+                // A refused socket is here too: measured, its read is a pending
+                // ECONNREFUSED on Darwin and end-of-file once the error is
+                // reported, on both (socket-unconnected-transfer-after.c).
+                Error (ReadRefusal.UnmodelledSocketPhase (socketId, socket.Domain, socket.Kind, socket.Phase))
         | ReadTarget.Directory (inode, position) ->
             // A directory has a position too, and each flavour's position rule
             // answers ahead of EISDIR, exactly as for a file.
@@ -1418,10 +1588,9 @@ module UnixReadWrite =
                 // Unseekable on both, for the same reason the port is, and
                 // measured on a TCP, a UDP and a Unix-domain socket alike.
                 //
-                // Unlike `read`, this needs no connection state and so is an
-                // answer rather than a refusal: every socket is unseekable
-                // whatever it is connected to, so `pread` never reaches the
-                // socket's own read operation.
+                // Unlike `read`, this does not depend on the socket's phase:
+                // every socket is unseekable whatever it is connected to, so
+                // `pread` never reaches the socket's own read operation.
                 Error UnixError.ESPIPE
             | OpenFileTarget.File (inode, _)
             | OpenFileTarget.Directory (inode, _) ->
@@ -1575,6 +1744,11 @@ module UnixReadWrite =
     /// what fits and sleeps for the rest. `admitFinishWrite` and `finishWrite`
     /// finish a sleeping write.
     ///
+    /// A socket with no peer answers without the buffer, as
+    /// `UnconnectedSocketRules.write` says, at every length including zero; on
+    /// Linux a stream socket's `EPIPE` raises `SIGPIPE` as a pipe's does. A
+    /// socket with a peer, or with a refused connection's error, is refused.
+    ///
     /// Fails loudly if `task` is not one of the process's tasks, or is already
     /// asleep in a syscall.
     let admitWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -1615,18 +1789,15 @@ module UnixReadWrite =
         // operation, so `write(socket, (void*)-1, n)` there is EFAULT for every
         // `n` including 0: the screen answers and the socket is never consulted.
         // Darwin screens nothing, so the same call reaches the socket and earns
-        // a connection-state answer (ENOTCONN for a stream socket,
-        // EDESTADDRREQ for a datagram one). This kernel models no write on a
-        // socket, so it refuses rather than answering either.
+        // its own answer (ENOTCONN for a stream socket with no peer,
+        // EDESTADDRREQ for a datagram one).
         //
         // And the no-op does *not* precede it: measured on both for an
         // unconnected socket, `write(socket, buf, 0)` is the socket's own
         // error rather than 0. (A connected stream socket's zero-length write
-        // is unmeasured here; the refusal below covers it either way.)
+        // is unmeasured here; it is refused with the rest of that phase.)
         match target with
-        | WriteTarget.Socket socketId ->
-            let socket = UnixMachineState.socket socketId system.Machine
-            Error (WriteRefusal.SocketConnectionState (socketId, socket.Domain, socket.Kind))
+        | WriteTarget.Socket socketId -> socketWrite (WriteAdmission.Answered) task socketId count system
         | WriteTarget.Pipe (pipeId, descriptionId, nonBlocking) ->
             // A pipe has no position, and its own write decides the zero-length
             // case, which it answers differently from a file.
@@ -1635,7 +1806,11 @@ module UnixReadWrite =
             match pipeWriteStep pipeId nonBlocking count buffer system with
             | PipeWriteStep.Refused refusal -> Error refusal
             | PipeWriteStep.Broken ->
-                brokenPipe (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EPIPE)) task pipeId system
+                broken
+                    (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EPIPE))
+                    task
+                    (BrokenWriteTarget.Pipe pipeId)
+                    system
             | PipeWriteStep.Answered answer ->
                 Ok (WriteOutcome.Returns (WriteAdmission.Answered answer, touchedByWrite pipeId system))
             | PipeWriteStep.TakesNothing answer ->
@@ -1705,8 +1880,8 @@ module UnixReadWrite =
     ///
     /// A write into a pipe the client drains is read by the client as it is
     /// written, and recorded in `UnixMachineState.Delivered`. A write into a
-    /// pipe with no reader answers `EPIPE` and raises `SIGPIPE`, as
-    /// `admitWrite` describes.
+    /// pipe with no reader answers `EPIPE` and raises `SIGPIPE`, and a socket
+    /// answers or is refused, as `admitWrite` describes.
     ///
     /// Fails loudly if `task` is not one of the process's tasks, or is already
     /// asleep in a syscall.
@@ -1731,16 +1906,15 @@ module UnixReadWrite =
         | Error error -> returns (WriteAnswer.Failed error) system
         | Ok (WriteTarget.Socket socketId) ->
             // There is no buffer here to screen, so the socket's own answer is
-            // all there is — and this kernel models no write on a socket, so it
-            // refuses rather than giving one. A caller that used
-            // `admitWrite` never reaches this: that call refused or answered
+            // all there is, and it never takes the bytes. A caller that used
+            // `admitWrite` never reaches this: that call answered or refused
             // first.
-            let socket = UnixMachineState.socket socketId system.Machine
-            Error (WriteRefusal.SocketConnectionState (socketId, socket.Domain, socket.Kind))
+            socketWrite id task socketId (uint64 bytes.Length) system
         | Ok (WriteTarget.Pipe (pipeId, descriptionId, nonBlocking)) ->
             match pipeWriteStep pipeId nonBlocking bytes.Length UserBuffer.Mapped system with
             | PipeWriteStep.Refused refusal -> Error refusal
-            | PipeWriteStep.Broken -> brokenPipe (WriteAnswer.Failed UnixError.EPIPE) task pipeId system
+            | PipeWriteStep.Broken ->
+                broken (WriteAnswer.Failed UnixError.EPIPE) task (BrokenWriteTarget.Pipe pipeId) system
             | PipeWriteStep.Answered answer -> returns answer (touchedByWrite pipeId system)
             | PipeWriteStep.TakesNothing answer ->
                 returns answer (touchedByWrite pipeId (leftUntaken pipeId bytes.Length system))
@@ -2018,7 +2192,7 @@ module UnixReadWrite =
                 | SimulatedUnixFlavour.Linux
                 | SimulatedUnixFlavour.Darwin -> WriteResumption.Answered (WriteAnswer.Failed UnixError.EPIPE)
 
-            brokenPipe answer task pipeId finished
+            broken answer task (BrokenWriteTarget.Pipe pipeId) finished
         else
 
         let taking = PipeBuffer.resumeTakes parked.Count parked.Written pipe.Buffer
@@ -2240,10 +2414,10 @@ module UnixReadWrite =
             // Unseekable on both, for the same reason the port is, and measured
             // on a TCP, a UDP and a Unix-domain socket alike.
             //
-            // Unlike `write`, this needs no connection state and so is an answer
-            // rather than a refusal: every socket is unseekable whatever it is
-            // connected to, so `pwrite` never reaches the socket's own write
-            // operation. That is why `PWriteRefusal` has no socket case.
+            // Unlike `write`, this does not depend on the socket's phase: every
+            // socket is unseekable whatever it is connected to, so `pwrite`
+            // never reaches the socket's own write operation. That is why
+            // `PWriteRefusal` has no socket case.
             Error UnixError.ESPIPE
         | OpenFileTarget.File (inode, _)
         | OpenFileTarget.Directory (inode, _) ->

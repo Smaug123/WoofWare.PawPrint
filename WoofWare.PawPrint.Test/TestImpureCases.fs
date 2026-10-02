@@ -913,7 +913,9 @@ module TestImpureCases =
         kernel.DirectoryStreamFds |> shouldEqual Map.empty
 
         // The three inherited standard streams and nothing else.
-        FileDescriptorRegistry.fds kernel.FileDescriptors |> Map.count |> shouldEqual 3
+        FileDescriptorRegistry.fds kernel.Process.FileDescriptors
+        |> Map.count
+        |> shouldEqual 3
 
         // Bounded rather than exact: CoreLib's own startup holds a handful of
         // native blocks (four, as this suite stands) and this assertion is not
@@ -1171,6 +1173,28 @@ module TestImpureCases =
                 )
         }
 
+    /// `SocketUnconnectedTransfer.cs` under `platform`: 0 for Linux's answers
+    /// and 100 for Darwin's. Compared against the real runtime on a host of the
+    /// same flavour, since the guest asserts nothing but errnos.
+    let private socketUnconnectedTransferCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
+        {
+            FileName = "SocketUnconnectedTransfer.cs"
+            ExpectedReturnCode =
+                match SimulatedUnixPlatform.flavour platform with
+                | SimulatedUnixFlavour.Linux -> 0
+                | SimulatedUnixFlavour.Darwin -> 100
+            KernelConfig =
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+            ExpectsUnhandledException = false
+            // Linux's TCP writes raised SIGPIPE, which the runtime's startup
+            // ignores, so none is left pending.
+            AssertTerminalState = Some (fun state -> SignalState.pending state.Kernel.Signals |> shouldEqual [])
+        }
+
     /// Build one registration of `PipeBrokenRaw.cs` under `platform`, whose
     /// exit code is the flavour's answer to a zero-length write with no reader:
     /// 0 on Linux, 100 (EPIPE) on Darwin. The assertion here is that none of
@@ -1385,6 +1409,8 @@ module TestImpureCases =
             pipeRawCase SimulatedUnixPlatform.macOsArm64
             pipeBrokenRawCase SimulatedUnixPlatform.linuxX64
             pipeBrokenRawCase SimulatedUnixPlatform.macOsArm64
+            socketUnconnectedTransferCase SimulatedUnixPlatform.linuxX64
+            socketUnconnectedTransferCase SimulatedUnixPlatform.macOsArm64
             pipeReaderLeavesCase SimulatedUnixPlatform.linuxX64
             pipeReaderLeavesCase SimulatedUnixPlatform.macOsArm64
             processIdCase None
