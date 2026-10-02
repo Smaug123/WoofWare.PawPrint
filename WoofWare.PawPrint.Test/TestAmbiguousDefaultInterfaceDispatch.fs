@@ -7,6 +7,7 @@ open System.Reflection
 open System.Reflection.Emit
 open System.Reflection.Metadata
 open FsUnitTyped
+open Microsoft.CodeAnalysis
 open NUnit.Framework
 open WoofWare.PawPrint
 
@@ -192,3 +193,110 @@ module TestAmbiguousDefaultInterfaceDispatch =
             |> List.sort
             |> shouldEqual [ "ILeft" ; "IRight" ]
         | other -> failwith $"expected an ambiguous dispatch, got %A{other}"
+
+    /// A struct implementing `I<string>` and `I<Exception>` of a covariant `I<out T>`, each instantiation
+    /// with a default body from an interface of its own, called through `I<object>`. Both bodies are
+    /// variance-compatible with the call, but CoreCLR's variance pass takes one rather than throwing.
+    let private variantSource : string =
+        """
+public interface I<out T> { int M(int n); }
+public interface L : I<string> { int I<string>.M(int n) => 1 / n; }
+public interface R : I<System.Exception> { int I<System.Exception>.M(int n) => 2 / n; }
+public struct S : L, R { }
+
+public static class Run
+{
+    public static int Call<T>(T x, int n) where T : I<object> => x.M(n);
+    public static int Go(int n) => Call(new S(), n);
+}
+"""
+
+    [<Test>]
+    let ``default bodies that conflict only through variance are not reported ambiguous`` () : unit =
+        let image =
+            Roslyn.compileAssembly "Variant" OutputKind.DynamicallyLinkedLibrary [] [ variantSource ]
+
+        // The real runtime runs one of the bodies.
+        do
+            let context =
+                System.Runtime.Loader.AssemblyLoadContext ("Variant", isCollectible = true)
+
+            try
+                let run = context.LoadFromStream(new MemoryStream (image)).GetType "Run"
+
+                let thrown =
+                    try
+                        run.GetMethod("Go").Invoke ((null : obj), [| box 0 |]) |> ignore<obj>
+                        None
+                    with :? TargetInvocationException as e ->
+                        Some (e.InnerException.GetType().FullName)
+
+                thrown |> shouldEqual (Some "System.DivideByZeroException")
+            finally
+                context.Unload ()
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let runtimeDirs = FrameworkUnderTest.runtimeDirs ()
+
+        let corelib =
+            Assembly.readFile
+                loggerFactory
+                (Path.Combine (FrameworkUnderTest.sharedFrameworkDirectory (), "System.Private.CoreLib.dll"))
+
+        let variant =
+            Assembly.read loggerFactory (Some "Variant.dll") (new MemoryStream (image))
+
+        let bct = BaseClassTypes.ofCorelib corelib
+        let loaded = LoadedAssemblies.ofAssemblies [ corelib ; variant ]
+        let concreteTypes = Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
+
+        let state =
+            { TypeSystemState.Empty with
+                _LoadedAssemblies = loaded
+                ConcreteTypes = concreteTypes
+            }
+
+        let typeNamed (name : string) : TypeInfo<GenericParamFromMetadata, TypeDefn> =
+            variant.TypeDefs.Values |> Seq.find (fun ty -> ty.Name = name)
+
+        let state, receiver =
+            TypeSystemState.concretizeType
+                loggerFactory
+                runtimeDirs
+                bct
+                state
+                variant.DefinitionFullName
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.FromDefinition ((typeNamed "S").Identity, SignatureTypeKind.ValueType))
+
+        let method = (typeNamed "I`1").Methods |> List.find (fun m -> m.Name = "M")
+
+        let state, concretized, _ =
+            MethodConcretisation.concretizeMethodWithAllGenerics
+                loggerFactory
+                runtimeDirs
+                bct
+                (ImmutableArray.Create (AllConcreteTypes.getRequiredNonGenericHandle concreteTypes bct.Object))
+                method
+                ImmutableArray.Empty
+                state
+
+        let _, resolved =
+            ConcreteVirtualDispatch.tryResolveVirtualImplementation
+                loggerFactory
+                runtimeDirs
+                bct
+                concretized.Generics
+                concretized
+                receiver
+                true
+                state
+
+        match resolved with
+        | VirtualImplementation.Found found when
+            found.RequiredDeclaringType.Name = "L" || found.RequiredDeclaringType.Name = "R"
+            ->
+            ()
+        | VirtualImplementation.Unmodelled _ -> ()
+        | other -> failwith $"expected one of the bodies, or a refusal to choose; got %A{other}"

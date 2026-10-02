@@ -39,7 +39,8 @@ module IlMachineStateExecution =
 
     /// `ConcreteVirtualDispatch.tryResolveVirtualImplementation` against the machine's type system:
     /// `None` when nothing overrides the method named. Refuses where more than one default
-    /// interface body is most specific, where the guest would see `AmbiguousImplementationException`.
+    /// interface body is most specific, where the guest would see `AmbiguousImplementationException`,
+    /// and where the type system does not model the dispatch.
     let tryResolveVirtualImplementation
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -72,6 +73,7 @@ module IlMachineStateExecution =
             |> String.concat ", "
             // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
             |> failwithf "multiple most-specific default interface implementations matched this virtual slot: %s"
+        | VirtualImplementation.Unmodelled reason -> failwith reason
 
     /// How a call chooses the method it runs.
     [<RequireQualifiedAccess>]
